@@ -1,0 +1,1 @@
+"""Argosy FastAPI application."""

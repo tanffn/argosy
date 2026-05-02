@@ -77,6 +77,54 @@ ${ARGOSY_HOME}/
 └── secrets/                       # encrypted; master key in OS keychain
 ```
 
+## Quick start (Phase 0)
+
+Phase 0 is the bare scaffold: FastAPI backend, Next.js dashboard, SQLite + Alembic migrations, secrets via OS keychain. No agents, no broker, no Claude calls yet.
+
+### Prerequisites
+
+- Python 3.12+
+- Node.js 20+ and npm
+- [`uv`](https://github.com/astral-sh/uv) for Python dep management (`pip install --user uv`)
+
+### First-time setup
+
+```bash
+# from the repo root
+uv sync                          # creates .venv and installs Python deps
+uv run alembic upgrade head      # apply DB migrations (creates db/argosy.db)
+
+cd ui
+npm install                      # install UI deps
+```
+
+### Run the stack (two terminals)
+
+Terminal 1 — FastAPI backend on `http://localhost:8000`:
+
+```bash
+uv run uvicorn argosy.api.main:app --reload
+```
+
+Terminal 2 — Next.js dashboard on `http://localhost:1337`:
+
+```bash
+cd ui && npm run dev
+```
+
+### Phase 0 exit gate
+
+Both servers up, browse to <http://localhost:1337>, and the home page shows the
+**Health: OK** badge in green. The dashboard fetches `/api/health` (proxied to
+the FastAPI backend), which in turn verifies the SQLite connection. If you see
+the green badge, the full stack is wired correctly.
+
+### Tests
+
+```bash
+uv run pytest -q
+```
+
 ## Reference paper
 
 Xiao et al. *TradingAgents: Multi-Agents LLM Financial Trading Framework.* [arXiv:2412.20138](https://arxiv.org/html/2412.20138v1).

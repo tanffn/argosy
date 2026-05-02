@@ -1,0 +1,20 @@
+# Argosy top-level configuration
+# Install path; everything else derives from this.
+# Default behavior: ARGOSY_HOME env var, else directory containing argosy.toml.
+
+[paths]
+home = "."
+backups = "./backups"
+db_file = "./db/argosy.db"
+domain_knowledge = "./domain_knowledge"
+configs = "./configs"
+logs = "./logs"
+
+[server]
+api_port = 8000
+ui_port = 1337
+api_host = "127.0.0.1"
+
+[anthropic]
+# Reads from OS keychain; keychain key name configurable.
+keychain_key_name = "argosy.anthropic.api_key"
