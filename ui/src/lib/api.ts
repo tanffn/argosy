@@ -1,10 +1,25 @@
 /**
  * Thin fetch helpers for the Argosy backend.
  *
- * The dev Next.js rewrites `/api/*` → `http://localhost:8000/*`, so all
- * calls are relative URLs. In production we expect the same proxy
- * arrangement.
+ * Every call resolves to an absolute URL via `apiUrl(path)`. We DO NOT
+ * route through the Next.js dev `rewrites()` proxy because the proxy
+ * has an internal timeout (~30-60s) that surfaces as HTTP 500 in the
+ * browser whenever an upstream agent call takes longer (intake/turn,
+ * intake/upload, plan/critique can all easily exceed 60s on Haiku).
+ *
+ * Resolution:
+ *   - `NEXT_PUBLIC_API_URL` env var if set (production: e.g. Vercel
+ *     frontend + separate engine host).
+ *   - Else `http://localhost:8000` (local dev — CORS in
+ *     `argosy/api/main.py` allows http://localhost:1337 origin).
  */
+function apiUrl(path: string): string {
+  const base =
+    typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL
+      ? process.env.NEXT_PUBLIC_API_URL
+      : "http://localhost:8000";
+  return path.startsWith("http") ? path : `${base}${path}`;
+}
 
 export interface PortfolioPosition {
   location: string;
@@ -259,13 +274,13 @@ export interface TOTPStatusResponse {
 }
 
 async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(path, { cache: "no-store" });
+  const res = await fetch(apiUrl(path), { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
   return (await res.json()) as T;
 }
 
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(apiUrl(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
