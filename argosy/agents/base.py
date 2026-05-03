@@ -312,6 +312,11 @@ class BaseAgent(Generic[T]):
             system_prompt=system,
             max_turns=1,
             allowed_tools=[],  # one-shot reasoning; no tool use during agent runs
+            # Headless server context — there is no human at the terminal to
+            # answer permission prompts. `bypassPermissions` silences the
+            # interactive flow; `allowed_tools=[]` already prevents any
+            # actual tool invocation, so this is a safe pairing.
+            permission_mode="bypassPermissions",
             model=self.model,
         )
 
