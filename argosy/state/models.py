@@ -5,9 +5,10 @@ Phase 1: `plan_versions`, `plan_critiques`, `agent_reports`,
 `agent_reports_blobs`. Adds `current_stage` to `user_context`.
 Phase 2: `cadence_state`, `daily_briefs`, `prices_cache`, `news_cache`,
 `macro_cache`.
+Phase 3: `proposals`, `proposals_history`, `approvals`, `decision_runs`.
 
-Other table groups (holdings, decisions full lifecycle, audit beyond agent
-reports, domain status, operations) come in later phases.
+Other table groups (broker order log, lots, audit beyond agent reports,
+domain status, operations) come in later phases.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -246,6 +248,131 @@ class MacroCache(Base, _CacheBase):
     __tablename__ = "macro_cache"
 
 
+# ----------------------------------------------------------------------
+# Phase 3: decisions + proposals
+# ----------------------------------------------------------------------
+
+
+class Proposal(Base):
+    """One trader proposal. Lives across the SDD §10 state machine.
+
+    Status strings come from `argosy.decisions.proposals.ProposalStatus`
+    (kept as str here so migrations are simpler).
+    """
+
+    __tablename__ = "proposals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(8), nullable=False)
+    size_shares_or_currency: Mapped[float] = mapped_column(
+        Numeric(18, 4), nullable=False, default=0
+    )
+    size_units: Mapped[str] = mapped_column(String(16), nullable=False, default="shares")
+    instrument: Mapped[str] = mapped_column(String(16), nullable=False, default="stock")
+    order_type: Mapped[str] = mapped_column(String(16), nullable=False, default="market")
+    limit_price: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    stop_price: Mapped[float | None] = mapped_column(Numeric(18, 4), nullable=True)
+    time_in_force: Mapped[str] = mapped_column(String(8), nullable=False, default="DAY")
+    tier: Mapped[str] = mapped_column(String(4), nullable=False, index=True)
+    account_class: Mapped[str] = mapped_column(String(16), nullable=False, default="main")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft", index=True)
+    rationale_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    expected_impact_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    cooling_off_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decision_run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("decision_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+    history: Mapped[list["ProposalHistory"]] = relationship(
+        back_populates="proposal", cascade="all, delete-orphan"
+    )
+    approvals: Mapped[list["Approval"]] = relationship(
+        back_populates="proposal", cascade="all, delete-orphan"
+    )
+
+
+class ProposalHistory(Base):
+    """Append-only state-machine audit. One row per status change."""
+
+    __tablename__ = "proposals_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    proposal_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("proposals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    transitioned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    transitioned_by: Mapped[str] = mapped_column(String(64), nullable=False, default="system")
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    proposal: Mapped[Proposal] = relationship(back_populates="history")
+
+
+class Approval(Base):
+    """One row per approval action (dashboard click, email link, etc.)."""
+
+    __tablename__ = "approvals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    proposal_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("proposals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    approval_channel: Mapped[str] = mapped_column(String(32), nullable=False, default="dashboard")
+    second_factor_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    signed_token_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    proposal: Mapped[Proposal] = relationship(back_populates="approvals")
+
+
+class DecisionRun(Base):
+    """One end-to-end decision-flow execution.
+
+    Links a flow run to the agent_reports rows it produced and to the
+    proposal it emitted (NULL until the trader fires).
+    """
+
+    __tablename__ = "decision_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    tier: Mapped[str] = mapped_column(String(4), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
+    fund_manager_decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    proposal_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("proposals.id", ondelete="SET NULL"), nullable=True
+    )
+
+
 __all__ = [
     "Base",
     "User",
@@ -259,4 +386,9 @@ __all__ = [
     "PricesCache",
     "NewsCache",
     "MacroCache",
+    # Phase 3
+    "Approval",
+    "DecisionRun",
+    "Proposal",
+    "ProposalHistory",
 ]

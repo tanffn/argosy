@@ -73,6 +73,54 @@ export interface AgentActivityResponse {
   next_since: string | null;
 }
 
+export interface ProposalListItem {
+  id: number;
+  user_id: string;
+  ticker: string;
+  action: string;
+  size_shares_or_currency: number;
+  size_units: string;
+  instrument: string;
+  order_type: string;
+  tier: string;
+  account_class: string;
+  status: string;
+  rationale_summary: string;
+  confidence: string | null;
+  cooling_off_until: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProposalListResponse {
+  rows: ProposalListItem[];
+  total: number;
+}
+
+export interface ReasoningTrailItem {
+  id: number;
+  agent_role: string;
+  model: string;
+  confidence: string | null;
+  response_text: string;
+  created_at: string;
+}
+
+export interface ProposalDetail {
+  proposal: ProposalListItem;
+  expected_impact: Record<string, unknown> | null;
+  history: Array<Record<string, unknown>>;
+  approvals: Array<Record<string, unknown>>;
+  reasoning_trail: ReasoningTrailItem[];
+  decision_run: Record<string, unknown> | null;
+}
+
+export interface ProposalActionResponse {
+  status: string;
+  proposal_id: number;
+  message?: string;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path, { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
@@ -111,4 +159,34 @@ export const api = {
     getJSON<AgentActivityResponse>(
       `/api/agent-activity?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
     ),
+  proposalsList: (userId: string, status?: string) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (status) qs.set("status", status);
+    return getJSON<ProposalListResponse>(`/api/proposals?${qs.toString()}`);
+  },
+  proposalDetail: (userId: string, id: number) =>
+    getJSON<ProposalDetail>(
+      `/api/proposals/${id}?user_id=${encodeURIComponent(userId)}`,
+    ),
+  proposalApprove: (
+    id: number,
+    userId: string,
+    secondFactor = false,
+    channel: "dashboard" | "email" | "cli" = "dashboard",
+  ) =>
+    postJSON<ProposalActionResponse>(`/api/proposals/${id}/approve`, {
+      user_id: userId,
+      channel,
+      second_factor: secondFactor,
+    }),
+  proposalReject: (id: number, userId: string, note = "") =>
+    postJSON<ProposalActionResponse>(`/api/proposals/${id}/reject`, {
+      user_id: userId,
+      note,
+    }),
+  proposalEscalateTier: (id: number, userId: string, levels = 1) =>
+    postJSON<ProposalActionResponse>(`/api/proposals/${id}/escalate-tier`, {
+      user_id: userId,
+      levels,
+    }),
 };

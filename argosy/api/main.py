@@ -26,9 +26,11 @@ from argosy import __version__
 from argosy.api.events import subscribe
 from argosy.api.routes.agent_activity import router as agent_activity_router
 from argosy.api.routes.daily_brief import router as daily_brief_router
+from argosy.api.routes.decisions import router as decisions_router
 from argosy.api.routes.health import router as health_router
 from argosy.api.routes.plan import router as plan_router
 from argosy.api.routes.portfolio import router as portfolio_router
+from argosy.api.routes.proposals import router as proposals_router
 from argosy.config import get_settings
 from argosy.logging import configure_logging, get_logger
 
@@ -61,6 +63,10 @@ def create_app() -> FastAPI:
     app.include_router(plan_router, prefix=api_prefix)
     app.include_router(daily_brief_router, prefix=api_prefix)
     app.include_router(agent_activity_router, prefix=api_prefix)
+
+    # Phase 3 — proposals + decisions
+    app.include_router(proposals_router, prefix=api_prefix)
+    app.include_router(decisions_router, prefix=api_prefix)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

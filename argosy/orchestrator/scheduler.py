@@ -24,6 +24,8 @@ from argosy.agent_settings import AgentSettings, load_agent_settings
 from argosy.logging import get_logger
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule, TickStatus
 from argosy.orchestrator.loops.daily_brief import DailyBriefLoop
+from argosy.orchestrator.loops.process_cooling import ProcessCoolingLoop
+from argosy.orchestrator.loops.weekly_review import WeeklyReviewLoop
 from argosy.orchestrator.triggers import is_market_open
 from argosy.state import db as db_mod
 from argosy.state.models import CadenceState
@@ -69,10 +71,13 @@ class Scheduler:
         self._loops[loop.name] = loop
 
     def register_default_loops(self) -> None:
-        """Register the Phase 2 default set (daily_brief only).
+        """Register the Phase 2+3 default set.
 
-        Other loops (minute/hour/weekly/...) get registered here in later
-        phases as they're implemented.
+        Phase 2: daily_brief.
+        Phase 3: weekly_review (full T3-style plan-critique re-pass) +
+        process_cooling (state-machine advancer for cooling proposals).
+        Other loops (minute/hour/monthly/quarterly/annual) land in later
+        phases as their tick implementations arrive.
         """
         cad = self.settings.cadences.daily_brief
         if cad.enabled:
@@ -84,6 +89,29 @@ class Scheduler:
                     user_id=self.user_id,
                 )
             )
+
+        weekly = self.settings.cadences.weekly_review
+        if weekly.enabled:
+            schedule = LoopSchedule.from_config(weekly)
+            self.register_loop(
+                WeeklyReviewLoop(
+                    schedule=schedule,
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
+
+        # Process-cooling runs every minute regardless of market hours;
+        # it's a cheap DB scan with no LLM calls. We don't gate it on a
+        # cadence config field (always-on for Phase 3).
+        self.register_loop(
+            ProcessCoolingLoop(
+                schedule=LoopSchedule(interval_seconds=60),
+                enabled=True,
+                user_id=self.user_id,
+                settings=self.settings,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Run

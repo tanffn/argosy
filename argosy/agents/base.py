@@ -49,6 +49,14 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "news": "claude-sonnet-4-6",
     "macro": "claude-sonnet-4-6",
     "concentration": "claude-haiku-4-5",
+    # Phase 3 decision team:
+    "bull_researcher": "claude-opus-4-7",
+    "bear_researcher": "claude-opus-4-7",
+    "researcher_facilitator": "claude-sonnet-4-6",
+    "trader": "claude-opus-4-7",
+    "risk_officer": "claude-sonnet-4-6",
+    "risk_facilitator": "claude-sonnet-4-6",
+    "fund_manager": "claude-opus-4-7",
 }
 FALLBACK_MODEL = "claude-sonnet-4-6"
 

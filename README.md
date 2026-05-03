@@ -251,6 +251,88 @@ Then open <http://localhost:1337>. Three tabs:
 - **Portfolio** — positions per account from the latest TSV, allocation vs target, FX header.
 - **Plan** — rendered plan markdown + critique findings, with a **Re-critique now** button that POSTs to `/api/plan/critique`.
 
+## Phase 3 quick start (decision team + tiers + proposals)
+
+Phase 3 wires the full TradingAgents-pattern decision team: bull/bear
+researchers + facilitator → trader → 3-perspective risk team + facilitator
+→ fund manager. Adds the tier system (T0/T1/T2/T3), proposals queue,
+rule-based risk preflight, weekly review loop, and the dashboard
+**Proposals** tab.
+
+### One-time setup
+
+Apply migrations (creates `proposals`, `proposals_history`, `approvals`,
+`decision_runs`):
+
+```bash
+uv run alembic upgrade head
+```
+
+### Trigger a one-shot decision flow
+
+```bash
+uv run argosy decide --ticker AAPL --tier auto --user-id ariel \
+  --proposed-value 5000 --portfolio-value 100000
+```
+
+Tier flag accepts `auto` | `T0` | `T1` | `T2` | `T3`. With `auto`, the
+resolver computes the tier from the value/portfolio rules in SDD §4.1
+(plus the NVDA / plan-structural / concentration-cap overrides).
+
+The decision-flow output is a `proposals` row plus the full reasoning
+trail (one `agent_reports` row per agent invocation, all linked by the
+parent `decision_runs` id).
+
+### Review proposals
+
+```bash
+uv run argosy proposals list --user-id ariel              # all proposals
+uv run argosy proposals list --status awaiting_human      # pending review
+uv run argosy proposals approve <id> --user-id ariel      # 1-click approve
+uv run argosy proposals approve <id> --second-factor      # required for T3
+uv run argosy proposals reject <id>  --note "no go"
+```
+
+The dashboard's **Proposals** tab provides the same actions plus a
+reasoning-trail expansion that pages through every agent-report row
+that produced the proposal. The page subscribes to WebSocket events
+`proposal.created` / `proposal.updated` and refreshes automatically.
+
+### Tier override modes (SDD §4.4)
+
+Edit `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml`:
+
+```yaml
+tiers:
+  override_mode: auto                  # default — use the resolver
+  # override_mode: pinned:T2           # floor every decision at T2
+  # override_mode: all-tier            # run the full T3 stack on everything
+  # override_mode: per-decision-escalate  # UI button bumps single proposals
+```
+
+### Cadences added in Phase 3
+
+- `weekly_review` — Sunday 18:00 default; full plan-critique re-pass +
+  RED flagging via `weekly_review.flagged` WebSocket event
+- `process_cooling` — every 60s; advances ripe `cooling` proposals
+  (T2/T3 main → `awaiting_human`; limited+paper → auto-`executed_paper`)
+
+Both auto-register when the scheduler starts (`uv run argosy run`).
+
+### Tests
+
+```bash
+uv run pytest -q
+```
+
+Tests mock the Anthropic client; nothing in the test suite calls live
+Claude. The 178+ tests cover tier resolution (every branch + override
+modes), proposals state-machine (every legal transition + reject
+illegal), risk preflight (every check + aggregator), the bull/bear
+debate, the 3-perspective risk team, trader, fund manager, full
+decision-flow happy paths for T0/T1/T2/T3, the proposals API, and the
+two new cadence loops.
+
 ## Reference paper
 
 Xiao et al. *TradingAgents: Multi-Agents LLM Financial Trading Framework.* [arXiv:2412.20138](https://arxiv.org/html/2412.20138v1).
