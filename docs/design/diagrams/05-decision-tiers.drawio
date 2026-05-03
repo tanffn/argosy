@@ -1,0 +1,117 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-tiers" name="Decision Tiers">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="900">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Decision Tiers (T0 → T3)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="20" width="500" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Review depth scales with transaction size; color gradient gray → blue → amber → red" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="400" y="58" width="700" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t0" value="T0 — ROUTINE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=14;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="320" height="640" as="geometry"/>
+        </mxCell>
+        <mxCell id="t0_thr" value="Threshold&#10;&lt; 0.1% portfolio&#10;known watchlist&#10;no recent material news" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t0">
+          <mxGeometry x="20" y="44" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t0_ag" value="Agents that run&#10;&#10;Trader only&#10;+ rule-based risk preflight&#10;(no LLM risk team)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t0">
+          <mxGeometry x="20" y="138" width="280" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="t0_ap" value="Approval&#10;&#10;Limited acct: AUTO&#10;Main accts: 1-click" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t0">
+          <mxGeometry x="20" y="270" width="280" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="t0_cost" value="Estimated cost&#10;~$0.05 per decision&#10;1-2 LLM calls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t0">
+          <mxGeometry x="20" y="380" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t0_ex" value="Examples&#10;• limit-price re-eval on minute loop&#10;• small position trim within band&#10;• stop-loss adjustment" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#999999;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="t0">
+          <mxGeometry x="20" y="470" width="280" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t1" value="T1 — STANDARD" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=14;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="400" y="120" width="320" height="640" as="geometry"/>
+        </mxCell>
+        <mxCell id="t1_thr" value="Threshold&#10;0.1 – 1% portfolio" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t1">
+          <mxGeometry x="20" y="44" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t1_ag" value="Agents that run&#10;&#10;Trader + 3 most-relevant analysts&#10;1-round bull/bear debate&#10;1 risk perspective" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t1">
+          <mxGeometry x="20" y="138" width="280" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="t1_ap" value="Approval&#10;&#10;Limited acct: AUTO&#10;Main accts: 1-click" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t1">
+          <mxGeometry x="20" y="270" width="280" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="t1_cost" value="Estimated cost&#10;~$0.30 per decision&#10;5-7 LLM calls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t1">
+          <mxGeometry x="20" y="380" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t1_ex" value="Examples&#10;• weekly buy-plan execution&#10;• small concentration trim&#10;• news-driven entry on watchlist" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="t1">
+          <mxGeometry x="20" y="470" width="280" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t2" value="T2 — MATERIAL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=14;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="740" y="120" width="320" height="640" as="geometry"/>
+        </mxCell>
+        <mxCell id="t2_thr" value="Threshold&#10;1 – 5% portfolio&#10;OR &lt; 1% but flagged ticker&#10;(news / plan-critique RED)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t2">
+          <mxGeometry x="20" y="44" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t2_ag" value="Agents that run&#10;&#10;ALL 9 analysts&#10;2-round bull/bear debate&#10;3-perspective risk team&#10;Fund manager check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t2">
+          <mxGeometry x="20" y="138" width="280" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="t2_ap" value="Approval&#10;&#10;HUMAN REQUIRED&#10;(read full reasoning before approve)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="t2">
+          <mxGeometry x="20" y="270" width="280" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="t2_cost" value="Estimated cost&#10;~$2 per decision&#10;~15 LLM calls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t2">
+          <mxGeometry x="20" y="380" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t2_ex" value="Examples&#10;• YE tax-loss harvest&#10;• mid-size rebalance&#10;• 102-plan election deadline&#10;• plan-critique YELLOW item" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="t2">
+          <mxGeometry x="20" y="470" width="280" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t3" value="T3 — STRATEGIC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=14;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="120" width="320" height="640" as="geometry"/>
+        </mxCell>
+        <mxCell id="t3_thr" value="Threshold&#10;&gt; 5% portfolio&#10;ANY NVDA tranche&#10;ANY plan-structure change&#10;ANY concentration-cap cross" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t3">
+          <mxGeometry x="20" y="44" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t3_ag" value="Agents that run&#10;&#10;T2 stack&#10;+ plan-critique sign-off&#10;+ 24h cooling-off&#10;+ next-day re-check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t3">
+          <mxGeometry x="20" y="138" width="280" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="t3_ap" value="Approval&#10;&#10;HUMAN REQUIRED&#10;NO override · 2nd-factor (Phase 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="t3">
+          <mxGeometry x="20" y="270" width="280" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="t3_cost" value="Estimated cost&#10;~$3-5 per decision&#10;~23 LLM calls" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="t3">
+          <mxGeometry x="20" y="380" width="280" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t3_ex" value="Examples&#10;• NVDA pace tranche&#10;• full annual plan re-formulation&#10;• broker / account move&#10;• large rebalance crossing cap" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="t3">
+          <mxGeometry x="20" y="470" width="280" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rules" value="Special rules:  account-scoped escalation (any trade &gt; 20% of limited acct → tier+1)  ·  tier descent disallowed mid-flight  ·  NVDA is always T3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="780" width="1340" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend_frame" value="Legend (color is review depth, not severity)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=10;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="830" width="1340" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_t0c" value="T0 gray = lightest review" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="20" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_t1c" value="T1 blue = standard" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="240" y="20" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_t2c" value="T2 amber = material" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="460" y="20" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_t3c" value="T3 red = strategic / cooling-off" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="680" y="20" width="220" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_g_l" value="green = auto-execute path" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="920" y="20" width="200" height="20" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

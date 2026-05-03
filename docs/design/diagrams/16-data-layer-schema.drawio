@@ -1,0 +1,181 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-er" name="Data Layer Schema">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1100">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Data Layer (8 logical groups, multi-tenant from day one)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="20" width="700" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Single SQLite file (write/transactional) + DuckDB read-view (analytics). Every table FKs to users.user_id." style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="350" y="58" width="1000" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="g_id" value="Identity" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="100" width="380" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_users" value="users&#10;━━━━━━━━━━━━━&#10;PK  user_id&#10;     email · created_at · timezone&#10;     status: active | paused" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_id">
+          <mxGeometry x="20" y="36" width="160" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_uctx" value="user_context&#10;━━━━━━━━━━━━━&#10;PK  user_id (FK→users)&#10;     identity (jurisdiction, family)&#10;     goals · constraints · accounts&#10;     confidence_flags" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_id">
+          <mxGeometry x="190" y="36" width="170" height="140" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="g_hold" value="Holdings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="480" y="100" width="380" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_acct" value="accounts&#10;━━━━━━━━━━━━━&#10;PK  account_id&#10;FK  user_id&#10;     broker · role&#10;     integration: api|csv|tsv&#10;     enabled" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_hold">
+          <mxGeometry x="20" y="36" width="160" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_pos" value="positions_snapshots&#10;━━━━━━━━━━━━━&#10;FK  account_id, user_id&#10;PK  (account_id, ticker, ts)&#10;     qty · avg_price · mkt_value" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_hold">
+          <mxGeometry x="190" y="36" width="170" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_lots" value="lots&#10;━━━━━━━━━━━━━&#10;PK  lot_id&#10;FK  account_id, user_id&#10;     ticker · qty · cost_basis&#10;     acquired_at · holding_period" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_hold">
+          <mxGeometry x="190" y="120" width="170" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="g_plan" value="Plan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="900" y="100" width="380" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_plan" value="plan_versions&#10;━━━━━━━━━━━━━&#10;PK  plan_version_id&#10;FK  user_id&#10;     content_md · created_at&#10;     parent_version (lineage)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_plan">
+          <mxGeometry x="20" y="36" width="160" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_critique" value="plan_critiques&#10;━━━━━━━━━━━━━&#10;PK  critique_id&#10;FK  plan_version_id, user_id&#10;     red_yellow_green_json&#10;     created_at · cost_usd" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_plan">
+          <mxGeometry x="190" y="36" width="170" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="g_dec" value="Decisions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="340" width="380" height="240" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_prop" value="proposals&#10;━━━━━━━━━━━━━&#10;PK  proposal_id (UUID)&#10;FK  user_id, account_id&#10;     ticker · action · size · TIF&#10;     tier · status (10 states)&#10;     created_at · updated_at" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#74E274;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_dec">
+          <mxGeometry x="20" y="36" width="160" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_prop_hist" value="proposals_history&#10;━━━━━━━━━━━━━&#10;FK  proposal_id, user_id&#10;     prev_status · next_status&#10;     transition_event&#10;     ts · actor (agent|user)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#74E274;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_dec">
+          <mxGeometry x="190" y="36" width="170" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_appr" value="approvals&#10;━━━━━━━━━━━━━&#10;FK  proposal_id, user_id&#10;     channel: dashboard|email&#10;     ts · token (rotating)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#74E274;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_dec">
+          <mxGeometry x="190" y="160" width="170" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="g_audit" value="Audit  (append-only)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="480" y="340" width="380" height="240" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_audit" value="audit_log&#10;━━━━━━━━━━━━━&#10;PK  log_id&#10;FK  user_id, proposal_id?&#10;     event_type · actor · ts&#10;     payload_json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_audit">
+          <mxGeometry x="20" y="36" width="160" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_reports" value="agent_reports&#10;━━━━━━━━━━━━━&#10;PK  report_id&#10;FK  user_id, proposal_id?&#10;     agent_role · model · ts&#10;     prompt_hash · cost_usd&#10;     report_blob_id (FK)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_audit">
+          <mxGeometry x="190" y="36" width="170" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_blobs" value="agent_reports_blobs&#10;━━━━━━━━━━━━━&#10;PK  blob_id&#10;     content (JSON, large)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_audit">
+          <mxGeometry x="190" y="180" width="170" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="g_ext" value="External (cached)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="900" y="340" width="380" height="240" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_prices" value="prices_cache&#10;━━━━━━━━━━━━━&#10;PK  (ticker, ts)&#10;     provider · payload_hash&#10;     retrieved_at · expires_at" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_ext">
+          <mxGeometry x="20" y="36" width="160" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_news" value="news_cache&#10;━━━━━━━━━━━━━&#10;PK  (ticker, news_id)&#10;     headline · ts · materiality&#10;     provider · sentiment_score" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_ext">
+          <mxGeometry x="190" y="36" width="170" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_corp" value="corp_actions&#10;━━━━━━━━━━━━━&#10;PK  action_id&#10;     ticker · type · effective_date&#10;     ratio · cash_amt" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_ext">
+          <mxGeometry x="20" y="140" width="340" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="g_dom" value="Domain" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="620" width="380" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_dom" value="domain_kb_status&#10;━━━━━━━━━━━━━&#10;PK  file_path&#10;     last_verified · next_refresh_due&#10;     last_diff (markdown blob)&#10;     refresh_status: ok|due|review" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_dom">
+          <mxGeometry x="20" y="36" width="340" height="140" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="g_ops" value="Operations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="480" y="620" width="380" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_tasks" value="tasks_queue&#10;━━━━━━━━━━━━━&#10;PK  task_id&#10;FK  user_id&#10;     kind · payload · scheduled_at&#10;     status: pending|running|done" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_ops">
+          <mxGeometry x="20" y="36" width="160" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_alerts" value="alerts&#10;━━━━━━━━━━━━━&#10;PK  alert_id&#10;FK  user_id&#10;     severity · channel · ts&#10;     read_at" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_ops">
+          <mxGeometry x="190" y="36" width="170" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_cad" value="cadence_state&#10;━━━━━━━━━━━━━&#10;PK  loop_name&#10;FK  user_id&#10;     last_tick · next_tick&#10;     paused · error_count" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_ops">
+          <mxGeometry x="190" y="120" width="170" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_users_uctx" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="g_id" source="t_users" target="t_uctx"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_acct_pos" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="g_hold" source="t_acct" target="t_pos"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_acct_lots" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="g_hold" source="t_acct" target="t_lots"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_plan_critique" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="g_plan" source="t_plan" target="t_critique"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_prop_hist" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#74E274;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="g_dec" source="t_prop" target="t_prop_hist"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_prop_appr" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#74E274;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="g_dec" source="t_prop" target="t_appr"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_reports_blobs" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="g_audit" source="t_reports" target="t_blobs"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="e_users_acct" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#999999;strokeWidth=1;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_users" target="t_acct"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_users_plan" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#999999;strokeWidth=1;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_users" target="t_plan"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_users_prop" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#999999;strokeWidth=1;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_users" target="t_prop"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_users_audit" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#999999;strokeWidth=1;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_users" target="t_audit">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="500" y="240"/>
+              <mxPoint x="500" y="380"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_prop_audit" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_prop" target="t_audit"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_prop_reports" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_prop" target="t_reports"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="legend_frame" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="900" y="620" width="640" height="380" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_b" value="" style="rounded=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_b_l" value="Identity / Holdings / Plan groups (user-context state)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="28" width="500" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_g" value="" style="rounded=1;fillColor=#E6FFE6;strokeColor=#74E274;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="58" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_g_l" value="Decisions group (proposal lifecycle)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="54" width="500" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_r" value="" style="rounded=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="84" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_r_l" value="Audit group (append-only, indefinite retention)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="80" width="500" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_o" value="" style="rounded=1;fillColor=#FFF4E6;strokeColor=#E2A674;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="110" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_o_l" value="External cache + Domain KB status" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="106" width="500" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_gray" value="" style="rounded=1;fillColor=#F5F5F5;strokeColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="136" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_gray_l" value="Operations (scheduling, alerts, cadence state)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="132" width="500" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_solid" value="solid colored edges = strong FK within group" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="172" width="500" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_dashed" value="dashed gray edges = user_id FK (every table is tenant-scoped)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="194" width="500" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_storage" value="Storage: SQLite for write/transactional; DuckDB attaches read-only for analytical queries from the dashboard." style="text;html=1;align=left;verticalAlign=top;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="226" width="600" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_back" value="Backups: daily SQLite snapshot to ${ARGOSY_HOME}/backups · 30 daily, 12 weekly, 12 monthly, indefinite annual." style="text;html=1;align=left;verticalAlign=top;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="266" width="600" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_audit_note" value="audit_log is append-only and indefinite — single source of truth for &quot;what did Argosy decide and why,&quot; queryable from dashboard." style="text;html=1;align=left;verticalAlign=top;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="306" width="600" height="40" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

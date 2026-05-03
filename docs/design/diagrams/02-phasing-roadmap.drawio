@@ -1,0 +1,168 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-phasing" name="Phasing Roadmap">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="900">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Phasing &amp; Milestones (Phases 0 → 6)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="20" width="700" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Each phase has explicit non-goals + a hard exit gate. No skipping." style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="500" y="58" width="700" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="timeline" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#4A90E2;strokeWidth=3;" edge="1" parent="1">
+          <mxGeometry as="geometry">
+            <mxPoint x="80" y="180" as="sourcePoint"/>
+            <mxPoint x="1620" y="180" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="timeline_label" value="time →" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="1630" y="170" width="60" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ph0" value="Phase 0&#10;Scaffold&#10;&#10;Repo · deps · FastAPI&#10;Next.js · SQLite&#10;ARGOSY_HOME · keychain&#10;diagrams committed&#10;&#10;Weeks 1-2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="220" width="170" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="ph0_gate" value="Gate&#10;Hello-world&#10;through full stack" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="105" y="410" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ph1" value="Phase 1&#10;Intake + Plan Critique&#10;&#10;Intake interview agent&#10;Domain KB seed (IL tax)&#10;Plan-critique agent&#10;Ingest TSV + plan&#10;&#10;Weeks 3-6" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="270" y="220" width="170" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="ph1_gate" value="Gate&#10;User accepts written&#10;plan critique" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="295" y="410" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ph2" value="Phase 2&#10;Cadences + Brief&#10;&#10;Daily-brief loop&#10;news / macro / concentration&#10;Dashboard v1 (3 screens)&#10;Paper only — no proposals&#10;&#10;Weeks 7-10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="460" y="220" width="170" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="ph2_gate" value="Gate&#10;Daily brief lands&#10;every morning" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="485" y="410" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ph3" value="Phase 3&#10;Decision Team + Tiers&#10;&#10;Full TradingAgents pattern&#10;Tier system (T0–T3)&#10;Proposals queue&#10;Paper for everything&#10;&#10;Weeks 11-14" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="650" y="220" width="170" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="ph3_gate" value="Gate&#10;5+ paper proposals&#10;reviewed clean" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="675" y="410" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ph35" value="Phase 3.5&#10;Soak (paper only)&#10;&#10;Mandatory 2-week run&#10;in paper mode&#10;No code changes during soak&#10;except critical bugs&#10;&#10;Weeks 15-16" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="840" y="220" width="170" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="ph35_gate" value="Gate&#10;No crashes / fills /&#10;audit gaps for 2 wks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="865" y="410" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ph4" value="Phase 4&#10;IBKR + Phase-1 exec&#10;&#10;IBKR adapter (read→write)&#10;Risk preflight&#10;Email approval channel&#10;1-click on dashboard&#10;Live for T0/T1 main acct&#10;&#10;Weeks 17-20" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1030" y="220" width="170" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="ph4_gate" value="Gate&#10;5+ small live trades&#10;1-click cleanly" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1055" y="410" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ph5" value="Phase 5&#10;Limited Acct Autonomy&#10;&#10;Open IBKR Pro account&#10;Argonaut autonomous&#10;T0/T1 auto · cooling-off&#10;Kill switch · 2nd-factor T3&#10;&#10;Weeks 21-24" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1220" y="220" width="170" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="ph5_gate" value="Gate&#10;4 weeks autonomous&#10;no kill-trips&#10;90%+ match" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1245" y="410" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ph6" value="Phase 6&#10;Productization&#10;&#10;Multi-tenant infra&#10;Licensing / billing&#10;Hosted deploy&#10;Marketing&#10;2nd tenant onboarded&#10;&#10;Weeks 25+" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1410" y="220" width="170" height="170" as="geometry"/>
+        </mxCell>
+        <mxCell id="ph6_gate" value="Gate&#10;2nd user end-to-end&#10;no engine changes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1435" y="410" width="120" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="phase_arrow_0_1" style="endArrow=classic;html=1;rounded=0;strokeColor=#4A90E2;strokeWidth=2;" edge="1" parent="1">
+          <mxGeometry as="geometry">
+            <mxPoint x="250" y="305" as="sourcePoint"/>
+            <mxPoint x="270" y="305" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase_arrow_1_2" style="endArrow=classic;html=1;rounded=0;strokeColor=#4A90E2;strokeWidth=2;" edge="1" parent="1">
+          <mxGeometry as="geometry">
+            <mxPoint x="440" y="305" as="sourcePoint"/>
+            <mxPoint x="460" y="305" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase_arrow_2_3" style="endArrow=classic;html=1;rounded=0;strokeColor=#4A90E2;strokeWidth=2;" edge="1" parent="1">
+          <mxGeometry as="geometry">
+            <mxPoint x="630" y="305" as="sourcePoint"/>
+            <mxPoint x="650" y="305" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase_arrow_3_35" style="endArrow=classic;html=1;rounded=0;strokeColor=#4A90E2;strokeWidth=2;" edge="1" parent="1">
+          <mxGeometry as="geometry">
+            <mxPoint x="820" y="305" as="sourcePoint"/>
+            <mxPoint x="840" y="305" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase_arrow_35_4" style="endArrow=classic;html=1;rounded=0;strokeColor=#4A90E2;strokeWidth=2;" edge="1" parent="1">
+          <mxGeometry as="geometry">
+            <mxPoint x="1010" y="305" as="sourcePoint"/>
+            <mxPoint x="1030" y="305" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase_arrow_4_5" style="endArrow=classic;html=1;rounded=0;strokeColor=#4A90E2;strokeWidth=2;" edge="1" parent="1">
+          <mxGeometry as="geometry">
+            <mxPoint x="1200" y="305" as="sourcePoint"/>
+            <mxPoint x="1220" y="305" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="phase_arrow_5_6" style="endArrow=classic;html=1;rounded=0;strokeColor=#4A90E2;strokeWidth=2;" edge="1" parent="1">
+          <mxGeometry as="geometry">
+            <mxPoint x="1390" y="305" as="sourcePoint"/>
+            <mxPoint x="1410" y="305" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="here_arrow" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#74E274;strokeWidth=4;" edge="1" parent="1">
+          <mxGeometry as="geometry">
+            <mxPoint x="1305" y="540" as="sourcePoint"/>
+            <mxPoint x="1305" y="475" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="here_label" value="WE ARE HERE&#10;(end of Phase 5 / soak complete)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="540" width="240" height="50" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend_frame" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="80" y="700" width="500" height="160" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_b" value="" style="rounded=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_b_l" value="Build phase — feature delivery" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="36" y="28" width="280" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_o" value="" style="rounded=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="58" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_o_l" value="Soak phase — no new features, only validation" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="36" y="54" width="380" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_g" value="" style="rounded=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="84" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_g_l" value="Live-money phase — real broker calls under autonomy" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="36" y="80" width="380" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_r" value="" style="rounded=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="110" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_r_l" value="Hard exit gate — no skipping, must pass before next phase begins" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="36" y="106" width="450" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_eff" value="Effort estimate: ~6 months of focused part-time (~10 hrs/week) for Phases 0-5; full-time ~3 months. Phases 6+ scale with productization scope." style="text;html=1;align=left;verticalAlign=top;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="130" width="480" height="30" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

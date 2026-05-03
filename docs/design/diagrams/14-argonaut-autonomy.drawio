@@ -1,0 +1,136 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-autonomy" name="Argonaut Autonomy">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="900">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Argonaut (Limited Account) Autonomy" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="450" y="20" width="600" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Phase 5 mechanic — bounded capital, mode toggle, account-scoped escalation, kill-switch gate" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="350" y="58" width="800" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="modes" value="Limited-account mode toggle  (configs/&lt;user&gt;/agent_settings.yaml + dashboard switch)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="1400" height="160" as="geometry"/>
+        </mxCell>
+        <mxCell id="mode_paper" value="paper&#10;&#10;default at Phase 5 startup&#10;every place_order → PaperFill&#10;no broker network call&#10;&#10;[soak default]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="modes">
+          <mxGeometry x="20" y="36" width="430" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="mode_live" value="live&#10;&#10;real broker calls via TWS Gateway&#10;ARGOSY_KILL=1 halts immediately&#10;daily-loss-limit auto-suspends&#10;&#10;[after 4-week soak passes]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;fontStyle=1;" vertex="1" parent="modes">
+          <mxGeometry x="470" y="36" width="430" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="mode_queue" value="queue_only&#10;&#10;every proposal enters human queue&#10;auto-execute disabled at every tier&#10;regardless of account&#10;&#10;[on-demand override · safe pause]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="modes">
+          <mxGeometry x="920" y="36" width="430" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="proposal" value="ApprovedProposal arrives (limited account)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="320" width="320" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dec_kill" value="Kill switch active?&#10;ARGOSY_KILL=1 OR dashboard halt OR daily-loss-limit hit" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="440" y="300" width="320" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="halt_state" value="HALT&#10;&#10;in-flight cancelled if cancellable&#10;engine read-only · alert sent" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="800" y="300" width="280" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dec_tier" value="What tier is the proposal?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="450" width="320" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dec_size" value="Trade &gt; 20% of limited acct?&#10;(account-scoped escalation)" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="440" y="600" width="320" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="auto" value="AUTO-EXECUTE&#10;(within paper / live / queue_only mode)&#10;UUID stamped · idempotent retry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="800" y="450" width="640" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="human" value="HUMAN APPROVAL REQUIRED&#10;(T2/T3 always, regardless of account)&#10;route to dashboard queue" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="800" y="600" width="640" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_p_kill" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="proposal" target="dec_kill"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="e_kill_halt" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="dec_kill" target="halt_state"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_kill_halt_l" value="yes" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fontStyle=1;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="765" y="335" width="40" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_kill_tier" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="dec_kill" target="dec_tier"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_kill_tier_l" value="no" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fontStyle=1;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="580" y="408" width="40" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_tier_size" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="dec_tier" target="dec_size"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_tier_size_l" value="T0 / T1" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fontStyle=1;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="570" y="558" width="60" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_tier_human" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="dec_tier" target="human">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="780" y="500"/>
+              <mxPoint x="780" y="650"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_tier_human_l" value="T2 / T3" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fontStyle=1;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="765" y="500" width="60" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_size_auto" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="dec_size" target="auto">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="780" y="650"/>
+              <mxPoint x="780" y="500"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_size_auto_l" value="no — within size cap" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fontStyle=1;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="660" y="540" width="160" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_size_human" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="dec_size" target="human"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_size_human_l" value="yes — escalate up one tier" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fontStyle=1;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="765" y="657" width="200" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend_frame" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="730" width="1400" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_au_g" value="" style="rounded=1;fillColor=#E6FFE6;strokeColor=#74E274;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_au_g_l" value="Auto-execute path" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="28" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_au_o" value="" style="rounded=1;fillColor=#FFF4E6;strokeColor=#E2A674;" vertex="1" parent="legend_frame">
+          <mxGeometry x="260" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_au_o_l" value="Decision branch" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="286" y="28" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_au_r" value="" style="rounded=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend_frame">
+          <mxGeometry x="500" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_au_r_l" value="Halt / human-required path" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="526" y="28" width="240" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_au_b" value="" style="rounded=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="780" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_au_b_l" value="Mode / config (paper as default)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="806" y="28" width="280" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_au_note" value="Account-scoped escalation: any single trade &gt; 20% of limited account moves up one tier — caps damage if the agent goes off the rails on the small account." style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="55" width="1340" height="20" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

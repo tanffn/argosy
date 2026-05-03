@@ -1,0 +1,253 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-arch" name="System Architecture">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="1000">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Top-Level System Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="450" y="20" width="600" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Three regions (Intake / Engine / UI) coordinated through a single shared state store" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="350" y="58" width="800" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="swim_intake" value="INTAKE  (one-shot at setup; re-runs monthly / quarterly / annually)" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="380" height="240" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_int_interview" value="LLM-led interview&#10;(6 stages — see §6)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_intake">
+          <mxGeometry x="20" y="44" width="160" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_int_docs" value="Doc ingestion&#10;(pay stubs, statements, plan)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_intake">
+          <mxGeometry x="200" y="44" width="160" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_int_critique" value="Plan-critique pass&#10;(RED / YELLOW / GREEN)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_intake">
+          <mxGeometry x="20" y="100" width="160" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_int_broker" value="Broker config&#10;(IBKR / Schwab / Leumi)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_intake">
+          <mxGeometry x="200" y="100" width="160" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_int_prefs" value="Operational preferences&#10;(tier mode, exec mode, alerts)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_intake">
+          <mxGeometry x="110" y="160" width="160" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="swim_state" value="PERSISTENT STATE  (SQLite write + DuckDB read)" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="500" y="100" width="500" height="240" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_st_id" value="Identity&#10;users · user_context" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_state">
+          <mxGeometry x="20" y="44" width="140" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_st_hold" value="Holdings&#10;accounts · positions · lots" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_state">
+          <mxGeometry x="180" y="44" width="140" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_st_plan" value="Plan&#10;plan_versions · critiques" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_state">
+          <mxGeometry x="340" y="44" width="140" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_st_dec" value="Decisions&#10;proposals · approvals" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_state">
+          <mxGeometry x="20" y="92" width="140" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_st_audit" value="Audit&#10;audit_log · agent_reports" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_state">
+          <mxGeometry x="180" y="92" width="140" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_st_ext" value="External cache&#10;prices · news · corp_actions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_state">
+          <mxGeometry x="340" y="92" width="140" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_st_dom" value="Domain KB status&#10;last_verified · refresh_due" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_state">
+          <mxGeometry x="100" y="140" width="160" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_st_ops" value="Operations&#10;tasks_queue · cadence_state" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_state">
+          <mxGeometry x="280" y="140" width="160" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="lbl_state_note" value="single source of truth — engine writes, dashboard reads, audit appends" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fontStyle=2;fontColor=#666666;" vertex="1" parent="swim_state">
+          <mxGeometry x="20" y="190" width="460" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="swim_ui" value="UI  (FastAPI :8000  +  Next.js :1337)" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="100" width="380" height="240" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_ui_dash" value="10 dashboard screens&#10;Home · Portfolio · Plan · Proposals&#10;Argonaut · Agent Activity · Audit&#10;Domain KB · Intake · Settings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_ui">
+          <mxGeometry x="20" y="44" width="340" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_ui_ws" value="WebSocket live events&#10;(proposal · agent · price · alert)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_ui">
+          <mxGeometry x="20" y="130" width="160" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_ui_email" value="Email approval channel&#10;(signed token · 24h TTL)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_ui">
+          <mxGeometry x="200" y="130" width="160" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_ui_cmd" value="Approval actions write&#10;(approve / reject / escalate / defer)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_ui">
+          <mxGeometry x="100" y="180" width="200" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="swim_engine" value="ENGINE  (always-on Python orchestrator)" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="40" y="400" width="700" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_eng_minute" value="Minute loop&#10;(market hours)&#10;orders · vol bands" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_engine">
+          <mxGeometry x="20" y="44" width="150" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_eng_hour" value="Hour loop&#10;(24/7)&#10;news · macro · FX" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_engine">
+          <mxGeometry x="190" y="44" width="150" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_eng_daily" value="Daily brief 09:00&#10;overnight ingest&#10;news + EOD recap" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_engine">
+          <mxGeometry x="360" y="44" width="150" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_eng_weekly" value="Weekly review Sun 18:00&#10;domain refresh · audit&#10;concentration drift" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_engine">
+          <mxGeometry x="530" y="44" width="150" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_eng_monthly" value="Monthly cycle (1st)&#10;buy-plan execution&#10;plan critique re-run" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_engine">
+          <mxGeometry x="20" y="120" width="150" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_eng_q" value="Quarterly&#10;real estate · bonus&#10;plan-drift check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_engine">
+          <mxGeometry x="190" y="120" width="150" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_eng_annual" value="Annual (Jan 2)&#10;tax filings · W-8BEN&#10;plan re-formulation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_engine">
+          <mxGeometry x="360" y="120" width="150" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_eng_adhoc" value="Ad-hoc (user)&#10;tier auto-selected&#10;from size + flags" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_engine">
+          <mxGeometry x="530" y="120" width="150" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="lbl_eng_note" value="Each loop polls cheaply → checks triggers → fires LLM decision team only on hits" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="swim_engine">
+          <mxGeometry x="20" y="200" width="660" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lbl_eng_proc" value="Background: process_cooling (60s always-on) · backup 03:00 · watchlist 08:30 · reconcile 30s mkt hours" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="swim_engine">
+          <mxGeometry x="20" y="222" width="660" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="swim_decision" value="DECISION AGENT TEAM  (TradingAgents pattern, fires on trigger)" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="780" y="400" width="680" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_dec_analysts" value="Analysts (parallel, structured reports)&#10;fundamentals · technical · news · sentiment&#10;macro · plan-critique · concentration · tax · FX" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_decision">
+          <mxGeometry x="20" y="44" width="640" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_dec_debate" value="Researcher debate (n rounds, facilitated)&#10;bull / bear → debate outcome record" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_decision">
+          <mxGeometry x="20" y="100" width="640" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_dec_trader" value="Trader proposal&#10;(action, size, instrument, limits, TIF)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_decision">
+          <mxGeometry x="20" y="148" width="640" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_dec_risk" value="Risk team (n rounds, facilitated)&#10;aggressive / neutral / conservative → verdict" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_decision">
+          <mxGeometry x="20" y="196" width="640" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_dec_fm" value="Fund manager — APPROVED PROPOSAL" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_decision">
+          <mxGeometry x="20" y="244" width="640" height="28" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="swim_exec" value="EXECUTION" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#F0E6FF;strokeColor=#B274E2;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
+          <mxGeometry x="200" y="740" width="1100" height="220" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_x_routing" value="Routing matrix (tier × account × mode)&#10;T0/T1 in limited acct: auto · T2/T3: human approval&#10;T3 + live: 24h cooling-off + next-day re-check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0E6FF;strokeColor=#B274E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_exec">
+          <mxGeometry x="20" y="44" width="320" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_x_pre" value="Risk preflight (rule-based, no LLM)&#10;cash · position cap · concentration cap&#10;wash-sale · daily loss · trading-hours" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0E6FF;strokeColor=#B274E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_exec">
+          <mxGeometry x="360" y="44" width="320" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_x_broker" value="Broker placement&#10;IBKR (live) · Schwab (CSV import) · Leumi (TSV)&#10;paper mode universal — every adapter honors paper=True" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0E6FF;strokeColor=#B274E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_exec">
+          <mxGeometry x="700" y="44" width="380" height="76" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_x_kill" value="Kill switch / pause / halt — three levels (§14.5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_exec">
+          <mxGeometry x="20" y="140" width="500" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="blk_x_idem" value="Idempotency UUID + reconcile loop on fills" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0E6FF;strokeColor=#B274E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_exec">
+          <mxGeometry x="540" y="140" width="540" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_intake_state" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4A90E2;strokeWidth=1.5;endArrow=classic;fontFamily=Calibri;fontSize=10;" edge="1" parent="1" source="swim_intake" target="swim_state">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_intake_state_l" value="writes" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="430" y="210" width="60" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_state_ui" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4A90E2;strokeWidth=1.5;endArrow=classic;startArrow=classic;fontFamily=Calibri;fontSize=10;" edge="1" parent="1" source="swim_state" target="swim_ui">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_state_ui_l" value="reads / approval writes" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="210" width="60" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_state_engine" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4A90E2;strokeWidth=1.5;endArrow=classic;startArrow=classic;fontFamily=Calibri;fontSize=10;" edge="1" parent="1" source="swim_state" target="swim_engine">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_state_engine_l" value="reads · writes&#10;(reports + state)" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="430" y="350" width="120" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_engine_decision" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4A90E2;strokeWidth=2;endArrow=classic;dashed=1;fontFamily=Calibri;fontSize=10;" edge="1" parent="1" source="swim_engine" target="swim_decision">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_engine_decision_l" value="on trigger" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="745" y="525" width="60" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_decision_exec" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4A90E2;strokeWidth=2;endArrow=classic;fontFamily=Calibri;fontSize=10;" edge="1" parent="1" source="swim_decision" target="swim_exec">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_decision_exec_l" value="approved proposal" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="700" width="120" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_exec_state" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#4A90E2;strokeWidth=1.5;endArrow=classic;dashed=1;fontFamily=Calibri;fontSize=10;" edge="1" parent="1" source="swim_exec" target="swim_state">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="180" y="850"/>
+              <mxPoint x="180" y="370"/>
+              <mxPoint x="500" y="370"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_exec_state_l" value="fills + audit" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="120" y="600" width="100" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_state_ui_ws" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#999999;strokeWidth=1;endArrow=classic;dashed=1;fontFamily=Calibri;fontSize=10;" edge="1" parent="1" source="swim_state" target="swim_ui">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1020" y="320"/>
+              <mxPoint x="1100" y="320"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_state_ui_ws_l" value="WebSocket events" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="325" width="100" height="16" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend_frame" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="700" width="140" height="200" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg1box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg1lbl" value="Argosy region" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="36" y="28" width="100" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg2box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="58" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg2lbl" value="State store" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="36" y="54" width="100" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg3box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0E6FF;strokeColor=#B274E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="84" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg3lbl" value="Execution" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="36" y="80" width="100" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg4box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="110" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg4lbl" value="Safety / kill switch" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="36" y="106" width="100" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg5lbl" value="solid arrow = data flow" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=9;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="135" width="120" height="18" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg6lbl" value="dashed = event-triggered" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=9;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="153" width="130" height="18" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg7lbl" value="double-headed = bidirectional" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=9;" vertex="1" parent="legend_frame">
+          <mxGeometry x="10" y="171" width="130" height="18" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

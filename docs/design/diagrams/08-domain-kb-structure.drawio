@@ -1,0 +1,147 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-kb" name="Domain KB Structure">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="950">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Domain Knowledge Base" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="20" width="500" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Folder tree (left) + frontmatter contract (top right) + refresh-agent feedback loop (bottom right)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="350" y="58" width="800" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="root" value="domain_knowledge/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="240" height="40" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="tax_root" value="tax/" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="190" width="160" height="32" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="tax_il" value="israel/&#10;brackets_2026.md&#10;national_insurance.md&#10;health_tax.md&#10;surtax.md&#10;capital_gains.md&#10;real_estate.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="100" y="240" width="220" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="tax_il_ret" value="israel/retirement/&#10;keren_hishtalmut.md&#10;kupat_gemel.md&#10;tikun_190.md&#10;section_102.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="100" y="370" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="tax_il_tr" value="israel/treaties/&#10;us_israel.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="100" y="480" width="220" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="tax_us" value="us/&#10;nonresident_withholding.md&#10;estate_tax_nonresidents.md&#10;pfic.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#4A90E2;strokeWidth=1;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="100" y="540" width="220" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="brokers" value="brokers/&#10;interactive_brokers.md&#10;schwab.md&#10;leumi.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="640" width="280" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="assets" value="asset_classes/&#10;ucits_etfs.md&#10;us_etfs.md&#10;options.md&#10;leveraged_etfs.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="360" y="640" width="280" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="data_src" value="market_data_sources/&#10;yfinance.md · fred.md&#10;finnhub.md · sec_edgar.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="740" width="280" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="strat" value="strategy_patterns/&#10;concentration_reduction.md&#10;gap_weighted_buying.md&#10;tax_loss_harvesting.md" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="360" y="740" width="280" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_root_tax" style="endArrow=none;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;exitX=0.25;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="root" target="tax_root"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_tax_il" style="endArrow=none;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="tax_root" target="tax_il"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_tax_il_ret" style="endArrow=none;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1;edgeStyle=orthogonalEdgeStyle;dashed=1;" edge="1" parent="1" source="tax_il" target="tax_il_ret"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_tax_il_tr" style="endArrow=none;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1;edgeStyle=orthogonalEdgeStyle;dashed=1;" edge="1" parent="1" source="tax_il_ret" target="tax_il_tr"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_tax_us" style="endArrow=none;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1;edgeStyle=orthogonalEdgeStyle;exitX=0.25;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="tax_il_tr" target="tax_us"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="e_root_brokers" style="endArrow=none;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="root" target="brokers">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="40" y="140"/>
+              <mxPoint x="40" y="680"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_root_assets" style="endArrow=none;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="root" target="assets">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="40" y="140"/>
+              <mxPoint x="40" y="680"/>
+              <mxPoint x="350" y="680"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="callout" value="Frontmatter contract  (every file starts with this YAML)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="700" y="120" width="740" height="280" as="geometry"/>
+        </mxCell>
+        <mxCell id="callout_yaml" value="---&#10;topic: israeli_capital_gains&#10;jurisdiction: israel&#10;last_verified: 2026-01-15&#10;next_refresh_due: 2026-07-15      # 6 months for stable rules; 1y for brackets&#10;sources:&#10;  - url: https://taxes.gov.il/...&#10;    retrieved: 2026-01-15&#10;    tier: 1                        # source-credibility tier&#10;  - url: https://...&#10;    retrieved: 2026-01-15&#10;    tier: 1&#10;---" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;fontColor=#000000;" vertex="1" parent="callout">
+          <mxGeometry x="20" y="40" width="500" height="220" as="geometry"/>
+        </mxCell>
+        <mxCell id="callout_tiers" value="Source-credibility tiers&#10;&#10;Tier 1 — Primary&#10;  taxes.gov.il · btl.gov.il · IRS · ETF&#10;  prospectuses · official broker docs&#10;&#10;Tier 2 — Reputable secondary&#10;  BDO Israel · KPMG · Bogleheads wiki&#10;&#10;Tier 3 — Expert blogs&#10;  WiseMoneyIsrael · forums · Reddit&#10;&#10;Tier 4 — News  (context only)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;fontColor=#000000;" vertex="1" parent="callout">
+          <mxGeometry x="540" y="40" width="180" height="220" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="refresh_frame" value="Domain-refresh agent  (weekly cadence)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="700" y="430" width="740" height="370" as="geometry"/>
+        </mxCell>
+        <mxCell id="rf_step1" value="1. Scan files for next_refresh_due ≤ today" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="refresh_frame">
+          <mxGeometry x="20" y="40" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="rf_step2" value="2. Re-fetch sources via WebFetch / WebSearch" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="refresh_frame">
+          <mxGeometry x="20" y="90" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="rf_step3" value="3. Compute structured diff vs current content" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="refresh_frame">
+          <mxGeometry x="20" y="140" width="320" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="rf_dec" value="Material change?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="refresh_frame">
+          <mxGeometry x="60" y="200" width="240" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="rf_yes" value="Yes → write to review queue&#10;NEVER auto-edits&#10;(human approves merge)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="refresh_frame">
+          <mxGeometry x="20" y="280" width="320" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="rf_no" value="No → bump last_verified&#10;schedule next_refresh_due" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="refresh_frame">
+          <mxGeometry x="380" y="200" width="320" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="rf_note" value="Tier-1 sources required for material change&#10;Annual cycle (Jan) re-verifies all rate-and-bracket files&#10;Tier-3+ alone NEVER triggers an update — files a verify-with-Tier-1 task" style="text;html=1;align=left;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="refresh_frame">
+          <mxGeometry x="380" y="280" width="320" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_rf_step1_2" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="refresh_frame" source="rf_step1" target="rf_step2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_rf_step2_3" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="refresh_frame" source="rf_step2" target="rf_step3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_rf_step3_dec" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="refresh_frame" source="rf_step3" target="rf_dec"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_rf_dec_yes" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="refresh_frame" source="rf_dec" target="rf_yes"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_rf_dec_no" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="refresh_frame" source="rf_dec" target="rf_no"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="legend_frame" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="830" width="1380" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_kb_b" value="" style="rounded=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="22" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_kb_b_l" value="KB folder / file" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="18" width="160" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_kb_o" value="" style="rounded=1;fillColor=#FFF4E6;strokeColor=#E2A674;" vertex="1" parent="legend_frame">
+          <mxGeometry x="220" y="22" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_kb_o_l" value="Frontmatter / decision" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="246" y="18" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_kb_g" value="" style="rounded=1;fillColor=#E6FFE6;strokeColor=#74E274;" vertex="1" parent="legend_frame">
+          <mxGeometry x="460" y="22" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_kb_g_l" value="Refresh-agent step" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="486" y="18" width="180" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_kb_r" value="" style="rounded=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend_frame">
+          <mxGeometry x="680" y="22" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_kb_r_l" value="Human-review-required step (no auto-edit on tax content)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="706" y="18" width="450" height="20" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

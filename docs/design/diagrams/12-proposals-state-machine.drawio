@@ -1,0 +1,240 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-fsm" name="Proposals State Machine">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1000">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Proposal State Machine (10 states + transitions)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="20" width="700" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Every transition is logged in audit_log with the action that triggered it. UUID idempotency on every place_order." style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="350" y="58" width="1000" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s_draft" value="DRAFT&#10;&#10;trader produced a candidate&#10;not yet integrity-checked" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="120" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_queued" value="QUEUED&#10;&#10;fund manager green-lit&#10;waiting for routing" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="120" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_human" value="AWAITING_HUMAN&#10;&#10;in proposals queue&#10;dashboard / email approval" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="680" y="120" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_cooling" value="COOLING&#10;&#10;T3 only · 24h hold&#10;auto-pause hooks active" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="980" y="120" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_approved" value="APPROVED&#10;&#10;cleared for execution&#10;UUID stamped" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="120" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_preflight" value="PREFLIGHT&#10;&#10;rule-based risk preflight&#10;cash · cap · wash · hours" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="320" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_broker" value="BROKER_QUEUED&#10;&#10;sent to broker.place_order&#10;awaiting BrokerAck" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0E6FF;strokeColor=#B274E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="980" y="320" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_paper" value="EXECUTED_PAPER&#10;&#10;PaperFill recorded&#10;intended price + ts in audit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="680" y="320" width="220" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_live" value="EXECUTED_LIVE&#10;&#10;real fill from broker&#10;lots updated · audit final" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="320" width="200" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="s_rejected" value="REJECTED&#10;&#10;broker rejected OR&#10;preflight hard fail" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="320" width="200" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s_cancelled" value="CANCELLED&#10;&#10;user cancelled · timeout&#10;or kill-switch HALT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="540" width="200" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t1" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_draft" target="s_queued">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t1_l" value="created → fund_manager_approved" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="280" y="160" width="100" height="34" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t2" style="endArrow=classic;html=1;rounded=1;strokeColor=#E2A674;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_queued" target="s_human">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t2_l" value="route_to_human (T2/T3 + main acct T0/T1)" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="580" y="170" width="120" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t3" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_human" target="s_cooling">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t3_l" value="approve_t3 → 24h hold" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="880" y="170" width="120" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t4" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_cooling" target="s_approved">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t4_l" value="recheck_pass" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="170" width="120" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t5" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_human" target="s_approved">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="790" y="80"/>
+              <mxPoint x="1400" y="80"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t5_l" value="approve_t1_t2 (no cooling-off)" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1010" y="60" width="220" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t6" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_queued" target="s_approved">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="480" y="60"/>
+              <mxPoint x="1400" y="60"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t6_l" value="auto_execute (limited acct T0/T1)" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="620" y="40" width="240" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t7" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_approved" target="s_preflight">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t7_l" value="run_preflight" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1310" y="240" width="120" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t8" style="endArrow=classic;html=1;rounded=1;strokeColor=#B274E2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_preflight" target="s_broker">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t8_l" value="preflight_pass + mode=live" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="360" width="160" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t9" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_preflight" target="s_paper">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1400" y="450"/>
+              <mxPoint x="800" y="450"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t9_l" value="preflight_pass + mode=paper" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="440" width="180" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t10" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_broker" target="s_live">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t10_l" value="broker_ack + fill_received" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="600" y="360" width="160" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t11" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_preflight" target="s_rejected">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1400" y="500"/>
+              <mxPoint x="180" y="500"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t11_l" value="preflight_hard_fail" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="700" y="490" width="160" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t12" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_broker" target="s_rejected">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t12_l" value="broker_rejected" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="290" y="350" width="100" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t13" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_human" target="s_rejected">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="180" y="170"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t13_l" value="user_rejected" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="120" y="240" width="120" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t14" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_cooling" target="s_human">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1090" y="280"/>
+              <mxPoint x="790" y="280"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="t14_l" value="auto_pause (analyst delta / news / plan-critique flip)" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="800" y="260" width="320" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t15" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_human" target="s_cancelled">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t15_l" value="user_cancel / timeout" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="600" y="490" width="160" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="t16" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_broker" target="s_cancelled">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="t16_l" value="ARGOSY_KILL=1 / cancel_order" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="600" y="465" width="200" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend_frame" value="Legend  (state colors group end-states)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="80" y="700" width="1500" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_b" value="" style="rounded=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_b_l" value="In-flight processing state" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="28" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_o" value="" style="rounded=1;fillColor=#FFF4E6;strokeColor=#E2A674;" vertex="1" parent="legend_frame">
+          <mxGeometry x="280" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_o_l" value="Awaiting human input" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="306" y="28" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_r" value="" style="rounded=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend_frame">
+          <mxGeometry x="540" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_r_l" value="Cooling-off / reject / cancel terminal" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="566" y="28" width="320" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_g" value="" style="rounded=1;fillColor=#E6FFE6;strokeColor=#74E274;" vertex="1" parent="legend_frame">
+          <mxGeometry x="900" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_g_l" value="Approved / executed live (success terminal)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="926" y="28" width="320" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_p" value="" style="rounded=1;fillColor=#F0E6FF;strokeColor=#B274E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="1260" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_p_l" value="Broker-side state" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="1286" y="28" width="180" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_gray" value="" style="rounded=1;fillColor=#F5F5F5;strokeColor=#999999;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="60" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_gray_l" value="Initial (DRAFT) — no integrity check yet" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="56" width="320" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_dashed" value="dashed edges = exception / abort transitions    ·    solid edges = happy path" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="380" y="56" width="640" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_fsm_idem" value="Idempotency: every transition records audit_log row + UUID; broker-side dedup on UUID prevents double-place on retries." style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="84" width="1480" height="20" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,137 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-cadence" name="Cadence Loops">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1050">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Cadence Loops" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="600" y="20" width="500" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="9 user-facing loops + 4 background processes. Cheap polling on the timer; LLM calls fire only on triggers." style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="350" y="58" width="1000" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lbl_h" value="Lane labels = clock / cadence anchor.  Bars show when loop is ACTIVE; ticks below = trigger frequency." style="text;html=1;align=left;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="60" y="90" width="1100" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ax_intra" value="Intra-day timeline (00:00 → 24:00 user TZ)" style="text;html=1;align=left;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="400" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="ax_axis_bg" value="" style="rounded=0;fillColor=#FFFFFF;strokeColor=#999999;strokeWidth=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="148" width="1320" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="ax_t0" value="00:00" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1"><mxGeometry x="290" y="170" width="60" height="14" as="geometry"/></mxCell>
+        <mxCell id="ax_t06" value="06:00" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1"><mxGeometry x="600" y="170" width="60" height="14" as="geometry"/></mxCell>
+        <mxCell id="ax_t09" value="09:00" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1"><mxGeometry x="755" y="170" width="60" height="14" as="geometry"/></mxCell>
+        <mxCell id="ax_t12" value="12:00" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1"><mxGeometry x="910" y="170" width="60" height="14" as="geometry"/></mxCell>
+        <mxCell id="ax_t16" value="16:00 (US close)" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1"><mxGeometry x="1110" y="170" width="100" height="14" as="geometry"/></mxCell>
+        <mxCell id="ax_t18" value="18:00" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1"><mxGeometry x="1245" y="170" width="60" height="14" as="geometry"/></mxCell>
+        <mxCell id="ax_t24" value="24:00" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1"><mxGeometry x="1610" y="170" width="60" height="14" as="geometry"/></mxCell>
+
+        <mxCell id="lane_minute_lbl" value="Minute  60s — order mgmt, vol bands" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="210" width="240" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="bar_minute" value="Active during market hours only (NYSE ~16:30–23:00 IL TZ; or NYSE 09:30-16:00 ET)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1;fontColor=#000000;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="210" width="450" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lane_hour_lbl" value="Hour  60min — news delta, macro, FX" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="256" width="240" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="bar_hour" value="24/7" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1;fontColor=#000000;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="320" y="256" width="1320" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lane_brief_lbl" value="Daily brief  09:00 user TZ" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="302" width="240" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="bar_brief" value="09:00 fire — overnight ingest, EOD recap" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=9;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="775" y="302" width="290" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lane_watch_lbl" value="Watchlist  daily 08:30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="348" width="240" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="bar_watch" value="08:30 — refresh ticker universe before brief" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="730" y="348" width="290" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lane_recon_lbl" value="Reconcile  30s mkt hours" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="394" width="240" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="bar_recon" value="Open-order fill reconcile (every 30s during NYSE hours)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1;fontColor=#000000;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="394" width="450" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lane_cool_lbl" value="process_cooling  60s always-on" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="440" width="240" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="bar_cool" value="never sleeps — drains pending T3 cooling-off proposals + paused hooks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1;fontColor=#000000;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="320" y="440" width="1320" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="lane_backup_lbl" value="Backup  daily 03:00" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="486" width="240" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="bar_backup" value="03:00 — SQLite snapshot to ${ARGOSY_HOME}/backups" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="425" y="486" width="220" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ax_week" value="Weekly / monthly / quarterly / annual cadences" style="text;html=1;align=left;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="560" width="500" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="card_weekly" value="Weekly review&#10;Sun 18:00&#10;&#10;• domain-knowledge freshness check&#10;• audit-agent self-review of past week&#10;• concentration drift&#10;• plan-adherence delta&#10;&#10;Triggers: plan-critique YELLOW/RED → T2&#10;concentration cap breach → T2/T3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="590" width="380" height="200" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="card_monthly" value="Monthly cycle&#10;1st of month, 08:00&#10;&#10;• statement reconciliation&#10;• RSU vest pulled in&#10;• gap-weighted buy template&#10;• full plan-critique re-run&#10;&#10;Triggers: buy-plan execution → T1-T3&#10;rebalance proposals → T2/T3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="460" y="590" width="380" height="200" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="card_quarterly" value="Quarterly&#10;After quarter close&#10;&#10;• real estate P&amp;L update&#10;• bonus event ingest&#10;• plan-drift check vs targets&#10;&#10;Triggers: plan revision proposal → T3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="860" y="590" width="380" height="200" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="card_annual" value="Annual&#10;January 2nd, 08:00&#10;&#10;• tax filing prep&#10;• W-8BEN refresh prompt&#10;• insurance renewal&#10;• full domain re-verify&#10;&#10;Triggers: plan re-formulation → T3&#10;YE TLH harvest → T2&#10;§102 election → T2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="590" width="380" height="200" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="card_audit" value="Audit  weekly Sun 19:00&#10;&#10;reviews last week's decisions, identifies systematic errors, proposes prompt tweaks (Opus model)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="810" width="780" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="card_adhoc" value="Ad-hoc  on user signal&#10;&#10;tier auto-selected from size + flags; nothing periodic — fired manually from dashboard or CLI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="860" y="810" width="780" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend_frame" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="900" width="1580" height="100" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_c_b" value="" style="rounded=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_c_b_l" value="High-frequency / real-time loop" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="28" width="280" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_c_o" value="" style="rounded=1;fillColor=#FFF4E6;strokeColor=#E2A674;" vertex="1" parent="legend_frame">
+          <mxGeometry x="350" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_c_o_l" value="Daily / weekly / monthly / quarterly cadence" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="376" y="28" width="320" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_c_r" value="" style="rounded=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend_frame">
+          <mxGeometry x="720" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_c_r_l" value="Annual cadence (most strategic; T3-only triggers)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="746" y="28" width="350" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_c_note" value="Configurable in agent_settings.yaml. Each loop can be paused individually from the dashboard. Cron strings + interval syntax both supported." style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="60" width="1540" height="20" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

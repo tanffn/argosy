@@ -39,6 +39,79 @@
 
 ---
 
+## 0. How Argosy Works (a Novice's Tour)
+
+### 0.1 What it is, in one paragraph
+
+Argosy is two things glued together: an always-on background process and a dashboard. The process watches your portfolio and the wider market continuously — prices, news, macro releases, your concentration, your plan-adherence — but it stays cheap by polling at a few different rhythms (a minute loop during market hours, an hour loop, a daily brief at 09:00, a weekly review on Sunday evening, a monthly cycle on the 1st, an annual sweep in January). When something interesting happens — a material news item on a holding, a concentration cap drifting, a tax-loss-harvest opportunity, a scheduled buy-plan execution — it convenes a small team of AI specialists who debate the move. If they reach a clear conclusion, they propose it to you (or, in a deliberately bounded "Argonaut" account, just execute it). Every reasoning step is persisted, so months later you can ask Argosy *why* it did what it did and get a real answer rather than a vague gesture at a model output.
+
+### 0.2 The picture
+
+![Argosy in one picture](diagrams/00-novice-overview.png)
+
+*Source: [00-novice-overview.drawio](diagrams/00-novice-overview.drawio)*
+
+### 0.3 Why this shape (the design choices, in plain language)
+
+**Why multi-agent debate, not a single prompt.** A single LLM prompt that asks "what should I do with my portfolio?" tends to produce a confident, plausible answer that's anchored in whatever the model saw most recently. Splitting the work across a fundamentals analyst, a news analyst, a tax analyst, a plan-critique agent, then a *bull* and *bear* researcher who actually argue with each other, then three risk officers (aggressive, neutral, conservative) — that structure forces specific evidence to be cited, surfaces the strongest counter-argument before you act, and makes it much harder for one cognitive shortcut to dominate. The pattern is borrowed from the *TradingAgents* paper and adapted for a personal-wealth context. It also costs more, but the cost is bounded by how often interesting things happen, not by wall-clock time.
+
+**Why human-in-the-loop on big trades.** The system is graded into four tiers (T0 routine, T1 standard, T2 material, T3 strategic). Tiny trades inside a small bounded account can run themselves; anything material on your main accounts requires a human approval before any broker call. The split is deliberate: you get the speed of automation where the downside is small, and you keep absolute control where the downside is large. T3 trades carry an extra 24h cooling-off window where new news can pause the order automatically.
+
+**Why a tier system at all.** The same workflow at the same depth for every decision is either too expensive (running a full debate to rebalance $200) or too thin (running a one-shot prompt to decide on a $20K position). Tiers are how the system spends its analysis budget proportionally to what's at stake.
+
+**Why paper mode by default.** Until a real broker connection has been live-soaked for weeks, every "trade" is a `PaperFill` log row — same code path as live, but no broker call. This is how you discover that an agent has a bad habit (over-aggressive entries near earnings, say) without burning real money to find out.
+
+**Why a small autonomous account.** Watching a system run on paper for a month is informative. Watching it run live with $1,000 of real-but-bounded capital is much more informative — the consequences become real but the worst-case loss is capped and recoverable. That's the *Argonaut* account. The kill-switch and account-scoped escalation rule (any trade > 20% of the small account auto-escalates a tier) limit how badly a runaway agent can damage things before the human notices.
+
+### 0.4 The pieces, top-down
+
+**Intake** ([07-intake-stages.png](diagrams/07-intake-stages.png)) is a 6-stage friendly interview that gathers identity, jurisdiction, goals, financial picture, broker connections, plan, and operational preferences. It runs once at setup, then in shorter monthly / quarterly / annual versions to keep state fresh.
+
+**The engine and its cadences** ([06-cadence-loops.png](diagrams/06-cadence-loops.png)) is the always-on Python orchestrator. Each cadence loop polls cheaply (read prices, scan news headlines, recompute concentration) and only invokes an LLM when a trigger fires. Background processes (`process_cooling`, daily backup, watchlist refresh, fill reconciliation) keep the rest of the system honest.
+
+**The agent fleet** ([04-agent-fleet.png](diagrams/04-agent-fleet.png)) is 5 decision teams (analysts → researchers → trader → risk → fund manager) plus 4 cross-cutting agents (intake, domain refresh, audit, watchlist). Each agent has a default model assignment (Haiku / Sonnet / Opus) tuned to its role.
+
+**Decision tiers** ([05-decision-tiers.png](diagrams/05-decision-tiers.png)) are the four review-depth grades. T0 is trader-only with rule-based preflight. T1 is 3 analysts plus a one-round debate plus one risk perspective. T2 runs the whole stack. T3 adds plan-critique sign-off, a 24h cooling-off, and a next-day re-check.
+
+**Execution & approval** ([10-execution-routing.png](diagrams/10-execution-routing.png)) is a routing matrix indexed by tier × account × mode. Most cells route to the human queue; a few (small trades inside the limited account, on live mode) auto-execute. `queue_only` mode disables every auto cell as a single-flag pause.
+
+**The dashboard** is a Next.js app at `localhost:1337` with 10 screens (Home, Portfolio, Plan, Proposals queue, Argonaut, Agent Activity, Audit Log, Domain KB, Intake/Setup, Settings). It reads state and offers approval actions; it never runs the engine. WebSocket events keep it live without page reloads.
+
+### 0.5 A worked example
+
+Suppose tomorrow morning NVDA opens up 3% on a positive analyst note. Walking minute-by-minute:
+
+- **09:00:** the daily-brief loop fires. The news analyst pulls overnight headlines and flags the analyst note as a *material price move on a holding*. The concentration analyst recomputes — NVDA is now 14% of net worth, still over the plan target.
+- **09:01:** the daily brief lands in the dashboard with that flag elevated. The watchlist agent has already (08:30) refreshed the universe so NVDA's recent comps are loaded.
+- **09:02:** because NVDA is load-bearing in the plan, the trigger logic forces a T3 decision flow (NVDA-specific override).
+- **09:02 – 09:08:** all 9 analysts run in parallel. Fundamentals updates the valuation read. News quantifies the materiality. Plan-critique re-runs against the current state and lands a YELLOW on "NVDA pace vs schedule" because the pace is now ahead of plan due to the rally. Tax computes the lot-by-lot consequence of trimming.
+- **09:08 – 09:14:** bull and bear researchers each take 2 rounds, each citing specific analyst reports. The facilitator extracts a debate outcome record: "modest trim recommended at the +3% mark; do not chase higher."
+- **09:14:** trader synthesizes a concrete proposal: sell 20 shares of NVDA, limit order at +1% from yesterday's close, GTC, expected concentration delta -1.2pp.
+- **09:14 – 09:18:** risk team — aggressive says fine, neutral says size is appropriate, conservative flags wash-sale risk because there was a small NVDA buy 12 days ago. Risk facilitator votes APPROVE_WITH_CONDITIONS (delay 18 days, or use IRA lots, or take a smaller size).
+- **09:18:** fund manager green-lights with the conservative's condition: cut size in half, accept the wash-sale window for the smaller portion.
+- **09:18:** because the proposal is T3, it enters the 24h `COOLING` state. The auto-pause hooks watch the next 24h for any analyst delta, news event, or plan-critique flip. The proposal lands on the dashboard with full reasoning trail.
+- **You:** wake up, see the proposal, read the trail (analyst reports, debate, risk verdicts, FM note), approve.
+- **Next morning 09:20:** the re-check pass runs (analyst delta only, not the full debate). Nothing flipped overnight. Risk preflight runs (cash, concentration cap, wash-sale, trading hours). Pass. Order goes to the broker. Fill arrives. Lots updated. Audit row written. Dashboard reflects the new position.
+
+The whole thing cost roughly $3 in Claude tokens, lives in `audit_log` forever, and is queryable by ticker, by tier, by date.
+
+### 0.6 What Argosy is NOT
+
+- **Not a high-frequency trader.** It thinks in cadences of minutes, hours, days, months — not microseconds. It is not chasing tick-level alpha.
+- **Not a regulated financial advisor.** In single-user mode it is personal-use software for the project's author. Productized later (Phase 6+) it is sold as *infrastructure*, not advice.
+- **Not optimized to beat the market.** A buy-and-hold global index will probably beat a multi-agent system on raw return over decades, and Argosy doesn't pretend otherwise. The optimization target is *plan adherence + concentration reduction + tax efficiency + audit trail*. Alpha, if any, is incidental.
+
+### 0.7 Where to go next
+
+- **§1–§2** for the formal overview and architecture diagram.
+- **§3–§4** for the agent fleet and decision-tier mechanics in full detail.
+- **§5–§7** for cadences, the intake phase, and the domain knowledge base.
+- **§8–§10** for the data layer, brokerage integration, and the execution / approval workflow.
+- **§13** for the implementation timeline, gates, and what's still ahead.
+- **README "Getting started"** for how to actually run the thing.
+
+---
+
 ## 1. Overview & Goals
 
 ### 1.1 What Argosy is
@@ -87,6 +160,10 @@ Replace the manual monthly portfolio-review cycle with a continuously-running mu
 
 ## 2. System Architecture
 
+![System architecture](diagrams/01-system-architecture.png)
+
+*Source: [01-system-architecture.drawio](diagrams/01-system-architecture.drawio) — open in draw.io to edit*
+
 ### 2.1 Three logical regions
 
 Argosy is organized into three logical regions, all coordinating through a single shared state store:
@@ -97,7 +174,7 @@ Argosy is organized into three logical regions, all coordinating through a singl
 
 ### 2.2 Top-level diagram
 
-> Diagram source: `docs/design/diagrams/system-architecture.drawio`. Export to SVG via [diagrams.net](https://app.diagrams.net) and place at `docs/design/diagrams/svg/system-architecture.svg`.
+> Canonical render: see [01-system-architecture.png](diagrams/01-system-architecture.png) embedded above (source: [01-system-architecture.drawio](diagrams/01-system-architecture.drawio)). The Mermaid below is an immediate-readable fallback for environments that do not render the PNG.
 
 ```mermaid
 flowchart TB
@@ -183,6 +260,10 @@ flowchart TB
 ---
 
 ## 3. Agent Fleet
+
+![Agent fleet](diagrams/04-agent-fleet.png)
+
+*Source: [04-agent-fleet.drawio](diagrams/04-agent-fleet.drawio) — open in draw.io to edit*
 
 The fleet borrows TradingAgents' team structure and extends it with specialists relevant to the user's situation (Israeli tax, concentration, plan critique, FX). Five teams plus four cross-cutting agents.
 
@@ -271,6 +352,12 @@ Set `models.override: {all: opus}` in `agent_settings.yaml` for quality-first re
 
 ## 4. Decision Tiers & Cross-Checks
 
+![Decision tiers](diagrams/05-decision-tiers.png)
+
+*Source: [05-decision-tiers.drawio](diagrams/05-decision-tiers.drawio) — open in draw.io to edit*
+
+The decision-flow sequence (analyst → debate → trader → risk → fund manager) is shown in §3, §10.3 and rendered in detail at [11-decision-flow-sequence.png](diagrams/11-decision-flow-sequence.png).
+
 Inspired by how large firms scale review depth to transaction size.
 
 ### 4.1 Tier definitions
@@ -326,6 +413,10 @@ Tier × execution-mode interaction (see §10 for full routing matrix):
 
 ## 5. Cadence Loops
 
+![Cadence loops](diagrams/06-cadence-loops.png)
+
+*Source: [06-cadence-loops.drawio](diagrams/06-cadence-loops.drawio) — open in draw.io to edit*
+
 The orchestrator runs these loops independently. Each is a Python coroutine doing cheap polling; LLM calls happen only on triggers.
 
 ### 5.1 Loop catalog
@@ -380,6 +471,10 @@ cadences:
 ---
 
 ## 6. Intake Phase
+
+![Intake stages](diagrams/07-intake-stages.png)
+
+*Source: [07-intake-stages.drawio](diagrams/07-intake-stages.drawio) — open in draw.io to edit*
 
 Intake is a multi-agent flow. The **intake agent** conducts the interview (one question at a time, conversational, prioritize critical info, challenge illogical answers — patterns borrowed from the user's prior "Victor Sterling" advisor prompt). The **plan-critique agent** runs in the background as data accumulates.
 
@@ -478,6 +573,10 @@ The trader and risk team weight inputs by confidence; the fund manager's integri
 ---
 
 ## 7. Domain Knowledge Base
+
+![Domain KB structure](diagrams/08-domain-kb-structure.png)
+
+*Source: [08-domain-kb-structure.drawio](diagrams/08-domain-kb-structure.drawio) — open in draw.io to edit*
 
 The shared knowledge layer agents RAG against for jurisdiction-specific rules. Centralized here so updates touch one place. Productization-friendly: a new tenant in a new jurisdiction just adds a new folder.
 
@@ -596,6 +695,10 @@ The intake agent contributes here: when a user is asked a question whose answer 
 
 ## 8. Data Layer
 
+![Data layer schema](diagrams/16-data-layer-schema.png)
+
+*Source: [16-data-layer-schema.drawio](diagrams/16-data-layer-schema.drawio) — open in draw.io to edit*
+
 Single SQLite database (`argosy.db`), DuckDB used for analytical queries against it. All state lives here.
 
 ### 8.1 Schema (logical groups)
@@ -650,6 +753,10 @@ Cache entries record `provider`, `retrieved_at`, `expires_at`, `payload_hash` fo
 ---
 
 ## 9. Brokerage Layer
+
+![Brokerage layer](diagrams/09-brokerage-layer.png)
+
+*Source: [09-brokerage-layer.drawio](diagrams/09-brokerage-layer.drawio) — open in draw.io to edit*
 
 Three accounts, three different integration realities.
 
@@ -719,6 +826,12 @@ Hard fails return an error before the proposal becomes a real order; warnings su
 ---
 
 ## 10. Execution & Approval Workflow
+
+![Execution routing matrix](diagrams/10-execution-routing.png)
+
+*Source: [10-execution-routing.drawio](diagrams/10-execution-routing.drawio) — open in draw.io to edit*
+
+The proposal lifecycle as a state machine is at [12-proposals-state-machine.png](diagrams/12-proposals-state-machine.png); the T3 cooling-off mechanic at [13-cooling-off-flow.png](diagrams/13-cooling-off-flow.png).
 
 Everything *after* the agent team produces an `ApprovedProposal`: external approval, queueing, broker placement, fill reconciliation, audit.
 
@@ -863,6 +976,10 @@ For Phase 1 (single user, localhost), auth is effectively *off* — bind only to
 
 ## 12. Productization Hooks
 
+![Deployment topology](diagrams/03-deployment-topology.png)
+
+*Source: [03-deployment-topology.drawio](diagrams/03-deployment-topology.drawio) — open in draw.io to edit*
+
 Cost almost nothing to bake in now; make later productization a config change rather than a rewrite.
 
 ### 12.1 Multi-tenancy from day one
@@ -930,6 +1047,10 @@ Per-tenant isolation: separate database file per tenant (or separate Postgres sc
 
 ## 13. Phasing & Milestones
 
+![Phasing roadmap](diagrams/02-phasing-roadmap.png)
+
+*Source: [02-phasing-roadmap.drawio](diagrams/02-phasing-roadmap.drawio) — open in draw.io to edit*
+
 Six phases, each with **explicit non-goals** to prevent scope creep, and a **hard gate** before advancing.
 
 | Phase | Window | Goal | Non-goals | Exit gate |
@@ -942,6 +1063,12 @@ Six phases, each with **explicit non-goals** to prevent scope creep, and a **har
 | **4 — IBKR + Phase-1 Execution (B)** | Weeks 17-20 | IBKR adapter (read first, then write); risk preflight; email approval channel; 1-click approve on dashboard; live mode for T0/T1 in main accounts (queue+approve flow) | Limited account autonomy; T2/T3 auto; multi-account write | Place 5+ small live trades via dashboard 1-click without surprises; reconcile fills cleanly; audit log is complete |
 | **5 — Limited Account Autonomy (C)** | Weeks 21-24 | Open IBKR Pro account; configure limited account; enable T0/T1 auto in limited acct; cooling-off; kill switch; second-factor for T3 | Productization; multi-tenant infra | Limited account runs autonomously for 4 weeks with no kill-switch trips; T0/T1 auto-executions match what user would have approved manually 90%+ of the time |
 | **6 — Productization** | Weeks 25+ | Multi-tenant infra; license/billing; hosted deploy; marketing; second tenant onboarded | Adding new agent specialties before second tenant works | Second user onboarded end-to-end without engine changes; their plan critique passes; they can run a paper-mode month |
+
+### 13.0 Phase 5 — Argonaut autonomy detail
+
+![Argonaut autonomy state machine](diagrams/14-argonaut-autonomy.png)
+
+*Source: [14-argonaut-autonomy.drawio](diagrams/14-argonaut-autonomy.drawio) — open in draw.io to edit*
 
 ### 13.1 Hard gates (no skipping)
 
@@ -1044,6 +1171,11 @@ Kill state persists across restart — engine boots into the kill state until ex
 Each agent has a small fixture file (`tests/agent_evals/<agent>/case_*.json`) with state input + expected properties of output (not exact text — properties: "report mentions all 5 input tickers," "confidence is medium given stale data," etc.).
 
 ### 14.7 Cost monitoring
+
+![Cost cap & pause flow](diagrams/15-cost-cap-pause-flow.png)
+
+*Source: [15-cost-cap-pause-flow.drawio](diagrams/15-cost-cap-pause-flow.drawio) — open in draw.io to edit*
+
 
 | Metric | Tracked per | Alert |
 |---|---|---|
@@ -1592,20 +1724,40 @@ solely on Tier 3+.
 
 ## Appendix C: Diagram Sources
 
-The following drawio source files are committed alongside this SDD:
+The 17 drawio source files committed alongside this SDD, each with a pre-rendered PNG export beside it (PNGs are produced by `docs/tools/drawio_export.py`):
 
-| Diagram | Source | Render |
-|---|---|---|
-| System architecture | `docs/design/diagrams/system-architecture.drawio` | `docs/design/diagrams/svg/system-architecture.svg` |
-| Decision flow | `docs/design/diagrams/decision-flow.drawio` | `docs/design/diagrams/svg/decision-flow.svg` |
-| Cadence orchestration | `docs/design/diagrams/cadence-loops.drawio` | `docs/design/diagrams/svg/cadence-loops.svg` |
-| Intake stages | `docs/design/diagrams/intake-stages.drawio` | `docs/design/diagrams/svg/intake-stages.svg` |
-| Execution sequence | `docs/design/diagrams/execution-sequence.drawio` | `docs/design/diagrams/svg/execution-sequence.svg` |
-| Multi-tenant deployment | `docs/design/diagrams/deployment-topology.drawio` | `docs/design/diagrams/svg/deployment-topology.svg` |
+| # | Diagram | Source (`docs/design/diagrams/`) | Render | SDD anchor |
+|---|---|---|---|---|
+| 0 | Novice overview ("Argosy in one picture") | `00-novice-overview.drawio` | `00-novice-overview.png` | §0.2 |
+| 1 | Top-level system architecture | `01-system-architecture.drawio` | `01-system-architecture.png` | §2 |
+| 2 | Phasing roadmap (Phases 0 → 6) | `02-phasing-roadmap.drawio` | `02-phasing-roadmap.png` | §13 |
+| 3 | Deployment topology (hosted + local dev) | `03-deployment-topology.drawio` | `03-deployment-topology.png` | §12.5 |
+| 4 | Agent fleet (5 teams + 4 cross-cutting) | `04-agent-fleet.drawio` | `04-agent-fleet.png` | §3 |
+| 5 | Decision tiers (T0 → T3) | `05-decision-tiers.drawio` | `05-decision-tiers.png` | §4 |
+| 6 | Cadence loops timeline | `06-cadence-loops.drawio` | `06-cadence-loops.png` | §5 |
+| 7 | Intake stages (6 sequential + recurring) | `07-intake-stages.drawio` | `07-intake-stages.png` | §6.1 |
+| 8 | Domain KB structure + refresh agent | `08-domain-kb-structure.drawio` | `08-domain-kb-structure.png` | §7 |
+| 9 | Brokerage layer (IBKR / Schwab / Leumi) | `09-brokerage-layer.drawio` | `09-brokerage-layer.png` | §9 |
+| 10 | Execution routing matrix | `10-execution-routing.drawio` | `10-execution-routing.png` | §10.1 |
+| 11 | Decision flow sequence | `11-decision-flow-sequence.drawio` | `11-decision-flow-sequence.png` | §3, §10.3 |
+| 12 | Proposal state machine (10 states) | `12-proposals-state-machine.drawio` | `12-proposals-state-machine.png` | §10.3 |
+| 13 | T3 cooling-off flow | `13-cooling-off-flow.drawio` | `13-cooling-off-flow.png` | §10.4 |
+| 14 | Argonaut limited-acct autonomy | `14-argonaut-autonomy.drawio` | `14-argonaut-autonomy.png` | §13 (Phase 5) |
+| 15 | Cost cap & pause flow | `15-cost-cap-pause-flow.drawio` | `15-cost-cap-pause-flow.png` | §14.7 |
+| 16 | Data layer ER schema (8 logical groups) | `16-data-layer-schema.drawio` | `16-data-layer-schema.png` | §8.1 |
 
-To render: open the `.drawio` source in [diagrams.net](https://app.diagrams.net) (or VS Code's "Draw.io Integration" extension), File → Export As → SVG → save to `docs/design/diagrams/svg/`. The SVG is referenced from this SDD; commit both source and SVG.
+Re-rendering: from `ARGOSY_HOME` run
 
-The Mermaid diagrams inline in this document are the immediate readable form; the drawio sources are the editable canonical sources for production rendering.
+```bash
+PATH="<playwright-bin>:$PATH" \
+  uv run python docs/tools/drawio_export.py docs/design/diagrams
+```
+
+(or pass `--file <name>.drawio` to re-render a single source). PNGs are written next to the `.drawio` source — pandoc (via `docs/tools/md_to_docx.py`) resolves the relative path correctly when this markdown is converted to docx.
+
+The Mermaid diagrams inline in this document are the immediate readable fallback; the `.drawio` sources are the editable canonical artifacts and the `.png` exports are the canonical render embedded throughout the SDD.
+
+**Note on the prior `system-architecture.drawio`:** the original minimal architecture source is preserved as `_system-architecture.drawio.bak` (and its render as `_system-architecture.png.bak`) in the same folder. The numbered file `01-system-architecture.drawio` supersedes it with a richer three-region view.
 
 ---
 

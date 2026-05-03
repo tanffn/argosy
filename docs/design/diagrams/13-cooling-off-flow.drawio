@@ -1,0 +1,126 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-cooling" name="T3 Cooling-Off Flow">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="900">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — T3 Cooling-Off Mechanic" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="20" width="500" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="24-hour pause after T3 approval; auto-pause hooks watch for thesis-flipping signals during the wait" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="350" y="58" width="800" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s_app" value="APPROVED&#10;(T3 fund manager green-light)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="300" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s_cool" value="COOLING&#10;&#10;24h hold (configurable: tiers.cooling_off_hours_t3)&#10;process_cooling loop drains it (60s ticks)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="500" y="120" width="440" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="hooks_frame" value="Auto-pause hooks (run during the 24h)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="280" width="660" height="320" as="geometry"/>
+        </mxCell>
+        <mxCell id="hk_analyst" value="Analyst delta hook&#10;Any analyst report (re-run hourly) flips materially:&#10;• fundamentals confidence drops to LOW&#10;• news materiality crosses threshold&#10;• plan-critique flips a related item to RED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="hooks_frame">
+          <mxGeometry x="20" y="36" width="620" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="hk_news" value="News hook&#10;Material news event arrives on the affected ticker&#10;(corp action, earnings warning, regulatory, lawsuit, FDA, etc.)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="hooks_frame">
+          <mxGeometry x="20" y="124" width="620" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="hk_plan" value="Plan-critique flip hook&#10;The plan-critique agent (run weekly + ad-hoc on news) changes&#10;a related plan item from GREEN/YELLOW to RED" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="hooks_frame">
+          <mxGeometry x="20" y="212" width="620" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s_pause" value="AWAITING_HUMAN&#10;(auto-paused — back to queue)&#10;&#10;requires fresh review:&#10;cited delta + re-run analyst report&#10;diff vs original proposal" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="640" width="660" height="160" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s_recheck" value="Re-check  (after 24h with no auto-pause)&#10;&#10;analyst delta only — not full debate&#10;risk re-preflight (cash, caps, wash-sale, hours)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="800" y="280" width="640" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s_dec" value="Re-check passes?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="420" width="240" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s_fire" value="APPROVED → PREFLIGHT → broker.place_order&#10;(per Routing Matrix)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="800" y="540" width="640" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="s_back" value="Back to queue&#10;requires fresh human approval" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="800" y="660" width="640" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_app_cool" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_app" target="s_cool"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_app_cool_l" value="enter cooling" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="380" y="150" width="100" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_cool_hooks" style="endArrow=classic;html=1;rounded=1;strokeColor=#E2A674;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;dashed=1;" edge="1" parent="1" source="s_cool" target="hooks_frame">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_cool_hooks_l" value="hooks watch continuously" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="430" y="240" width="200" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_hooks_pause" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="hooks_frame" target="s_pause">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_hooks_pause_l" value="ANY hook fires → auto-pause" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="608" width="240" height="24" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_cool_recheck" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_cool" target="s_recheck"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_cool_recheck_l" value="24h elapsed, no hook fired" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="800" y="220" width="220" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_recheck_dec" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_recheck" target="s_dec"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <mxCell id="e_dec_fire" style="endArrow=classic;html=1;rounded=1;strokeColor=#74E274;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_dec" target="s_fire"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_dec_fire_l" value="pass" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="510" width="80" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_dec_back" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="s_dec" target="s_back"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e_dec_back_l" value="fail" style="text;html=1;align=center;fontFamily=Calibri;fontSize=10;fillColor=#FFFFFF;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="510" width="80" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend_frame" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="780" width="1380" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_co_g" value="" style="rounded=1;fillColor=#E6FFE6;strokeColor=#74E274;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_co_g_l" value="Approval / progress" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="28" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_co_r" value="" style="rounded=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend_frame">
+          <mxGeometry x="260" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_co_r_l" value="Hold / pause / abort" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="286" y="28" width="200" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_co_o" value="" style="rounded=1;fillColor=#FFF4E6;strokeColor=#E2A674;" vertex="1" parent="legend_frame">
+          <mxGeometry x="500" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_co_o_l" value="Auto-pause hook surface" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="526" y="28" width="240" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_co_b" value="" style="rounded=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="780" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_co_b_l" value="Re-check / preflight (no full re-debate)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="806" y="28" width="320" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_co_note" value="Cooling-off applies ONLY to T3 (and only on live mode by default; paper T3 also runs cooling per SDD §10.1 to keep symmetry)." style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="55" width="1340" height="20" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

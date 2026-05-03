@@ -1,0 +1,129 @@
+<mxfile host="app.diagrams.net" modified="2026-05-02">
+  <diagram id="argosy-routing" name="Execution Routing Matrix">
+    <mxGraphModel dx="1422" dy="762" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="900">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Execution Routing Matrix (tier × account × mode)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="350" y="20" width="800" height="36" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Hard rule: queue_only mode disables every &quot;auto-execute&quot; cell — no exceptions" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="350" y="58" width="800" height="20" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="hdr_tier" value="Tier &#92; (Account, Mode)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="120" width="240" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="hdr_lim_live" value="Limited (Argonaut)&#10;LIVE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="120" width="270" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="hdr_lim_pap" value="Limited (Argonaut)&#10;PAPER" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="610" y="120" width="270" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="hdr_main_live" value="Main (Schwab/Leumi)&#10;LIVE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="900" y="120" width="270" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="hdr_main_pap" value="Main (Schwab/Leumi)&#10;PAPER" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="120" width="270" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="row_t0_lbl" value="T0&#10;Routine" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="200" width="240" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t0_ll" value="AUTO-EXECUTE&#10;(rule-based preflight)&#10;no LLM risk team" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="200" width="270" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t0_lp" value="PaperFill log&#10;intended price + datetime&#10;no broker call" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="200" width="270" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t0_ml" value="Human queue, 1-click&#10;email approval link OK&#10;Schwab/Leumi: manual" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="900" y="200" width="270" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t0_mp" value="PaperFill log" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="200" width="270" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="row_t1_lbl" value="T1&#10;Standard" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="340" width="240" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t1_ll" value="AUTO-EXECUTE&#10;3 analysts + 1-rd debate&#10;1 risk perspective" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="340" width="270" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t1_lp" value="PaperFill log" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="340" width="270" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t1_ml" value="Human queue, 1-click&#10;email approval link OK" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="900" y="340" width="270" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t1_mp" value="PaperFill log" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="340" width="270" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="row_t2_lbl" value="T2&#10;Material" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="480" width="240" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t2_ll" value="HUMAN QUEUE&#10;review FULL reasoning&#10;before approve" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="480" width="270" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t2_lp" value="PaperFill + review record" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="480" width="270" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t2_ml" value="HUMAN QUEUE&#10;review FULL reasoning&#10;before approve" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="900" y="480" width="270" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t2_mp" value="PaperFill + review record" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="480" width="270" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="row_t3_lbl" value="T3&#10;Strategic" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="620" width="240" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t3_ll" value="HUMAN QUEUE&#10;+ 24h cooling-off&#10;+ next-day re-check&#10;+ 2nd-factor (Phase 5)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="320" y="620" width="270" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t3_lp" value="PaperFill + cooling-off&#10;+ next-day paper re-check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="610" y="620" width="270" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t3_ml" value="HUMAN QUEUE&#10;+ 24h cooling-off&#10;+ next-day re-check&#10;+ 2nd-factor mandatory" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="900" y="620" width="270" height="140" as="geometry"/>
+        </mxCell>
+        <mxCell id="c_t3_mp" value="PaperFill + cooling-off&#10;+ next-day paper re-check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="620" width="270" height="140" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="legend_frame" value="Legend  (cell color = approval path)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="60" y="790" width="1400" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_x_g" value="" style="rounded=1;fillColor=#E6FFE6;strokeColor=#74E274;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_x_g_l" value="Auto-execute (no human in the loop)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="46" y="28" width="280" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_x_o" value="" style="rounded=1;fillColor=#FFF4E6;strokeColor=#E2A674;" vertex="1" parent="legend_frame">
+          <mxGeometry x="340" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_x_o_l" value="Human required (1-click for T1, full review for T2)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="366" y="28" width="380" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_x_r" value="" style="rounded=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend_frame">
+          <mxGeometry x="760" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_x_r_l" value="Human + cooling-off + re-check (T3 only)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="786" y="28" width="320" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_x_b" value="" style="rounded=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="1100" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_x_b_l" value="Paper-only (logged, no broker call)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="1126" y="28" width="280" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_x_note" value="Universal kill-switch: ARGOSY_KILL=1 halts every cell · queue_only mode disables every green cell · NVDA always lands at T3" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+          <mxGeometry x="20" y="55" width="1380" height="20" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
