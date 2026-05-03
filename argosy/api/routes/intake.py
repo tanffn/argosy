@@ -29,6 +29,11 @@ from sqlalchemy import select
 from argosy.agents.intake import IntakeAgent, IntakeTurnOutput
 from argosy.agents.intake_extractor import IntakeExtraction, IntakeExtractorAgent
 from argosy.agents.intake_fields import stage_status
+from argosy.ingest.file_to_text import (
+    FileTooLargeError,
+    UnsupportedFileTypeError,
+    convert_to_text,
+)
 from argosy.ingest.plan import parse_plan_markdown_text
 from argosy.logging import get_logger
 from argosy.state import db as db_mod
@@ -650,6 +655,63 @@ async def get_status(user_id: str = Query("ariel")) -> dict[str, Any]:
         "user_exists": user_exists,
         "current_stage": (ctx.current_stage if ctx else None) or "stage_1",
     }
+
+
+# ----------------------------------------------------------------------
+# /file-to-text
+# ----------------------------------------------------------------------
+
+
+class FileToTextResponse(BaseModel):
+    """Result of converting an uploaded doc to plain text.
+
+    Stateless. The frontend uses this to pre-process an attached file
+    before posting `/api/intake/turn` so the user's typed answer can
+    include the file contents inline.
+    """
+
+    filename: str
+    content_type: str
+    extracted_text: str
+    warnings: list[str]
+    page_or_sheet_count: int
+
+
+@router.post("/file-to-text", response_model=FileToTextResponse)
+async def post_file_to_text(file: UploadFile = File(...)) -> FileToTextResponse:
+    """Convert an uploaded doc (any supported type) to plain text.
+
+    Stateless. No DB writes, no agent calls. Frontend uses this to
+    pre-process an attached file before posting /api/intake/turn.
+    """
+    filename = file.filename or "uploaded"
+    content_type = (file.content_type or "").lower()
+    raw_bytes = await file.read()
+    if len(raw_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    try:
+        result = convert_to_text(
+            filename=filename, content_type=content_type, data=raw_bytes
+        )
+    except FileTooLargeError as exc:
+        # 413 Payload Too Large.
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except UnsupportedFileTypeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.exception("intake.file_to_text.failed", filename=filename)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to extract text from {filename!r}: {exc}",
+        ) from exc
+
+    return FileToTextResponse(
+        filename=result.filename,
+        content_type=result.content_type,
+        extracted_text=result.extracted_text,
+        warnings=list(result.warnings),
+        page_or_sheet_count=result.page_or_sheet_count,
+    )
 
 
 __all__ = [

@@ -1,12 +1,16 @@
 "use client";
 
 /**
- * Plan markdown renderer.
+ * Markdown renderer used by Plan view + intake conversation.
  *
- * Uses `react-markdown` when installed (the package is declared in
- * `package.json`; install with `npm install`). Falls back to a
- * paragraph-preserving plain-text rendering when the dep is absent so
- * the build never fails on a fresh checkout.
+ * Honors single-`\n` line breaks via the `remark-breaks` plugin.
+ * Without that, CommonMark collapses single newlines to a space and
+ * an LLM-emitted multi-line list renders as one wall of text. Most
+ * Claude outputs use single `\n` between numbered items; we render
+ * each on its own line.
+ *
+ * Uses lazy-loaded `react-markdown` so a missing dep doesn't break
+ * SSR (paragraph-preserving plain-text fallback).
  */
 
 import * as React from "react";
@@ -15,21 +19,31 @@ interface MarkdownProps {
   children: string;
 }
 
+interface ReactMarkdownProps {
+  children: string;
+  remarkPlugins?: unknown[];
+}
+
 export function Markdown({ children }: MarkdownProps) {
-  // Lazy-load react-markdown so the absence of the dep doesn't break
-  // SSR builds. Until installed we render a plain-text version.
-  const [Component, setComponent] = React.useState<
-    React.ComponentType<{ children: string }> | null
-  >(null);
+  const [bundle, setBundle] = React.useState<{
+    Component: React.ComponentType<ReactMarkdownProps>;
+    plugins: unknown[];
+  } | null>(null);
 
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const mod = await import("react-markdown");
-        if (!cancelled) {
-          setComponent(() => mod.default as React.ComponentType<{ children: string }>);
-        }
+        const [rm, breaks] = await Promise.all([
+          import("react-markdown"),
+          import("remark-breaks").catch(() => null),
+        ]);
+        if (cancelled) return;
+        const plugins = breaks ? [breaks.default] : [];
+        setBundle({
+          Component: rm.default as React.ComponentType<ReactMarkdownProps>,
+          plugins,
+        });
       } catch {
         // dep not installed yet; fall back below
       }
@@ -39,10 +53,11 @@ export function Markdown({ children }: MarkdownProps) {
     };
   }, []);
 
-  if (Component) {
+  if (bundle) {
+    const { Component, plugins } = bundle;
     return (
       <article className="prose prose-sm dark:prose-invert max-w-none">
-        <Component>{children}</Component>
+        <Component remarkPlugins={plugins}>{children}</Component>
       </article>
     );
   }

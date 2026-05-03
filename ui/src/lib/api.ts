@@ -441,6 +441,25 @@ export const api = {
       last_user_message: lastUserMessage,
       current_stage: currentStage,
     }),
+  intakeFileToText: async (file: File): Promise<FileToTextResponse> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch(apiUrl("/api/intake/file-to-text"), {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body?.detail) detail = String(body.detail);
+      } catch {
+        /* non-JSON body */
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as FileToTextResponse;
+  },
   intakeUpload: async (userId: string, file: File): Promise<IntakeUploadResponse> => {
     const fd = new FormData();
     fd.append("user_id", userId);
@@ -550,4 +569,12 @@ export interface IntakeUploadResponse {
   confidence: string;
   notes: string;
   summary_for_user: string;
+}
+
+export interface FileToTextResponse {
+  filename: string;
+  content_type: string;
+  extracted_text: string;
+  warnings: string[];
+  page_or_sheet_count: number;
 }

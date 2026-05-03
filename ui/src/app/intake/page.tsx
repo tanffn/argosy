@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -15,6 +16,10 @@ import {
   type IntakeTurnResponse,
   type IntakeUploadResponse,
 } from "@/lib/api";
+
+// File extensions accepted by the answer-form attachment picker. Mirrors
+// argosy/ingest/file_to_text.py's _EXT_TO_KIND whitelist.
+const ATTACH_ACCEPT = ".md,.markdown,.txt,.csv,.tsv,.pdf,.xlsx";
 
 const USER_ID = "ariel";
 
@@ -54,6 +59,14 @@ export default function IntakePage() {
   // After a successful upload the widget collapses; user can re-expand it.
   const [uploadCollapsed, setUploadCollapsed] = useState(false);
 
+  // ---- Answer-form attachment state ---------------------------------
+  // The user can attach a file (pay stub, broker export, etc.) alongside
+  // their typed answer. On submit we POST the file to /file-to-text first,
+  // then prepend the extracted text into last_user_message before /turn.
+  const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
   const loadStatus = useCallback(async () => {
     try {
       const s = await api.intakeStatus(USER_ID);
@@ -87,19 +100,53 @@ export default function IntakePage() {
 
   const submit = async () => {
     if (!pending) return;
+    setSubmitError(null);
+
+    // If an attachment is present, convert it first. On error, surface
+    // the detail and leave the file attached so the user can retry.
+    let augmented = answer;
+    if (attachedFile) {
+      try {
+        const r = await api.intakeFileToText(attachedFile);
+        const fenced =
+          "I've attached " +
+          r.filename +
+          ":\n```\n" +
+          r.extracted_text +
+          "\n```\n\n";
+        augmented = fenced + (answer || "");
+      } catch (e: unknown) {
+        setSubmitError(e instanceof Error ? e.message : String(e));
+        return;
+      }
+    }
+
     setHistory((h) => [
       ...h,
       {
         question: pending.question_for_user,
-        answer,
+        answer: attachedFile
+          ? `[attached ${attachedFile.name}]${answer ? "\n" + answer : ""}`
+          : answer,
         stage: pending.stage,
         confidence: pending.confidence,
       },
     ]);
-    const a = answer;
     setAnswer("");
+    setAttachedFile(null);
+    if (attachInputRef.current) attachInputRef.current.value = "";
     setPending(null);
-    await askNext(a);
+    await askNext(augmented);
+  };
+
+  const handleAttachChosen = (f: File | null) => {
+    setSubmitError(null);
+    setAttachedFile(f);
+  };
+
+  const removeAttachment = () => {
+    setAttachedFile(null);
+    if (attachInputRef.current) attachInputRef.current.value = "";
   };
 
   // ---- Upload handlers ----------------------------------------------
@@ -313,10 +360,13 @@ export default function IntakePage() {
         <CardContent className="flex flex-col gap-4">
           {history.map((turn, idx) => (
             <div key={idx} className="flex flex-col gap-1">
-              <p className="text-sm">
-                <span className="font-semibold">Q:</span> {turn.question}
-              </p>
-              <p className="text-sm text-muted-foreground">
+              <div className="text-sm">
+                <span className="font-semibold">Q:</span>{" "}
+                <div className="inline-block align-top w-full">
+                  <Markdown>{turn.question}</Markdown>
+                </div>
+              </div>
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap">
                 <span className="font-semibold text-foreground">A:</span>{" "}
                 {turn.answer}
               </p>
@@ -327,7 +377,9 @@ export default function IntakePage() {
 
           {pending && pending.question_for_user && (
             <div className="flex flex-col gap-2">
-              <p className="text-sm font-semibold">{pending.question_for_user}</p>
+              <div className="text-sm font-semibold">
+                <Markdown>{pending.question_for_user}</Markdown>
+              </div>
               {pending.notes_for_orchestrator && (
                 <p className="text-xs text-amber-500">
                   Note: {pending.notes_for_orchestrator}
@@ -339,11 +391,61 @@ export default function IntakePage() {
                 onChange={(e) => setAnswer(e.target.value)}
                 placeholder="Your answer..."
               />
+
+              {/* Attachment row */}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <label
+                  htmlFor="intake-attach-input"
+                  className="cursor-pointer text-primary underline-offset-4 hover:underline"
+                >
+                  {attachedFile ? "Replace attachment" : "Attach a file"}
+                </label>
+                <input
+                  id="intake-attach-input"
+                  ref={attachInputRef}
+                  type="file"
+                  accept={ATTACH_ACCEPT}
+                  className="hidden"
+                  onChange={(e) =>
+                    handleAttachChosen(e.target.files?.[0] ?? null)
+                  }
+                />
+                {attachedFile && (
+                  <>
+                    <span className="text-muted-foreground font-mono">
+                      {attachedFile.name}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={removeAttachment}
+                      className="text-red-500 underline-offset-4 hover:underline"
+                    >
+                      remove
+                    </button>
+                  </>
+                )}
+                <span className="text-muted-foreground">
+                  (.md, .markdown, .txt, .csv, .tsv, .pdf, .xlsx — 5 MB max)
+                </span>
+              </div>
+
+              {submitError && (
+                <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
+                  <p className="text-sm text-red-500 font-mono">
+                    {submitError}
+                  </p>
+                </div>
+              )}
+
               <div className="flex items-center justify-between">
                 <span className="text-xs text-muted-foreground">
                   Confidence: {pending.confidence}
                 </span>
-                <Button onClick={submit} size="sm" disabled={!answer.trim()}>
+                <Button
+                  onClick={submit}
+                  size="sm"
+                  disabled={!answer.trim() && !attachedFile}
+                >
                   Submit
                 </Button>
               </div>

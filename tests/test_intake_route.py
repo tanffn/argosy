@@ -266,6 +266,211 @@ async def test_upload_rejects_non_markdown(
         reset_intake_extractor_factory()
 
 
+# ----------------------------------------------------------------------
+# /file-to-text
+# ----------------------------------------------------------------------
+
+
+def _build_xlsx_bytes(sheets: dict[str, list[list[object]]]) -> bytes:
+    from openpyxl import Workbook  # type: ignore[import-untyped]
+
+    wb = Workbook()
+    default = wb.active
+    wb.remove(default)
+    for name, rows in sheets.items():
+        ws = wb.create_sheet(title=name)
+        for row in rows:
+            ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _build_minimal_pdf_bytes(pages: list[str]) -> bytes:
+    """Hand-rolled minimal PDF with one text per page."""
+    objs: list[bytes] = []
+
+    def _add(body: bytes) -> int:
+        objs.append(body)
+        return len(objs)
+
+    catalog_id = _add(b"")
+    pages_id = _add(b"")
+    page_kids: list[int] = []
+    for txt in pages:
+        safe = txt.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        stream = f"BT /F1 12 Tf 72 720 Td ({safe}) Tj ET".encode("latin-1")
+        content_obj = (
+            f"<< /Length {len(stream)} >>\nstream\n".encode("latin-1")
+            + stream
+            + b"\nendstream"
+        )
+        content_id = _add(content_obj)
+        page_obj = (
+            f"<< /Type /Page /Parent {pages_id} 0 R "
+            f"/MediaBox [0 0 612 792] "
+            f"/Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> "
+            f"/Contents {content_id} 0 R >>"
+        ).encode("latin-1")
+        page_id = _add(page_obj)
+        page_kids.append(page_id)
+    objs[catalog_id - 1] = (
+        f"<< /Type /Catalog /Pages {pages_id} 0 R >>".encode("latin-1")
+    )
+    kids_str = " ".join(f"{k} 0 R" for k in page_kids)
+    objs[pages_id - 1] = (
+        f"<< /Type /Pages /Kids [{kids_str}] /Count {len(page_kids)} >>".encode(
+            "latin-1"
+        )
+    )
+
+    buf = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for i, obj in enumerate(objs, start=1):
+        offsets.append(len(buf))
+        buf += f"{i} 0 obj\n".encode("latin-1") + obj + b"\nendobj\n"
+    xref_pos = len(buf)
+    buf += f"xref\n0 {len(objs) + 1}\n".encode("latin-1")
+    buf += b"0000000000 65535 f \n"
+    for off in offsets:
+        buf += f"{off:010d} 00000 n \n".encode("latin-1")
+    buf += (
+        f"trailer << /Size {len(objs) + 1} /Root {catalog_id} 0 R >>\n"
+        f"startxref\n{xref_pos}\n%%EOF\n"
+    ).encode("latin-1")
+    return bytes(buf)
+
+
+@pytest.mark.asyncio
+async def test_file_to_text_md_happy_path(
+    engine: None, client: AsyncClient
+) -> None:
+    src = "# Title\n\n**Bold** plus קרן השתלמות"
+    files = {
+        "file": ("notes.md", io.BytesIO(src.encode("utf-8")), "text/markdown"),
+    }
+    res = await client.post("/api/intake/file-to-text", files=files)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["filename"] == "notes.md"
+    assert body["extracted_text"] == src
+    assert body["warnings"] == []
+    assert body["page_or_sheet_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_file_to_text_csv_happy_path(
+    engine: None, client: AsyncClient
+) -> None:
+    src = "ticker,shares\nAAPL,100\n"
+    files = {
+        "file": ("p.csv", io.BytesIO(src.encode("utf-8")), "text/csv"),
+    }
+    res = await client.post("/api/intake/file-to-text", files=files)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["extracted_text"] == src
+
+
+@pytest.mark.asyncio
+async def test_file_to_text_tsv_happy_path(
+    engine: None, client: AsyncClient
+) -> None:
+    src = "ticker\tshares\nAAPL\t100\n"
+    files = {
+        "file": (
+            "p.tsv",
+            io.BytesIO(src.encode("utf-8")),
+            "text/tab-separated-values",
+        ),
+    }
+    res = await client.post("/api/intake/file-to-text", files=files)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["extracted_text"] == src
+
+
+@pytest.mark.asyncio
+async def test_file_to_text_txt_happy_path(
+    engine: None, client: AsyncClient
+) -> None:
+    src = "Hello world\n"
+    files = {
+        "file": ("note.txt", io.BytesIO(src.encode("utf-8")), "text/plain"),
+    }
+    res = await client.post("/api/intake/file-to-text", files=files)
+    assert res.status_code == 200, res.text
+    assert res.json()["extracted_text"] == src
+
+
+@pytest.mark.asyncio
+async def test_file_to_text_pdf_happy_path(
+    engine: None, client: AsyncClient
+) -> None:
+    pdf = _build_minimal_pdf_bytes(["Pay stub line A", "Pay stub line B"])
+    files = {"file": ("stub.pdf", io.BytesIO(pdf), "application/pdf")}
+    res = await client.post("/api/intake/file-to-text", files=files)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["page_or_sheet_count"] == 2
+    assert "Pay stub line A" in body["extracted_text"]
+
+
+@pytest.mark.asyncio
+async def test_file_to_text_xlsx_happy_path(
+    engine: None, client: AsyncClient
+) -> None:
+    xlsx = _build_xlsx_bytes(
+        {"Positions": [["ticker", "shares"], ["AAPL", 100]]}
+    )
+    files = {
+        "file": (
+            "broker.xlsx",
+            io.BytesIO(xlsx),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+    }
+    res = await client.post("/api/intake/file-to-text", files=files)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["page_or_sheet_count"] == 1
+    assert "AAPL,100" in body["extracted_text"]
+    assert "## Sheet: Positions" in body["extracted_text"]
+
+
+@pytest.mark.asyncio
+async def test_file_to_text_rejects_unsupported(
+    engine: None, client: AsyncClient
+) -> None:
+    files = {
+        "file": ("photo.png", io.BytesIO(b"\x89PNG\r\n"), "image/png"),
+    }
+    res = await client.post("/api/intake/file-to-text", files=files)
+    assert res.status_code == 400
+    assert "Unsupported" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_file_to_text_rejects_oversize(
+    engine: None, client: AsyncClient
+) -> None:
+    big = b"x" * (5 * 1024 * 1024 + 1)
+    files = {"file": ("big.txt", io.BytesIO(big), "text/plain")}
+    res = await client.post("/api/intake/file-to-text", files=files)
+    assert res.status_code == 413
+    assert "too large" in res.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_file_to_text_rejects_empty(
+    engine: None, client: AsyncClient
+) -> None:
+    files = {"file": ("empty.md", io.BytesIO(b""), "text/markdown")}
+    res = await client.post("/api/intake/file-to-text", files=files)
+    assert res.status_code == 400
+    assert "empty" in res.json()["detail"].lower()
+
+
 @pytest.mark.asyncio
 async def test_upload_creates_user_if_missing(
     engine: None, client: AsyncClient
