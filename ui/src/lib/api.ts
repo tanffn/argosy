@@ -430,7 +430,25 @@ export const api = {
     const fd = new FormData();
     fd.append("user_id", userId);
     fd.append("file", file);
-    const res = await fetch("/api/intake/upload", { method: "POST", body: fd });
+    // Plan extraction takes ~60-90s on Haiku for a typical plan markdown.
+    // The Next.js dev server's `rewrites()` proxy will drop the connection
+    // before the upstream finishes, surfacing as HTTP 500 in the browser
+    // even though the FastAPI request completes successfully behind the
+    // proxy. To avoid the proxy timeout, hit the API directly.
+    //
+    // In dev: NEXT_PUBLIC_API_URL is unset and we hardcode localhost:8000.
+    // In production (Vercel + Fly.io etc.): set NEXT_PUBLIC_API_URL to the
+    // engine's public URL and the same direct call works.
+    //
+    // CORS in argosy/api/main.py already allows http://localhost:1337.
+    const apiBase =
+      typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL
+        ? process.env.NEXT_PUBLIC_API_URL
+        : "http://localhost:8000";
+    const res = await fetch(`${apiBase}/api/intake/upload`, {
+      method: "POST",
+      body: fd,
+    });
     if (!res.ok) {
       let detail = `HTTP ${res.status}`;
       try {
