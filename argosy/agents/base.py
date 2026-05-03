@@ -43,7 +43,13 @@ from argosy.secrets import get_secret
 # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2;
 # the per-role default below is the fallback when the file is absent.
 DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
-    "intake": "claude-sonnet-4-6",
+    # Intake conducts a conversational interview — one focused question per
+    # turn. The work is light reasoning + structured-output emission; not
+    # adversarial debate or contradictory-input synthesis. Haiku handles it
+    # at ~3-5x the speed of Sonnet for the same effective quality. A future
+    # `intake_reviewer` role (Sonnet/Opus, runs once at stage_6 completion)
+    # can validate the gathered context and structure the final user_context.
+    "intake": "claude-haiku-4-5",
     "plan_critique": "claude-sonnet-4-6",
     # Phase 2 analyst team:
     "news": "claude-sonnet-4-6",
