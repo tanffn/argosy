@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -10,7 +10,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { api, type IntakeTurnResponse } from "@/lib/api";
+import {
+  api,
+  type IntakeTurnResponse,
+  type IntakeUploadResponse,
+} from "@/lib/api";
 
 const USER_ID = "ariel";
 
@@ -38,6 +42,17 @@ export default function IntakePage() {
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // ---- Upload widget state ------------------------------------------
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadResult, setUploadResult] = useState<IntakeUploadResponse | null>(
+    null,
+  );
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  // After a successful upload the widget collapses; user can re-expand it.
+  const [uploadCollapsed, setUploadCollapsed] = useState(false);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -87,6 +102,54 @@ export default function IntakePage() {
     await askNext(a);
   };
 
+  // ---- Upload handlers ----------------------------------------------
+  const handleFileChosen = (f: File | null) => {
+    setUploadError(null);
+    if (f && !f.name.toLowerCase().endsWith(".md")) {
+      setUploadError("Please choose a Markdown (.md) file.");
+      setSelectedFile(null);
+      return;
+    }
+    setSelectedFile(f);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files?.[0];
+    if (f) handleFileChosen(f);
+  };
+
+  const onUpload = async () => {
+    if (!selectedFile) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const result = await api.intakeUpload(USER_ID, selectedFile);
+      setUploadResult(result);
+      setSelectedFile(null);
+    } catch (e: unknown) {
+      setUploadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const onContinueAfterUpload = async () => {
+    setUploadCollapsed(true);
+    // Refresh status + restart the turn loop so the next question reflects
+    // the freshly-merged user_context.
+    await loadStatus();
+    setPending(null);
+    await askNext("");
+  };
+
+  const reopenUpload = () => {
+    setUploadCollapsed(false);
+    setUploadResult(null);
+    setSelectedFile(null);
+    setUploadError(null);
+  };
+
   return (
     <main className="max-w-3xl mx-auto p-6 flex flex-col gap-6">
       <header>
@@ -98,6 +161,144 @@ export default function IntakePage() {
       </header>
 
       {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+
+      {/* ---- Upload widget ---- */}
+      {uploadCollapsed ? (
+        <p className="text-xs text-muted-foreground">
+          Plan uploaded.{" "}
+          <button
+            type="button"
+            onClick={reopenUpload}
+            className="text-primary underline-offset-4 hover:underline"
+          >
+            Upload another plan
+          </button>
+        </p>
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Have an existing plan?</CardTitle>
+            <CardDescription>
+              Upload a Markdown plan and I&apos;ll only ask about what&apos;s
+              missing.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {!uploadResult && (
+              <>
+                <div
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border border-dashed border-border rounded-md p-6 text-center cursor-pointer hover:bg-accent/30 transition-colors"
+                >
+                  <p className="text-sm">
+                    {selectedFile
+                      ? selectedFile.name
+                      : "Drop a .md file here, or click to choose"}
+                  </p>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".md,text/markdown"
+                    className="hidden"
+                    onChange={(e) =>
+                      handleFileChosen(e.target.files?.[0] ?? null)
+                    }
+                  />
+                </div>
+
+                {uploadError && (
+                  <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
+                    <p className="text-sm text-red-500 font-mono">
+                      {uploadError}
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    onClick={onUpload}
+                    disabled={!selectedFile || uploading}
+                    size="sm"
+                  >
+                    {uploading ? (
+                      <span className="inline-flex items-center gap-2">
+                        <span
+                          className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent"
+                          aria-hidden
+                        />
+                        Extracting...
+                      </span>
+                    ) : (
+                      "Upload plan"
+                    )}
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {uploadResult && (
+              <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-4 flex flex-col gap-3">
+                <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                  {uploadResult.summary_for_user}
+                </p>
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-semibold">
+                    Extracted from your plan:
+                  </p>
+                  {uploadResult.fields_extracted.length > 0 ? (
+                    <ul className="text-xs text-muted-foreground list-disc pl-5">
+                      {uploadResult.fields_extracted.map((f) => (
+                        <li key={f}>{f}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      (none — the plan didn&apos;t map cleanly)
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-semibold">
+                    Still need to ask about:
+                  </p>
+                  {uploadResult.fields_missing.length > 0 ? (
+                    <ul className="text-xs text-muted-foreground list-disc pl-5">
+                      {uploadResult.fields_missing.map((f) => (
+                        <li key={f}>{f}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      (nothing — the plan covered everything)
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <p className="text-xs">
+                    <span className="font-semibold">Confidence:</span>{" "}
+                    {uploadResult.confidence}
+                  </p>
+                  {uploadResult.notes && (
+                    <p className="text-xs text-muted-foreground">
+                      <span className="font-semibold text-foreground">
+                        Notes:
+                      </span>{" "}
+                      {uploadResult.notes}
+                    </p>
+                  )}
+                </div>
+                <div className="flex justify-end">
+                  <Button onClick={onContinueAfterUpload} size="sm">
+                    Continue
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

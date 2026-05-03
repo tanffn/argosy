@@ -50,6 +50,11 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # `intake_reviewer` role (Sonnet/Opus, runs once at stage_6 completion)
     # can validate the gathered context and structure the final user_context.
     "intake": "claude-haiku-4-5",
+    # Plan-markdown extractor: light reasoning over a single user-provided
+    # document. Fast Haiku is sufficient and keeps the upload UX responsive
+    # (~10-15s end-to-end). Citations not required (the source IS the user's
+    # plan); fabrication is prevented by an explicit prompt rule.
+    "intake_extractor": "claude-haiku-4-5",
     "plan_critique": "claude-sonnet-4-6",
     # Phase 2 analyst team:
     "news": "claude-sonnet-4-6",

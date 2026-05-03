@@ -426,6 +426,23 @@ export const api = {
       last_user_message: lastUserMessage,
       current_stage: currentStage,
     }),
+  intakeUpload: async (userId: string, file: File): Promise<IntakeUploadResponse> => {
+    const fd = new FormData();
+    fd.append("user_id", userId);
+    fd.append("file", file);
+    const res = await fetch("/api/intake/upload", { method: "POST", body: fd });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        if (body?.detail) detail = String(body.detail);
+      } catch {
+        /* non-JSON body */
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as IntakeUploadResponse;
+  },
 
   // Phase 7: Settings
   getAgentSettings: (userId: string) =>
@@ -490,4 +507,14 @@ export interface IntakeTurnResponse {
   cited_sources: string[];
   notes_for_orchestrator: string;
   context_updates: Array<Record<string, unknown>>;
+}
+
+export interface IntakeUploadResponse {
+  plan_version_id: number;
+  intake_session_id: string;
+  fields_extracted: string[];
+  fields_missing: string[];
+  confidence: string;
+  notes: string;
+  summary_for_user: string;
 }
