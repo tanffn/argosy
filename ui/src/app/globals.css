@@ -130,3 +130,21 @@
 .argosy-pulse-dot {
   animation: argosy-pulse-dot 1.6s ease-in-out infinite;
 }
+
+/* Brand-hero gradient ring. Defined as a class (not an inline style)
+   so the Dark Reader browser extension's inline-style rewriting can't
+   produce hydration mismatches. */
+.argosy-hero-ring {
+  background: linear-gradient(
+    135deg,
+    rgba(52, 211, 153, 0.35) 0%,
+    rgba(34, 211, 238, 0.22) 35%,
+    rgba(255, 255, 255, 0.06) 70%,
+    rgba(255, 255, 255, 0.04) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}

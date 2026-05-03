@@ -483,18 +483,14 @@ export default function Home() {
       >
         {/* Gradient border ring (1px) — drawn as an absolutely-positioned
             div using padding + masking, so we can keep the inner content
-            on a normal flow. */}
+            on a normal flow. The gradient/mask is in a CSS class
+            (.argosy-hero-ring in globals.css), NOT an inline style, so
+            the Dark Reader extension's inline-style rewriting can't
+            produce hydration mismatches. */}
         <div
           aria-hidden
-          className="pointer-events-none absolute inset-0 rounded-xl p-px"
-          style={{
-            background:
-              "linear-gradient(135deg, rgba(52,211,153,0.35) 0%, rgba(34,211,238,0.22) 35%, rgba(255,255,255,0.06) 70%, rgba(255,255,255,0.04) 100%)",
-            WebkitMask:
-              "linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)",
-            WebkitMaskComposite: "xor",
-            maskComposite: "exclude",
-          }}
+          suppressHydrationWarning
+          className="argosy-hero-ring pointer-events-none absolute inset-0 rounded-xl p-px"
         />
         <div
           aria-hidden
