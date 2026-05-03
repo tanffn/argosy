@@ -28,6 +28,7 @@ from sqlalchemy import select
 
 from argosy.agents.intake import IntakeAgent, IntakeTurnOutput
 from argosy.agents.intake_extractor import IntakeExtraction, IntakeExtractorAgent
+from argosy.agents.intake_fields import stage_status
 from argosy.ingest.plan import parse_plan_markdown_text
 from argosy.logging import get_logger
 from argosy.state import db as db_mod
@@ -158,12 +159,24 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
     else:
         agent = factory(req.user_id)
 
+    # Compute the structured "answered / missing" lists for the stage so
+    # the agent receives an explicit checklist instead of having to derive
+    # one from free-form YAML (Haiku is unreliable at that).
+    pre_status = stage_status(
+        identity_yaml=(ctx.identity_yaml if ctx is not None else "") or "",
+        goals_yaml=(ctx.goals_yaml if ctx is not None else "") or "",
+        constraints_yaml=(ctx.constraints_yaml if ctx is not None else "") or "",
+        stage=stage,
+    )
+
     try:
         report = await agent.run(
             current_stage=stage,
             accumulated_context=accumulated,
             last_user_message=req.last_user_message,
             history_excerpt=req.history_excerpt,
+            answered_fields=pre_status["answered"],
+            missing_fields=pre_status["missing"],
         )
     except Exception as exc:  # pragma: no cover - defensive
         _log.exception("intake.turn_failed", intake_session_id=session_id)
@@ -241,9 +254,40 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
                 intake_session_id=session_id,
             )
 
-        # Advance stage when the agent says we're done with the current one.
+        # Advance stage. Two triggers:
+        #   1. The agent explicitly said stage_complete=True with a next_stage
+        #   2. The post-update field-checklist for the stage is empty
+        #      (override the agent's claim — Haiku sometimes keeps asking
+        #       even when every required field is now answered)
+        post_status = stage_status(
+            identity_yaml=ctx.identity_yaml or "",
+            goals_yaml=ctx.goals_yaml or "",
+            constraints_yaml=ctx.constraints_yaml or "",
+            stage=stage,
+        )
+        post_complete = len(post_status["missing"]) == 0
+        next_stage_default = {
+            "stage_1": "stage_2",
+            "stage_2": "stage_3",
+            "stage_3": "stage_4",
+            "stage_4": "stage_5",
+            "stage_5": "stage_6",
+            "stage_6": "complete",
+        }.get(stage, "complete")
+
         if out.stage_complete and out.next_stage:
             ctx.current_stage = out.next_stage
+        elif post_complete:
+            # Authoritative override — every required field is filled
+            # for this stage, so advance regardless of what the agent
+            # claimed in its output.
+            ctx.current_stage = next_stage_default
+            _log.info(
+                "intake.stage_auto_advanced",
+                from_stage=stage,
+                to_stage=next_stage_default,
+                intake_session_id=session_id,
+            )
         elif ctx.current_stage is None:
             ctx.current_stage = out.stage
 

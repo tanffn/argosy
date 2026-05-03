@@ -182,6 +182,8 @@ class IntakeAgent(BaseAgent[IntakeTurnOutput]):
         accumulated_context: str = "",
         last_user_message: str = "",
         history_excerpt: str = "",
+        answered_fields: list[str] | None = None,
+        missing_fields: list[str] | None = None,
     ) -> tuple[str, str]:
         """Construct (system_addendum, user_prompt) for one intake turn.
 
@@ -239,19 +241,51 @@ class IntakeAgent(BaseAgent[IntakeTurnOutput]):
             f"{IntakeTurnOutput.model_json_schema()}\n"
         )
 
+        # Render explicit answered / still-needed lists. These are the
+        # AUTHORITATIVE source for what's done — the agent must NOT
+        # re-derive this from the YAML (Haiku is bad at that, repeatedly
+        # re-asking answered fields). The route computes these via
+        # `argosy.agents.intake_fields.stage_status` and passes them in.
+        if answered_fields is None:
+            answered_block = "  (route did not compute — derive from YAML below as best you can)"
+        elif not answered_fields:
+            answered_block = "  (none yet — this is early in the stage)"
+        else:
+            answered_block = "\n".join(f"  - {f}" for f in answered_fields)
+
+        if missing_fields is None:
+            missing_block = "  (route did not compute — pick from stage purpose above)"
+        elif not missing_fields:
+            missing_block = (
+                "  (none — set stage_complete=true and name next_stage; "
+                "do NOT ask another question on this turn)"
+            )
+        else:
+            missing_block = "\n".join(f"  - {f}" for f in missing_fields)
+
         user = (
             "Information gathered so far (YAML, may be empty):\n"
             "```yaml\n"
             f"{accumulated_context}\n"
             "```\n\n"
+            "ALREADY ANSWERED — DO NOT ASK ABOUT ANY OF THESE AGAIN:\n"
+            f"{answered_block}\n\n"
+            "STILL NEEDED for this stage — ask ONLY about these fields, "
+            "in BATCHED form (2-4 related at once when they cluster):\n"
+            f"{missing_block}\n\n"
+            "When you emit a context_updates entry, the yaml_patch should use "
+            "the SAME dotted-key shape as the lists above (e.g., "
+            "`spouse_citizenship: Israeli` for `identity.spouse_citizenship`; "
+            "or nested `spouse: {citizenship: Israeli}` — both are accepted "
+            "by the merge step, but flat is preferred for stability).\n\n"
             "Recent conversation (last few turns; may be empty):\n"
             f"{history_excerpt or '(no prior turns)'}\n\n"
             "User's most recent answer:\n"
             f"<user_answer>{last_user_message or '(this is the first turn — greet briefly and start the interview)'}</user_answer>\n\n"
             "Produce the next intake turn as JSON conforming to the IntakeTurnOutput "
             "schema above. If the previous answer materially advances the current "
-            "stage, include a context_updates entry. If the stage is satisfied, set "
-            "stage_complete=true and name the next stage."
+            "stage, include a context_updates entry. If the STILL NEEDED list is "
+            "empty, set stage_complete=true and name the next stage."
         )
         return system, user
 
