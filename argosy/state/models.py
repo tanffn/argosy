@@ -41,6 +41,11 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # Phase 6: NextAuth JWT email claim -> user_id mapping. Nullable
+    # because Phase 1-5 users predate this column.
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    # Phase 6: cached entitlements plan ("free" | "pro" | "enterprise").
+    plan: Mapped[str] = mapped_column(String(32), nullable=False, default="free")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -593,6 +598,50 @@ class TOTPSecret(Base):
     )
 
 
+# ----------------------------------------------------------------------
+# Phase 6: control-plane tenant registry + setup tokens
+# ----------------------------------------------------------------------
+
+
+class Tenant(Base):
+    """Control-plane registry of provisioned tenants (SDD §12.5).
+
+    One row per tenant. Lives in the *control* DB (the one ARGOSY_HOME
+    points at). Per-tenant data DBs are derived from `db_path`.
+    """
+
+    __tablename__ = "tenants"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    db_path: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_active_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    plan: Mapped[str] = mapped_column(String(32), nullable=False, default="free")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+
+
+class SetupToken(Base):
+    """One-time first-login token issued by `argosy admin tenant create`."""
+
+    __tablename__ = "setup_tokens"
+
+    token: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 __all__ = [
     "Base",
     "User",
@@ -620,4 +669,7 @@ __all__ = [
     "ArgonautSnapshot",
     "DailyAccountPnL",
     "TOTPSecret",
+    # Phase 6
+    "Tenant",
+    "SetupToken",
 ]

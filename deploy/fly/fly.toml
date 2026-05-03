@@ -1,0 +1,62 @@
+# Argosy engine on Fly.io (Phase 6).
+#
+# Deploys a single-region engine instance. Per-tenant data lives on a
+# Fly Volume mounted at /data. Each customer gets a separate Fly app
+# (one ARGOSY_HOME per tenant) until the engine grows native multi-DB
+# support.
+#
+# Bootstrap:
+#   fly launch --copy-config --no-deploy --image argosy/engine:latest
+#   fly volumes create argosy_home --size 10
+#   fly secrets set ARGOSY_TENANCY=per-tenant NEXTAUTH_SECRET=...
+#   fly deploy
+
+app = "argosy-engine"
+primary_region = "iad"
+kill_signal = "SIGINT"
+kill_timeout = 30
+
+[build]
+  image = "argosy/engine:latest"
+
+[env]
+  ARGOSY_HOME = "/data"
+  ARGOSY_TENANCY = "per-tenant"
+
+[[mounts]]
+  source = "argosy_home"
+  destination = "/data"
+  initial_size = "10gb"
+
+[[services]]
+  internal_port = 8000
+  protocol = "tcp"
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "get"
+    path = "/health"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

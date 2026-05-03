@@ -110,14 +110,15 @@ class ProcessCoolingLoop(CadenceLoop):
             limited_mode = self.settings.limited_account.execution_mode
 
             # Limited paper: short-circuit through approved → executed_paper.
-            # T0/T1 only — T3 must always run the re-check first per SDD §10.1
-            # ("PaperFill + cooling-off + next-day paper re-check"). T2 is
-            # always human-required. T3 falls through to the recheck branch
-            # below regardless of paper/live mode.
+            # T0/T1/T2 all auto-fill in paper mode per SDD §10.1 routing matrix
+            # ("PaperFill log" / "PaperFill + review record"). Only T3 must
+            # run the next-day re-check first ("PaperFill + cooling-off +
+            # next-day paper re-check"), so T3 falls through to the recheck
+            # branch below.
             if (
                 row.account_class == "limited"
                 and (global_mode == "paper" or limited_mode == "paper")
-                and row.tier in ("T0", "T1")
+                and row.tier != "T3"
             ):
                 try:
                     _safe_advance(

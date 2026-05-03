@@ -559,6 +559,124 @@ execution time, T3 cooling-off re-check (delta detection + preflight),
 TOTP secret/verify/replay, the daily loss limit gate, and the new API
 routes.
 
+## Phase 6 quick start (productization)
+
+Phase 6 promotes Argosy from a single-tenant developer tool to a hosted
+multi-tenant service. Per-tenant SQLite databases, license / quota
+enforcement, NextAuth, an opt-in telemetry pipeline, white-label
+branding, and an admin CLI for tenant onboarding all land here.
+
+### Hosted vs self-hosted
+
+Argosy ships two deploy paths:
+
+- **Hosted (Vercel + Fly):** `ui/` deploys to Vercel; the engine runs as
+  a Fly.io app per tenant. See `docs/deploy/vercel.md` and
+  `docs/deploy/fly.md`.
+- **Self-hosted (Docker compose):** single host runs `argosy/engine` +
+  `argosy/ui` containers from `docker-compose.yml`. See
+  `docs/deploy/docker.md`.
+
+The engine reads `ARGOSY_CORS_ORIGINS` (comma-separated) so the same
+image serves localhost dev, Vercel-hosted UIs, and bespoke white-label
+domains.
+
+### Tenant onboarding
+
+A new tenant is provisioned by an operator:
+
+```bash
+uv run argosy admin tenant create --user-id alice --email alice@example.com --plan pro
+```
+
+The command prints a JSON payload with a single-use **setup token**.
+Send the token to the new tenant; they visit `/onboarding?token=...` to
+complete first login (NextAuth credentials provider). The engine
+creates `${ARGOSY_HOME}/tenants/alice/argosy.db` and seeds
+`configs/alice/{entitlements,branding}.yaml`.
+
+```bash
+uv run argosy admin tenant list      # registry of provisioned tenants
+```
+
+### Entitlement plans
+
+Per-tenant feature + quota gating lives in
+`configs/<user_id>/entitlements.yaml`. The minimal form just records
+the plan tier; the rest is resolved from the defaults:
+
+```yaml
+plan: pro     # free | pro | enterprise
+# Optional overrides:
+# features:
+#   autonomous_mode: true
+# limits:
+#   monthly_decisions: 500
+```
+
+Plan tier defaults:
+
+| Feature             | free | pro | enterprise |
+|---------------------|:---:|:---:|:---:|
+| `agent_fleet_full`  | -   | yes | yes |
+| `domain_kb_custom`  | -   | yes | yes |
+| `multi_account`     | -   | yes | yes |
+| `autonomous_mode`   | -   | -   | yes |
+| `live_execution`    | -   | -   | yes |
+
+`/api/decisions/run`, `/api/argonaut/mode→live`, and
+`/api/proposals/{id}/execute (live)` all enforce the matching feature.
+Free-tier tenants additionally hit a 50/month decision count cap and
+$5/month Claude spend cap; pro raises both, enterprise removes them.
+
+### Watchdog
+
+```bash
+uv run argosy admin watchdog start --user-id alice
+```
+
+Polls the SDD §14.2 health signals (engine heartbeat, cadence loops,
+broker, Claude error rate, monthly spend, disk, backup age) and emails
+on threshold breach. The same data is exposed via
+`GET /internal/health/full?user_id=...` (admin token required).
+
+### Telemetry
+
+Opt-in. Set `agent_settings.telemetry.enabled: true` and an
+`endpoint:` URL; the client POSTs anonymized event records (sha256
+hashed user id, no tickers / prices / plan content). For self-hosted
+instances `POST /internal/telemetry` is a built-in receiver stub —
+useful for engine-only observability without an external service.
+
+### White-label branding
+
+`configs/<user_id>/branding.yaml` overrides the app name + theme
+tokens; the dashboard fetches `/api/branding` on mount and applies the
+theme via `BrandingProvider`.
+
+```yaml
+app_name: Pilot Capital
+theme:
+  primary: "#0f172a"
+  accent: "#a78bfa"
+logo_url: /pilot/logo.svg
+favicon_url: /pilot/favicon.ico
+support_email: hello@pilot.example
+```
+
+### Cross-tenant isolation
+
+- One SQLite file per tenant under `${ARGOSY_HOME}/tenants/<user_id>/argosy.db`.
+- `argosy.tenancy.context.TenantContext` resolves the per-request
+  user_id from the NextAuth JWT, an `X-Argosy-User` header, or the
+  `user_id` query/body parameter.
+- Setting `ARGOSY_TENANCY=per-tenant` flips `state.db.get_session()` to
+  route each session to the tenant's DB.
+- Cross-tenant access raises `CrossTenantAccessError`. The
+  `tests/test_tenant_isolation.py` suite asserts that two tenants on
+  one engine cannot read each other's positions / proposals / agent
+  reports / fills / audit log / TOTP secret.
+
 ## Reference paper
 
 Xiao et al. *TradingAgents: Multi-Agents LLM Financial Trading Framework.* [arXiv:2412.20138](https://arxiv.org/html/2412.20138v1).

@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from argosy.api.events import publish_event
+from argosy.billing.entitlements import Entitlements, feature_required_tier
 from argosy.channels.email import EmailApprovalLink, EmailSettings
 from argosy.decisions.proposals import IllegalTransitionError
 from argosy.execution.router import ExecutionRouter
@@ -128,6 +129,32 @@ async def execute_proposal(
     proposal_id: int,
     body: ExecuteRequest,
 ) -> ExecuteResponse:
+    # Live execution requires the live_execution entitlement.
+    # Paper-mode is always allowed (the router resolves mode internally
+    # via agent_settings; we pre-block live for tenants without the
+    # entitlement so we don't even attempt).
+    settings_obj = None
+    try:
+        from argosy.agent_settings import load_agent_settings as _load
+
+        settings_obj = _load(body.user_id)
+    except Exception:  # pragma: no cover - defensive
+        pass
+    if settings_obj is not None and settings_obj.execution.default_mode == "live":
+        ent = Entitlements.load(body.user_id)
+        if not ent.has("live_execution"):
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "feature_not_entitled",
+                    "feature": "live_execution",
+                    "required_tier": feature_required_tier(
+                        "live_execution"
+                    ).value,
+                    "plan": ent.plan.value,
+                },
+            )
+
     routerz = ExecutionRouter(user_id=body.user_id)
     try:
         result = await routerz.execute(

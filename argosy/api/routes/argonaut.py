@@ -23,6 +23,7 @@ from argosy.agent_settings import (
     save_agent_settings,
 )
 from argosy.api.events import publish_event
+from argosy.billing.entitlements import Entitlements, feature_required_tier
 from argosy.execution.audit import record_audit_event
 from argosy.state import db as db_mod
 from argosy.state.models import Fill as FillRow
@@ -129,6 +130,22 @@ async def argonaut_snapshots(
 
 @router.post("/mode", response_model=ModeResponse)
 async def set_mode(body: ModeRequest) -> ModeResponse:
+    # Switching to live requires the autonomous_mode entitlement (SDD §12.2).
+    if body.mode == "live":
+        ent = Entitlements.load(body.user_id)
+        if not ent.has("autonomous_mode"):
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "feature_not_entitled",
+                    "feature": "autonomous_mode",
+                    "required_tier": feature_required_tier(
+                        "autonomous_mode"
+                    ).value,
+                    "plan": ent.plan.value,
+                },
+            )
+
     settings = load_agent_settings(body.user_id)
     prior = settings.limited_account.execution_mode
     if prior == body.mode:

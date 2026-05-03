@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import typer
 
+from argosy.cli.admin import admin_app
 from argosy.cli.argonaut import app as argonaut_app
 from argosy.cli.brief import brief
 from argosy.cli.critique import critique
@@ -46,6 +47,7 @@ app.add_typer(lots_app, name="lots", help="Per-tax-lot import + listing.")
 app.add_typer(email_app, name="email", help="Email approval channel commands.")
 app.add_typer(argonaut_app, name="argonaut", help="Argonaut limited-account commands.")
 app.add_typer(security_app, name="security", help="Security / second-factor management.")
+app.add_typer(admin_app, name="admin", help="Operator commands (tenants, watchdog).")
 
 
 def main() -> None:  # pragma: no cover

@@ -21,6 +21,7 @@ from sqlalchemy import select
 
 from argosy.agent_settings import load_agent_settings
 from argosy.agents.base import AgentReport, ConfidenceBand
+from argosy.billing.decorators import requires_feature, requires_within_quota
 from argosy.decisions.flow import (
     ApprovedProposal,
     BlockedProposal,
@@ -64,6 +65,9 @@ class RunResponse(BaseModel):
 
 
 @router.post("/run", response_model=RunResponse)
+@requires_feature("agent_fleet_full")
+@requires_within_quota("monthly_decisions")
+@requires_within_quota("monthly_claude_spend_usd")
 async def run_decision_flow(body: RunRequest) -> RunResponse:
     settings = load_agent_settings(body.user_id)
 

@@ -12,12 +12,18 @@ Phase 2 endpoints:
   - GET  /api/agent-activity
   - WS   /ws — pushes `daily_brief.ready` and `agent.run.finished` events.
 
-CORS allows the Next.js dev server at http://localhost:1337.
+Phase 6 additions:
+  - GET  /api/branding                — per-tenant theme tokens.
+  - GET  /internal/health/full        — full watchdog signals (admin).
+  - POST /internal/telemetry          — receiver stub (admin).
+  - CORS now reads `ARGOSY_CORS_ORIGINS` env (comma-separated) so the
+    same image can serve Vercel-hosted UIs in addition to localhost.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,10 +32,13 @@ from argosy import __version__
 from argosy.api.events import subscribe
 from argosy.api.routes.agent_activity import router as agent_activity_router
 from argosy.api.routes.argonaut import router as argonaut_router
+from argosy.api.routes.branding import router as branding_router
 from argosy.api.routes.daily_brief import router as daily_brief_router
 from argosy.api.routes.decisions import router as decisions_router
 from argosy.api.routes.execution import router as execution_router
 from argosy.api.routes.health import router as health_router
+from argosy.api.routes.internal import router as internal_router
+from argosy.api.routes.onboarding import router as onboarding_router
 from argosy.api.routes.plan import router as plan_router
 from argosy.api.routes.portfolio import router as portfolio_router
 from argosy.api.routes.proposals import router as proposals_router
@@ -49,9 +58,16 @@ def create_app() -> FastAPI:
         description="Argosy: multi-agent financial advisor (Phase 2)",
     )
 
+    cors_env = os.environ.get("ARGOSY_CORS_ORIGINS", "")
+    extra_origins = [o.strip() for o in cors_env.split(",") if o.strip()]
+    cors_origins = [
+        f"http://localhost:{settings.server.ui_port}",
+        f"http://127.0.0.1:{settings.server.ui_port}",
+        *extra_origins,
+    ]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[f"http://localhost:{settings.server.ui_port}"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -77,6 +93,11 @@ def create_app() -> FastAPI:
     # Phase 5 — Argonaut limited account + TOTP second-factor
     app.include_router(argonaut_router, prefix=api_prefix)
     app.include_router(security_router, prefix=api_prefix)
+
+    # Phase 6 — branding + onboarding + admin/internal
+    app.include_router(branding_router, prefix=api_prefix)
+    app.include_router(onboarding_router, prefix=api_prefix)
+    app.include_router(internal_router)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

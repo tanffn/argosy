@@ -1,0 +1,71 @@
+# Argosy local-hosted compose (Phase 6).
+#
+# Starts the engine + the Next.js UI. The IBKR TWS Gateway is left
+# commented-out — production users wire their broker out-of-band.
+#
+# Usage:
+#   docker compose up --build
+#   open http://localhost:1337
+
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: argosy/engine:latest
+    container_name: argosy-engine
+    restart: unless-stopped
+    environment:
+      ARGOSY_HOME: /data
+      ARGOSY_TENANCY: per-tenant
+      ARGOSY_CORS_ORIGINS: http://localhost:1337
+    volumes:
+      - argosy-home:/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    image: argosy/ui:latest
+    container_name: argosy-ui
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXTAUTH_URL: http://localhost:1337
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-replace-me}
+    depends_on:
+      - engine
+    ports:
+      - "1337:1337"
+
+  # Uncomment to run the watchdog as a sidecar.
+  # watchdog:
+  #   image: argosy/engine:latest
+  #   command: ["python", "-m", "argosy.cli.main", "admin", "watchdog", "start", "--user-id", "ariel"]
+  #   environment:
+  #     ARGOSY_HOME: /data
+  #   volumes:
+  #     - argosy-home:/data
+  #   depends_on:
+  #     - engine
+
+  # Uncomment + configure for live IBKR. Production runs this on a
+  # dedicated host with TWS Gateway -- not in the same container as the
+  # engine.
+  # tws-gateway:
+  #   image: ibcalpha/ibc:latest
+  #   environment:
+  #     TWS_USERID: ${IBKR_USERNAME}
+  #     TWS_PASSWORD: ${IBKR_PASSWORD}
+  #   ports:
+  #     - "4002:4002"
+
+volumes:
+  argosy-home: {}
