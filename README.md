@@ -125,6 +125,74 @@ the green badge, the full stack is wired correctly.
 uv run pytest -q
 ```
 
+## Phase 1 quick start (intake + plan critique)
+
+Phase 1 adds a CLI (`argosy ...`), an Israeli/US tax domain knowledge seed at `domain_knowledge/`, and two cross-cutting agents: the **intake** interview agent and the **plan-critique** agent. No cadences, no decision team, no broker yet.
+
+### One-time setup
+
+1. Apply migrations (creates the new Phase 1 tables — `plan_versions`, `plan_critiques`, `agent_reports`, `agent_reports_blobs`, plus `user_context.current_stage`):
+
+   ```bash
+   uv run alembic upgrade head
+   ```
+
+2. Set the Anthropic API key. Either of these is fine; the keychain entry takes priority if both are set:
+
+   ```bash
+   uv run argosy secrets set argosy.anthropic.api_key sk-ant-...
+   # or, transient for shell sessions:
+   set ANTHROPIC_API_KEY=sk-ant-...        # Windows cmd
+   $env:ANTHROPIC_API_KEY = "sk-ant-..."  # PowerShell
+   export ANTHROPIC_API_KEY=sk-ant-...     # bash/zsh
+   ```
+
+   If the key is missing the CLI prints actionable instructions and exits non-zero.
+
+### Ingest your data
+
+You provide two file paths — Argosy never hardcodes your Drive paths in code:
+
+```bash
+# Portfolio TSV (parses Leumi+Schwab+real-estate+pensions+allocations).
+uv run argosy ingest tsv "<path-to-Family Finances Status - YY MMM.tsv>"
+
+# Plan markdown (stored as a new plan_versions row).
+uv run argosy ingest plan "<path-to-Jacobs_Wealth_Plan.md>" --version-label v2.0
+```
+
+`argosy ingest tsv` prints a summary and reports parse warnings; it does **not** write positions to the DB in Phase 1 (the holdings table arrives in Phase 2).
+
+### Run the intake interview
+
+```bash
+uv run argosy intake --user-id ariel
+```
+
+The agent walks the SDD §6 six-stage flow one question at a time:
+
+1. Identity & jurisdiction → 2. Goals & timeline → 3. Financial picture → 4. Brokerage connections → 5. Plan import & critique → 6. Operational preferences.
+
+Type `/quit` to end early; progress (current_stage + accumulated YAML) is persisted to `user_context`.
+
+### Produce a plan critique
+
+```bash
+uv run argosy critique --user-id ariel \
+  --plan "<path-to-Jacobs_Wealth_Plan.md>" \
+  --snapshot "<path-to-Family Finances Status - YY MMM.tsv>"
+```
+
+If `--plan` is omitted, the most recent ingested `plan_versions` row is used. The agent loads the relevant Israeli/US tax KB files, produces RED/YELLOW/GREEN findings with cited evidence, prints them, and saves the structured critique to `plan_critiques`.
+
+### Tests
+
+```bash
+uv run pytest -q
+```
+
+The Phase 1 test suite mocks the Anthropic client; no live Claude calls happen in tests. The TSV/plan parser tests skip cleanly when the user's Google-Drive files are absent.
+
 ## Reference paper
 
 Xiao et al. *TradingAgents: Multi-Agents LLM Financial Trading Framework.* [arXiv:2412.20138](https://arxiv.org/html/2412.20138v1).

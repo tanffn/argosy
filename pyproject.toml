@@ -17,6 +17,10 @@ dependencies = [
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
     "tomli; python_version < '3.11'",
+    # Phase 1 additions
+    "anthropic>=0.40.0",
+    "typer>=0.12.5",
+    "pyyaml>=6.0.2",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +38,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["argosy"]
+
+[project.scripts]
+argosy = "argosy.cli.main:app"
 
 [dependency-groups]
 dev = [
