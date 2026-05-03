@@ -53,15 +53,14 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # Override via agent_settings.yaml if Haiku is preferred for cost.
     "intake": "claude-sonnet-4-6",
     # Plan-markdown extractor: light reasoning over a single user-provided
-    # document. Fast Haiku is sufficient and keeps the upload UX responsive
-    # (~10-15s end-to-end). Citations not required (the source IS the user's
-    # plan); fabrication is prevented by an explicit prompt rule.
-    "intake_extractor": "claude-haiku-4-5",
+    # document. Citations not required (the source IS the user's plan);
+    # fabrication is prevented by an explicit prompt rule.
+    "intake_extractor": "claude-sonnet-4-6",
     "plan_critique": "claude-sonnet-4-6",
     # Phase 2 analyst team:
     "news": "claude-sonnet-4-6",
     "macro": "claude-sonnet-4-6",
-    "concentration": "claude-haiku-4-5",
+    "concentration": "claude-sonnet-4-6",
     # Phase 3 decision team:
     "bull_researcher": "claude-opus-4-7",
     "bear_researcher": "claude-opus-4-7",
@@ -72,14 +71,21 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "fund_manager": "claude-opus-4-7",
     # Phase 7 analysts (SDD §3.1, §3.8):
     "fundamentals": "claude-sonnet-4-6",
-    "technical": "claude-haiku-4-5",
-    "sentiment": "claude-haiku-4-5",
+    "technical": "claude-sonnet-4-6",
+    "sentiment": "claude-sonnet-4-6",
     "tax": "claude-sonnet-4-6",
-    "fx": "claude-haiku-4-5",
+    "fx": "claude-sonnet-4-6",
     # Phase 7 cross-cutting (SDD §3.6):
     "domain_refresh": "claude-sonnet-4-6",
     "audit": "claude-opus-4-7",
-    "watchlist": "claude-haiku-4-5",
+    "watchlist": "claude-sonnet-4-6",
+    # NOTE: Haiku is intentionally NOT used in any role default after the
+    # intake instruction-following ceiling (commit 432bd6f) made it clear
+    # that Argosy's prompts are too structured for Haiku's adherence
+    # profile. The pricing entry below stays so historical agent_reports
+    # rows from earlier Haiku runs still cost-track correctly. Override
+    # to Haiku is still possible per-role via agent_settings.yaml for
+    # cost-sensitive tenants.
 }
 FALLBACK_MODEL = "claude-sonnet-4-6"
 
