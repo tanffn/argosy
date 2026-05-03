@@ -26,9 +26,14 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   // Dark mode default per SDD §11.2; light tokens still defined for opt-in.
+  // suppressHydrationWarning: needed because some browser extensions
+  // (notably Dark Reader) inject `data-darkreader-*` attributes into <html>
+  // before React hydrates, which would otherwise produce a hydration mismatch
+  // warning. Suppression scoped to <html> only — not children.
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">

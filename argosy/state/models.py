@@ -68,6 +68,13 @@ class UserContext(Base):
     # Phase 1: tracks where the intake interview is in the 6-stage flow.
     # NULL = not started; "stage_1" .. "stage_6"; "complete" once all stages done.
     current_stage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Hardening: groups all turns of one intake conversation. Generated on
+    # stage_1 entry; cleared (left as the last value) when stage_6 completes;
+    # rotated on the next stage_1 entry. Stamped onto every agent_reports
+    # row produced during this intake session.
+    intake_session_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
@@ -141,6 +148,12 @@ class AgentReport(Base):
     )
     agent_role: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     decision_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # Hardening: groups all agent calls produced during one intake session.
+    # Mutually exclusive with decision_id in practice — intake agents stamp
+    # this; decision-flow agents stamp decision_id.
+    intake_session_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     prompt_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     response_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

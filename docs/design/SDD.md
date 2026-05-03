@@ -972,6 +972,77 @@ Frontend subscribes selectively per screen: Proposals queue subscribes to `propo
 
 For Phase 1 (single user, localhost), auth is effectively *off* — bind only to `localhost:1337`, simple session cookie. When productization happens, drop in NextAuth + per-tenant scoping; no engine changes required because every query already takes a `user_id`.
 
+### 11.6 Request/response IPC flow
+
+How a single user input traverses the stack from browser keystroke to LLM call and back. This explains *what "paste my answer to the agent" actually means in code* — a question novices ask and the SDD previously did not document.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as User (Browser)
+    participant N as Next.js dev server<br/>(:1337)
+    participant F as FastAPI<br/>(:8000)
+    participant A as IntakeAgent<br/>(BaseAgent.run)
+    participant K as Claude Agent SDK<br/>(Python)
+    participant C as claude.exe<br/>(subprocess)
+    participant H as Anthropic API
+    participant D as SQLite DB
+
+    U->>N: POST /api/intake/turn { user_id, answer }
+    N->>F: Proxy → POST /api/intake/turn (preserves /api/ prefix)
+    F->>D: SELECT user_context WHERE user_id = ariel
+    D-->>F: identity_yaml + goals_yaml + intake_session_id + current_stage
+    Note over F: If stage_1 entry: rotate intake_session_id (UUID)
+    F->>A: agent.run(current_stage, accumulated_context, last_user_message)
+    A->>A: build_prompt → (system_prompt, user_prompt) — pure strings
+    A->>K: query(prompt=user_prompt, options=ClaudeAgentOptions(...))
+    K->>C: spawn subprocess; write JSON over stdin<br/>{ system, user, model, max_turns:1, allowed_tools:[],<br/>  permission_mode: "bypassPermissions" }
+    C->>H: POST /v1/messages (auth via local Claude Code session)
+    H-->>C: streamed response chunks
+    C-->>K: stdout: AssistantMessage(TextBlock(...))
+    C-->>K: stdout: ResultMessage(usage, total_cost_usd)
+    K-->>A: ModelCall(text, tokens_in, tokens_out)
+    A->>A: parse JSON output → IntakeTurnOutput pydantic
+    A->>A: validate citations; extract confidence
+    A-->>F: AgentReport(output, model, tokens, cost, ...)
+    F->>D: INSERT agent_reports (intake_session_id stamped)
+    F-->>N: 200 OK { stage, question_for_user, intake_session_id, ... }
+    N-->>U: forwarded JSON
+    U->>U: render next question; await user input
+```
+
+**Key design points:**
+
+1. **No terminal "paste".** `claude.exe` is launched by the SDK in *agent-protocol mode* — it accepts and emits JSON over stdin/stdout pipes, not user keystrokes. The user's typed answer becomes a Python string (`req.last_user_message`), is composed into the agent's user prompt, and is serialized as a JSON field in the SDK's protocol message. No terminal, no shell, no prompt UI.
+
+2. **Stateless subprocess; stateful DB.** Each `/api/intake/turn` call **spawns a fresh `claude.exe`**. The subprocess has no memory of prior turns. Conversation state lives in SQLite:
+
+   | Table.column | Holds |
+   |---|---|
+   | `user_context.current_stage` | Which of the 6 stages (`stage_1`..`stage_6` or `complete`) |
+   | `user_context.identity_yaml` / `goals_yaml` / `constraints_yaml` | Accumulated answers as YAML |
+   | `user_context.intake_session_id` | UUID grouping all turns of one interview |
+   | `agent_reports` (one row per call) | Prompt hash, model, tokens, cost, confidence; `intake_session_id` stamped to group |
+
+   The model "remembers" the conversation only because we re-include the accumulated context on every call.
+
+3. **Session lifecycle** (added in migration `0008_intake_session`):
+   - On `stage_1` entry (when `current_stage IS NULL` or `= "complete"`), `intake_session_id` is rotated to a new UUID.
+   - All subsequent turns within the same conversation reuse that UUID.
+   - Every `agent_reports` row produced during the session is stamped with it.
+   - This lets the audit log answer queries like "show me every Claude call from Ariel's third intake attempt" with one `WHERE` clause.
+
+4. **Why `bypassPermissions` + `allowed_tools=[]`** (see `argosy/agents/base.py`):
+   - `allowed_tools=[]` prevents the model from invoking *any* tool — no file reads, no shell, no web fetches. The model must answer from the prompt alone.
+   - `permission_mode="bypassPermissions"` silences the SDK's interactive permission flow (which otherwise hangs in a headless server context).
+   - Combined: the model can request a tool, but the SDK refuses without prompting; the model proceeds to answer without it.
+
+5. **Cost shape per turn:** ~3 input tokens (the user's accumulated answers are tiny relative to the system prompt + schema) + 500-1500 output tokens for the structured response. ~$0.01 per turn at Sonnet rates.
+
+6. **Why each turn is a fresh subprocess:** simplicity and crash-isolation. A long-lived `claude.exe` would be cheaper but harder to reason about across restart, kill switch, and per-tenant isolation. The cost difference (~500 ms subprocess startup × number of turns) is negligible relative to the LLM call latency.
+
+The same pattern applies to every other agent in the fleet — only the prompt content and pydantic schema differ. The IPC plumbing is shared.
+
 ---
 
 ## 12. Productization Hooks

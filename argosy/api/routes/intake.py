@@ -14,6 +14,7 @@ inject a mocked `IntakeAgent`. Production wires through the real agent.
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -22,7 +23,7 @@ from sqlalchemy import select
 from argosy.agents.intake import IntakeAgent, IntakeTurnOutput
 from argosy.logging import get_logger
 from argosy.state import db as db_mod
-from argosy.state.models import User, UserContext
+from argosy.state.models import AgentReport as AgentReportRow, User, UserContext
 
 _log = get_logger("argosy.api.intake")
 router = APIRouter(prefix="/intake", tags=["intake"])
@@ -65,6 +66,7 @@ class TurnResponse(BaseModel):
     cited_sources: list[str]
     notes_for_orchestrator: str
     context_updates: list[dict[str, Any]]
+    intake_session_id: str
 
 
 @router.post("/turn", response_model=TurnResponse)
@@ -76,28 +78,11 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
     talks to. The orchestrator merges `context_updates` after the user
     confirms.
     """
-    # Resolve current stage.
+    # Resolve current stage AND intake_session_id.
+    # Session lifecycle: rotated on every stage_1 entry; carried through
+    # stages 2-6; preserved (last value sticks) once stage_complete.
     stage = req.current_stage
-    if stage is None:
-        async with db_mod.get_session() as session:
-            ctx = (
-                await session.execute(
-                    select(UserContext).where(UserContext.user_id == req.user_id)
-                )
-            ).scalar_one_or_none()
-            if ctx is None or ctx.current_stage is None:
-                stage = "stage_1"
-            elif ctx.current_stage == "complete":
-                stage = "stage_6"
-            else:
-                stage = ctx.current_stage
-
-    factory = _AGENT_FACTORY
-    if factory is None:
-        agent = IntakeAgent(user_id=req.user_id)
-    else:
-        agent = factory(req.user_id)
-
+    session_id: str | None = None
     accumulated = ""
     async with db_mod.get_session() as session:
         ctx = (
@@ -105,6 +90,28 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
                 select(UserContext).where(UserContext.user_id == req.user_id)
             )
         ).scalar_one_or_none()
+        if stage is None:
+            if ctx is None or ctx.current_stage is None:
+                stage = "stage_1"
+            elif ctx.current_stage == "complete":
+                stage = "stage_6"
+            else:
+                stage = ctx.current_stage
+
+        # Rotate the session id on stage_1 entry; otherwise reuse.
+        if stage == "stage_1" and (ctx is None or ctx.current_stage in (None, "complete")):
+            session_id = uuid4().hex
+            if ctx is not None:
+                ctx.intake_session_id = session_id
+                await session.commit()
+        elif ctx is not None:
+            session_id = ctx.intake_session_id or uuid4().hex
+            if ctx.intake_session_id is None:
+                ctx.intake_session_id = session_id
+                await session.commit()
+        else:
+            session_id = uuid4().hex
+
         if ctx is not None:
             parts = []
             if ctx.identity_yaml:
@@ -115,6 +122,12 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
                 parts.append("# constraints\n" + ctx.constraints_yaml)
             accumulated = "\n\n".join(parts)
 
+    factory = _AGENT_FACTORY
+    if factory is None:
+        agent = IntakeAgent(user_id=req.user_id)
+    else:
+        agent = factory(req.user_id)
+
     try:
         report = await agent.run(
             current_stage=stage,
@@ -123,8 +136,26 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
             history_excerpt=req.history_excerpt,
         )
     except Exception as exc:  # pragma: no cover - defensive
-        _log.exception("intake.turn_failed")
+        _log.exception("intake.turn_failed", intake_session_id=session_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Stamp the agent_reports row with the session id for audit grouping.
+    async with db_mod.get_session() as session:
+        ar_row = AgentReportRow(
+            user_id=req.user_id,
+            agent_role=report.agent_role,
+            decision_id=None,
+            intake_session_id=session_id,
+            prompt_hash=report.prompt_hash,
+            response_text=report.response_text,
+            tokens_in=report.tokens_in,
+            tokens_out=report.tokens_out,
+            cost_usd=report.cost_usd,
+            model=report.model,
+            confidence=(report.confidence.value if report.confidence else None),
+        )
+        session.add(ar_row)
+        await session.commit()
 
     out: IntakeTurnOutput = report.output  # type: ignore[assignment]
     return TurnResponse(
@@ -136,6 +167,7 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
         cited_sources=out.cited_sources,
         notes_for_orchestrator=out.notes_for_orchestrator,
         context_updates=[u.model_dump() for u in out.context_updates],
+        intake_session_id=session_id,
     )
 
 
