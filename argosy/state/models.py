@@ -3,9 +3,11 @@
 Phase 0: `users` and `user_context`.
 Phase 1: `plan_versions`, `plan_critiques`, `agent_reports`,
 `agent_reports_blobs`. Adds `current_stage` to `user_context`.
+Phase 2: `cadence_state`, `daily_briefs`, `prices_cache`, `news_cache`,
+`macro_cache`.
 
 Other table groups (holdings, decisions full lifecycle, audit beyond agent
-reports, external caches, domain status, operations) come in later phases.
+reports, domain status, operations) come in later phases.
 """
 
 from __future__ import annotations
@@ -163,6 +165,87 @@ class AgentReportBlob(Base):
     report: Mapped[AgentReport] = relationship(back_populates="blobs")
 
 
+class CadenceState(Base):
+    """Per-loop scheduler bookkeeping (Phase 2).
+
+    Loops are global, not per-user — the scheduler is one process serving
+    one ARGOSY_HOME, so we key by `loop_name`. When productizing, each
+    tenant gets its own ARGOSY_HOME (or `loop_name` is namespaced).
+    """
+
+    __tablename__ = "cadence_state"
+
+    loop_name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_tick_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class DailyBrief(Base):
+    """One Daily Brief run record. Holds the four analyst reports + summary.
+
+    `news_report_json`, `macro_report_json`, `concentration_report_json`, and
+    `plan_delta_json` are pydantic-validated payloads serialized to JSON.
+    """
+
+    __tablename__ = "daily_briefs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    run_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, index=True
+    )
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    news_report_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    macro_report_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    concentration_report_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default=""
+    )
+    plan_delta_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class _CacheBase:
+    """Shared columns for the three external-data caches.
+
+    Composite PK (provider, key) — different providers can use the same key.
+    `payload_json` is the raw JSON-serialized response; `payload_hash` is a
+    sha256 of the payload for audit / change-detection.
+    """
+
+    provider: Mapped[str] = mapped_column(String(32), primary_key=True)
+    key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+
+class PricesCache(Base, _CacheBase):
+    __tablename__ = "prices_cache"
+
+
+class NewsCache(Base, _CacheBase):
+    __tablename__ = "news_cache"
+
+
+class MacroCache(Base, _CacheBase):
+    __tablename__ = "macro_cache"
+
+
 __all__ = [
     "Base",
     "User",
@@ -171,4 +254,9 @@ __all__ = [
     "PlanCritique",
     "AgentReport",
     "AgentReportBlob",
+    "CadenceState",
+    "DailyBrief",
+    "PricesCache",
+    "NewsCache",
+    "MacroCache",
 ]

@@ -1,0 +1,338 @@
+"""Daily Brief loop (SDD §5.1, Phase 2).
+
+Runs at the configured cron (default `0 9 * * *` Asia/Jerusalem). Pulls
+overnight news + macro state, computes concentration deltas vs plan
+targets, asks the plan-critique agent for a one-shot adherence delta,
+and writes a `daily_briefs` row. Emits a `daily_brief.ready` WebSocket
+event.
+
+The loop is a thin orchestrator: it composes the four analyst agents +
+data adapters via dependency injection so tests can mock everything.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from sqlalchemy import desc, select
+
+from argosy.adapters import MissingAPIKeyError as AdapterMissingAPIKeyError
+from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
+from argosy.agents.macro_analyst import MacroAnalystAgent
+from argosy.agents.news_analyst import NewsAnalystAgent
+from argosy.agents.plan_critique import PlanCritiqueAgent
+from argosy.api.events import publish_event
+from argosy.config import get_settings
+from argosy.logging import get_logger
+from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
+from argosy.state import db as db_mod
+from argosy.state.models import DailyBrief, PlanCritique, PlanVersion
+
+_log = get_logger("argosy.loops.daily_brief")
+
+
+@dataclass
+class DailyBriefInputs:
+    """Inputs to one daily-brief run, gathered before the LLM calls.
+
+    Tests construct this directly to avoid touching adapters.
+    """
+
+    user_id: str
+    tickers: list[str]
+    news_payload: dict[str, list[dict[str, Any]]]
+    macro_snapshot: dict[str, float]
+    positions_summary: str
+    plan_targets: dict[str, float]
+    nvda_shares_sold_ytd: int
+    nvda_target_shares_ytd: int
+    plan_label: str
+    plan_markdown: str
+
+
+class DailyBriefLoop(CadenceLoop):
+    """Wires news + macro + concentration analysts + plan critique into one daily run."""
+
+    name = "daily_brief"
+
+    def __init__(
+        self,
+        *,
+        schedule: LoopSchedule,
+        enabled: bool = True,
+        user_id: str = "ariel",
+        news_agent_factory: Callable[[], NewsAnalystAgent] | None = None,
+        macro_agent_factory: Callable[[], MacroAnalystAgent] | None = None,
+        concentration_agent_factory: Callable[[], ConcentrationAnalystAgent] | None = None,
+        plan_critique_agent_factory: Callable[[], PlanCritiqueAgent] | None = None,
+        gather_inputs: Callable[[str], "DailyBriefInputs"] | None = None,
+    ) -> None:
+        super().__init__(schedule=schedule, enabled=enabled)
+        self.user_id = user_id
+        self._news_factory = news_agent_factory or (lambda: NewsAnalystAgent(user_id=user_id))
+        self._macro_factory = macro_agent_factory or (lambda: MacroAnalystAgent(user_id=user_id))
+        self._concentration_factory = concentration_agent_factory or (
+            lambda: ConcentrationAnalystAgent(user_id=user_id)
+        )
+        self._plan_critique_factory = plan_critique_agent_factory or (
+            lambda: PlanCritiqueAgent(user_id=user_id)
+        )
+        self._gather = gather_inputs or _default_gather_inputs
+
+    async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
+        """Run one Daily Brief end-to-end."""
+        run_at = (now or _utcnow)()
+        inputs = await self._maybe_async(self._gather(self.user_id))
+        if not isinstance(inputs, DailyBriefInputs):  # pragma: no cover - defensive
+            raise TypeError(
+                f"gather_inputs must return DailyBriefInputs, got {type(inputs)!r}"
+            )
+
+        # 1. News digest
+        news_agent = self._news_factory()
+        news_report = await news_agent.run(
+            tickers=inputs.tickers,
+            news_payload=inputs.news_payload,
+        )
+
+        # 2. Macro regime
+        macro_agent = self._macro_factory()
+        macro_report = await macro_agent.run(macro_snapshot=inputs.macro_snapshot)
+
+        # 3. Concentration deltas
+        conc_agent = self._concentration_factory()
+        conc_report = await conc_agent.run(
+            positions_summary=inputs.positions_summary,
+            plan_targets=inputs.plan_targets,
+            nvda_shares_sold_ytd=inputs.nvda_shares_sold_ytd,
+            nvda_target_shares_ytd=inputs.nvda_target_shares_ytd,
+        )
+
+        # 4. Plan adherence delta (re-run plan-critique with today's snapshot
+        # so the home page shows fresh RED/YELLOW/GREEN findings).
+        critique_agent = self._plan_critique_factory()
+        critique_report = await critique_agent.run(
+            plan_label=inputs.plan_label,
+            plan_markdown=inputs.plan_markdown,
+            snapshot_label=f"daily_brief:{run_at.isoformat()}",
+            snapshot_summary=inputs.positions_summary,
+            user_context_yaml="",
+            domain_kb_files={},
+        )
+
+        # 5. Compose summary text from all four reports.
+        summary = _compose_summary(
+            news=news_report.output,
+            macro=macro_report.output,
+            concentration=conc_report.output,
+            plan=critique_report.output,
+        )
+
+        # 6. Persist daily_briefs row
+        async with db_mod.get_session() as session:
+            row = DailyBrief(
+                user_id=self.user_id,
+                run_at=run_at,
+                summary_text=summary,
+                news_report_json=news_report.output.model_dump_json(),
+                macro_report_json=macro_report.output.model_dump_json(),
+                concentration_report_json=conc_report.output.model_dump_json(),
+                plan_delta_json=critique_report.output.model_dump_json(),
+            )
+            session.add(row)
+            await session.commit()
+            brief_id = row.id
+
+        _log.info("daily_brief.persisted", brief_id=brief_id, user_id=self.user_id)
+
+        # 7. Emit WebSocket event (best-effort; never crash on a broken pubsub).
+        try:
+            await publish_event(
+                "daily_brief.ready",
+                {"brief_id": brief_id, "user_id": self.user_id, "run_at": run_at.isoformat()},
+            )
+        except Exception:  # pragma: no cover - defensive
+            _log.exception("daily_brief.publish_failed")
+
+    @staticmethod
+    async def _maybe_async(value: Any) -> Any:
+        if hasattr(value, "__await__"):
+            return await value
+        return value
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _compose_summary(*, news: Any, macro: Any, concentration: Any, plan: Any) -> str:
+    parts: list[str] = []
+    parts.append("=== DAILY BRIEF ===")
+    parts.append(f"News: {getattr(news, 'top_line', '(no news headlines)')}")
+    regime = getattr(macro, "regime", None)
+    drivers = getattr(macro, "drivers", []) or []
+    parts.append(f"Macro regime: {regime}; drivers: {', '.join(drivers) or '(none)'}")
+    breaches = getattr(concentration, "breaches", []) or []
+    if breaches:
+        parts.append(f"Concentration: {len(breaches)} breach(es)")
+    else:
+        parts.append("Concentration: within caps")
+    overall = getattr(plan, "overall_summary", "")
+    if overall:
+        parts.append(f"Plan delta: {overall}")
+    return "\n".join(parts)
+
+
+async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
+    """Default input gatherer for production runs.
+
+    Best-effort wiring of the real adapters with graceful degradation:
+    - Latest TSV at ARGOSY_HOME → tickers + positions_summary
+    - Finnhub → per-ticker news payload (skipped if API key missing)
+    - FRED + BoI → macro snapshot (skipped on adapter / network error)
+    - DB → latest plan_versions row → plan_label + plan_markdown
+
+    Each section degrades independently to an empty payload with a
+    structured warning so the LLM agents see "this section is empty"
+    rather than fabricated content.
+    """
+    plan_label = "(no plan imported)"
+    plan_markdown = ""
+    plan_targets: dict[str, float] = {}
+    tickers: list[str] = []
+    positions_summary = "(no portfolio snapshot ingested today)"
+
+    async with db_mod.get_session() as session:
+        plan = (
+            await session.execute(
+                select(PlanVersion)
+                .where(PlanVersion.user_id == user_id)
+                .order_by(desc(PlanVersion.imported_at))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if plan is not None:
+            plan_label = plan.version_label or f"plan_version_id={plan.id}"
+            plan_markdown = plan.raw_markdown
+        # Latest critique can carry plan-target hints in future phases;
+        # for Phase 2 we just record that one was found.
+        _ = (
+            await session.execute(
+                select(PlanCritique)
+                .where(PlanCritique.user_id == user_id)
+                .order_by(desc(PlanCritique.created_at))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    # 1. Portfolio snapshot from latest TSV under ARGOSY_HOME.
+    try:
+        tsv_path = _find_latest_tsv()
+        if tsv_path is not None:
+            from argosy.ingest.tsv import parse_portfolio_tsv
+
+            snapshot = parse_portfolio_tsv(tsv_path)
+            tickers = sorted({p.ticker for p in snapshot.positions if p.ticker})
+            positions_summary = _summarize_positions(snapshot)
+        else:
+            _log.warning("daily_brief.no_tsv_found", user_id=user_id)
+    except Exception:  # pragma: no cover - defensive (fallback to empty)
+        _log.exception("daily_brief.tsv_parse_failed", user_id=user_id)
+
+    # 2. News via Finnhub (best-effort).
+    news_payload: dict[str, list[dict[str, Any]]] = {}
+    if tickers:
+        try:
+            from argosy.adapters.data.finnhub_adapter import FinnhubAdapter
+
+            adapter = FinnhubAdapter()
+            for ticker in tickers[:25]:  # cap to avoid rate-limit blow-up
+                headlines = await adapter.get_company_news(ticker, days=1)
+                if headlines:
+                    news_payload[ticker] = headlines
+        except AdapterMissingAPIKeyError as e:
+            _log.warning("daily_brief.news_skipped_no_key", reason=str(e).splitlines()[0])
+        except Exception:  # pragma: no cover - network/library defensive
+            _log.exception("daily_brief.news_fetch_failed")
+
+    # 3. Macro snapshot via FRED + BoI (best-effort).
+    macro_snapshot: dict[str, float] = {}
+    try:
+        from argosy.adapters.data.fred_adapter import FredAdapter
+
+        fred = FredAdapter()
+        # VIX, 10Y treasury, USD/NIS, oil. Specific series IDs are stable.
+        for label, series in (
+            ("vix", "VIXCLS"),
+            ("ust_10y", "DGS10"),
+            ("usd_nis", "DEXISUS"),
+            ("oil_wti", "DCOILWTICO"),
+        ):
+            try:
+                rows = await fred.get_series(series)
+                # Take the most recent non-null observation.
+                for row in reversed(rows):
+                    val = row.get("value") if isinstance(row, dict) else None
+                    if val is not None:
+                        macro_snapshot[label] = float(val)
+                        break
+            except Exception:  # pragma: no cover - per-series defensive
+                _log.warning("daily_brief.macro_series_failed", series=series)
+    except AdapterMissingAPIKeyError as e:
+        _log.warning("daily_brief.fred_skipped_no_key", reason=str(e).splitlines()[0])
+    except Exception:  # pragma: no cover
+        _log.exception("daily_brief.fred_failed")
+
+    # If everything came back empty, log a clear warning so the user
+    # understands why the brief reads thin.
+    if not tickers and not news_payload and not macro_snapshot:
+        _log.warning(
+            "daily_brief.empty_payload",
+            user_id=user_id,
+            hint="No TSV under ARGOSY_HOME and no adapters configured. "
+            "Run `argosy ingest tsv <path>` and set FRED/Finnhub keys via "
+            "`argosy secrets set ...` to populate the brief.",
+        )
+
+    return DailyBriefInputs(
+        user_id=user_id,
+        tickers=tickers,
+        news_payload=news_payload,
+        macro_snapshot=macro_snapshot,
+        positions_summary=positions_summary,
+        plan_targets=plan_targets,
+        nvda_shares_sold_ytd=0,
+        nvda_target_shares_ytd=0,
+        plan_label=plan_label,
+        plan_markdown=plan_markdown,
+    )
+
+
+def _find_latest_tsv() -> "Any | None":
+    """Locate the newest `*.tsv` under ARGOSY_HOME (matches the portfolio route)."""
+    settings = get_settings()
+    candidates = sorted(
+        settings.home.rglob("*.tsv"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _summarize_positions(snapshot: Any) -> str:
+    """One-line-per-position text summary the LLM can read directly."""
+    lines: list[str] = []
+    for p in getattr(snapshot, "positions", []) or []:
+        ticker = getattr(p, "ticker", "?")
+        qty = getattr(p, "quantity", None)
+        value = getattr(p, "market_value", None) or getattr(p, "value", None)
+        account = getattr(p, "account", "")
+        lines.append(f"  {ticker:<8} qty={qty}  value={value}  acct={account}")
+    if not lines:
+        return "(no positions)"
+    return "\n".join(lines)
+
+
+__all__ = ["DailyBriefInputs", "DailyBriefLoop"]

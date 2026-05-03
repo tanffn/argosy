@@ -193,6 +193,64 @@ uv run pytest -q
 
 The Phase 1 test suite mocks the Anthropic client; no live Claude calls happen in tests. The TSV/plan parser tests skip cleanly when the user's Google-Drive files are absent.
 
+## Phase 2 quick start (cadences + daily brief + dashboard)
+
+Phase 2 wires up the cadence orchestrator, three new analyst agents (news, macro, concentration), the Daily Brief loop, and a real three-tab dashboard (Home / Portfolio / Plan).
+
+### One-time setup
+
+1. Apply migrations (creates `cadence_state`, `daily_briefs`, and the three external-data caches):
+
+   ```bash
+   uv run alembic upgrade head
+   ```
+
+2. Set adapter API keys. FRED and Finnhub each have a free tier; both are optional but the daily brief is sparse without them. Same priority order as Phase 1 (keychain wins, env var fallback):
+
+   ```bash
+   uv run argosy secrets set argosy.fred.api_key <fred-key>
+   uv run argosy secrets set argosy.finnhub.api_key <finnhub-key>
+   # or transient env vars:
+   #   FRED_API_KEY, FINNHUB_API_KEY
+   ```
+
+   If a key is missing, the affected adapter raises a clear `MissingAPIKeyError` at call time and the loop logs the failure but continues with reduced fidelity.
+
+3. The first run of the orchestrator writes a default `agent_settings.yaml` under `configs/<user_id>/` (template lives at `configs/example/agent_settings.yaml`). Edit cadences, model overrides, and tier thresholds there.
+
+### Run the cadence scheduler (foreground)
+
+```bash
+uv run argosy run --user-id ariel
+```
+
+The scheduler runs in the foreground; Ctrl-C stops it cleanly. Phase 2 wires only the **Daily Brief** loop (`0 9 * * *` Asia/Jerusalem by default). Other loops (minute / hour / weekly / monthly / quarterly / annual) are scheduled but their tick implementations land in Phase 3+.
+
+### Trigger a one-shot Daily Brief
+
+Useful for testing without waiting until 09:00:
+
+```bash
+uv run argosy brief --user-id ariel
+```
+
+This runs the news + macro + concentration analysts and re-runs the plan-critique against today's snapshot, persisting all four reports + a summary to `daily_briefs`. The `daily_brief.ready` WebSocket event fires; the dashboard's Home page subscribes and refreshes automatically.
+
+### Browse the dashboard
+
+```bash
+# Terminal 1
+uv run uvicorn argosy.api.main:app --reload
+# Terminal 2
+cd ui && npm install && npm run dev
+```
+
+Then open <http://localhost:1337>. Three tabs:
+
+- **Home** — net worth, concentration scorecard, plan RED/YELLOW/GREEN badge, daily-brief teaser, last 10 agent runs.
+- **Portfolio** — positions per account from the latest TSV, allocation vs target, FX header.
+- **Plan** — rendered plan markdown + critique findings, with a **Re-critique now** button that POSTs to `/api/plan/critique`.
+
 ## Reference paper
 
 Xiao et al. *TradingAgents: Multi-Agents LLM Financial Trading Framework.* [arXiv:2412.20138](https://arxiv.org/html/2412.20138v1).

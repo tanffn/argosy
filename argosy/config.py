@@ -97,6 +97,10 @@ class Settings(BaseSettings):
         # SQLAlchemy async URL for aiosqlite.
         return f"sqlite+aiosqlite:///{self.db_file.as_posix()}"
 
+    def agent_settings_path(self, user_id: str) -> Path:
+        """Per-user agent_settings.yaml path. See SDD Appendix A.2."""
+        return self.configs_dir / user_id / "agent_settings.yaml"
+
 
 def _build_settings() -> Settings:
     home = resolve_home()

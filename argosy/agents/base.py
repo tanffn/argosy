@@ -39,13 +39,16 @@ from argosy.config import get_settings
 from argosy.logging import get_logger
 from argosy.secrets import get_secret
 
-# Phase 1 model defaults. TODO(Phase 5): read from
-# `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2 once
-# that override file exists. For Phase 1 we hardcode Sonnet 4.6 for the
-# intake and plan-critique agents per SDD §3.1 / §3.6 / §13 plan.
+# Phase 1+2 model defaults. Phase 2 reads overrides from
+# `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2;
+# the per-role default below is the fallback when the file is absent.
 DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "intake": "claude-sonnet-4-6",
     "plan_critique": "claude-sonnet-4-6",
+    # Phase 2 analyst team:
+    "news": "claude-sonnet-4-6",
+    "macro": "claude-sonnet-4-6",
+    "concentration": "claude-haiku-4-5",
 }
 FALLBACK_MODEL = "claude-sonnet-4-6"
 

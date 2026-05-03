@@ -1,0 +1,47 @@
+# Argosy per-user agent settings — example template.
+# Phase 2 ships a default copy of this file under
+# `configs/<user_id>/agent_settings.yaml` the first time the orchestrator
+# runs. Edit values as desired; the scheduler reloads on restart.
+#
+# See SDD Appendix A.2 for the full schema reference.
+
+# Execution
+execution:
+  default_mode: paper        # paper | live | queue_only
+
+# Tier thresholds
+tiers:
+  t0_max_portfolio_pct: 0.1
+  t1_max_portfolio_pct: 1.0
+  t2_max_portfolio_pct: 5.0
+  cooling_off_hours_t3: 24
+  account_scoped_escalation_pct: 20
+  override_mode: auto        # auto | pinned:T2 | all-tier | per-decision
+
+# Models per agent role; defaults sensible, override anything.
+# Phase 2 wires `news`, `macro`, `concentration`, `plan_critique`, `intake`.
+models:
+  defaults:
+    fundamentals: sonnet
+    technical: haiku
+    news: sonnet
+    sentiment: haiku
+    macro: sonnet
+    plan_critique: sonnet    # opus on RED flags (Phase 3+)
+    concentration: haiku
+    tax: sonnet
+    fx: haiku
+    trader: opus              # T2/T3; sonnet for T0/T1 (Phase 3+)
+    intake: sonnet
+  override: {}                # e.g. {all: opus} or {trader: sonnet}
+
+# Cadences (cron strings or interval syntax). Phase 2 wires `daily_brief`
+# only; the others are accepted but not yet running.
+cadences:
+  minute:        { enabled: true,  market_hours_only: true, interval_seconds: 60 }
+  hour:          { enabled: true,  interval_minutes: 60 }
+  daily_brief:   { enabled: true,  cron: "0 9 * * *", timezone: "Asia/Jerusalem" }
+  weekly_review: { enabled: true,  cron: "0 18 * * SUN" }
+  monthly_cycle: { enabled: true,  cron: "0 8 1 * *" }
+  quarterly:     { enabled: true }
+  annual:        { enabled: true }

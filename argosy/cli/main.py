@@ -1,20 +1,22 @@
 """Argosy root CLI app.
 
-Wires up the Phase 1 subcommands behind a single `argosy` entry point.
+Wires up the Phase 1+2 subcommands behind a single `argosy` entry point.
 """
 
 from __future__ import annotations
 
 import typer
 
+from argosy.cli.brief import brief
 from argosy.cli.critique import critique
 from argosy.cli.ingest import app as ingest_app
 from argosy.cli.intake import intake
+from argosy.cli.run import run
 from argosy.cli.secrets import app as secrets_app
 
 app = typer.Typer(
     name="argosy",
-    help="Argosy multi-agent financial advisor — Phase 1 CLI.",
+    help="Argosy multi-agent financial advisor — Phase 2 CLI.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -22,6 +24,8 @@ app = typer.Typer(
 # Standalone subcommands.
 app.command("intake")(intake)
 app.command("critique")(critique)
+app.command("run")(run)
+app.command("brief")(brief)
 
 # Subcommand groups.
 app.add_typer(ingest_app, name="ingest", help="Ingestion commands (TSV, plan).")
