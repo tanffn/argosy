@@ -122,7 +122,13 @@ class IntakeTurnOutput(BaseModel):
     ]
     question_for_user: str = Field(
         default="",
-        description="Exactly one question, or empty if stage just completed.",
+        description=(
+            "A single message asking the user 2-4 RELATED sub-questions at "
+            "once when the fields naturally cluster (e.g., spouse + children + "
+            "spouse-residency in one message; brokerage names + account types + "
+            "estimated balances together). Render as a numbered list inside the "
+            "single string. Empty if the stage has just completed."
+        ),
     )
     context_updates: list[ContextUpdate] = Field(
         default_factory=list,
@@ -154,7 +160,13 @@ class IntakeTurnOutput(BaseModel):
 
 
 class IntakeAgent(BaseAgent[IntakeTurnOutput]):
-    """Intake interview agent. One question per turn. Stage-aware."""
+    """Intake interview agent.
+
+    Batches 2-4 related sub-questions per turn (each agent round-trip
+    takes ~10s on Haiku; one-question-at-a-time made the interview feel
+    sluggish). Stage-aware. Avoids re-asking anything already present in
+    `accumulated_context`.
+    """
 
     agent_role = "intake"
     output_model = IntakeTurnOutput
@@ -189,13 +201,29 @@ class IntakeAgent(BaseAgent[IntakeTurnOutput]):
 
         system = (
             "You are the intake agent on the Argosy fleet, conducting a "
-            "financial-context interview. One question at a time. "
-            "Conversational, calm, professional. Prioritize critical info "
-            "first (tax residency, family, income, assets, savings rate).\n\n"
+            "financial-context interview. Each turn round-trips through the "
+            "model and takes ~10 seconds, so BATCH related sub-questions "
+            "together to make the interview feel responsive. Conversational, "
+            "calm, professional. Prioritize critical info first (tax "
+            "residency, family, income, assets, savings rate).\n\n"
             f"Current stage: {current_stage} ({stage_index} of 6).\n"
             f"Stage purpose: {stage_purpose}\n\n"
+            "BATCHING RULE — ask 2-4 RELATED sub-questions per turn whenever "
+            "the fields naturally cluster:\n"
+            "  - household: spouse status + spouse residency + children + ages\n"
+            "  - citizenship: own + spouse's + any others (single turn)\n"
+            "  - income: gross salary + RSU vesting + bonus structure together\n"
+            "  - brokerages: which brokers + account types + rough balance per\n"
+            "  - real estate: how many properties + mortgage status + rental P/L\n"
+            "  - pensions (Israeli context): קרן השתלמות + קופת גמל + פנסיה\n"
+            "Render as a numbered list inside the single `question_for_user` "
+            "string. Do NOT ask >4 sub-questions in one turn — that overwhelms "
+            "the user. If a field needs disambiguation, defer it to the next "
+            "turn; don't pad.\n\n"
             "CONSTRAINTS:\n"
-            "  - Ask exactly ONE question per turn.\n"
+            "  - DO NOT re-ask anything that's already in `accumulated_context`. "
+            "If an answer is already there (even partially), accept it and move "
+            "on; ask for the MISSING piece only.\n"
             "  - When the user provides data with low confidence, ask for "
             "documentation if it materially affects downstream decisions.\n"
             "  - When the user gives an illogical answer per established "
