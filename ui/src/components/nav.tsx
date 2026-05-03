@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { LiveClock } from "@/components/live-clock";
+import { StatusPill } from "@/components/ui/status-pill";
 import { cn } from "@/lib/utils";
 
 const TABS = [
@@ -22,9 +24,23 @@ export function NavBar() {
   const pathname = usePathname();
   return (
     <header className="border-b border-border bg-background/60 backdrop-blur sticky top-0 z-10">
-      <nav className="max-w-6xl mx-auto px-6 py-3 flex items-center gap-6">
-        <span className="font-semibold tracking-tight text-lg">Argosy</span>
-        <ul className="flex items-center gap-2">
+      <nav className="max-w-6xl mx-auto px-6 py-3 flex items-center gap-4 flex-wrap">
+        <Link
+          href="/"
+          className="flex items-center gap-2 shrink-0"
+          aria-label="Argosy home"
+        >
+          <span className="font-mono text-lg leading-none" aria-hidden>
+            🚢
+          </span>
+          <span className="font-mono font-semibold tracking-tight text-lg text-foreground">
+            Argosy
+          </span>
+        </Link>
+        <StatusPill tone="neutral" mono>
+          v0.1.0
+        </StatusPill>
+        <ul className="flex items-center gap-1 flex-wrap">
           {TABS.map((t) => {
             const active = pathname === t.href;
             return (
@@ -32,9 +48,9 @@ export function NavBar() {
                 <Link
                   href={t.href}
                   className={cn(
-                    "px-3 py-1.5 rounded-md text-sm transition-colors",
+                    "px-3 py-1.5 rounded-md text-sm transition-colors relative",
                     active
-                      ? "bg-secondary text-secondary-foreground"
+                      ? "bg-secondary text-foreground border-b-2 border-primary -mb-[2px]"
                       : "hover:bg-secondary/60 text-muted-foreground",
                   )}
                 >
@@ -44,6 +60,9 @@ export function NavBar() {
             );
           })}
         </ul>
+        <div className="ml-auto">
+          <LiveClock seconds={false} />
+        </div>
       </nav>
     </header>
   );
