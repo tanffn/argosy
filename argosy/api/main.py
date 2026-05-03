@@ -79,8 +79,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Phase 0
+    # Phase 0 — /health is exposed at both root and /api/health so it works
+    # whether the caller goes through the Next.js /api/* proxy or hits the
+    # FastAPI process directly (e.g., the watchdog liveness check).
     app.include_router(health_router)
+    app.include_router(health_router, prefix="/api")
 
     # Phase 2 (multi-tenant `user_id` query param on each)
     api_prefix = "/api"

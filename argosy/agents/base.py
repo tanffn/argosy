@@ -272,12 +272,91 @@ class BaseAgent(Generic[T]):
         return Anthropic(api_key=api_key)
 
     async def _call_model(self, *, system: str, user: str) -> ModelCall:
-        """Invoke the model. Tests override this to return a ModelCall stub.
+        """Invoke the model. Dispatches on the configured backend.
 
-        We use the synchronous Anthropic client and run it in a thread to
-        keep the public interface async without forcing a separate
-        async-SDK dependency.
+        - `claude_code`: routes through the Claude Agent SDK, which spawns
+          the local `claude.exe` and reuses its authentication. No API
+          key needed. Cost lands on the user's Claude Code subscription.
+        - `api_key`: direct Anthropic API via the `anthropic` SDK; reads
+          the key from the OS keychain or the `ANTHROPIC_API_KEY` env var.
+
+        Tests override this method directly to return a `ModelCall` stub
+        without exercising either backend.
         """
+        backend = get_settings().anthropic.backend
+        if backend == "claude_code":
+            return await self._call_via_claude_code(system=system, user=user)
+        if backend == "api_key":
+            return await self._call_via_api_key(system=system, user=user)
+        raise AgentRunError(
+            f"{self.agent_role}: unknown anthropic backend {backend!r} "
+            "(expected 'claude_code' or 'api_key')"
+        )
+
+    async def _call_via_claude_code(self, *, system: str, user: str) -> ModelCall:
+        """Backend: claude-agent-sdk → local `claude.exe`. No API key needed."""
+        try:
+            from claude_agent_sdk import (
+                AssistantMessage,
+                ClaudeAgentOptions,
+                ResultMessage,
+                TextBlock,
+                query,
+            )
+        except ImportError as exc:  # pragma: no cover - install-time error
+            raise AgentRunError(
+                "claude-agent-sdk is not installed. Run: uv add claude-agent-sdk"
+            ) from exc
+
+        options = ClaudeAgentOptions(
+            system_prompt=system,
+            max_turns=1,
+            allowed_tools=[],  # one-shot reasoning; no tool use during agent runs
+            model=self.model,
+        )
+
+        text_parts: list[str] = []
+        tokens_in = 0
+        tokens_out = 0
+        cost_usd_from_sdk = 0.0
+
+        try:
+            async for message in query(prompt=user, options=options):
+                if isinstance(message, AssistantMessage):
+                    for block in getattr(message, "content", []) or []:
+                        if isinstance(block, TextBlock):
+                            text_parts.append(block.text)
+                elif isinstance(message, ResultMessage):
+                    cost_usd_from_sdk = float(
+                        getattr(message, "total_cost_usd", 0.0) or 0.0
+                    )
+                    usage = getattr(message, "usage", None)
+                    if usage is not None:
+                        tokens_in = int(
+                            getattr(usage, "input_tokens", 0)
+                            or (usage.get("input_tokens", 0) if isinstance(usage, dict) else 0)
+                            or 0
+                        )
+                        tokens_out = int(
+                            getattr(usage, "output_tokens", 0)
+                            or (usage.get("output_tokens", 0) if isinstance(usage, dict) else 0)
+                            or 0
+                        )
+        except Exception as exc:  # pragma: no cover - exercised by integration only
+            raise AgentRunError(
+                f"{self.agent_role}: claude-agent-sdk error: {exc}"
+            ) from exc
+
+        return ModelCall(
+            text="".join(text_parts),
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            model=self.model,
+            raw={"backend": "claude_code", "cost_usd_from_sdk": cost_usd_from_sdk},
+        )
+
+    async def _call_via_api_key(self, *, system: str, user: str) -> ModelCall:
+        """Backend: direct Anthropic API. Requires API key in keychain or env."""
         import asyncio
 
         if self._client is None:

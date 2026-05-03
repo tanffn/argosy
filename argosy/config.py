@@ -62,6 +62,15 @@ class ServerSettings(BaseSettings):
 
 class AnthropicSettings(BaseSettings):
     keychain_key_name: str = "argosy.anthropic.api_key"
+    # Backend selector for BaseAgent._call_model.
+    #   "claude_code" — auth via the local `claude.exe` session (Claude Agent SDK).
+    #                   No API key needed; cost lands on the user's Claude Code
+    #                   subscription. Default — works out of the box.
+    #   "api_key"     — direct Anthropic API via `anthropic` SDK; reads the key
+    #                   from the OS keychain or `ANTHROPIC_API_KEY` env var.
+    # Switchable per-environment via `argosy.toml [anthropic] backend = ...` or
+    # via the `ARGOSY_ANTHROPIC__BACKEND` env var.
+    backend: str = "claude_code"
 
 
 class Settings(BaseSettings):

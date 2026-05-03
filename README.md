@@ -2,7 +2,7 @@
 
 A multi-agent financial advisor system. Python orchestration + Claude Agent SDK + FastAPI + Next.js dashboard. Designed for sophisticated DIY investors; multi-tenant from day one.
 
-> **Status:** Design phase. SDD approved. Implementation has not started.
+> **Status:** Implementation complete across Phases 0-7 (9 commits, 359 tests passing). Paper mode is the default execution mode; live trading requires the mandatory 2-week paper-mode soak per SDD §13.1.
 
 ## Documentation
 
@@ -38,7 +38,105 @@ A multi-agent financial advisor system. Python orchestration + Claude Agent SDK 
 
 See SDD §13 for full details and exit gates.
 
-## Repo layout (planned)
+## Getting started
+
+Six steps to a running dev system. Each command is also documented in the phase-specific quick-starts further down — this section is the canonical first-time walkthrough.
+
+### 1. Prerequisites
+
+- Python 3.12+
+- Node.js 20+ and npm
+- [`uv`](https://github.com/astral-sh/uv) for Python dep management (`pip install --user uv`)
+- (Phase 4+ live execution only) Interactive Brokers TWS Gateway, paper-trading port 7497 by default
+
+#### About `uv` and `uv run`
+
+`uv` is a fast Rust-based replacement for `pip + venv`. It manages the project's virtual environment at `.venv/` against `pyproject.toml` (declared deps) and `uv.lock` (pinned versions).
+
+| Command | Purpose |
+|---|---|
+| `uv sync` | Install/refresh `.venv/` to match the lockfile |
+| `uv add <pkg>` | Add a dependency to `pyproject.toml` and install it |
+| `uv run <cmd>` | Run `<cmd>` inside the project venv (auto-syncs first; never produces stale-deps errors) |
+
+Every command in this guide that begins with `uv run` (e.g. `uv run argosy intake`) is just running a command inside the project's virtual environment — equivalent to `.\.venv\Scripts\Activate` followed by the command. The `argosy` CLI itself is wired as a project entry point in `pyproject.toml`, so `uv run argosy <subcommand>` works without a separate install step.
+
+### 2. Backend setup (one-time)
+
+```bash
+cd D:\Projects\financial-advisor
+uv sync                              # install Python deps (~89 packages)
+uv run alembic upgrade head          # apply DB migrations 0001..0007
+```
+
+### 3. Frontend setup (one-time)
+
+```bash
+cd ui
+npm install                          # install Next.js + shadcn + react-markdown + next-auth
+```
+
+### 4. Anthropic backend & secrets
+
+Argosy can talk to Claude through one of two backends, selected by `[anthropic] backend = ...` in `argosy.toml`:
+
+| Backend | When to use | Auth | Cost lands on |
+|---|---|---|---|
+| **`claude_code`** *(default)* | You already have the `claude.exe` (Claude Code) CLI installed and authenticated | Inherited from your local Claude Code session — **no API key needed** | Your Claude Code subscription |
+| **`api_key`** | You want metered pay-as-you-go API billing, or are running headless on a server without `claude.exe` | `sk-ant-...` key from <https://console.anthropic.com/settings/keys> stored in the OS keychain | Anthropic API account |
+
+The default is `claude_code` so a fresh checkout works out of the box if you're already a Claude Code user. To switch to the API-key backend, edit `argosy.toml`:
+
+```toml
+[anthropic]
+backend = "api_key"
+keychain_key_name = "argosy.anthropic.api_key"
+```
+
+…or set the env var `ARGOSY_ANTHROPIC__BACKEND=api_key`. Then store the key:
+
+```bash
+uv run argosy secrets set argosy.anthropic.api_key sk-ant-...
+```
+
+Optional adapter keys (richer daily briefs; both backends use these the same way):
+
+```bash
+uv run argosy secrets set argosy.fred.api_key <fred-key>
+uv run argosy secrets set argosy.finnhub.api_key <finnhub-key>
+```
+
+### 5. Run the stack (two terminals)
+
+```bash
+# Terminal 1 — backend on http://localhost:8000
+uv run uvicorn argosy.api.main:app --reload
+
+# Terminal 2 — frontend on http://localhost:1337
+cd ui && npm run dev
+```
+
+Browse to <http://localhost:1337>. The home dashboard should render with a green **Health: OK** badge.
+
+### 6. Onboard yourself (first-run)
+
+```bash
+uv run argosy intake --user-id ariel        # 6-stage interview (SDD §6.1)
+uv run argosy ingest tsv "<portfolio.tsv>"  # import current positions
+uv run argosy ingest plan "<plan.md>"       # import existing plan (optional)
+uv run argosy critique --user-id ariel      # run plan-critique agent
+uv run argosy brief --user-id ariel         # one-shot daily brief
+```
+
+After this, the orchestrator's cadence loops can run continuously:
+
+```bash
+uv run argosy run                            # foreground scheduler
+```
+
+For depth on each phase (decision flows, IBKR setup, Argonaut autonomy, productization), see the phase-specific quick-starts below or the [SDD](docs/design/SDD.md) §13.
+
+## Repo layout
 
 ```
 ${ARGOSY_HOME}/
@@ -137,7 +235,10 @@ Phase 1 adds a CLI (`argosy ...`), an Israeli/US tax domain knowledge seed at `d
    uv run alembic upgrade head
    ```
 
-2. Set the Anthropic API key. Either of these is fine; the keychain entry takes priority if both are set:
+2. Pick an Anthropic backend (see Getting started §4 for the full table).
+
+   - **`claude_code`** (default) — uses your local `claude.exe` session; no API key needed. Skip this step.
+   - **`api_key`** — set `[anthropic] backend = "api_key"` in `argosy.toml`, then store the key. The keychain entry takes priority if both are set:
 
    ```bash
    uv run argosy secrets set argosy.anthropic.api_key sk-ant-...
@@ -147,7 +248,7 @@ Phase 1 adds a CLI (`argosy ...`), an Israeli/US tax domain knowledge seed at `d
    export ANTHROPIC_API_KEY=sk-ant-...     # bash/zsh
    ```
 
-   If the key is missing the CLI prints actionable instructions and exits non-zero.
+   If `backend = "api_key"` and no key is found, the CLI prints actionable instructions and exits non-zero.
 
 ### Ingest your data
 

@@ -16,5 +16,13 @@ ui_port = 1337
 api_host = "127.0.0.1"
 
 [anthropic]
-# Reads from OS keychain; keychain key name configurable.
+# Backend selector for the BaseAgent LLM call.
+#   "claude_code" — auth via the local `claude.exe` session (Claude Agent
+#                   SDK). No API key needed; cost lands on the user's
+#                   Claude Code subscription. Default.
+#   "api_key"     — direct Anthropic API via the `anthropic` SDK.
+#                   Reads the key from the OS keychain (preferred) or
+#                   the `ANTHROPIC_API_KEY` env var.
+backend = "claude_code"
+# Used only when backend = "api_key".
 keychain_key_name = "argosy.anthropic.api_key"
