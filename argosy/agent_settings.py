@@ -100,6 +100,36 @@ class TiersBlock(BaseModel):
     override_mode: str = "auto"
 
 
+class LimitedAccountBlock(BaseModel):
+    """Argonaut limited-account configuration (SDD A.2).
+
+    Phase 5 wires bounded autonomy: T0/T1 in this account auto-execute,
+    while T2/T3 still go to the human queue. `account_id` is the IBKR
+    account identifier; `execution_mode` overrides the global default for
+    *this* account so the user can run paper Argonaut while main accounts
+    are queue_only, etc.
+    """
+
+    size_usd: float = 1000.0
+    account_id: str = ""
+    execution_mode: Literal["paper", "live", "queue_only"] = "paper"
+    per_decision_max_pct: float = 20.0
+    daily_loss_limit_pct: float = 5.0
+
+
+class SecurityBlock(BaseModel):
+    """Phase 5 second-factor configuration for T3 approvals.
+
+    `t3_second_factor`:
+      - "totp"  → require a valid TOTP code (header X-TOTP-Code)
+      - "delay" → require a 1h cooling-off after first approve before
+                  the order is committed (cheaper UX for solo operation)
+    """
+
+    t3_second_factor: Literal["totp", "delay"] = "delay"
+    delay_minutes: int = 60
+
+
 class AgentSettings(BaseModel):
     """Top-level model for `agent_settings.yaml`. See SDD A.2."""
 
@@ -107,6 +137,8 @@ class AgentSettings(BaseModel):
     cadences: CadencesBlock = Field(default_factory=CadencesBlock)
     models: ModelsBlock = Field(default_factory=ModelsBlock)
     tiers: TiersBlock = Field(default_factory=TiersBlock)
+    limited_account: LimitedAccountBlock = Field(default_factory=LimitedAccountBlock)
+    security: SecurityBlock = Field(default_factory=SecurityBlock)
 
     def model_for_role(self, role: str) -> str | None:
         """Resolve the configured model for an agent role.
@@ -168,6 +200,17 @@ tiers:
   cooling_off_hours_t3: 24
   account_scoped_escalation_pct: 20
   override_mode: auto
+
+limited_account:
+  size_usd: 1000
+  account_id: ""
+  execution_mode: paper
+  per_decision_max_pct: 20
+  daily_loss_limit_pct: 5
+
+security:
+  t3_second_factor: delay
+  delay_minutes: 60
 """
 
 
@@ -207,13 +250,30 @@ def write_default_agent_settings(path: Path) -> None:
     path.write_text(_DEFAULT_YAML, encoding="utf-8")
 
 
+def save_agent_settings(user_id: str, settings: AgentSettings) -> Path:
+    """Persist a modified `AgentSettings` back to the user's YAML file.
+
+    Returns the path written. Used by the Argonaut mode-toggle endpoint
+    and the `argosy argonaut mode` CLI command.
+    """
+    settings_obj = get_settings()
+    path = settings_obj.agent_settings_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = settings.model_dump(mode="json")
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
 __all__ = [
     "AgentSettings",
     "CadenceConfig",
     "CadencesBlock",
     "ExecutionBlock",
+    "LimitedAccountBlock",
     "ModelsBlock",
+    "SecurityBlock",
     "TiersBlock",
     "load_agent_settings",
+    "save_agent_settings",
     "write_default_agent_settings",
 ]

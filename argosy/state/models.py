@@ -24,6 +24,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -493,6 +494,105 @@ class PendingOrder(Base):
     )
 
 
+# ----------------------------------------------------------------------
+# Phase 5: Argonaut limited account + daily P&L + TOTP secrets
+# ----------------------------------------------------------------------
+
+
+class ArgonautSnapshot(Base):
+    """One per-day snapshot of the Argonaut limited-account state.
+
+    Drives the P&L curve since inception on screen #5. Persisted by the
+    daily-brief loop. `date` is YYYY-MM-DD for friendly indexing.
+    """
+
+    __tablename__ = "argonaut_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
+    date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    total_value_usd: Mapped[float] = mapped_column(
+        Numeric(18, 4), nullable=False, default=0
+    )
+    cash_usd: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    positions_value_usd: Mapped[float] = mapped_column(
+        Numeric(18, 4), nullable=False, default=0
+    )
+    day_pnl_usd: Mapped[float] = mapped_column(
+        Numeric(18, 4), nullable=False, default=0
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "account_id", "date", name="uq_argonaut_snapshots_user_acct_date"
+        ),
+    )
+
+
+class DailyAccountPnL(Base):
+    """Per-account, per-day realized + unrealized P&L roll-up.
+
+    Drives the daily-loss-limit hard gate in the risk preflight. The
+    reconcile loop writes/updates this row from fills as they arrive;
+    `locked=True` marks the row as halted (no further trades for the day).
+    """
+
+    __tablename__ = "daily_account_pnl"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
+    date: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    realized_pnl_usd: Mapped[float] = mapped_column(
+        Numeric(18, 4), nullable=False, default=0
+    )
+    unrealized_pnl_usd: Mapped[float] = mapped_column(
+        Numeric(18, 4), nullable=False, default=0
+    )
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "account_id", "date", name="uq_daily_account_pnl_user_acct_date"
+        ),
+    )
+
+
+class TOTPSecret(Base):
+    """Per-user TOTP secret for the T3 second-factor flow.
+
+    `secret_encrypted` is the user's TOTP base32 secret. v1 stores it
+    plain-text inside the DB; productization will move it to the OS
+    keychain via `argosy.secrets`. `last_verified_at` advances on every
+    successful verify so the API can detect replay (require monotonically
+    increasing timestamps within a step window).
+    """
+
+    __tablename__ = "totp_secrets"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    secret_encrypted: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 __all__ = [
     "Base",
     "User",
@@ -516,4 +616,8 @@ __all__ = [
     "Fill",
     "Lot",
     "PendingOrder",
+    # Phase 5
+    "ArgonautSnapshot",
+    "DailyAccountPnL",
+    "TOTPSecret",
 ]

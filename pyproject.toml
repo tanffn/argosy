@@ -30,6 +30,7 @@ dependencies = [
     # Phase 4 additions
     "ib_insync>=0.9.86",
     "aiosmtplib>=3.0.0",
+    "cryptography>=47.0.0",
 ]
 
 [project.optional-dependencies]

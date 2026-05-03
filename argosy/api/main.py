@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from argosy import __version__
 from argosy.api.events import subscribe
 from argosy.api.routes.agent_activity import router as agent_activity_router
+from argosy.api.routes.argonaut import router as argonaut_router
 from argosy.api.routes.daily_brief import router as daily_brief_router
 from argosy.api.routes.decisions import router as decisions_router
 from argosy.api.routes.execution import router as execution_router
@@ -32,6 +33,7 @@ from argosy.api.routes.health import router as health_router
 from argosy.api.routes.plan import router as plan_router
 from argosy.api.routes.portfolio import router as portfolio_router
 from argosy.api.routes.proposals import router as proposals_router
+from argosy.api.routes.security import router as security_router
 from argosy.config import get_settings
 from argosy.logging import configure_logging, get_logger
 
@@ -71,6 +73,10 @@ def create_app() -> FastAPI:
 
     # Phase 4 — execution router + lots/fills/audit + email-link approval
     app.include_router(execution_router, prefix=api_prefix)
+
+    # Phase 5 — Argonaut limited account + TOTP second-factor
+    app.include_router(argonaut_router, prefix=api_prefix)
+    app.include_router(security_router, prefix=api_prefix)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

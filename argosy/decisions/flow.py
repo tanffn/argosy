@@ -392,8 +392,23 @@ class DecisionFlow:
                 )
 
         # ---------------- Build the proposal ----------------
+        # Phase 5 routing matrix (SDD §10.1): T0/T1 in the limited account
+        # auto-promote past `awaiting_human` straight to `approved` so the
+        # execution router (called by the caller) can run them. T2/T3
+        # always go through human review even in the limited account, and
+        # T3 still enters cooling first.
         cooling_until = None
         initial_status = ProposalStatus.AWAITING_HUMAN
+        is_limited_t0t1 = (
+            account_class == "limited" and tier in (Tier.T0, Tier.T1)
+        )
+        # Honor `queue_only` global mode and per-account override.
+        settings = self._settings()
+        global_mode = settings.execution.default_mode
+        limited_mode = settings.limited_account.execution_mode
+        queue_only = global_mode == "queue_only" or limited_mode == "queue_only"
+        if is_limited_t0t1 and not queue_only:
+            initial_status = ProposalStatus.APPROVED
         if tier == Tier.T3:
             cooling_until = clock() + timedelta(
                 hours=self.config.resolve_cooling_off_hours(self.user_id)
@@ -425,10 +440,33 @@ class DecisionFlow:
         # Record the proposal under "trader" with fm_decision=None so the
         # audit trail honestly reflects which agents ran.
         transitioned_by = "fund_manager" if fm_decision is not None else "trader"
+        if proposal.status == ProposalStatus.APPROVED:
+            transitioned_by = "auto_execute:limited_t0t1"
         proposal_id = await self._persist_proposal(
             proposal, fm_decision=fm_decision, transitioned_by=transitioned_by
         )
         proposal.id = proposal_id
+
+        # Phase 5 audit_log: when auto-promoted, write the dedicated
+        # `auto_promoted: True` event so downstream tooling (audit page,
+        # CLI) can surface the path the proposal took.
+        if proposal.status == ProposalStatus.APPROVED and is_limited_t0t1:
+            from argosy.execution.audit import record_audit_event as _audit
+
+            try:
+                await _audit(
+                    user_id=self.user_id,
+                    event_type="proposal.auto_promoted",
+                    entity_type="proposal",
+                    entity_id=str(proposal_id),
+                    payload={
+                        "tier": tier.value,
+                        "account_class": account_class,
+                        "auto_promoted": True,
+                    },
+                )
+            except Exception:  # pragma: no cover - defensive
+                _log.exception("flow.auto_promote_audit_failed")
 
         await self._close_decision_run(
             decision_run_id,

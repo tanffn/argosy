@@ -32,3 +32,34 @@ def delete_secret(key: str) -> None:
         keyring.delete_password(SERVICE_NAME, key)
     except KeyringError:
         pass
+
+
+# ----------------------------------------------------------------------
+# Phase 5: TOTP secret helpers (DB-backed; keychain target later)
+# ----------------------------------------------------------------------
+
+
+def _totp_key(user_id: str) -> str:
+    return f"argosy.totp.{user_id}"
+
+
+def set_totp_secret(user_id: str, secret: str) -> None:
+    """Store a user's TOTP secret in the OS keychain (best-effort).
+
+    Phase 5 also writes the secret to the DB via
+    `argosy.security.totp.set_user_totp_secret` for read access from the
+    API. This keychain call is the productization-ready path; failures
+    are silent so dev environments without a keyring still work.
+    """
+    try:
+        set_secret(_totp_key(user_id), secret)
+    except KeyringError:  # pragma: no cover - dev fallback
+        pass
+
+
+def get_totp_secret(user_id: str) -> str | None:
+    """Return the user's TOTP secret from the keychain, or None."""
+    try:
+        return get_secret(_totp_key(user_id))
+    except KeyringError:  # pragma: no cover
+        return None

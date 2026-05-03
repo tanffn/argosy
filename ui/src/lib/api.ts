@@ -184,6 +184,80 @@ export interface AuditResponse {
   total: number;
 }
 
+// ----------------------------------------------------------------------
+// Phase 5: Argonaut + security
+// ----------------------------------------------------------------------
+
+export interface ArgonautPosition {
+  ticker: string;
+  quantity: number;
+  avg_cost: number | null;
+  currency: string;
+  asset_class: string;
+}
+
+export interface ArgonautStatus {
+  user_id: string;
+  account_id: string;
+  size_usd: number;
+  execution_mode: "paper" | "live" | "queue_only";
+  autonomy_enabled: boolean;
+  per_decision_max_pct: number;
+  daily_loss_limit_pct: number;
+  open_positions: ArgonautPosition[];
+}
+
+export interface ArgonautSnapshot {
+  date: string;
+  total_value_usd: number;
+  cash_usd: number;
+  positions_value_usd: number;
+  day_pnl_usd: number;
+}
+
+export interface ArgonautSnapshotsResponse {
+  rows: ArgonautSnapshot[];
+}
+
+export interface ArgonautTrade {
+  id: number;
+  ticker: string;
+  action: string;
+  quantity: number;
+  price: number;
+  commission: number;
+  filled_at: string;
+  paper: boolean;
+  broker: string;
+  broker_order_id: string;
+}
+
+export interface ArgonautTradesResponse {
+  rows: ArgonautTrade[];
+}
+
+export interface ModeResponse {
+  status: string;
+  mode: string;
+  message?: string;
+}
+
+export interface TOTPSetupResponse {
+  secret: string;
+  provisioning_uri: string;
+}
+
+export interface TOTPVerifyResponse {
+  ok: boolean;
+  last_verified_at: string | null;
+  detail?: string;
+}
+
+export interface TOTPStatusResponse {
+  enrolled: boolean;
+  last_verified_at: string | null;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path, { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
@@ -287,4 +361,38 @@ export const api = {
     if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
     return getJSON<AuditResponse>(`/api/audit?${qs.toString()}`);
   },
+
+  // Phase 5: Argonaut limited account
+  argonautStatus: (userId: string) =>
+    getJSON<ArgonautStatus>(
+      `/api/argonaut/status?user_id=${encodeURIComponent(userId)}`,
+    ),
+  argonautSnapshots: (userId: string, limit = 365) =>
+    getJSON<ArgonautSnapshotsResponse>(
+      `/api/argonaut/snapshots?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
+    ),
+  argonautTrades: (userId: string, limit = 50) =>
+    getJSON<ArgonautTradesResponse>(
+      `/api/argonaut/trades?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
+    ),
+  argonautMode: (userId: string, mode: "paper" | "live" | "queue_only") =>
+    postJSON<ModeResponse>(`/api/argonaut/mode`, { user_id: userId, mode }),
+  argonautForceSnapshot: (userId: string) =>
+    postJSON<ArgonautSnapshot>(`/api/argonaut/snapshot`, {
+      user_id: userId,
+      mode: "paper",
+    }),
+
+  // Phase 5: TOTP
+  totpStatus: (userId: string) =>
+    getJSON<TOTPStatusResponse>(
+      `/api/security/totp/status?user_id=${encodeURIComponent(userId)}`,
+    ),
+  totpSetup: (userId: string) =>
+    postJSON<TOTPSetupResponse>(`/api/security/totp/setup`, { user_id: userId }),
+  totpVerify: (userId: string, code: string) =>
+    postJSON<TOTPVerifyResponse>(`/api/security/totp/verify`, {
+      user_id: userId,
+      code,
+    }),
 };

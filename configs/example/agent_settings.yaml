@@ -45,3 +45,19 @@ cadences:
   monthly_cycle: { enabled: true,  cron: "0 8 1 * *" }
   quarterly:     { enabled: true }
   annual:        { enabled: true }
+
+# Phase 5: Argonaut limited-account configuration. T0/T1 in this account
+# auto-execute (paper or live). T2/T3 always go to the human queue, even
+# in the limited account, per SDD §4.3 / §10.1.
+limited_account:
+  size_usd: 1000
+  account_id: ""             # IBKR Pro account id; set after Phase 5 sign-up
+  execution_mode: paper      # paper | live | queue_only
+  per_decision_max_pct: 20   # any trade > this % of the account auto-escalates a tier
+  daily_loss_limit_pct: 5    # halts new trades for the day if breached
+
+# Phase 5: T3 second-factor. "delay" is the simpler solo-phase choice;
+# "totp" requires an authenticator app and X-TOTP-Code header on approve.
+security:
+  t3_second_factor: delay    # totp | delay
+  delay_minutes: 60

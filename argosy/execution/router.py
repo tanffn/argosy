@@ -51,6 +51,7 @@ from argosy.execution.audit import record_audit_event
 from argosy.logging import get_logger
 from argosy.state import db as db_mod
 from argosy.state.models import (
+    DailyAccountPnL,
     PendingOrder,
     Proposal as ProposalRow,
     ProposalHistory,
@@ -198,6 +199,57 @@ class ExecutionRouter:
             if current is not ProposalStatus.APPROVED:
                 raise IllegalTransitionError(current, ProposalStatus.EXECUTED_LIVE)
 
+            # ----- Account-scoped escalation re-check (SDD §4.3) -----------------
+            # The proposal's tier was decided at flow time. If the account
+            # has shrunk since (e.g. the user withdrew funds), the trade may
+            # now cross the per-decision-max threshold; the agent must NOT
+            # auto-execute. Convert back to AWAITING_HUMAN with an audit
+            # entry so the user can re-evaluate.
+            if proposal.account_class == "limited":
+                escalation = self._check_account_escalation(proposal)
+                if escalation is not None:
+                    await self._transition(
+                        session,
+                        proposal,
+                        ProposalStatus.CANCELLED,
+                        actor="execution_router:account_escalation",
+                        note=escalation,
+                    )
+                    await record_audit_event(
+                        user_id=self.user_id,
+                        event_type="execution.account_escalation_block",
+                        entity_type="proposal",
+                        entity_id=str(proposal.id),
+                        payload={"reason": escalation},
+                        session=session,
+                    )
+                    await session.commit()
+                    return ExecutionResult(
+                        status="rejected",
+                        broker="(account_escalation)",
+                        reason=escalation,
+                    )
+
+            # ----- Daily loss limit (Phase 5) ------------------------------------
+            # When the proposal is in the limited account and the caller
+            # didn't supply day_pnl_usd / daily_loss_limit_usd, derive
+            # them from `daily_account_pnl` and the configured percent of
+            # account size.
+            if proposal.account_class == "limited":
+                cfg = self.settings.limited_account
+                if day_pnl_usd == 0.0:
+                    try:
+                        day_pnl_usd = await self.get_daily_account_pnl_usd(
+                            cfg.account_id or "argonaut"
+                        )
+                    except Exception:  # pragma: no cover - defensive
+                        day_pnl_usd = 0.0
+                if daily_loss_limit_usd is None and cfg.daily_loss_limit_pct > 0:
+                    daily_loss_limit_usd = -1.0 * (
+                        float(cfg.size_usd or 0.0)
+                        * (float(cfg.daily_loss_limit_pct) / 100.0)
+                    )
+
             # ----- Risk preflight ------------------------------------------------
             inputs = self.build_preflight_inputs(
                 proposal,
@@ -343,6 +395,175 @@ class ExecutionRouter:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def get_daily_account_pnl_usd(
+        self, account_id: str, *, on_date: str | None = None
+    ) -> float:
+        """Return today's realized + unrealized P&L for the account, in USD.
+
+        Returns 0.0 if no row exists yet. Drives the daily-loss-limit
+        check in `risk_preflight.check_daily_loss_limit` for the limited
+        account.
+        """
+        from datetime import date as _date_cls
+
+        from sqlalchemy import select
+
+        target = on_date or _date_cls.today().isoformat()
+        async with db_mod.get_session() as session:
+            row = (
+                await session.execute(
+                    select(DailyAccountPnL).where(
+                        DailyAccountPnL.user_id == self.user_id,
+                        DailyAccountPnL.account_id == account_id,
+                        DailyAccountPnL.date == target,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return 0.0
+            return float(row.realized_pnl_usd) + float(row.unrealized_pnl_usd)
+
+    def _check_account_escalation(self, proposal: ProposalRow) -> str | None:
+        """Return a rejection reason string when the trade would now cross
+        the limited-account escalation threshold; None otherwise.
+
+        Recomputes the trade's ratio against the *current* account size
+        (from `agent_settings.limited_account.size_usd`). The Phase 3
+        tier resolver applies this rule at flow start; Phase 5 re-applies
+        it at execution time per SDD §4.3.
+        """
+        cfg = self.settings.limited_account
+        size_usd = float(cfg.size_usd or 0.0)
+        if size_usd <= 0:
+            return None
+        # Best-effort proposed_value:
+        #   - currency size: just the size
+        #   - shares + limit: shares * limit
+        #   - shares + market: skip (caller can't verify cleanly)
+        size = float(proposal.size_shares_or_currency or 0)
+        units = (proposal.size_units or "shares").lower()
+        if units == "currency":
+            proposed_usd = size
+        elif proposal.limit_price is not None:
+            proposed_usd = size * float(proposal.limit_price)
+        else:
+            return None
+        threshold_pct = float(cfg.per_decision_max_pct or 0.0)
+        actual_pct = (proposed_usd / size_usd) * 100.0
+        if actual_pct > threshold_pct:
+            return (
+                f"Account-scoped escalation: trade is {actual_pct:.1f}% of "
+                f"limited account (${size_usd:,.0f}); threshold "
+                f"{threshold_pct:.0f}%. Reverting auto-execution."
+            )
+        return None
+
+    async def auto_execute_if_eligible(
+        self,
+        proposal_id: int,
+        **execute_kwargs: Any,
+    ) -> ExecutionResult | None:
+        """Phase 5: limited+T0/T1 auto-execute path.
+
+        Routing matrix (SDD §10.1):
+          - T0+limited+live → auto-execute
+          - T1+limited+live → auto-execute
+          - T0+limited+paper → PaperFill log (still auto)
+          - T1+limited+paper → PaperFill log (still auto)
+          - T2/T3 (any account) → never auto
+
+        Returns the ExecutionResult on auto-promotion, or None when the
+        proposal is not eligible (caller continues with normal queue).
+
+        The function transitions a DRAFT or AWAITING_HUMAN proposal to
+        APPROVED first, then calls `execute()`. `queue_only` mode and
+        `ARGOSY_KILL=1` short-circuit to None / kill-switch handling.
+        """
+        import os
+
+        if os.environ.get("ARGOSY_KILL") == "1":
+            await record_audit_event(
+                user_id=self.user_id,
+                event_type="auto_execute.kill_switch_blocked",
+                entity_type="proposal",
+                entity_id=str(proposal_id),
+                payload={"reason": "ARGOSY_KILL=1"},
+            )
+            return None
+
+        async with db_mod.get_session() as session:
+            proposal = await session.get(ProposalRow, proposal_id)
+            if proposal is None:
+                raise LookupError(f"proposal {proposal_id} not found")
+            if proposal.user_id != self.user_id:
+                raise PermissionError(
+                    f"proposal {proposal_id} belongs to {proposal.user_id}"
+                )
+
+            if proposal.account_class != "limited":
+                return None
+            if proposal.tier not in ("T0", "T1"):
+                return None
+            # `queue_only` (global) disables every auto-execute cell.
+            if self.settings.execution.default_mode == "queue_only":
+                return None
+            # The limited account also has its own per-account override.
+            if self.settings.limited_account.execution_mode == "queue_only":
+                return None
+
+            current = ProposalStatus(proposal.status)
+            if current not in (
+                ProposalStatus.DRAFT,
+                ProposalStatus.AWAITING_HUMAN,
+            ):
+                return None
+
+            # Promote → APPROVED via legal path.
+            now = _utcnow()
+            try:
+                if current is ProposalStatus.DRAFT:
+                    # DRAFT → APPROVED is legal per Phase 5 transitions.
+                    await self._transition(
+                        session,
+                        proposal,
+                        ProposalStatus.APPROVED,
+                        actor="auto_execute:limited_t0t1",
+                        note="auto-promoted: T0/T1 limited account",
+                    )
+                else:
+                    # AWAITING_HUMAN → APPROVED.
+                    await self._transition(
+                        session,
+                        proposal,
+                        ProposalStatus.APPROVED,
+                        actor="auto_execute:limited_t0t1",
+                        note="auto-promoted: T0/T1 limited account",
+                    )
+            except IllegalTransitionError:
+                _log.warning(
+                    "auto_execute.illegal_transition",
+                    proposal_id=proposal_id,
+                    from_status=current.value,
+                )
+                return None
+
+            await record_audit_event(
+                user_id=self.user_id,
+                event_type="auto_execute.promoted",
+                entity_type="proposal",
+                entity_id=str(proposal.id),
+                payload={
+                    "tier": proposal.tier,
+                    "account_class": proposal.account_class,
+                    "auto_promoted": True,
+                    "promoted_at": now.isoformat(),
+                },
+                session=session,
+            )
+            await session.commit()
+
+        return await self.execute(proposal_id, **execute_kwargs)
 
     async def _transition(
         self,

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import typer
 
+from argosy.cli.argonaut import app as argonaut_app
 from argosy.cli.brief import brief
 from argosy.cli.critique import critique
 from argosy.cli.decide import decide
@@ -19,6 +20,7 @@ from argosy.cli.lots import app as lots_app
 from argosy.cli.proposals import app as proposals_app
 from argosy.cli.run import run
 from argosy.cli.secrets import app as secrets_app
+from argosy.cli.security import app as security_app
 
 app = typer.Typer(
     name="argosy",
@@ -42,6 +44,8 @@ app.add_typer(proposals_app, name="proposals", help="Proposals review commands."
 app.add_typer(fills_app, name="fills", help="Fills inspection commands.")
 app.add_typer(lots_app, name="lots", help="Per-tax-lot import + listing.")
 app.add_typer(email_app, name="email", help="Email approval channel commands.")
+app.add_typer(argonaut_app, name="argonaut", help="Argonaut limited-account commands.")
+app.add_typer(security_app, name="security", help="Security / second-factor management.")
 
 
 def main() -> None:  # pragma: no cover

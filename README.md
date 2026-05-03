@@ -472,6 +472,93 @@ hard-fail / paper / live paths), the reconcile loop (filled / partial /
 cancelled / rejected), email token round-trip + tampering rejection,
 and the new API routes.
 
+## Phase 5 quick start (Argonaut limited-account autonomy)
+
+Phase 5 wires the limited-account autonomous path: T0/T1 decisions auto-execute
+inside a bounded IBKR Pro account (the **Argonaut**); T2/T3 still require
+human approval, with a 24h cooling-off + analyst-delta + risk-preflight
+re-check before T3 commits. Kill-switch (`ARGOSY_KILL=1`) is honored at
+every auto-execute call.
+
+### 1. Open an IBKR Pro account
+
+IBKR Lite is unavailable to Israeli residents; IBKR Pro is the right product.
+Fund it with the bounded amount you wrote into your plan (default $1,000).
+Take note of the account id (e.g. `U1234567`).
+
+### 2. Configure Argonaut in `agent_settings.yaml`
+
+```yaml
+limited_account:
+  size_usd: 1000             # bound the agent's capital
+  account_id: "U1234567"     # IBKR account id
+  execution_mode: paper      # paper | live | queue_only — start at paper
+  per_decision_max_pct: 20   # > 20% of acct → escalate one tier
+  daily_loss_limit_pct: 5    # halts new trades when breached
+```
+
+Or use the dashboard: navigate to the **Argonaut** tab and click the mode
+buttons. The page reads/writes the same YAML file via `/api/argonaut/mode`.
+
+### 3. Set up T3 second-factor (TOTP or 1h delay)
+
+```yaml
+security:
+  t3_second_factor: delay    # delay (recommended for solo) or totp
+  delay_minutes: 60
+```
+
+For TOTP:
+
+```bash
+uv run argosy security totp setup       # prints provisioning URI
+uv run argosy security totp verify 123456
+```
+
+Then approve T3 proposals with `X-TOTP-Code: <code>` in the API call (the
+dashboard prompts for it inline).
+
+### 4. The 4-week soak protocol
+
+Per SDD §13, Phase 5's exit gate is **4 weeks of autonomous paper-mode
+operation with no kill-switch trips**, plus T0/T1 auto-executions matching
+what you would have approved manually 90%+ of the time. Don't switch to
+`live` early.
+
+  - Week 1: paper mode only; review every auto-execution daily.
+  - Week 2: paper mode; check the audit_log for `auto_promoted=True` entries
+    and verify each one was a decision you'd have approved.
+  - Weeks 3-4: paper mode; run the agreement-rate analysis. If < 90%, fix
+    the underlying agent prompts before going live.
+  - End of week 4: flip to `live` mode (Argonaut tab → live button) only if
+    the agreement-rate target is hit AND no kill-switch trips occurred.
+
+The kill switch is your seatbelt: `ARGOSY_KILL=1` halts all new orders and
+leaves the engine in read-only mode. Trip it at the first sign of trouble.
+
+### CLI
+
+```bash
+uv run argosy argonaut status               # current account state
+uv run argosy argonaut snapshot             # force a daily snapshot
+uv run argosy argonaut mode paper           # toggle execution mode
+uv run argosy security totp setup           # enroll TOTP
+uv run argosy security totp verify <code>
+```
+
+### Tests
+
+```bash
+uv run pytest -q
+```
+
+Tests mock `ib_insync` and never make live broker calls. The Phase 5 suite
+covers ArgonautAccount config + snapshots, the auto-execute path
+(limited+T0/T1 vs T2/T3 vs main), account-scoped escalation re-check at
+execution time, T3 cooling-off re-check (delta detection + preflight),
+TOTP secret/verify/replay, the daily loss limit gate, and the new API
+routes.
+
 ## Reference paper
 
 Xiao et al. *TradingAgents: Multi-Agents LLM Financial Trading Framework.* [arXiv:2412.20138](https://arxiv.org/html/2412.20138v1).

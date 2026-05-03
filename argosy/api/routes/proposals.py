@@ -18,10 +18,11 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from argosy.agent_settings import load_agent_settings
 from argosy.api.events import publish_event
 from argosy.decisions.proposals import (
     IllegalTransitionError,
@@ -29,6 +30,7 @@ from argosy.decisions.proposals import (
     assert_legal,
 )
 from argosy.decisions.tiers import Tier
+from argosy.security import totp as totp_mod
 from argosy.state import db as db_mod
 from argosy.state.models import (
     AgentReport as AgentReportRow,
@@ -36,6 +38,7 @@ from argosy.state.models import (
     DecisionRun,
     Proposal as ProposalRow,
     ProposalHistory,
+    TOTPSecret,
 )
 
 
@@ -268,18 +271,127 @@ async def get_proposal(
 async def approve_proposal(
     proposal_id: int,
     body: ApproveRequest,
+    x_totp_code: str | None = Header(default=None, alias="X-TOTP-Code"),
 ) -> ProposalActionResponse:
     async with db_mod.get_session() as session:
         row = await session.get(ProposalRow, proposal_id)
         if row is None or row.user_id != body.user_id:
             raise HTTPException(status_code=404, detail="proposal not found")
 
-        # T3 requires 2nd-factor (Phase 5 wires it; Phase 3 stub: respect flag).
-        if row.tier == "T3" and not body.second_factor:
-            raise HTTPException(
-                status_code=400,
-                detail="T3 approval requires second_factor (Phase 3 stub).",
-            )
+        # ----- T3 second-factor (Phase 5: TOTP or delay) ---------------------
+        # Per `agent_settings.security.t3_second_factor`:
+        #   - "totp"  → require a valid X-TOTP-Code header
+        #   - "delay" → require body.second_factor=True AND first approval
+        #               was at least `delay_minutes` ago
+        if row.tier == "T3":
+            settings = load_agent_settings(body.user_id)
+            kind = settings.security.t3_second_factor
+            if kind == "totp":
+                if not x_totp_code:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="T3 approval requires X-TOTP-Code header.",
+                    )
+                secret_row = await session.get(TOTPSecret, body.user_id)
+                if secret_row is None or not secret_row.secret_encrypted:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="user has no TOTP secret enrolled; "
+                        "POST /api/security/totp/setup first.",
+                    )
+                last_used_counter: int | None = None
+                if secret_row.last_verified_at is not None:
+                    last_used_counter = int(
+                        secret_row.last_verified_at.timestamp()
+                        // totp_mod.DEFAULT_STEP_SECONDS
+                    )
+                try:
+                    result = totp_mod.verify_code(
+                        secret_row.secret_encrypted,
+                        x_totp_code,
+                        last_used_counter=last_used_counter,
+                    )
+                    secret_row.last_verified_at = _utcnow().replace(
+                        microsecond=0
+                    )
+                except totp_mod.TOTPVerificationError as exc:
+                    raise HTTPException(
+                        status_code=401, detail=f"TOTP failed: {exc}"
+                    ) from exc
+                # Mark second_factor_used=True regardless of body flag.
+                body.second_factor = True
+                _ = result  # kept for audit completeness
+            elif kind == "delay":
+                # Backwards-compat: callers must still set second_factor=True
+                # to opt into the delay flow (Phase 3 contract preserved;
+                # Phase 5 layers a 1h gap on top).
+                if not body.second_factor:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="T3 approval requires second_factor (delay mode).",
+                    )
+                # Two-step: first call records an Approval pending; the
+                # second call (>= delay_minutes later) commits. We use
+                # the existing `approvals` table: the first row carries
+                # a pending marker via `signed_token_id="pending"`.
+                first_pending = (
+                    await session.execute(
+                        select(Approval)
+                        .where(
+                            Approval.proposal_id == row.id,
+                            Approval.signed_token_id == "pending",
+                        )
+                        .order_by(Approval.approved_at.asc())
+                    )
+                ).scalars().first()
+                from datetime import timedelta as _td
+
+                if first_pending is None:
+                    # Step 1: record pending and return.
+                    session.add(
+                        Approval(
+                            proposal_id=row.id,
+                            user_id=body.user_id,
+                            approved_at=_utcnow(),
+                            approval_channel=body.channel,
+                            second_factor_used=False,
+                            signed_token_id="pending",
+                        )
+                    )
+                    session.add(
+                        ProposalHistory(
+                            proposal_id=row.id,
+                            status=row.status,
+                            transitioned_at=_utcnow(),
+                            transitioned_by=f"user:{body.user_id}",
+                            note="T3 delay-mode: first approve recorded (pending)",
+                        )
+                    )
+                    await session.commit()
+                    return ProposalActionResponse(
+                        status="pending_delay",
+                        proposal_id=row.id,
+                        message=(
+                            f"First approve recorded; wait "
+                            f"{settings.security.delay_minutes} minutes "
+                            "and approve again to commit."
+                        ),
+                    )
+                # Step 2: ensure delay elapsed.
+                elapsed = _utcnow() - first_pending.approved_at
+                required = _td(minutes=settings.security.delay_minutes)
+                if elapsed < required:
+                    remaining = (required - elapsed).total_seconds() / 60.0
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Delay second-factor: wait "
+                            f"{remaining:.1f} more minutes before commit."
+                        ),
+                    )
+                # Mark first_pending as confirmed.
+                first_pending.signed_token_id = "delay_confirmed"
+                body.second_factor = True
 
         src = ProposalStatus(row.status)
         try:
