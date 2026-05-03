@@ -213,19 +213,33 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
             await session.flush()
 
         # Merge each context_update into the right YAML section, patch wins.
-        for u in out.context_updates:
-            target = getattr(u, "target_section", None) or u.get("target_section")  # type: ignore[union-attr]
-            patch = getattr(u, "yaml_patch", None) or u.get("yaml_patch", "")  # type: ignore[union-attr]
-            if not target or not patch:
-                continue
-            if target == "identity":
-                ctx.identity_yaml = _apply_turn_update(ctx.identity_yaml or "", patch)
-            elif target == "goals":
-                ctx.goals_yaml = _apply_turn_update(ctx.goals_yaml or "", patch)
-            elif target == "constraints":
-                ctx.constraints_yaml = _apply_turn_update(
-                    ctx.constraints_yaml or "", patch
-                )
+        # `out.context_updates` is list[ContextUpdate] — pydantic models with
+        # required `target_section` (Literal) and a default-"" `yaml_patch`.
+        # A common case is yaml_patch="" when the agent has no concrete delta
+        # to record this turn; we skip those silently.
+        try:
+            for u in out.context_updates:
+                target = u.target_section
+                patch = u.yaml_patch or ""
+                if not patch.strip():
+                    continue
+                if target == "identity":
+                    ctx.identity_yaml = _apply_turn_update(
+                        ctx.identity_yaml or "", patch
+                    )
+                elif target == "goals":
+                    ctx.goals_yaml = _apply_turn_update(ctx.goals_yaml or "", patch)
+                elif target == "constraints":
+                    ctx.constraints_yaml = _apply_turn_update(
+                        ctx.constraints_yaml or "", patch
+                    )
+        except Exception:
+            # Don't crash the whole turn just because one delta was malformed —
+            # log and continue. The agent's question was still produced.
+            _log.exception(
+                "intake.turn.context_update_apply_failed",
+                intake_session_id=session_id,
+            )
 
         # Advance stage when the agent says we're done with the current one.
         if out.stage_complete and out.next_stage:
