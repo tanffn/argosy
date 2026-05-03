@@ -169,7 +169,14 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
         _log.exception("intake.turn_failed", intake_session_id=session_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    # Stamp the agent_reports row with the session id for audit grouping.
+    out: IntakeTurnOutput = report.output  # type: ignore[assignment]
+
+    # Persist the conversation turn:
+    #   - Stamp agent_reports with session id (audit grouping)
+    #   - Apply context_updates to the user_context YAML payloads so the
+    #     NEXT turn's accumulated_context reflects what was just learned
+    #     (without this, the agent has amnesia and re-asks answered Qs)
+    #   - Advance current_stage when the agent signals stage_complete=True
     async with db_mod.get_session() as session:
         ar_row = AgentReportRow(
             user_id=req.user_id,
@@ -185,9 +192,52 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
             confidence=(report.confidence.value if report.confidence else None),
         )
         session.add(ar_row)
-        await session.commit()
 
-    out: IntakeTurnOutput = report.output  # type: ignore[assignment]
+        # Make sure user / user_context exist before merging.
+        user = (
+            await session.execute(select(User).where(User.id == req.user_id))
+        ).scalar_one_or_none()
+        if user is None:
+            user = User(id=req.user_id)
+            session.add(user)
+            await session.flush()
+
+        ctx = (
+            await session.execute(
+                select(UserContext).where(UserContext.user_id == req.user_id)
+            )
+        ).scalar_one_or_none()
+        if ctx is None:
+            ctx = UserContext(user_id=req.user_id)
+            session.add(ctx)
+            await session.flush()
+
+        # Merge each context_update into the right YAML section, patch wins.
+        for u in out.context_updates:
+            target = getattr(u, "target_section", None) or u.get("target_section")  # type: ignore[union-attr]
+            patch = getattr(u, "yaml_patch", None) or u.get("yaml_patch", "")  # type: ignore[union-attr]
+            if not target or not patch:
+                continue
+            if target == "identity":
+                ctx.identity_yaml = _apply_turn_update(ctx.identity_yaml or "", patch)
+            elif target == "goals":
+                ctx.goals_yaml = _apply_turn_update(ctx.goals_yaml or "", patch)
+            elif target == "constraints":
+                ctx.constraints_yaml = _apply_turn_update(
+                    ctx.constraints_yaml or "", patch
+                )
+
+        # Advance stage when the agent says we're done with the current one.
+        if out.stage_complete and out.next_stage:
+            ctx.current_stage = out.next_stage
+        elif ctx.current_stage is None:
+            ctx.current_stage = out.stage
+
+        # Make sure the session_id sticks even if we created the row above.
+        if session_id and not ctx.intake_session_id:
+            ctx.intake_session_id = session_id
+
+        await session.commit()
     return TurnResponse(
         stage=out.stage,
         question_for_user=out.question_for_user,
@@ -226,7 +276,9 @@ def _merge_yaml_additive(existing_yaml: str, extracted_yaml: str) -> str:
 
     Both inputs are YAML strings (possibly empty). Returns a YAML string.
     Existing values WIN over extracted values — we never overwrite anything
-    the user already typed in the conversational interview.
+    the user already typed in the conversational interview. Used by the
+    /upload path where the new content is *extracted* and the existing
+    content may be *typed by the user*.
 
     On parse failure of either side, we degrade gracefully:
       - If the existing YAML is unparseable, we keep it unchanged (don't
@@ -253,6 +305,48 @@ def _merge_yaml_additive(existing_yaml: str, extracted_yaml: str) -> str:
 
     if not merged:
         return existing_yaml  # nothing new
+    return yaml.safe_dump(merged, sort_keys=True, allow_unicode=True)
+
+
+def _apply_turn_update(existing_yaml: str, patch_yaml: str) -> str:
+    """Merge a turn's context_update yaml_patch into the section's YAML.
+
+    Used by the /turn path. The agent's patch represents the user's
+    authoritative answer for the fields it touches, so **patch values
+    win over existing** here (the inverse of `_merge_yaml_additive`).
+
+    Recursive merge for nested dicts; lists/scalars from the patch
+    replace the existing value.
+
+    On parse failure on either side, returns the existing string
+    unchanged (don't clobber).
+    """
+    try:
+        existing_obj = yaml.safe_load(existing_yaml) if existing_yaml.strip() else {}
+    except yaml.YAMLError:
+        return existing_yaml
+    try:
+        patch_obj = yaml.safe_load(patch_yaml) if patch_yaml.strip() else {}
+    except yaml.YAMLError:
+        return existing_yaml
+
+    if not isinstance(existing_obj, dict):
+        existing_obj = {} if existing_obj is None else {"_value": existing_obj}
+    if not isinstance(patch_obj, dict):
+        patch_obj = {} if patch_obj is None else {"_value": patch_obj}
+
+    def _deep_merge(base: dict, override: dict) -> dict:
+        out = dict(base)
+        for k, v in override.items():
+            if isinstance(v, dict) and isinstance(out.get(k), dict):
+                out[k] = _deep_merge(out[k], v)
+            else:
+                out[k] = v
+        return out
+
+    merged = _deep_merge(existing_obj, patch_obj)
+    if not merged:
+        return existing_yaml
     return yaml.safe_dump(merged, sort_keys=True, allow_unicode=True)
 
 
