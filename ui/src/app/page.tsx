@@ -1004,7 +1004,7 @@ function ActivityTimeline({ groups, topEntryRecent }: ActivityTimelineProps) {
               return (
                 <li
                   key={row.id}
-                  className="relative pl-5 pr-4 py-1.5 flex items-center justify-between gap-3 text-sm argosy-fade-in"
+                  className="relative pl-8 pr-4 py-1.5 flex items-center justify-between gap-3 text-sm argosy-fade-in"
                 >
                   <span
                     aria-hidden
@@ -1023,22 +1023,26 @@ function ActivityTimeline({ groups, topEntryRecent }: ActivityTimelineProps) {
                       </StatusPill>
                     ) : null}
                   </span>
+                  {/* Right column: fixed-width slots so time and cost align */}
+                  {/* across rows regardless of the pill's variable width.   */}
                   <span className="flex items-center gap-3 shrink-0">
-                    <span className="text-xs text-muted-foreground font-mono tabular-nums">
+                    <span className="text-xs text-muted-foreground font-mono tabular-nums w-24 text-right">
                       {new Date(row.created_at).toLocaleTimeString()}
                     </span>
-                    <span className="text-xs text-muted-foreground font-mono tabular-nums">
+                    <span className="text-xs text-muted-foreground font-mono tabular-nums w-16 text-right">
                       ${row.cost_usd.toFixed(4)}
                     </span>
-                    {c ? (
-                      <StatusPill tone={confidenceTone(c)} mono>
-                        {c.toLowerCase()}
-                      </StatusPill>
-                    ) : (
-                      <StatusPill tone="neutral" mono>
-                        n/a
-                      </StatusPill>
-                    )}
+                    <span className="w-20 flex justify-end">
+                      {c ? (
+                        <StatusPill tone={confidenceTone(c)} mono>
+                          {c.toLowerCase()}
+                        </StatusPill>
+                      ) : (
+                        <StatusPill tone="neutral" mono>
+                          n/a
+                        </StatusPill>
+                      )}
+                    </span>
                   </span>
                 </li>
               );
