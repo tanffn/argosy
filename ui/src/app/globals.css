@@ -81,3 +81,52 @@
     color: var(--foreground);
   }
 }
+
+/* Pass-2 visual refresh: keyframes for fade-in (timeline entries) and
+   flash-border (real-time WS event highlight). Exposed as utility
+   classes used from components/page.tsx. */
+@keyframes argosy-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes argosy-flash-border {
+  0% {
+    border-top-color: rgb(52 211 153 / 0.7);
+    box-shadow: 0 -1px 0 0 rgb(52 211 153 / 0.4);
+  }
+  100% {
+    border-top-color: var(--color-border);
+    box-shadow: none;
+  }
+}
+
+@keyframes argosy-pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.92);
+  }
+}
+
+.argosy-fade-in {
+  animation: argosy-fade-in 320ms ease-out both;
+}
+
+.argosy-flash-border {
+  animation: argosy-flash-border 600ms ease-out 1;
+}
+
+.argosy-pulse-dot {
+  animation: argosy-pulse-dot 1.6s ease-in-out infinite;
+}
