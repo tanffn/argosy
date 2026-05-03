@@ -57,6 +57,16 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "risk_officer": "claude-sonnet-4-6",
     "risk_facilitator": "claude-sonnet-4-6",
     "fund_manager": "claude-opus-4-7",
+    # Phase 7 analysts (SDD §3.1, §3.8):
+    "fundamentals": "claude-sonnet-4-6",
+    "technical": "claude-haiku-4-5",
+    "sentiment": "claude-haiku-4-5",
+    "tax": "claude-sonnet-4-6",
+    "fx": "claude-haiku-4-5",
+    # Phase 7 cross-cutting (SDD §3.6):
+    "domain_refresh": "claude-sonnet-4-6",
+    "audit": "claude-opus-4-7",
+    "watchlist": "claude-haiku-4-5",
 }
 FALLBACK_MODEL = "claude-sonnet-4-6"
 

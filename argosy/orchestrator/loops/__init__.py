@@ -1,13 +1,35 @@
-"""Cadence loop implementations (Phase 2).
+"""Cadence loop implementations.
 
-Phase 2 wires only `daily_brief`. Other loops (minute/hour/weekly/
-monthly/quarterly/annual) are scheduled by the orchestrator but their
-implementations land in Phases 3+.
+Phase 2: daily_brief.
+Phase 3: weekly_review, process_cooling.
+Phase 4: reconcile.
+Phase 7: minute, hour, monthly_cycle, quarterly, annual, backup.
 """
 
 from __future__ import annotations
 
+from argosy.orchestrator.loops.annual import AnnualLoop
+from argosy.orchestrator.loops.backup import BackupLoop
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule, TickStatus
 from argosy.orchestrator.loops.daily_brief import DailyBriefLoop
+from argosy.orchestrator.loops.hour_loop import HourLoop
+from argosy.orchestrator.loops.minute_loop import MinuteLoop
+from argosy.orchestrator.loops.monthly_cycle import MonthlyCycleLoop
+from argosy.orchestrator.loops.process_cooling import ProcessCoolingLoop
+from argosy.orchestrator.loops.quarterly import QuarterlyLoop
+from argosy.orchestrator.loops.weekly_review import WeeklyReviewLoop
 
-__all__ = ["CadenceLoop", "DailyBriefLoop", "LoopSchedule", "TickStatus"]
+__all__ = [
+    "AnnualLoop",
+    "BackupLoop",
+    "CadenceLoop",
+    "DailyBriefLoop",
+    "HourLoop",
+    "LoopSchedule",
+    "MinuteLoop",
+    "MonthlyCycleLoop",
+    "ProcessCoolingLoop",
+    "QuarterlyLoop",
+    "TickStatus",
+    "WeeklyReviewLoop",
+]

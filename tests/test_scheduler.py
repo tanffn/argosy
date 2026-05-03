@@ -154,3 +154,36 @@ def test_disabled_loop_not_run(engine: None) -> None:
     scheduler = Scheduler(user_id="ariel", settings=settings)
     scheduler.register_default_loops()
     assert "daily_brief" not in scheduler._loops  # type: ignore[attr-defined]
+
+
+def test_phase7_loops_registered_by_default(engine: None) -> None:
+    """All Phase 7 cadence loops register when their cadences.<name>.enabled=True."""
+    scheduler = Scheduler(user_id="ariel")
+    scheduler.register_default_loops()
+    for name in (
+        "minute",
+        "hour",
+        "monthly_cycle",
+        "quarterly",
+        "annual",
+        "backup",
+    ):
+        assert name in scheduler._loops  # type: ignore[attr-defined]
+
+
+def test_phase7_loops_disabled_individually(engine: None) -> None:
+    """Each Phase 7 loop honors its own `cadences.<name>.enabled` flag."""
+    from argosy.agent_settings import AgentSettings, CadencesBlock
+
+    settings = AgentSettings(
+        cadences=CadencesBlock(
+            minute=CadenceConfig(enabled=False, interval_seconds=60),
+            backup=CadenceConfig(enabled=False, cron="0 3 * * *"),
+        )
+    )
+    scheduler = Scheduler(user_id="ariel", settings=settings)
+    scheduler.register_default_loops()
+    assert "minute" not in scheduler._loops  # type: ignore[attr-defined]
+    assert "backup" not in scheduler._loops  # type: ignore[attr-defined]
+    # other Phase 7 loops still present (defaults are enabled)
+    assert "hour" in scheduler._loops  # type: ignore[attr-defined]

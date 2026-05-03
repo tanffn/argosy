@@ -35,14 +35,20 @@ from argosy.api.routes.argonaut import router as argonaut_router
 from argosy.api.routes.branding import router as branding_router
 from argosy.api.routes.daily_brief import router as daily_brief_router
 from argosy.api.routes.decisions import router as decisions_router
+from argosy.api.routes.domain_kb import router as domain_kb_router
 from argosy.api.routes.execution import router as execution_router
 from argosy.api.routes.health import router as health_router
+from argosy.api.routes.intake import router as intake_router
 from argosy.api.routes.internal import router as internal_router
 from argosy.api.routes.onboarding import router as onboarding_router
 from argosy.api.routes.plan import router as plan_router
 from argosy.api.routes.portfolio import router as portfolio_router
 from argosy.api.routes.proposals import router as proposals_router
 from argosy.api.routes.security import router as security_router
+from argosy.api.routes.settings import (
+    cost_guard_router,
+    router as settings_router,
+)
 from argosy.config import get_settings
 from argosy.logging import configure_logging, get_logger
 
@@ -98,6 +104,12 @@ def create_app() -> FastAPI:
     app.include_router(branding_router, prefix=api_prefix)
     app.include_router(onboarding_router, prefix=api_prefix)
     app.include_router(internal_router)
+
+    # Phase 7 — domain KB browser, intake API, settings, cost-guard override
+    app.include_router(domain_kb_router, prefix=api_prefix)
+    app.include_router(intake_router, prefix=api_prefix)
+    app.include_router(settings_router, prefix=api_prefix)
+    app.include_router(cost_guard_router)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

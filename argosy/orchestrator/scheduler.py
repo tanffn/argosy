@@ -22,9 +22,17 @@ from sqlalchemy import select
 
 from argosy.agent_settings import AgentSettings, load_agent_settings
 from argosy.logging import get_logger
+from argosy.orchestrator.loops.annual import AnnualLoop
+from argosy.orchestrator.loops.audit import AuditLoop
+from argosy.orchestrator.loops.backup import BackupLoop
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule, TickStatus
 from argosy.orchestrator.loops.daily_brief import DailyBriefLoop
+from argosy.orchestrator.loops.hour_loop import HourLoop
+from argosy.orchestrator.loops.minute_loop import MinuteLoop
+from argosy.orchestrator.loops.monthly_cycle import MonthlyCycleLoop
 from argosy.orchestrator.loops.process_cooling import ProcessCoolingLoop
+from argosy.orchestrator.loops.quarterly import QuarterlyLoop
+from argosy.orchestrator.loops.watchlist import WatchlistLoop
 from argosy.orchestrator.loops.weekly_review import WeeklyReviewLoop
 from argosy.orchestrator.triggers import is_market_open
 from argosy.state import db as db_mod
@@ -131,6 +139,76 @@ class Scheduler:
             )
         except ImportError:  # pragma: no cover - defensive
             pass
+
+        # Phase 7: minute / hour / monthly / quarterly / annual / backup
+        # All gated on `cadences.<name>.enabled` from agent_settings.yaml.
+        cadences = self.settings.cadences
+
+        if cadences.minute.enabled:
+            self.register_loop(
+                MinuteLoop(
+                    schedule=LoopSchedule.from_config(cadences.minute),
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
+        if cadences.hour.enabled:
+            self.register_loop(
+                HourLoop(
+                    schedule=LoopSchedule.from_config(cadences.hour),
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
+        if cadences.monthly_cycle.enabled:
+            self.register_loop(
+                MonthlyCycleLoop(
+                    schedule=LoopSchedule.from_config(cadences.monthly_cycle),
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
+        if cadences.quarterly.enabled:
+            self.register_loop(
+                QuarterlyLoop(
+                    schedule=LoopSchedule.from_config(cadences.quarterly),
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
+        if cadences.annual.enabled:
+            self.register_loop(
+                AnnualLoop(
+                    schedule=LoopSchedule.from_config(cadences.annual),
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
+        if cadences.backup.enabled:
+            self.register_loop(
+                BackupLoop(
+                    schedule=LoopSchedule.from_config(cadences.backup),
+                    enabled=True,
+                    user_id=self.user_id,
+                    settings=self.settings,
+                )
+            )
+        if cadences.audit.enabled:
+            self.register_loop(
+                AuditLoop(
+                    schedule=LoopSchedule.from_config(cadences.audit),
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
+        if cadences.watchlist.enabled:
+            self.register_loop(
+                WatchlistLoop(
+                    schedule=LoopSchedule.from_config(cadences.watchlist),
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
 
     # ------------------------------------------------------------------
     # Run

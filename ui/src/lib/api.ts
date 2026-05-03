@@ -395,4 +395,99 @@ export const api = {
       user_id: userId,
       code,
     }),
+
+  // Phase 7: Domain KB
+  domainKbTree: () => getJSON<DomainKbTreeNode>(`/api/domain-kb/tree`),
+  domainKbFile: (path: string) =>
+    getJSON<DomainKbFileResponse>(
+      `/api/domain-kb/file?path=${encodeURIComponent(path)}`,
+    ),
+  domainKbReviewQueue: () =>
+    getJSON<DomainKbReviewQueueResponse>(`/api/domain-kb/review-queue`),
+  domainKbReviewApprove: (id: number) =>
+    postJSON<{ status: string; id: number }>(
+      `/api/domain-kb/review/${id}/approve`,
+      {},
+    ),
+  domainKbReviewReject: (id: number) =>
+    postJSON<{ status: string; id: number }>(
+      `/api/domain-kb/review/${id}/reject`,
+      {},
+    ),
+
+  // Phase 7: Intake
+  intakeStatus: (userId: string) =>
+    getJSON<IntakeStatusResponse>(
+      `/api/intake/status?user_id=${encodeURIComponent(userId)}`,
+    ),
+  intakeTurn: (userId: string, lastUserMessage: string, currentStage?: string) =>
+    postJSON<IntakeTurnResponse>(`/api/intake/turn`, {
+      user_id: userId,
+      last_user_message: lastUserMessage,
+      current_stage: currentStage,
+    }),
+
+  // Phase 7: Settings
+  getAgentSettings: (userId: string) =>
+    getJSON<Record<string, unknown>>(
+      `/api/settings?user_id=${encodeURIComponent(userId)}`,
+    ),
+  patchAgentSettings: (userId: string, patch: Record<string, unknown>) =>
+    fetch(`/api/settings`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, patch }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status} for /api/settings`);
+      return (await r.json()) as Record<string, unknown>;
+    }),
 };
+
+// ----------------------------------------------------------------------
+// Phase 7 type definitions
+// ----------------------------------------------------------------------
+
+export interface DomainKbTreeNode {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  children: DomainKbTreeNode[];
+}
+
+export interface DomainKbFileResponse {
+  path: string;
+  frontmatter: string;
+  content: string;
+  raw: string;
+}
+
+export interface DomainKbReviewItem {
+  id: number;
+  path: string;
+  diff: string;
+  evidence: Array<Record<string, unknown>>;
+  status: string;
+  note: string;
+}
+
+export interface DomainKbReviewQueueResponse {
+  rows: DomainKbReviewItem[];
+  total: number;
+}
+
+export interface IntakeStatusResponse {
+  user_id: string;
+  user_exists: boolean;
+  current_stage: string;
+}
+
+export interface IntakeTurnResponse {
+  stage: string;
+  question_for_user: string;
+  stage_complete: boolean;
+  next_stage: string | null;
+  confidence: string;
+  cited_sources: string[];
+  notes_for_orchestrator: string;
+  context_updates: Array<Record<string, unknown>>;
+}

@@ -65,7 +65,46 @@ class CadencesBlock(BaseModel):
         default_factory=lambda: CadenceConfig(enabled=True, cron="0 8 1 * *")
     )
     quarterly: CadenceConfig = Field(default_factory=lambda: CadenceConfig(enabled=True))
-    annual: CadenceConfig = Field(default_factory=lambda: CadenceConfig(enabled=True))
+    annual: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(enabled=True, cron="0 8 2 1 *")
+    )
+    backup: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(enabled=True, cron="0 3 * * *")
+    )
+    audit: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(enabled=True, cron="0 19 * * SUN")
+    )
+    watchlist: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(enabled=True, cron="30 8 * * *")
+    )
+
+
+class BackupsBlock(BaseModel):
+    """Backup retention + offsite copy config (SDD §14.4)."""
+
+    enabled: bool = True
+    backups_dir: str = ""
+    offsite_path: str = ""
+    retention_daily: int = 30
+    retention_weekly: int = 12
+    retention_monthly: int = 12
+
+
+class CostBlock(BaseModel):
+    """Claude monthly budget + pause threshold (SDD §14.7)."""
+
+    monthly_budget_usd: float = 100.0
+    alert_at_pct: float = 80.0
+    pause_at_pct: float = 100.0
+
+
+class AlertsBlock(BaseModel):
+    """Alert channel configuration (SDD §11.1 row 10)."""
+
+    email_enabled: bool = True
+    email_to: str = ""
+    telegram_enabled: bool = False
+    telegram_chat_id: str = ""
 
 
 class ExecutionBlock(BaseModel):
@@ -139,6 +178,10 @@ class AgentSettings(BaseModel):
     tiers: TiersBlock = Field(default_factory=TiersBlock)
     limited_account: LimitedAccountBlock = Field(default_factory=LimitedAccountBlock)
     security: SecurityBlock = Field(default_factory=SecurityBlock)
+    # Phase 7 additions
+    backups: BackupsBlock = Field(default_factory=BackupsBlock)
+    cost: CostBlock = Field(default_factory=CostBlock)
+    alerts: AlertsBlock = Field(default_factory=AlertsBlock)
 
     def model_for_role(self, role: str) -> str | None:
         """Resolve the configured model for an agent role.
@@ -176,7 +219,9 @@ cadences:
   weekly_review: { enabled: true, cron: "0 18 * * SUN" }
   monthly_cycle: { enabled: true, cron: "0 8 1 * *" }
   quarterly:     { enabled: true }
-  annual:        { enabled: true }
+  annual:        { enabled: true, cron: "0 8 2 1 *" }
+  backup:        { enabled: true, cron: "0 3 * * *" }
+  audit:         { enabled: true, cron: "0 19 * * SUN" }
 
 models:
   defaults:
@@ -211,6 +256,25 @@ limited_account:
 security:
   t3_second_factor: delay
   delay_minutes: 60
+
+backups:
+  enabled: true
+  backups_dir: ""
+  offsite_path: ""
+  retention_daily: 30
+  retention_weekly: 12
+  retention_monthly: 12
+
+cost:
+  monthly_budget_usd: 100
+  alert_at_pct: 80
+  pause_at_pct: 100
+
+alerts:
+  email_enabled: true
+  email_to: ""
+  telegram_enabled: false
+  telegram_chat_id: ""
 """
 
 
@@ -266,8 +330,11 @@ def save_agent_settings(user_id: str, settings: AgentSettings) -> Path:
 
 __all__ = [
     "AgentSettings",
+    "AlertsBlock",
+    "BackupsBlock",
     "CadenceConfig",
     "CadencesBlock",
+    "CostBlock",
     "ExecutionBlock",
     "LimitedAccountBlock",
     "ModelsBlock",

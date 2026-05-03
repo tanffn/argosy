@@ -11,7 +11,11 @@ const TABS = [
   { href: "/plan", label: "Plan" },
   { href: "/proposals", label: "Proposals" },
   { href: "/argonaut", label: "Argonaut" },
+  { href: "/agents", label: "Agents" },
   { href: "/audit", label: "Audit" },
+  { href: "/domain-kb", label: "Domain KB" },
+  { href: "/intake", label: "Intake" },
+  { href: "/settings", label: "Settings" },
 ];
 
 export function NavBar() {

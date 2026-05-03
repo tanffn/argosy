@@ -677,6 +677,77 @@ support_email: hello@pilot.example
   one engine cannot read each other's positions / proposals / agent
   reports / fills / audit log / TOTP secret.
 
+## Phase 7 — SDD completeness
+
+Phase 7 closes the remaining SDD gaps so every feature listed in the
+spec has a working scaffold:
+
+### Five additional analyst agents
+
+| Agent | Module | Default model |
+|---|---|---|
+| Fundamentals | `argosy.agents.fundamentals_analyst.FundamentalsAnalystAgent` | Sonnet |
+| Technical    | `argosy.agents.technical_analyst.TechnicalAnalystAgent`    | Haiku  |
+| Sentiment    | `argosy.agents.sentiment_analyst.SentimentAnalystAgent`    | Haiku  |
+| Tax          | `argosy.agents.tax_analyst.TaxAnalystAgent`                | Sonnet |
+| FX           | `argosy.agents.fx_analyst.FXAnalystAgent`                  | Haiku  |
+
+Each follows the news / concentration analyst pattern (pydantic output,
+mocked-Anthropic tests, citation gate). Tax requires a non-empty
+`domain_knowledge/tax/...` citation set.
+
+### Three cross-cutting agents
+
+| Agent | Module | Cadence |
+|---|---|---|
+| Domain refresh | `argosy.agents.domain_refresh.DomainRefreshAgent` | Weekly + annual full pass |
+| Audit          | `argosy.agents.audit_agent.AuditAgent`            | Weekly                    |
+| Watchlist      | `argosy.agents.watchlist.WatchlistAgent`          | Daily                     |
+
+### Five new cadence loops
+
+| Loop | Class | Schedule |
+|---|---|---|
+| Minute         | `MinuteLoop`        | 60 s, market-hours-only |
+| Hour           | `HourLoop`          | 60 min, 24/7            |
+| Monthly cycle  | `MonthlyCycleLoop`  | `0 8 1 * *`             |
+| Quarterly      | `QuarterlyLoop`     | enabled flag only       |
+| Annual         | `AnnualLoop`        | `0 8 2 1 *`             |
+| Backup         | `BackupLoop`        | `0 3 * * *`             |
+
+`Scheduler.register_default_loops()` wires them all, gated on
+`cadences.<name>.enabled` from `agent_settings.yaml`.
+
+### Cost-cap pause enforcement
+
+`argosy.orchestrator.cost_guard.CostGuard` checks current month's
+`agent_reports.cost_usd` sum against
+`agent_settings.cost.monthly_budget_usd × pause_at_pct / 100`. All loops
+EXCEPT `daily_brief` and `process_cooling` consult the guard at tick
+start. `POST /internal/cost-guard/override` (admin-token-gated) lifts
+the pause for a window; the override is audit-logged.
+
+### Daily backup automation
+
+`BackupLoop` snapshots the SQLite DB to
+`${ARGOSY_HOME}/backups/argosy-YYYYMMDD.db` (or
+`agent_settings.backups.backups_dir`) using `sqlite3.backup`. Retention:
+30 daily, 12 weekly (Sunday), 12 monthly (1st), indefinite annual. When
+`agent_settings.backups.offsite_path` is set, Sunday backups also
+`shutil.copy2` to that path.
+
+### Four new UI screens
+
+| Screen | Route | API endpoints |
+|---|---|---|
+| Agent activity | `/agents`     | `/api/agent-activity` |
+| Domain KB      | `/domain-kb`  | `/api/domain-kb/{tree,file,review-queue,review/{id}/{approve,reject}}` |
+| Intake wizard  | `/intake`     | `/api/intake/{turn,status}` |
+| Settings       | `/settings`   | `GET /api/settings`, `PATCH /api/settings`, `POST /internal/cost-guard/override` |
+
+Nav entries added; each page is a Client Component using shadcn/ui
+patterns established in earlier phases.
+
 ## Reference paper
 
 Xiao et al. *TradingAgents: Multi-Agents LLM Financial Trading Framework.* [arXiv:2412.20138](https://arxiv.org/html/2412.20138v1).
