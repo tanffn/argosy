@@ -43,13 +43,15 @@ from argosy.secrets import get_secret
 # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2;
 # the per-role default below is the fallback when the file is absent.
 DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
-    # Intake conducts a conversational interview — one focused question per
-    # turn. The work is light reasoning + structured-output emission; not
-    # adversarial debate or contradictory-input synthesis. Haiku handles it
-    # at ~3-5x the speed of Sonnet for the same effective quality. A future
-    # `intake_reviewer` role (Sonnet/Opus, runs once at stage_6 completion)
-    # can validate the gathered context and structure the final user_context.
-    "intake": "claude-haiku-4-5",
+    # Intake conducts a conversational interview. Initially defaulted to
+    # Haiku for speed, but Haiku proved unreliable at: (a) following the
+    # "DO NOT re-ask answered fields" rule even with an explicit checklist,
+    # (b) emitting yaml_patch entries that match the canonical key shape,
+    # (c) batched-question structure consistency. Sonnet follows the
+    # structured-checklist prompt reliably enough to halve the number of
+    # turns despite each turn being ~2-3x slower. Net: shorter interviews.
+    # Override via agent_settings.yaml if Haiku is preferred for cost.
+    "intake": "claude-sonnet-4-6",
     # Plan-markdown extractor: light reasoning over a single user-provided
     # document. Fast Haiku is sufficient and keeps the upload UX responsive
     # (~10-15s end-to-end). Citations not required (the source IS the user's
