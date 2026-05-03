@@ -6,9 +6,10 @@ Phase 1: `plan_versions`, `plan_critiques`, `agent_reports`,
 Phase 2: `cadence_state`, `daily_briefs`, `prices_cache`, `news_cache`,
 `macro_cache`.
 Phase 3: `proposals`, `proposals_history`, `approvals`, `decision_runs`.
-
-Other table groups (broker order log, lots, audit beyond agent reports,
-domain status, operations) come in later phases.
+Phase 4: `audit_log`, `lots`, `fills`, `pending_orders`. The audit_log
+table is the universal event log per SDD §14.1; lots holds per-lot
+cost-basis from broker imports; fills records each execution event;
+pending_orders tracks open broker orders awaiting reconciliation.
 """
 
 from __future__ import annotations
@@ -373,6 +374,125 @@ class DecisionRun(Base):
     )
 
 
+# ----------------------------------------------------------------------
+# Phase 4: audit log + lots + fills + pending_orders
+# ----------------------------------------------------------------------
+
+
+class AuditLog(Base):
+    """Universal append-only audit log (SDD §14.1).
+
+    One row per recorded event: every fill, every approval, every
+    override, every paper fill, every credential use. `event_type` is a
+    free-form string namespace ("fill.received", "approval.granted",
+    "paper_fill.recorded", "credential.used", ...). `entity_type` /
+    `entity_id` link the row to whatever it's about ("proposal" / "12",
+    "order" / "<broker_order_id>", ...). `payload_json` carries the
+    structured data.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False, default="", index=True)
+    entity_id: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, index=True
+    )
+
+
+class Lot(Base):
+    """Per-tax-lot cost-basis record (SDD §9.1).
+
+    Imported from broker exports (Schwab CSV in v1; IBKR API later;
+    Leumi: never — Leumi gives no per-lot data).
+    """
+
+    __tablename__ = "lots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    account_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    lot_id_external: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    quantity: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    cost_basis_usd: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    acquired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class Fill(Base):
+    """One execution event (a partial or full fill).
+
+    `paper=True` rows are PaperFill log entries; live executions have
+    `paper=False`. A single proposal can have multiple fills (partials).
+    """
+
+    __tablename__ = "fills"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    proposal_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("proposals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    broker: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    broker_order_id: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(8), nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    price: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    commission: Mapped[float] = mapped_column(Numeric(18, 4), nullable=False, default=0)
+    filled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False, index=True
+    )
+    paper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+
+
+class PendingOrder(Base):
+    """A broker order placed but not yet fully reconciled.
+
+    The reconcile loop (SDD §10.5) polls these to drive proposals to
+    EXECUTED_LIVE once filled, or back to BLOCKED/REJECTED on broker
+    failure.
+    """
+
+    __tablename__ = "pending_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    proposal_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("proposals.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    broker: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    broker_order_id: Mapped[str] = mapped_column(String(128), nullable=False, default="", index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="submitted", index=True)
+    last_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
 __all__ = [
     "Base",
     "User",
@@ -391,4 +511,9 @@ __all__ = [
     "DecisionRun",
     "Proposal",
     "ProposalHistory",
+    # Phase 4
+    "AuditLog",
+    "Fill",
+    "Lot",
+    "PendingOrder",
 ]

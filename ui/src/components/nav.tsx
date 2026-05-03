@@ -10,6 +10,7 @@ const TABS = [
   { href: "/portfolio", label: "Portfolio" },
   { href: "/plan", label: "Plan" },
   { href: "/proposals", label: "Proposals" },
+  { href: "/audit", label: "Audit" },
 ];
 
 export function NavBar() {

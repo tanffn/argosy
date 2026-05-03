@@ -121,6 +121,69 @@ export interface ProposalActionResponse {
   message?: string;
 }
 
+export interface ExecuteResponse {
+  status: string;
+  proposal_id: number;
+  broker: string;
+  broker_order_id: string;
+  paper: boolean;
+  reason: string;
+  fills: Array<Record<string, unknown>>;
+}
+
+export interface LotItem {
+  id: number;
+  user_id: string;
+  account_id: string;
+  ticker: string;
+  lot_id_external: string;
+  quantity: number;
+  cost_basis_usd: number;
+  acquired_at: string | null;
+  source: string;
+  imported_at: string;
+}
+
+export interface LotsResponse {
+  rows: LotItem[];
+  total: number;
+}
+
+export interface FillItem {
+  id: number;
+  user_id: string;
+  proposal_id: number | null;
+  broker: string;
+  broker_order_id: string;
+  ticker: string;
+  action: string;
+  quantity: number;
+  price: number;
+  commission: number;
+  filled_at: string;
+  paper: boolean;
+}
+
+export interface FillsResponse {
+  rows: FillItem[];
+  total: number;
+}
+
+export interface AuditItem {
+  id: number;
+  user_id: string;
+  event_type: string;
+  entity_type: string;
+  entity_id: string;
+  payload_json: string;
+  created_at: string;
+}
+
+export interface AuditResponse {
+  rows: AuditItem[];
+  total: number;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path, { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
@@ -189,4 +252,39 @@ export const api = {
       user_id: userId,
       levels,
     }),
+  proposalExecute: (id: number, userId: string) =>
+    postJSON<ExecuteResponse>(`/api/proposals/${id}/execute`, {
+      user_id: userId,
+    }),
+  fillsList: (userId: string, proposalId?: number) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (proposalId !== undefined) qs.set("proposal_id", String(proposalId));
+    return getJSON<FillsResponse>(`/api/fills?${qs.toString()}`);
+  },
+  lotsList: (userId: string, opts?: { accountId?: string; ticker?: string }) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (opts?.accountId) qs.set("account_id", opts.accountId);
+    if (opts?.ticker) qs.set("ticker", opts.ticker);
+    return getJSON<LotsResponse>(`/api/lots?${qs.toString()}`);
+  },
+  auditList: (
+    userId: string,
+    opts?: {
+      eventType?: string;
+      entityType?: string;
+      entityId?: string;
+      since?: string;
+      until?: string;
+      limit?: number;
+    },
+  ) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (opts?.eventType) qs.set("event_type", opts.eventType);
+    if (opts?.entityType) qs.set("entity_type", opts.entityType);
+    if (opts?.entityId) qs.set("entity_id", opts.entityId);
+    if (opts?.since) qs.set("since", opts.since);
+    if (opts?.until) qs.set("until", opts.until);
+    if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    return getJSON<AuditResponse>(`/api/audit?${qs.toString()}`);
+  },
 };

@@ -113,6 +113,25 @@ class Scheduler:
             )
         )
 
+        # Phase 4: ReconcileLoop polls open broker orders during market
+        # hours and updates fills + pending_orders. Without this loop,
+        # live orders would sit in pending_orders forever.
+        try:
+            from argosy.execution.reconcile import ReconcileLoop
+
+            self.register_loop(
+                ReconcileLoop(
+                    schedule=LoopSchedule(
+                        interval_seconds=30,
+                        market_hours_only=True,
+                    ),
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
+        except ImportError:  # pragma: no cover - defensive
+            pass
+
     # ------------------------------------------------------------------
     # Run
     # ------------------------------------------------------------------

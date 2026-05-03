@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import {
   api,
+  type FillItem,
   type ProposalDetail,
   type ProposalListItem,
   type ReasoningTrailItem,
@@ -75,6 +76,7 @@ export default function ProposalsPage() {
     "proposal.created",
     "proposal.updated",
     "proposal.executed",
+    "fill.received",
   ]);
   useEffect(() => {
     if (lastEvt) refresh();
@@ -129,6 +131,38 @@ export default function ProposalsPage() {
     },
     [refresh],
   );
+
+  const [fillsByProposal, setFillsByProposal] = useState<Record<number, FillItem[]>>({});
+
+  const onExecute = useCallback(
+    async (id: number) => {
+      setBusy(id);
+      try {
+        const r = await api.proposalExecute(id, USER_ID);
+        await refresh();
+        // Refresh fills for that proposal.
+        const fr = await api.fillsList(USER_ID, id);
+        setFillsByProposal((prev) => ({ ...prev, [id]: fr.rows }));
+        if (r.status === "rejected") {
+          setError(`Execution rejected: ${r.reason}`);
+        }
+      } catch (e: unknown) {
+        setError(String(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [refresh],
+  );
+
+  const onShowFills = useCallback(async (id: number) => {
+    try {
+      const fr = await api.fillsList(USER_ID, id);
+      setFillsByProposal((prev) => ({ ...prev, [id]: fr.rows }));
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  }, []);
 
   const onExpand = useCallback(
     async (id: number) => {
@@ -254,7 +288,58 @@ export default function ProposalsPage() {
                   >
                     Reasoning trail
                   </Button>
+                  {p.status === "approved" && (
+                    <Button
+                      size="sm"
+                      variant="default"
+                      onClick={() => onExecute(p.id)}
+                      disabled={busy === p.id}
+                    >
+                      Execute now
+                    </Button>
+                  )}
+                  {(p.status === "executed_paper" ||
+                    p.status === "executed_live") && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onShowFills(p.id)}
+                    >
+                      Fills
+                    </Button>
+                  )}
                 </div>
+                {fillsByProposal[p.id]?.length ? (
+                  <div className="mt-3 border-t border-border/40 pt-3">
+                    <h4 className="text-xs font-semibold mb-2">
+                      Fills ({fillsByProposal[p.id].length})
+                    </h4>
+                    <table className="w-full text-xs font-mono">
+                      <thead className="text-muted-foreground">
+                        <tr>
+                          <th className="text-left py-1">when</th>
+                          <th className="text-left py-1">mode</th>
+                          <th className="text-left py-1">broker</th>
+                          <th className="text-right py-1">qty</th>
+                          <th className="text-right py-1">price</th>
+                          <th className="text-right py-1">commission</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {fillsByProposal[p.id].map((f) => (
+                          <tr key={f.id} className="border-t border-border/30">
+                            <td className="py-1">{f.filled_at}</td>
+                            <td className="py-1">{f.paper ? "paper" : "live"}</td>
+                            <td className="py-1">{f.broker}</td>
+                            <td className="py-1 text-right">{f.quantity}</td>
+                            <td className="py-1 text-right">{f.price}</td>
+                            <td className="py-1 text-right">{f.commission}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           </li>

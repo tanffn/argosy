@@ -333,6 +333,145 @@ debate, the 3-perspective risk team, trader, fund manager, full
 decision-flow happy paths for T0/T1/T2/T3, the proposals API, and the
 two new cadence loops.
 
+## Phase 4 quick start (IBKR adapter + execution + email approval)
+
+Phase 4 wires the brokerage layer end-to-end: a `BrokerAdapter` Protocol,
+the IBKR adapter (read+write through TWS Gateway), a Schwab read-only
+CSV importer, a Leumi read-only TSV wrapper, the execution router, the
+reconcile loop, and the email approval channel. Live execution is gated
+to T0/T1 in main accounts via the queue+approve flow; T2/T3 still
+requires explicit human approval via the dashboard.
+
+### One-time setup
+
+Apply migrations (creates `audit_log`, `lots`, `fills`, `pending_orders`):
+
+```bash
+uv run alembic upgrade head
+```
+
+### Run TWS Gateway in paper mode
+
+1. Install [IBKR TWS Gateway](https://www.interactivebrokers.com/en/trading/tws.php) and run the **Paper Trading** instance.
+2. In the gateway: **Configure → Settings → API → Settings**, enable
+   "Enable ActiveX and Socket Clients", set the **Socket port** to
+   **7497** (paper) or **7496** (live), and check "Read-Only API" off.
+3. Allow connections from `127.0.0.1` only (default).
+4. Optional per-account override: create
+   `configs/<user_id>/ibkr_settings.yaml`:
+
+   ```yaml
+   accounts:
+     limited:
+       host: localhost
+       paper_port: 7497
+       live_port: 7496
+       client_id: 1
+       mode: paper
+   ```
+
+### Set IBKR credentials
+
+The gateway handles the actual login; Argosy stores the IBKR username
+for audit only:
+
+```bash
+uv run argosy secrets set argosy.ibkr.username <ibkr-user>
+```
+
+### Import a Schwab cost-basis CSV
+
+1. From schwab.com → **Accounts → History → Cost Basis** export the CSV.
+2. Persist the lots:
+
+   ```bash
+   uv run argosy lots import --broker schwab --path "<path>.csv" --user-id ariel
+   ```
+
+The CLI reports the row count. Dashboard `/audit` and `/api/lots` then
+expose the imported rows. Re-importing appends; clear the `lots` table
+manually before re-importing the same export.
+
+### Send an approval email
+
+1. Create `configs/<user_id>/email_settings.yaml`:
+
+   ```yaml
+   smtp_host: smtp.gmail.com
+   smtp_port: 587
+   smtp_username: argosy@example.com
+   smtp_use_tls: true
+   sender: argosy@example.com
+   public_url: http://localhost:8000
+   ```
+
+2. Stash the SMTP password (and let Argosy auto-generate a token-signing
+   key on first send):
+
+   ```bash
+   uv run argosy secrets set argosy.email.smtp_password <password>
+   ```
+
+3. Send for a specific proposal:
+
+   ```bash
+   uv run argosy email send-approval <proposal_id> --to you@example.com
+   ```
+
+The email contains two signed links — one approve, one reject — that
+land on `/api/proposals/{id}/approve?token=...`. The endpoint verifies
+the signature + expiry (24h), then **redirects** to the dashboard with
+`?confirm=<id>&action=<approve|reject>&token=...`. The dashboard shows
+a one-click confirm dialog (per SDD §10.2 anti-phishing rule).
+
+### Execute a proposal
+
+After a proposal is `approved` (via dashboard 1-click, CLI, or email
+landing), trigger execution:
+
+```bash
+# Via the dashboard: visit /proposals and click "Execute now".
+# Or via CLI:
+uv run argosy execute <proposal_id> \
+  --user-id ariel \
+  --cash-available-usd 100000 \
+  --max-position-usd 25000
+```
+
+The execution router re-runs the rule-based risk preflight (SDD §9.3),
+calls `IBKRAdapter.place_order(paper=mode == "paper")`, and either:
+
+- **paper**: writes a `PaperFill` row + audit_log entry; transitions
+  the proposal to `executed_paper`.
+- **live**: places the order via TWS Gateway, records a `pending_orders`
+  row, transitions the proposal to `executed_live`. The reconcile loop
+  (30s cadence during market hours) then writes `fills` rows as they
+  arrive and updates `pending_orders.status`.
+
+### Audit log
+
+Every fill, approval, paper fill, broker error, and credential read
+writes one row to `audit_log` (SDD §14.1). Browse via the new
+**Audit** dashboard tab or `/api/audit`.
+
+```bash
+uv run argosy fills list --proposal <id>      # CLI fills view
+```
+
+### Tests
+
+```bash
+uv run pytest -q
+```
+
+Tests mock both `ib_insync` and `aiosmtplib`; nothing in the test suite
+makes a live broker connection or sends real email. The Phase 4 suite
+covers Protocol conformance for all three adapters, IBKR paper/live
+symmetry, Schwab CSV parsing, the execution router (preflight pass /
+hard-fail / paper / live paths), the reconcile loop (filled / partial /
+cancelled / rejected), email token round-trip + tampering rejection,
+and the new API routes.
+
 ## Reference paper
 
 Xiao et al. *TradingAgents: Multi-Agents LLM Financial Trading Framework.* [arXiv:2412.20138](https://arxiv.org/html/2412.20138v1).

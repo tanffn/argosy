@@ -10,15 +10,19 @@ import typer
 from argosy.cli.brief import brief
 from argosy.cli.critique import critique
 from argosy.cli.decide import decide
+from argosy.cli.email import app as email_app
+from argosy.cli.execute import execute
+from argosy.cli.fills import app as fills_app
 from argosy.cli.ingest import app as ingest_app
 from argosy.cli.intake import intake
+from argosy.cli.lots import app as lots_app
 from argosy.cli.proposals import app as proposals_app
 from argosy.cli.run import run
 from argosy.cli.secrets import app as secrets_app
 
 app = typer.Typer(
     name="argosy",
-    help="Argosy multi-agent financial advisor — Phase 3 CLI.",
+    help="Argosy multi-agent financial advisor — Phase 4 CLI.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -29,11 +33,15 @@ app.command("critique")(critique)
 app.command("run")(run)
 app.command("brief")(brief)
 app.command("decide")(decide)
+app.command("execute")(execute)
 
 # Subcommand groups.
 app.add_typer(ingest_app, name="ingest", help="Ingestion commands (TSV, plan).")
 app.add_typer(secrets_app, name="secrets", help="OS-keychain secret management.")
 app.add_typer(proposals_app, name="proposals", help="Proposals review commands.")
+app.add_typer(fills_app, name="fills", help="Fills inspection commands.")
+app.add_typer(lots_app, name="lots", help="Per-tax-lot import + listing.")
+app.add_typer(email_app, name="email", help="Email approval channel commands.")
 
 
 def main() -> None:  # pragma: no cover
