@@ -189,118 +189,21 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
 
     out: IntakeTurnOutput = report.output  # type: ignore[assignment]
 
-    # Persist the conversation turn:
-    #   - Stamp agent_reports with session id (audit grouping)
-    #   - Apply context_updates to the user_context YAML payloads so the
-    #     NEXT turn's accumulated_context reflects what was just learned
-    #     (without this, the agent has amnesia and re-asks answered Qs)
-    #   - Advance current_stage when the agent signals stage_complete=True
-    async with db_mod.get_session() as session:
-        ar_row = AgentReportRow(
-            user_id=req.user_id,
-            agent_role=report.agent_role,
-            decision_id=None,
-            intake_session_id=session_id,
-            prompt_hash=report.prompt_hash,
-            response_text=report.response_text,
-            tokens_in=report.tokens_in,
-            tokens_out=report.tokens_out,
-            cost_usd=report.cost_usd,
-            model=report.model,
-            confidence=(report.confidence.value if report.confidence else None),
-        )
-        session.add(ar_row)
+    # Persist the conversation turn via the shared helper (also used by
+    # /api/advisor/turn). The helper stamps agent_reports, merges
+    # context_updates into user_context.*_yaml, and auto-advances
+    # current_stage when the post-update checklist is empty (overriding
+    # the agent's own stage_complete claim if needed).
+    from argosy.api.routes.advisor import _persist_turn
 
-        # Make sure user / user_context exist before merging.
-        user = (
-            await session.execute(select(User).where(User.id == req.user_id))
-        ).scalar_one_or_none()
-        if user is None:
-            user = User(id=req.user_id)
-            session.add(user)
-            await session.flush()
-
-        ctx = (
-            await session.execute(
-                select(UserContext).where(UserContext.user_id == req.user_id)
-            )
-        ).scalar_one_or_none()
-        if ctx is None:
-            ctx = UserContext(user_id=req.user_id)
-            session.add(ctx)
-            await session.flush()
-
-        # Merge each context_update into the right YAML section, patch wins.
-        # `out.context_updates` is list[ContextUpdate] — pydantic models with
-        # required `target_section` (Literal) and a default-"" `yaml_patch`.
-        # A common case is yaml_patch="" when the agent has no concrete delta
-        # to record this turn; we skip those silently.
-        try:
-            for u in out.context_updates:
-                target = u.target_section
-                patch = u.yaml_patch or ""
-                if not patch.strip():
-                    continue
-                if target == "identity":
-                    ctx.identity_yaml = _apply_turn_update(
-                        ctx.identity_yaml or "", patch
-                    )
-                elif target == "goals":
-                    ctx.goals_yaml = _apply_turn_update(ctx.goals_yaml or "", patch)
-                elif target == "constraints":
-                    ctx.constraints_yaml = _apply_turn_update(
-                        ctx.constraints_yaml or "", patch
-                    )
-        except Exception:
-            # Don't crash the whole turn just because one delta was malformed —
-            # log and continue. The agent's question was still produced.
-            _log.exception(
-                "intake.turn.context_update_apply_failed",
-                intake_session_id=session_id,
-            )
-
-        # Advance stage. Two triggers:
-        #   1. The agent explicitly said stage_complete=True with a next_stage
-        #   2. The post-update field-checklist for the stage is empty
-        #      (override the agent's claim — Haiku sometimes keeps asking
-        #       even when every required field is now answered)
-        post_status = stage_status(
-            identity_yaml=ctx.identity_yaml or "",
-            goals_yaml=ctx.goals_yaml or "",
-            constraints_yaml=ctx.constraints_yaml or "",
-            stage=stage,
-        )
-        post_complete = len(post_status["missing"]) == 0
-        next_stage_default = {
-            "stage_1": "stage_2",
-            "stage_2": "stage_3",
-            "stage_3": "stage_4",
-            "stage_4": "stage_5",
-            "stage_5": "stage_6",
-            "stage_6": "complete",
-        }.get(stage, "complete")
-
-        if out.stage_complete and out.next_stage:
-            ctx.current_stage = out.next_stage
-        elif post_complete:
-            # Authoritative override — every required field is filled
-            # for this stage, so advance regardless of what the agent
-            # claimed in its output.
-            ctx.current_stage = next_stage_default
-            _log.info(
-                "intake.stage_auto_advanced",
-                from_stage=stage,
-                to_stage=next_stage_default,
-                intake_session_id=session_id,
-            )
-        elif ctx.current_stage is None:
-            ctx.current_stage = out.stage
-
-        # Make sure the session_id sticks even if we created the row above.
-        if session_id and not ctx.intake_session_id:
-            ctx.intake_session_id = session_id
-
-        await session.commit()
+    await _persist_turn(
+        user_id=req.user_id,
+        stage=stage,
+        session_id=session_id,
+        report=report,
+        out=out,
+        apply_turn_update=_apply_turn_update,
+    )
     return TurnResponse(
         stage=out.stage,
         question_for_user=out.question_for_user,

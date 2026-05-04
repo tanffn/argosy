@@ -30,6 +30,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from argosy import __version__
 from argosy.api.events import subscribe
+from argosy.api.routes.advisor import router as advisor_router
 from argosy.api.routes.agent_activity import router as agent_activity_router
 from argosy.api.routes.argonaut import router as argonaut_router
 from argosy.api.routes.branding import router as branding_router
@@ -111,6 +112,10 @@ def create_app() -> FastAPI:
     # Phase 7 — domain KB browser, intake API, settings, cost-guard override
     app.include_router(domain_kb_router, prefix=api_prefix)
     app.include_router(intake_router, prefix=api_prefix)
+    # Phase 1 reframe — advisor panel (gap-tracker + persistent Q&A).
+    # Mounted alongside /api/intake/* so the legacy intake page keeps
+    # working until the redirect lands.
+    app.include_router(advisor_router, prefix=api_prefix)
     app.include_router(settings_router, prefix=api_prefix)
     app.include_router(cost_guard_router)
 

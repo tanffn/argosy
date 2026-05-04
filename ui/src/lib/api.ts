@@ -441,6 +441,24 @@ export const api = {
       last_user_message: lastUserMessage,
       current_stage: currentStage,
     }),
+
+  // Phase 1 reframe: Advisor (persistent gap-tracker panel)
+  advisorTurn: (
+    userId: string,
+    lastUserMessage: string,
+    opts?: { currentStage?: string; targetField?: string; historyExcerpt?: string },
+  ) =>
+    postJSON<AdvisorTurnResponse>(`/api/advisor/turn`, {
+      user_id: userId,
+      last_user_message: lastUserMessage,
+      current_stage: opts?.currentStage,
+      target_field: opts?.targetField,
+      history_excerpt: opts?.historyExcerpt ?? "",
+    }),
+  advisorGaps: (userId: string) =>
+    getJSON<AdvisorGapsResponse>(
+      `/api/advisor/gaps?user_id=${encodeURIComponent(userId)}`,
+    ),
   intakeFileToText: async (file: File): Promise<FileToTextResponse> => {
     const fd = new FormData();
     fd.append("file", file);
@@ -577,4 +595,40 @@ export interface FileToTextResponse {
   extracted_text: string;
   warnings: string[];
   page_or_sheet_count: number;
+}
+
+// ----------------------------------------------------------------------
+// Phase 1 reframe: Advisor types
+// ----------------------------------------------------------------------
+
+export interface AdvisorTurnResponse {
+  stage: string;
+  question_for_user: string;
+  stage_complete: boolean;
+  next_stage: string | null;
+  confidence: string;
+  cited_sources: string[];
+  notes_for_orchestrator: string;
+  context_updates: Array<Record<string, unknown>>;
+  intake_session_id: string;
+  mode: string;
+}
+
+export type GapState = "fresh" | "missing" | "stale";
+
+export interface AdvisorGapItem {
+  path: string;
+  label: string;
+  section: "identity" | "goals" | "constraints";
+  freshness: "one_shot" | "monthly" | "quarterly" | "annual";
+  priority: number;
+  state: GapState;
+  last_updated: string | null;
+}
+
+export interface AdvisorGapsResponse {
+  user_id: string;
+  current_stage: string;
+  items: AdvisorGapItem[];
+  counts: { fresh: number; missing: number; stale: number };
 }

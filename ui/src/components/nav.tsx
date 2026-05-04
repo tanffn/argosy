@@ -16,7 +16,7 @@ const TABS = [
   { href: "/agents", label: "Agents" },
   { href: "/audit", label: "Audit" },
   { href: "/domain-kb", label: "Domain KB" },
-  { href: "/intake", label: "Intake" },
+  { href: "/advisor", label: "Advisor" },
   { href: "/settings", label: "Settings" },
 ];
 

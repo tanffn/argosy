@@ -570,6 +570,18 @@ Every analyst report carries a confidence band:
 
 The trader and risk team weight inputs by confidence; the fund manager's integrity check refuses to act on Low-confidence T3 decisions without human sign-off.
 
+### 6.5 Advisor reframe — gap tracker + persistent panel
+
+The original §6.1 framing was a one-shot 6-stage interview that *gated* progression on `stage_complete`. In practice the user wants an ongoing relationship: same UI handles first-run intake AND every later check-in (monthly balance update, quarterly RSU vest, annual W-8BEN refresh). The Phase 1 reframe replaces `/intake` with a persistent `/advisor` panel:
+
+- **Gap tracker** (`argosy.agents.gap_tracker`). Each required field has a `FieldSpec(path, label, section, freshness, priority)`. `freshness` is one of `one_shot` (life-event facts like tax residency), `monthly` (bank/brokerage balances), `quarterly` (vest events), or `annual` (employer comp, real estate, pensions, all goals/constraints). `gap_status(...)` classifies every field as **fresh** / **stale** / **missing**; `compute_field_timestamps(user_id)` walks the agent_reports audit log to pin a last-updated date on each field.
+- **AdvisorAgent** (`argosy.agents.advisor`). Subclass of IntakeAgent with a `mode` parameter: `gap_driven` (the agent asks the next batched cluster of missing/stale fields, same as legacy intake) or `user_driven` (the user asked something — agent answers, logs any factual updates buried in the message, and optionally appends one related follow-up). The route picks the mode from request shape: empty `last_user_message` → gap_driven, otherwise user_driven.
+- **`/api/advisor/turn` + `/api/advisor/gaps`** routes. The `/turn` route reuses the persist + auto-advance + agent_reports stamping from intake via a shared `_persist_turn(...)` helper. The `/gaps` route returns the full GapStatus as JSON for the sidebar.
+- **`/advisor` page** (Next.js). Two-column layout: chat history + free-form input on the left, color-coded gap tracker (green/amber/red) on the right. Each sidebar row is clickable — click a missing or stale field to ask the agent to focus on that gap (passed as `target_field` to the route).
+- **Backwards compat**. Legacy `/api/intake/*` routes still work unchanged (the route file delegates persistence to the same shared helper). The legacy `/intake` page redirects to `/advisor`.
+
+The cadence schedule (§6.2) still drives notifications, but instead of "interview again at month-end" it now means "the gap tracker will flip these fields to amber on day 33 and we'll surface a `gap_due` event in the next session."
+
 ---
 
 ## 7. Domain Knowledge Base
