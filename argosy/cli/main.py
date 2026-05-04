@@ -11,6 +11,7 @@ from argosy.cli.admin import admin_app
 from argosy.cli.argonaut import app as argonaut_app
 from argosy.cli.brief import brief
 from argosy.cli.critique import critique
+from argosy.cli.data import app as data_app
 from argosy.cli.decide import decide
 from argosy.cli.email import app as email_app
 from argosy.cli.execute import execute
@@ -51,6 +52,8 @@ app.add_typer(security_app, name="security", help="Security / second-factor mana
 app.add_typer(admin_app, name="admin", help="Operator commands (tenants, watchdog).")
 app.add_typer(gemelnet_app, name="gemelnet",
               help="Israeli pension performance data (gemelnet.mof.gov.il).")
+app.add_typer(data_app, name="data",
+              help="Investor-event feeds: 13F, Form 4, capitoltrades, tipranks.")
 
 
 def main() -> None:  # pragma: no cover

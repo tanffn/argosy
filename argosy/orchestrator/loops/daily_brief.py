@@ -12,7 +12,7 @@ data adapters via dependency injection so tests can mock everything.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -38,6 +38,13 @@ class DailyBriefInputs:
     """Inputs to one daily-brief run, gathered before the LLM calls.
 
     Tests construct this directly to avoid touching adapters.
+
+    The investor-event fields (``insider_activity``, ``analyst_signals``,
+    ``thirteen_f_watchlist``) carry data pulled from the Phase 4
+    adapters; each one degrades to an empty dict when its adapter is
+    unreachable or unconfigured. Analyst agents that already accept a
+    ``payload`` dict (news / sentiment / concentration) can opt-in to
+    consuming this auxiliary context without prompt changes.
     """
 
     user_id: str
@@ -50,6 +57,11 @@ class DailyBriefInputs:
     nvda_target_shares_ytd: int
     plan_label: str
     plan_markdown: str
+    # Phase 4 — investor-event payloads. Empty by default so existing
+    # tests that construct ``DailyBriefInputs(...)`` keep working.
+    insider_activity: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    analyst_signals: dict[str, dict[str, Any]] = field(default_factory=dict)
+    thirteen_f_watchlist: list[dict[str, Any]] = field(default_factory=list)
 
 
 class DailyBriefLoop(CadenceLoop):
@@ -257,7 +269,76 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
         except Exception:  # pragma: no cover - network/library defensive
             _log.exception("daily_brief.news_fetch_failed")
 
-    # 3. Macro snapshot via FRED + BoI (best-effort).
+    # 3a. Insider activity (SEC Form 4) per portfolio ticker.
+    insider_activity: dict[str, list[dict[str, Any]]] = {}
+    if tickers:
+        try:
+            from argosy.adapters.data.sec_form4_adapter import SecForm4Adapter
+
+            form4 = SecForm4Adapter()
+            for ticker in tickers[:25]:
+                try:
+                    rows = await form4.get_recent_form4_for_ticker(ticker, days=30)
+                except MissingDataSourceError as e:
+                    _log.warning(
+                        "daily_brief.form4_skipped",
+                        ticker=ticker, reason=str(e).splitlines()[0],
+                    )
+                    continue
+                if rows:
+                    insider_activity[ticker] = rows
+        except Exception:  # pragma: no cover - defensive
+            _log.exception("daily_brief.form4_failed")
+
+    # 3b. Analyst sentiment (TipRanks consensus) per portfolio ticker.
+    analyst_signals: dict[str, dict[str, Any]] = {}
+    if tickers:
+        try:
+            from argosy.adapters.data.tipranks_adapter import TipRanksAdapter
+
+            tr = TipRanksAdapter()
+            # TipRanks has aggressive rate-limits on the free tier; cap
+            # concurrent lookups to a small number.
+            for ticker in tickers[:10]:
+                try:
+                    consensus = await tr.get_analyst_consensus(ticker)
+                except MissingDataSourceError as e:
+                    _log.warning(
+                        "daily_brief.tipranks_skipped",
+                        ticker=ticker, reason=str(e).splitlines()[0],
+                    )
+                    continue
+                analyst_signals[ticker] = consensus
+        except Exception:  # pragma: no cover - defensive
+            _log.exception("daily_brief.tipranks_failed")
+
+    # 3c. 13F watchlist — pull most-recent filings for filers the user
+    # follows. We read the watchlist from identity_yaml (key:
+    # ``thirteen_f_watchlist: [<cik>, ...]``); empty by default.
+    thirteen_f_watchlist: list[dict[str, Any]] = []
+    cik_watchlist = await _resolve_thirteen_f_watchlist(user_id)
+    if cik_watchlist:
+        try:
+            from argosy.adapters.data.sec_13f_adapter import Sec13FAdapter
+
+            sec13f = Sec13FAdapter()
+            for cik in cik_watchlist[:10]:
+                try:
+                    history = await sec13f.get_filer_history(cik, quarters=1)
+                except MissingDataSourceError as e:
+                    _log.warning(
+                        "daily_brief.sec13f_skipped",
+                        cik=cik, reason=str(e).splitlines()[0],
+                    )
+                    continue
+                if history:
+                    thirteen_f_watchlist.append(
+                        {"cik": cik, "filings": history[:1]}
+                    )
+        except Exception:  # pragma: no cover - defensive
+            _log.exception("daily_brief.sec13f_failed")
+
+    # 4. Macro snapshot via FRED + BoI (best-effort).
     macro_snapshot: dict[str, float] = {}
     try:
         from argosy.adapters.data.fred_adapter import FredAdapter
@@ -307,7 +388,43 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
         nvda_target_shares_ytd=0,
         plan_label=plan_label,
         plan_markdown=plan_markdown,
+        insider_activity=insider_activity,
+        analyst_signals=analyst_signals,
+        thirteen_f_watchlist=thirteen_f_watchlist,
     )
+
+
+async def _resolve_thirteen_f_watchlist(user_id: str) -> list[str]:
+    """Read ``identity.thirteen_f_watchlist`` (list of CIKs) for ``user_id``.
+
+    The watchlist lives in ``UserContext.identity_yaml`` under the key
+    ``thirteen_f_watchlist``. Returns an empty list if absent / malformed.
+    """
+    try:
+        import yaml
+
+        from argosy.state.models import UserContext
+
+        async with db_mod.get_session() as session:
+            ctx = (
+                await session.execute(
+                    select(UserContext).where(UserContext.user_id == user_id)
+                )
+            ).scalar_one_or_none()
+            if ctx is None or not ctx.identity_yaml:
+                return []
+            try:
+                identity = yaml.safe_load(ctx.identity_yaml) or {}
+            except yaml.YAMLError:
+                return []
+            if not isinstance(identity, dict):
+                return []
+            wl = identity.get("thirteen_f_watchlist") or []
+            if not isinstance(wl, list):
+                return []
+            return [str(c).strip() for c in wl if str(c).strip()]
+    except Exception:  # pragma: no cover - defensive
+        return []
 
 
 def _find_latest_tsv() -> "Any | None":
