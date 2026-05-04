@@ -3,8 +3,10 @@
 Phase 0: `users` and `user_context`.
 Phase 1: `plan_versions`, `plan_critiques`, `agent_reports`,
 `agent_reports_blobs`. Adds `current_stage` to `user_context`.
-Phase 2: `cadence_state`, `daily_briefs`, `prices_cache`, `news_cache`,
-`macro_cache`.
+Phase 2: `cadence_state`, `daily_briefs`, `kv_cache`, `news_cache`,
+`macro_cache`. (`kv_cache` was historically `prices_cache` — renamed in
+migration 0011 because it's a generic key/value/TTL store, not a
+prices-only table.)
 Phase 3: `proposals`, `proposals_history`, `approvals`, `decision_runs`.
 Phase 4: `audit_log`, `lots`, `fills`, `pending_orders`. The audit_log
 table is the universal event log per SDD §14.1; lots holds per-lot
@@ -257,8 +259,16 @@ class _CacheBase:
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
 
 
-class PricesCache(Base, _CacheBase):
-    __tablename__ = "prices_cache"
+class KvCacheEntry(Base, _CacheBase):
+    """Generic per-(provider, key) JSON cache with TTL.
+
+    Despite the legacy ``prices_cache`` name, this table stores cached
+    payloads for any kind that fits the ``CacheKind`` enum — prices,
+    news (when callers route here vs. ``news_cache``), and UI snapshots
+    (``CacheKind.UI``) such as the home-brief composition.
+    """
+
+    __tablename__ = "kv_cache"
 
 
 class NewsCache(Base, _CacheBase):
@@ -708,6 +718,56 @@ class PensionFundSnapshot(Base):
     )
 
 
+class InvestorEvent(Base):
+    """One investor-event row from a Phase 4 adapter.
+
+    Sources: ``sec_form4`` (insider trades), ``sec_13f`` (institutional
+    quarterly filings), ``tipranks`` (analyst-consensus snapshots),
+    ``capitoltrades`` (STOCK Act disclosures). Adapters write through the
+    ``record_investor_events(...)`` helper after a successful pull.
+
+    The home-brief signal bullet picks the most-recent row by
+    ``occurred_at DESC`` and surfaces a one-liner. Querying by ``user_id``
+    keeps the row scoped to the user the daily-brief loop ran for.
+
+    Indexed on ``(user_id, occurred_at)`` so the home-brief query is an
+    index seek; ``(user_id, source, ticker)`` lets us extend later for
+    per-source / per-ticker drilldowns without a table scan.
+    """
+
+    __tablename__ = "investor_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    headline: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    occurred_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    __table_args__ = (
+        Index(
+            "ix_investor_events_user_occurred",
+            "user_id",
+            "occurred_at",
+        ),
+        Index(
+            "ix_investor_events_user_source_ticker",
+            "user_id",
+            "source",
+            "ticker",
+        ),
+    )
+
+
 __all__ = [
     "Base",
     "User",
@@ -718,7 +778,7 @@ __all__ = [
     "AgentReportBlob",
     "CadenceState",
     "DailyBrief",
-    "PricesCache",
+    "KvCacheEntry",
     "NewsCache",
     "MacroCache",
     # Phase 3
@@ -740,4 +800,6 @@ __all__ = [
     "SetupToken",
     # Phase 3 (Israeli pension)
     "PensionFundSnapshot",
+    # Phase 4 (investor events)
+    "InvestorEvent",
 ]

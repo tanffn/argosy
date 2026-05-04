@@ -17,7 +17,7 @@ investment managers with > $100M AUM file with the SEC. We expose:
 
 Implementation notes:
 
-  - Cached in `prices_cache` with a 90-day TTL. 13Fs are quarterly; a
+  - Cached in `kv_cache` with a 90-day TTL. 13Fs are quarterly; a
     daily refresh would be wasteful.
   - SEC requires a polite ``User-Agent: <Org> <email>`` header — they
     will rate-limit / block missing or generic UAs. We send

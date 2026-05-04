@@ -16,7 +16,7 @@ from argosy.adapters.data.finnhub_adapter import FinnhubAdapter
 from argosy.adapters.data.fred_adapter import FredAdapter
 from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 from argosy.state import db as db_mod
-from argosy.state.models import PricesCache
+from argosy.state.models import KvCacheEntry
 
 
 # ---------------------------------------------------------------------------
@@ -172,8 +172,8 @@ async def test_cache_ttl_zero_always_refetches(engine: None) -> None:
     async with db_mod.get_session() as session:
         row = (
             await session.execute(
-                select(PricesCache).where(
-                    (PricesCache.provider == "testprov") & (PricesCache.key == "k1")
+                select(KvCacheEntry).where(
+                    (KvCacheEntry.provider == "testprov") & (KvCacheEntry.key == "k1")
                 )
             )
         ).scalar_one()

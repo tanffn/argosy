@@ -32,6 +32,7 @@ from argosy.logging import get_logger
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.state import db as db_mod
 from argosy.state.models import DailyBrief, PlanCritique, PlanVersion
+from argosy.state.queries import record_investor_events
 
 _log = get_logger("argosy.loops.daily_brief")
 
@@ -294,6 +295,15 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
                     continue
                 if rows:
                     insider_activity[ticker] = rows
+                    # Persist each Form 4 row so the home brief can pick
+                    # the most-recent event without depending on the
+                    # 24h kv_cache row staying alive past its TTL.
+                    try:
+                        await record_investor_events(user_id, "sec_form4", rows)
+                    except Exception:  # pragma: no cover - defensive
+                        _log.exception(
+                            "daily_brief.form4_persist_failed", ticker=ticker
+                        )
         except Exception:  # pragma: no cover - defensive
             _log.exception("daily_brief.form4_failed")
 
@@ -316,6 +326,16 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
                     )
                     continue
                 analyst_signals[ticker] = consensus
+            # Persist all collected analyst signals as a single batch —
+            # the mapper turns ``{ticker: consensus}`` into one
+            # investor_events row per ticker.
+            if analyst_signals:
+                try:
+                    await record_investor_events(
+                        user_id, "tipranks", analyst_signals
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    _log.exception("daily_brief.tipranks_persist_failed")
         except Exception:  # pragma: no cover - defensive
             _log.exception("daily_brief.tipranks_failed")
 
@@ -342,6 +362,23 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
                     thirteen_f_watchlist.append(
                         {"cik": cik, "filings": history[:1]}
                     )
+                    # Persist each filing as one investor_events row so
+                    # the home brief picks the most-recent 13F when no
+                    # fresher Form 4 / TipRanks signal exists.
+                    try:
+                        # ``history`` is a list of filing summaries;
+                        # tag each with the cik for downstream context.
+                        annotated = [
+                            {**f, "cik": cik} for f in history[:1]
+                            if isinstance(f, dict)
+                        ]
+                        await record_investor_events(
+                            user_id, "sec_13f", annotated
+                        )
+                    except Exception:  # pragma: no cover - defensive
+                        _log.exception(
+                            "daily_brief.sec13f_persist_failed", cik=cik
+                        )
         except Exception:  # pragma: no cover - defensive
             _log.exception("daily_brief.sec13f_failed")
 

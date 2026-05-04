@@ -38,6 +38,7 @@ from argosy.logging import get_logger
 from argosy.state import db as db_mod
 from argosy.state.models import AgentReport as AgentReportRow
 from argosy.state.models import DailyBrief, PensionFundSnapshot, User, UserContext
+from argosy.state.queries import get_latest_investor_event
 
 _log = get_logger("argosy.api.advisor")
 router = APIRouter(prefix="/advisor", tags=["advisor"])
@@ -469,9 +470,11 @@ def _field_to_dto(spec: FieldSpec, state: str, ts) -> GapItemDTO:
 # ----------------------------------------------------------------------
 #
 # Stitches three lines from already-cached state — gap tracker, latest
-# daily brief, and the most recent watchlist signal (pension snapshots,
-# for now; SEC Form 4 etc. land in Phase 4). NO new LLM call. Per-user
-# cache via `prices_cache` provider="advisor_home_brief", TTL 30 minutes.
+# daily brief, and the most recent watchlist signal. The signal bullet
+# prefers Phase 4 investor events (SEC Form 4 / 13F / TipRanks) when
+# they exist and falls back to the most recent pension fund snapshot.
+# NO new LLM call. Per-user cache via `kv_cache` (CacheKind.UI),
+# provider="advisor_home_brief", TTL 30 minutes.
 
 # Why-it-matters one-liners keyed by gap field path. Used to add a tiny
 # "because X" clause after the gap label, so a missing field reads
@@ -647,13 +650,37 @@ async def _portfolio_bullet(user_id: str) -> HomeBriefBullet | None:
 
 
 async def _signal_bullet(user_id: str) -> HomeBriefBullet | None:
-    """Most recent watchlist event — pension snapshot for now (Phase 3 data).
+    """Most recent watchlist event.
 
-    Defensive: the pension_fund_snapshots table only exists on environments
-    that ran the Phase 3 migration. On older dev DBs the query raises
-    OperationalError (no such table); we treat that the same as "no rows"
-    and just omit the signal bullet rather than 500-ing the home page.
+    Preference order:
+      1. Phase 4 investor event (SEC Form 4 / 13F / TipRanks /
+         CapitolTrades) — written by the daily-brief loop into
+         ``investor_events``. Most recent by ``occurred_at DESC``.
+      2. Pension fund snapshot (Phase 3 data) — fallback when no
+         investor events exist for the user.
+
+    Both queries are defensive: a missing table on older dev DBs
+    (pre-migration) is logged at debug and treated as "no rows" rather
+    than 500-ing the home page.
     """
+    # 1. Investor events first.
+    try:
+        event = await get_latest_investor_event(user_id)
+    except Exception:  # noqa: BLE001 — degrade gracefully on missing table / DB issues
+        _log.debug(
+            "home_brief.signal_bullet_investor_skipped",
+            user_id=user_id,
+            exc_info=True,
+        )
+        event = None
+    if event is not None:
+        text = (event.get("headline") or "").strip()
+        if text:
+            # Match _trim_summary's 140-char cap so the home-brief card
+            # has a stable width regardless of source verbosity.
+            return HomeBriefBullet(kind="signal", text=_trim_summary(text))
+
+    # 2. Pension snapshot fallback.
     try:
         async with db_mod.get_session() as session:
             row = (
@@ -719,14 +746,14 @@ async def get_home_brief(
 
     Stitched from existing state — gap tracker, latest daily brief, most
     recent watchlist signal. NO new LLM call. Cached per-user for 30
-    minutes via `prices_cache` (provider=`advisor_home_brief`).
+    minutes via `kv_cache` (CacheKind.UI, provider=`advisor_home_brief`).
     """
     async def _fetch() -> dict[str, Any]:
         composed = await _compose_home_brief(user_id)
         return composed.model_dump()
 
     data = await cached_call(
-        kind=CacheKind.PRICES,
+        kind=CacheKind.UI,
         provider="advisor_home_brief",
         key=f"user:{user_id}",
         ttl_seconds=30 * 60,

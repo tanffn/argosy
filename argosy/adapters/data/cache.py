@@ -1,9 +1,13 @@
 """Adapter cache wrapper.
 
-Stores responses in `prices_cache` / `news_cache` / `macro_cache` per
-SDD §8.3. Honors per-record TTL. The cache is content-addressed: each
-row carries a `payload_hash` so an audit trail can detect when a vendor
+Stores responses in `kv_cache` / `news_cache` / `macro_cache` per SDD
+§8.3. Honors per-record TTL. The cache is content-addressed: each row
+carries a `payload_hash` so an audit trail can detect when a vendor
 silently mutates a payload without changing its key.
+
+`kv_cache` is a generic key/value/TTL store; `CacheKind` values namespace
+rows within it (``PRICES``, ``NEWS``, ``MACRO``, ``UI`` …). The same
+table also backs UI snapshots like the home-brief composition.
 
 Usage::
 
@@ -34,21 +38,34 @@ from typing import Any, TypeVar
 from sqlalchemy import select
 
 from argosy.state import db as db_mod
-from argosy.state.models import MacroCache, NewsCache, PricesCache
+from argosy.state.models import KvCacheEntry, MacroCache, NewsCache
 
 T = TypeVar("T")
 
 
 class CacheKind(str, enum.Enum):
+    """Namespace within the underlying cache tables.
+
+    ``PRICES``, ``NEWS``, ``MACRO``, and ``UI`` all share rows in
+    ``kv_cache`` (the legacy ``prices_cache``); ``NewsCache`` /
+    ``MacroCache`` exist separately for historical reasons but most new
+    callers should pick a kind here and write to ``kv_cache``.
+    """
+
     PRICES = "prices"
     NEWS = "news"
     MACRO = "macro"
+    # UI snapshots (e.g. home-brief, composed dashboards). Lives in
+    # ``kv_cache`` alongside PRICES — the kind is just a logical
+    # namespace, not a physical table choice.
+    UI = "ui"
 
 
 _TABLE_BY_KIND = {
-    CacheKind.PRICES: PricesCache,
+    CacheKind.PRICES: KvCacheEntry,
     CacheKind.NEWS: NewsCache,
     CacheKind.MACRO: MacroCache,
+    CacheKind.UI: KvCacheEntry,
 }
 
 

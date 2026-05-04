@@ -20,8 +20,9 @@ from argosy.state import db as db_mod
 from argosy.state.models import AgentReport as AgentReportRow
 from argosy.state.models import (
     DailyBrief,
+    InvestorEvent,
+    KvCacheEntry,
     PensionFundSnapshot,
-    PricesCache,
     User,
     UserContext,
 )
@@ -442,6 +443,193 @@ async def test_home_brief_full_user_emits_all_three_bullet_kinds(
 
 
 @pytest.mark.asyncio
+async def test_home_brief_signal_bullet_picks_pension_when_no_investor_events(
+    engine: None, client: AsyncClient
+) -> None:
+    """When investor_events is empty, signal bullet falls back to pension snapshot."""
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(UserContext(user_id="ariel", current_stage="stage_1"))
+        session.add(
+            PensionFundSnapshot(
+                user_id="ariel",
+                fund_id="42",
+                fund_name="Migdal Kupat Gemel",
+                return_pct_12m=6.5,
+                benchmark_return_pct_12m=7.1,
+                relative_to_benchmark_pct=-0.6,
+                snapshot_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    res = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    signal = next((b for b in body["bullets"] if b["kind"] == "signal"), None)
+    assert signal is not None, body
+    assert "Migdal" in signal["text"]
+    assert "below" in signal["text"]
+
+
+@pytest.mark.asyncio
+async def test_home_brief_signal_bullet_prefers_investor_event_over_pension(
+    engine: None, client: AsyncClient
+) -> None:
+    """When both investor events and pension snapshots exist, the most recent
+    investor event wins and is surfaced verbatim."""
+    now = datetime.now(UTC)
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(UserContext(user_id="ariel", current_stage="stage_1"))
+        session.add(
+            PensionFundSnapshot(
+                user_id="ariel",
+                fund_id="42",
+                fund_name="Migdal Kupat Gemel",
+                return_pct_12m=6.5,
+                benchmark_return_pct_12m=7.1,
+                relative_to_benchmark_pct=-0.6,
+                snapshot_at=now,
+            )
+        )
+        # Insider buy — most recent.
+        session.add(
+            InvestorEvent(
+                user_id="ariel",
+                source="sec_form4",
+                ticker="NVDA",
+                event_kind="purchase",
+                headline="Jensen Huang (officer (CEO)) bought 10,000 NVDA @ $912.34",
+                occurred_at=now,
+            )
+        )
+        # An older event so we also confirm "most recent" wins.
+        from datetime import timedelta as _td
+        session.add(
+            InvestorEvent(
+                user_id="ariel",
+                source="tipranks",
+                ticker="AAPL",
+                event_kind="analyst_consensus",
+                headline="AAPL analyst consensus — Strong Buy avg PT $245.00",
+                occurred_at=now - _td(days=3),
+            )
+        )
+        await session.commit()
+
+    res = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    signal = next((b for b in body["bullets"] if b["kind"] == "signal"), None)
+    assert signal is not None, body
+    # Most-recent investor event wins; pension snapshot is suppressed.
+    assert "Jensen Huang" in signal["text"]
+    assert "NVDA" in signal["text"]
+    # Confirm the pension fallback didn't fire.
+    assert "Migdal" not in signal["text"]
+
+
+@pytest.mark.asyncio
+async def test_home_brief_signal_bullet_omitted_when_no_events_or_pension(
+    engine: None, client: AsyncClient
+) -> None:
+    """No investor events + no pension snapshots → no signal bullet at all."""
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(
+            UserContext(
+                user_id="ariel",
+                current_stage="stage_1",
+                identity_yaml="tax_residency: israel\n",
+            )
+        )
+        # Daily brief so the response isn't dominated by the intake invite.
+        session.add(
+            DailyBrief(
+                user_id="ariel",
+                run_at=datetime.now(UTC),
+                summary_text="Quiet day across the watchlist.",
+                news_report_json="{}",
+                macro_report_json="{}",
+                concentration_report_json="{}",
+                plan_delta_json="{}",
+            )
+        )
+        await session.commit()
+
+    res = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    kinds = {b["kind"] for b in body["bullets"]}
+    assert "signal" not in kinds, body
+
+
+@pytest.mark.asyncio
+async def test_home_brief_signal_bullet_cross_user_isolation(
+    engine: None, client: AsyncClient
+) -> None:
+    """An investor event for user A must not leak into user B's home brief."""
+    now = datetime.now(UTC)
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(User(id="dana"))
+        session.add(UserContext(user_id="ariel", current_stage="stage_1"))
+        session.add(UserContext(user_id="dana", current_stage="stage_1"))
+        # Event belongs ONLY to ariel.
+        session.add(
+            InvestorEvent(
+                user_id="ariel",
+                source="sec_form4",
+                ticker="NVDA",
+                event_kind="purchase",
+                headline="Insider X bought 5,000 NVDA",
+                occurred_at=now,
+            )
+        )
+        # Dana has a pension snapshot to make the fallback path observable.
+        session.add(
+            PensionFundSnapshot(
+                user_id="dana",
+                fund_id="99",
+                fund_name="Harel Pension",
+                return_pct_12m=5.0,
+                benchmark_return_pct_12m=6.0,
+                relative_to_benchmark_pct=-1.0,
+                snapshot_at=now,
+            )
+        )
+        await session.commit()
+
+    # Dana — must see her pension snapshot, NOT ariel's investor event.
+    res_dana = await client.get(
+        "/api/advisor/home-brief", params={"user_id": "dana"}
+    )
+    assert res_dana.status_code == 200
+    body_dana = res_dana.json()
+    signal_dana = next(
+        (b for b in body_dana["bullets"] if b["kind"] == "signal"), None
+    )
+    assert signal_dana is not None
+    assert "Harel" in signal_dana["text"]
+    assert "NVDA" not in signal_dana["text"], (
+        "ariel's investor event leaked to dana"
+    )
+
+    # Ariel — must see his own investor event.
+    res_ariel = await client.get(
+        "/api/advisor/home-brief", params={"user_id": "ariel"}
+    )
+    assert res_ariel.status_code == 200
+    body_ariel = res_ariel.json()
+    signal_ariel = next(
+        (b for b in body_ariel["bullets"] if b["kind"] == "signal"), None
+    )
+    assert signal_ariel is not None
+    assert "NVDA" in signal_ariel["text"]
+
+
+@pytest.mark.asyncio
 async def test_home_brief_caches_within_ttl(
     engine: None, client: AsyncClient
 ) -> None:
@@ -477,9 +665,9 @@ async def test_home_brief_caches_within_ttl(
     async with db_mod.get_session() as session:
         cached = (
             await session.execute(
-                select(PricesCache).where(
-                    PricesCache.provider == "advisor_home_brief",
-                    PricesCache.key == "user:ariel",
+                select(KvCacheEntry).where(
+                    KvCacheEntry.provider == "advisor_home_brief",
+                    KvCacheEntry.key == "user:ariel",
                 )
             )
         ).scalar_one_or_none()

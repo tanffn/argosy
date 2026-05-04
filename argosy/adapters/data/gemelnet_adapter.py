@@ -23,7 +23,7 @@ Implementation notes:
   - The MoF site renders an ASP.NET WebForms `<table>` with the data
     rows. Column names are Hebrew; we map to English keys via the
     constants below so callers never see Hebrew strings on the wire.
-  - Cached in `prices_cache` keyed ``gemelnet:fund_returns:<id>:<p>``
+  - Cached in `kv_cache` keyed ``gemelnet:fund_returns:<id>:<p>``
     with a 24h TTL. Fund-level data is updated monthly upstream so a
     daily refresh is more than enough.
   - On unreachable site (DNS, timeout, 5xx, parse failure) we raise

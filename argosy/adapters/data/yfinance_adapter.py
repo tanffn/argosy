@@ -2,8 +2,8 @@
 
 Wraps the `yfinance` package for EOD prices and quotes. yfinance does
 not require an API key; absence of the package itself is the only
-"missing source" mode. The adapter caches results in `prices_cache` per
-SDD §8.3.
+"missing source" mode. The adapter caches results in `kv_cache` per
+SDD §8.3 (using ``CacheKind.PRICES`` for the namespace).
 
 Tests inject a fake yfinance module via the `client` constructor arg so
 no live calls happen. Production callers leave `client=None` and the

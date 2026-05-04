@@ -270,3 +270,93 @@ async def test_default_gather_inputs_form4_outage_degrades(
     assert inputs.analyst_signals == {}
     # Other fields should still be populated from the fake snapshot.
     assert sorted(inputs.tickers) == ["AAPL", "NVDA"]
+
+
+# ----------------------------------------------------------------------
+# Investor-event persistence (Phase 4 / home-brief signal-bullet path).
+# Verifies _default_gather_inputs writes through to the investor_events
+# table after a successful adapter pull, so the home brief can query
+# durable state instead of depending on the adapter cache TTL.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_default_gather_inputs_persists_investor_events(
+    monkeypatch: pytest.MonkeyPatch, engine: None
+) -> None:
+    from argosy.adapters.data import sec_form4_adapter, tipranks_adapter
+    from argosy.orchestrator.loops import daily_brief as db_loop
+    from argosy.state.models import InvestorEvent, User
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    class _FakePos:
+        def __init__(self, t: str) -> None:
+            self.ticker = t
+            self.quantity = 1
+            self.market_value = 0
+            self.value = 0
+            self.account = ""
+
+    class _FakeSnap:
+        positions = [_FakePos("NVDA")]
+
+    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
+    import argosy.ingest.tsv as ingest_tsv
+    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+
+    class _StubForm4:
+        async def get_recent_form4_for_ticker(
+            self, ticker: str, *, days: int = 30
+        ) -> list[dict]:
+            return [
+                {
+                    "filer_name": "Jensen Huang",
+                    "role": "officer (CEO)",
+                    "ticker": ticker,
+                    "transaction_date": "2026-04-30",
+                    "transaction_code": "P",
+                    "transaction_kind": "purchase",
+                    "shares": 10000,
+                    "price_per_share": 912.34,
+                    "value_usd": 9123400.0,
+                    "post_transaction_holdings": 100000,
+                }
+            ]
+
+    class _StubTipRanks:
+        async def get_analyst_consensus(self, ticker: str) -> dict:
+            return {
+                "ticker": ticker,
+                "consensus_label": "Strong Buy",
+                "average_price_target": 950.0,
+                "num_buy": 30,
+                "num_hold": 5,
+                "num_sell": 1,
+                "last_updated": "2026-05-01",
+            }
+
+    monkeypatch.setattr(sec_form4_adapter, "SecForm4Adapter", lambda: _StubForm4())
+    monkeypatch.setattr(tipranks_adapter, "TipRanksAdapter", lambda: _StubTipRanks())
+
+    await db_loop._default_gather_inputs("ariel")
+
+    async with db_mod.get_session() as session:
+        rows = (
+            await session.execute(
+                select(InvestorEvent).where(InvestorEvent.user_id == "ariel")
+            )
+        ).scalars().all()
+    sources = {r.source for r in rows}
+    assert "sec_form4" in sources
+    assert "tipranks" in sources
+    # Form 4 row should carry the headline our mapper produces.
+    f4 = next(r for r in rows if r.source == "sec_form4")
+    assert "Jensen Huang" in f4.headline
+    assert f4.ticker == "NVDA"
+    # TipRanks row carries consensus label + ticker.
+    tr = next(r for r in rows if r.source == "tipranks")
+    assert "Strong Buy" in tr.headline
+    assert tr.ticker == "NVDA"

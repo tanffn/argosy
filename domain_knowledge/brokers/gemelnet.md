@@ -42,7 +42,7 @@ the canonical, free, no-auth source for fund-level returns.
 
 - Upstream: monthly. The MoF publishes after end-of-month NAVs are
   rolled up — typically 6-8 weeks after the close of a calendar month.
-- Argosy adapter cache: 24h TTL (`prices_cache` rows keyed
+- Argosy adapter cache: 24h TTL (`kv_cache` rows keyed
   `gemelnet:fund_returns:<id>:<period>`). Daily refresh is more than
   enough given monthly upstream cadence.
 - Annual loop: opportunistically refreshes every fund the user has
