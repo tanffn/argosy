@@ -18,7 +18,10 @@ from typing import Any, Callable
 
 from sqlalchemy import desc, select
 
-from argosy.adapters import MissingAPIKeyError as AdapterMissingAPIKeyError
+from argosy.adapters import (
+    MissingAPIKeyError as AdapterMissingAPIKeyError,
+    MissingDataSourceError,
+)
 from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
 from argosy.agents.macro_analyst import MacroAnalystAgent
 from argosy.agents.news_analyst import NewsAnalystAgent
@@ -270,13 +273,17 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
             _log.exception("daily_brief.news_fetch_failed")
 
     # 3a. Insider activity (SEC Form 4) per portfolio ticker.
+    # Cap fan-out to 10 tickers per day. SEC has a ~10 req/s limit and
+    # each ticker fans out into multiple sub-requests (atom + index +
+    # per-filing XML); 10 keeps us comfortably below the cap on a single
+    # daily-brief tick and matches the documented Phase 4 design.
     insider_activity: dict[str, list[dict[str, Any]]] = {}
     if tickers:
         try:
             from argosy.adapters.data.sec_form4_adapter import SecForm4Adapter
 
             form4 = SecForm4Adapter()
-            for ticker in tickers[:25]:
+            for ticker in tickers[:10]:
                 try:
                     rows = await form4.get_recent_form4_for_ticker(ticker, days=30)
                 except MissingDataSourceError as e:

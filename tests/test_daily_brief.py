@@ -188,3 +188,85 @@ async def test_daily_brief_end_to_end(engine: None) -> None:
     assert any("daily_brief.ready" in m for m in received), (
         f"Expected daily_brief.ready event, got: {received!r}"
     )
+
+
+# ----------------------------------------------------------------------
+# _default_gather_inputs — investor-event adapter graceful degradation.
+# Covers the Phase 4 review fix where MissingDataSourceError was used
+# inside the inner per-ticker try/except but never imported at module
+# scope. Without the import, an outage on the *first* ticker turns into
+# a NameError swallowed by the outer ``except Exception``, dropping the
+# entire section instead of degrading per-ticker.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_default_gather_inputs_form4_outage_degrades(
+    monkeypatch: pytest.MonkeyPatch, engine: None
+) -> None:
+    from argosy.adapters import MissingDataSourceError
+    from argosy.adapters.data import sec_form4_adapter, tipranks_adapter
+    from argosy.orchestrator.loops import daily_brief as db_loop
+    from argosy.state.models import User
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    # Pretend a TSV exists with two tickers; we don't actually parse a
+    # file — we monkeypatch the loader to return a synthetic snapshot.
+    class _FakePos:
+        def __init__(self, t: str) -> None:
+            self.ticker = t
+            self.quantity = 1
+            self.market_value = 0
+            self.value = 0
+            self.account = ""
+
+    class _FakeSnap:
+        positions = [_FakePos("NVDA"), _FakePos("AAPL")]
+
+    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
+    import argosy.ingest.tsv as ingest_tsv
+    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+
+    # Failing Form 4 adapter — first ticker outage must NOT abort the
+    # loop; subsequent tickers must continue to be attempted.
+    class _OutageForm4:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_recent_form4_for_ticker(
+            self, ticker: str, *, days: int = 30
+        ) -> list[dict]:
+            self.calls.append(ticker)
+            raise MissingDataSourceError(f"simulated SEC outage for {ticker}")
+
+    outage_form4 = _OutageForm4()
+    monkeypatch.setattr(
+        sec_form4_adapter, "SecForm4Adapter", lambda: outage_form4
+    )
+
+    # Failing TipRanks adapter — same pattern.
+    class _OutageTipRanks:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_analyst_consensus(self, ticker: str) -> dict:
+            self.calls.append(ticker)
+            raise MissingDataSourceError(f"simulated TipRanks outage for {ticker}")
+
+    outage_tr = _OutageTipRanks()
+    monkeypatch.setattr(tipranks_adapter, "TipRanksAdapter", lambda: outage_tr)
+
+    inputs = await db_loop._default_gather_inputs("ariel")
+
+    # Both tickers should have been attempted, despite the first one
+    # raising. The empty per-ticker dict is the graceful-degradation
+    # outcome — neither a crash nor silent abort after the first miss.
+    assert outage_form4.calls == ["AAPL", "NVDA"]
+    assert outage_tr.calls == ["AAPL", "NVDA"]
+    assert inputs.insider_activity == {}
+    assert inputs.analyst_signals == {}
+    # Other fields should still be populated from the fake snapshot.
+    assert sorted(inputs.tickers) == ["AAPL", "NVDA"]

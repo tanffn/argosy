@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -134,13 +135,20 @@ class Sec13FAdapter:
         if days <= 0:
             raise ValueError(f"days must be positive; got {days}")
 
+        # SEC EDGAR FTS expects an actual ISO date range when
+        # ``dateRange=custom``. Empty values either 400 or are silently
+        # ignored, so we compute the window from ``days``.
+        today = datetime.now(timezone.utc).date()
+        startdt = (today - timedelta(days=days)).isoformat()
+        enddt = today.isoformat()
+
         async def _fetch() -> list[dict[str, Any]]:
             params = {
                 "q": "",
                 "forms": "13F-HR",
                 "dateRange": "custom",
-                "startdt": "",
-                "enddt": "",
+                "startdt": startdt,
+                "enddt": enddt,
             }
             data = await self._fetch_json(EDGAR_FTS_URL, params=params)
             return _parse_fts_hits(data)
