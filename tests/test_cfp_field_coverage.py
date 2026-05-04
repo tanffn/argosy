@@ -28,8 +28,10 @@ def test_catalog_has_at_least_50_fields() -> None:
 
 
 def test_catalog_has_ten_stages_in_order() -> None:
-    """Phase 2 added stages 7-10. The order tuple drives all_fields()
-    traversal — if it's wrong, gap ordering goes off."""
+    """Phase 2 added stages 7-10 (CFP expansion). The concentration-
+    reduction follow-up added stage_11 (special situations). The order
+    tuple drives all_fields() traversal — if it's wrong, gap ordering
+    goes off."""
     assert STAGE_ORDER == (
         "stage_1",
         "stage_2",
@@ -41,6 +43,7 @@ def test_catalog_has_ten_stages_in_order() -> None:
         "stage_8",
         "stage_9",
         "stage_10",
+        "stage_11",
     )
     assert set(STAGE_FIELDS.keys()) == set(STAGE_ORDER)
 
@@ -107,10 +110,15 @@ def test_education_stage_targets_per_dependent_funding() -> None:
 
 def test_israeli_pension_fields_preserved() -> None:
     """Argosy is bicultural — the IL pension catalog stays even though
-    the CFP Board is US-centric. Smoke check that pensions row is still
-    present in stage_3."""
+    the CFP Board is US-centric. Phase 3 follow-up split the single
+    `identity.pensions` bucket into three per-vehicle slots whose keys
+    mirror the gemelnet adapter's canonical fund-type values
+    (kupat_gemel / keren_hishtalmut / kupat_pensia) so adapter snapshots
+    can flow straight into the right gap-tracker slot."""
     paths = {f.path for f in STAGE_FIELDS["stage_3"]}
-    assert "identity.pensions" in paths
+    assert any(p.startswith("identity.pensions.keren_hishtalmut") for p in paths)
+    assert any(p.startswith("identity.pensions.kupat_gemel") for p in paths)
+    assert any(p.startswith("identity.pensions.kupat_pensia") for p in paths)
 
 
 def test_must_have_priority_one_fields_present() -> None:

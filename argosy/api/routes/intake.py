@@ -130,7 +130,7 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
             if ctx is None or ctx.current_stage is None:
                 stage = "stage_1"
             elif ctx.current_stage == "complete":
-                stage = "stage_10"
+                stage = "stage_11"
             else:
                 stage = ctx.current_stage
 

@@ -91,11 +91,12 @@ async def test_intake_stage_complete_signals_advancement() -> None:
 
 def test_intake_stages_phase2_layout() -> None:
     """Phase 2 (CFP expansion) added stages 7-10 (estate, insurance, tax,
-    education) — the catalog is now ten stages 1..10."""
-    assert len(INTAKE_STAGES) == 10
+    education); the concentration-reduction follow-up added stage_11
+    (special situations) — the catalog is now eleven stages 1..11."""
+    assert len(INTAKE_STAGES) == 11
     assert INTAKE_STAGES[0] == "stage_1"
-    assert INTAKE_STAGES[-1] == "stage_10"
-    assert INTAKE_STAGES == [f"stage_{i}" for i in range(1, 11)]
+    assert INTAKE_STAGES[-1] == "stage_11"
+    assert INTAKE_STAGES == [f"stage_{i}" for i in range(1, 12)]
 
 
 @pytest.mark.asyncio

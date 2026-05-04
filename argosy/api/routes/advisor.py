@@ -154,7 +154,8 @@ async def _persist_turn(
         "stage_7": "stage_8",
         "stage_8": "stage_9",
         "stage_9": "stage_10",
-        "stage_10": "complete",
+        "stage_10": "stage_11",
+        "stage_11": "complete",
     }.get(stage, "complete")
 
     advanced_to: str | None = None
@@ -280,7 +281,7 @@ async def post_turn(req: AdvisorTurnRequest) -> AdvisorTurnResponse:
             if ctx is None or ctx.current_stage is None:
                 stage = "stage_1"
             elif ctx.current_stage == "complete":
-                stage = "stage_10"
+                stage = "stage_11"
             else:
                 stage = ctx.current_stage
 

@@ -95,6 +95,7 @@ class GapStatus:
 #   stage_8  risk management/insurance (CFP)
 #   stage_9  tax situation             (CFP)
 #   stage_10 education funding         (CFP)
+#   stage_11 special situations        (concentration, RSU, sector tilts)
 
 STAGE_FIELDS: dict[str, list[FieldSpec]] = {
     # --- Stage 1: Identity & jurisdiction (CFP Personal / Family) ----
@@ -280,12 +281,66 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             freshness="quarterly",
             priority=2,
         ),
+        # IL pensions — split per-vehicle so the gemelnet adapter can flow
+        # snapshots into the right slot. Keys mirror the canonical fund-type
+        # values produced by `argosy.adapters.data.gemelnet_adapter`'s
+        # HEBREW_TYPE_MAP (kupat_gemel / keren_hishtalmut / kupat_pensia)
+        # so adapter output and gap-tracker slots agree without translation.
         FieldSpec(
-            path="identity.pensions",
-            label="Pensions (קרן השתלמות / קופת גמל / פנסיה)",
+            path="identity.pensions.keren_hishtalmut.balance_nis",
+            label="קרן השתלמות balance (NIS) — liquid after 6y, employer match",
             section="identity",
             freshness="annual",
             priority=2,
+        ),
+        FieldSpec(
+            path="identity.pensions.keren_hishtalmut.contribution_rate_pct",
+            label="קרן השתלמות employee contribution rate (%)",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="identity.pensions.keren_hishtalmut.employer_match_pct",
+            label="קרן השתלמות employer match (%)",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="identity.pensions.kupat_gemel.balance_nis",
+            label="קופת גמל balance (NIS) — locked till retirement",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.pensions.kupat_gemel.contribution_rate_pct",
+            label="קופת גמל employee contribution rate (%)",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="identity.pensions.kupat_pensia.balance_nis",
+            label="פנסיה balance (NIS) — mandatory salary-deferred",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.pensions.kupat_pensia.contribution_rate_pct",
+            label="פנסיה employee contribution rate (%)",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="identity.pensions.kupat_pensia.employer_match_pct",
+            label="פנסיה employer match (%)",
+            section="identity",
+            freshness="annual",
+            priority=3,
         ),
         FieldSpec(
             path="identity.rsu_grants",
@@ -557,6 +612,19 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             freshness="quarterly",
             priority=3,
         ),
+        # Israeli severance / exit-grant tax (מס על פיצויי פיטורין). Fires
+        # when an employee takes severance/cash on termination or converts
+        # קרן השתלמות into liquid funds before the 6-year mark — material
+        # for any tax-aware decision around employer transitions or
+        # education-fund withdrawals. Annual review cadence (the rules and
+        # the user's expected exposure shift year-over-year).
+        FieldSpec(
+            path="identity.mas_shevach",
+            label="Severance / exit-grant tax exposure (מס על פיצויי פיטורין)",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
     ],
     # --- Stage 10: Education funding (CFP) -------------------------
     "stage_10": [
@@ -582,12 +650,54 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             priority=3,
         ),
     ],
+    # --- Stage 11: Special situations -------------------------------
+    # Single-employer equity concentration, RSU vest schedules, sector
+    # overweights, and other portfolio-risk factors the user must
+    # explicitly acknowledge with a mitigation plan. This is the
+    # concentration-reduction stage — Argosy's core driver per Ariel's
+    # profile, but worth running on every employee with material RSU
+    # exposure.
+    "stage_11": [
+        FieldSpec(
+            path="identity.employer_concentration_pct",
+            label="Single-employer equity as % of net worth",
+            section="identity",
+            freshness="quarterly",
+            priority=1,
+        ),
+        FieldSpec(
+            path="identity.rsu_vest_schedule",
+            label="RSU vest schedule (upcoming tranches: date, shares, est. value)",
+            section="identity",
+            freshness="quarterly",
+            priority=1,
+        ),
+        FieldSpec(
+            path="constraints.rsu_concentration_plan",
+            label=(
+                "RSU concentration plan "
+                "(sell-on-vest / hold / collar / other)"
+            ),
+            section="constraints",
+            freshness="annual",
+            priority=1,
+        ),
+        FieldSpec(
+            path="constraints.sector_overweight_acknowledged",
+            label="Sector overweight explicitly acknowledged (bool)",
+            section="constraints",
+            freshness="annual",
+            priority=2,
+        ),
+    ],
 }
 
 
 # Stage progression — keep this in sync with `INTAKE_STAGES` and the
 # `_persist_turn` next-stage default map. The Phase 2 expansion runs
-# 1→2→3→4→5→6→7→8→9→10→complete.
+# 1→2→3→4→5→6→7→8→9→10; the concentration-reduction follow-up adds
+# stage_11 (special situations) so the full sequence runs
+# 1→2→3→4→5→6→7→8→9→10→11→complete.
 STAGE_ORDER: tuple[str, ...] = (
     "stage_1",
     "stage_2",
@@ -599,6 +709,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "stage_8",
     "stage_9",
     "stage_10",
+    "stage_11",
 )
 
 

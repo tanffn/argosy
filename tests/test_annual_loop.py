@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
@@ -14,8 +15,7 @@ from argosy.orchestrator.cost_guard import reset_cost_guard
 from argosy.orchestrator.loops.annual import AnnualLoop
 from argosy.orchestrator.loops.base import LoopSchedule
 from argosy.state import db as db_mod
-from argosy.state.models import AuditLog, User
-
+from argosy.state.models import AuditLog, PensionFundSnapshot, User
 
 _REFRESH_CANNED = {
     "per_file": [
@@ -123,3 +123,205 @@ async def test_annual_with_no_files_still_records_audit(engine: None) -> None:
             )
         ).scalars().all()
     assert len(audits) == 1
+
+
+# ----------------------------------------------------------------------
+# pension_refresh_callable wiring (Phase 3 follow-up)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_annual_invokes_pension_refresh_once_per_tick(engine: None) -> None:
+    """The annual-loop instance is per-user, so a tick calls the
+    pension-refresh callable exactly once with the loop's `user_id`."""
+    events._reset_for_tests()
+    reset_cost_guard()
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    invocations: list[str] = []
+
+    def _refresh(user_id: str) -> int:
+        invocations.append(user_id)
+        return 3  # arbitrary "3 funds refreshed" return
+
+    loop = AnnualLoop(
+        schedule=LoopSchedule(cron="0 8 2 1 *"),
+        user_id="ariel",
+        domain_refresh_factory=_mock_refresh_factory,
+        domain_files_provider=lambda: [],
+        pension_refresh_callable=_refresh,
+    )
+    await loop.tick()
+
+    assert invocations == ["ariel"]
+
+    async with db_mod.get_session() as session:
+        audits = (
+            await session.execute(
+                select(AuditLog).where(AuditLog.event_type == "annual.completed")
+            )
+        ).scalars().all()
+    assert len(audits) == 1
+    assert "pensions_refreshed" in audits[0].payload_json
+    assert '"pensions_refreshed": 3' in audits[0].payload_json
+
+
+@pytest.mark.asyncio
+async def test_annual_pension_refresh_failure_does_not_abort_other_users(
+    engine: None,
+) -> None:
+    """One user's pension-refresh blowing up MUST NOT prevent another
+    user's annual loop from completing. Each AnnualLoop is per-user, so
+    we exercise this by ticking two loops back-to-back: one whose
+    pension-refresh raises, one whose callable returns cleanly. Both
+    should still record their `annual.completed` audit row."""
+    events._reset_for_tests()
+    reset_cost_guard()
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="user_a"))
+        session.add(User(id="user_b"))
+        await session.commit()
+
+    a_invocations: list[str] = []
+    b_invocations: list[str] = []
+
+    def _refresh_a(user_id: str) -> int:
+        a_invocations.append(user_id)
+        raise RuntimeError("user_a's gemelnet snapshot blew up")
+
+    def _refresh_b(user_id: str) -> int:
+        b_invocations.append(user_id)
+        return 2
+
+    loop_a = AnnualLoop(
+        schedule=LoopSchedule(cron="0 8 2 1 *"),
+        user_id="user_a",
+        domain_refresh_factory=_mock_refresh_factory,
+        domain_files_provider=lambda: [],
+        pension_refresh_callable=_refresh_a,
+    )
+    loop_b = AnnualLoop(
+        schedule=LoopSchedule(cron="0 8 2 1 *"),
+        user_id="user_b",
+        domain_refresh_factory=_mock_refresh_factory,
+        domain_files_provider=lambda: [],
+        pension_refresh_callable=_refresh_b,
+    )
+
+    # Both ticks must not raise — the loop is supposed to swallow
+    # pension-refresh exceptions defensively.
+    await loop_a.tick()
+    await loop_b.tick()
+
+    assert a_invocations == ["user_a"]
+    assert b_invocations == ["user_b"]
+
+    async with db_mod.get_session() as session:
+        audits = (
+            await session.execute(
+                select(AuditLog).where(AuditLog.event_type == "annual.completed")
+            )
+        ).scalars().all()
+    by_user = {a.user_id: a for a in audits}
+    assert "user_a" in by_user, "user_a's audit should still land despite exception"
+    assert "user_b" in by_user, "user_b's audit should be untouched by user_a's failure"
+    assert '"pensions_refreshed": 2' in by_user["user_b"].payload_json
+
+
+@pytest.mark.asyncio
+async def test_annual_pension_refresh_persists_snapshot_end_to_end(
+    engine: None,
+) -> None:
+    """A pension-refresh callable that uses ``persist_pension_snapshot``
+    must successfully write a `pension_fund_snapshots` row through the
+    in-memory test DB. Stubs the gemelnet adapter so no network call
+    happens; asserts the row landed."""
+    from argosy.adapters.data.gemelnet_adapter import persist_pension_snapshot
+
+    events._reset_for_tests()
+    reset_cost_guard()
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    # Canned "adapter" output — what GemelnetAdapter.get_fund_returns
+    # would have produced. We hand-build it to avoid coupling this test
+    # to the parser.
+    canned_returns = {
+        "fund_id": "1234",
+        "period": "12m",
+        "return_pct": 11.5,
+        "benchmark_return_pct": 9.0,
+        "relative_to_benchmark_pct": 2.5,
+        "last_updated": "2026-04-01",
+        "source_url": "http://gemelnet.mof.gov.il/Tsuot/UI/DafMakdim.aspx",
+        "fund_name": "Stub Hishtalmut",
+        "fund_type": "keren_hishtalmut",
+        "manager": "Stub Manager",
+    }
+
+    async def _refresh(user_id: str) -> int:
+        await persist_pension_snapshot(
+            user_id=user_id,
+            fund_returns=canned_returns,
+            balance_nis=50000,
+            snapshot_at=datetime.now(UTC),
+        )
+        return 1
+
+    loop = AnnualLoop(
+        schedule=LoopSchedule(cron="0 8 2 1 *"),
+        user_id="ariel",
+        domain_refresh_factory=_mock_refresh_factory,
+        domain_files_provider=lambda: [],
+        pension_refresh_callable=_refresh,
+    )
+    await loop.tick()
+
+    async with db_mod.get_session() as session:
+        snaps = (
+            await session.execute(
+                select(PensionFundSnapshot).where(
+                    PensionFundSnapshot.user_id == "ariel"
+                )
+            )
+        ).scalars().all()
+    assert len(snaps) == 1
+    assert snaps[0].fund_id == "1234"
+    assert snaps[0].fund_type == "keren_hishtalmut"
+    assert float(snaps[0].balance_nis) == pytest.approx(50000)
+
+
+@pytest.mark.asyncio
+async def test_annual_without_pension_callable_is_a_noop(engine: None) -> None:
+    """When `pension_refresh_callable` is omitted, the loop must complete
+    without touching pensions and record `pensions_refreshed: null`."""
+    events._reset_for_tests()
+    reset_cost_guard()
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    loop = AnnualLoop(
+        schedule=LoopSchedule(cron="0 8 2 1 *"),
+        user_id="ariel",
+        domain_refresh_factory=_mock_refresh_factory,
+        domain_files_provider=lambda: [],
+        # pension_refresh_callable intentionally omitted.
+    )
+    await loop.tick()
+
+    async with db_mod.get_session() as session:
+        audits = (
+            await session.execute(
+                select(AuditLog).where(AuditLog.event_type == "annual.completed")
+            )
+        ).scalars().all()
+    assert len(audits) == 1
+    assert '"pensions_refreshed": null' in audits[0].payload_json

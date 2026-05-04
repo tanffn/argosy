@@ -4,15 +4,22 @@ This is a *turn-based* agent: each `run(...)` produces a single next-question
 plus an optional structured update to `user_context` derived from the
 *previous* user answer. The CLI loop (`argosy intake`) drives the conversation.
 
-Stages (per SDD §6.1):
+Stages (per SDD §6.1, expanded by Phase 2 CFP coverage and the
+concentration-reduction follow-up):
 
-  stage_1: identity & jurisdiction
-  stage_2: goals & timeline
-  stage_3: financial picture (income → bank → brokerage → pensions → real
-           estate → insurance → tax filings)
-  stage_4: brokerage connections
-  stage_5: plan import & critique
-  stage_6: operational preferences
+  stage_1:  identity & jurisdiction
+  stage_2:  goals & timeline
+  stage_3:  financial picture (income → bank → brokerage → IL pensions
+            per-vehicle → US retirement → real estate → expenses)
+  stage_4:  brokerage connections
+  stage_5:  plan import & critique
+  stage_6:  operational preferences
+  stage_7:  estate planning           (CFP)
+  stage_8:  risk management/insurance (CFP)
+  stage_9:  tax situation             (CFP)
+  stage_10: education funding         (CFP)
+  stage_11: special situations        (employer concentration, RSU plans,
+            sector overweights — explicit acknowledgement + mitigation)
 
 The agent advances stages by emitting a STAGE_COMPLETE marker on the
 `stage_complete` field of its output. The orchestrator (CLI) is responsible
@@ -50,6 +57,7 @@ INTAKE_STAGES: list[str] = [
     "stage_8",
     "stage_9",
     "stage_10",
+    "stage_11",
 ]
 
 STAGE_PURPOSE: dict[str, str] = {
@@ -109,6 +117,11 @@ STAGE_PURPOSE: dict[str, str] = {
         "cost, currency, education savings accounts (529 / Coverdell / "
         "חיסכון לכל ילד), funding strategy (full / partial / loans expected)."
     ),
+    "stage_11": (
+        "Single-employer equity concentration, RSU vest schedules, sector "
+        "overweights, and other portfolio-risk factors that warrant explicit "
+        "acknowledgement and a mitigation plan."
+    ),
 }
 
 
@@ -149,7 +162,7 @@ class IntakeTurnOutput(BaseModel):
 
     stage: Literal[
         "stage_1", "stage_2", "stage_3", "stage_4", "stage_5", "stage_6",
-        "stage_7", "stage_8", "stage_9", "stage_10",
+        "stage_7", "stage_8", "stage_9", "stage_10", "stage_11",
     ]
     question_for_user: str = Field(
         default="",
@@ -171,7 +184,7 @@ class IntakeTurnOutput(BaseModel):
     )
     next_stage: Literal[
         "stage_1", "stage_2", "stage_3", "stage_4", "stage_5", "stage_6",
-        "stage_7", "stage_8", "stage_9", "stage_10", "complete",
+        "stage_7", "stage_8", "stage_9", "stage_10", "stage_11", "complete",
     ] | None = None
     confidence: ConfidenceBand = ConfidenceBand.MEDIUM
     cited_sources: list[str] = Field(
