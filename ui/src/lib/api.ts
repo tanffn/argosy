@@ -459,6 +459,10 @@ export const api = {
     getJSON<AdvisorGapsResponse>(
       `/api/advisor/gaps?user_id=${encodeURIComponent(userId)}`,
     ),
+  advisorHomeBrief: (userId: string) =>
+    getJSON<AdvisorHomeBriefResponse>(
+      `/api/advisor/home-brief?user_id=${encodeURIComponent(userId)}`,
+    ),
   intakeFileToText: async (file: File): Promise<FileToTextResponse> => {
     const fd = new FormData();
     fd.append("file", file);
@@ -631,4 +635,23 @@ export interface AdvisorGapsResponse {
   current_stage: string;
   items: AdvisorGapItem[];
   counts: { fresh: number; missing: number; stale: number };
+}
+
+export type AdvisorBriefBulletKind = "gap" | "portfolio" | "signal";
+
+export interface AdvisorBriefBullet {
+  kind: AdvisorBriefBulletKind;
+  text: string;
+}
+
+export interface AdvisorBriefCTA {
+  label: string;
+  href: string;
+}
+
+export interface AdvisorHomeBriefResponse {
+  headline: string;
+  bullets: AdvisorBriefBullet[];
+  cta: AdvisorBriefCTA;
+  generated_at: string;
 }

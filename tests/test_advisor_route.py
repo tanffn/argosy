@@ -1,8 +1,9 @@
-"""Advisor API route tests — /turn, /gaps, and intake-alias backwards-compat."""
+"""Advisor API route tests — /turn, /gaps, /home-brief, and intake-alias backwards-compat."""
 
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 import pytest
 from httpx import AsyncClient
@@ -17,7 +18,13 @@ from argosy.api.routes.advisor import (
 )
 from argosy.state import db as db_mod
 from argosy.state.models import AgentReport as AgentReportRow
-from argosy.state.models import User, UserContext
+from argosy.state.models import (
+    DailyBrief,
+    PensionFundSnapshot,
+    PricesCache,
+    User,
+    UserContext,
+)
 
 
 def _canned(question: str, **overrides) -> dict:
@@ -348,3 +355,152 @@ async def test_intake_alias_turn_still_works(
             assert len(rows) == 1
     finally:
         reset_intake_agent_factory()
+
+
+# ----------------------------------------------------------------------
+# /api/advisor/home-brief
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_home_brief_empty_user_returns_intake_invite_only(
+    engine: None, client: AsyncClient
+) -> None:
+    """A user with no context, no portfolio, no pension data should yield
+    headline + cta + a single 'let's start with intake' gap bullet."""
+    res = await client.get("/api/advisor/home-brief", params={"user_id": "newbie"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["headline"]
+    assert body["cta"] == {"label": "Talk to advisor", "href": "/advisor"}
+    assert body["generated_at"]
+    # Without any portfolio or pension data, only the intake-invite gap
+    # bullet should appear.
+    assert len(body["bullets"]) == 1
+    assert body["bullets"][0]["kind"] == "gap"
+    assert "intake" in body["bullets"][0]["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_home_brief_full_user_emits_all_three_bullet_kinds(
+    engine: None, client: AsyncClient
+) -> None:
+    """Gaps + daily brief + pension snapshot → gap, portfolio, signal bullets."""
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        # Partial intake — one field answered, others still missing so the
+        # gap-tracker has something to surface.
+        session.add(
+            UserContext(
+                user_id="ariel",
+                current_stage="stage_1",
+                identity_yaml="tax_residency: israel\n",
+            )
+        )
+        # Daily brief output → drives the portfolio bullet.
+        session.add(
+            DailyBrief(
+                user_id="ariel",
+                run_at=datetime.now(UTC),
+                summary_text=(
+                    "NVDA up 2.4% overnight; concentration unchanged at 48%."
+                ),
+                news_report_json="{}",
+                macro_report_json="{}",
+                concentration_report_json="{}",
+                plan_delta_json="{}",
+            )
+        )
+        # Pension snapshot → drives the signal bullet.
+        session.add(
+            PensionFundSnapshot(
+                user_id="ariel",
+                fund_id="123",
+                fund_name="Altshuler Shaham Pension",
+                return_pct_12m=8.2,
+                benchmark_return_pct_12m=7.0,
+                relative_to_benchmark_pct=1.2,
+                snapshot_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    res = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    kinds = {b["kind"] for b in body["bullets"]}
+    assert "gap" in kinds, body
+    assert "portfolio" in kinds, body
+    assert "signal" in kinds, body
+    # Portfolio bullet should carry the daily-brief summary line.
+    portfolio = next(b for b in body["bullets"] if b["kind"] == "portfolio")
+    assert "NVDA" in portfolio["text"]
+    # Signal bullet should mention the fund + relative-to-benchmark direction.
+    signal = next(b for b in body["bullets"] if b["kind"] == "signal")
+    assert "Altshuler" in signal["text"]
+    assert "above" in signal["text"] or "below" in signal["text"]
+
+
+@pytest.mark.asyncio
+async def test_home_brief_caches_within_ttl(
+    engine: None, client: AsyncClient
+) -> None:
+    """Second call within 30 minutes returns the cached payload — no
+    recompute. We verify by mutating the underlying DailyBrief between
+    calls and asserting the cached `summary_text` is still served."""
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(UserContext(user_id="ariel", current_stage="stage_1"))
+        session.add(
+            DailyBrief(
+                user_id="ariel",
+                run_at=datetime.now(UTC),
+                summary_text="FIRST",
+                news_report_json="{}",
+                macro_report_json="{}",
+                concentration_report_json="{}",
+                plan_delta_json="{}",
+            )
+        )
+        await session.commit()
+
+    res1 = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
+    assert res1.status_code == 200
+    body1 = res1.json()
+    portfolio1 = next(
+        (b for b in body1["bullets"] if b["kind"] == "portfolio"), None
+    )
+    assert portfolio1 is not None
+    assert "FIRST" in portfolio1["text"]
+
+    # Cache row should now exist.
+    async with db_mod.get_session() as session:
+        cached = (
+            await session.execute(
+                select(PricesCache).where(
+                    PricesCache.provider == "advisor_home_brief",
+                    PricesCache.key == "user:ariel",
+                )
+            )
+        ).scalar_one_or_none()
+        assert cached is not None
+
+        # Mutate the daily brief — a non-cached call would now read SECOND.
+        db_row = (
+            await session.execute(
+                select(DailyBrief).where(DailyBrief.user_id == "ariel")
+            )
+        ).scalar_one()
+        db_row.summary_text = "SECOND"
+        await session.commit()
+
+    res2 = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
+    assert res2.status_code == 200
+    body2 = res2.json()
+    portfolio2 = next(
+        (b for b in body2["bullets"] if b["kind"] == "portfolio"), None
+    )
+    # Cache hit: still serves FIRST.
+    assert portfolio2 is not None
+    assert "FIRST" in portfolio2["text"]
+    assert "SECOND" not in portfolio2["text"]

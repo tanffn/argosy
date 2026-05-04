@@ -1,8 +1,9 @@
 """Advisor API — persistent gap-tracker panel (Phase 1 reframe).
 
 Endpoints:
-  - POST /api/advisor/turn  — drive one turn (gap_driven OR user_driven)
-  - GET  /api/advisor/gaps  — current GapStatus as JSON, for the sidebar
+  - POST /api/advisor/turn         — drive one turn (gap_driven OR user_driven)
+  - GET  /api/advisor/gaps         — current GapStatus as JSON, for the sidebar
+  - GET  /api/advisor/home-brief   — composed glanceable summary for home page
 
 Backwards-compat: the legacy `/api/intake/turn`, `/api/intake/upload`,
 `/api/intake/file-to-text`, `/api/intake/status` endpoints still exist
@@ -13,13 +14,15 @@ The two routes share the persist + auto-advance logic via the
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import desc, select
 
+from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.agents.advisor import AdvisorAgent, AdvisorTurnOutput
 from argosy.agents.gap_tracker import (
     FieldSpec,
@@ -34,7 +37,7 @@ from argosy.agents.intake_fields import stage_status
 from argosy.logging import get_logger
 from argosy.state import db as db_mod
 from argosy.state.models import AgentReport as AgentReportRow
-from argosy.state.models import User, UserContext
+from argosy.state.models import DailyBrief, PensionFundSnapshot, User, UserContext
 
 _log = get_logger("argosy.api.advisor")
 router = APIRouter(prefix="/advisor", tags=["advisor"])
@@ -461,11 +464,285 @@ def _field_to_dto(spec: FieldSpec, state: str, ts) -> GapItemDTO:
     )
 
 
+# ----------------------------------------------------------------------
+# /home-brief — composed glanceable summary for the home page
+# ----------------------------------------------------------------------
+#
+# Stitches three lines from already-cached state — gap tracker, latest
+# daily brief, and the most recent watchlist signal (pension snapshots,
+# for now; SEC Form 4 etc. land in Phase 4). NO new LLM call. Per-user
+# cache via `prices_cache` provider="advisor_home_brief", TTL 30 minutes.
+
+# Why-it-matters one-liners keyed by gap field path. Used to add a tiny
+# "because X" clause after the gap label, so a missing field reads
+# instructively rather than just bureaucratically. Falls back silently
+# when a path isn't in the dict — the bullet just shows the label.
+_GAP_REASON: dict[str, str] = {
+    "identity.tax_residency": "anchors every tax-side decision",
+    "identity.user_citizenship": "drives FATCA / PFIC exposure",
+    "identity.spouse_citizenship": "affects estate planning",
+    "identity.spouse_tax_residency": "affects joint-filing options",
+    "identity.children": "shapes 529 / education planning",
+    "identity.user_date_of_birth": "needed for retirement timing",
+    "identity.spouse_date_of_birth": "needed for survivor benefits",
+    "identity.dependents_count": "affects withholding & deductions",
+    "identity.primary_residence_country": "drives reporting jurisdiction",
+    "identity.employment_status": "affects income forecasting",
+    "identity.marital_status": "drives filing status & estate",
+    "goals.retirement_target_year": "anchors withdrawal planning",
+    "goals.target_annual_income": "anchors withdrawal planning",
+    "goals.risk_tolerance": "drives allocation guardrails",
+    "goals.investment_time_horizon_years": "drives allocation guardrails",
+    "goals.near_term_spending": "affects liquidity reserves",
+    "goals.lifestyle_aspirations": "informs goal sequencing",
+}
+
+
+class HomeBriefBullet(BaseModel):
+    kind: str  # "gap" | "portfolio" | "signal"
+    text: str
+
+
+class HomeBriefCTA(BaseModel):
+    label: str
+    href: str
+
+
+class HomeBriefResponse(BaseModel):
+    headline: str
+    bullets: list[HomeBriefBullet]
+    cta: HomeBriefCTA
+    generated_at: str
+
+
+def _greeting_for_hour(hour: int) -> str:
+    if 5 <= hour < 12:
+        return "Good morning"
+    if 12 <= hour < 18:
+        return "Good afternoon"
+    return "Good evening"
+
+
+def _trim_summary(text: str, max_len: int = 140) -> str:
+    """Pick a representative one-liner from the daily brief summary."""
+    if not text:
+        return ""
+    # Prefer the first non-empty line; fall back to a slice.
+    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    line = first_line or text.strip()
+    if len(line) <= max_len:
+        return line
+    return line[: max_len - 1].rstrip() + "…"
+
+
+async def _gap_bullet(user_id: str) -> HomeBriefBullet | None:
+    """Top missing/stale field, with one-clause why-it-matters."""
+    identity_yaml = ""
+    goals_yaml = ""
+    constraints_yaml = ""
+
+    async with db_mod.get_session() as session:
+        ctx = (
+            await session.execute(
+                select(UserContext).where(UserContext.user_id == user_id)
+            )
+        ).scalar_one_or_none()
+        if ctx is not None:
+            identity_yaml = ctx.identity_yaml or ""
+            goals_yaml = ctx.goals_yaml or ""
+            constraints_yaml = ctx.constraints_yaml or ""
+
+    last_updated_per_field = await compute_field_timestamps(user_id)
+    status = gap_status(
+        identity_yaml=identity_yaml,
+        goals_yaml=goals_yaml,
+        constraints_yaml=constraints_yaml,
+        last_updated_per_field=last_updated_per_field,
+    )
+
+    target = pick_gap_driven_target(status)
+
+    # Empty user (no YAML at all) — surface a friendly intake-invite
+    # rather than the bureaucratic "Tax residency still missing".
+    if not (identity_yaml or goals_yaml or constraints_yaml):
+        return HomeBriefBullet(
+            kind="gap",
+            text="Let's start with intake — answer a few questions so I can plan with you.",
+        )
+
+    if target is None:
+        # Fully fresh catalog — no gap bullet at all.
+        return None
+
+    reason = _GAP_REASON.get(target.path)
+    stale_paths = {s.path for s, _ in status.stale}
+    if target.path in stale_paths:
+        verb = "due for refresh"
+    else:
+        verb = "still missing"
+
+    if reason:
+        text = f"{target.label} {verb} — {reason}."
+    else:
+        text = f"{target.label} {verb}."
+    return HomeBriefBullet(kind="gap", text=text)
+
+
+async def _portfolio_bullet(user_id: str) -> HomeBriefBullet | None:
+    """One line from the most recent daily brief; fall back to a position note.
+
+    Defensive on DB hiccups (missing table on stale schemas, etc.) — degrades
+    to None rather than 500-ing the home page.
+    """
+    try:
+        async with db_mod.get_session() as session:
+            row = (
+                await session.execute(
+                    select(DailyBrief)
+                    .where(DailyBrief.user_id == user_id)
+                    .order_by(desc(DailyBrief.run_at))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                line = _trim_summary(row.summary_text or "")
+                if line:
+                    return HomeBriefBullet(kind="portfolio", text=line)
+    except Exception:  # noqa: BLE001
+        _log.debug(
+            "home_brief.portfolio_bullet_db_skipped", user_id=user_id, exc_info=True
+        )
+
+    # Fallback: try the on-disk portfolio TSV for a top-position concentration
+    # one-liner. Keep this best-effort — if parsing fails, omit the bullet.
+    try:
+        from argosy.api.routes.portfolio import _find_latest_tsv
+        from argosy.ingest.tsv import parse_portfolio_tsv
+    except ImportError:  # pragma: no cover - defensive
+        return None
+
+    try:
+        tsv = _find_latest_tsv()
+        if tsv is None:
+            return None
+        snap = parse_portfolio_tsv(tsv)
+    except Exception:  # pragma: no cover - parser failures shouldn't 500 the page
+        return None
+
+    total = snap.total_usd_value_k or 0.0
+    if total <= 0 or not snap.positions:
+        return None
+    top = max(
+        (p for p in snap.positions if p.usd_value_k),
+        key=lambda p: p.usd_value_k or 0.0,
+        default=None,
+    )
+    if top is None or not top.usd_value_k:
+        return None
+    pct = (top.usd_value_k / total) * 100
+    return HomeBriefBullet(
+        kind="portfolio",
+        text=f"{top.symbol or 'Top position'} concentration at {pct:.0f}% of portfolio.",
+    )
+
+
+async def _signal_bullet(user_id: str) -> HomeBriefBullet | None:
+    """Most recent watchlist event — pension snapshot for now (Phase 3 data).
+
+    Defensive: the pension_fund_snapshots table only exists on environments
+    that ran the Phase 3 migration. On older dev DBs the query raises
+    OperationalError (no such table); we treat that the same as "no rows"
+    and just omit the signal bullet rather than 500-ing the home page.
+    """
+    try:
+        async with db_mod.get_session() as session:
+            row = (
+                await session.execute(
+                    select(PensionFundSnapshot)
+                    .where(PensionFundSnapshot.user_id == user_id)
+                    .order_by(desc(PensionFundSnapshot.snapshot_at))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 — degrade gracefully on missing table / DB issues
+        _log.debug("home_brief.signal_bullet_skipped", user_id=user_id, exc_info=True)
+        return None
+    if row is None:
+        return None
+
+    name = row.fund_name or row.fund_id
+    rel = row.relative_to_benchmark_pct
+    if rel is not None:
+        direction = "above" if float(rel) >= 0 else "below"
+        return HomeBriefBullet(
+            kind="signal",
+            text=f"{name} {abs(float(rel)):.1f}% {direction} benchmark in latest pension snapshot.",
+        )
+    if row.return_pct_12m is not None:
+        return HomeBriefBullet(
+            kind="signal",
+            text=f"{name} 12m return {float(row.return_pct_12m):.1f}% in latest pension snapshot.",
+        )
+    return HomeBriefBullet(
+        kind="signal", text=f"New pension snapshot recorded for {name}."
+    )
+
+
+async def _compose_home_brief(user_id: str) -> HomeBriefResponse:
+    now = datetime.now(UTC)
+    headline = f"{_greeting_for_hour(now.hour)}. Here's where you stand."
+
+    bullets: list[HomeBriefBullet] = []
+    gap = await _gap_bullet(user_id)
+    if gap is not None:
+        bullets.append(gap)
+    portfolio = await _portfolio_bullet(user_id)
+    if portfolio is not None:
+        bullets.append(portfolio)
+    signal = await _signal_bullet(user_id)
+    if signal is not None:
+        bullets.append(signal)
+
+    return HomeBriefResponse(
+        headline=headline,
+        bullets=bullets,
+        cta=HomeBriefCTA(label="Talk to advisor", href="/advisor"),
+        generated_at=now.isoformat(),
+    )
+
+
+@router.get("/home-brief", response_model=HomeBriefResponse)
+async def get_home_brief(
+    user_id: str = Query("ariel"),
+) -> HomeBriefResponse:
+    """Compose a 3–5 line glance card for the home page.
+
+    Stitched from existing state — gap tracker, latest daily brief, most
+    recent watchlist signal. NO new LLM call. Cached per-user for 30
+    minutes via `prices_cache` (provider=`advisor_home_brief`).
+    """
+    async def _fetch() -> dict[str, Any]:
+        composed = await _compose_home_brief(user_id)
+        return composed.model_dump()
+
+    data = await cached_call(
+        kind=CacheKind.PRICES,
+        provider="advisor_home_brief",
+        key=f"user:{user_id}",
+        ttl_seconds=30 * 60,
+        fetch=_fetch,
+    )
+    return HomeBriefResponse(**data)
+
+
 __all__ = [
     "AdvisorTurnRequest",
     "AdvisorTurnResponse",
     "GapItemDTO",
     "GapStatusResponse",
+    "HomeBriefBullet",
+    "HomeBriefCTA",
+    "HomeBriefResponse",
     "_persist_turn",
     "classify_mode",
     "field_by_path",

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { AdvisorBriefCard } from "@/components/advisor-brief-card";
 import { LiveClock } from "@/components/live-clock";
 import {
   Card,
@@ -535,6 +536,11 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      {/* Advisor brief — front-and-center glance card so the advisor is a
+          primary surface, not buried in nav. Composed server-side from
+          gap-tracker + daily-brief + watchlist signals (no LLM call). */}
+      <AdvisorBriefCard userId={USER_ID} />
 
       {/* Compact metric row — now with sparklines. */}
       <section>
