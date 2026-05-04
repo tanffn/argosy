@@ -30,6 +30,7 @@ forward and backward migrations are symmetric.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import Any
 
@@ -37,6 +38,8 @@ import yaml
 from sqlalchemy import text
 
 from alembic import op
+
+_log = logging.getLogger("alembic.runtime.migration.0013")
 
 revision: str = "0013_pensions_to_dict_shape"
 down_revision: str | Sequence[str] | None = "0012_investor_events"
@@ -80,8 +83,19 @@ def _list_to_dict(pensions: list[Any]) -> dict[str, Any]:
     for entry in pensions:
         if not isinstance(entry, dict):
             continue
-        vk = _vehicle_key(entry.get("type"))
+        raw_type = entry.get("type")
+        vk = _vehicle_key(raw_type)
         if vk is None:
+            # Unknown type — auto-bucket but log a WARNING so an
+            # operator running the migration can see the original
+            # value and manually repair if the default is wrong for
+            # this fund.
+            _log.warning(
+                "migration_0013.unknown_pension_type_defaulted "
+                "(original_type=%r fund_id=%r fund_name=%r "
+                "defaulted_to=kupat_gemel)",
+                raw_type, entry.get("fund_id"), entry.get("fund_name"),
+            )
             vk = "kupat_gemel"  # safest default — locked-till-retirement
         bucket = out.setdefault(vk, {"funds": []})
         bal = entry.get("balance_nis")
@@ -127,7 +141,14 @@ def _dict_to_list(pensions: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         # Spread the bucket's aggregate balance across the first fund so
         # we don't lose it on round-trip; subsequent funds get balance=None.
+        # Aggregate rate fields (``contribution_rate_pct`` /
+        # ``employer_match_pct``) live at the vehicle level in the new
+        # shape, but the legacy list-shape carried them per-fund. We
+        # stamp them onto the FIRST fund only so the round-trip
+        # preserves them without falsely duplicating across funds.
         agg_balance = bucket.get("balance_nis")
+        agg_contrib = bucket.get("contribution_rate_pct")
+        agg_match = bucket.get("employer_match_pct")
         for i, f in enumerate(funds):
             if not isinstance(f, dict):
                 continue
@@ -137,6 +158,11 @@ def _dict_to_list(pensions: dict[str, Any]) -> list[dict[str, Any]]:
                 "fund_name": f.get("fund_name"),
                 "balance_nis": agg_balance if i == 0 else None,
             }
+            if i == 0:
+                if agg_contrib is not None:
+                    row["contribution_rate_pct"] = agg_contrib
+                if agg_match is not None:
+                    row["employer_match_pct"] = agg_match
             if f.get("last_refreshed_at"):
                 row["last_refreshed"] = f.get("last_refreshed_at")
             out.append(row)

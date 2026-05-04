@@ -12,14 +12,20 @@ The ``prices_cache`` name was misleading — every new caller had to
 re-explain "this isn't actually a prices table". Renaming to
 ``kv_cache`` so the schema describes what it is.
 
-The ``CacheKind`` enum keeps its existing values (``PRICES``, ``NEWS``,
-``MACRO``) — they namespace rows within the table, not the table name —
-and a new ``UI`` value joins them. The home-brief endpoint is migrated
-from ``CacheKind.PRICES`` to ``CacheKind.UI`` in the same change set.
+The ``CacheKind`` enum selects which physical cache table backs the
+call; for ``KvCacheEntry``-backed callers (``PRICES`` and ``UI``), it
+is informational only — the namespace comes from the ``provider``
+field (the composite PK is ``(provider, key)``), not from ``kind``.
+The home-brief endpoint is migrated from ``CacheKind.PRICES`` to
+``CacheKind.UI`` in the same change set, with
+``provider="advisor_home_brief"`` providing the actual isolation.
 
 Idempotent: the upgrade is a no-op if ``prices_cache`` is already gone
-(e.g., a fresh ``Base.metadata.create_all`` from tests already created
-``kv_cache`` directly). The downgrade is symmetric.
+AND ``kv_cache`` already exists (e.g., a fresh
+``Base.metadata.create_all`` from tests already created ``kv_cache``
+directly). If neither table exists we raise rather than silently
+no-op so an operator running the migration on a misconfigured DB sees
+a clear failure. The downgrade is symmetric.
 """
 
 from __future__ import annotations
@@ -48,7 +54,19 @@ def upgrade() -> None:
         # Both present (shouldn't happen in practice, but be safe). Drop
         # the empty prices_cache so we converge.
         op.drop_table("prices_cache")
-    # else: kv_cache already present (or neither) — nothing to do.
+    elif "kv_cache" in tables:
+        # Already migrated (e.g., a fresh ``Base.metadata.create_all``
+        # from tests created ``kv_cache`` directly) — nothing to do.
+        return
+    else:
+        # Neither table exists. Don't silently no-op — that lets a
+        # misconfigured DB run the rest of the migration chain on top
+        # of a missing cache table and fail much later in a much
+        # harder-to-diagnose way.
+        raise RuntimeError(
+            "Migration 0011: neither prices_cache nor kv_cache exists. "
+            "Restore from backup or run Base.metadata.create_all() first."
+        )
 
 
 def downgrade() -> None:

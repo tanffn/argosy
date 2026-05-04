@@ -113,6 +113,13 @@ class CapitolTradesAdapter:
         if days <= 0:
             raise ValueError(f"days must be positive; got {days}")
 
+        # Include today's date in the cache key so a Monday tick and a
+        # Wednesday tick don't collide. ``days`` alone made the key day-
+        # independent — at midnight UTC the second tick would silently
+        # serve the first tick's stale window even though the underlying
+        # date range had moved forward.
+        enddt = datetime.now(timezone.utc).date().isoformat()  # noqa: UP017
+
         async def _fetch() -> list[dict[str, Any]]:
             html_text = await self._fetch_text(TRADES_URL)
             rows = _parse_trades_html(html_text, source_url=TRADES_URL)
@@ -122,7 +129,7 @@ class CapitolTradesAdapter:
         return await cached_call(
             kind=CacheKind.PRICES,
             provider=self.PROVIDER,
-            key=f"recent:days={days}",
+            key=f"recent:days={days}:enddt={enddt}",
             ttl_seconds=ttl_seconds,
             fetch=_fetch,
         )
@@ -170,6 +177,11 @@ class CapitolTradesAdapter:
             raise ValueError(f"days must be positive; got {days}")
         ticker_norm = ticker.strip().upper()
 
+        # See ``list_recent_trades`` — pin the cache key to today's date
+        # so a multi-day cache TTL doesn't serve a stale window across
+        # day boundaries.
+        enddt = datetime.now(timezone.utc).date().isoformat()  # noqa: UP017
+
         async def _fetch() -> list[dict[str, Any]]:
             url = f"{TRADES_URL}?asset={ticker_norm}"
             html_text = await self._fetch_text(url, params={"asset": ticker_norm})
@@ -184,7 +196,7 @@ class CapitolTradesAdapter:
         return await cached_call(
             kind=CacheKind.PRICES,
             provider=self.PROVIDER,
-            key=f"by_ticker:{ticker_norm}:days={days}",
+            key=f"by_ticker:{ticker_norm}:days={days}:enddt={enddt}",
             ttl_seconds=ttl_seconds,
             fetch=_fetch,
         )

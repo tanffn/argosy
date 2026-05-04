@@ -180,6 +180,12 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
     else:
         agent = factory(req.user_id)
 
+    # ``stage_status`` and the agent both reject ``"complete"`` — it's a
+    # synthetic stage representing "nothing to do". Map to stage_11 (the
+    # last real stage) for both calls; the veto in ``_persist_turn``
+    # keeps the user pinned at ``complete`` when no actual gap remains.
+    agent_stage = "stage_11" if stage == "complete" else stage
+
     # Compute the structured "answered / missing" lists for the stage so
     # the agent receives an explicit checklist instead of having to derive
     # one from free-form YAML (Haiku is unreliable at that).
@@ -187,12 +193,12 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
         identity_yaml=(ctx.identity_yaml if ctx is not None else "") or "",
         goals_yaml=(ctx.goals_yaml if ctx is not None else "") or "",
         constraints_yaml=(ctx.constraints_yaml if ctx is not None else "") or "",
-        stage=stage,
+        stage=agent_stage,
     )
 
     try:
         report = await agent.run(
-            current_stage=stage,
+            current_stage=agent_stage,
             accumulated_context=accumulated,
             last_user_message=req.last_user_message,
             history_excerpt=req.history_excerpt,

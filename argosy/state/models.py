@@ -730,6 +730,15 @@ class InvestorEvent(Base):
     ``occurred_at DESC`` and surfaces a one-liner. Querying by ``user_id``
     keeps the row scoped to the user the daily-brief loop ran for.
 
+    Dedup: every row carries a ``unique_key`` derived from natural keys
+    in the source payload (e.g. ``ticker:accession`` for Form 4,
+    ``ticker:url`` for news). The unique constraint on
+    ``(user_id, source, unique_key)`` lets the writer use
+    ``INSERT ... ON CONFLICT DO NOTHING`` so the same insider trade
+    landing in 30 consecutive daily-brief ticks produces one row, not
+    30. ``unique_key`` is required and persisted as the canonical
+    de-duplication anchor.
+
     Indexed on ``(user_id, occurred_at)`` so the home-brief query is an
     index seek; ``(user_id, source, ticker)`` lets us extend later for
     per-source / per-ticker drilldowns without a table scan.
@@ -752,6 +761,11 @@ class InvestorEvent(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
     payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Natural-key digest derived from the source payload. Used (with
+    # ``user_id`` and ``source``) to gate idempotent inserts so the
+    # same Form 4 / 13F / news / consensus row landing on N consecutive
+    # daily-brief ticks produces one row, not N.
+    unique_key: Mapped[str] = mapped_column(String(128), nullable=False, default="")
 
     __table_args__ = (
         Index(
@@ -764,6 +778,12 @@ class InvestorEvent(Base):
             "user_id",
             "source",
             "ticker",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "source",
+            "unique_key",
+            name="uq_investor_events_user_source_uniquekey",
         ),
     )
 

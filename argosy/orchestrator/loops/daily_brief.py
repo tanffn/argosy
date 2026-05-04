@@ -69,6 +69,12 @@ class DailyBriefInputs:
     insider_activity: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     analyst_signals: dict[str, dict[str, Any]] = field(default_factory=dict)
     thirteen_f_watchlist: list[dict[str, Any]] = field(default_factory=list)
+    # Per-ticker CapitolTrades (STOCK Act) rows. Mirrors
+    # ``insider_activity`` — agents that already accept ``payload`` dicts
+    # can opt-in by reading this field.
+    capitoltrades_signals: dict[str, list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
 
 
 class DailyBriefLoop(CadenceLoop):
@@ -362,7 +368,7 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
         except Exception:  # pragma: no cover - defensive
             _log.exception("daily_brief.tipranks_failed")
 
-    # 3d. CapitolTrades (STOCK Act disclosures) per portfolio ticker.
+    # 3c. CapitolTrades (STOCK Act disclosures) per portfolio ticker.
     # Cap fan-out at 10 tickers/day — the public site is rate-limited
     # and ten covers a typical concentrated portfolio. Persist each
     # batch into investor_events so the home brief's signal bullet
@@ -399,7 +405,7 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
         except Exception:  # pragma: no cover - defensive
             _log.exception("daily_brief.capitoltrades_failed")
 
-    # 3c. 13F watchlist — pull most-recent filings for filers the user
+    # 3d. 13F watchlist — pull most-recent filings for filers the user
     # follows. We read the watchlist from identity_yaml (key:
     # ``thirteen_f_watchlist: [<cik>, ...]``); empty by default.
     thirteen_f_watchlist: list[dict[str, Any]] = []
@@ -495,6 +501,7 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
         insider_activity=insider_activity,
         analyst_signals=analyst_signals,
         thirteen_f_watchlist=thirteen_f_watchlist,
+        capitoltrades_signals=capitoltrades,
     )
 
 

@@ -20,12 +20,15 @@ Currently houses:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from argosy.state import db as db_mod
 from argosy.state.models import InvestorEvent, PensionFundSnapshot
@@ -137,6 +140,11 @@ async def get_user_pension_snapshots(
     return [_row_to_dict(row) for row in rows]
 
 
+def _hash_text(s: str) -> str:
+    """Short stable hash for natural-key fallbacks (32 hex chars)."""
+    return hashlib.sha256((s or "").encode("utf-8")).hexdigest()[:32]
+
+
 def _parse_iso(value: Any) -> datetime | None:
     """Best-effort ISO 8601 parse; tolerates ``None`` / non-strings."""
     if value is None:
@@ -195,12 +203,22 @@ def _form4_event(row: Mapping[str, Any]) -> dict[str, Any] | None:
         except (TypeError, ValueError):
             pass
     headline = " ".join(parts).strip()
+    accession = row.get("accession_number") or row.get("accession") or ""
+    if accession:
+        unique_key = f"{ticker or ''}:{accession}"
+    else:
+        # Fall back to a hash of the row when the adapter didn't surface
+        # an accession (rare but seen in some edge cases).
+        unique_key = (
+            f"{ticker or ''}:{_hash_text(headline)}"
+        )
     return {
         "ticker": ticker,
         "event_kind": kind,
         "headline": headline,
         "occurred_at": occurred,
         "payload_json": json.dumps(dict(row), default=str),
+        "unique_key": unique_key[:128],
     }
 
 
@@ -226,12 +244,19 @@ def _tipranks_event(ticker: str, payload: Mapping[str, Any]) -> dict[str, Any] |
     if (n_buy + n_hold + n_sell) > 0:
         bits.append(f"({n_buy}B/{n_hold}H/{n_sell}S)")
     headline = " — ".join(bits[:2]) + ((" " + " ".join(bits[2:])) if len(bits) > 2 else "")
+    ticker_norm = ticker.upper()
+    occ_iso = (
+        payload.get("last_updated") or
+        (occurred.isoformat() if occurred else "")
+    )
+    unique_key = f"{ticker_norm}:{occ_iso}"
     return {
-        "ticker": ticker.upper(),
+        "ticker": ticker_norm,
         "event_kind": "analyst_consensus",
         "headline": headline.strip(),
         "occurred_at": occurred,
         "payload_json": json.dumps(dict(payload), default=str),
+        "unique_key": unique_key[:128],
     }
 
 
@@ -239,7 +264,8 @@ def _sec13f_event(filing: Mapping[str, Any]) -> dict[str, Any] | None:
     """Map a 13F filing summary to an investor_events insert."""
     fund_name = filing.get("fund_name") or filing.get("filer_name") or filing.get("cik") or ""
     period = filing.get("period_of_report") or ""
-    accession = filing.get("accession_number") or ""
+    accession = filing.get("accession_number") or filing.get("accession") or ""
+    cik = str(filing.get("cik") or "")
     occurred = _parse_iso(filing.get("filed_at") or filing.get("period_of_report"))
     if not (fund_name or accession):
         return None
@@ -249,12 +275,18 @@ def _sec13f_event(filing: Mapping[str, Any]) -> dict[str, Any] | None:
     if period:
         bits.append(f"(period {period})")
     headline = " — ".join(bits[:2]) + ((" " + " ".join(bits[2:])) if len(bits) > 2 else "")
+    if accession:
+        unique_key = f"{cik}:{accession}"
+    else:
+        # Fall back when no accession (very rare; index might omit it).
+        unique_key = f"{cik}:{period}:{_hash_text(str(fund_name))}"
     return {
         "ticker": None,
         "event_kind": "13f_filing",
         "headline": headline.strip(),
         "occurred_at": occurred,
         "payload_json": json.dumps(dict(filing), default=str),
+        "unique_key": unique_key[:128],
     }
 
 
@@ -273,22 +305,34 @@ def _capitoltrades_event(row: Mapping[str, Any]) -> dict[str, Any] | None:
     if amount:
         parts.append(f"({amount})")
     headline = " ".join(p for p in parts if p)
+    trade_id = str(row.get("trade_id") or row.get("id") or "").strip()
+    occ_iso = (
+        row.get("transaction_date") or
+        row.get("disclosure_date") or
+        (occurred.isoformat() if occurred else "")
+    )
+    if trade_id:
+        unique_key = f"{ticker or ''}:{trade_id}"
+    else:
+        unique_key = f"{ticker or ''}:{occ_iso}:{politician}"
     return {
         "ticker": ticker,
         "event_kind": tx_type,
         "headline": headline,
         "occurred_at": occurred,
         "payload_json": json.dumps(dict(row), default=str),
+        "unique_key": unique_key[:128],
     }
 
 
 def _news_event(ticker: str, item: Mapping[str, Any]) -> dict[str, Any] | None:
     """Map a Finnhub-style news headline to an investor_events insert.
 
-    Headline format: ``<TICKER> · <TITLE> (<source domain>)``. We extract
-    the source domain from the raw URL when possible so the bullet
-    reads as a sentence rather than dumping the full URL. Empty title
-    or empty url → skip (Finnhub returns occasional ghost rows).
+    Headline format: ``<TICKER> · <TITLE> (<source name or domain>)``.
+    Finnhub provides an explicit ``source`` (e.g. ``"Reuters"``); when
+    absent we fall back to parsing the URL hostname so unsourced rows
+    still render. Empty title → skip (Finnhub returns occasional
+    ghost rows).
     """
     title = (item.get("headline") or item.get("title") or "").strip()
     if not title:
@@ -322,12 +366,18 @@ def _news_event(ticker: str, item: Mapping[str, Any]) -> dict[str, Any] | None:
     headline = " · ".join(bits)
     if src:
         headline = f"{headline} ({src})"
+    url = item.get("url") or ""
+    if isinstance(url, str) and url:
+        unique_key = f"{ticker_norm or ''}:{url}"
+    else:
+        unique_key = f"{ticker_norm or ''}:{_hash_text(title)}"
     return {
         "ticker": ticker_norm,
         "event_kind": "news",
         "headline": headline[:512],
         "occurred_at": occurred,
         "payload_json": json.dumps(dict(item), default=str),
+        "unique_key": unique_key[:128],
     }
 
 
@@ -346,39 +396,41 @@ async def record_investor_events(
 ) -> int:
     """Persist investor events for one user from one source.
 
+    Idempotent: each row carries a ``unique_key`` derived from natural
+    keys in the source payload (accession number, URL, trade id, …).
+    A unique constraint on ``(user_id, source, unique_key)`` plus
+    dialect-aware ``INSERT ... ON CONFLICT DO NOTHING`` means the same
+    insider trade landing in N consecutive daily-brief ticks produces
+    one row, not N.
+
     Args:
         user_id: owner of the rows. Required so the home-brief query
             stays cross-user safe.
         source: the originating adapter — ``sec_form4``, ``sec_13f``,
-            ``tipranks``, ``capitoltrades``. Unknown sources are stored
-            as raw rows with ``event_kind=source`` and a generic headline
-            (no fancy formatting).
-        events: an iterable of payload dicts (Form 4 / CapitolTrades /
-            13F filing summary), or a ``{ticker: payload}`` mapping
-            (TipRanks consensus). The helper picks the right shape per
-            ``source``.
+            ``tipranks``, ``capitoltrades``, or ``news``.
+        events: shape depends on ``source``:
+            - ``sec_form4`` / ``sec_13f`` / ``capitoltrades``: list of
+              payload dicts.
+            - ``tipranks``: ``{ticker: consensus_dict}`` mapping.
+            - ``news``: ``{ticker: [item_dict, ...]}`` mapping.
 
     Returns:
-        Number of rows inserted. Zero on empty input or all-skipped
-        events (e.g., a payload that has no parseable fields).
+        Number of rows inserted (NOT ignored by ON CONFLICT). Zero on
+        empty input, all-skipped events, or all-duplicate events.
     """
     if not events or not source or not user_id:
         return 0
 
-    mapper = _MAPPERS.get(source)
     rows: list[dict[str, Any]] = []
 
     if source == "tipranks":
         # TipRanks comes in as ``{ticker: consensus_dict}``.
-        if isinstance(events, Mapping):
-            iter_pairs: Iterable[tuple[str, Mapping[str, Any]]] = (
-                (str(k), v) for k, v in events.items()
-                if isinstance(v, Mapping)
-            )
-        else:
+        if not isinstance(events, Mapping):
             return 0
-        for ticker, payload in iter_pairs:
-            event = _tipranks_event(ticker, payload)
+        for ticker, payload in events.items():
+            if not isinstance(payload, Mapping):
+                continue
+            event = _tipranks_event(str(ticker), payload)
             if event is not None:
                 rows.append(event)
     elif source == "news":
@@ -386,65 +438,70 @@ async def record_investor_events(
         # maps to a list of headline items; we emit one investor_events
         # row per item so the home brief surfaces the latest single
         # headline rather than a batch.
-        if isinstance(events, Mapping):
-            for ticker_key, items in events.items():
-                if not isinstance(items, list):
-                    continue
-                for item in items:
-                    if not isinstance(item, Mapping):
-                        continue
-                    mapped = _news_event(str(ticker_key), item)
-                    if mapped is not None:
-                        rows.append(mapped)
-        else:
+        if not isinstance(events, Mapping):
             return 0
-    else:
-        # All other sources come in as a list of payload dicts.
-        if isinstance(events, Mapping):
-            iterable: Iterable[Any] = events.values()
-        else:
-            iterable = events
-        for entry in iterable:
-            if isinstance(entry, list):
-                # Some adapters return list-of-list (e.g., 13F watchlist
-                # is ``[{cik, filings:[...]}]``); flatten if present.
-                for sub in entry:
-                    if isinstance(sub, Mapping):
-                        mapped = mapper(sub) if mapper else None
-                        if mapped is not None:
-                            rows.append(mapped)
-            elif isinstance(entry, Mapping):
-                mapped = mapper(entry) if mapper else None
-                if mapped is None and mapper is None:
-                    # Unknown source: store a generic row.
-                    mapped = {
-                        "ticker": (entry.get("ticker") or "").upper() or None,
-                        "event_kind": source,
-                        "headline": str(entry.get("headline") or "")[:512],
-                        "occurred_at": _parse_iso(entry.get("occurred_at")),
-                        "payload_json": json.dumps(dict(entry), default=str),
-                    }
+        for ticker_key, items in events.items():
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                mapped = _news_event(str(ticker_key), item)
                 if mapped is not None:
                     rows.append(mapped)
+    else:
+        # ``sec_form4`` / ``sec_13f`` / ``capitoltrades`` — flat list of
+        # payload dicts. (No caller passes a Mapping for these sources.)
+        mapper = _MAPPERS.get(source)
+        if mapper is None:
+            return 0
+        for entry in events:
+            if not isinstance(entry, Mapping):
+                continue
+            mapped = mapper(entry)
+            if mapped is not None:
+                rows.append(mapped)
 
     if not rows:
         return 0
 
+    # Pick the dialect-appropriate ON CONFLICT statement so duplicate
+    # inserts no-op cleanly. SQLAlchemy core insert dialect helpers
+    # support ``on_conflict_do_nothing`` for sqlite + postgres; tests
+    # run on sqlite, prod runs on whatever the deployment configures.
+    inserted = 0
     async with db_mod.get_session() as session:
+        # Resolve the dialect from the bound engine (session.bind is
+        # the AsyncSession bind; ``.dialect`` reaches through).
+        dialect_name = "sqlite"
+        try:
+            bind = session.get_bind()
+            dialect_name = bind.dialect.name
+        except Exception:  # pragma: no cover - defensive
+            pass
+        stmt_factory = pg_insert if dialect_name == "postgresql" else sqlite_insert
+
         for r in rows:
-            session.add(
-                InvestorEvent(
-                    user_id=user_id,
-                    source=source,
-                    ticker=r.get("ticker"),
-                    event_kind=r.get("event_kind") or source,
-                    headline=r.get("headline") or "",
-                    occurred_at=r.get("occurred_at"),
-                    payload_json=r.get("payload_json") or "",
-                )
+            values = {
+                "user_id": user_id,
+                "source": source,
+                "ticker": r.get("ticker"),
+                "event_kind": r.get("event_kind") or source,
+                "headline": r.get("headline") or "",
+                "occurred_at": r.get("occurred_at"),
+                "payload_json": r.get("payload_json") or "",
+                "unique_key": (r.get("unique_key") or "")[:128],
+            }
+            stmt = stmt_factory(InvestorEvent).values(**values)
+            stmt = stmt.on_conflict_do_nothing(
+                index_elements=["user_id", "source", "unique_key"]
             )
+            result = await session.execute(stmt)
+            # rowcount is 1 on insert, 0 on conflict-skip.
+            if (result.rowcount or 0) > 0:
+                inserted += 1
         await session.commit()
-    return len(rows)
+    return inserted
 
 
 async def get_latest_investor_event(user_id: str) -> dict[str, Any] | None:

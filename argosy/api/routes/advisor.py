@@ -420,9 +420,16 @@ async def post_turn(req: AdvisorTurnRequest) -> AdvisorTurnResponse:
     else:
         agent = factory(req.user_id)
 
+    # The advisor agent doesn't know the synthetic ``complete`` stage —
+    # it only understands stage_1..stage_11. Map ``complete`` to
+    # stage_11 for the agent call (the last real stage); the persist
+    # helper's stage_11 veto then keeps the user pinned at ``complete``
+    # if there's no actual gap to fill.
+    agent_stage = "stage_11" if stage == "complete" else stage
+
     try:
         report = await agent.run(
-            current_stage=stage,
+            current_stage=agent_stage,
             accumulated_context=accumulated,
             last_user_message=req.last_user_message,
             history_excerpt=req.history_excerpt,
@@ -720,16 +727,26 @@ async def _signal_bullet(user_id: str) -> HomeBriefBullet | None:
     Preference order:
       1. Phase 4 investor event (SEC Form 4 / 13F / TipRanks /
          CapitolTrades / news) — written by the daily-brief loop into
-         ``investor_events``. Most recent by ``occurred_at DESC``.
-      2. Pension fund snapshot (Phase 3 data) — fallback when no
-         investor events exist for the user.
+         ``investor_events``. Most recent by ``occurred_at DESC``,
+         capped at 14 days. Stale-by-default investor events (older
+         than 14 days) fall through to the pension snapshot rather
+         than misleading the user about "today's signal."
+      2. Pension fund snapshot (Phase 3 data) — fallback when no fresh
+         investor event exists. Capped at 365 days; older snapshots
+         omit the bullet entirely (no signal beats a stale signal).
 
     Both queries are defensive: a missing table on older dev DBs
     (pre-migration) is logged at debug and treated as "no rows" rather
     than 500-ing the home page. We only catch SQLAlchemy / DB-shaped
     errors so genuine bugs surface.
     """
+    from datetime import timedelta as _td
+
     from sqlalchemy.exc import OperationalError, SQLAlchemyError
+
+    now = datetime.now(UTC)
+    EVENT_CUTOFF = _td(days=14)
+    PENSION_CUTOFF = _td(days=365)
 
     # 1. Investor events first.
     try:
@@ -743,7 +760,19 @@ async def _signal_bullet(user_id: str) -> HomeBriefBullet | None:
         event = None
     if event is not None:
         text = (event.get("headline") or "").strip()
-        if text:
+        # Recency check — events older than 14 days are stale signal,
+        # not "today's signal". Treat them as absent and fall through.
+        occ_iso = event.get("occurred_at") or event.get("ingested_at")
+        occ_dt: datetime | None = None
+        if occ_iso:
+            try:
+                occ_dt = datetime.fromisoformat(str(occ_iso).replace("Z", "+00:00"))
+                if occ_dt.tzinfo is None:
+                    occ_dt = occ_dt.replace(tzinfo=UTC)
+            except ValueError:
+                occ_dt = None
+        is_fresh = occ_dt is None or (now - occ_dt) <= EVENT_CUTOFF
+        if text and is_fresh:
             # Match _trim_summary's 140-char cap so the home-brief card
             # has a stable width regardless of source verbosity.
             return HomeBriefBullet(kind="signal", text=_trim_summary(text))
@@ -764,6 +793,14 @@ async def _signal_bullet(user_id: str) -> HomeBriefBullet | None:
         return None
     if row is None:
         return None
+    # Skip pension snapshots older than 365 days entirely — the user
+    # would rather see no signal bullet than a year-old pension stat.
+    snap_at = row.snapshot_at
+    if snap_at is not None:
+        if snap_at.tzinfo is None:
+            snap_at = snap_at.replace(tzinfo=UTC)
+        if (now - snap_at) > PENSION_CUTOFF:
+            return None
 
     name = row.fund_name or row.fund_id
     rel = row.relative_to_benchmark_pct

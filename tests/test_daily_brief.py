@@ -585,8 +585,91 @@ async def test_default_gather_inputs_persists_investor_events(
     # Form 4 row should carry the headline our mapper produces.
     f4 = next(r for r in rows if r.source == "sec_form4")
     assert "Jensen Huang" in f4.headline
+    # The ``transaction_kind=purchase`` mapping must surface as the verb
+    # ``bought`` (not the raw transaction code ``P``) so the bullet
+    # reads as a sentence.
+    assert "bought" in f4.headline, f4.headline
+    # Shares are formatted with thousands separators.
+    assert "10,000" in f4.headline, f4.headline
+    # Price clause renders with two decimals.
+    assert "$912.34" in f4.headline, f4.headline
     assert f4.ticker == "NVDA"
+    # payload_json round-trips: structured fields survive serialization.
+    import json as _json
+    parsed = _json.loads(f4.payload_json)
+    assert parsed["filer_name"] == "Jensen Huang"
+    assert parsed["transaction_code"] == "P"
     # TipRanks row carries consensus label + ticker.
     tr = next(r for r in rows if r.source == "tipranks")
     assert "Strong Buy" in tr.headline
     assert tr.ticker == "NVDA"
+
+
+@pytest.mark.asyncio
+async def test_default_gather_inputs_dedups_repeat_pulls(
+    monkeypatch: pytest.MonkeyPatch, engine: None
+) -> None:
+    """Same Form 4 row landing on two consecutive daily-brief ticks must
+    produce one investor_events row, not two — the ``unique_key`` +
+    ON CONFLICT DO NOTHING gating keeps the table from growing
+    unboundedly across repeat pulls."""
+    from argosy.adapters.data import sec_form4_adapter
+    from argosy.orchestrator.loops import daily_brief as db_loop
+    from argosy.state.models import InvestorEvent, User
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    class _FakePos:
+        def __init__(self, t: str) -> None:
+            self.ticker = t
+            self.quantity = 1
+            self.market_value = 0
+            self.value = 0
+            self.account = ""
+
+    class _FakeSnap:
+        positions = [_FakePos("NVDA")]
+
+    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
+    import argosy.ingest.tsv as ingest_tsv
+    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+
+    class _StubForm4:
+        async def get_recent_form4_for_ticker(
+            self, ticker: str, *, days: int = 30
+        ) -> list[dict]:
+            # Same row both times — this is exactly the production
+            # behavior: a 30-day lookback returns the same insider trade
+            # on every tick within the window.
+            return [
+                {
+                    "filer_name": "Jensen Huang",
+                    "ticker": ticker,
+                    "transaction_date": "2026-04-30",
+                    "transaction_code": "P",
+                    "transaction_kind": "purchase",
+                    "shares": 10000,
+                    "price_per_share": 912.34,
+                    "accession_number": "0001045810-26-000123",
+                }
+            ]
+
+    monkeypatch.setattr(sec_form4_adapter, "SecForm4Adapter", lambda: _StubForm4())
+
+    # Two consecutive ticks with the SAME stub data.
+    await db_loop._default_gather_inputs("ariel")
+    await db_loop._default_gather_inputs("ariel")
+
+    async with db_mod.get_session() as session:
+        rows = (
+            await session.execute(
+                select(InvestorEvent).where(
+                    InvestorEvent.user_id == "ariel",
+                    InvestorEvent.source == "sec_form4",
+                )
+            )
+        ).scalars().all()
+    # Despite two ticks, only one row — dedup by (user_id, source, unique_key).
+    assert len(rows) == 1, [r.headline for r in rows]

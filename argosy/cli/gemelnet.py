@@ -28,8 +28,10 @@ from argosy.adapters.data.gemelnet_adapter import (
     GemelnetAdapter,
     persist_pension_snapshot,
 )
-from argosy.logging import configure_logging
+from argosy.logging import configure_logging, get_logger
 from argosy.state import db as db_mod
+
+_log = get_logger("argosy.cli.gemelnet")
 
 app = typer.Typer(name="gemelnet", help="Israeli pension data (gemelnet.mof.gov.il).",
                   no_args_is_help=True)
@@ -210,9 +212,19 @@ def _ensure_vehicle_dict(pensions: Any) -> dict[str, Any]:
     for entry in pensions:
         if not isinstance(entry, dict):
             continue
-        vk = _coerce_vehicle_key(entry.get("type"))
+        raw_type = entry.get("type")
+        vk = _coerce_vehicle_key(raw_type)
         if vk is None:
-            # Unknown type → drop into a generic bucket so we don't lose data.
+            # Unknown type → drop into a generic bucket so we don't lose
+            # data. Log a WARNING so an operator can see the original
+            # value and manually repair if the auto-bucket is wrong.
+            _log.warning(
+                "gemelnet.unknown_pension_type_defaulted",
+                original_type=raw_type,
+                fund_id=entry.get("fund_id"),
+                fund_name=entry.get("fund_name"),
+                defaulted_to="kupat_gemel",
+            )
             vk = "kupat_gemel"  # safest default — locked-till-retirement
         bucket = out.setdefault(vk, {"funds": []})
         # Aggregate balance.

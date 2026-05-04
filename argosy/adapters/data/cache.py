@@ -44,20 +44,25 @@ T = TypeVar("T")
 
 
 class CacheKind(str, enum.Enum):
-    """Namespace within the underlying cache tables.
+    """Selects which physical cache table backs the call.
 
-    ``PRICES``, ``NEWS``, ``MACRO``, and ``UI`` all share rows in
-    ``kv_cache`` (the legacy ``prices_cache``); ``NewsCache`` /
-    ``MacroCache`` exist separately for historical reasons but most new
-    callers should pick a kind here and write to ``kv_cache``.
+    ``PRICES`` and ``UI`` both resolve to ``KvCacheEntry`` (the
+    ``kv_cache`` table); ``NEWS`` resolves to ``NewsCache``; ``MACRO``
+    resolves to ``MacroCache``.
+
+    For ``KvCacheEntry`` callers, the kind is informational only — the
+    composite primary key on ``kv_cache`` is ``(provider, key)``, so two
+    callers using ``CacheKind.PRICES`` vs ``CacheKind.UI`` with the same
+    ``(provider, key)`` would clobber each other. Namespacing among
+    ``KvCacheEntry``-backed callers comes from the ``provider`` field
+    (e.g. ``"yfinance"`` vs ``"advisor_home_brief"``), NOT the kind.
     """
 
     PRICES = "prices"
     NEWS = "news"
     MACRO = "macro"
-    # UI snapshots (e.g. home-brief, composed dashboards). Lives in
-    # ``kv_cache`` alongside PRICES — the kind is just a logical
-    # namespace, not a physical table choice.
+    # Routes to ``KvCacheEntry`` — same physical table as PRICES.
+    # Cross-caller isolation comes from the ``provider`` column.
     UI = "ui"
 
 

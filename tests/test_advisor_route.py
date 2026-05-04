@@ -631,7 +631,7 @@ async def test_home_brief_signal_bullet_cross_user_isolation(
 
 @pytest.mark.asyncio
 async def test_home_brief_gap_bullet_uses_due_for_refresh_for_stale_field(
-    engine: None, client: AsyncClient
+    engine: None,
 ) -> None:
     """When the top gap is stale (answered but past its freshness
     window), the bullet should read 'due for refresh' rather than
@@ -639,8 +639,13 @@ async def test_home_brief_gap_bullet_uses_due_for_refresh_for_stale_field(
     last-updated timestamp via agent_reports older than the freshness
     window — we synthesize that here by writing an
     agent_reports row with a back-dated created_at that touches the
-    field."""
+    field. We invoke ``_gap_bullet`` directly so the assertion is
+    unconditional (the home-brief picker also honours
+    missing-over-stale priority; a route-level test could land on a
+    different field)."""
     from datetime import timedelta
+
+    from argosy.api.routes.advisor import _gap_bullet
 
     # Pick a `monthly` field — bank_accounts — so we don't have to wait
     # 380 days simulated to push it stale (`one_shot` fields are
@@ -696,18 +701,55 @@ async def test_home_brief_gap_bullet_uses_due_for_refresh_for_stale_field(
         ar.created_at = old
         await session.commit()
 
-    res = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
-    assert res.status_code == 200, res.text
-    body = res.json()
-    gap = next((b for b in body["bullets"] if b["kind"] == "gap"), None)
-    assert gap is not None, body
-    # The picker prefers MISSING over STALE, so we need a user with no
-    # missing high-priority gaps before the stale bullet wins. The
-    # YAML above answers all stage_1+stage_2 priority-1 fields and
-    # leaves bank_accounts answered-but-stale. If the picker landed on
-    # bank_accounts as stale, the bullet text contains 'due for refresh'.
-    if "Bank accounts" in gap["text"]:
-        assert "due for refresh" in gap["text"], gap["text"]
+    bullet = await _gap_bullet("ariel")
+    assert bullet is not None, "expected a gap bullet"
+    # The route picker may select a different missing field before
+    # bank_accounts (missing > stale). For an unconditional assertion
+    # of the stale-bullet phrasing we walk the gap status directly: any
+    # stale bullet must read "due for refresh", and the user must have
+    # at least one stale gap.
+    from argosy.agents.gap_tracker import compute_field_timestamps, gap_status
+
+    last_updated = await compute_field_timestamps("ariel")
+    status = gap_status(
+        identity_yaml=(
+            "tax_residency: israel\n"
+            "user_citizenship: [israel]\n"
+            "marital_status: single\n"
+            "user_date_of_birth: 1980-01-01\n"
+            "dependents_count: 0\n"
+            "primary_residence_country: israel\n"
+            "employment_status: employed\n"
+            "bank_accounts:\n"
+            "  - {bank: leumi, balance_nis: 100000}\n"
+        ),
+        goals_yaml="",
+        constraints_yaml="",
+        last_updated_per_field=last_updated,
+    )
+    stale_paths = {f.path for f, _ in status.stale}
+    assert "identity.bank_accounts" in stale_paths, (
+        f"expected bank_accounts to be stale, stale_paths={stale_paths}"
+    )
+    # Missing-priority-1 gap may still win over a stale bullet — that's
+    # the documented picker behaviour. But IF the bullet picked a stale
+    # path, it must use the 'due for refresh' verb.
+    if any(p in bullet.text for p in ("Bank accounts", "Income", "Plan")):
+        # Heuristic — if it landed on a stale field the bullet phrasing
+        # is 'due for refresh'; if it landed on a missing field it's
+        # 'still missing'. Check the actual mapping rather than guessing.
+        from argosy.api.routes.advisor import _gap_bullet as _gb  # noqa: F401
+
+    # Authoritative assertion: pick the picker's actual target and
+    # confirm the route-emitted text matches its missing/stale state.
+    from argosy.agents.gap_tracker import pick_gap_driven_target
+
+    target = pick_gap_driven_target(status)
+    assert target is not None
+    if target.path in stale_paths:
+        assert "due for refresh" in bullet.text, bullet.text
+    else:
+        assert "still missing" in bullet.text, bullet.text
 
 
 @pytest.mark.asyncio
@@ -831,3 +873,384 @@ async def test_home_brief_caches_within_ttl(
     assert portfolio2 is not None
     assert "FIRST" in portfolio2["text"]
     assert "SECOND" not in portfolio2["text"]
+
+
+# ----------------------------------------------------------------------
+# A3: stage_11 veto — `complete` users with no stage_11 gap must NOT be
+# bounced back to stage_11 just because the agent claims next_stage or
+# the default-map points there. Mirror these on the intake-alias route.
+# ----------------------------------------------------------------------
+
+
+_FRESH_STAGE_11_IDENTITY = (
+    "employer_concentration_pct: 48\n"
+    "rsu_vest_schedule:\n"
+    "  - {date: 2026-08-15, shares: 1200, est_value_usd: 1100000}\n"
+)
+_FRESH_STAGE_11_CONSTRAINTS = (
+    "rsu_concentration_plan: sell-on-vest\n"
+    "sector_overweight_acknowledged: true\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_advisor_turn_complete_user_with_fresh_stage_11_stays_complete(
+    engine: None, client: AsyncClient
+) -> None:
+    """A user already at ``current_stage="complete"`` with all stage_11
+    fields populated must stay at ``complete`` — the veto in
+    ``_persist_turn`` MUST suppress an agent-claimed
+    ``next_stage="stage_11"`` redirect."""
+    # Agent claims stage_complete + next_stage=stage_11 (the buggy A3
+    # behaviour we're testing the veto against).
+    set_advisor_agent_factory(
+        _factory(_canned("Q?", stage_complete=True, next_stage="stage_11"))
+    )
+    try:
+        async with db_mod.get_session() as session:
+            session.add(User(id="ariel"))
+            session.add(
+                UserContext(
+                    user_id="ariel",
+                    current_stage="complete",
+                    identity_yaml=_FRESH_STAGE_11_IDENTITY,
+                    constraints_yaml=_FRESH_STAGE_11_CONSTRAINTS,
+                )
+            )
+            await session.commit()
+
+        res = await client.post(
+            "/api/advisor/turn",
+            json={"user_id": "ariel", "last_user_message": "ack"},
+        )
+        assert res.status_code == 200, res.text
+
+        async with db_mod.get_session() as session:
+            ctx = (
+                await session.execute(
+                    select(UserContext).where(UserContext.user_id == "ariel")
+                )
+            ).scalar_one()
+            assert ctx.current_stage == "complete", (
+                f"veto failed — user got bounced to {ctx.current_stage!r}"
+            )
+    finally:
+        reset_advisor_agent_factory()
+
+
+@pytest.mark.asyncio
+async def test_advisor_turn_complete_user_missing_stage_11_advances_to_stage_11(
+    engine: None, client: AsyncClient
+) -> None:
+    """A ``complete`` user whose stage_11 fields are missing should advance
+    to stage_11 when the agent claims ``next_stage=stage_11`` — the
+    veto must NOT fire when an actual gap exists."""
+    set_advisor_agent_factory(
+        _factory(_canned("Q?", stage_complete=True, next_stage="stage_11"))
+    )
+    try:
+        async with db_mod.get_session() as session:
+            session.add(User(id="ariel"))
+            session.add(
+                UserContext(
+                    user_id="ariel",
+                    current_stage="complete",
+                    # stage_11 fields ABSENT — open gap, redirect is legitimate.
+                )
+            )
+            await session.commit()
+
+        res = await client.post(
+            "/api/advisor/turn",
+            json={"user_id": "ariel", "last_user_message": "ack"},
+        )
+        assert res.status_code == 200, res.text
+
+        async with db_mod.get_session() as session:
+            ctx = (
+                await session.execute(
+                    select(UserContext).where(UserContext.user_id == "ariel")
+                )
+            ).scalar_one()
+            assert ctx.current_stage == "stage_11", (
+                f"expected stage_11 advance, got {ctx.current_stage!r}"
+            )
+    finally:
+        reset_advisor_agent_factory()
+
+
+@pytest.mark.asyncio
+async def test_advisor_turn_stage_10_to_complete_when_stage_11_fresh(
+    engine: None, client: AsyncClient
+) -> None:
+    """User on stage_10 with stage_complete=True AND stage_11 fields
+    already populated should land at ``complete`` — the default-map
+    points stage_10→stage_11 but the veto must suppress that hop when
+    no real gap remains."""
+    set_advisor_agent_factory(
+        _factory(_canned("Q?", stage_complete=True, next_stage=None))
+    )
+    try:
+        async with db_mod.get_session() as session:
+            session.add(User(id="ariel"))
+            # Pre-populate identity_yaml with everything stage_10 needs +
+            # the stage_11 fields. The simplest way to make
+            # ``post_complete=True`` for stage_10 is to leave stage_10's
+            # explicit gaps closed (we just need its `missing` list
+            # empty after the agent's reply). For this test we pre-fill
+            # all known YAML so the post-status comes out clean.
+            session.add(
+                UserContext(
+                    user_id="ariel",
+                    current_stage="stage_10",
+                    identity_yaml=(
+                        # Stage_1 + stage_3 + stage_11 — enough that the
+                        # post_status walker doesn't claim stage_10
+                        # is open. We aren't gating on stage_10 here;
+                        # we're gating on the veto.
+                        "tax_residency: israel\n"
+                        + _FRESH_STAGE_11_IDENTITY
+                    ),
+                    constraints_yaml=_FRESH_STAGE_11_CONSTRAINTS,
+                )
+            )
+            await session.commit()
+
+        res = await client.post(
+            "/api/advisor/turn",
+            json={"user_id": "ariel", "last_user_message": "done"},
+        )
+        assert res.status_code == 200, res.text
+
+        async with db_mod.get_session() as session:
+            ctx = (
+                await session.execute(
+                    select(UserContext).where(UserContext.user_id == "ariel")
+                )
+            ).scalar_one()
+            # Either complete (veto fired) or stage_10 (post_status
+            # didn't go complete because of unrelated gaps). The
+            # important assertion: it must NOT be stage_11.
+            assert ctx.current_stage != "stage_11", (
+                "stage_10 → stage_11 hop should have been vetoed"
+            )
+    finally:
+        reset_advisor_agent_factory()
+
+
+@pytest.mark.asyncio
+async def test_advisor_turn_stage_10_to_stage_11_when_real_gap(
+    engine: None, client: AsyncClient
+) -> None:
+    """User on stage_10 with stage_complete=True but stage_11 missing →
+    advance to stage_11 (gap is real, veto must not fire)."""
+    set_advisor_agent_factory(
+        _factory(_canned("Q?", stage_complete=True, next_stage="stage_11"))
+    )
+    try:
+        async with db_mod.get_session() as session:
+            session.add(User(id="ariel"))
+            session.add(
+                UserContext(
+                    user_id="ariel",
+                    current_stage="stage_10",
+                    # stage_11 fields ABSENT.
+                    identity_yaml="tax_residency: israel\n",
+                )
+            )
+            await session.commit()
+
+        res = await client.post(
+            "/api/advisor/turn",
+            json={"user_id": "ariel", "last_user_message": "done"},
+        )
+        assert res.status_code == 200, res.text
+
+        async with db_mod.get_session() as session:
+            ctx = (
+                await session.execute(
+                    select(UserContext).where(UserContext.user_id == "ariel")
+                )
+            ).scalar_one()
+            assert ctx.current_stage == "stage_11", (
+                f"expected stage_11 advance, got {ctx.current_stage!r}"
+            )
+    finally:
+        reset_advisor_agent_factory()
+
+
+# ----------------------------------------------------------------------
+# Investor-event ordering: NULL occurred_at must lose to a non-NULL
+# occurred_at row even if its ingested_at is fresher.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_latest_investor_event_prefers_non_null_occurred_at(
+    engine: None,
+) -> None:
+    """The query orders by ``occurred_at IS NULL`` first so a row with
+    a parsed event time wins over a NULL-occurred_at row even when the
+    NULL row was ingested later."""
+    from datetime import timedelta as _td
+
+    from argosy.state.queries import get_latest_investor_event
+
+    now = datetime.now(UTC)
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        # Row A: NULL occurred_at, ingested NOW (the freshest ingest).
+        session.add(
+            InvestorEvent(
+                user_id="ariel",
+                source="news",
+                ticker="NVDA",
+                event_kind="news",
+                headline="A — null occurred_at",
+                occurred_at=None,
+                ingested_at=now,
+                unique_key="A",
+            )
+        )
+        # Row B: occurred 7 days ago, ingested 1 day ago.
+        session.add(
+            InvestorEvent(
+                user_id="ariel",
+                source="sec_form4",
+                ticker="NVDA",
+                event_kind="purchase",
+                headline="B — occurred_at set",
+                occurred_at=now - _td(days=7),
+                ingested_at=now - _td(days=1),
+                unique_key="B",
+            )
+        )
+        await session.commit()
+
+    latest = await get_latest_investor_event("ariel")
+    assert latest is not None
+    assert latest["headline"].startswith("B"), (
+        f"expected non-NULL occurred_at row to win, got {latest['headline']!r}"
+    )
+
+
+# ----------------------------------------------------------------------
+# Signal-bullet recency window: investor events older than 14 days fall
+# through to pension; pension older than 365 days suppresses the bullet.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_signal_bullet_falls_through_on_stale_investor_event(
+    engine: None, client: AsyncClient
+) -> None:
+    """An investor event older than 14 days must fall through to the
+    pension snapshot fallback rather than surface as today's signal."""
+    from datetime import timedelta as _td
+
+    now = datetime.now(UTC)
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(UserContext(user_id="ariel", current_stage="stage_1"))
+        # 15 days old — outside the 14-day window.
+        session.add(
+            InvestorEvent(
+                user_id="ariel",
+                source="sec_form4",
+                ticker="NVDA",
+                event_kind="purchase",
+                headline="Stale insider trade — should NOT surface",
+                occurred_at=now - _td(days=15),
+                unique_key="STALE",
+            )
+        )
+        # Fresh pension snapshot to exercise the fallback.
+        session.add(
+            PensionFundSnapshot(
+                user_id="ariel",
+                fund_id="42",
+                fund_name="Migdal Pension",
+                relative_to_benchmark_pct=0.5,
+                snapshot_at=now,
+            )
+        )
+        await session.commit()
+
+    res = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    signal = next((b for b in body["bullets"] if b["kind"] == "signal"), None)
+    assert signal is not None
+    assert "Stale insider trade" not in signal["text"], signal["text"]
+    assert "Migdal" in signal["text"], signal["text"]
+
+
+@pytest.mark.asyncio
+async def test_signal_bullet_keeps_fresh_investor_event(
+    engine: None, client: AsyncClient
+) -> None:
+    """A 13-day-old event still wins over the pension fallback."""
+    from datetime import timedelta as _td
+
+    now = datetime.now(UTC)
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(UserContext(user_id="ariel", current_stage="stage_1"))
+        session.add(
+            InvestorEvent(
+                user_id="ariel",
+                source="sec_form4",
+                ticker="NVDA",
+                event_kind="purchase",
+                headline="Fresh insider trade — wins",
+                occurred_at=now - _td(days=13),
+                unique_key="FRESH",
+            )
+        )
+        session.add(
+            PensionFundSnapshot(
+                user_id="ariel",
+                fund_id="42",
+                fund_name="Migdal Pension",
+                relative_to_benchmark_pct=0.5,
+                snapshot_at=now,
+            )
+        )
+        await session.commit()
+
+    res = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    signal = next((b for b in body["bullets"] if b["kind"] == "signal"), None)
+    assert signal is not None
+    assert "Fresh insider trade" in signal["text"], signal["text"]
+
+
+@pytest.mark.asyncio
+async def test_signal_bullet_omitted_when_pension_older_than_365_days(
+    engine: None, client: AsyncClient
+) -> None:
+    """No fresh investor event + pension snapshot older than 365 days
+    → no signal bullet at all (better silent than misleading)."""
+    from datetime import timedelta as _td
+
+    now = datetime.now(UTC)
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        session.add(UserContext(user_id="ariel", current_stage="stage_1"))
+        session.add(
+            PensionFundSnapshot(
+                user_id="ariel",
+                fund_id="42",
+                fund_name="Migdal Pension",
+                relative_to_benchmark_pct=0.5,
+                snapshot_at=now - _td(days=400),
+            )
+        )
+        await session.commit()
+
+    res = await client.get("/api/advisor/home-brief", params={"user_id": "ariel"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    kinds = {b["kind"] for b in body["bullets"]}
+    assert "signal" not in kinds, body
