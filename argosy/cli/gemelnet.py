@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC
 from typing import Any
 
 import typer
@@ -149,6 +150,94 @@ def search_cmd(
         raise typer.Exit(code=rc)
 
 
+# Canonical fund-type vehicle keys, matching
+# `gemelnet_adapter.HEBREW_TYPE_MAP.values()`. Used by `refresh-user` and
+# `update_user_pension_holdings` to bucket fund-level data into the right
+# vehicle slot under `identity.pensions`.
+_VEHICLE_KEYS: tuple[str, ...] = ("keren_hishtalmut", "kupat_gemel", "kupat_pensia")
+
+
+def _coerce_vehicle_key(raw: Any) -> str | None:
+    """Map a free-form ``type`` value to a canonical vehicle key, or None."""
+    if not raw:
+        return None
+    s = str(raw).strip().lower()
+    if s in _VEHICLE_KEYS:
+        return s
+    # Tolerate the Hebrew labels and some common aliases.
+    aliases = {
+        "קרן השתלמות": "keren_hishtalmut",
+        "hishtalmut": "keren_hishtalmut",
+        "קופת גמל": "kupat_gemel",
+        "gemel": "kupat_gemel",
+        "kupat gemel": "kupat_gemel",
+        "פנסיה": "kupat_pensia",
+        "קרן פנסיה": "kupat_pensia",
+        "pensia": "kupat_pensia",
+        "pension": "kupat_pensia",
+    }
+    return aliases.get(s) or aliases.get(str(raw).strip())
+
+
+def _ensure_vehicle_dict(pensions: Any) -> dict[str, Any]:
+    """Coerce ``pensions`` (list, dict, or other) into a vehicle-keyed dict.
+
+    Migration helper: legacy ``identity.pensions`` was a flat list of fund
+    entries; the gap-tracker now expects a dict keyed by vehicle
+    (``keren_hishtalmut`` / ``kupat_gemel`` / ``kupat_pensia``). This
+    converts on the fly so the CLI can be re-run on either shape.
+
+    Each vehicle dict carries:
+      - ``balance_nis``: aggregated across funds of that vehicle
+      - ``contribution_rate_pct`` / ``employer_match_pct``: first-seen
+      - ``funds``: list of {fund_id, fund_name, last_refreshed_at, ...}
+    """
+    if isinstance(pensions, dict):
+        # Already-dict shape — pass through (we'll still merge fresh
+        # snapshots into the right vehicle's `funds` list below).
+        out = dict(pensions)
+        for vk in _VEHICLE_KEYS:
+            if vk in out and not isinstance(out[vk], dict):
+                # Defensive: somebody handwrote a scalar at a vehicle key.
+                out[vk] = {}
+        return out
+    if not isinstance(pensions, list):
+        return {}
+
+    # List → dict migration. Group entries by vehicle, aggregating
+    # ``balance_nis`` and merging fund-level metadata.
+    out: dict[str, Any] = {}
+    for entry in pensions:
+        if not isinstance(entry, dict):
+            continue
+        vk = _coerce_vehicle_key(entry.get("type"))
+        if vk is None:
+            # Unknown type → drop into a generic bucket so we don't lose data.
+            vk = "kupat_gemel"  # safest default — locked-till-retirement
+        bucket = out.setdefault(vk, {"funds": []})
+        # Aggregate balance.
+        bal = entry.get("balance_nis")
+        try:
+            bal_f = float(bal) if bal is not None else None
+        except (TypeError, ValueError):
+            bal_f = None
+        if bal_f is not None:
+            bucket["balance_nis"] = (bucket.get("balance_nis") or 0.0) + bal_f
+        # First-seen contribution rates.
+        for k in ("contribution_rate_pct", "employer_match_pct"):
+            if entry.get(k) is not None and bucket.get(k) is None:
+                bucket[k] = entry.get(k)
+        # Append the fund-level entry.
+        fund_record = {
+            "fund_id": entry.get("fund_id"),
+            "fund_name": entry.get("fund_name"),
+        }
+        if entry.get("last_refreshed"):
+            fund_record["last_refreshed_at"] = entry.get("last_refreshed")
+        bucket.setdefault("funds", []).append(fund_record)
+    return out
+
+
 @app.command("refresh-user")
 def refresh_user_cmd(
     user_id: str = typer.Option("ariel", "--user-id"),
@@ -156,15 +245,17 @@ def refresh_user_cmd(
 ) -> None:
     """Refresh every fund in `identity.pensions` and snapshot the data.
 
-    Reads the user's `identity_yaml`, expects an optional
-    ``pensions: [{fund_id, fund_name, type, balance_nis,
-    last_refreshed}, ...]`` list. For each entry with a ``fund_id``,
-    calls the adapter and writes a `pension_fund_snapshots` row.
-    Updates the `last_refreshed` timestamp on each entry in
-    `identity_yaml`.
+    Reads the user's `identity_yaml`. ``identity.pensions`` is a dict
+    keyed by canonical vehicle (``keren_hishtalmut`` / ``kupat_gemel``
+    / ``kupat_pensia``); each value carries an aggregated
+    ``balance_nis`` plus a ``funds`` list of
+    ``{fund_id, fund_name, last_refreshed_at}`` entries. The legacy
+    flat-list shape is migrated on the fly (and persisted back as dict)
+    so re-running the CLI is idempotent.
 
-    Funds without a ``fund_id`` (e.g. legacy free-form entries) are
-    skipped with a warning so users can be onboarded incrementally.
+    For each fund with a ``fund_id``, calls the adapter and writes a
+    `pension_fund_snapshots` row. Funds without a ``fund_id`` (e.g.
+    legacy free-form entries) are skipped with a warning.
     """
     configure_logging()
     # Engine is lazily initialized by `db_mod.get_session()` on first
@@ -172,7 +263,7 @@ def refresh_user_cmd(
     # to point at a temp DB so we don't force re-init here.
 
     async def _run() -> int:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from sqlalchemy import select
 
@@ -196,60 +287,82 @@ def refresh_user_cmd(
                 return 2
             if not isinstance(identity, dict):
                 identity = {}
-            pensions = identity.get("pensions") or []
+            pensions_raw = identity.get("pensions")
 
-            # If `pensions` is the legacy single-string field, we have
-            # nothing to refresh; treat as no funds.
-            if not isinstance(pensions, list):
+            if pensions_raw is None:
                 typer.echo(
-                    "identity.pensions is not a list yet; "
+                    "identity.pensions is empty; "
                     "no funds to refresh. Add fund-level structure first."
                 )
                 return 0
 
+            pensions = _ensure_vehicle_dict(pensions_raw)
+
             refreshed = 0
             skipped = 0
-            for entry in pensions:
-                if not isinstance(entry, dict):
-                    skipped += 1
+            for vk in _VEHICLE_KEYS:
+                bucket = pensions.get(vk)
+                if not isinstance(bucket, dict):
                     continue
-                fund_id = str(entry.get("fund_id") or "").strip()
-                if not fund_id:
+                funds = bucket.get("funds") or []
+                if not isinstance(funds, list):
+                    continue
+                for fund in funds:
+                    if not isinstance(fund, dict):
+                        skipped += 1
+                        continue
+                    fund_id = str(fund.get("fund_id") or "").strip()
+                    if not fund_id:
+                        typer.echo(
+                            f"  - skipping {vk} fund without fund_id: "
+                            f"{fund.get('fund_name') or fund}"
+                        )
+                        skipped += 1
+                        continue
+                    try:
+                        payload = await adapter.get_fund_returns(
+                            fund_id, period=period
+                        )
+                    except (MissingDataSourceError, ValueError) as exc:
+                        typer.echo(f"  - {fund_id}: error: {exc}", err=True)
+                        skipped += 1
+                        continue
+                    # Per-fund balance is only meaningful at the
+                    # vehicle aggregate level; we pass the bucket's
+                    # aggregated balance through to the snapshot if a
+                    # fund-specific value isn't available.
+                    balance_nis = fund.get("balance_nis")
+                    if balance_nis is None:
+                        balance_nis = bucket.get("balance_nis")
+                    try:
+                        balance_nis_f = (
+                            float(balance_nis) if balance_nis is not None else None
+                        )
+                    except (TypeError, ValueError):
+                        balance_nis_f = None
+                    snap_id = await persist_pension_snapshot(
+                        user_id=user_id,
+                        fund_returns=payload,
+                        balance_nis=balance_nis_f,
+                    )
+                    fund["last_refreshed_at"] = datetime.now(
+                        UTC
+                    ).isoformat()
+                    fund["fund_name"] = (
+                        fund.get("fund_name") or payload.get("fund_name")
+                    )
+                    refreshed += 1
                     typer.echo(
-                        f"  - skipping pension entry without fund_id: "
-                        f"{entry.get('fund_name') or entry}"
+                        f"  + {fund_id} ({vk}): "
+                        f"return={payload.get('return_pct')} "
+                        f"benchmark={payload.get('benchmark_return_pct')} "
+                        f"rel={payload.get('relative_to_benchmark_pct')} "
+                        f"snapshot_id={snap_id}"
                     )
-                    skipped += 1
-                    continue
-                try:
-                    payload = await adapter.get_fund_returns(fund_id, period=period)
-                except (MissingDataSourceError, ValueError) as exc:
-                    typer.echo(f"  - {fund_id}: error: {exc}", err=True)
-                    skipped += 1
-                    continue
-                balance_nis = entry.get("balance_nis")
-                try:
-                    balance_nis_f = (
-                        float(balance_nis) if balance_nis is not None else None
-                    )
-                except (TypeError, ValueError):
-                    balance_nis_f = None
-                snap_id = await persist_pension_snapshot(
-                    user_id=user_id,
-                    fund_returns=payload,
-                    balance_nis=balance_nis_f,
-                )
-                entry["last_refreshed"] = datetime.now(timezone.utc).isoformat()
-                entry["fund_name"] = entry.get("fund_name") or payload.get("fund_name")
-                refreshed += 1
-                typer.echo(
-                    f"  + {fund_id}: return={payload.get('return_pct')} "
-                    f"benchmark={payload.get('benchmark_return_pct')} "
-                    f"rel={payload.get('relative_to_benchmark_pct')} "
-                    f"snapshot_id={snap_id}"
-                )
 
-            # Persist updated identity yaml so `last_refreshed` sticks.
+            # Persist updated identity yaml in the new dict shape so
+            # `last_refreshed_at` sticks AND the legacy list-shape gets
+            # auto-migrated on first refresh.
             identity["pensions"] = pensions
             ctx.identity_yaml = yaml.safe_dump(
                 identity, allow_unicode=True, sort_keys=False
@@ -264,4 +377,44 @@ def refresh_user_cmd(
         raise typer.Exit(code=rc)
 
 
-__all__ = ["app"]
+def update_user_pension_holdings(
+    identity: dict[str, Any], fund_rows: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Public helper: merge a list of fund rows into ``identity.pensions``.
+
+    Used by callers (CLI, ingest) that have a flat list of
+    ``{fund_id, fund_name, type, balance_nis}`` rows and need to write
+    them into the canonical dict-keyed-by-vehicle shape under
+    ``identity.pensions``. Returns a new identity dict (does not mutate
+    the input).
+    """
+    out = dict(identity)
+    existing = _ensure_vehicle_dict(out.get("pensions") or {})
+    for row in fund_rows or []:
+        if not isinstance(row, dict):
+            continue
+        vk = _coerce_vehicle_key(row.get("type"))
+        if vk is None:
+            vk = "kupat_gemel"
+        bucket = existing.setdefault(vk, {"funds": []})
+        bal = row.get("balance_nis")
+        try:
+            bal_f = float(bal) if bal is not None else None
+        except (TypeError, ValueError):
+            bal_f = None
+        if bal_f is not None:
+            bucket["balance_nis"] = (bucket.get("balance_nis") or 0.0) + bal_f
+        for k in ("contribution_rate_pct", "employer_match_pct"):
+            if row.get(k) is not None and bucket.get(k) is None:
+                bucket[k] = row.get(k)
+        bucket.setdefault("funds", []).append(
+            {
+                "fund_id": row.get("fund_id"),
+                "fund_name": row.get("fund_name"),
+            }
+        )
+    out["pensions"] = existing
+    return out
+
+
+__all__ = ["app", "update_user_pension_holdings"]

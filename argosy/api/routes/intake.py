@@ -26,6 +26,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from argosy.agents.gap_tracker import STAGE_FIELDS, gap_status
 from argosy.agents.intake import IntakeAgent, IntakeTurnOutput
 from argosy.agents.intake_extractor import IntakeExtraction, IntakeExtractorAgent
 from argosy.agents.intake_fields import stage_status
@@ -130,7 +131,22 @@ async def post_turn(req: TurnRequest) -> TurnResponse:
             if ctx is None or ctx.current_stage is None:
                 stage = "stage_1"
             elif ctx.current_stage == "complete":
-                stage = "stage_11"
+                # Existing-user backwards-compat: stage_11 (special
+                # situations) was added after some users had already
+                # finished intake. Only re-enter stage_11 if there's
+                # actually an open gap there; otherwise stay "complete".
+                _post = gap_status(
+                    identity_yaml=ctx.identity_yaml or "",
+                    goals_yaml=ctx.goals_yaml or "",
+                    constraints_yaml=ctx.constraints_yaml or "",
+                )
+                _stage_11_paths = {f.path for f in STAGE_FIELDS.get("stage_11", [])}
+                _missing = {f.path for f in _post.missing}
+                _stale = {f.path for f, _t in _post.stale}
+                if (_missing | _stale) & _stage_11_paths:
+                    stage = "stage_11"
+                else:
+                    stage = "complete"
             else:
                 stage = ctx.current_stage
 

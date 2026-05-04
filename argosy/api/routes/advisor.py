@@ -164,6 +164,28 @@ async def _persist_turn(
 
     advanced_to: str | None = None
 
+    def _has_open_stage_11_gap(status_obj) -> bool:
+        """True iff stage_11 has any missing/stale field for this user.
+
+        Used to decide whether mapping ``complete → stage_11`` is
+        legitimate (an existing user who finished intake before stage_11
+        was added must NOT be thrown back unless there's actually a
+        stage_11 gap to fill).
+        """
+        from argosy.agents.gap_tracker import STAGE_FIELDS as _SF
+
+        stage_11_paths = {f.path for f in _SF.get("stage_11", [])}
+        if not stage_11_paths:
+            return False
+        # Both `missing` and `stale` count as open gaps.
+        for f in status_obj.missing:
+            if f.path in stage_11_paths:
+                return True
+        for f, _ts in status_obj.stale:
+            if f.path in stage_11_paths:
+                return True
+        return False
+
     async with db_mod.get_session() as session:
         ar_row = AgentReportRow(
             user_id=user_id,
@@ -229,18 +251,48 @@ async def _persist_turn(
         )
         post_complete = len(post_status["missing"]) == 0
 
+        # Compute the post-update GapStatus once so we can suppress
+        # spurious "complete → stage_11" redirects: existing users who
+        # finished intake before stage_11 (special situations) was added
+        # have ``current_stage="complete"`` and no stage_11 gap. They
+        # must NOT be thrown back to stage_11 just because the agent
+        # claimed ``next_stage="stage_11"`` or the default-map points
+        # there. Only redirect if there's an actual missing/stale
+        # stage_11 field.
+        from argosy.agents.gap_tracker import gap_status as _gap_status
+
+        full_status = _gap_status(
+            identity_yaml=ctx.identity_yaml or "",
+            goals_yaml=ctx.goals_yaml or "",
+            constraints_yaml=ctx.constraints_yaml or "",
+        )
+
+        def _resolve_next(claimed: str | None) -> str | None:
+            """Veto a complete→stage_11 hop when the user has no real gap."""
+            if claimed != "stage_11":
+                return claimed
+            if stage != "stage_11" and not _has_open_stage_11_gap(full_status):
+                # User is already past stage_11 (or never had a gap there).
+                # Pin them at "complete" instead of bouncing back.
+                return "complete"
+            return claimed
+
         if out.stage_complete and out.next_stage:
-            ctx.current_stage = out.next_stage
-            advanced_to = out.next_stage
+            resolved = _resolve_next(out.next_stage)
+            if resolved is not None:
+                ctx.current_stage = resolved
+                advanced_to = resolved
         elif post_complete:
-            ctx.current_stage = next_stage_default
-            advanced_to = next_stage_default
-            _log.info(
-                "advisor.stage_auto_advanced",
-                from_stage=stage,
-                to_stage=next_stage_default,
-                intake_session_id=session_id,
-            )
+            resolved = _resolve_next(next_stage_default)
+            if resolved is not None:
+                ctx.current_stage = resolved
+                advanced_to = resolved
+                _log.info(
+                    "advisor.stage_auto_advanced",
+                    from_stage=stage,
+                    to_stage=resolved,
+                    intake_session_id=session_id,
+                )
         elif ctx.current_stage is None:
             ctx.current_stage = out.stage
 
@@ -285,7 +337,29 @@ async def post_turn(req: AdvisorTurnRequest) -> AdvisorTurnResponse:
             if ctx is None or ctx.current_stage is None:
                 stage = "stage_1"
             elif ctx.current_stage == "complete":
-                stage = "stage_11"
+                # Existing-user backwards-compat: stage_11 (special
+                # situations) was added after some users had already
+                # finished intake. Only re-enter stage_11 if there's
+                # actually an open gap there; otherwise stay "complete".
+                from argosy.agents.gap_tracker import (
+                    STAGE_FIELDS as _SF,
+                )
+                from argosy.agents.gap_tracker import (
+                    gap_status as _gs,
+                )
+
+                _post = _gs(
+                    identity_yaml=ctx.identity_yaml or "",
+                    goals_yaml=ctx.goals_yaml or "",
+                    constraints_yaml=ctx.constraints_yaml or "",
+                )
+                _stage_11_paths = {f.path for f in _SF.get("stage_11", [])}
+                _missing = {f.path for f in _post.missing}
+                _stale = {f.path for f, _t in _post.stale}
+                if (_missing | _stale) & _stage_11_paths:
+                    stage = "stage_11"
+                else:
+                    stage = "complete"
             else:
                 stage = ctx.current_stage
 
@@ -540,20 +614,30 @@ def _trim_summary(text: str, max_len: int = 140) -> str:
 
 async def _gap_bullet(user_id: str) -> HomeBriefBullet | None:
     """Top missing/stale field, with one-clause why-it-matters."""
+    from sqlalchemy.exc import OperationalError, SQLAlchemyError
+
     identity_yaml = ""
     goals_yaml = ""
     constraints_yaml = ""
 
-    async with db_mod.get_session() as session:
-        ctx = (
-            await session.execute(
-                select(UserContext).where(UserContext.user_id == user_id)
-            )
-        ).scalar_one_or_none()
-        if ctx is not None:
-            identity_yaml = ctx.identity_yaml or ""
-            goals_yaml = ctx.goals_yaml or ""
-            constraints_yaml = ctx.constraints_yaml or ""
+    try:
+        async with db_mod.get_session() as session:
+            ctx = (
+                await session.execute(
+                    select(UserContext).where(UserContext.user_id == user_id)
+                )
+            ).scalar_one_or_none()
+            if ctx is not None:
+                identity_yaml = ctx.identity_yaml or ""
+                goals_yaml = ctx.goals_yaml or ""
+                constraints_yaml = ctx.constraints_yaml or ""
+    except (SQLAlchemyError, OperationalError):
+        # Stale schema / connection hiccup — degrade rather than 500
+        # the home page. Re-raise on anything else (genuine bugs).
+        _log.debug(
+            "home_brief.gap_bullet_db_skipped", user_id=user_id, exc_info=True
+        )
+        return None
 
     last_updated_per_field = await compute_field_timestamps(user_id)
     status = gap_status(
@@ -592,11 +676,22 @@ async def _gap_bullet(user_id: str) -> HomeBriefBullet | None:
 
 
 async def _portfolio_bullet(user_id: str) -> HomeBriefBullet | None:
-    """One line from the most recent daily brief; fall back to a position note.
+    """One line from the most recent daily brief.
 
-    Defensive on DB hiccups (missing table on stale schemas, etc.) — degrades
-    to None rather than 500-ing the home page.
+    Defensive on DB hiccups (missing table on stale schemas, etc.) —
+    degrades to None rather than 500-ing the home page. We only catch
+    SQLAlchemy/DB-shaped errors so that genuine bugs (AttributeError,
+    KeyError after a refactor) still surface.
+
+    Note on the (deliberately removed) TSV fallback: ``_find_latest_tsv``
+    in ``argosy.api.routes.portfolio`` is a global pick of the newest
+    ``*.tsv`` under ``ARGOSY_HOME``, NOT user-scoped. A multi-tenant
+    home brief that walked that path would leak Ariel's portfolio into
+    Dana's bullets. Until per-user TSV path resolution lands, return
+    None when no DailyBrief row exists for this user.
     """
+    from sqlalchemy.exc import OperationalError, SQLAlchemyError
+
     try:
         async with db_mod.get_session() as session:
             row = (
@@ -611,42 +706,12 @@ async def _portfolio_bullet(user_id: str) -> HomeBriefBullet | None:
                 line = _trim_summary(row.summary_text or "")
                 if line:
                     return HomeBriefBullet(kind="portfolio", text=line)
-    except Exception:  # noqa: BLE001
+    except (SQLAlchemyError, OperationalError):
         _log.debug(
             "home_brief.portfolio_bullet_db_skipped", user_id=user_id, exc_info=True
         )
 
-    # Fallback: try the on-disk portfolio TSV for a top-position concentration
-    # one-liner. Keep this best-effort — if parsing fails, omit the bullet.
-    try:
-        from argosy.api.routes.portfolio import _find_latest_tsv
-        from argosy.ingest.tsv import parse_portfolio_tsv
-    except ImportError:  # pragma: no cover - defensive
-        return None
-
-    try:
-        tsv = _find_latest_tsv()
-        if tsv is None:
-            return None
-        snap = parse_portfolio_tsv(tsv)
-    except Exception:  # pragma: no cover - parser failures shouldn't 500 the page
-        return None
-
-    total = snap.total_usd_value_k or 0.0
-    if total <= 0 or not snap.positions:
-        return None
-    top = max(
-        (p for p in snap.positions if p.usd_value_k),
-        key=lambda p: p.usd_value_k or 0.0,
-        default=None,
-    )
-    if top is None or not top.usd_value_k:
-        return None
-    pct = (top.usd_value_k / total) * 100
-    return HomeBriefBullet(
-        kind="portfolio",
-        text=f"{top.symbol or 'Top position'} concentration at {pct:.0f}% of portfolio.",
-    )
+    return None
 
 
 async def _signal_bullet(user_id: str) -> HomeBriefBullet | None:
@@ -654,19 +719,22 @@ async def _signal_bullet(user_id: str) -> HomeBriefBullet | None:
 
     Preference order:
       1. Phase 4 investor event (SEC Form 4 / 13F / TipRanks /
-         CapitolTrades) — written by the daily-brief loop into
+         CapitolTrades / news) — written by the daily-brief loop into
          ``investor_events``. Most recent by ``occurred_at DESC``.
       2. Pension fund snapshot (Phase 3 data) — fallback when no
          investor events exist for the user.
 
     Both queries are defensive: a missing table on older dev DBs
     (pre-migration) is logged at debug and treated as "no rows" rather
-    than 500-ing the home page.
+    than 500-ing the home page. We only catch SQLAlchemy / DB-shaped
+    errors so genuine bugs surface.
     """
+    from sqlalchemy.exc import OperationalError, SQLAlchemyError
+
     # 1. Investor events first.
     try:
         event = await get_latest_investor_event(user_id)
-    except Exception:  # noqa: BLE001 — degrade gracefully on missing table / DB issues
+    except (SQLAlchemyError, OperationalError):
         _log.debug(
             "home_brief.signal_bullet_investor_skipped",
             user_id=user_id,
@@ -691,7 +759,7 @@ async def _signal_bullet(user_id: str) -> HomeBriefBullet | None:
                     .limit(1)
                 )
             ).scalar_one_or_none()
-    except Exception:  # noqa: BLE001 — degrade gracefully on missing table / DB issues
+    except (SQLAlchemyError, OperationalError):
         _log.debug("home_brief.signal_bullet_skipped", user_id=user_id, exc_info=True)
         return None
     if row is None:
@@ -703,21 +771,37 @@ async def _signal_bullet(user_id: str) -> HomeBriefBullet | None:
         direction = "above" if float(rel) >= 0 else "below"
         return HomeBriefBullet(
             kind="signal",
-            text=f"{name} {abs(float(rel)):.1f}% {direction} benchmark in latest pension snapshot.",
+            text=(
+                f"{name} {abs(float(rel)):.1f}% {direction} "
+                "benchmark in latest pension snapshot."
+            ),
         )
     if row.return_pct_12m is not None:
         return HomeBriefBullet(
             kind="signal",
-            text=f"{name} 12m return {float(row.return_pct_12m):.1f}% in latest pension snapshot.",
+            text=(
+                f"{name} 12m return {float(row.return_pct_12m):.1f}% "
+                "in latest pension snapshot."
+            ),
         )
     return HomeBriefBullet(
         kind="signal", text=f"New pension snapshot recorded for {name}."
     )
 
 
-async def _compose_home_brief(user_id: str) -> HomeBriefResponse:
+def _time_of_day_greeting(now: datetime) -> str:
+    """Build the greeting headline. Pure function so the route can call
+    it on every request after a cache hit, never serving a stale
+    'Good morning' at 11pm."""
+    return f"{_greeting_for_hour(now.hour)}. Here's where you stand."
+
+
+async def _compose_home_brief_cacheable(user_id: str) -> dict[str, Any]:
+    """Compose the *cacheable* portion of the home brief — bullets +
+    cta + generated_at. Headline is computed fresh at response time
+    (see ``get_home_brief``) so the greeting always matches the
+    user's current time-of-day window even on a cache hit."""
     now = datetime.now(UTC)
-    headline = f"{_greeting_for_hour(now.hour)}. Here's where you stand."
 
     bullets: list[HomeBriefBullet] = []
     gap = await _gap_bullet(user_id)
@@ -730,12 +814,11 @@ async def _compose_home_brief(user_id: str) -> HomeBriefResponse:
     if signal is not None:
         bullets.append(signal)
 
-    return HomeBriefResponse(
-        headline=headline,
-        bullets=bullets,
-        cta=HomeBriefCTA(label="Talk to advisor", href="/advisor"),
-        generated_at=now.isoformat(),
-    )
+    return {
+        "bullets": [b.model_dump() for b in bullets],
+        "cta": HomeBriefCTA(label="Talk to advisor", href="/advisor").model_dump(),
+        "generated_at": now.isoformat(),
+    }
 
 
 @router.get("/home-brief", response_model=HomeBriefResponse)
@@ -745,12 +828,16 @@ async def get_home_brief(
     """Compose a 3–5 line glance card for the home page.
 
     Stitched from existing state — gap tracker, latest daily brief, most
-    recent watchlist signal. NO new LLM call. Cached per-user for 30
+    recent watchlist signal. NO new LLM call.
+
+    Caching: bullets / cta / generated_at are cached per-user for 30
     minutes via `kv_cache` (CacheKind.UI, provider=`advisor_home_brief`).
+    The ``headline`` is intentionally NOT cached — we compute it fresh
+    at response time so a "Good morning" generated at 7am isn't served
+    back to the user at 11pm just because the bullets are still warm.
     """
     async def _fetch() -> dict[str, Any]:
-        composed = await _compose_home_brief(user_id)
-        return composed.model_dump()
+        return await _compose_home_brief_cacheable(user_id)
 
     data = await cached_call(
         kind=CacheKind.UI,
@@ -759,7 +846,13 @@ async def get_home_brief(
         ttl_seconds=30 * 60,
         fetch=_fetch,
     )
-    return HomeBriefResponse(**data)
+    # Build the response by adding a fresh headline on every call.
+    return HomeBriefResponse(
+        headline=_time_of_day_greeting(datetime.now(UTC)),
+        bullets=[HomeBriefBullet(**b) for b in data.get("bullets", [])],
+        cta=HomeBriefCTA(**data.get("cta", {"label": "Talk to advisor", "href": "/advisor"})),
+        generated_at=data.get("generated_at") or datetime.now(UTC).isoformat(),
+    )
 
 
 __all__ = [

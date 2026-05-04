@@ -618,8 +618,15 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
         # for any tax-aware decision around employer transitions or
         # education-fund withdrawals. Annual review cadence (the rules and
         # the user's expected exposure shift year-over-year).
+        #
+        # NOTE: previously misnamed ``mas_shevach`` — מס שבח is the Israeli
+        # real-estate appreciation tax (see
+        # ``domain_knowledge/tax/israel/capital_gains.md``). Severance /
+        # exit-grant tax is מס על פיצויי פיטורין, so the field key is
+        # ``severance_tax_exposure`` (English; unambiguous; future-proof
+        # against a real ``mas_shevach`` field for property-gain tax).
         FieldSpec(
-            path="identity.mas_shevach",
+            path="identity.severance_tax_exposure",
             label="Severance / exit-grant tax exposure (מס על פיצויי פיטורין)",
             section="identity",
             freshness="annual",

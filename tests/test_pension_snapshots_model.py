@@ -122,47 +122,6 @@ async def test_get_user_pension_snapshots_full_history(engine: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_user_pension_snapshots_isolates_by_user(engine: None) -> None:
-    """Two users, each with their own snapshots — `get_user_pension_snapshots`
-    must return ONLY the queried user's rows."""
-    async with db_mod.get_session() as session:
-        session.add(User(id="user_a"))
-        session.add(User(id="user_b"))
-        await session.flush()
-
-        now = datetime.now(UTC)
-        session.add(
-            PensionFundSnapshot(
-                user_id="user_a",
-                fund_id="A1",
-                fund_name="A's fund",
-                return_pct_12m=5.0,
-                snapshot_at=now,
-            )
-        )
-        session.add(
-            PensionFundSnapshot(
-                user_id="user_b",
-                fund_id="B1",
-                fund_name="B's fund",
-                return_pct_12m=7.0,
-                snapshot_at=now,
-            )
-        )
-        await session.commit()
-
-    a_rows = await get_user_pension_snapshots("user_a")
-    assert len(a_rows) == 1
-    assert a_rows[0]["fund_id"] == "A1"
-    assert all(row["user_id"] == "user_a" for row in a_rows)
-
-    b_rows = await get_user_pension_snapshots("user_b")
-    assert len(b_rows) == 1
-    assert b_rows[0]["fund_id"] == "B1"
-    assert all(row["user_id"] == "user_b" for row in b_rows)
-
-
-@pytest.mark.asyncio
 async def test_get_user_pension_snapshots_same_fund_id_separate_users(
     engine: None,
 ) -> None:

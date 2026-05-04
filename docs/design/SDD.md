@@ -188,7 +188,7 @@ flowchart TB
     subgraph State["PERSISTENT STATE (SQLite + DuckDB)"]
         S1[user_context · plan · positions]
         S2[agent_reports · proposals · alerts]
-        S3[audit_log · prices_cache · news_cache]
+        S3[audit_log · kv_cache · news_cache]
     end
 
     subgraph Engine["ENGINE (always-on Python orchestrator)"]
@@ -749,7 +749,9 @@ Single SQLite database (`argosy.db`), DuckDB used for analytical queries against
 | **Plan** | `plan_versions`, `plan_critiques` | Plan as ingested + every critique pass with timestamp |
 | **Decisions** | `proposals`, `proposals_history`, `approvals` | Full proposal lifecycle (draft → queued → approved → executed/cancelled) |
 | **Audit** | `audit_log`, `agent_reports`, `agent_reports_blobs` | Append-only; every agent output, every decision, every override |
-| **External** | `prices_cache`, `news_cache`, `corp_actions` | Cached external data with provider + retrieved_at |
+| **External** | `kv_cache`[^kv-cache-rename], `news_cache`, `corp_actions` | Cached external data with provider + retrieved_at |
+
+[^kv-cache-rename]: Originally named `prices_cache`; renamed to `kv_cache` in migration `0011_rename_prices_cache_to_kv_cache` (the table has always been a generic key/value/TTL store keyed by `(provider, key)` — the old name was misleading). See `argosy/state/models.py::KvCacheEntry`.
 | **Domain** | `domain_kb_status` | Per-file last_verified, next_refresh_due, last_diff |
 | **Operations** | `tasks_queue`, `alerts`, `cadence_state` | Scheduling state, in-flight work, alerts |
 

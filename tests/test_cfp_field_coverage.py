@@ -49,9 +49,10 @@ def test_catalog_has_ten_stages_in_order() -> None:
 
 
 def test_each_new_cfp_stage_has_three_or_more_fields() -> None:
-    """Every new CFP stage carries at least 3 fields — anything less
-    suggests the migration dropped entries on the floor."""
-    for stage in ("stage_7", "stage_8", "stage_9", "stage_10"):
+    """Every new CFP stage (and the concentration-reduction follow-up
+    in stage_11) carries at least 3 fields — anything less suggests the
+    migration dropped entries on the floor."""
+    for stage in ("stage_7", "stage_8", "stage_9", "stage_10", "stage_11"):
         n = len(STAGE_FIELDS[stage])
         assert n >= 3, f"{stage} has only {n} fields (expected >=3)"
 
@@ -100,6 +101,12 @@ def test_tax_stage_covers_filing_status_and_carryforwards() -> None:
     paths = {f.path for f in STAGE_FIELDS["stage_9"]}
     assert any("filing_status" in p for p in paths)
     assert any("carryforward" in p for p in paths)
+    # The Israeli severance-tax field stays in stage_9. The key was renamed
+    # from `mas_shevach` (which is actually מס שבח, the real-estate
+    # appreciation tax) to `severance_tax_exposure` for unambiguous semantics
+    # and to free up `mas_shevach` for a future property-gain field.
+    assert "identity.severance_tax_exposure" in paths
+    assert "identity.mas_shevach" not in paths
 
 
 def test_education_stage_targets_per_dependent_funding() -> None:
@@ -119,6 +126,55 @@ def test_israeli_pension_fields_preserved() -> None:
     assert any(p.startswith("identity.pensions.keren_hishtalmut") for p in paths)
     assert any(p.startswith("identity.pensions.kupat_gemel") for p in paths)
     assert any(p.startswith("identity.pensions.kupat_pensia") for p in paths)
+
+
+def test_per_vehicle_pension_paths_resolve_against_dict_shape_yaml() -> None:
+    """Regression: the gap-tracker's per-vehicle pension paths
+    (``identity.pensions.<vehicle>.<field>``) must resolve via
+    ``intake_fields._lookup`` against a realistic dict-keyed-by-vehicle
+    YAML payload — the shape the gemelnet CLI now emits and the 0013
+    migration produces. The list-shape that Phase 3 originally wrote
+    would silently None-out every per-vehicle field, breaking stage_3
+    auto-advance for any user with gemelnet data."""
+    import yaml
+
+    from argosy.agents.intake_fields import _lookup
+
+    identity_yaml = """
+pensions:
+  keren_hishtalmut:
+    balance_nis: 75000
+    contribution_rate_pct: 7.5
+    employer_match_pct: 7.5
+    funds:
+      - fund_id: "1234"
+        fund_name: Altshuler Shaham Hishtalmut
+  kupat_gemel:
+    balance_nis: 50000
+    contribution_rate_pct: 6.0
+    funds:
+      - fund_id: "5678"
+        fund_name: Harel Gemel Equity
+  kupat_pensia:
+    balance_nis: 200000
+    contribution_rate_pct: 6.0
+    employer_match_pct: 6.5
+    funds:
+      - fund_id: "9999"
+        fund_name: Migdal Pensia Comprehensive
+"""
+    parsed = yaml.safe_load(identity_yaml)
+    stage3_pension_paths = [
+        f.path for f in STAGE_FIELDS["stage_3"]
+        if f.path.startswith("identity.pensions.")
+    ]
+    assert len(stage3_pension_paths) >= 8, stage3_pension_paths
+    for path in stage3_pension_paths:
+        value = _lookup(parsed, path)
+        assert value is not None, (
+            f"path {path!r} resolved to None against dict-shape YAML "
+            f"(gemelnet data flow broken)"
+        )
 
 
 def test_must_have_priority_one_fields_present() -> None:

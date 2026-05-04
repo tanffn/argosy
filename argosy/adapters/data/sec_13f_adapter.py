@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -138,7 +138,7 @@ class Sec13FAdapter:
         # SEC EDGAR FTS expects an actual ISO date range when
         # ``dateRange=custom``. Empty values either 400 or are silently
         # ignored, so we compute the window from ``days``.
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         startdt = (today - timedelta(days=days)).isoformat()
         enddt = today.isoformat()
 
@@ -153,10 +153,15 @@ class Sec13FAdapter:
             data = await self._fetch_json(EDGAR_FTS_URL, params=params)
             return _parse_fts_hits(data)
 
+        # Include `enddt` in the cache key so a Monday tick and a
+        # Wednesday tick don't collide. ``days`` alone made the key day-
+        # independent — the second tick would silently serve the first
+        # tick's stale 90-day window even though the underlying date
+        # range had moved forward.
         out: list[dict[str, Any]] = await cached_call(
             kind=CacheKind.PRICES,
             provider=self.PROVIDER,
-            key=f"recent:days={days}",
+            key=f"recent:days={days}:enddt={enddt}",
             ttl_seconds=ttl_seconds,
             fetch=_fetch,
         )

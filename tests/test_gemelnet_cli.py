@@ -18,7 +18,6 @@ from argosy.cli import gemelnet as gemelnet_cli
 from argosy.state import db as db_mod
 from argosy.state.models import PensionFundSnapshot, User, UserContext
 
-
 _SAMPLE_FUNDS = [
     {
         "fund_id": "1234",
@@ -172,6 +171,9 @@ def test_refresh_user_persists_snapshots(
         eng = db_mod.init_engine(url)
         async with eng.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+        # Seed in the LEGACY list shape so the CLI must migrate to the
+        # canonical dict-keyed-by-vehicle shape on first refresh. This
+        # exercises both the migration path AND the dict-shape persist.
         identity = {
             "name": "Ariel",
             "pensions": [
@@ -184,6 +186,7 @@ def test_refresh_user_persists_snapshots(
                 {
                     # legacy / free-form: no fund_id → must be skipped
                     "fund_name": "Some old account",
+                    "type": "keren_hishtalmut",
                     "balance_nis": 10000,
                 },
             ],
@@ -222,7 +225,12 @@ def test_refresh_user_persists_snapshots(
                 assert row.user_id == "ariel"
                 assert row.fund_id == "1234"
                 assert float(row.return_pct_12m) == pytest.approx(12.34)
-                assert float(row.balance_nis) == pytest.approx(75000.0)
+                # Snapshot uses the vehicle's AGGREGATE balance across all
+                # funds of that vehicle (75000 + 10000 = 85000) — the
+                # legacy entry without fund_id still contributes its
+                # balance to the bucket even though it's skipped from
+                # adapter calls.
+                assert float(row.balance_nis) == pytest.approx(85000.0)
 
                 ctx = (
                     await session.execute(
@@ -230,7 +238,19 @@ def test_refresh_user_persists_snapshots(
                     )
                 ).scalar_one()
                 identity_after = yaml.safe_load(ctx.identity_yaml)
-                assert identity_after["pensions"][0]["last_refreshed"]
+                # CLI now persists pensions in dict-keyed-by-vehicle shape.
+                pensions_after = identity_after["pensions"]
+                assert isinstance(pensions_after, dict), pensions_after
+                assert "keren_hishtalmut" in pensions_after
+                hishtalmut = pensions_after["keren_hishtalmut"]
+                # Aggregated balance across both list entries (75000 + 10000).
+                assert float(hishtalmut.get("balance_nis", 0)) == pytest.approx(85000)
+                # Refreshed-fund must carry a `last_refreshed_at` timestamp.
+                refreshed_funds = [
+                    f for f in hishtalmut["funds"] if f.get("last_refreshed_at")
+                ]
+                assert len(refreshed_funds) == 1
+                assert refreshed_funds[0]["fund_id"] == "1234"
 
         asyncio.run(_verify())
     finally:

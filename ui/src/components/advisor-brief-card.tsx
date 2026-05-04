@@ -89,7 +89,20 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        setError(String(e));
+        // Always log the raw error for dev visibility — but render a
+        // friendly, fixed-string message in the UI so users don't see
+        // stack traces / "Error: HTTP 500" in their home page.
+        console.error("advisor-brief-card: fetch failed", e);
+        // AbortError (from the 8s fetch timeout below) gets a more
+        // specific copy so the user knows it's a connectivity issue,
+        // not a stale-data issue.
+        const isAbort =
+          e instanceof DOMException && e.name === "AbortError";
+        setError(
+          isAbort
+            ? "Couldn't reach advisor service."
+            : "Brief unavailable right now.",
+        );
       })
       .finally(() => {
         if (cancelled) return;
@@ -147,9 +160,7 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
 
         {/* Bullet list */}
         {error ? (
-          <div className="text-xs text-red-400 font-mono">
-            Couldn&apos;t load brief: {error}
-          </div>
+          <div className="text-xs text-red-400 font-mono">{error}</div>
         ) : data && data.bullets.length > 0 ? (
           <ul className="flex flex-col gap-1.5">
             {data.bullets.map((b, i) => {

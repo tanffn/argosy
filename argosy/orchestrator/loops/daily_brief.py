@@ -12,14 +12,17 @@ data adapters via dependency injection so tests can mock everything.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import desc, select
 
 from argosy.adapters import (
     MissingAPIKeyError as AdapterMissingAPIKeyError,
+)
+from argosy.adapters import (
     MissingDataSourceError,
 )
 from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
@@ -83,7 +86,7 @@ class DailyBriefLoop(CadenceLoop):
         macro_agent_factory: Callable[[], MacroAnalystAgent] | None = None,
         concentration_agent_factory: Callable[[], ConcentrationAnalystAgent] | None = None,
         plan_critique_agent_factory: Callable[[], PlanCritiqueAgent] | None = None,
-        gather_inputs: Callable[[str], "DailyBriefInputs"] | None = None,
+        gather_inputs: Callable[[str], DailyBriefInputs] | None = None,
     ) -> None:
         super().__init__(schedule=schedule, enabled=enabled)
         self.user_id = user_id
@@ -180,7 +183,7 @@ class DailyBriefLoop(CadenceLoop):
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _compose_summary(*, news: Any, macro: Any, concentration: Any, plan: Any) -> str:
@@ -261,13 +264,33 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
     news_payload: dict[str, list[dict[str, Any]]] = {}
     if tickers:
         try:
+            from datetime import date as _date
+            from datetime import timedelta as _td
+
             from argosy.adapters.data.finnhub_adapter import FinnhubAdapter
 
             adapter = FinnhubAdapter()
+            today_d = _date.today()
+            yesterday_d = today_d - _td(days=1)
             for ticker in tickers[:25]:  # cap to avoid rate-limit blow-up
-                headlines = await adapter.get_company_news(ticker, days=1)
+                try:
+                    headlines = await adapter.get_company_news(
+                        ticker, start=yesterday_d, end=today_d
+                    )
+                except Exception:  # pragma: no cover - per-ticker defensive
+                    _log.warning("daily_brief.news_per_ticker_failed", ticker=ticker)
+                    continue
                 if headlines:
                     news_payload[ticker] = headlines
+            # Persist news as investor_events so the home brief's signal
+            # bullet can pick the most-recent headline alongside Form 4
+            # / 13F / TipRanks / CapitolTrades. We persist as a single
+            # batch keyed by ticker → list[item].
+            if news_payload:
+                try:
+                    await record_investor_events(user_id, "news", news_payload)
+                except Exception:  # pragma: no cover - defensive
+                    _log.exception("daily_brief.news_persist_failed")
         except AdapterMissingAPIKeyError as e:
             _log.warning("daily_brief.news_skipped_no_key", reason=str(e).splitlines()[0])
         except Exception:  # pragma: no cover - network/library defensive
@@ -338,6 +361,43 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
                     _log.exception("daily_brief.tipranks_persist_failed")
         except Exception:  # pragma: no cover - defensive
             _log.exception("daily_brief.tipranks_failed")
+
+    # 3d. CapitolTrades (STOCK Act disclosures) per portfolio ticker.
+    # Cap fan-out at 10 tickers/day — the public site is rate-limited
+    # and ten covers a typical concentrated portfolio. Persist each
+    # batch into investor_events so the home brief's signal bullet
+    # can surface the most-recent politician trade alongside Form 4 /
+    # 13F / TipRanks events.
+    capitoltrades: dict[str, list[dict[str, Any]]] = {}
+    if tickers:
+        try:
+            from argosy.adapters.data.capitoltrades_adapter import (
+                CapitolTradesAdapter,
+            )
+
+            ct = CapitolTradesAdapter()
+            for ticker in tickers[:10]:
+                try:
+                    rows = await ct.list_trades_for_ticker(ticker, days=30)
+                except MissingDataSourceError as e:
+                    _log.warning(
+                        "daily_brief.capitoltrades_skipped",
+                        ticker=ticker, reason=str(e).splitlines()[0],
+                    )
+                    continue
+                if rows:
+                    capitoltrades[ticker] = rows
+                    try:
+                        await record_investor_events(
+                            user_id, "capitoltrades", rows
+                        )
+                    except Exception:  # pragma: no cover - defensive
+                        _log.exception(
+                            "daily_brief.capitoltrades_persist_failed",
+                            ticker=ticker,
+                        )
+        except Exception:  # pragma: no cover - defensive
+            _log.exception("daily_brief.capitoltrades_failed")
 
     # 3c. 13F watchlist — pull most-recent filings for filers the user
     # follows. We read the watchlist from identity_yaml (key:
@@ -471,7 +531,7 @@ async def _resolve_thirteen_f_watchlist(user_id: str) -> list[str]:
         return []
 
 
-def _find_latest_tsv() -> "Any | None":
+def _find_latest_tsv() -> Any | None:
     """Locate the newest `*.tsv` under ARGOSY_HOME (matches the portfolio route)."""
     settings = get_settings()
     candidates = sorted(

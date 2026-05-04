@@ -8,9 +8,8 @@ Verifies:
 
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
@@ -153,7 +152,7 @@ async def test_daily_brief_end_to_end(engine: None) -> None:
         gather_inputs=_gather_inputs,
     )
 
-    fixed_now = datetime(2026, 5, 2, 9, 0, tzinfo=timezone.utc)
+    fixed_now = datetime(2026, 5, 2, 9, 0, tzinfo=UTC)
     await loop.tick(now=lambda: fixed_now)
 
     # Drain any queued events.
@@ -202,15 +201,27 @@ async def test_daily_brief_end_to_end(engine: None) -> None:
 
 @pytest.mark.asyncio
 async def test_default_gather_inputs_form4_outage_degrades(
-    monkeypatch: pytest.MonkeyPatch, engine: None
+    monkeypatch: pytest.MonkeyPatch, engine: None, caplog: pytest.LogCaptureFixture
 ) -> None:
     from argosy.adapters import MissingDataSourceError
-    from argosy.adapters.data import sec_form4_adapter, tipranks_adapter
+    from argosy.adapters.data import (
+        sec_13f_adapter,
+        sec_form4_adapter,
+        tipranks_adapter,
+    )
     from argosy.orchestrator.loops import daily_brief as db_loop
-    from argosy.state.models import User
+    from argosy.state.models import User, UserContext
 
     async with db_mod.get_session() as session:
         session.add(User(id="ariel"))
+        # Seed a 13F watchlist so the third (Sec 13F) adapter branch is
+        # exercised by the regression test, alongside Form 4 and TipRanks.
+        session.add(
+            UserContext(
+                user_id="ariel",
+                identity_yaml="thirteen_f_watchlist:\n  - '0001067983'\n",
+            )
+        )
         await session.commit()
 
     # Pretend a TSV exists with two tickers; we don't actually parse a
@@ -259,17 +270,51 @@ async def test_default_gather_inputs_form4_outage_degrades(
     outage_tr = _OutageTipRanks()
     monkeypatch.setattr(tipranks_adapter, "TipRanksAdapter", lambda: outage_tr)
 
-    inputs = await db_loop._default_gather_inputs("ariel")
+    # Failing 13F adapter — verify the per-CIK branch handles outage too.
+    class _OutageSec13F:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def get_filer_history(
+            self, cik: str, *, quarters: int = 1
+        ) -> list[dict]:
+            self.calls.append(cik)
+            raise MissingDataSourceError(f"simulated SEC 13F outage for {cik}")
+
+    outage_13f = _OutageSec13F()
+    monkeypatch.setattr(sec_13f_adapter, "Sec13FAdapter", lambda: outage_13f)
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="argosy.loops.daily_brief"):
+        inputs = await db_loop._default_gather_inputs("ariel")
 
     # Both tickers should have been attempted, despite the first one
     # raising. The empty per-ticker dict is the graceful-degradation
     # outcome — neither a crash nor silent abort after the first miss.
     assert outage_form4.calls == ["AAPL", "NVDA"]
     assert outage_tr.calls == ["AAPL", "NVDA"]
+    # The 13F filer must have been hit too, despite Form 4 / TipRanks
+    # both raising before it.
+    assert outage_13f.calls == ["0001067983"]
     assert inputs.insider_activity == {}
     assert inputs.analyst_signals == {}
+    assert inputs.thirteen_f_watchlist == []
     # Other fields should still be populated from the fake snapshot.
     assert sorted(inputs.tickers) == ["AAPL", "NVDA"]
+    # Per-ticker outages must be logged at WARNING with the
+    # ``form4_skipped`` / ``tipranks_skipped`` / ``sec13f_skipped`` event
+    # names — NOT the catch-all ``form4_failed`` / ``tipranks_failed`` /
+    # ``sec13f_failed`` (those would indicate the inner try-except didn't
+    # catch the MissingDataSourceError, which is the regression we
+    # introduced this fixture to guard against).
+    log_text = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert "form4_skipped" in log_text, log_text
+    assert "form4_failed" not in log_text, log_text
+    assert "tipranks_skipped" in log_text, log_text
+    assert "tipranks_failed" not in log_text, log_text
+    assert "sec13f_skipped" in log_text, log_text
+    assert "sec13f_failed" not in log_text, log_text
 
 
 # ----------------------------------------------------------------------
@@ -278,6 +323,191 @@ async def test_default_gather_inputs_form4_outage_degrades(
 # table after a successful adapter pull, so the home brief can query
 # durable state instead of depending on the adapter cache TTL.
 # ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_default_gather_inputs_capitoltrades_outage_degrades(
+    monkeypatch: pytest.MonkeyPatch, engine: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A CapitolTrades adapter outage on the first ticker MUST NOT
+    abort the loop; subsequent tickers must continue to be attempted,
+    and the per-ticker outage must be logged at WARNING via
+    ``daily_brief.capitoltrades_skipped`` (NOT the catch-all
+    ``capitoltrades_failed``)."""
+    from argosy.adapters import MissingDataSourceError
+    from argosy.adapters.data import capitoltrades_adapter
+    from argosy.orchestrator.loops import daily_brief as db_loop
+    from argosy.state.models import User
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    class _FakePos:
+        def __init__(self, t: str) -> None:
+            self.ticker = t
+            self.quantity = 1
+            self.market_value = 0
+            self.value = 0
+            self.account = ""
+
+    class _FakeSnap:
+        positions = [_FakePos("NVDA"), _FakePos("AAPL")]
+
+    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
+    import argosy.ingest.tsv as ingest_tsv
+    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+
+    class _OutageCT:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def list_trades_for_ticker(
+            self, ticker: str, *, days: int = 30
+        ) -> list[dict]:
+            self.calls.append(ticker)
+            raise MissingDataSourceError(f"simulated CapitolTrades outage for {ticker}")
+
+    outage_ct = _OutageCT()
+    monkeypatch.setattr(
+        capitoltrades_adapter, "CapitolTradesAdapter", lambda: outage_ct
+    )
+
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="argosy.loops.daily_brief"):
+        await db_loop._default_gather_inputs("ariel")
+
+    assert outage_ct.calls == ["AAPL", "NVDA"]
+    log_text = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert "capitoltrades_skipped" in log_text, log_text
+    assert "capitoltrades_failed" not in log_text, log_text
+
+
+@pytest.mark.asyncio
+async def test_default_gather_inputs_persists_capitoltrades_events(
+    monkeypatch: pytest.MonkeyPatch, engine: None
+) -> None:
+    """Successful CapitolTrades pull must write through to investor_events
+    so the home brief signal bullet can surface the most-recent
+    politician trade."""
+    from argosy.adapters.data import capitoltrades_adapter
+    from argosy.orchestrator.loops import daily_brief as db_loop
+    from argosy.state.models import InvestorEvent, User
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    class _FakePos:
+        def __init__(self, t: str) -> None:
+            self.ticker = t
+            self.quantity = 1
+            self.market_value = 0
+            self.value = 0
+            self.account = ""
+
+    class _FakeSnap:
+        positions = [_FakePos("NVDA")]
+
+    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
+    import argosy.ingest.tsv as ingest_tsv
+    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+
+    class _StubCT:
+        async def list_trades_for_ticker(
+            self, ticker: str, *, days: int = 30
+        ) -> list[dict]:
+            return [
+                {
+                    "politician_name": "Nancy Pelosi",
+                    "ticker": ticker,
+                    "transaction_type": "buy",
+                    "transaction_date": "2026-04-30",
+                    "amount_range": "$1M-$5M",
+                }
+            ]
+
+    monkeypatch.setattr(
+        capitoltrades_adapter, "CapitolTradesAdapter", lambda: _StubCT()
+    )
+
+    await db_loop._default_gather_inputs("ariel")
+
+    async with db_mod.get_session() as session:
+        rows = (
+            await session.execute(
+                select(InvestorEvent).where(
+                    InvestorEvent.user_id == "ariel",
+                    InvestorEvent.source == "capitoltrades",
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 1
+    assert "Nancy Pelosi" in rows[0].headline
+    assert rows[0].ticker == "NVDA"
+
+
+@pytest.mark.asyncio
+async def test_default_gather_inputs_persists_news_events(
+    monkeypatch: pytest.MonkeyPatch, engine: None
+) -> None:
+    """Successful Finnhub news pull must write through to
+    investor_events under source=``news`` so the home brief signal
+    bullet can surface the most-recent headline alongside Form 4 / 13F
+    / TipRanks / CapitolTrades."""
+    from argosy.adapters.data import finnhub_adapter
+    from argosy.orchestrator.loops import daily_brief as db_loop
+    from argosy.state.models import InvestorEvent, User
+
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        await session.commit()
+
+    class _FakePos:
+        def __init__(self, t: str) -> None:
+            self.ticker = t
+            self.quantity = 1
+            self.market_value = 0
+            self.value = 0
+            self.account = ""
+
+    class _FakeSnap:
+        positions = [_FakePos("NVDA")]
+
+    monkeypatch.setattr(db_loop, "_find_latest_tsv", lambda: "fake.tsv")
+    import argosy.ingest.tsv as ingest_tsv
+    monkeypatch.setattr(ingest_tsv, "parse_portfolio_tsv", lambda _p: _FakeSnap())
+
+    class _StubFinnhub:
+        async def get_company_news(self, symbol, *, start, end, ttl_seconds=900):
+            return [
+                {
+                    "headline": "NVDA earnings beat the street",
+                    "summary": "Q1 EPS beat by 5%.",
+                    "url": "https://www.reuters.com/x/1",
+                    "source": "Reuters",
+                    "datetime": 1746360000,  # 2025-05-04 ish UTC
+                }
+            ]
+
+    monkeypatch.setattr(finnhub_adapter, "FinnhubAdapter", lambda: _StubFinnhub())
+
+    await db_loop._default_gather_inputs("ariel")
+
+    async with db_mod.get_session() as session:
+        rows = (
+            await session.execute(
+                select(InvestorEvent).where(
+                    InvestorEvent.user_id == "ariel",
+                    InvestorEvent.source == "news",
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].ticker == "NVDA"
+    assert "earnings beat" in rows[0].headline
+    assert "Reuters" in rows[0].headline
 
 
 @pytest.mark.asyncio

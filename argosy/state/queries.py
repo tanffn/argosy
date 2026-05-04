@@ -282,6 +282,55 @@ def _capitoltrades_event(row: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _news_event(ticker: str, item: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Map a Finnhub-style news headline to an investor_events insert.
+
+    Headline format: ``<TICKER> · <TITLE> (<source domain>)``. We extract
+    the source domain from the raw URL when possible so the bullet
+    reads as a sentence rather than dumping the full URL. Empty title
+    or empty url → skip (Finnhub returns occasional ghost rows).
+    """
+    title = (item.get("headline") or item.get("title") or "").strip()
+    if not title:
+        return None
+    # Prefer the explicit `source` field (Finnhub provides it). Fall
+    # back to parsing the URL hostname so unsourced rows still render.
+    src = (item.get("source") or "").strip()
+    if not src:
+        url = item.get("url") or ""
+        if isinstance(url, str) and url:
+            try:
+                from urllib.parse import urlparse
+
+                src = urlparse(url).hostname or ""
+                # Drop any leading "www." for a tighter bullet.
+                if src.startswith("www."):
+                    src = src[4:]
+            except (TypeError, ValueError):
+                src = ""
+    occurred: datetime | None
+    raw_dt = item.get("datetime")
+    if isinstance(raw_dt, (int, float)):
+        try:
+            occurred = datetime.fromtimestamp(float(raw_dt), tz=UTC)
+        except (OSError, OverflowError, ValueError):
+            occurred = None
+    else:
+        occurred = _parse_iso(raw_dt or item.get("published_at"))
+    ticker_norm = (ticker or "").upper() or None
+    bits = [t for t in [ticker_norm, title] if t]
+    headline = " · ".join(bits)
+    if src:
+        headline = f"{headline} ({src})"
+    return {
+        "ticker": ticker_norm,
+        "event_kind": "news",
+        "headline": headline[:512],
+        "occurred_at": occurred,
+        "payload_json": json.dumps(dict(item), default=str),
+    }
+
+
 _MAPPERS: dict[str, Any] = {
     "sec_form4": _form4_event,
     "tipranks": _tipranks_event,
@@ -332,6 +381,23 @@ async def record_investor_events(
             event = _tipranks_event(ticker, payload)
             if event is not None:
                 rows.append(event)
+    elif source == "news":
+        # News comes in as ``{ticker: [item_dict, ...]}``. Each ticker
+        # maps to a list of headline items; we emit one investor_events
+        # row per item so the home brief surfaces the latest single
+        # headline rather than a batch.
+        if isinstance(events, Mapping):
+            for ticker_key, items in events.items():
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    mapped = _news_event(str(ticker_key), item)
+                    if mapped is not None:
+                        rows.append(mapped)
+        else:
+            return 0
     else:
         # All other sources come in as a list of payload dicts.
         if isinstance(events, Mapping):

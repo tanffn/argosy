@@ -273,8 +273,8 @@ export interface TOTPStatusResponse {
   last_verified_at: string | null;
 }
 
-async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(apiUrl(path), { cache: "no-store" });
+async function getJSON<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(apiUrl(path), { cache: "no-store", ...(init ?? {}) });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
   return (await res.json()) as T;
 }
@@ -460,8 +460,12 @@ export const api = {
       `/api/advisor/gaps?user_id=${encodeURIComponent(userId)}`,
     ),
   advisorHomeBrief: (userId: string) =>
+    // 8s timeout — the home brief stitches cached state and shouldn't
+    // ever take that long. Surfaces as an `AbortError` (DOMException)
+    // so the card can render "Couldn't reach advisor service" copy.
     getJSON<AdvisorHomeBriefResponse>(
       `/api/advisor/home-brief?user_id=${encodeURIComponent(userId)}`,
+      { signal: AbortSignal.timeout(8000) },
     ),
   intakeFileToText: async (file: File): Promise<FileToTextResponse> => {
     const fd = new FormData();

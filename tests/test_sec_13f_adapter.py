@@ -6,6 +6,7 @@ We never hit the network; every test patches the adapter's `http_client`.
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from typing import Any
 
 import pytest
@@ -18,7 +19,6 @@ from argosy.adapters.data.sec_13f_adapter import (
     _parse_fts_hits,
     _parse_information_table_xml,
 )
-
 
 # ----------------------------------------------------------------------
 # Fixture payloads
@@ -135,14 +135,23 @@ class _FakeResp:
 
 
 class _RoutedHttp:
-    """Routes specific URL substrings to canned responses; defaults to 404."""
+    """Routes specific URL substrings to canned responses; defaults to 404.
+
+    Captures both the URL and the outgoing ``params`` dict on each call so
+    tests can assert on the wire-level date window (``startdt`` /
+    ``enddt``) the adapter sends — caching by computed date is part of
+    the contract and we want a regression guard at the boundary.
+    """
 
     def __init__(self, routes: dict[str, _FakeResp]) -> None:
         self._routes = routes
         self.calls: list[str] = []
+        self.calls_with_params: list[tuple[str, dict[str, Any]]] = []
 
-    async def get(self, url: str, **_kwargs: Any) -> _FakeResp:
+    async def get(self, url: str, **kwargs: Any) -> _FakeResp:
         self.calls.append(url)
+        params = dict(kwargs.get("params") or {})
+        self.calls_with_params.append((url, params))
         for needle, resp in self._routes.items():
             if needle in url:
                 return resp
@@ -244,6 +253,28 @@ async def test_list_recent_13f_caches(engine: None) -> None:
     assert rows == rows2
     # Second call served from cache; HTTP not re-hit.
     assert len(fake.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_recent_13f_sends_date_window(engine: None) -> None:
+    """The adapter must emit ``startdt = today - days`` and ``enddt = today``
+    as ISO dates on the FTS request. Empty / missing values either 400
+    or are silently ignored by SEC EDGAR, so this is contract-level."""
+    from datetime import datetime, timedelta
+
+    fake = _RoutedHttp({"efts.sec.gov": _FakeResp(json_payload=_FTS_PAYLOAD)})
+    adapter = Sec13FAdapter(http_client=fake)
+    await adapter.list_recent_13f(days=90)
+
+    assert fake.calls_with_params, "expected at least one HTTP call"
+    _url, params = fake.calls_with_params[0]
+    today = datetime.now(UTC).date()
+    expected_start = (today - timedelta(days=90)).isoformat()
+    expected_end = today.isoformat()
+    assert params.get("startdt") == expected_start, params
+    assert params.get("enddt") == expected_end, params
+    assert params.get("forms") == "13F-HR", params
+    assert params.get("dateRange") == "custom", params
 
 
 @pytest.mark.asyncio

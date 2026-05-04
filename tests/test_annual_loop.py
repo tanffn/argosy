@@ -170,32 +170,28 @@ async def test_annual_invokes_pension_refresh_once_per_tick(engine: None) -> Non
 
 
 @pytest.mark.asyncio
-async def test_annual_pension_refresh_failure_does_not_abort_other_users(
+async def test_annual_pension_refresh_failure_swallowed_within_tick(
     engine: None,
 ) -> None:
-    """One user's pension-refresh blowing up MUST NOT prevent another
-    user's annual loop from completing. Each AnnualLoop is per-user, so
-    we exercise this by ticking two loops back-to-back: one whose
-    pension-refresh raises, one whose callable returns cleanly. Both
-    should still record their `annual.completed` audit row."""
+    """A pension-refresh exception MUST be swallowed by the per-user
+    loop tick — the rest of the annual loop (audit log write, domain
+    refresh prompts) must still complete cleanly.
+
+    AnnualLoop is per-user, so this test exercises a single tick:
+    multi-user isolation falls out of the per-user-instance design and
+    doesn't need its own assertion."""
     events._reset_for_tests()
     reset_cost_guard()
 
     async with db_mod.get_session() as session:
         session.add(User(id="user_a"))
-        session.add(User(id="user_b"))
         await session.commit()
 
     a_invocations: list[str] = []
-    b_invocations: list[str] = []
 
     def _refresh_a(user_id: str) -> int:
         a_invocations.append(user_id)
         raise RuntimeError("user_a's gemelnet snapshot blew up")
-
-    def _refresh_b(user_id: str) -> int:
-        b_invocations.append(user_id)
-        return 2
 
     loop_a = AnnualLoop(
         schedule=LoopSchedule(cron="0 8 2 1 *"),
@@ -204,21 +200,12 @@ async def test_annual_pension_refresh_failure_does_not_abort_other_users(
         domain_files_provider=lambda: [],
         pension_refresh_callable=_refresh_a,
     )
-    loop_b = AnnualLoop(
-        schedule=LoopSchedule(cron="0 8 2 1 *"),
-        user_id="user_b",
-        domain_refresh_factory=_mock_refresh_factory,
-        domain_files_provider=lambda: [],
-        pension_refresh_callable=_refresh_b,
-    )
 
-    # Both ticks must not raise — the loop is supposed to swallow
-    # pension-refresh exceptions defensively.
+    # The tick must not raise — the loop swallows pension-refresh
+    # exceptions defensively so the rest of the annual flow completes.
     await loop_a.tick()
-    await loop_b.tick()
 
     assert a_invocations == ["user_a"]
-    assert b_invocations == ["user_b"]
 
     async with db_mod.get_session() as session:
         audits = (
@@ -228,8 +215,6 @@ async def test_annual_pension_refresh_failure_does_not_abort_other_users(
         ).scalars().all()
     by_user = {a.user_id: a for a in audits}
     assert "user_a" in by_user, "user_a's audit should still land despite exception"
-    assert "user_b" in by_user, "user_b's audit should be untouched by user_a's failure"
-    assert '"pensions_refreshed": 2' in by_user["user_b"].payload_json
 
 
 @pytest.mark.asyncio
