@@ -20,6 +20,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -655,6 +656,58 @@ class SetupToken(Base):
     )
 
 
+# ----------------------------------------------------------------------
+# Phase 3 (Israeli pension data): pension_fund_snapshots
+# ----------------------------------------------------------------------
+
+
+class PensionFundSnapshot(Base):
+    """One per-user, per-fund snapshot of gemelnet performance data.
+
+    The `argosy gemelnet refresh-user` command writes one row per
+    fund in the user's `identity.pensions` list each time it runs.
+    Time-series: query by `(user_id, fund_id)` ordered by
+    `snapshot_at DESC` to get the most recent snapshot. The
+    `source_url` column is auditability sugar — every claim made by
+    a downstream agent can quote the row id and its `source_url` so a
+    reader can hop to the underlying public MoF page.
+    """
+
+    __tablename__ = "pension_fund_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    fund_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    fund_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    fund_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    manager: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    return_pct_12m: Mapped[float | None] = mapped_column(
+        Numeric(8, 4), nullable=True
+    )
+    benchmark_return_pct_12m: Mapped[float | None] = mapped_column(
+        Numeric(8, 4), nullable=True
+    )
+    relative_to_benchmark_pct: Mapped[float | None] = mapped_column(
+        Numeric(8, 4), nullable=True
+    )
+    balance_nis: Mapped[float | None] = mapped_column(Numeric(18, 2), nullable=True)
+    snapshot_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    source_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_pension_fund_snapshots_user_fund_time",
+            "user_id",
+            "fund_id",
+            "snapshot_at",
+        ),
+    )
+
+
 __all__ = [
     "Base",
     "User",
@@ -685,4 +738,6 @@ __all__ = [
     # Phase 6
     "Tenant",
     "SetupToken",
+    # Phase 3 (Israeli pension)
+    "PensionFundSnapshot",
 ]

@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from argosy.agents.domain_refresh import DomainRefreshAgent
 from argosy.api.events import publish_event
@@ -44,6 +44,7 @@ class AnnualLoop(CadenceLoop):
         user_id: str = "ariel",
         domain_refresh_factory: Callable[[], DomainRefreshAgent] | None = None,
         domain_files_provider: Callable[[], Iterable[dict[str, str]]] | None = None,
+        pension_refresh_callable: Callable[[str], Any] | None = None,
     ) -> None:
         super().__init__(schedule=schedule, enabled=enabled)
         self.user_id = user_id
@@ -51,6 +52,11 @@ class AnnualLoop(CadenceLoop):
             lambda: DomainRefreshAgent(user_id=user_id)
         )
         self._files_provider = domain_files_provider or _default_files_provider
+        # Phase 3: pluggable pension snapshot job (gemelnet adapter).
+        # Defaults to None — when omitted the loop attempts the job
+        # lazily and silently no-ops if the user has no `pensions`
+        # block. Tests can inject a fake to avoid network access.
+        self._pension_refresh: Callable[[str], Any] | None = pension_refresh_callable
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
         if os.environ.get("ARGOSY_KILL") == "1":
@@ -97,6 +103,22 @@ class AnnualLoop(CadenceLoop):
             except Exception:  # pragma: no cover - defensive
                 _log.exception("annual.domain_refresh_failed")
 
+        # Phase 3: opportunistic gemelnet pension snapshot.
+        # We do NOT bubble exceptions — pensions data is auxiliary; an
+        # unreachable MoF site shouldn't fail the annual loop.
+        pensions_refreshed: int | None = None
+        try:
+            if self._pension_refresh is not None:
+                outcome = self._pension_refresh(self.user_id)
+                if hasattr(outcome, "__await__"):
+                    outcome = await outcome  # type: ignore[assignment]
+                if isinstance(outcome, int):
+                    pensions_refreshed = outcome
+                elif isinstance(outcome, dict):
+                    pensions_refreshed = int(outcome.get("refreshed", 0))
+        except Exception:  # pragma: no cover - defensive
+            _log.exception("annual.pension_refresh_failed")
+
         await record_audit_event(
             user_id=self.user_id,
             event_type="annual.completed",
@@ -107,6 +129,7 @@ class AnnualLoop(CadenceLoop):
                 "prompts_count": len(prompts),
                 "files_reviewed": len(files),
                 "refresh_summary": refresh_summary,
+                "pensions_refreshed": pensions_refreshed,
             },
         )
 

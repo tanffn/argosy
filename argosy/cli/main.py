@@ -15,6 +15,7 @@ from argosy.cli.decide import decide
 from argosy.cli.email import app as email_app
 from argosy.cli.execute import execute
 from argosy.cli.fills import app as fills_app
+from argosy.cli.gemelnet import app as gemelnet_app
 from argosy.cli.ingest import app as ingest_app
 from argosy.cli.intake import intake
 from argosy.cli.lots import app as lots_app
@@ -48,6 +49,8 @@ app.add_typer(email_app, name="email", help="Email approval channel commands.")
 app.add_typer(argonaut_app, name="argonaut", help="Argonaut limited-account commands.")
 app.add_typer(security_app, name="security", help="Security / second-factor management.")
 app.add_typer(admin_app, name="admin", help="Operator commands (tenants, watchdog).")
+app.add_typer(gemelnet_app, name="gemelnet",
+              help="Israeli pension performance data (gemelnet.mof.gov.il).")
 
 
 def main() -> None:  # pragma: no cover

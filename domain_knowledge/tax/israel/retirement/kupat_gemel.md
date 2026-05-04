@@ -67,3 +67,12 @@ These ceilings are unified across pensions and provident funds; over-contributio
 
 - **Annual (January)** — ceilings, age thresholds, and rates re-issued.
 - **On reform** — Israel periodically reforms the pension/`gemel`/`hishtalmut` rules; any reform triggers a full refresh.
+
+## Performance data
+
+Per-fund 12-month / 36-month / 60-month nominal returns plus the
+sector benchmark are available via the gemelnet adapter (see
+`domain_knowledge/brokers/gemelnet.md`). When discussing a specific
+user's `kupat gemel` performance, query
+`argosy.state.queries.get_user_pension_snapshots(user_id)` and cite the
+snapshot's `source_url` (`gemelnet.mof.gov.il/Tsuot/UI/DafMakdim.aspx`).

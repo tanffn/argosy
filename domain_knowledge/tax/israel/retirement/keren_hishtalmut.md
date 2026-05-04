@@ -71,6 +71,17 @@ After 6 years of vesting:
 - **Annual (January)** — ceilings index with average-wage.
 - **On legislation** — any Knesset bill touching the wrapper rules triggers refresh.
 
+## Performance data
+
+The MoF gemelnet portal publishes per-fund 12m / 36m / 60m / YTD
+returns plus a sector benchmark for every `keren hishtalmut`. The
+Argosy adapter is documented in
+`domain_knowledge/brokers/gemelnet.md`. When citing a fund's recent
+performance, query
+`argosy.state.queries.get_user_pension_snapshots(user_id)` and cite
+the row's `source_url`. A 12m relative-to-benchmark gap of more than
+~1pp warrants a "consider switching providers" gap entry.
+
 ## Open issues
 
 - The exact January 2026 ceiling needs verification; the figures above use the 2025 ceiling as the working number.
