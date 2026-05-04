@@ -43,6 +43,10 @@ const STAGE_NAMES: Record<string, string> = {
   stage_4: "Brokerage Connections",
   stage_5: "Plan Import & Critique",
   stage_6: "Operational Preferences",
+  stage_7: "Estate Planning",
+  stage_8: "Risk Management & Insurance",
+  stage_9: "Tax Situation",
+  stage_10: "Education Funding",
   complete: "Ongoing",
 };
 

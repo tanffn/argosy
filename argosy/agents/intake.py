@@ -46,24 +46,32 @@ INTAKE_STAGES: list[str] = [
     "stage_4",
     "stage_5",
     "stage_6",
+    "stage_7",
+    "stage_8",
+    "stage_9",
+    "stage_10",
 ]
 
 STAGE_PURPOSE: dict[str, str] = {
     "stage_1": (
         "Establish identity & jurisdiction: country of tax residence, "
-        "citizenship, family status (spouse, children). This determines "
-        "which domain_knowledge/tax/<jurisdiction>/ files apply downstream."
+        "citizenship, family status (spouse, children, dependents), date "
+        "of birth, employment status. This determines which "
+        "domain_knowledge/tax/<jurisdiction>/ files apply downstream."
     ),
     "stage_2": (
         "Establish goals & timeline: retirement target year, target annual "
-        "income, near-term spending events, kids' education, charitable plans."
+        "income, near-term spending events, risk tolerance, time horizon, "
+        "lifestyle aspirations, legacy/charitable intent."
     ),
     "stage_3": (
         "Build the financial picture in priority order: income (pay stubs, "
-        "RSU schedule, bonus history) → bank balances → brokerage positions "
-        "(with cost-basis lots if available) → pensions (קרן השתלמות, "
-        "קופת גמל, קרן פנסיה) → real estate (mortgages, valuations, rental "
-        "P&L) → insurance → tax filings (prior דוח שנתי, W-8BEN status). "
+        "RSU schedule, bonus history, secondary income) → bank balances → "
+        "brokerage positions (with cost-basis lots if available) → US "
+        "retirement accounts (401k / IRA / Roth / HSA) → IL pensions "
+        "(קרן השתלמות, קופת גמל, קרן פנסיה) → real estate (mortgages, "
+        "valuations, rental P&L) → monthly expense breakdown → emergency "
+        "fund → other debts → business interests / foreign assets. "
         "Ask for documentation when self-reported confidence is low."
     ),
     "stage_4": (
@@ -78,6 +86,28 @@ STAGE_PURPOSE: dict[str, str] = {
     "stage_6": (
         "Operational preferences: tier override mode, execution mode (paper "
         "for first N weeks), model defaults, alert channels, cadence schedule."
+    ),
+    "stage_7": (
+        "Estate planning (CFP scope): will, living trust, durable power of "
+        "attorney, healthcare directive, beneficiary designations on retirement "
+        "and insurance accounts, guardianship designation for minor children. "
+        "Annual review cadence — life events trigger out-of-band updates."
+    ),
+    "stage_8": (
+        "Risk management / insurance (CFP scope): life, disability (short and "
+        "long term), health (carrier + deductible + HSA-eligibility), long-term "
+        "care, property & casualty (home/auto/renters), umbrella liability."
+    ),
+    "stage_9": (
+        "Tax situation (CFP scope): filing status (US: MFJ/MFS/single/HoH; IL: "
+        "individual/joint), prior-year AGI and effective rate, carryforwards "
+        "(capital losses, AMT credit, foreign tax credit), tax-loss harvesting "
+        "preference, planned charitable giving, estimated quarterly payments."
+    ),
+    "stage_10": (
+        "Education funding (CFP scope): per-dependent target college year and "
+        "cost, currency, education savings accounts (529 / Coverdell / "
+        "חיסכון לכל ילד), funding strategy (full / partial / loans expected)."
     ),
 }
 
@@ -118,7 +148,8 @@ class IntakeTurnOutput(BaseModel):
     """
 
     stage: Literal[
-        "stage_1", "stage_2", "stage_3", "stage_4", "stage_5", "stage_6"
+        "stage_1", "stage_2", "stage_3", "stage_4", "stage_5", "stage_6",
+        "stage_7", "stage_8", "stage_9", "stage_10",
     ]
     question_for_user: str = Field(
         default="",
@@ -139,7 +170,8 @@ class IntakeTurnOutput(BaseModel):
         description="True if the agent has gathered enough for this stage.",
     )
     next_stage: Literal[
-        "stage_1", "stage_2", "stage_3", "stage_4", "stage_5", "stage_6", "complete"
+        "stage_1", "stage_2", "stage_3", "stage_4", "stage_5", "stage_6",
+        "stage_7", "stage_8", "stage_9", "stage_10", "complete",
     ] | None = None
     confidence: ConfidenceBand = ConfidenceBand.MEDIUM
     cited_sources: list[str] = Field(
@@ -208,7 +240,7 @@ class IntakeAgent(BaseAgent[IntakeTurnOutput]):
             "together to make the interview feel responsive. Conversational, "
             "calm, professional. Prioritize critical info first (tax "
             "residency, family, income, assets, savings rate).\n\n"
-            f"Current stage: {current_stage} ({stage_index} of 6).\n"
+            f"Current stage: {current_stage} ({stage_index} of {len(INTAKE_STAGES)}).\n"
             f"Stage purpose: {stage_purpose}\n\n"
             "BATCHING RULE — ask 2-4 RELATED sub-questions per turn whenever "
             "the fields naturally cluster:\n"

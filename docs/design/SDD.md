@@ -582,6 +582,33 @@ The original §6.1 framing was a one-shot 6-stage interview that *gated* progres
 
 The cadence schedule (§6.2) still drives notifications, but instead of "interview again at month-end" it now means "the gap tracker will flip these fields to amber on day 33 and we'll surface a `gap_due` event in the next session."
 
+### 6.6 CFP Board field expansion (Phase 2)
+
+The original §6.1 / §6.5 catalog (~25 fields, six stages) was modeled on what we needed for the first thin slice — Israeli identity + retirement target + brokerage + ops prefs. A real CFP-certified planner gathers materially more during intake. Phase 2 expands `argosy.agents.gap_tracker.STAGE_FIELDS` to ~55 fields aligned with the CFP Board's "Core Financial Planning Technologies Questionnaire" categories (https://www.cfp.net/ — Tech Guide questionnaire/checklist).
+
+**New stages 7-10** (additive — stages 1-6 keep their fields, with priority-1 augmentations):
+
+- `stage_7` **estate**: will, living trust, durable POA, healthcare directive, beneficiary review, guardianship-for-minors.
+- `stage_8` **risk management / insurance**: life, disability (short + long), health (carrier, deductible, HSA-eligibility), long-term care, property & casualty, umbrella liability.
+- `stage_9` **tax**: filing status (US: MFJ/MFS/single/HoH; IL: individual), prior-year AGI + effective rate, carryforwards (capital losses, AMT credit, foreign tax credit), tax-loss harvesting opt-in, planned charitable giving, estimated quarterly payments.
+- `stage_10` **education**: per-dependent target college year + cost + currency, education savings accounts (529 / Coverdell / חיסכון לכל ילד), funding strategy (full / partial / loans expected).
+
+**Stage-1 / stage-2 / stage-3 augmentations** (added to existing stages, not new ones):
+
+- Stage 1 now also gathers DOB (user + spouse), dependents count, employment status, primary-residence country.
+- Stage 2 now also gathers risk tolerance, investment time horizon, lifestyle aspirations, legacy intent, charitable intent.
+- Stage 3 now also gathers RSU/equity vest schedule, bonus history, secondary income, US retirement accounts (401k / IRA / Roth / HSA), monthly expense total + breakdown, emergency-fund months, mortgage balance + rate, other debts, business interests, foreign assets.
+
+**Israeli specificity preserved**. Argosy is bicultural — the קרן השתלמות / קופת גמל / קרן פנסיה / מס שבח fields stay alongside the US-centric CFP defaults. The catalog is a superset, not a replacement.
+
+**Plumbing changes**:
+
+- `argosy.agents.intake.INTAKE_STAGES` extended to ten entries; `STAGE_PURPOSE` gets corresponding strings.
+- `argosy.api.routes.advisor._persist_turn` next-stage map chains 6→7→8→9→10→complete.
+- `argosy.agents.intake_fields.STAGE_REQUIRED_FIELDS` now lazy-resolves from `gap_tracker` via PEP 562 module `__getattr__` to break the circular import (gap_tracker uses intake_fields' YAML helpers).
+
+**Test coverage**: `tests/test_cfp_field_coverage.py` enforces ≥50 fields, all four freshness bands populated, spot-checks each new stage's canonical entries, and re-affirms back-compat between `STAGE_REQUIRED_FIELDS` and `STAGE_FIELDS`.
+
 ---
 
 ## 7. Domain Knowledge Base

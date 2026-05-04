@@ -15,55 +15,22 @@ section (identity / goals / constraints); the rest is the path inside
 that section. The lookup tolerates BOTH nested keys (spouse.citizenship)
 AND flattened keys (spouse_citizenship), since past intake turns wrote
 flat keys and we don't want to re-ask just because the shape differs.
+
+Phase 2 (CFP expansion): the canonical field list is now defined in
+`argosy.agents.gap_tracker` (`STAGE_FIELDS`) — this module re-exports
+`STAGE_REQUIRED_FIELDS` from there as the dotted-path projection so all
+existing call sites keep working unchanged. See gap_tracker.py for the
+full CFP-aligned catalog (10 stages, ~55 fields).
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
-STAGE_REQUIRED_FIELDS: dict[str, list[str]] = {
-    # Identity & jurisdiction. Spouse fields only required when married.
-    "stage_1": [
-        "identity.tax_residency",
-        "identity.user_citizenship",
-        "identity.marital_status",
-        "identity.spouse_citizenship",
-        "identity.spouse_tax_residency",
-        "identity.children",
-    ],
-    # Goals & timeline.
-    "stage_2": [
-        "goals.retirement_target_year",
-        "goals.target_annual_income",
-        "goals.near_term_spending",
-    ],
-    # Financial picture (high level — broker/account specifics ride later).
-    "stage_3": [
-        "identity.user_employment_employer",
-        "identity.user_employment_gross_annual",
-        "identity.spouse_employment_gross_annual",
-        "identity.bank_accounts",
-        "identity.brokerage_accounts",
-        "identity.real_estate",
-        "identity.pensions",
-    ],
-    # Brokerage connections — mostly opt-in but we ack the choice.
-    "stage_4": [
-        "constraints.broker_credentials_acknowledged",
-    ],
-    # Plan import & critique.
-    "stage_5": [
-        "constraints.plan_imported",
-    ],
-    # Operational preferences.
-    "stage_6": [
-        "constraints.tier_override_mode",
-        "constraints.execution_mode_default",
-        "constraints.alert_email",
-    ],
-}
+if TYPE_CHECKING:
+    pass
 
 
 def _has_value(node: Any) -> bool:
@@ -121,6 +88,21 @@ def _safe_yaml_load(s: str) -> dict:
     return v if isinstance(v, dict) else {}
 
 
+def __getattr__(name: str) -> Any:
+    """Lazy re-export of `STAGE_REQUIRED_FIELDS` from gap_tracker.
+
+    The canonical field catalog moved to `argosy.agents.gap_tracker` in
+    Phase 2 (CFP expansion). gap_tracker imports the helpers in this
+    module, so we cannot import gap_tracker at top level — instead we
+    resolve `STAGE_REQUIRED_FIELDS` lazily via PEP 562 module __getattr__.
+    """
+    if name == "STAGE_REQUIRED_FIELDS":
+        from argosy.agents.gap_tracker import STAGE_REQUIRED_FIELDS as _SRF
+
+        return _SRF
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def stage_status(
     *,
     identity_yaml: str,
@@ -133,6 +115,10 @@ def stage_status(
     `answered` and `missing` are lists of dotted field paths. Their union
     equals `STAGE_REQUIRED_FIELDS[stage]`.
     """
+    # Lazy import to avoid the circular dep — gap_tracker imports this
+    # module's helpers, so we can't import it at top level.
+    from argosy.agents.gap_tracker import STAGE_REQUIRED_FIELDS
+
     required = STAGE_REQUIRED_FIELDS.get(stage, [])
     by_section = {
         "identity": _safe_yaml_load(identity_yaml),

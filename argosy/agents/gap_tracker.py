@@ -10,6 +10,13 @@ shape (dict[str, list[str]]) is rebuilt as `STAGE_REQUIRED_FIELDS` here
 by projecting `STAGE_FIELDS` to dotted-path lists, so the existing
 /api/intake/turn auto-advance logic (which imports either symbol)
 keeps working unchanged.
+
+Field catalog scope: aligned with the CFP Board's "Core Financial
+Planning Technologies Questionnaire" (https://www.cfp.net/) intake
+categories — Personal/Family, Goals, Income, Cash Flow, Net Worth,
+Insurance, Estate, Tax, Retirement, Education. Israeli-specific
+pension fields (קרן השתלמות, קופת גמל, מס שבח) are preserved
+alongside the US-centric CFP defaults — Argosy is bicultural.
 """
 
 from __future__ import annotations
@@ -71,12 +78,26 @@ class GapStatus:
 #     user reports a marriage / new child / move).
 #   - Employment / asset values → annual (review yearly).
 #   - Bank + brokerage balances → monthly (cadence loops nudge).
+#   - Estate documents / insurance → annual (review yearly).
+#   - RSU vest, real estate P/L → quarterly.
 # Priority: 1 = must-have for the very first session;
 #           2 = should-have once basics are in;
 #           3 = nice-to-have / operational.
+#
+# Stage layout (10 stages total — Phase 2 adds estate/insurance/tax/education):
+#   stage_1  identity & jurisdiction
+#   stage_2  goals & timeline
+#   stage_3  financial picture (income, balances, real estate, IL pensions, US retirement)
+#   stage_4  brokerage connections
+#   stage_5  plan import & critique
+#   stage_6  operational preferences
+#   stage_7  estate planning           (CFP)
+#   stage_8  risk management/insurance (CFP)
+#   stage_9  tax situation             (CFP)
+#   stage_10 education funding         (CFP)
 
 STAGE_FIELDS: dict[str, list[FieldSpec]] = {
-    # Identity & jurisdiction.
+    # --- Stage 1: Identity & jurisdiction (CFP Personal / Family) ----
     "stage_1": [
         FieldSpec(
             path="identity.tax_residency",
@@ -120,8 +141,43 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             freshness="one_shot",
             priority=2,
         ),
+        FieldSpec(
+            path="identity.user_date_of_birth",
+            label="Your date of birth",
+            section="identity",
+            freshness="one_shot",
+            priority=1,
+        ),
+        FieldSpec(
+            path="identity.spouse_date_of_birth",
+            label="Spouse date of birth",
+            section="identity",
+            freshness="one_shot",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.dependents_count",
+            label="Number of financial dependents",
+            section="identity",
+            freshness="one_shot",
+            priority=1,
+        ),
+        FieldSpec(
+            path="identity.primary_residence_country",
+            label="Primary residence (country)",
+            section="identity",
+            freshness="one_shot",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.employment_status",
+            label="Employment status (employed / self-employed / retired)",
+            section="identity",
+            freshness="annual",
+            priority=1,
+        ),
     ],
-    # Goals & timeline.
+    # --- Stage 2: Goals & timeline (CFP Goals & Aspirations) --------
     "stage_2": [
         FieldSpec(
             path="goals.retirement_target_year",
@@ -144,8 +200,43 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             freshness="annual",
             priority=2,
         ),
+        FieldSpec(
+            path="goals.risk_tolerance",
+            label="Risk tolerance (conservative / moderate / aggressive)",
+            section="goals",
+            freshness="annual",
+            priority=1,
+        ),
+        FieldSpec(
+            path="goals.investment_time_horizon_years",
+            label="Investment time horizon (years)",
+            section="goals",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="goals.lifestyle_aspirations",
+            label="Lifestyle aspirations (travel, second home, sabbatical)",
+            section="goals",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="goals.legacy_intent",
+            label="Legacy / inheritance intent",
+            section="goals",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="goals.charitable_intent",
+            label="Charitable giving intent",
+            section="goals",
+            freshness="annual",
+            priority=3,
+        ),
     ],
-    # Financial picture.
+    # --- Stage 3: Financial picture (CFP Income + Cash Flow + Net Worth) ----
     "stage_3": [
         FieldSpec(
             path="identity.user_employment_employer",
@@ -186,7 +277,7 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             path="identity.real_estate",
             label="Real estate holdings",
             section="identity",
-            freshness="annual",
+            freshness="quarterly",
             priority=2,
         ),
         FieldSpec(
@@ -196,8 +287,85 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             freshness="annual",
             priority=2,
         ),
+        FieldSpec(
+            path="identity.rsu_grants",
+            label="RSU / equity grants & vest schedule",
+            section="identity",
+            freshness="quarterly",
+            priority=1,
+        ),
+        FieldSpec(
+            path="identity.bonus_history",
+            label="Bonus history (last 3 years)",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.secondary_income",
+            label="Secondary income (rental, consulting, royalties)",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.us_retirement_accounts",
+            label="US retirement accounts (401k / IRA / Roth / HSA)",
+            section="identity",
+            freshness="quarterly",
+            priority=1,
+        ),
+        FieldSpec(
+            path="identity.monthly_expenses_total",
+            label="Total monthly household expenses",
+            section="identity",
+            freshness="quarterly",
+            priority=1,
+        ),
+        FieldSpec(
+            path="identity.monthly_expenses_breakdown",
+            label="Monthly expense breakdown (housing / food / transit / discretionary)",
+            section="identity",
+            freshness="quarterly",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.emergency_fund_months",
+            label="Emergency fund (months of expenses covered)",
+            section="identity",
+            freshness="quarterly",
+            priority=1,
+        ),
+        FieldSpec(
+            path="identity.mortgage_balance",
+            label="Mortgage balance & rate",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.other_debts",
+            label="Other debts (auto, student, credit card)",
+            section="identity",
+            freshness="quarterly",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.business_interests",
+            label="Business ownership interests",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="identity.foreign_assets",
+            label="Foreign assets (FBAR / declaration scope)",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
     ],
-    # Brokerage connections.
+    # --- Stage 4: Brokerage connections -----------------------------
     "stage_4": [
         FieldSpec(
             path="constraints.broker_credentials_acknowledged",
@@ -207,7 +375,7 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             priority=3,
         ),
     ],
-    # Plan import & critique.
+    # --- Stage 5: Plan import & critique -----------------------------
     "stage_5": [
         FieldSpec(
             path="constraints.plan_imported",
@@ -217,7 +385,7 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             priority=3,
         ),
     ],
-    # Operational preferences.
+    # --- Stage 6: Operational preferences ----------------------------
     "stage_6": [
         FieldSpec(
             path="constraints.tier_override_mode",
@@ -241,7 +409,197 @@ STAGE_FIELDS: dict[str, list[FieldSpec]] = {
             priority=3,
         ),
     ],
+    # --- Stage 7: Estate planning (CFP) -----------------------------
+    "stage_7": [
+        FieldSpec(
+            path="constraints.will_exists",
+            label="Will / last testament exists",
+            section="constraints",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="constraints.will_last_review_year",
+            label="Will last reviewed (year)",
+            section="constraints",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="constraints.living_trust_exists",
+            label="Living trust",
+            section="constraints",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="constraints.power_of_attorney",
+            label="Durable power of attorney",
+            section="constraints",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="constraints.healthcare_directive",
+            label="Healthcare directive / living will",
+            section="constraints",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="constraints.beneficiary_designations_reviewed",
+            label="Beneficiary designations reviewed (retirement / insurance)",
+            section="constraints",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="constraints.guardianship_for_minors",
+            label="Guardianship designation for minor children",
+            section="constraints",
+            freshness="annual",
+            priority=2,
+        ),
+    ],
+    # --- Stage 8: Risk management / Insurance (CFP) -----------------
+    "stage_8": [
+        FieldSpec(
+            path="identity.life_insurance",
+            label="Life insurance (carrier, face amount, type)",
+            section="identity",
+            freshness="annual",
+            priority=1,
+        ),
+        FieldSpec(
+            path="identity.disability_insurance",
+            label="Disability insurance (short / long term)",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.health_insurance",
+            label="Health insurance (carrier, deductible, HSA-eligible)",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.long_term_care_insurance",
+            label="Long-term care insurance",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="identity.property_casualty_insurance",
+            label="Property & casualty (home, auto, renters)",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="identity.umbrella_liability_insurance",
+            label="Umbrella liability coverage",
+            section="identity",
+            freshness="annual",
+            priority=3,
+        ),
+    ],
+    # --- Stage 9: Tax situation (CFP) ------------------------------
+    "stage_9": [
+        FieldSpec(
+            path="identity.tax_filing_status",
+            label="Tax filing status (MFJ / MFS / single / HoH / IL individual)",
+            section="identity",
+            freshness="annual",
+            priority=1,
+        ),
+        FieldSpec(
+            path="identity.prior_year_agi",
+            label="Prior-year adjusted gross income",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.prior_year_effective_rate",
+            label="Prior-year effective tax rate",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.tax_carryforwards",
+            label="Tax carryforwards (capital losses, AMT credit, foreign tax)",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="constraints.tax_loss_harvesting_enabled",
+            label="Tax-loss harvesting enabled",
+            section="constraints",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="constraints.planned_charitable_giving_annual",
+            label="Planned annual charitable giving (USD/NIS)",
+            section="constraints",
+            freshness="annual",
+            priority=3,
+        ),
+        FieldSpec(
+            path="identity.estimated_quarterly_taxes",
+            label="Estimated quarterly tax payments (self-employed / large variable)",
+            section="identity",
+            freshness="quarterly",
+            priority=3,
+        ),
+    ],
+    # --- Stage 10: Education funding (CFP) -------------------------
+    "stage_10": [
+        FieldSpec(
+            path="goals.education_funding_targets",
+            label="Education funding targets (per dependent: year, cost, currency)",
+            section="goals",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="identity.education_savings_accounts",
+            label="Education savings accounts (529 / Coverdell / חיסכון לכל ילד)",
+            section="identity",
+            freshness="annual",
+            priority=2,
+        ),
+        FieldSpec(
+            path="goals.education_funding_strategy",
+            label="Education funding strategy (full / partial / loans expected)",
+            section="goals",
+            freshness="annual",
+            priority=3,
+        ),
+    ],
 }
+
+
+# Stage progression — keep this in sync with `INTAKE_STAGES` and the
+# `_persist_turn` next-stage default map. The Phase 2 expansion runs
+# 1→2→3→4→5→6→7→8→9→10→complete.
+STAGE_ORDER: tuple[str, ...] = (
+    "stage_1",
+    "stage_2",
+    "stage_3",
+    "stage_4",
+    "stage_5",
+    "stage_6",
+    "stage_7",
+    "stage_8",
+    "stage_9",
+    "stage_10",
+)
 
 
 # Backwards-compat shim. Keep `STAGE_REQUIRED_FIELDS` exported so the
@@ -256,7 +614,7 @@ def all_fields() -> list[FieldSpec]:
     """Flatten STAGE_FIELDS into a single deduped list (ordered by stage)."""
     seen: set[str] = set()
     out: list[FieldSpec] = []
-    for stage in ("stage_1", "stage_2", "stage_3", "stage_4", "stage_5", "stage_6"):
+    for stage in STAGE_ORDER:
         for f in STAGE_FIELDS.get(stage, []):
             if f.path in seen:
                 continue
@@ -509,6 +867,7 @@ __all__ = [
     "FieldSpec",
     "GapStatus",
     "STAGE_FIELDS",
+    "STAGE_ORDER",
     "STAGE_REQUIRED_FIELDS",
     "all_fields",
     "compute_field_timestamps",

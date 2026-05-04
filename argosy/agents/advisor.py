@@ -136,7 +136,7 @@ class AdvisorAgent(IntakeAgent):
             "model and takes ~10 seconds, so be efficient. Conversational, "
             "calm, professional. Prioritize critical info first (tax "
             "residency, family, income, assets, savings rate).\n\n"
-            f"Current stage: {current_stage} ({stage_index} of 6).\n"
+            f"Current stage: {current_stage} ({stage_index} of {len(INTAKE_STAGES)}).\n"
             f"Stage purpose: {stage_purpose}\n\n"
             f"{mode_addendum}\n\n"
             "BATCHING RULE — when in gap_driven mode, ask 2-4 RELATED "
