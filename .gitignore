@@ -62,3 +62,6 @@ desktop.ini
 
 # Claude Code
 .claude/
+
+# Git worktrees (isolated feature workspaces)
+.worktrees/
