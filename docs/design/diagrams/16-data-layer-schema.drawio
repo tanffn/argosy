@@ -5,7 +5,7 @@
         <mxCell id="0"/>
         <mxCell id="1" parent="0"/>
 
-        <mxCell id="title" value="Argosy — Data Layer (8 logical groups, multi-tenant from day one)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+        <mxCell id="title" value="Argosy — Data Layer (10 logical groups, multi-tenant from day one)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="500" y="20" width="700" height="36" as="geometry"/>
         </mxCell>
         <mxCell id="subtitle" value="Single SQLite file (write/transactional) + DuckDB read-view (analytics). Every table FKs to users.user_id." style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
@@ -74,7 +74,7 @@
         <mxCell id="g_ext" value="External (cached)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="900" y="340" width="380" height="240" as="geometry"/>
         </mxCell>
-        <mxCell id="t_prices" value="prices_cache&#10;━━━━━━━━━━━━━&#10;PK  (ticker, ts)&#10;     provider · payload_hash&#10;     retrieved_at · expires_at" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_ext">
+        <mxCell id="t_prices" value="kv_cache  (was prices_cache, mig 0011)&#10;━━━━━━━━━━━━━&#10;PK  (provider, key)&#10;     payload_json · payload_hash&#10;     retrieved_at · expires_at&#10;     CacheKind ∈ {PRICES, UI, ...}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_ext">
           <mxGeometry x="20" y="36" width="160" height="100" as="geometry"/>
         </mxCell>
         <mxCell id="t_news" value="news_cache&#10;━━━━━━━━━━━━━&#10;PK  (ticker, news_id)&#10;     headline · ts · materiality&#10;     provider · sentiment_score" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_ext">
@@ -126,6 +126,37 @@
         <mxCell id="e_prop_audit" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_prop" target="t_audit"><mxGeometry relative="1" as="geometry"/></mxCell>
         <mxCell id="e_prop_reports" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_prop" target="t_reports"><mxGeometry relative="1" as="geometry"/></mxCell>
 
+        <mxCell id="g_pension" value="Israeli pension (Phase 3)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0E6FF;strokeColor=#9C74E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="60" y="840" width="380" height="160" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_pension" value="pension_fund_snapshots&#10;━━━━━━━━━━━━━&#10;PK  id&#10;FK  user_id&#10;     fund_id · fund_name · fund_type&#10;     return_pct_12m · benchmark_pct_12m&#10;     relative_to_benchmark_pct&#10;     balance_nis · snapshot_at&#10;     source_url&#10;IDX (user_id, fund_id, snapshot_at)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#9C74E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_pension">
+          <mxGeometry x="20" y="36" width="340" height="110" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="g_invest" value="Investor events (Phase 4)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6F4;strokeColor=#E274B6;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="480" y="840" width="380" height="160" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_invest" value="investor_events&#10;━━━━━━━━━━━━━&#10;PK  id&#10;FK  user_id&#10;     ticker (NULL ok) · source · event_kind&#10;     headline · occurred_at · ingested_at&#10;     payload_json · unique_key&#10;IDX (user_id, occurred_at DESC)&#10;IDX (user_id, source, ticker)&#10;UNQ (user_id, source, unique_key)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E274B6;strokeWidth=1.5;fontColor=#000000;fontFamily=Consolas,Courier New,monospace;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="g_invest">
+          <mxGeometry x="20" y="36" width="340" height="120" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="e_users_pension" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#999999;strokeWidth=1;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_users" target="t_pension">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="40" y="240"/>
+              <mxPoint x="40" y="900"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_users_invest" style="endArrow=ERmany;startArrow=ERone;html=1;rounded=1;strokeColor=#999999;strokeWidth=1;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="t_users" target="t_invest">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="460" y="240"/>
+              <mxPoint x="460" y="900"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
         <mxCell id="legend_frame" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;strokeWidth=1;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
           <mxGeometry x="900" y="620" width="640" height="380" as="geometry"/>
         </mxCell>
@@ -158,6 +189,18 @@
         </mxCell>
         <mxCell id="lg_er_gray_l" value="Operations (scheduling, alerts, cadence state)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
           <mxGeometry x="46" y="132" width="500" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_purple" value="" style="rounded=1;fillColor=#F0E6FF;strokeColor=#9C74E2;" vertex="1" parent="legend_frame">
+          <mxGeometry x="320" y="32" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_purple_l" value="Israeli pension (Phase 3 — gemelnet snapshots)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="346" y="28" width="280" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_pink" value="" style="rounded=1;fillColor=#FFE6F4;strokeColor=#E274B6;" vertex="1" parent="legend_frame">
+          <mxGeometry x="320" y="58" width="20" height="14" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg_er_pink_l" value="Investor events (Phase 4 — Form 4 / 13F / TipRanks / CapitolTrades)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
+          <mxGeometry x="346" y="54" width="280" height="20" as="geometry"/>
         </mxCell>
         <mxCell id="lg_er_solid" value="solid colored edges = strong FK within group" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
           <mxGeometry x="20" y="172" width="500" height="20" as="geometry"/>

@@ -584,30 +584,85 @@ The cadence schedule (§6.2) still drives notifications, but instead of "intervi
 
 ### 6.6 CFP Board field expansion (Phase 2)
 
-The original §6.1 / §6.5 catalog (~25 fields, six stages) was modeled on what we needed for the first thin slice — Israeli identity + retirement target + brokerage + ops prefs. A real CFP-certified planner gathers materially more during intake. Phase 2 expands `argosy.agents.gap_tracker.STAGE_FIELDS` to ~55 fields aligned with the CFP Board's "Core Financial Planning Technologies Questionnaire" categories (https://www.cfp.net/ — Tech Guide questionnaire/checklist).
+The original §6.1 / §6.5 catalog (~25 fields, six stages) was modeled on what we needed for the first thin slice — Israeli identity + retirement target + brokerage + ops prefs. A real CFP-certified planner gathers materially more during intake. Phase 2 expands `argosy.agents.gap_tracker.STAGE_FIELDS` to **~75 fields across 11 stages** — aligned with the CFP Board's "Core Financial Planning Technologies Questionnaire" categories (https://www.cfp.net/ — Tech Guide questionnaire/checklist) and Argosy's concentration-reduction core driver. The canonical source is `argosy.agents.gap_tracker.STAGE_FIELDS`; `tests/test_cfp_field_coverage.py` asserts a floor of ≥50 fields and freshness-band coverage across all four bands.
 
 **New stages 7-10** (additive — stages 1-6 keep their fields, with priority-1 augmentations):
 
 - `stage_7` **estate**: will, living trust, durable POA, healthcare directive, beneficiary review, guardianship-for-minors.
 - `stage_8` **risk management / insurance**: life, disability (short + long), health (carrier, deductible, HSA-eligibility), long-term care, property & casualty, umbrella liability.
-- `stage_9` **tax**: filing status (US: MFJ/MFS/single/HoH; IL: individual), prior-year AGI + effective rate, carryforwards (capital losses, AMT credit, foreign tax credit), tax-loss harvesting opt-in, planned charitable giving, estimated quarterly payments.
+- `stage_9` **tax**: filing status (US: MFJ/MFS/single/HoH; IL: individual), prior-year AGI + effective rate, carryforwards (capital losses, AMT credit, foreign tax credit), tax-loss harvesting opt-in, planned charitable giving, estimated quarterly payments, **`severance_tax_exposure`** (מס על פיצויי פיטורין — exit-grant tax exposure; deliberately NOT named `mas_shevach`, which is the Israeli real-estate appreciation tax — see `domain_knowledge/tax/israel/capital_gains.md`).
 - `stage_10` **education**: per-dependent target college year + cost + currency, education savings accounts (529 / Coverdell / חיסכון לכל ילד), funding strategy (full / partial / loans expected).
+
+**New stage 11 — special situations** (concentration-reduction stage; Argosy's core driver per the user profile, but worth running on every employee with material RSU exposure). Four fields:
+
+| Field | Why |
+|---|---|
+| `identity.employer_concentration_pct` | Single-employer equity as % of net worth — the headline concentration number |
+| `identity.rsu_vest_schedule` | Upcoming tranches (date, shares, est. value) — drives tax timing and cash-flow planning |
+| `constraints.rsu_concentration_plan` | Sell-on-vest / hold / collar / other — the user's pre-committed mitigation |
+| `constraints.sector_overweight_acknowledged` | Bool acknowledgement that a sector overweight exists and is intentional |
+
+**Backwards-compat veto.** `stage_11` was added after some users had already finished intake. `argosy.api.routes.advisor._persist_turn` carries an explicit veto: `complete` users only get redirected to `stage_11` if they actually have missing or stale `stage_11` fields. The route's `_resolve_next` helper checks `_has_open_stage_11_gap(full_status)` before honoring an agent-claimed `next_stage="stage_11"` or the default-map's pointer there. Otherwise the user stays pinned at `complete`.
 
 **Stage-1 / stage-2 / stage-3 augmentations** (added to existing stages, not new ones):
 
 - Stage 1 now also gathers DOB (user + spouse), dependents count, employment status, primary-residence country.
 - Stage 2 now also gathers risk tolerance, investment time horizon, lifestyle aspirations, legacy intent, charitable intent.
-- Stage 3 now also gathers RSU/equity vest schedule, bonus history, secondary income, US retirement accounts (401k / IRA / Roth / HSA), monthly expense total + breakdown, emergency-fund months, mortgage balance + rate, other debts, business interests, foreign assets.
+- Stage 3 now also gathers RSU/equity vest schedule, bonus history, secondary income, US retirement accounts (401k / IRA / Roth / HSA), monthly expense total + breakdown, emergency-fund months, mortgage balance + rate, other debts, business interests, foreign assets, **per-vehicle Israeli pensions** (see §6.7).
 
-**Israeli specificity preserved**. Argosy is bicultural — the קרן השתלמות / קופת גמל / קרן פנסיה / מס שבח fields stay alongside the US-centric CFP defaults. The catalog is a superset, not a replacement.
+**Israeli specificity preserved**. Argosy is bicultural — the קרן השתלמות / קופת גמל / קרן פנסיה fields stay alongside the US-centric CFP defaults. The catalog is a superset, not a replacement.
 
 **Plumbing changes**:
 
-- `argosy.agents.intake.INTAKE_STAGES` extended to ten entries; `STAGE_PURPOSE` gets corresponding strings.
-- `argosy.api.routes.advisor._persist_turn` next-stage map chains 6→7→8→9→10→complete.
+- `argosy.agents.intake.INTAKE_STAGES` extended to eleven entries; `STAGE_PURPOSE` gets corresponding strings.
+- `argosy.api.routes.advisor._persist_turn` next-stage map chains 6→7→8→9→10→11→complete; the stage_11 hop is gated by the open-gap veto above.
 - `argosy.agents.intake_fields.STAGE_REQUIRED_FIELDS` now lazy-resolves from `gap_tracker` via PEP 562 module `__getattr__` to break the circular import (gap_tracker uses intake_fields' YAML helpers).
+- The advisor agent doesn't know the synthetic `complete` stage — only `stage_1`..`stage_11`. The route maps `complete` → `stage_11` for the agent call; the persist helper's veto then keeps the user pinned at `complete` if there's no actual gap.
 
 **Test coverage**: `tests/test_cfp_field_coverage.py` enforces ≥50 fields, all four freshness bands populated, spot-checks each new stage's canonical entries, and re-affirms back-compat between `STAGE_REQUIRED_FIELDS` and `STAGE_FIELDS`.
+
+### 6.7 Israeli pension catalog — per-vehicle split
+
+Stage 3 was originally a single `identity.pensions` field. The Phase 2 reframe splits it per-vehicle so the gemelnet adapter can flow snapshots into the right gap-tracker slot without translation. The canonical keys mirror the values produced by `argosy.adapters.data.gemelnet_adapter.HEBREW_TYPE_MAP`:
+
+| Vehicle key | Hebrew | Liquidity | Fields surfaced |
+|---|---|---|---|
+| `keren_hishtalmut` | קרן השתלמות | Liquid after 6yr (tax-free wrapper); employer match up to 7.5% | `balance_nis`, `contribution_rate_pct`, `employer_match_pct` |
+| `kupat_gemel` | קופת גמל | Locked till retirement (60+); Tikun 190 unlocks at 60 | `balance_nis`, `contribution_rate_pct` |
+| `kupat_pensia` | קרן פנסיה | Locked till retirement; mandatory salary-deferred; default-fund (`קרן פנסיה ברירת מחדל`) regime applies if employee doesn't elect | `balance_nis`, `contribution_rate_pct`, `employer_match_pct` |
+
+Adapter snapshots write to `pension_fund_snapshots` and the per-vehicle YAML keys; the home-brief signal bullet falls back to the most recent snapshot row when no Phase 4 investor event is fresh.
+
+Reference docs: `domain_knowledge/tax/israel/retirement/{keren_hishtalmut,kupat_gemel,kupat_pensia}.md`.
+
+### 6.8 Advisor reframe — gap-driven and user-driven modes
+
+`AdvisorAgent` (`argosy.agents.advisor`) is a strict superset of `IntakeAgent`. The route classifies each request and the agent branches on a `mode` parameter:
+
+| Trigger | Mode | Agent behavior |
+|---|---|---|
+| Empty `last_user_message` (page just loaded) | `gap_driven` | Greet briefly on first turn; ask 2–4 RELATED sub-questions drawn from the STILL NEEDED list, batched into one message. Don't re-ask anything in ALREADY ANSWERED. |
+| Any non-empty message (question or statement) | `user_driven` | Answer the question concisely (cite `domain_knowledge/...` files when jurisdiction-specific); log any factual updates buried in the message as `context_updates`; optionally append ONE related follow-up from STILL NEEDED if it flows naturally. |
+
+`AdvisorTurnOutput` extends `IntakeTurnOutput` with a `mode: "gap_driven" | "user_driven"` discriminator so the UI can render Q&A bubbles differently from gap-driven asks. `agent_role = "advisor"` (vs. legacy `"intake"`) so the audit log can distinguish reframed turns when slicing reports.
+
+**Sidebar focus.** When the user clicks a sidebar gap row, the route passes `target_field` through to the agent; the agent prioritizes that field plus 1–3 sibling fields that cluster naturally.
+
+### 6.9 Home-brief composition
+
+`GET /api/advisor/home-brief` stitches three lines from already-cached state — gap tracker, latest daily brief, most recent watchlist signal. **No new LLM call.** Per-user cache via `kv_cache` (`CacheKind.UI`, `provider="advisor_home_brief"`, TTL 30 minutes).
+
+Bullet composition (in `argosy.api.routes.advisor`):
+
+| Helper | Source | Fallback rule |
+|---|---|---|
+| `_gap_bullet` | `pick_gap_driven_target(GapStatus)` — top missing/stale field. Adds a one-clause "because X" from `_GAP_REASON` when the path is in the dict. Empty-user case surfaces a friendly intake invite. | Returns `None` when the catalog is fully fresh — the bullet is omitted. |
+| `_portfolio_bullet` | Latest `DailyBrief` row (`ORDER BY run_at DESC LIMIT 1`), trimmed to 140 chars. | Returns `None` when no row exists — **deliberately no TSV fallback.** `_find_latest_tsv` is a global pick, NOT user-scoped, and would leak Ariel's portfolio into Dana's bullets in a multi-tenant world. Until per-user TSV path resolution lands, omit the bullet. |
+| `_signal_bullet` | (1) Latest `investor_events` row within 14 days; if absent → (2) latest `pension_fund_snapshots` row within 365 days. | Older rows are dropped entirely (no signal beats a stale signal). DB hiccups (missing tables on stale schemas) degrade to `None` rather than 500-ing the home page. |
+
+**Headline freshness.** `_time_of_day_greeting(now)` is computed fresh on every request — never cached. A "Good morning" generated at 7am must NOT serve back at 11pm just because the bullets are still warm. Only the bullets / cta / `generated_at` are cached; the headline is rebuilt per-call.
+
+**CTA.** Always `{label: "Talk to advisor", href: "/advisor"}`.
 
 ---
 
@@ -750,12 +805,37 @@ Single SQLite database (`argosy.db`), DuckDB used for analytical queries against
 | **Decisions** | `proposals`, `proposals_history`, `approvals` | Full proposal lifecycle (draft → queued → approved → executed/cancelled) |
 | **Audit** | `audit_log`, `agent_reports`, `agent_reports_blobs` | Append-only; every agent output, every decision, every override |
 | **External** | `kv_cache`[^kv-cache-rename], `news_cache`, `corp_actions` | Cached external data with provider + retrieved_at |
-
-[^kv-cache-rename]: Originally named `prices_cache`; renamed to `kv_cache` in migration `0011_rename_prices_cache_to_kv_cache` (the table has always been a generic key/value/TTL store keyed by `(provider, key)` — the old name was misleading). See `argosy/state/models.py::KvCacheEntry`.
+| **Israeli pension** | `pension_fund_snapshots` | Per-user, per-fund time-series of gemelnet (MoF) performance data; 12m / 36m / 60m returns, benchmark, relative gap, optional NIS balance, `source_url`. Compound index `(user_id, fund_id, snapshot_at)`. Written by `argosy gemelnet refresh-user`; queried via `get_user_pension_snapshots(user_id)` |
+| **Investor events** | `investor_events` | Phase 4 signal persistence — see table spec below |
 | **Domain** | `domain_kb_status` | Per-file last_verified, next_refresh_due, last_diff |
 | **Operations** | `tasks_queue`, `alerts`, `cadence_state` | Scheduling state, in-flight work, alerts |
 
+[^kv-cache-rename]: Originally named `prices_cache`; renamed to `kv_cache` in migration `0011_rename_prices_cache_to_kv_cache` (the table has always been a generic key/value/TTL store keyed by `(provider, key)` — the old name was misleading). See `argosy/state/models.py::KvCacheEntry`. The `CacheKind` enum is a *selector* for the underlying physical table; for `KvCacheEntry`-backed callers (`PRICES` and `UI` both map to the same `kv_cache` table) it is informational only — namespacing comes from the `provider` field, not `kind`. The home-brief endpoint uses `CacheKind.UI` with `provider="advisor_home_brief"` for actual isolation.
+
 Detailed table specs are in Appendix A.
+
+#### `investor_events` (Phase 4)
+
+Durable storage for the structured events the Phase 4 adapters emit on each pull. The home-brief signal bullet picks the most-recent row by `occurred_at DESC` and surfaces a one-liner (no coupling to `kv_cache` TTL boundaries).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | int PK | Surrogate |
+| `user_id` | str FK→`users.id` | Owner; query scope for cross-user isolation |
+| `ticker` | str NULL | Issuer ticker; NULL for filer-level / non-equity rows |
+| `source` | str | One of `sec_form4` · `sec_13f` · `tipranks` · `capitoltrades` · `news` |
+| `event_kind` | str | Short label (e.g. `insider_purchase`, `13f_filing`) |
+| `headline` | text | Human-readable one-liner for the signal bullet |
+| `occurred_at` | datetime NULL | Event time (transaction date, filing date, …); NULL when the adapter can't parse it |
+| `ingested_at` | datetime | Row write time |
+| `payload_json` | text | Full structured payload from the adapter |
+| `unique_key` | str | Natural-key digest (e.g. `ticker:accession` for Form 4, `ticker:url` for news) |
+
+Indexes: `(user_id, occurred_at DESC)` for the home-brief query (index seek, no scan); `(user_id, source, ticker)` for future per-source / per-ticker drilldowns.
+
+Constraint: `UniqueConstraint(user_id, source, unique_key)` named `uq_investor_events_user_source_uniquekey`.
+
+**Lifecycle.** Written by `_default_gather_inputs` in `argosy.orchestrator.loops.daily_brief` after each Phase 4 adapter pull (Form 4 / 13F / TipRanks / CapitolTrades / news), via the `record_investor_events(user_id, source, events)` helper in `argosy.state.queries`. Queried by `argosy.api.routes.advisor._signal_bullet` with a 14-day recency window (older rows fall through to the pension-snapshot fallback). Deduped via `unique_key` + dialect-aware `INSERT ... ON CONFLICT DO NOTHING` so the same Form 4 landing in 30 consecutive daily-brief ticks produces one row, not 30.
 
 ### 8.2 Market-data adapters
 
@@ -768,8 +848,26 @@ Detailed table specs are in Appendix A.
 | **SEC EDGAR** | 10-K/10-Q/8-K filings | Primary | 10/sec | Free |
 | **Reddit (PRAW)** | Sentiment from rWallStreetBets, rInvesting | Secondary | API quotas | Free |
 | **Alpha Vantage** | Fallback prices, fundamentals | Fallback | 25/day free | Free tier |
+| **gemelnet (MoF)** | Per-fund 12m/36m/60m returns + sector benchmarks for Israeli pension vehicles | Primary | Light (public portal) | Free |
+| **SEC Form 4** (Phase 4) | Insider transactions (P/S/A/M/F/G codes) within 2 business days of trade | Primary | 10/sec (SEC EDGAR) | Free |
+| **SEC 13F-HR** (Phase 4) | Quarterly institutional long-equity holdings (45-day lag) | Primary | 10/sec | Free |
+| **TipRanks** (Phase 4) | Analyst-consensus snapshot, blogger sentiment, hedge-fund signal | Secondary | Public-page scrape; conservative throttling | Free tier |
+| **CapitolTrades** (Phase 4) | US Congress STOCK Act PTRs (politician + ticker + transaction) | Secondary | Light; aggregator of clerk-of-house + senate EFD | Free |
 
 All adapters share a common `fetch(ticker, ...) -> CachedResponse` interface. Caching is decision-aware: a proposal in flight bumps cache to high-priority refresh; routine polling uses generous TTLs.
+
+**Phase 4 investor-event adapters feed the daily-brief loop.** `_default_gather_inputs` in `argosy.orchestrator.loops.daily_brief` pulls from each adapter per-tick and writes the structured rows to `investor_events` via `record_investor_events(user_id, source, events)` (idempotent — see §8.1 dedup notes). The loop's `DailyBriefInputs` dataclass now carries:
+
+| Field | Source | Shape |
+|---|---|---|
+| `insider_activity` | `sec_form4` adapter | `{ticker: [row, …]}` |
+| `analyst_signals` | `tipranks` adapter | `{ticker: consensus_dict}` |
+| `thirteen_f_watchlist` | `sec_13f` adapter (CIK list resolved from `identity.thirteen_f_watchlist`) | `[row, …]` |
+| `capitoltrades_signals` | `capitoltrades` adapter | `{ticker: [row, …]}` |
+
+These fields default to empty so existing tests that construct `DailyBriefInputs(...)` keep working. Analyst agents that already accept a `payload` dict (news / sentiment / concentration) can opt-in to consuming this auxiliary context without prompt changes.
+
+Cross-references for adapter endpoint details: `domain_knowledge/data_sources/{sec_form4,sec_13f,tipranks,capitoltrades}.md`.
 
 ### 8.3 Caching strategy
 
@@ -790,6 +888,27 @@ Cache entries record `provider`, `retrieved_at`, `expires_at`, `payload_hash` fo
 - Weekly snapshot replicated to a non-Drive cloud or a separate physical disk
 - Retention: 30 daily, 12 weekly, 12 monthly, indefinite annual
 - Quarterly restore drill: restore latest weekly snapshot to a scratch DB and verify queries
+
+### 8.5 Migration history
+
+Alembic, linear chain. Each revision is small and rollback-tested.
+
+| Revision | Purpose |
+|---|---|
+| `0001_initial` | Phase 0 scaffold: `users`, `user_context` |
+| `0002_phase1` | `plan_versions`, `plan_critiques`, `agent_reports`, `agent_reports_blobs`; adds `user_context.current_stage` |
+| `0003_phase2` | `cadence_state`, `daily_briefs`, `prices_cache`, `news_cache`, `macro_cache` |
+| `0004_phase3` | Decisions group: `proposals`, `proposals_history`, `approvals`, `decision_runs` |
+| `0005_phase4` | `audit_log`, `lots`, `fills`, `pending_orders` |
+| `0006_phase5` | Argonaut autonomy: `argonaut_snapshots`, `daily_account_pnl`, `totp_secrets` (T3 second-factor) |
+| `0007_phase6` | Productization: `users.email` + `users.plan`, `tenants`, `setup_tokens` (control-DB only) |
+| `0008_intake_session` | `user_context.intake_session_id` (UUID) — groups every agent_reports row from one interview run |
+| `0009_drop_orphan_user_context_id` | Drops the orphan `user_context.id` column left over from very early dev — never modeled in SQLAlchemy, no default, blocked fresh INSERTs (`user_id` is the primary key, so dropping `id` loses no info) |
+| `0010_pension_snapshots` | `pension_fund_snapshots` table for gemelnet adapter outputs (Phase 3 Israeli pension data) |
+| `0011_rename_prices_cache_to_kv_cache` | Generic-name fix; idempotent inspector check (no-op if `kv_cache` already exists from `Base.metadata.create_all`) |
+| `0012_investor_events` | Phase 4 signal persistence — see §8.1 above |
+| `0013_pensions_to_dict_shape` | Convert `identity.pensions` from list to vehicle-keyed dict in `user_context.identity_yaml` so the gap-tracker's `_lookup` walker can traverse it |
+| `0014_investor_events_dedup` | Add `unique_key` column + `UniqueConstraint(user_id, source, unique_key)` for idempotent persistence; backfill mirrors the keying logic in `argosy.state.queries._unique_key` |
 
 ---
 
@@ -959,18 +1078,34 @@ Stack: FastAPI on `localhost:8000` + Next.js + TypeScript + Tailwind + shadcn/ui
 
 ### 11.1 Screen inventory
 
+Nav order (per `ui/src/components/nav.tsx`): Home → Advisor → Portfolio → Plan → Proposals → Argonaut → Agents → Audit → Domain KB → Settings. The **Advisor** tab was promoted from a buried last-tab to **slot 2** (right after Home) so the gap-tracker / Q&A panel is one click from any page. The legacy `/intake` page redirects to `/advisor`; legacy `/api/intake/*` routes still work unchanged.
+
 | # | Screen | What it shows | Interactions |
 |---|---|---|---|
-| 1 | **Home** | Net worth + Δ (week/month/year); concentration scorecard; pending proposals count; plan RED/YELLOW/GREEN; recent agent activity (last 10) | Glance only; click-throughs to detail screens |
-| 2 | **Portfolio** | Positions per account; per-acct P&L (unrealized + realized YTD); allocation pie vs target pie; drift indicator per category | Click ticker → lots/holding-period detail |
-| 3 | **Plan** | Rendered plan + critique-agent output (findings with evidence); plan version history; diff view between versions | "Re-critique now"; export current plan as md |
-| 4 | **Proposals queue** | Cards per pending proposal: tier badge, account, ticker, action, size, expected impact; full reasoning trail on expand | Approve / Reject / Escalate-tier / Defer; bulk-approve grouped |
-| 5 | **Argonaut** (limited acct) | P&L curve since inception; open positions; recent trades incl. paper fills; per-strategy stats (win rate, avg hold period); mode toggle | Toggle paper/live/queue_only with confirmation modal; deposit/withdraw config |
-| 6 | **Agent activity** | Live timeline of agent invocations; per-agent monthly Claude cost; drill-down into any run (prompt, response, tools) | Click run → full transcript; export run JSON |
-| 7 | **Audit log** | Every decision, override, fill — searchable | Filter by date / ticker / agent / tier / outcome; export CSV |
-| 8 | **Domain KB** | Tree of `domain_knowledge/`; per-file content, last_verified, next_refresh_due, sources; refresh-agent's review queue | "Trigger refresh"; approve/reject proposed updates from refresh agent |
-| 9 | **Intake / Setup** | The 6-stage wizard (re-runnable for recurring cadences); doc upload widgets; progress indicator | Run full intake or per-cadence sub-intake; confidence flags surface here |
+| 1 | **Home** | `<AdvisorBriefCard>` (above OVERVIEW); net worth + Δ (week/month/year); concentration scorecard; pending proposals count; plan RED/YELLOW/GREEN; recent agent activity (last 10) | Glance only; click-throughs to detail screens; "Talk to advisor" CTA on the brief card → `/advisor` |
+| 2 | **Advisor** (was Intake) | Two-column persistent panel: chat history + free-form input on the left; color-coded gap tracker (green/amber/red) on the right. Same UI handles first-run intake AND every later check-in | Type a question (user_driven mode) or click a sidebar gap row (gap_driven, focused on `target_field`); stale fields show a "stale: …" marker |
+| 3 | **Portfolio** | Positions per account; per-acct P&L (unrealized + realized YTD); allocation pie vs target pie; drift indicator per category | Click ticker → lots/holding-period detail |
+| 4 | **Plan** | Rendered plan + critique-agent output (findings with evidence); plan version history; diff view between versions | "Re-critique now"; export current plan as md |
+| 5 | **Proposals queue** | Cards per pending proposal: tier badge, account, ticker, action, size, expected impact; full reasoning trail on expand | Approve / Reject / Escalate-tier / Defer; bulk-approve grouped |
+| 6 | **Argonaut** (limited acct) | P&L curve since inception; open positions; recent trades incl. paper fills; per-strategy stats (win rate, avg hold period); mode toggle | Toggle paper/live/queue_only with confirmation modal; deposit/withdraw config |
+| 7 | **Agent activity** | Live timeline of agent invocations; per-agent monthly Claude cost; drill-down into any run (prompt, response, tools) | Click run → full transcript; export run JSON |
+| 8 | **Audit log** | Every decision, override, fill — searchable | Filter by date / ticker / agent / tier / outcome; export CSV |
+| 9 | **Domain KB** | Tree of `domain_knowledge/`; per-file content, last_verified, next_refresh_due, sources; refresh-agent's review queue | "Trigger refresh"; approve/reject proposed updates from refresh agent |
 | 10 | **Settings** | Cadence scheduling; tier thresholds; execution mode per account; model overrides per agent role; alert channels; install path / backup config | Edit + save; some changes require restart, surfaced clearly |
+
+#### `<AdvisorBriefCard>` (Home page)
+
+Glass-card surface (`ui/src/components/advisor-brief-card.tsx`) sitting above OVERVIEW on the home page. Aesthetic mirrors the brand-hero on the same page (gradient accent stripe; cyan/emerald/amber Lucide icons). Three bullet kinds, each with a dedicated icon:
+
+| Bullet kind | Lucide icon | Tone |
+|---|---|---|
+| `gap` | `AlertTriangle` (amber-400) | warning |
+| `portfolio` | `TrendingUp` (emerald-400) | success |
+| `signal` | `RadioTower` (cyan-400) | accent |
+
+Header carries a `Headphones` avatar, the time-of-day greeting headline, and a "Talk to advisor" CTA → `/advisor`. Footer shows a relative-time stamp ("Updated 2m ago") computed from `generated_at`.
+
+**Fetch resilience.** `api.advisorHomeBrief(userId)` is called with `AbortSignal.timeout(8000)`. On AbortError → "Couldn't reach advisor service." On any other failure → "Brief unavailable right now." (fixed strings; no stack-trace leakage). Empty bullets array → "All caught up. Nothing to surface right now." Loading state → three faint skeleton rows so the page doesn't jump on data arrival.
 
 ### 11.2 Design principles
 
