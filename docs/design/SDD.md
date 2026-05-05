@@ -65,7 +65,7 @@ Argosy is two things glued together: an always-on background process and a dashb
 
 ### 0.4 The pieces, top-down
 
-**Intake** ([07-intake-stages.png](diagrams/07-intake-stages.png)) is a 6-stage friendly interview that gathers identity, jurisdiction, goals, financial picture, broker connections, plan, and operational preferences. It runs once at setup, then in shorter monthly / quarterly / annual versions to keep state fresh.
+**Advisor** ([07-intake-stages.png](diagrams/07-intake-stages.png)) is a persistent panel — same surface for first-run intake AND every later check-in. The agent operates in two modes (gap_driven when the user opens the panel cold, user_driven when they ask something) and walks an 11-stage CFP-aligned field catalog (~75 fields covering identity, goals, financial picture, broker connections, plan, ops prefs, estate, insurance, tax, education, and special situations like single-employer concentration). A side-panel gap tracker shows every required field as fresh / stale / missing per per-field freshness policies. The legacy `/intake` route redirects here. Full details in §6.5–§6.9.
 
 **The engine and its cadences** ([06-cadence-loops.png](diagrams/06-cadence-loops.png)) is the always-on Python orchestrator. Each cadence loop polls cheaply (read prices, scan news headlines, recompute concentration) and only invokes an LLM when a trigger fires. Background processes (`process_cooling`, daily backup, watchlist refresh, fill reconciliation) keep the rest of the system honest.
 
@@ -75,7 +75,7 @@ Argosy is two things glued together: an always-on background process and a dashb
 
 **Execution & approval** ([10-execution-routing.png](diagrams/10-execution-routing.png)) is a routing matrix indexed by tier × account × mode. Most cells route to the human queue; a few (small trades inside the limited account, on live mode) auto-execute. `queue_only` mode disables every auto cell as a single-flag pause.
 
-**The dashboard** is a Next.js app at `localhost:1337` with 10 screens (Home, Portfolio, Plan, Proposals queue, Argonaut, Agent Activity, Audit Log, Domain KB, Intake/Setup, Settings). It reads state and offers approval actions; it never runs the engine. WebSocket events keep it live without page reloads.
+**The dashboard** is a Next.js app at `localhost:1337` with 10 screens (Home, **Advisor**, Portfolio, Plan, Proposals queue, Argonaut, Agent Activity, Audit Log, Domain KB, Settings). The Advisor sits in nav slot 2 (right after Home) and exposes a persistent gap tracker + free-form chat surface; the home page also carries an `<AdvisorBriefCard>` glance widget composed from the most recent gap, daily-brief output, and investor-event signal. It reads state and offers approval actions; it never runs the engine. WebSocket events keep it live without page reloads.
 
 ### 0.5 A worked example
 
@@ -325,6 +325,7 @@ Run on their own cadences; not part of any decision team.
 | Agent | Role | Cadence | Default model |
 |---|---|---|---|
 | **Intake** | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Sonnet |
+| **Advisor** | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. See §6.5. | Per-turn (user-initiated) | Sonnet |
 | **Domain refresh** | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet |
 | **Audit** | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus |
 | **Watchlist** | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Haiku |
@@ -478,7 +479,10 @@ cadences:
 
 Intake is a multi-agent flow. The **intake agent** conducts the interview (one question at a time, conversational, prioritize critical info, challenge illogical answers — patterns borrowed from the user's prior "Victor Sterling" advisor prompt). The **plan-critique agent** runs in the background as data accumulates.
 
-### 6.1 Six-stage interview
+### 6.1 Six-stage interview *(historical — superseded by §6.5–§6.9)*
+
+> **Note.** The 6-stage gated interview below is the original Phase 0 design. The Phase 1 reframe replaces it with a persistent gap-tracker advisor (§6.5), and Phase 2 expands the catalog to 11 stages and ~75 fields (§6.6). The diagram is retained for context — see §6.5 onward for current behavior.
+
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -552,7 +556,7 @@ What the intake agent asks for, organized by category:
 | **Income** | Pay stubs (3 months), RSU vesting schedule, bonus history, rental statements (Romania/Atlanta) | Cash-flow model; tax projections; RSU planning |
 | **Bank** | Leumi statements (3 months), Schwab cash sweep | Identify real savings rate vs declared; reserve sizing |
 | **Brokerage** | Schwab + Leumi current positions + **cost-basis lots** | Tax-loss harvesting requires lot-level data, not just totals |
-| **Pensions** | קרן השתלמות, קופת גמל, קרן פנסיה statements | Israeli tax-advantaged accounts are huge; currently a gap |
+| **Pensions** | קרן השתלמות, קופת גמל, קרן פנסיה statements | Israeli tax-advantaged accounts are huge; the gemelnet adapter (§8.2) now closes the previous data gap by pulling balances + 1y/3y/5y returns from the Israeli MoF portal |
 | **Real estate** | Mortgage balances, property valuations, rental P&L | Net-worth picture; Mas Shevach exposure on Israeli sale |
 | **Tax filings** | Prior דוח שנתי + W-8BEN status at Schwab | Carryforward losses, treaty position, withholding correctness |
 | **Insurance** | Life policies with cash value, disability | Wealth + risk picture |
