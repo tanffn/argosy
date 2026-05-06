@@ -320,12 +320,135 @@ def _load_user_context_yaml(*, session, user_id) -> str:
 
 def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
                          baseline, prior_current, decision_run_id, trigger) -> str:
-    """Run bull/bear/facilitator per-horizon (parallel across horizons)."""
-    log.info("plan_synthesis.phase_2_stub", user_id=user_id, decision_run_id=decision_run_id)
-    return (
-        "(Phase 2 debate outcomes per horizon — wired against the "
-        "researcher debate flow once SDD Phase 3 is complete.)"
+    """Run bull/bear/facilitator across all three horizons in parallel.
+
+    Each horizon argues theses, not trades. Per-horizon facilitator
+    extracts a structured DebateOutcome record.
+    """
+    log.info("plan_synthesis.phase_2.start",
+             user_id=user_id, decision_run_id=decision_run_id)
+
+    parts: list[str] = []
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {
+            ex.submit(
+                _run_one_horizon_debate,
+                horizon=h,
+                user_id=user_id,
+                analyst_reports_text=analyst_reports_text,
+                baseline=baseline,
+                prior_current=prior_current,
+                decision_run_id=decision_run_id,
+                trigger=trigger,
+            ): h for h in ("long", "medium", "short")
+        }
+        for fut in as_completed(futures):
+            horizon = futures[fut]
+            try:
+                outcome_text = fut.result()
+                parts.append(f"=== Debate outcome — {horizon} ===\n{outcome_text}")
+            except Exception as exc:  # noqa: BLE001
+                log.error("plan_synthesis.phase_2.debate_failed",
+                          horizon=horizon, decision_run_id=decision_run_id,
+                          error=str(exc))
+                parts.append(f"=== Debate outcome — {horizon} (FAILED) ===\n{exc}")
+    return "\n\n".join(parts)
+
+
+def _run_one_horizon_debate(*, horizon: str, user_id: str,
+                             analyst_reports_text: str,
+                             baseline, prior_current, decision_run_id: str,
+                             trigger: str) -> str:
+    """Run bull/bear/facilitator for one horizon.
+
+    Reuses the existing argosy.agents.researcher and researcher_facilitator
+    modules. The horizon shapes the prompt's question:
+      - long: "do principles + targets still hold?"
+      - medium: "tactical posture for next 1-2 years?"
+      - short: "specific calls for next 30 days?"
+
+    ADAPTATIONS vs spec:
+      * Spec used a single `ResearcherAgent(stance=...)` class; the actual
+        codebase exposes `BullResearcherAgent` and `BearResearcherAgent`
+        as concrete subclasses (no `stance` kwarg).
+      * `BaseAgent.__init__` requires a `user_id` keyword — added to this
+        function's signature and threaded through from
+        `_run_phase_2_debates`.
+      * The researcher `build_prompt` signature is
+        `(analyst_reports: list[dict], prior_rounds, round_index, n_max,
+        ticker)` — NOT `(question, analyst_reports, round_n, round_max,
+        opposing)`. We embed the per-horizon question into the analyst
+        reports payload as a `_horizon_prompt` entry so it reaches the
+        model, and wrap the concatenated text in a single dict (the
+        agents' build_prompt iterates `analyst_reports`). The cross-side
+        rebuttal is conveyed via `prior_rounds` (the bear sees the bull's
+        round 1 turn).
+      * The facilitator `build_prompt` signature is
+        `(bull_turns, bear_turns, rounds_run, ticker)` — not
+        `(question, bull, bear)`. We pass single-element lists.
+    """
+    from argosy.agents.researcher import (
+        BearResearcherAgent,
+        BullResearcherAgent,
     )
+    from argosy.agents.researcher_facilitator import ResearcherFacilitatorAgent
+
+    horizon_question = {
+        "long": "Do the durable principles and 5+ year targets still hold?",
+        "medium": (
+            "Given the analyst reports and current state, what tactical "
+            "posture should drive the next 1-2 years? Specific targets and "
+            "themed actions; this is the strategic centerpiece."
+        ),
+        "short": (
+            "What specific calls for the next 30 days? Defer or pull "
+            "anything forward? Speculative candidates worth surfacing?"
+        ),
+    }[horizon]
+
+    # The researcher build_prompt iterates analyst_reports as a list[dict];
+    # we package the concatenated upstream text plus the horizon question
+    # into a single synthetic report dict.
+    analyst_reports_payload = [{
+        "agent_role": "phase_1_aggregated",
+        "horizon": horizon,
+        "horizon_question": horizon_question,
+        "report_text": analyst_reports_text,
+    }]
+    ticker = f"plan-{horizon}"
+
+    bull = BullResearcherAgent(user_id=user_id)
+    bear = BearResearcherAgent(user_id=user_id)
+    fac = ResearcherFacilitatorAgent(user_id=user_id)
+
+    bull_report = bull.run_sync(
+        analyst_reports=analyst_reports_payload,
+        prior_rounds=[],
+        round_index=1,
+        n_max=2,
+        ticker=ticker,
+    )
+    bull_turn = bull_report.output if hasattr(bull_report, "output") else None
+    bull_turn_dict = bull_turn.model_dump() if bull_turn is not None else {}
+
+    bear_report = bear.run_sync(
+        analyst_reports=analyst_reports_payload,
+        prior_rounds=[bull_turn_dict] if bull_turn_dict else [],
+        round_index=1,
+        n_max=2,
+        ticker=ticker,
+    )
+    bear_turn = bear_report.output if hasattr(bear_report, "output") else None
+    bear_turn_dict = bear_turn.model_dump() if bear_turn is not None else {}
+
+    fac_report = fac.run_sync(
+        bull_turns=[bull_turn_dict] if bull_turn_dict else [],
+        bear_turns=[bear_turn_dict] if bear_turn_dict else [],
+        rounds_run=1,
+        ticker=ticker,
+    )
+    out = fac_report.output if hasattr(fac_report, "output") else fac_report
+    return out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
 
 
 def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,

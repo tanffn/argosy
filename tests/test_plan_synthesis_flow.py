@@ -166,3 +166,26 @@ def test_phase_1_runs_all_nine_analysts(session, monkeypatch):
     assert len(invoked) == 9, f"expected 9 analyst calls, got {len(invoked)}: {invoked}"
     assert isinstance(out, str)
     assert len(out) > 0
+
+
+def test_phase_2_debates_runs_three_horizons(session, monkeypatch):
+    """Phase 2 must invoke the researcher-debate flow once per horizon."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    horizons_seen: list[str] = []
+
+    def _fake_debate(*, horizon, **kw):
+        horizons_seen.append(horizon)
+        return f"DEBATE OUTCOME for {horizon}"
+
+    monkeypatch.setattr(flow, "_run_one_horizon_debate", _fake_debate)
+
+    baseline = next(iter(session.query(PlanVersion).filter_by(role="baseline").all()))
+    out = flow._run_phase_2_debates(
+        session=session, user_id="ariel",
+        analyst_reports_text="(stub)", baseline=baseline,
+        prior_current=None, decision_run_id="test", trigger="scheduled",
+    )
+    assert sorted(horizons_seen) == ["long", "medium", "short"]
+    for h in ("long", "medium", "short"):
+        assert f"DEBATE OUTCOME for {h}" in out
