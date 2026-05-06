@@ -16,6 +16,7 @@ import {
   type ArgonautSnapshot,
   type ArgonautStatus,
   type ArgonautTrade,
+  type DraftResponse,
 } from "@/lib/api";
 
 const USER_ID = "ariel";
@@ -81,6 +82,8 @@ export default function ArgonautPage() {
   const [trades, setTrades] = useState<ArgonautTrade[]>([]);
   const [pending, setPending] = useState<Mode | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [planCurrent, setPlanCurrent] = useState<DraftResponse | null>(null);
+  const [takingTicker, setTakingTicker] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -101,6 +104,35 @@ export default function ArgonautPage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Pull the user's accepted plan once. 404 (no current plan yet) is
+  // expected for fresh installs — silently set null so the panel hides.
+  useEffect(() => {
+    api
+      .planCurrentStructured(USER_ID)
+      .then(setPlanCurrent)
+      .catch(() => setPlanCurrent(null));
+  }, []);
+
+  const onTake = useCallback(
+    async (ticker: string) => {
+      setError(null);
+      setTakingTicker(ticker);
+      try {
+        await api.planSpeculativeTake(USER_ID, ticker, "paper");
+        // Surface the routed proposal in the trades/positions panels.
+        await refresh();
+        window.alert(`Routed ${ticker} to Argonaut paper queue`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+        window.alert(msg);
+      } finally {
+        setTakingTicker(null);
+      }
+    },
+    [refresh],
+  );
 
   const handleMode = useCallback(
     async (mode: Mode) => {
@@ -256,6 +288,60 @@ export default function ArgonautPage() {
           )}
         </CardContent>
       </Card>
+
+      {planCurrent?.horizon_short &&
+      planCurrent.horizon_short.speculative_candidates.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Speculative candidates this month
+            </CardTitle>
+            <CardDescription>
+              Bounded-risk shots surfaced by the fleet. Each is within your
+              speculation cap.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="flex flex-col gap-2">
+              {planCurrent.horizon_short.speculative_candidates.map((c, i) => {
+                const cc = c as Record<string, unknown>;
+                const ticker = cc.ticker as string;
+                return (
+                  <li
+                    key={i}
+                    className="border border-border rounded-md p-3 flex items-start justify-between gap-3"
+                  >
+                    <div className="text-sm">
+                      <strong>{ticker}</strong> — {cc.thesis_summary as string}
+                      <br />
+                      <span className="text-xs text-muted-foreground">
+                        ≤ $
+                        {(cc.suggested_position_usd as number).toLocaleString()}{" "}
+                        · exit: {cc.exit_trigger as string}
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={takingTicker !== null}
+                        onClick={() => void onTake(ticker)}
+                      >
+                        {takingTicker === ticker
+                          ? "Routing..."
+                          : "Take a swing"}
+                      </Button>
+                      <Button size="sm" variant="ghost" disabled>
+                        Skip
+                      </Button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader>

@@ -364,6 +364,54 @@ def test_delta_accept_invalidates_home_brief_cache(app_with_draft, monkeypatch):
     assert "ariel" in purged, f"cache purge not called; purged={purged}"
 
 
+def test_get_current_structured_returns_current_plan(client_with_db):
+    """T3.5: GET /api/plan/current/structured returns the role='current' plan
+    in the DraftResponse shape."""
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.commit()
+        sess.add(PlanVersion(
+            user_id="ariel",
+            role="current",
+            version_label="synth-2026-04-accepted",
+            raw_markdown="",
+            horizon_long_md="# Long",
+            horizon_medium_md="# Medium",
+            horizon_short_md="# Short",
+            horizon_long_json='{"horizon":"long","freshness_expected":"annual","status":"no_change","posture":"x"}',
+            horizon_medium_json='{"horizon":"medium","freshness_expected":"quarterly","status":"no_change","posture":"x"}',
+            horizon_short_json=(
+                '{"horizon":"short","freshness_expected":"monthly","status":"no_change",'
+                '"posture":"x","speculative_candidates":['
+                '{"ticker":"HOOD","thesis_summary":"momentum",'
+                '"suggested_position_usd":800,"suggested_position_pct_of_net_worth":0.0008,'
+                '"risk_ceiling_check":true,"horizon_days":30,"expected_drawdown_pct":0.2,'
+                '"exit_trigger":"stop -20%, take +50%","sourced_from":["sentiment"]}'
+                ']}'
+            ),
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/current/structured?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["plan_version_id"] is not None
+    assert body["horizon_short"]["horizon"] == "short"
+    cands = body["horizon_short"]["speculative_candidates"]
+    assert len(cands) == 1
+    assert cands[0]["ticker"] == "HOOD"
+
+
+def test_get_current_structured_404_when_no_current(client_with_db):
+    """T3.5: 404 when the user has no role='current' plan."""
+    r = client_with_db.get("/api/plan/current/structured?user_id=newcomer")
+    assert r.status_code == 404
+
+
 def test_delta_edit_invalidates_home_brief_cache(app_with_draft, monkeypatch):
     """patch_delta_edit must call invalidate_home_brief after commit."""
     from argosy.api.routes import plan as plan_routes

@@ -622,6 +622,29 @@ export const api = {
       `/api/advisor/check-in`,
       { user_id: userId, guidance, urgency: "now" },
     ),
+
+  // ----------------------------------------------------------------------
+  // Wave 3: speculative candidates ("Take a swing")
+  // ----------------------------------------------------------------------
+
+  // GET the user's accepted plan in the structured DraftResponse shape so
+  // the Argonaut page can read horizon_short.speculative_candidates.  The
+  // legacy `/api/plan/current` returns a different DTO (raw markdown +
+  // latest critique) consumed by the home + /plan pages, so this endpoint
+  // lives at `/current/structured` to avoid colliding.
+  planCurrentStructured: (userId: string) =>
+    getJSON<DraftResponse>(
+      `/api/plan/current/structured?user_id=${encodeURIComponent(userId)}`,
+    ),
+  planSpeculativeTake: (
+    userId: string,
+    ticker: string,
+    executionMode: "paper" | "live" = "paper",
+  ) =>
+    postJSON<{ status: string; proposal_id: number; ticker: string; paper: boolean }>(
+      `/api/plan/current/speculative/${encodeURIComponent(ticker)}/take?user_id=${encodeURIComponent(userId)}&execution_mode=${executionMode}`,
+      {},
+    ),
 };
 
 // ----------------------------------------------------------------------

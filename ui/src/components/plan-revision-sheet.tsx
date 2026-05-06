@@ -145,6 +145,48 @@ export function PlanRevisionSheet(props: PlanRevisionSheetProps) {
               h={draft.horizon_short}
               md={draft.horizon_short_md}
             />
+            {draft.horizon_short &&
+            draft.horizon_short.speculative_candidates.length > 0 ? (
+              <div className="mt-4">
+                <p className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                  Speculative candidates (bounded-risk)
+                </p>
+                <ul className="flex flex-col gap-2">
+                  {draft.horizon_short.speculative_candidates.map((c, i) => (
+                    <li
+                      key={i}
+                      className="border border-cyan-500/30 rounded-md p-2 text-sm"
+                    >
+                      <div className="flex items-center justify-between">
+                        <strong>{(c as { ticker: string }).ticker}</strong>
+                        <span className="text-xs font-mono text-muted-foreground">
+                          ≤ $
+                          {(
+                            c as { suggested_position_usd: number }
+                          ).suggested_position_usd.toLocaleString()}{" "}
+                          ·{" "}
+                          {(
+                            (c as { suggested_position_pct_of_net_worth: number })
+                              .suggested_position_pct_of_net_worth * 100
+                          ).toFixed(2)}
+                          % NW
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {(c as { thesis_summary: string }).thesis_summary}
+                      </p>
+                      <p className="text-[10px] font-mono text-muted-foreground">
+                        exit: {(c as { exit_trigger: string }).exit_trigger}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs text-muted-foreground italic mt-2">
+                  Worth a small swing if you want it. Take action from the
+                  Argonaut tab.
+                </p>
+              </div>
+            ) : null}
           </TabsContent>
         </Tabs>
 

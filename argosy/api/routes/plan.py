@@ -427,6 +427,40 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
     )
 
 
+@router.get("/current/structured", response_model=DraftResponse)
+def get_current_structured(
+    user_id: str, db: Session = Depends(get_db)
+) -> DraftResponse:
+    """Return the user's currently-accepted plan as the same structured
+    DraftResponse shape used by ``GET /api/plan/draft``.
+
+    Wave 3 / Task 3.5. The legacy ``GET /api/plan/current`` endpoint
+    returns a different DTO (raw markdown + latest critique) and remains
+    in use by the home page + /plan page.  This sibling route mirrors
+    the draft endpoint so the Argonaut page can read structured horizons
+    (notably ``horizon_short.speculative_candidates``).
+
+    404 when no current plan exists for the user.
+    """
+    from argosy.state.queries import get_current_plan
+
+    pv = get_current_plan(db, user_id)
+    if pv is None:
+        raise HTTPException(status_code=404, detail="no current plan for user")
+    return DraftResponse(
+        plan_version_id=pv.id,
+        drafted_at=(pv.accepted_at or pv.imported_at).isoformat(),
+        derived_from_id=pv.derived_from_id,
+        decision_run_id=pv.decision_run_id,
+        horizon_long=_horizon_view(pv.horizon_long_json),
+        horizon_medium=_horizon_view(pv.horizon_medium_json),
+        horizon_short=_horizon_view(pv.horizon_short_json),
+        horizon_long_md=pv.horizon_long_md,
+        horizon_medium_md=pv.horizon_medium_md,
+        horizon_short_md=pv.horizon_short_md,
+    )
+
+
 @router.post("/draft/{draft_id}/accept", response_model=AcceptResponse)
 def post_draft_accept(
     draft_id: int,
