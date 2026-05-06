@@ -203,6 +203,17 @@ class BaseAgent(Generic[T]):
     # Public API
     # ------------------------------------------------------------------
 
+    def run_sync(self, **inputs: Any) -> "AgentReport":
+        """Synchronous wrapper around ``run``.
+
+        Convenience for callers in sync contexts (service layer, CLI).
+        Uses ``asyncio.run`` so it cannot be called from inside a running
+        event loop — async callers should await ``run`` directly.
+        """
+        import asyncio
+
+        return asyncio.run(self.run(**inputs))
+
     async def run(self, **inputs: Any) -> AgentReport:
         """Build the prompt, call the model, validate the output, return a report.
 
