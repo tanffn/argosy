@@ -827,16 +827,17 @@ both at synthesis time (the synthesizer's prompt enforces it) and at
 routing time (defense-in-depth in `argosy/orchestrator/speculation_router.py`).
 
 Accepting a candidate via the Argonaut tab routes it as a T0 proposal
-in the limited (`argonaut`) account, paper-mode by default. Per SDD
-§10.1 routing matrix: T0 + Argonaut + live = auto-execute; T0 + main +
-live = single-click human queue.
+in the limited account (the "Argonaut" feature; account-class string
+`"limited"`), paper-mode by default. Per SDD §10.1 routing matrix:
+T0 + limited + live = auto-execute; T0 + main + live = single-click
+human queue.
 
 Configuration in `agent_settings.yaml`::
 
     speculation:
       max_pct_of_net_worth: 0.001       # 0.1% NW (default)
       max_concurrent_positions: 3
-      allowed_account_classes: ["argonaut"]
+      allowed_account_classes: ["limited"]   # DB/code value; "Argonaut" is the user-facing feature name
 
 **Two proposal-creation paths (current state):** speculation-origin
 proposals use a sync helper at
@@ -846,6 +847,11 @@ candidate just needs a `proposals` row. Trade-flow-originated proposals
 (analyst → trader → fund manager pipeline) flow through the full async
 `DecisionFlow._persist_proposal`. Future TODO: consolidate the two paths
 once the sync helper grows enough features to justify the merge.
+
+**Watchlist integration:** speculative ideas reach the synthesizer via
+the existing analyst-reports concatenation (sentiment + news + watchlist
+agent outputs) in Phase 1 — `argosy/agents/watchlist.py` requires no
+per-agent change for Wave 3.
 
 ---
 
@@ -1195,8 +1201,8 @@ Everything *after* the agent team produces an `ApprovedProposal`: external appro
 | T2 | Any | paper | PaperFill + review record |
 | T3 | Any | live | Human queue + **24h cooling-off** + next-day re-check |
 | T3 | Any | paper | PaperFill + cooling-off + next-day paper re-check |
-| `speculative` | argonaut | live | T0 — auto-execute, paper logged |
-| `speculative` | argonaut | paper | PaperFill log; cap-enforced preflight |
+| `speculative` | limited | live | T0 — auto-execute, paper logged |
+| `speculative` | limited | paper | PaperFill log; cap-enforced preflight |
 | `plan_revision` | Any | Any | Human queue, **always T3 depth, never auto-execute** |
 
 Hard rule: `queue_only` mode disables every "auto-execute" cell — no exceptions.
@@ -1321,6 +1327,7 @@ plan.draft.started        plan.draft.completed
 plan.draft.delta.accepted plan.draft.delta.edited
 plan.draft.accepted       plan.draft.rejected
 plan.current.changed
+plan.speculative.routed   plan.synthesis.cap_load_failed
 ```
 
 Frontend subscribes selectively per screen: Proposals queue subscribes to `proposal.*`; Portfolio subscribes to `position.*` and `price.*` for visible tickers; etc.
@@ -1868,7 +1875,7 @@ risk:
 speculation:
   max_pct_of_net_worth: 0.001
   max_concurrent_positions: 3
-  allowed_account_classes: [argonaut]
+  allowed_account_classes: [limited]   # account-class string; the "Argonaut" feature is its user-facing name
 ```
 
 ### A.3 `user_context.yaml` (per-user; `configs/<user_id>/user_context.yaml`)

@@ -122,10 +122,16 @@ export default function ArgonautPage() {
         await api.planSpeculativeTake(USER_ID, ticker, "paper");
         // Surface the routed proposal in the trades/positions panels.
         await refresh();
+        // TODO(toast-migration): the project has no toast infrastructure
+        // yet (no sonner / no `useToast`); when one lands (likely shadcn
+        // ``toast``), replace these blocking ``window.alert`` calls with
+        // a non-blocking success toast and an error toast respectively.
         window.alert(`Routed ${ticker} to Argonaut paper queue`);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         setError(msg);
+        // TODO(toast-migration): see above — replace with an error toast
+        // once toast infra exists.
         window.alert(msg);
       } finally {
         setTakingTicker(null);
@@ -303,41 +309,36 @@ export default function ArgonautPage() {
           </CardHeader>
           <CardContent>
             <ul className="flex flex-col gap-2">
-              {planCurrent.horizon_short.speculative_candidates.map((c, i) => {
-                const cc = c as Record<string, unknown>;
-                const ticker = cc.ticker as string;
-                return (
-                  <li
-                    key={i}
-                    className="border border-border rounded-md p-3 flex items-start justify-between gap-3"
-                  >
-                    <div className="text-sm">
-                      <strong>{ticker}</strong> — {cc.thesis_summary as string}
-                      <br />
-                      <span className="text-xs text-muted-foreground">
-                        ≤ $
-                        {(cc.suggested_position_usd as number).toLocaleString()}{" "}
-                        · exit: {cc.exit_trigger as string}
-                      </span>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={takingTicker !== null}
-                        onClick={() => void onTake(ticker)}
-                      >
-                        {takingTicker === ticker
-                          ? "Routing..."
-                          : "Take a swing"}
-                      </Button>
-                      <Button size="sm" variant="ghost" disabled>
-                        Skip
-                      </Button>
-                    </div>
-                  </li>
-                );
-              })}
+              {planCurrent.horizon_short.speculative_candidates.map((c, i) => (
+                <li
+                  key={i}
+                  className="border border-border rounded-md p-3 flex items-start justify-between gap-3"
+                >
+                  <div className="text-sm">
+                    <strong>{c.ticker}</strong> — {c.thesis_summary}
+                    <br />
+                    <span className="text-xs text-muted-foreground">
+                      ≤ ${c.suggested_position_usd.toLocaleString()} · exit:{" "}
+                      {c.exit_trigger}
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={takingTicker !== null}
+                      onClick={() => void onTake(c.ticker)}
+                    >
+                      {takingTicker === c.ticker
+                        ? "Routing..."
+                        : "Take a swing"}
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled>
+                      Skip
+                    </Button>
+                  </div>
+                </li>
+              ))}
             </ul>
           </CardContent>
         </Card>

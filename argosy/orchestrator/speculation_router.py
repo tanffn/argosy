@@ -105,7 +105,42 @@ def route_accepted_candidate(
         exit_trigger=candidate.get("exit_trigger", ""),
         execution_mode=execution_mode,
         paper=paper,
+        # I1 audit lineage: thread the originating plan's decision_run_id
+        # through so the routed proposal links back to the synthesis run
+        # that emitted the candidate (per SDD §6.11).
+        decision_run_id=getattr(pv, "decision_run_id", None),
     )
+    session.commit()
+
+    # C2 defense-in-depth: the helper sets ``account_class`` from our
+    # ``target_account_class``, but a future regression in the helper
+    # could override it (e.g. a default arg flip).  Re-check that the
+    # persisted row's class is still in the allowed set.
+    if proposal.account_class not in cap.allowed_account_classes:
+        raise CapBreachError(
+            f"routed proposal {proposal.id} has account_class="
+            f"{proposal.account_class!r} which is not in cap "
+            f"allowed_account_classes={cap.allowed_account_classes!r}"
+        )
+
+    # M7: emit a WS event so subscribed UIs (notably the Argonaut tab)
+    # surface the routed proposal without waiting for the next refresh.
+    # Best-effort fire-and-forget — failure to publish must never break
+    # the route.
+    try:
+        from argosy.api.events import publish_event_threadsafe
+
+        publish_event_threadsafe(
+            "plan.speculative.routed",
+            {
+                "user_id": user_id,
+                "ticker": ticker.upper(),
+                "proposal_id": proposal.id,
+                "paper": paper,
+            },
+        )
+    except Exception:  # noqa: BLE001 — defensive; events are best-effort
+        log.warning("speculation_router.publish_failed", proposal_id=proposal.id)
 
     log.info(
         "speculation_router.routed",
@@ -117,7 +152,7 @@ def route_accepted_candidate(
     return RouteResult(proposal_id=proposal.id, ticker=ticker.upper(), paper=paper)
 
 
-def _create_proposal(**kw):  # pragma: no cover - thin shim around existing flow
+def _create_proposal(**kw):
     """Indirection point so tests can monkeypatch.
 
     Wave 3: delegates to ``argosy.orchestrator.proposal_lifecycle``,

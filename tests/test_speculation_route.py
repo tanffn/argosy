@@ -39,7 +39,12 @@ def test_post_take_speculative_routes_to_argonaut(client_with_db, monkeypatch):
 
     monkeypatch.setattr(
         router, "_create_proposal",
-        lambda **kw: type("P", (), {"id": 4242})(),
+        # The router runs a C2 sanity check on ``account_class`` after the
+        # helper returns, so the stub must expose that attribute (matching
+        # the routed account-class string, "limited").
+        lambda **kw: type(
+            "P", (), {"id": 4242, "account_class": kw["account_class"]},
+        )(),
     )
 
     r = client_with_db.post(

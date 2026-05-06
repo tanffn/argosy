@@ -167,7 +167,11 @@ class SpeculationCap:
         speculation:
           max_pct_of_net_worth: 0.001       # 0.1% NW, very tight
           max_concurrent_positions: 3
-          allowed_account_classes: ["argonaut"]
+          allowed_account_classes: ["limited"]
+
+    The string ``"limited"`` is the DB/code account-class value that the
+    routing layer (``argosy/execution/router.py``) checks; the
+    *Argonaut* feature is the user-facing name for that class.
 
     These values constrain the synthesizer (it must never emit a
     SpeculativeCandidate that would breach the cap) AND the routing
@@ -176,7 +180,7 @@ class SpeculationCap:
 
     max_pct_of_net_worth: float = 0.001  # 0.1% default — conservative
     max_concurrent_positions: int = 3
-    allowed_account_classes: tuple[str, ...] = ("argonaut",)
+    allowed_account_classes: tuple[str, ...] = ("limited",)
 
     def validate(self) -> None:
         if self.max_pct_of_net_worth <= 0:
@@ -203,7 +207,7 @@ def load_speculation_cap(*, user_id: str, agent_settings: dict) -> SpeculationCa
         max_pct_of_net_worth=float(block.get("max_pct_of_net_worth", 0.001)),
         max_concurrent_positions=int(block.get("max_concurrent_positions", 3)),
         allowed_account_classes=tuple(
-            block.get("allowed_account_classes", ("argonaut",))
+            block.get("allowed_account_classes", ("limited",))
         ),
     )
     cap.validate()

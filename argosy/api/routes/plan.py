@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 from argosy.adapters.data.cache import invalidate_home_brief
 from argosy.agents.errors import AgentRunError, MissingAPIKeyError
 from argosy.agents.plan_critique import PlanCritiqueAgent
-from argosy.agents.plan_synthesizer_types import Delta
+from argosy.agents.plan_synthesizer_types import Delta, SpeculativeCandidate
 from argosy.api.events import publish_event, publish_event_threadsafe
 from argosy.state import db as db_mod
 from argosy.state.models import PlanCritique, PlanVersion, UserContext
@@ -370,7 +370,10 @@ class HorizonSectionView(BaseModel):
     targets: list[dict] = []
     themes: list[dict] = []
     actions: list[dict] = []
-    speculative_candidates: list[dict] = []
+    # Tighter typing (M6): the speculative-candidate shape is fixed by the
+    # synthesizer's pydantic model; surfacing it here lets the OpenAPI
+    # schema document the contract and lets the TS client drop its casts.
+    speculative_candidates: list[SpeculativeCandidate] = []
     deltas_from_prior: list[dict] = []
     rationale: str = ""
     cited_sources: list[str] = []

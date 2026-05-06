@@ -244,6 +244,118 @@ def test_phase_5_fund_manager_green_lights_or_rejects(monkeypatch, session):
 
 
 # ---------------------------------------------------------------------------
+# I3 — cap-load fallback path (Wave 3 review fix)
+# ---------------------------------------------------------------------------
+
+
+def test_synthesis_flow_falls_back_to_default_cap_when_yaml_load_fails(
+    session, monkeypatch,
+):
+    """When ``get_user_agent_settings`` raises (e.g. a malformed
+    agent_settings.yaml), the orchestrator must:
+
+      1. Not propagate the exception (the run continues to Phase 3+).
+      2. Emit ``plan.synthesis.cap_load_failed`` so the UI can surface
+         a "your speculation cap fell back to defaults" warning.
+      3. Apply the post-filter with the default cap (``SpeculationCap()``
+         — 0.001 == 0.1% NW).  We verify by emitting an over-cap candidate
+         from Phase 3 and asserting the post-filter dropped it.
+    """
+    from argosy.agents.plan_synthesizer_types import (
+        HorizonSection, PlanSynthesisOutput, SpeculativeCandidate, SynthesisInputs,
+    )
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    phase_3_called = {"hit": False}
+
+    def _phase_3_with_over_cap_candidate(**kw):
+        phase_3_called["hit"] = True
+        # 0.5% NW — over the 0.1% default cap.
+        over_cap = SpeculativeCandidate(
+            ticker="HOOD", thesis_summary="momentum",
+            suggested_position_usd=4_000,
+            suggested_position_pct_of_net_worth=0.005,
+            risk_ceiling_check=True, horizon_days=30,
+            expected_drawdown_pct=0.2, exit_trigger="stop -20%",
+            sourced_from=["sentiment"],
+        )
+        long = HorizonSection(
+            horizon="long", freshness_expected="annual",
+            status="no_change", posture="x",
+        )
+        medium = HorizonSection(
+            horizon="medium", freshness_expected="quarterly",
+            status="no_change", posture="x",
+        )
+        short = HorizonSection(
+            horizon="short", freshness_expected="monthly",
+            status="no_change", posture="x",
+            speculative_candidates=[over_cap],
+        )
+        return PlanSynthesisOutput(
+            long=long, medium=medium, short=short, inputs=SynthesisInputs(),
+        )
+
+    # Force the cap-load helper to raise — the production code path uses
+    # ``get_user_agent_settings`` directly, so we patch the orchestrator
+    # module's view of it.  Both module-local and ``argosy.config`` patches
+    # are safe; the call in the orchestrator does ``from argosy.config
+    # import ...`` at function call time, so the canonical patch target is
+    # ``argosy.config.get_user_agent_settings``.
+    def _boom(_uid):
+        raise RuntimeError("simulated yaml parse error")
+
+    monkeypatch.setattr(
+        "argosy.config.get_user_agent_settings", _boom,
+    )
+
+    # Capture events to verify the operator-alert path.  ``_emit_event``
+    # is a module-private helper in the orchestrator submodule that
+    # delegates to ``publish_event_threadsafe``.  The orchestrator calls
+    # it as a bare local name, so patch it on the orchestrator submodule
+    # (NOT on the package facade — the call site doesn't go through the
+    # package namespace for ``_emit_event``).
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch_mod
+
+    captured: list[tuple[str, dict]] = []
+
+    def _capture(name, payload):
+        captured.append((name, payload))
+
+    monkeypatch.setattr(orch_mod, "_emit_event", _capture)
+
+    monkeypatch.setattr(flow, "_run_phase_1_analysts", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_run_phase_2_debates", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_run_phase_3_synthesizer",
+                        _phase_3_with_over_cap_candidate)
+    monkeypatch.setattr(flow, "_run_phase_4_risk", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_run_phase_5_fund_manager", lambda **kw: True)
+    monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+    # Must not raise.
+    out = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+
+    # Phase 3 stub must have been invoked — i.e. the run continued past
+    # the cap-load failure.
+    assert phase_3_called["hit"] is True
+
+    # The cap_load_failed event should have been emitted at least once.
+    assert any(name == "plan.synthesis.cap_load_failed" for name, _ in captured), (
+        f"expected plan.synthesis.cap_load_failed event; got {[n for n, _ in captured]}"
+    )
+
+    # The post-filter applied the default cap (0.001) to the over-cap
+    # candidate, dropping it from the persisted draft.
+    pv = session.get(PlanVersion, out.draft_id)
+    short = json.loads(pv.horizon_short_json)
+    assert short.get("speculative_candidates") == [], (
+        f"default-cap post-filter should have dropped the over-cap candidate; "
+        f"got {short.get('speculative_candidates')}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # I2 — _horizon_md operator-precedence fix
 # ---------------------------------------------------------------------------
 

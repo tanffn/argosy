@@ -863,6 +863,25 @@ export interface DeltaItem {
   user_edit_note: string | null;
 }
 
+/**
+ * Bounded-risk speculative idea surfaced in the short-horizon plan.
+ *
+ * Mirrors the python pydantic model
+ * ``argosy.agents.plan_synthesizer_types.SpeculativeCandidate`` —
+ * keep the two in sync when adding fields.
+ */
+export interface SpeculativeCandidate {
+  ticker: string;
+  thesis_summary: string;
+  suggested_position_usd: number;
+  suggested_position_pct_of_net_worth: number;
+  risk_ceiling_check: boolean;
+  horizon_days: number;
+  expected_drawdown_pct: number;
+  exit_trigger: string;
+  sourced_from: string[];
+}
+
 export interface HorizonView {
   horizon: "long" | "medium" | "short";
   freshness_expected: "annual" | "quarterly" | "monthly";
@@ -871,7 +890,7 @@ export interface HorizonView {
   targets: Array<Record<string, unknown>>;
   themes: Array<Record<string, unknown>>;
   actions: Array<Record<string, unknown>>;
-  speculative_candidates: Array<Record<string, unknown>>;
+  speculative_candidates: SpeculativeCandidate[];
   deltas_from_prior: DeltaItem[];
   rationale: string;
   cited_sources: string[];

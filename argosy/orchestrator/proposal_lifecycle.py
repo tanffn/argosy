@@ -28,7 +28,7 @@ so unit tests can monkeypatch it without ever touching the DB.
 
 from __future__ import annotations
 
-from typing import Any
+import json
 
 from sqlalchemy.orm import Session
 
@@ -45,12 +45,12 @@ def create_speculative_proposal(
     size_usd: float,
     order_type: str = "limit",
     tier: str = "T0",
-    account_class: str = "argonaut",
+    account_class: str = "limited",
     rationale_summary: str = "",
     exit_trigger: str = "",
     execution_mode: str = "paper",
     paper: bool = True,
-    **_extra: Any,
+    decision_run_id: int | None = None,
 ) -> ProposalRow:
     """Persist one speculation-origin proposal and return the ORM row.
 
@@ -58,44 +58,51 @@ def create_speculative_proposal(
       - ``size_usd`` lands in ``size_shares_or_currency`` with units
         ``currency`` so downstream cost-basis / risk math reads it as a
         dollar number, not a share count.
-      - ``account_class`` accepts the wider Argonaut value (the column is
-        a free-form ``String(16)``; only the pydantic transport object
-        narrows to ``Literal["main", "limited"]``).
+      - ``account_class`` defaults to ``"limited"`` (the DB/code value
+        the broker router in ``argosy/execution/router.py`` checks; the
+        "Argonaut" feature is the user-facing name for that class).
       - The ``paper`` flag is not persisted on ``proposals`` — it lives
         on ``Fill`` rows once the order is filled. We thread it back in
         the return tuple via ``RouteResult`` so the caller can stamp
         downstream PaperFill/audit records correctly.
-      - ``exit_trigger`` and ``execution_mode`` are stashed inside
-        ``rationale_summary`` (prefix-tagged with ``[exit]`` / ``[mode]``)
-        so the existing schema carries them without a migration. A
-        future migration may move them to dedicated columns.
+      - ``exit_trigger`` and ``execution_mode`` are persisted in the
+        existing JSON column ``expected_impact_json`` rather than smuggled
+        as prefix-tagged lines inside ``rationale_summary`` — that column
+        already exists on the ``proposals`` table and was previously
+        unused for speculation rows.
+      - ``decision_run_id`` (I1) carries the synthesis-run audit lineage
+        from the originating PlanVersion forward onto the proposals row
+        — so the SDD §6.11 promise ("you can reconstruct the full
+        synthesis by joining plan_versions.decision_run_id →
+        decision_runs.id") extends to speculation-origin proposals too.
+        ProposalHistory has no ``decision_run_id`` column of its own;
+        joining ProposalHistory.proposal_id → proposals.decision_run_id
+        recovers the lineage when reading history rows.
 
     Requires a ``session`` keyword argument bound to an open
     SQLAlchemy session.
 
     .. note::
-       This helper **commits the session itself** (see ``session.commit()``
-       below). Callers must therefore not have uncommitted state that
-       should remain pending — any pending writes will be flushed and
-       committed together with the proposal + history rows. If the caller
-       wants transactional isolation, it must use a separate session.
+       This helper **flushes** the session to populate ``row.id`` but
+       does NOT commit. The caller (``route_accepted_candidate``) owns
+       the transaction and is responsible for committing — this avoids
+       the prior split-ownership where both helper and caller could
+       commit, mixing concerns.
     """
     if session is None:
         raise ValueError(
-            "create_speculative_proposal requires session="
+            "create_speculative_proposal requires the `session` keyword argument"
         )
 
-    # TODO(plan-distillate-wave4): promote ``exit_trigger`` and
-    # ``execution_mode`` to dedicated columns on the ``proposals`` table
-    # so we no longer have to stash them as ``[exit]`` / ``[mode]``
-    # prefix-tagged lines inside ``rationale_summary``. This requires an
-    # alembic migration + a backfill step that parses the prefixes out of
-    # existing speculation-origin rows.
-    summary = rationale_summary or ""
-    if exit_trigger:
-        summary = f"{summary}\n[exit] {exit_trigger}".strip()
-    if execution_mode and execution_mode != "paper":
-        summary = f"{summary}\n[mode] {execution_mode}".strip()
+    # TODO(plan-distillate-wave4): if the product surfaces filtering /
+    # search by exit_trigger or execution_mode, promote them from this
+    # JSON column to dedicated columns via an alembic migration + a
+    # one-shot backfill. For now the JSON column is sufficient — the
+    # data is read back in the proposal-detail UI, never aggregated.
+    expected_impact_json = json.dumps({
+        "exit_trigger": exit_trigger,
+        "execution_mode": execution_mode,
+    })
 
     row = ProposalRow(
         user_id=user_id,
@@ -108,9 +115,10 @@ def create_speculative_proposal(
         tier=tier,
         account_class=account_class,
         status=ProposalStatus.DRAFT.value,
-        rationale_summary=summary,
-        expected_impact_json="",
+        rationale_summary=rationale_summary or "",
+        expected_impact_json=expected_impact_json,
         confidence="MEDIUM",
+        decision_run_id=decision_run_id,
     )
     session.add(row)
     session.flush()  # populate row.id
@@ -122,7 +130,7 @@ def create_speculative_proposal(
         note=f"speculation-origin candidate; paper={paper}; mode={execution_mode}",
     )
     session.add(history)
-    session.commit()
+    session.flush()
     return row
 
 

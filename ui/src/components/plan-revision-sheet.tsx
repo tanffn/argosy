@@ -158,25 +158,20 @@ export function PlanRevisionSheet(props: PlanRevisionSheetProps) {
                       className="border border-cyan-500/30 rounded-md p-2 text-sm"
                     >
                       <div className="flex items-center justify-between">
-                        <strong>{(c as { ticker: string }).ticker}</strong>
+                        <strong>{c.ticker}</strong>
                         <span className="text-xs font-mono text-muted-foreground">
-                          ≤ $
-                          {(
-                            c as { suggested_position_usd: number }
-                          ).suggested_position_usd.toLocaleString()}{" "}
-                          ·{" "}
-                          {(
-                            (c as { suggested_position_pct_of_net_worth: number })
-                              .suggested_position_pct_of_net_worth * 100
-                          ).toFixed(2)}
+                          ≤ ${c.suggested_position_usd.toLocaleString()} ·{" "}
+                          {(c.suggested_position_pct_of_net_worth * 100).toFixed(
+                            2,
+                          )}
                           % NW
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        {(c as { thesis_summary: string }).thesis_summary}
+                        {c.thesis_summary}
                       </p>
                       <p className="text-[10px] font-mono text-muted-foreground">
-                        exit: {(c as { exit_trigger: string }).exit_trigger}
+                        exit: {c.exit_trigger}
                       </p>
                     </li>
                   ))}
