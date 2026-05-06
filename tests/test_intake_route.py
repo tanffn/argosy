@@ -506,3 +506,113 @@ async def test_upload_creates_user_if_missing(
             assert "tax_residency" in ctx.identity_yaml
     finally:
         reset_intake_extractor_factory()
+
+
+# ----------------------------------------------------------------------
+# T1.9 — distillation hook on upload happy-path
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_intake_upload_triggers_distillation(
+    engine: None, client: AsyncClient, monkeypatch
+) -> None:
+    """After upload, the inserted plan_versions row has distillate_json populated."""
+    import io
+
+    from argosy.agents.plan_distiller_types import Goal, PlanDistillate
+    from argosy.services import plan_distiller_service as svc
+
+    # Stub the agent so no LLM call happens.
+    class _Fake:
+        def run_sync(self, **kw):
+            payload = PlanDistillate(
+                plan_label="Test plan",
+                distilled_at_iso="2026-05-05T00:00:00+00:00",
+                goals=[Goal(label="retirement_target_year", value="2031")],
+            )
+            return type(
+                "R",
+                (),
+                {
+                    "output": payload,
+                    "model": "fake",
+                    "tokens_in": 1,
+                    "tokens_out": 1,
+                    "cost_usd": 0.0,
+                },
+            )()
+
+    monkeypatch.setattr(svc, "_make_agent", lambda user_id: _Fake())
+    set_intake_extractor_factory(_extractor_factory(_CANNED_EXTRACTION))
+    try:
+        files = {
+            "file": (
+                "plan.md",
+                io.BytesIO(b"# Plan\n\nRetirement: 2031\n"),
+                "text/markdown",
+            )
+        }
+        data = {"user_id": "ariel"}
+        r = await client.post("/api/intake/upload", files=files, data=data)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        plan_id = body["plan_version_id"]
+
+        # Distillate should now be populated.
+        async with db_mod.get_session() as session:
+            pv = (
+                await session.execute(
+                    select(PlanVersion).where(PlanVersion.id == plan_id)
+                )
+            ).scalar_one_or_none()
+            assert pv is not None
+            assert pv.distillate_json is not None, "distillate_json should be populated"
+            assert "retirement_target_year" in pv.distillate_json
+            assert pv.distilled_at is not None
+            assert pv.source_hash is not None
+            assert pv.role == "baseline"
+    finally:
+        reset_intake_extractor_factory()
+
+
+@pytest.mark.asyncio
+async def test_intake_upload_distillation_failure_is_non_fatal(
+    engine: None, client: AsyncClient, monkeypatch
+) -> None:
+    """If the distiller raises, the upload still succeeds; distillate stays NULL.
+
+    Distillation is a value-add, not a precondition for the upload to
+    be useful. The user's plan markdown must still be captured.
+    """
+    import io
+
+    from argosy.services import plan_distiller_service as svc
+
+    class _Boom:
+        def run_sync(self, **kw):
+            raise RuntimeError("LLM down")
+
+    monkeypatch.setattr(svc, "_make_agent", lambda user_id: _Boom())
+    set_intake_extractor_factory(_extractor_factory(_CANNED_EXTRACTION))
+    try:
+        files = {
+            "file": ("plan.md", io.BytesIO(b"# Plan"), "text/markdown")
+        }
+        data = {"user_id": "ariel"}
+        r = await client.post("/api/intake/upload", files=files, data=data)
+        assert r.status_code == 200, r.text
+        plan_id = r.json()["plan_version_id"]
+
+        async with db_mod.get_session() as session:
+            pv = (
+                await session.execute(
+                    select(PlanVersion).where(PlanVersion.id == plan_id)
+                )
+            ).scalar_one_or_none()
+            assert pv is not None
+            assert pv.distillate_json is None  # distillation failed silently
+            assert pv.role == "baseline"
+            assert pv.raw_markdown == "# Plan"
+    finally:
+        reset_intake_extractor_factory()

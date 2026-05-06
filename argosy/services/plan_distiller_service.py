@@ -140,6 +140,116 @@ def distill_baseline_plan(
     )
 
 
+async def distill_baseline_plan_async(
+    *,
+    plan_version_id: int,
+    user_id: str,
+    preserve_user_edits: bool = True,
+) -> DistillResult:
+    """Async variant of distill_baseline_plan for use inside FastAPI handlers.
+
+    Opens its own async DB session so callers don't need to manage one.
+    The agent call (which uses ``asyncio.run`` internally via ``run_sync``)
+    is dispatched to a thread via ``asyncio.to_thread`` to avoid the
+    "event loop already running" error.
+
+    Args:
+        plan_version_id: must exist and have role='baseline'.
+        user_id: stamped on log events.
+        preserve_user_edits: same semantics as distill_baseline_plan.
+
+    Returns:
+        DistillResult — same shape as the sync variant.
+    """
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from argosy.state import db as db_mod
+
+    async with db_mod.get_session() as session:
+        pv = await session.get(PlanVersion, plan_version_id)
+        if pv is None:
+            raise ValueError(f"plan_version {plan_version_id} not found")
+        if pv.role != "baseline":
+            raise ValueError(
+                f"plan_version {plan_version_id} role={pv.role!r}, expected 'baseline'"
+            )
+
+        # Snapshot fields needed by the agent and for user-edit merge.
+        version_label = pv.version_label
+        raw_markdown = pv.raw_markdown
+        prior_distillate_json = pv.distillate_json if preserve_user_edits else None
+
+    # Capture prior user-edits.
+    prior_edits: dict[str, dict[str, dict]] = {}
+    if prior_distillate_json:
+        prior = json.loads(prior_distillate_json)
+        for category in ("goals", "principles", "decision_rules", "targets", "constraints"):
+            for item in prior.get(category) or []:
+                if item.get("user_edited"):
+                    prior_edits.setdefault(category, {})[item["label"]] = item
+
+    # Run the agent in a thread (agent.run_sync calls asyncio.run internally).
+    def _call_agent() -> PlanDistillate:
+        agent = _make_agent(user_id)
+        result = agent.run_sync(
+            plan_label=version_label or "Imported plan",
+            plan_markdown=raw_markdown,
+        )
+        return result.output  # type: ignore[attr-defined]
+
+    fresh: PlanDistillate = await asyncio.to_thread(_call_agent)
+
+    # Merge user edits back in.
+    edits_preserved = 0
+    if prior_edits:
+        for category, by_label in prior_edits.items():
+            items = getattr(fresh, category)
+            new_items = []
+            for fresh_item in items:
+                edit = by_label.get(fresh_item.label)
+                if edit is None:
+                    new_items.append(fresh_item)
+                    continue
+                fresh_dict = fresh_item.model_dump()
+                item_model_fields = type(fresh_item).model_fields
+                for k, v in edit.items():
+                    if k in item_model_fields and k != "label":
+                        fresh_dict[k] = v
+                merged = type(fresh_item).model_validate(fresh_dict)
+                new_items.append(merged)
+                edits_preserved += 1
+            setattr(fresh, category, new_items)
+
+    # Persist back.
+    source_hash = _sha256(raw_markdown)
+    distilled_at = datetime.now(timezone.utc)
+    async with db_mod.get_session() as session:
+        pv = await session.get(PlanVersion, plan_version_id)
+        if pv is None:
+            raise ValueError(f"plan_version {plan_version_id} disappeared after agent call")
+        pv.distillate_json = fresh.model_dump_json()
+        pv.distillate_rendered = render_distillate(fresh)
+        pv.source_hash = source_hash
+        pv.distilled_at = distilled_at
+        await session.commit()
+
+    log.info(
+        "plan_distiller.persisted",
+        plan_version_id=plan_version_id,
+        user_id=user_id,
+        edits_preserved=edits_preserved,
+    )
+
+    return DistillResult(
+        plan_version_id=plan_version_id,
+        distillate=fresh,
+        source_hash=source_hash,
+        user_edits_preserved=edits_preserved,
+    )
+
+
 def set_distillate_item_user_edit(
     session: Session,
     *,
@@ -182,5 +292,6 @@ def set_distillate_item_user_edit(
 __all__ = [
     "DistillResult",
     "distill_baseline_plan",
+    "distill_baseline_plan_async",
     "set_distillate_item_user_edit",
 ]

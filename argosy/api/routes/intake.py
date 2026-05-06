@@ -489,6 +489,27 @@ async def post_upload(
 
         await session.commit()
 
+    # ---- 5.5. Distill the baseline plan (non-fatal value-add) ----------
+    # distill_baseline_plan_async opens its own async sessions and dispatches
+    # the agent call (which calls asyncio.run internally) to a thread.
+    # Failure is intentionally swallowed — the upload is still useful without
+    # a distillate; the user can retry via the Re-distill button (T1.11).
+    try:
+        from argosy.services.plan_distiller_service import distill_baseline_plan_async
+
+        await distill_baseline_plan_async(
+            plan_version_id=plan_version_id,
+            user_id=user_id,
+            preserve_user_edits=False,  # initial import — no prior edits
+        )
+    except Exception as exc:  # noqa: BLE001 — non-fatal value-add
+        _log.warning(
+            "intake_upload.distill_failed",
+            plan_version_id=plan_version_id,
+            user_id=user_id,
+            error=str(exc),
+        )
+
     # ---- 6. Run the extractor (no DB session held) --------------------
     factory = _EXTRACTOR_FACTORY
     if factory is None:
