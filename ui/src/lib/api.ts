@@ -536,6 +536,46 @@ export const api = {
       if (!r.ok) throw new Error(`HTTP ${r.status} for /api/settings`);
       return (await r.json()) as Record<string, unknown>;
     }),
+
+  // ----------------------------------------------------------------------
+  // Wave 1: Baseline distillate
+  // ----------------------------------------------------------------------
+
+  planBaseline: (userId: string) =>
+    getJSON<BaselineResponse>(
+      `/api/plan/baseline?user_id=${encodeURIComponent(userId)}`,
+    ),
+  planBaselineDistill: (userId: string, preserveUserEdits = true) =>
+    postJSON<BaselineResponse>(
+      `/api/plan/baseline/distill?user_id=${encodeURIComponent(userId)}&preserve_user_edits=${preserveUserEdits}`,
+      {},
+    ),
+  planBaselineDistillateEdit: (
+    userId: string,
+    category: string,
+    itemLabel: string,
+    body: {
+      value?: string | number;
+      rationale?: string;
+      detail?: string;
+      rule?: string;
+      user_edit_note?: string;
+    },
+  ) =>
+    fetch(
+      apiUrl(
+        `/api/plan/baseline/distillate/${encodeURIComponent(category)}/${encodeURIComponent(itemLabel)}?user_id=${encodeURIComponent(userId)}`,
+      ),
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ).then(async (r) => {
+      if (!r.ok)
+        throw new Error(`HTTP ${r.status} for /api/plan/baseline/distillate`);
+      return (await r.json()) as BaselineResponse;
+    }),
 };
 
 // ----------------------------------------------------------------------
@@ -658,4 +698,75 @@ export interface AdvisorHomeBriefResponse {
   bullets: AdvisorBriefBullet[];
   cta: AdvisorBriefCTA;
   generated_at: string;
+}
+
+// ----------------------------------------------------------------------
+// Wave 1: Baseline distillate types
+// ----------------------------------------------------------------------
+
+export interface DistillateGoal {
+  label: string;
+  value: string;
+  rationale: string;
+  source_section: string;
+  user_edited: boolean;
+  user_edit_note: string | null;
+}
+
+export interface DistillatePrinciple {
+  label: string;
+  rationale: string;
+  source_section: string;
+  user_edited: boolean;
+  user_edit_note: string | null;
+}
+
+export interface DistillateDecisionRule {
+  label: string;
+  rule: string;
+  source_section: string;
+  user_edited: boolean;
+  user_edit_note: string | null;
+}
+
+export interface DistillateTarget {
+  label: string;
+  value: number;
+  unit: string;
+  stated_at: string; // ISO date
+  revisit_after: string; // ISO date
+  rationale: string;
+  source_section: string;
+  user_edited: boolean;
+  user_edit_note: string | null;
+}
+
+export interface DistillateConstraint {
+  label: string;
+  detail: string;
+  source_section: string;
+  user_edited: boolean;
+  user_edit_note: string | null;
+}
+
+export interface PlanDistillate {
+  plan_label: string;
+  distilled_at_iso: string;
+  goals: DistillateGoal[];
+  principles: DistillatePrinciple[];
+  risk_priorities: string[];
+  decision_rules: DistillateDecisionRule[];
+  targets: DistillateTarget[];
+  constraints: DistillateConstraint[];
+  stress_tolerance: string;
+}
+
+export interface BaselineResponse {
+  plan_version_id: number;
+  version_label: string;
+  raw_markdown: string;
+  distillate: PlanDistillate | null;
+  distillate_rendered: string | null;
+  distilled_at: string | null;
+  source_hash: string | null;
 }

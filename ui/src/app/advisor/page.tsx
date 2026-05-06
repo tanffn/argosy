@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Markdown } from "@/components/markdown";
+import { PlanInScopeCard } from "@/components/plan-in-scope-card";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -283,6 +284,8 @@ export default function AdvisorPage() {
       </header>
 
       {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+
+      <PlanInScopeCard userId={USER_ID} />
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_320px] gap-6">
         {/* ---- Main column: chat + upload ---- */}
