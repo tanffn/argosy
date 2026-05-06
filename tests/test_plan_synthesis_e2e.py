@@ -1,14 +1,21 @@
 """End-to-end synthesis test — calls the live fleet.
 
-Marked llm_eval; skipped without ANTHROPIC_API_KEY. The Wave 2 gate
-requires this test to PASS at least once before promoting to Wave 3.
+Marked llm_eval. The Wave 2 gate requires this test to PASS at least
+once before promoting to Wave 3.
 
-Cost: ~$5-8 per run (T3 depth, full fleet). Run sparingly.
+The test auto-skips when:
+  - backend == "api_key" and ANTHROPIC_API_KEY is not set
+  - backend == "claude_code" and ``claude.exe`` is not on PATH
+
+Cost: ~$5-8 per run on api_key backend (T3 depth, full fleet);
+free-of-direct-cost on claude_code backend (charged to the user's
+Claude Code subscription instead). Run sparingly either way.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 
 import pytest
 from sqlalchemy.orm import sessionmaker
@@ -16,10 +23,29 @@ from sqlalchemy.orm import sessionmaker
 from argosy.state.models import PlanVersion, User
 
 
+def _llm_backend_available() -> bool:
+    """Return True when at least one LLM backend is reachable."""
+    try:
+        from argosy.config import get_settings
+
+        backend = get_settings().anthropic.backend
+    except Exception:
+        backend = "claude_code"
+
+    if backend == "api_key":
+        return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    if backend == "claude_code":
+        return shutil.which("claude") is not None
+    return False
+
+
 @pytest.mark.llm_eval
 @pytest.mark.skipif(
-    not os.environ.get("ANTHROPIC_API_KEY"),
-    reason="ANTHROPIC_API_KEY not set",
+    not _llm_backend_available(),
+    reason=(
+        "No LLM backend reachable: set ANTHROPIC_API_KEY (api_key backend) "
+        "or ensure claude.exe is on PATH (claude_code backend)"
+    ),
 )
 def test_synthesis_e2e_jacobs_baseline(alembic_engine_at_head):
     """Run synthesis end-to-end against a Jacobs-style baseline."""
