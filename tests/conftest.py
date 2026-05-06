@@ -12,6 +12,66 @@ from argosy.state import db as db_module
 from argosy.state.models import Base
 
 
+@pytest.fixture
+def client_with_db(tmp_path):
+    """Synchronous TestClient backed by a dedicated file-backed SQLite DB.
+
+    Provides ``client_with_db.app.state.session_factory`` so test setup
+    code can insert rows directly, and overrides the ``get_db`` dependency
+    used by the plan routes.
+
+    Both the sync engine (for the route's get_db dependency and fixture
+    setup) and the async engine (for distill_baseline_plan_async which
+    opens its own session via db_mod.get_session()) are pointed at the
+    same file-backed SQLite so all code paths share the same data.
+    """
+    import asyncio
+
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+    from starlette.testclient import TestClient
+
+    from argosy.api.main import create_app
+    from argosy.api.routes.plan import get_db
+
+    # File-backed SQLite in tmp_path; shared by sync + async connections.
+    db_path = tmp_path / "test_plan.db"
+    sync_url = f"sqlite:///{db_path}"
+    async_url = f"sqlite+aiosqlite:///{db_path}"
+
+    # Sync engine — used by the get_db dependency and by fixture setup.
+    engine = sa.create_engine(sync_url, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+    # Async engine — used by distill_baseline_plan_async's db_mod.get_session().
+    # Point it at the same file so the async path can read the rows that
+    # the sync path inserted.
+    db_module.init_engine(async_url)
+
+    def override_get_db():
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app = create_app()
+    app.state.session_factory = SessionLocal
+    app.dependency_overrides[get_db] = override_get_db
+
+    with TestClient(app, raise_server_exceptions=True) as tc:
+        yield tc
+
+    # Tear down async engine.
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(db_module.dispose_engine())
+    finally:
+        loop.close()
+    engine.dispose()
+
+
 @pytest_asyncio.fixture
 async def engine() -> AsyncIterator[None]:
     """Set up an in-memory SQLite engine for the duration of a test."""

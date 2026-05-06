@@ -1,27 +1,79 @@
-"""Plan-related routes (Phase 2).
+"""Plan-related routes (Phase 2 + Wave 1 plan-distillate).
 
+Phase 2 endpoints:
   GET  /api/plan/current  — latest plan version + latest critique
   POST /api/plan/critique — queue a re-critique on demand (returns the
                             new critique inline once complete; Phase 2
                             runs synchronously since there is no job
                             queue yet).
+
+Wave 1 endpoints (T1.10 / T1.11 / T1.12):
+  GET   /api/plan/baseline                              — fetch active baseline + distillate
+  POST  /api/plan/baseline/distill                      — manual re-distill trigger
+  PATCH /api/plan/baseline/distillate/{category}/{item} — apply a user edit to one item
+
+Wave 2 will add the draft + current distillate endpoints.
 """
 
 from __future__ import annotations
 
 import json
+from typing import Generator
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import desc, select
+from sqlalchemy.orm import Session
 
 from argosy.agents.errors import AgentRunError, MissingAPIKeyError
 from argosy.agents.plan_critique import PlanCritiqueAgent
 from argosy.api.events import publish_event
 from argosy.state import db as db_mod
 from argosy.state.models import PlanCritique, PlanVersion, UserContext
+from argosy.state.queries import get_active_baseline
 
 router = APIRouter(prefix="/plan", tags=["plan"])
+
+
+# ---------------------------------------------------------------------------
+# Sync DB dependency — used by Wave 1 routes.
+# The existing Phase 2 routes use the async db_mod.get_session() pattern.
+# Wave 1 routes use sync def handlers + a sync SQLAlchemy session so they
+# can call sync helpers (get_active_baseline, set_distillate_item_user_edit)
+# without bridging back to async.  Tests override this dependency via
+# app.dependency_overrides[get_db].
+# ---------------------------------------------------------------------------
+
+
+def get_db() -> Generator[Session, None, None]:
+    """Yield a sync SQLAlchemy session.
+
+    In production the session factory is configured by the first caller
+    that triggers init via the module-level lazy-init below.  In tests
+    the dependency is overridden via ``app.dependency_overrides[get_db]``
+    (see ``conftest.client_with_db``).
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    global _sync_engine, _sync_session_factory
+    if _sync_session_factory is None:
+        from argosy.config import get_settings
+
+        settings = get_settings()
+        sync_url = settings.database_url.replace("+aiosqlite", "")
+        _sync_engine = create_engine(sync_url, connect_args={"check_same_thread": False})
+        _sync_session_factory = sessionmaker(bind=_sync_engine, expire_on_commit=False)
+
+    db: Session = _sync_session_factory()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+_sync_engine = None
+_sync_session_factory = None
 
 
 class PlanCurrentDTO(BaseModel):
@@ -163,4 +215,132 @@ async def queue_critique(req: CritiqueRequestDTO) -> CritiqueQueuedDTO:
     )
 
 
-__all__ = ["router"]
+# ---------------------------------------------------------------------------
+# Wave 1 — baseline distillate endpoints (T1.10 / T1.11 / T1.12)
+# ---------------------------------------------------------------------------
+
+
+class BaselineResponse(BaseModel):
+    plan_version_id: int
+    version_label: str
+    raw_markdown: str
+    distillate: dict | None
+    distillate_rendered: str | None
+    distilled_at: str | None
+    source_hash: str | None
+
+
+def _build_baseline_response(pv: PlanVersion) -> BaselineResponse:
+    """Shape a PlanVersion row into the baseline API response."""
+    distillate_obj = json.loads(pv.distillate_json) if pv.distillate_json else None
+    return BaselineResponse(
+        plan_version_id=pv.id,
+        version_label=pv.version_label,
+        raw_markdown=pv.raw_markdown,
+        distillate=distillate_obj,
+        distillate_rendered=pv.distillate_rendered,
+        distilled_at=pv.distilled_at.isoformat() if pv.distilled_at else None,
+        source_hash=pv.source_hash,
+    )
+
+
+@router.get("/baseline", response_model=BaselineResponse)
+def get_baseline(user_id: str, db: Session = Depends(get_db)) -> BaselineResponse:
+    """Return the active baseline plan + distillate for the user.
+
+    404 when no baseline row exists (user hasn't uploaded a plan yet).
+    """
+    pv = get_active_baseline(db, user_id)
+    if pv is None:
+        raise HTTPException(status_code=404, detail="no baseline plan for user")
+    return _build_baseline_response(pv)
+
+
+@router.post("/baseline/distill", response_model=BaselineResponse)
+async def post_baseline_distill(
+    user_id: str,
+    preserve_user_edits: bool = True,
+    db: Session = Depends(get_db),
+) -> BaselineResponse:
+    """Trigger a fresh distillation pass on the active baseline.
+
+    Used by the "Re-distill" UI button. Preserves user edits by default.
+    Pass ``preserve_user_edits=false`` to overwrite all prior user edits.
+
+    The async variant (distill_baseline_plan_async) opens its own DB
+    session and dispatches the agent call to a thread, so the route's
+    sync ``db`` session is only used for the initial lookup and the
+    post-distill refresh.
+    """
+    pv = get_active_baseline(db, user_id)
+    if pv is None:
+        raise HTTPException(status_code=404, detail="no baseline plan for user")
+
+    from argosy.services.plan_distiller_service import distill_baseline_plan_async
+
+    await distill_baseline_plan_async(
+        plan_version_id=pv.id,
+        user_id=user_id,
+        preserve_user_edits=preserve_user_edits,
+    )
+    # Re-read the updated row from the DB (the async function writes via
+    # its own session; expire + refresh pulls the fresh columns).
+    db.expire(pv)
+    db.refresh(pv)
+    return _build_baseline_response(pv)
+
+
+class DistillateItemEditRequest(BaseModel):
+    value: str | float | None = None
+    rationale: str | None = None
+    detail: str | None = None
+    rule: str | None = None
+    user_edit_note: str | None = None
+
+
+@router.patch(
+    "/baseline/distillate/{category}/{item_label}",
+    response_model=BaselineResponse,
+)
+def patch_distillate_item(
+    category: str,
+    item_label: str,
+    user_id: str,
+    body: DistillateItemEditRequest,
+    db: Session = Depends(get_db),
+) -> BaselineResponse:
+    """Apply a user edit to one item of the distillate.
+
+    Sets ``user_edited=true`` on the matched item and merges the
+    supplied fields in.  404 when no baseline exists or the item
+    label doesn't exist in the named category.
+    """
+    pv = get_active_baseline(db, user_id)
+    if pv is None:
+        raise HTTPException(status_code=404, detail="no baseline plan for user")
+
+    from argosy.services.plan_distiller_service import set_distillate_item_user_edit
+
+    # Only pass non-None fields so the helper doesn't overwrite omitted ones.
+    new_value = {k: v for k, v in body.model_dump().items() if v is not None}
+    try:
+        set_distillate_item_user_edit(
+            db,
+            plan_version_id=pv.id,
+            category=category,
+            item_label=item_label,
+            new_value=new_value,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    db.refresh(pv)
+    return _build_baseline_response(pv)
+
+
+__all__ = [
+    "BaselineResponse",
+    "DistillateItemEditRequest",
+    "get_db",
+    "router",
+]
