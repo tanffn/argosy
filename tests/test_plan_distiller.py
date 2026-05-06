@@ -113,3 +113,57 @@ def test_plan_distiller_build_prompt_contains_exclusion_list():
     assert "NVDA at 66% today" in usr
     # Plan label must be passed through.
     assert "Jacobs Wealth Plan v2.0" in usr
+
+
+def test_render_distillate_to_markdown_smoke():
+    """Rendered markdown contains every category header and each label."""
+    from datetime import date
+
+    from argosy.agents.plan_distiller_render import render_distillate
+    from argosy.agents.plan_distiller_types import (
+        Constraint,
+        DecisionRule,
+        Goal,
+        PlanDistillate,
+        Principle,
+        Target,
+    )
+
+    d = PlanDistillate(
+        plan_label="Jacobs v2.0",
+        distilled_at_iso="2026-05-05T00:00:00+00:00",
+        goals=[Goal(label="retirement_target_year", value="2031")],
+        principles=[Principle(label="UCITS-first")],
+        risk_priorities=["concentration", "fx"],
+        decision_rules=[DecisionRule(label="bracket_aware_rsu_sales", rule="spread sales")],
+        targets=[
+            Target(
+                label="NVDA concentration",
+                value=0.15,
+                unit="pct_of_portfolio",
+                stated_at=date(2026, 2, 1),
+                revisit_after=date(2026, 8, 1),
+            )
+        ],
+        constraints=[Constraint(label="no_consolidate_brokers", detail="keep separate")],
+        stress_tolerance="30% drawdown OK while employed",
+    )
+
+    md = render_distillate(d)
+    assert "# Plan distillate — Jacobs v2.0" in md
+    assert "## Goals" in md
+    assert "retirement_target_year" in md
+    assert "## Principles" in md
+    assert "UCITS-first" in md
+    assert "## Risk priorities" in md
+    assert "concentration" in md
+    assert "## Decision rules" in md
+    assert "bracket_aware_rsu_sales" in md
+    assert "## Targets" in md
+    assert "NVDA concentration" in md
+    assert "stated 2026-02-01" in md
+    assert "revisit 2026-08-01" in md
+    assert "## Constraints" in md
+    assert "no_consolidate_brokers" in md
+    assert "## Stress tolerance" in md
+    assert "30% drawdown OK" in md
