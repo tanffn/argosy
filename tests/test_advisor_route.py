@@ -1254,3 +1254,55 @@ async def test_signal_bullet_omitted_when_pension_older_than_365_days(
     body = res.json()
     kinds = {b["kind"] for b in body["bullets"]}
     assert "signal" not in kinds, body
+
+
+# ----------------------------------------------------------------------
+# /api/advisor/check-in (Wave 2 T2.12) — user-initiated plan synthesis.
+# Uses the sync `client_with_db` fixture (file-backed SQLite) because
+# `run_synthesis` is sync and takes a sync SQLAlchemy Session via the
+# `get_db` dependency from argosy.api.routes.plan.
+# ----------------------------------------------------------------------
+
+
+def test_post_advisor_checkin_returns_decision_run_id(client_with_db, monkeypatch):
+    """POST /api/advisor/check-in should fire run_synthesis and return 202."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.state.models import PlanVersion, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.add(PlanVersion(user_id="ariel", role="baseline", raw_markdown="# Plan"))
+            sess.commit()
+    finally:
+        sess.close()
+
+    captured = {}
+
+    def _fake_run(session, *, user_id, trigger, guidance=""):
+        captured["user_id"] = user_id
+        captured["trigger"] = trigger
+        captured["guidance"] = guidance
+        class _R:
+            decision_run_id = "test-cr-1"
+            draft_id = 42
+        return _R()
+
+    monkeypatch.setattr(flow, "run_synthesis", _fake_run)
+
+    body = {"user_id": "ariel", "guidance": "weight tax analyst more heavily", "urgency": "now"}
+    r = client_with_db.post("/api/advisor/check-in", json=body)
+    assert r.status_code == 202, r.text
+    out = r.json()
+    assert out["decision_run_id"] == "test-cr-1"
+    assert out["draft_id"] == 42
+    assert captured["user_id"] == "ariel"
+    assert captured["trigger"] == "check_in"
+    assert "tax analyst" in captured["guidance"]
+
+
+def test_post_advisor_checkin_404_when_no_baseline(client_with_db):
+    body = {"user_id": "ghost", "guidance": "", "urgency": "now"}
+    r = client_with_db.post("/api/advisor/check-in", json=body)
+    assert r.status_code == 404

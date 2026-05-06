@@ -18,9 +18,10 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import desc, select
+from sqlalchemy.orm import Session
 
 from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.agents.advisor import AdvisorAgent, AdvisorTurnOutput
@@ -892,9 +893,71 @@ async def get_home_brief(
     )
 
 
+# ----------------------------------------------------------------------
+# /check-in — user-initiated plan synthesis (spec §7.6)
+# ----------------------------------------------------------------------
+#
+# Reuses the sync `get_db` dependency from `argosy.api.routes.plan` so
+# the existing `client_with_db` test fixture's `app.dependency_overrides`
+# entry covers this route too. `run_synthesis` is synchronous and takes
+# a sync SQLAlchemy `Session`, hence the sync handler here (the rest of
+# this module is async, but mixing is fine — FastAPI handles each route
+# independently).
+
+from argosy.api.routes.plan import get_db
+
+
+class CheckInRequest(BaseModel):
+    user_id: str
+    guidance: str = ""
+    urgency: str = "now"  # currently informational only
+
+
+class CheckInResponse(BaseModel):
+    status: str
+    decision_run_id: str
+    draft_id: int
+
+
+@router.post("/check-in", response_model=CheckInResponse, status_code=202)
+def post_check_in(
+    body: CheckInRequest,
+    db: Session = Depends(get_db),
+) -> CheckInResponse:
+    """User-initiated plan synthesis (spec §7.6).
+
+    Calls ``plan_synthesis.run_synthesis`` with ``trigger="check_in"`` and
+    returns the resulting decision_run_id + draft_id. 404 when the user
+    has no active baseline plan (the synthesis flow raises
+    ``NoBaselineError`` before any DB writes).
+    """
+    from argosy.orchestrator.flows.plan_synthesis import (
+        NoBaselineError,
+        run_synthesis,
+    )
+
+    try:
+        result = run_synthesis(
+            db,
+            user_id=body.user_id,
+            trigger="check_in",
+            guidance=body.guidance,
+        )
+    except NoBaselineError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return CheckInResponse(
+        status="accepted",
+        decision_run_id=result.decision_run_id,
+        draft_id=result.draft_id,
+    )
+
+
 __all__ = [
     "AdvisorTurnRequest",
     "AdvisorTurnResponse",
+    "CheckInRequest",
+    "CheckInResponse",
     "GapItemDTO",
     "GapStatusResponse",
     "HomeBriefBullet",
