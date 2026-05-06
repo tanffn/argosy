@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from argosy.agents.errors import AgentRunError, MissingAPIKeyError
 from argosy.agents.plan_critique import PlanCritiqueAgent
-from argosy.api.events import publish_event
+from argosy.api.events import publish_event, publish_event_threadsafe
 from argosy.state import db as db_mod
 from argosy.state.models import PlanCritique, PlanVersion, UserContext
 from argosy.state.queries import get_active_baseline
@@ -43,35 +43,11 @@ router = APIRouter(prefix="/plan", tags=["plan"])
 def _publish(event_type: str, payload: dict) -> None:
     """Publish a plan-lifecycle event via the in-process WebSocket layer.
 
-    Indirection point so tests can monkeypatch this symbol on the module
-    directly. Production behavior delegates to ``argosy.api.events`` (the
-    actual module name in this codebase; the original spec referenced
-    ``argosy.api.websocket`` which does not exist here).
-
-    The underlying ``publish_event`` is async, but plan draft routes are
-    sync, so we bridge by either scheduling on a running loop (when called
-    inside an async context) or running a one-shot loop. Any failure is
-    swallowed — event publishing must never break the route's primary work.
-
-    Wave 2: if the events module is missing or anything else goes wrong,
-    this is a best-effort no-op.
+    Thin shim kept for monkeypatch compatibility (tests patch this symbol on
+    the module directly).  All sync→async bridging logic lives in
+    ``publish_event_threadsafe`` in ``argosy.api.events`` (I3, I4, M2 fix).
     """
-    try:
-        from argosy.api.events import publish_event
-    except ImportError:
-        return
-    try:
-        import asyncio
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # No running loop — run the coroutine in a fresh one.
-            asyncio.run(publish_event(event_type, payload))
-            return
-        loop.create_task(publish_event(event_type, payload))
-    except Exception:  # pragma: no cover - defensive
-        return
+    publish_event_threadsafe(event_type, payload)
 
 
 # ---------------------------------------------------------------------------

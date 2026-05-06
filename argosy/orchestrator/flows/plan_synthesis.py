@@ -60,27 +60,17 @@ Trigger = Literal["scheduled", "check_in", "quarterly", "annual"]
 
 
 def _emit_event(event_type: str, payload: dict) -> None:
-    """Best-effort fire-and-forget publish from sync code.
+    """Best-effort fire-and-forget publish from sync code (M2 fix).
 
-    ADAPTATION (T2.16): the spec referenced ``argosy.api.websocket`` but the
-    actual module is ``argosy.api.events`` and ``publish_event`` is async.
-    We bridge by either scheduling on a running loop or running a one-shot
-    loop. Any failure is swallowed — synthesis must never break because of
-    a flaky event subscriber.
+    Delegates to ``publish_event_threadsafe`` which centralises the
+    sync→async bridge and uses a threading.Lock so it is safe when called
+    from asyncio.to_thread worker threads (monthly_cycle path).
+    Any failure is swallowed — synthesis must never break because of a
+    flaky event subscriber.
     """
-    try:
-        import asyncio
+    from argosy.api.events import publish_event_threadsafe
 
-        from argosy.api.events import publish_event
-
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            asyncio.run(publish_event(event_type, payload))
-            return
-        loop.create_task(publish_event(event_type, payload))
-    except Exception:  # pragma: no cover - defensive
-        pass
+    publish_event_threadsafe(event_type, payload)
 
 
 class NoBaselineError(Exception):
