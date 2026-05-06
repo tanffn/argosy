@@ -117,3 +117,37 @@ def test_short_horizon_only_allows_speculative_candidates():
     # only emitting them on `short`. The test asserts the type still
     # validates so legacy data round-trips.
     assert len(bad.speculative_candidates) == 1
+
+
+def test_plan_synthesizer_agent_basic_shape():
+    from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
+    from argosy.agents.plan_synthesizer_types import PlanSynthesisOutput
+
+    agent = PlanSynthesizerAgent(user_id="test")
+    assert agent.agent_role == "plan_synthesizer"
+    assert agent.output_model is PlanSynthesisOutput
+    assert agent.require_citations is True
+
+
+def test_plan_synthesizer_prompt_includes_authority_disclaimer_and_inputs():
+    from argosy.agents._plan_authority import AUTHORITY_DISCLAIMER
+    from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
+
+    agent = PlanSynthesizerAgent(user_id="test")
+    sys, usr = agent.build_prompt(
+        baseline_distillate_md="# Distillate\n\nNVDA target 15%",
+        prior_current_md="# Prior current",
+        analyst_reports_text="news: ok\nmacro: ok\n",
+        debate_outcomes_text="long: hold; medium: tighten; short: harvest",
+        portfolio_snapshot_summary="NVDA 14%; cash 5%",
+        recent_fills_summary="sold 1000 NVDA on 2026-04-15",
+    )
+    # System prompt MUST include the authority disclaimer verbatim.
+    assert AUTHORITY_DISCLAIMER in sys
+    # Inputs are in the user prompt.
+    assert "Distillate" in usr
+    assert "Prior current" in usr
+    assert "news: ok" in usr
+    assert "tighten" in usr
+    assert "NVDA 14%" in usr
+    assert "sold 1000 NVDA" in usr

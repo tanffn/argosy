@@ -82,6 +82,11 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "domain_refresh": "claude-sonnet-4-6",
     "audit": "claude-opus-4-7",
     "watchlist": "claude-sonnet-4-6",
+    # Plan synthesizer (Phase 3 of plan_synthesis_flow): produces the
+    # three HorizonSection drafts. Opus default — accuracy over cost
+    # per user preference (the synthesizer is the firm's intellectual
+    # output; its quality dominates the overall flow's value).
+    "plan_synthesizer": "claude-opus-4-7",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
