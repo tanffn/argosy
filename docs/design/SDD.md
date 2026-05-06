@@ -817,6 +817,27 @@ guidance prompt and fires another check-in.
 See `docs/superpowers/specs/2026-05-05-plan-distillate-design.md` for
 full design.
 
+### 6.12 Speculative candidates (Wave 3 of plan-distillate work)
+
+The synthesizer's `short.speculative_candidates` list surfaces
+bounded-risk opportunities — "worth a small swing if you want it,"
+never recommendations. Each candidate must satisfy the user's
+speculation cap (default 0.1% of net worth, max 3 concurrent positions)
+both at synthesis time (the synthesizer's prompt enforces it) and at
+routing time (defense-in-depth in `argosy/orchestrator/speculation_router.py`).
+
+Accepting a candidate via the Argonaut tab routes it as a T0 proposal
+in the limited (`argonaut`) account, paper-mode by default. Per SDD
+§10.1 routing matrix: T0 + Argonaut + live = auto-execute; T0 + main +
+live = single-click human queue.
+
+Configuration in `agent_settings.yaml`::
+
+    speculation:
+      max_pct_of_net_worth: 0.001       # 0.1% NW (default)
+      max_concurrent_positions: 3
+      allowed_account_classes: ["argonaut"]
+
 ---
 
 ## 7. Domain Knowledge Base
@@ -1165,6 +1186,8 @@ Everything *after* the agent team produces an `ApprovedProposal`: external appro
 | T2 | Any | paper | PaperFill + review record |
 | T3 | Any | live | Human queue + **24h cooling-off** + next-day re-check |
 | T3 | Any | paper | PaperFill + cooling-off + next-day paper re-check |
+| `speculative` | argonaut | live | T0 — auto-execute, paper logged |
+| `speculative` | argonaut | paper | PaperFill log; cap-enforced preflight |
 | `plan_revision` | Any | Any | Human queue, **always T3 depth, never auto-execute** |
 
 Hard rule: `queue_only` mode disables every "auto-execute" cell — no exceptions.
@@ -1831,6 +1854,12 @@ risk:
   sector_concentration_max_pct: 25
   daily_loss_limit_pct_per_account: 5
   wash_sale_window_days: 30
+
+# Speculative candidates (Wave 3 of plan-distillate work; see §6.12)
+speculation:
+  max_pct_of_net_worth: 0.001
+  max_concurrent_positions: 3
+  allowed_account_classes: [argonaut]
 ```
 
 ### A.3 `user_context.yaml` (per-user; `configs/<user_id>/user_context.yaml`)
