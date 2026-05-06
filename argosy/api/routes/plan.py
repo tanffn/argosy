@@ -338,9 +338,133 @@ def patch_distillate_item(
     return _build_baseline_response(pv)
 
 
+# ---------------------------------------------------------------------------
+# Wave 2 — draft lifecycle endpoints (T2.13)
+# ---------------------------------------------------------------------------
+
+from datetime import datetime, timezone
+
+
+class HorizonSectionView(BaseModel):
+    horizon: str
+    freshness_expected: str
+    status: str
+    posture: str
+    targets: list[dict] = []
+    themes: list[dict] = []
+    actions: list[dict] = []
+    speculative_candidates: list[dict] = []
+    deltas_from_prior: list[dict] = []
+    rationale: str = ""
+    cited_sources: list[str] = []
+
+
+class DraftResponse(BaseModel):
+    plan_version_id: int
+    drafted_at: str
+    derived_from_id: int | None
+    decision_run_id: str | None
+    horizon_long: HorizonSectionView | None
+    horizon_medium: HorizonSectionView | None
+    horizon_short: HorizonSectionView | None
+    horizon_long_md: str | None
+    horizon_medium_md: str | None
+    horizon_short_md: str | None
+
+
+class AcceptResponse(BaseModel):
+    status: str
+    new_current_id: int
+
+
+class RejectRequest(BaseModel):
+    reason: str
+    guidance: str = ""
+
+
+def _horizon_view(json_str: str | None) -> HorizonSectionView | None:
+    if not json_str:
+        return None
+    payload = json.loads(json_str)
+    return HorizonSectionView(**payload)
+
+
+@router.get("/draft", response_model=DraftResponse)
+def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
+    from argosy.state.queries import get_pending_draft
+
+    pv = get_pending_draft(db, user_id)
+    if pv is None:
+        raise HTTPException(status_code=404, detail="no pending draft for user")
+    return DraftResponse(
+        plan_version_id=pv.id,
+        drafted_at=pv.imported_at.isoformat(),
+        derived_from_id=pv.derived_from_id,
+        decision_run_id=pv.decision_run_id,
+        horizon_long=_horizon_view(pv.horizon_long_json),
+        horizon_medium=_horizon_view(pv.horizon_medium_json),
+        horizon_short=_horizon_view(pv.horizon_short_json),
+        horizon_long_md=pv.horizon_long_md,
+        horizon_medium_md=pv.horizon_medium_md,
+        horizon_short_md=pv.horizon_short_md,
+    )
+
+
+@router.post("/draft/{draft_id}/accept", response_model=AcceptResponse)
+def post_draft_accept(
+    draft_id: int,
+    user_id: str,
+    db: Session = Depends(get_db),
+) -> AcceptResponse:
+    from argosy.state.queries import get_current_plan
+
+    pv = db.get(PlanVersion, draft_id)
+    if pv is None or pv.user_id != user_id or pv.role != "draft":
+        raise HTTPException(status_code=404, detail="draft not found for user")
+
+    now = datetime.now(timezone.utc)
+    prior = get_current_plan(db, user_id)
+    if prior is not None:
+        prior.role = "superseded"
+        prior.superseded_at = now
+
+    pv.role = "current"
+    pv.accepted_at = now
+    pv.accepted_by_user_id = user_id
+    db.commit()
+
+    return AcceptResponse(status="accepted", new_current_id=pv.id)
+
+
+@router.post("/draft/{draft_id}/reject")
+def post_draft_reject(
+    draft_id: int,
+    user_id: str,
+    body: RejectRequest,
+    db: Session = Depends(get_db),
+):
+    pv = db.get(PlanVersion, draft_id)
+    if pv is None or pv.user_id != user_id or pv.role != "draft":
+        raise HTTPException(status_code=404, detail="draft not found for user")
+
+    pv.role = "superseded"
+    pv.superseded_at = datetime.now(timezone.utc)
+    # Stash the rejection reason in synthesis_inputs_json for forensics.
+    inputs = json.loads(pv.synthesis_inputs_json) if pv.synthesis_inputs_json else {}
+    inputs["rejection_reason"] = body.reason
+    inputs["rejection_guidance"] = body.guidance
+    pv.synthesis_inputs_json = json.dumps(inputs)
+    db.commit()
+    return {"status": "rejected", "draft_id": draft_id}
+
+
 __all__ = [
+    "AcceptResponse",
     "BaselineResponse",
     "DistillateItemEditRequest",
+    "DraftResponse",
+    "HorizonSectionView",
+    "RejectRequest",
     "get_db",
     "router",
 ]
