@@ -241,3 +241,83 @@ def test_phase_5_fund_manager_green_lights_or_rejects(monkeypatch, session):
         session=session, user_id="ariel", draft_output=out,
         risk_verdict="(ok)", decision_run_id="test",
     ) is False
+
+
+# ---------------------------------------------------------------------------
+# I2 — _horizon_md operator-precedence fix
+# ---------------------------------------------------------------------------
+
+def test_horizon_md_renders_targets_with_and_without_rationale():
+    """Both targets must appear; empty rationale must not drop the bullet.
+
+    Regression for the operator-precedence bug where the whole f-string
+    expression was conditional on t.rationale, causing targets with
+    rationale="" to be appended as empty strings instead of bullet lines.
+    """
+    from datetime import date
+
+    from argosy.agents.plan_synthesizer_types import HorizonSection, SynthTarget, Theme
+    from argosy.orchestrator.flows.plan_synthesis import _horizon_md
+
+    t_with = SynthTarget(
+        label="Equity allocation",
+        value=60.0,
+        unit="pct_of_portfolio",
+        stated_at=date(2025, 1, 1),
+        revisit_after=date(2026, 1, 1),
+        rationale="Matches long-term risk tolerance",
+    )
+    t_without = SynthTarget(
+        label="Cash buffer",
+        value=5.0,
+        unit="pct_of_portfolio",
+        stated_at=date(2025, 1, 1),
+        revisit_after=date(2026, 1, 1),
+        # rationale intentionally omitted — defaults to ""
+    )
+    th_with = Theme(
+        label="Tighten NVDA cap",
+        direction="lean_away_from",
+        rationale="Concentration risk post-rally",
+    )
+    th_without = Theme(
+        label="Hold bonds",
+        direction="monitor",
+        # rationale intentionally omitted — defaults to ""
+    )
+
+    section = HorizonSection(
+        horizon="long",
+        freshness_expected="annual",
+        status="minor_revision",
+        posture="Steady accumulation with defensive tilt",
+        targets=[t_with, t_without],
+        themes=[th_with, th_without],
+    )
+
+    md = _horizon_md(section)
+
+    # Both target bullets must be present.
+    assert "**Equity allocation**" in md, "target with rationale should render"
+    assert "**Cash buffer**" in md, "target without rationale should render (I2 regression)"
+
+    # The target WITH rationale should include the suffix.
+    assert "Matches long-term risk tolerance" in md
+
+    # The target WITHOUT rationale must NOT produce a trailing " — " dash.
+    # Find the Cash buffer line and check it has no dangling dash.
+    cash_line = next(l for l in md.splitlines() if "Cash buffer" in l)
+    assert not cash_line.rstrip().endswith("—"), (
+        f"empty-rationale target should not have trailing dash; got: {cash_line!r}"
+    )
+
+    # Both theme bullets must be present.
+    assert "**Tighten NVDA cap**" in md, "theme with rationale should render"
+    assert "**Hold bonds**" in md, "theme without rationale should render"
+
+    # Theme WITH rationale includes suffix; theme WITHOUT must not trail a dash.
+    assert "Concentration risk post-rally" in md
+    hold_line = next(l for l in md.splitlines() if "Hold bonds" in l)
+    assert not hold_line.rstrip().endswith("—"), (
+        f"empty-rationale theme should not have trailing dash; got: {hold_line!r}"
+    )

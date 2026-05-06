@@ -770,16 +770,18 @@ def _horizon_md(section) -> str:
     if section.targets:
         lines.append("## Targets")
         for t in section.targets:
+            suffix = f" — {t.rationale}" if t.rationale else ""
             lines.append(
                 f"- **{t.label}**: {t.value} {t.unit} "
                 f"(stated {t.stated_at.isoformat()}; revisit {t.revisit_after.isoformat()})"
-                f" — {t.rationale}" if t.rationale else ""
+                f"{suffix}"
             )
         lines.append("")
     if section.themes:
         lines.append("## Themes")
         for th in section.themes:
-            lines.append(f"- **{th.label}** ({th.direction}) — {th.rationale}")
+            th_suffix = f" — {th.rationale}" if th.rationale else ""
+            lines.append(f"- **{th.label}** ({th.direction}){th_suffix}")
         lines.append("")
     if section.actions:
         lines.append("## Actions")
