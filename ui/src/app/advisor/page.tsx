@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Markdown } from "@/components/markdown";
 import { PlanInScopeCard } from "@/components/plan-in-scope-card";
+import { PlanRevisionSheet } from "@/components/plan-revision-sheet";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -17,6 +18,7 @@ import {
   type AdvisorGapItem,
   type AdvisorGapsResponse,
   type AdvisorTurnResponse,
+  type DraftResponse,
   type GapState,
   type IntakeUploadResponse,
 } from "@/lib/api";
@@ -121,6 +123,24 @@ export default function AdvisorPage() {
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Wave 2: monthly plan-revision draft (banner + side sheet).
+  const [draft, setDraft] = useState<DraftResponse | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  const refreshDraft = useCallback(async () => {
+    try {
+      const d = await api.planDraft(USER_ID);
+      setDraft(d);
+    } catch {
+      // No pending draft (404) or transient error — banner stays hidden.
+      setDraft(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshDraft();
+  }, [refreshDraft]);
 
   const refreshGaps = useCallback(async () => {
     try {
@@ -284,6 +304,41 @@ export default function AdvisorPage() {
       </header>
 
       {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+
+      {draft && (
+        <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 flex items-center justify-between">
+          <p className="text-sm">
+            Draft plan ready (synthesized{" "}
+            {new Date(draft.drafted_at).toLocaleDateString()}) —{" "}
+            <strong>
+              {(draft.horizon_long?.deltas_from_prior.length ?? 0) +
+                (draft.horizon_medium?.deltas_from_prior.length ?? 0) +
+                (draft.horizon_short?.deltas_from_prior.length ?? 0)}
+            </strong>{" "}
+            delta(s) vs. last month.
+          </p>
+          <Button size="sm" onClick={() => setSheetOpen(true)}>
+            Review now
+          </Button>
+        </div>
+      )}
+
+      {draft && (
+        <PlanRevisionSheet
+          open={sheetOpen}
+          onOpenChange={setSheetOpen}
+          userId={USER_ID}
+          draft={draft}
+          onAccepted={() => {
+            setSheetOpen(false);
+            refreshDraft();
+          }}
+          onRejected={() => {
+            setSheetOpen(false);
+            refreshDraft();
+          }}
+        />
+      )}
 
       <PlanInScopeCard userId={USER_ID} />
 

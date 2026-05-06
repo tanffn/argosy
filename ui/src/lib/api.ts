@@ -576,6 +576,52 @@ export const api = {
         throw new Error(`HTTP ${r.status} for /api/plan/baseline/distillate`);
       return (await r.json()) as BaselineResponse;
     }),
+
+  // ----------------------------------------------------------------------
+  // Wave 2: synthesis flow + draft lifecycle
+  // ----------------------------------------------------------------------
+
+  planDraft: (userId: string) =>
+    getJSON<DraftResponse>(`/api/plan/draft?user_id=${encodeURIComponent(userId)}`),
+  planDraftAccept: (draftId: number, userId: string) =>
+    postJSON<{ status: string; new_current_id: number }>(
+      `/api/plan/draft/${draftId}/accept?user_id=${encodeURIComponent(userId)}`,
+      {},
+    ),
+  planDraftReject: (draftId: number, userId: string, reason: string, guidance = "") =>
+    postJSON<{ status: string; draft_id: number }>(
+      `/api/plan/draft/${draftId}/reject?user_id=${encodeURIComponent(userId)}`,
+      { reason, guidance },
+    ),
+  planDraftDeltaAccept: (draftId: number, itemId: string, userId: string) =>
+    postJSON<{ status: string }>(
+      `/api/plan/draft/${draftId}/items/${encodeURIComponent(itemId)}/accept?user_id=${encodeURIComponent(userId)}`,
+      {},
+    ),
+  planDraftDeltaEdit: (
+    draftId: number,
+    itemId: string,
+    userId: string,
+    body: { proposed?: Record<string, unknown>; user_edit_note?: string },
+  ) =>
+    fetch(
+      apiUrl(
+        `/api/plan/draft/${draftId}/items/${encodeURIComponent(itemId)}?user_id=${encodeURIComponent(userId)}`,
+      ),
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ).then(async (r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return (await r.json()) as { status: string };
+    }),
+  advisorCheckIn: (userId: string, guidance = "") =>
+    postJSON<{ status: string; decision_run_id: string; draft_id: number }>(
+      `/api/advisor/check-in`,
+      { user_id: userId, guidance, urgency: "now" },
+    ),
 };
 
 // ----------------------------------------------------------------------
@@ -769,4 +815,50 @@ export interface BaselineResponse {
   distillate_rendered: string | null;
   distilled_at: string | null;
   source_hash: string | null;
+}
+
+// ----------------------------------------------------------------------
+// Wave 2: synthesis flow + draft lifecycle
+// ----------------------------------------------------------------------
+
+export interface DeltaItem {
+  item_kind: "target" | "theme" | "action" | "speculative_candidate";
+  item_id: string;
+  horizon: "long" | "medium" | "short";
+  change_kind: "added" | "removed" | "modified";
+  summary: string;
+  prior: Record<string, unknown> | null;
+  proposed: Record<string, unknown> | null;
+  rationale: string;
+  cited_sources: string[];
+  accepted: boolean;
+  user_edited: boolean;
+  user_edit_note: string | null;
+}
+
+export interface HorizonView {
+  horizon: "long" | "medium" | "short";
+  freshness_expected: "annual" | "quarterly" | "monthly";
+  status: "no_change" | "minor_revision" | "major_revision";
+  posture: string;
+  targets: Array<Record<string, unknown>>;
+  themes: Array<Record<string, unknown>>;
+  actions: Array<Record<string, unknown>>;
+  speculative_candidates: Array<Record<string, unknown>>;
+  deltas_from_prior: DeltaItem[];
+  rationale: string;
+  cited_sources: string[];
+}
+
+export interface DraftResponse {
+  plan_version_id: number;
+  drafted_at: string;
+  derived_from_id: number | null;
+  decision_run_id: string | null;
+  horizon_long: HorizonView | null;
+  horizon_medium: HorizonView | null;
+  horizon_short: HorizonView | null;
+  horizon_long_md: string | null;
+  horizon_medium_md: string | null;
+  horizon_short_md: string | null;
 }
