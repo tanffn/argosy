@@ -230,13 +230,13 @@ def test_phase_5_fund_manager_green_lights_or_rejects(monkeypatch, session):
 
     out = _stub_synthesis_output()
 
-    monkeypatch.setattr(flow, "_make_fund_manager", lambda: _FakeFM(True))
+    monkeypatch.setattr(flow, "_make_fund_manager", lambda *args, **kw: _FakeFM(True))
     assert flow._run_phase_5_fund_manager(
         session=session, user_id="ariel", draft_output=out,
         risk_verdict="(ok)", decision_run_id="test",
     ) is True
 
-    monkeypatch.setattr(flow, "_make_fund_manager", lambda: _FakeFM(False))
+    monkeypatch.setattr(flow, "_make_fund_manager", lambda *args, **kw: _FakeFM(False))
     assert flow._run_phase_5_fund_manager(
         session=session, user_id="ariel", draft_output=out,
         risk_verdict="(ok)", decision_run_id="test",

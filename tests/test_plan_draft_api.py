@@ -206,6 +206,51 @@ def test_patch_delta_user_edit_records_change(app_with_draft):
         sess.close()
 
 
+def test_patch_delta_invalid_edit_returns_400(app_with_draft):
+    """M3: patch_delta_edit must reject a patch that leaves the Delta in an invalid state.
+
+    We store a delta whose item_kind is intentionally set to an invalid value
+    (not one of the allowed Literals).  A user edit that is valid at the
+    DeltaEditRequest level passes FastAPI body validation, but the route must
+    re-validate the full resulting Delta and return 400 when it fails.
+    """
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        from argosy.state.queries import get_pending_draft
+        import json as _j
+        pv = get_pending_draft(sess, "ariel")
+        med = _j.loads(pv.horizon_medium_json)
+        med["deltas_from_prior"] = [{
+            # Intentionally corrupt: "bogus_kind" is not a valid item_kind.
+            "item_kind": "bogus_kind",
+            "item_id": "medium.targets.nvda",
+            "horizon": "medium",
+            "change_kind": "modified",
+            "summary": "...",
+            "prior": {"value": 0.15},
+            "proposed": {"value": 0.12},
+            "rationale": "...",
+            "cited_sources": [],
+            "accepted": False,
+            "user_edited": False,
+            "user_edit_note": None,
+        }]
+        pv.horizon_medium_json = _j.dumps(med)
+        sess.commit()
+        draft_id = pv.id
+    finally:
+        sess.close()
+
+    # A valid DeltaEditRequest body — passes FastAPI body validation.
+    # The route must re-validate the whole Delta and return 400 because
+    # item_kind is invalid.
+    r = app_with_draft.patch(
+        f"/api/plan/draft/{draft_id}/items/medium.targets.nvda?user_id=ariel",
+        json={"user_edit_note": "looks fine from user side"},
+    )
+    assert r.status_code == 400, r.text
+
+
 def test_post_delta_accept_404_when_item_id_missing(app_with_draft):
     sess = app_with_draft.app.state.session_factory()
     try:

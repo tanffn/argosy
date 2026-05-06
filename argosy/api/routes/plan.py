@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from argosy.adapters.data.cache import invalidate_home_brief
 from argosy.agents.errors import AgentRunError, MissingAPIKeyError
 from argosy.agents.plan_critique import PlanCritiqueAgent
+from argosy.agents.plan_synthesizer_types import Delta
 from argosy.api.events import publish_event, publish_event_threadsafe
 from argosy.state import db as db_mod
 from argosy.state.models import PlanCritique, PlanVersion, UserContext
@@ -551,6 +552,12 @@ def patch_delta_edit(
     if body.user_edit_note is not None:
         delta["user_edit_note"] = body.user_edit_note
     delta["user_edited"] = True
+    # Validate the mutated delta against the Delta schema before persisting.
+    try:
+        from pydantic import ValidationError
+        Delta.model_validate(delta)
+    except (ValidationError, Exception) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid delta after edit: {exc}") from exc
     setattr(pv, field, json.dumps(payload))
     db.commit()
     invalidate_home_brief(user_id)

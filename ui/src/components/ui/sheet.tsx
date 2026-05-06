@@ -5,8 +5,8 @@
  * so call sites can move to a Radix-backed implementation later without
  * changes.
  *
- * `SheetContent.side` controls which edge the panel anchors to. Only
- * "right" is exercised today; "left" is wired for symmetry.
+ * `SheetContent` anchors to the right edge. Add side="left" back here
+ * if a future caller needs it (YAGNI).
  */
 "use client";
 
@@ -50,14 +50,11 @@ function Sheet({ open, onOpenChange, children }: SheetProps) {
 // SheetContent — renders as a side-drawer overlay
 // ---------------------------------------------------------------------------
 
-interface SheetContentProps extends React.ComponentProps<"div"> {
-  side?: "right" | "left";
-}
+interface SheetContentProps extends React.ComponentProps<"div"> {}
 
 function SheetContent({
   className,
   children,
-  side = "right",
   ...props
 }: SheetContentProps) {
   const { open, onOpenChange } = React.useContext(SheetContext);
@@ -74,11 +71,6 @@ function SheetContent({
 
   if (!open) return null;
 
-  const sideClasses =
-    side === "left"
-      ? "left-0 border-r"
-      : "right-0 border-l";
-
   return (
     <>
       {/* Backdrop */}
@@ -93,8 +85,7 @@ function SheetContent({
         aria-modal="true"
         data-slot="sheet-content"
         className={cn(
-          "fixed top-0 bottom-0 z-50 flex flex-col gap-4 bg-card text-card-foreground shadow-lg p-6",
-          sideClasses,
+          "fixed top-0 bottom-0 right-0 z-50 flex flex-col gap-4 bg-card text-card-foreground shadow-lg border-l p-6",
           className,
         )}
         {...props}

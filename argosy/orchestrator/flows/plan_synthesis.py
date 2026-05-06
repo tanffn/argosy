@@ -25,11 +25,12 @@ the existing fleet agents with plan-revision prompts; tests stub them).
 
 from __future__ import annotations
 
+import inspect
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, cast
 
 from sqlalchemy.orm import Session
 
@@ -252,20 +253,21 @@ def run_synthesis(
 # ----------------------------------------------------------------------
 
 
-# Module-level tuple — the test resolves each name via attribute lookup
-# on this module (monkeypatch.setattr("...plan_synthesis.<Name>", stub)),
-# so we build the iteration list lazily inside _run_phase_1_analysts to
-# pick up monkeypatched replacements.
+# Resolved at call time via sys.modules[__name__] so monkeypatch.setattr
+# on the module-level names (used by tests) takes effect. Capturing the
+# class refs in a tuple at import time would freeze them and bypass the
+# patch.
+# Names are alphabetical for deterministic log output.
 _PHASE_1_AGENT_NAMES = (
-    "FundamentalsAnalystAgent",
-    "TechnicalAnalystAgent",
-    "NewsAnalystAgent",
-    "SentimentAnalystAgent",
-    "MacroAnalystAgent",
-    "PlanCritiqueAgent",
     "ConcentrationAnalystAgent",
-    "TaxAnalystAgent",
     "FxAnalystAgent",
+    "FundamentalsAnalystAgent",
+    "MacroAnalystAgent",
+    "NewsAnalystAgent",
+    "PlanCritiqueAgent",
+    "SentimentAnalystAgent",
+    "TaxAnalystAgent",
+    "TechnicalAnalystAgent",
 )
 
 
@@ -347,8 +349,10 @@ def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
     except TypeError:
         # If the agent doesn't accept all the common kwargs, retry with
         # only the ones it explicitly declares. Cheap defensive retry.
-        sig = getattr(agent.build_prompt, "__code__", None)
-        accepted = set(sig.co_varnames if sig else ())
+        # inspect.signature gives only the declared parameters; co_varnames
+        # would include all locals too and falsely accept them.
+        sig = inspect.signature(agent.build_prompt)
+        accepted = set(sig.parameters.keys())
         narrowed = {k: v for k, v in kwargs.items() if k in accepted}
         result = agent.run_sync(**narrowed)
         out = getattr(result, "output", None)
@@ -640,8 +644,8 @@ def _make_risk_officer(stance: str, *, user_id: str | None = None):
     ``user_id`` is keyword-only because the test monkeypatches this
     helper and never passes one.
     """
-    from argosy.agents.risk_officer import RiskOfficerAgent
-    return RiskOfficerAgent(user_id=user_id or "system", perspective=stance)  # type: ignore[arg-type]
+    from argosy.agents.risk_officer import Perspective, RiskOfficerAgent
+    return RiskOfficerAgent(user_id=user_id or "system", perspective=cast(Perspective, stance))
 
 
 def _run_one_risk_perspective(*, stance: str, user_id: str,
@@ -689,23 +693,23 @@ def _run_one_risk_perspective(*, stance: str, user_id: str,
     return out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
 
 
-def _make_fund_manager():
+def _make_fund_manager(user_id: str | None = None):
     """Factory seam for the fund manager agent.
 
-    Zero-arg by design so tests can monkeypatch with a bare lambda.
-    A hardcoded ``user_id="system"`` is used because the plan-revision
-    integrity check is a system-level decision (not attributable to an
-    individual user's run); the per-user audit trail is captured via the
-    decision_run_id and the caller's ``user_id`` kwarg threaded into the
-    log line below.
+    Accepts an optional ``user_id`` so the real audit trail names the
+    requesting user; falls back to ``"system"`` when not provided (e.g.
+    scheduled runs or test monkeypatches).
+
+    Test stubs use ``lambda *args, **kw: _FakeFM(...)`` so the optional
+    argument is safely ignored without breaking the call site.
 
     ADAPTATION vs spec: ``BaseAgent.__init__`` requires ``user_id`` as a
     mandatory keyword (see Tasks 2.5/2.7-2.9), so ``FundManagerAgent()``
-    with no args from the spec would TypeError. We pass a fixed sentinel
-    here; the test's monkeypatched lambda ignores it entirely.
+    with no args from the spec would TypeError. We pass a sentinel when
+    no real user is available.
     """
     from argosy.agents.fund_manager import FundManagerAgent
-    return FundManagerAgent(user_id="system")
+    return FundManagerAgent(user_id=user_id or "system")
 
 
 def _run_phase_5_fund_manager(*, session, user_id,
@@ -723,7 +727,7 @@ def _run_phase_5_fund_manager(*, session, user_id,
     """
     log.info("plan_synthesis.phase_5.start",
              user_id=user_id, decision_run_id=decision_run_id)
-    fm = _make_fund_manager()
+    fm = _make_fund_manager(user_id=user_id)
     result = fm.run_sync(
         decision_kind="plan_revision",
         draft_plan=draft_output.model_dump_json(),
