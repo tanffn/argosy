@@ -7,7 +7,7 @@ latest plan critique, the user constraints, and the tier; emits
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +15,7 @@ from argosy.agents.base import BaseAgent, ConfidenceBand
 
 
 class FundManagerDecision(BaseModel):
-    """Fund manager's final verdict."""
+    """Fund manager's final verdict (trade-proposal flow)."""
 
     decision: Literal["green_light", "block"]
     reason: str = Field(
@@ -41,6 +41,30 @@ class FundManagerDecision(BaseModel):
     )
 
 
+class FundManagerPlanRevisionDecision(BaseModel):
+    """Fund manager's plan-revision integrity verdict (plan_synthesis Phase 5).
+
+    Schema is intentionally simpler than ``FundManagerDecision`` because
+    this is not a trade approval — it is a plan-level structural check.
+    ``cited_sources`` is required so the base-class citation gate passes.
+    """
+
+    approved: bool = Field(
+        description="True if the synthesized plan honours all hard "
+        "constraints and the three horizons cohere."
+    )
+    reasons: list[str] = Field(
+        default_factory=list,
+        description="Bullet-point justification for the verdict. Must be "
+        "non-empty when approved=False.",
+    )
+    cited_sources: list[str] = Field(
+        default_factory=list,
+        description="Citations backing the verdict (domain_kb paths, "
+        "risk-verdict references, plan-section refs).",
+    )
+
+
 class FundManagerAgent(BaseAgent[FundManagerDecision]):
     """Fund manager. Default Opus."""
 
@@ -56,6 +80,8 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         model: str | None = None,
     ) -> None:
         super().__init__(user_id=user_id, model=model or "claude-opus-4-7")
+        # Tracks which schema to validate against; set during build_prompt.
+        self._current_decision_kind: str = "trade_proposal"
 
     def build_prompt(
         self,
@@ -68,12 +94,34 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         - ``"trade_proposal"`` (default): legacy execution-time integrity
           check used by Phase 3 trade-execution flow.
         - ``"plan_revision"``: plan-revision integrity check used by the
-          plan_synthesis flow's Phase 5 (Wave 2). Emits a different
-          schema: ``{ approved: bool, reasons: list[str] }``.
+          plan_synthesis flow's Phase 5 (Wave 2). Validates against
+          ``FundManagerPlanRevisionDecision`` instead of
+          ``FundManagerDecision``.
         """
+        # Stash for _parse_output to pick the correct schema.
+        self._current_decision_kind = decision_kind
         if decision_kind == "plan_revision":
             return self._build_plan_revision_prompt(**kw)
         return self._build_trade_proposal_prompt(**kw)
+
+    def _parse_output(self, text: str) -> BaseModel:
+        """Select the output model based on the current decision_kind."""
+        import json
+
+        # Tolerate fenced code blocks.
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+        data = json.loads(cleaned)
+
+        if self._current_decision_kind == "plan_revision":
+            return FundManagerPlanRevisionDecision.model_validate(data)
+        return FundManagerDecision.model_validate(data)
 
     def _build_trade_proposal_prompt(
         self,
@@ -140,7 +188,8 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
             "Validate: (a) distillate hard-constraints honored; (b) three "
             "horizons cohere; (c) every target has rationale + cited source; "
             "(d) 'no_change' is justified by evidence if claimed.\n\n"
-            "Output a JSON object: { approved: bool, reasons: list[str] }."
+            "OUTPUT must be a JSON object conforming to this schema:\n"
+            f"{FundManagerPlanRevisionDecision.model_json_schema()}\n"
         )
         user = (
             f"=== DRAFT PLAN ===\n{draft_plan}\n\n"
@@ -150,4 +199,4 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         return system, user
 
 
-__all__ = ["FundManagerAgent", "FundManagerDecision"]
+__all__ = ["FundManagerAgent", "FundManagerDecision", "FundManagerPlanRevisionDecision"]

@@ -701,14 +701,21 @@ def _run_phase_5_fund_manager(*, session, user_id,
         risk_verdict=risk_verdict,
     )
     out = result.output
-    payload_text = out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
-    try:
-        payload = json.loads(payload_text)
-        approved = bool(payload.get("approved", False))
-    except (ValueError, TypeError):
-        log.error("plan_synthesis.phase_5.payload_unparseable",
-                  decision_run_id=decision_run_id, payload=payload_text)
-        return False
+
+    # The plan-revision path validates against FundManagerPlanRevisionDecision
+    # which has a typed `approved` bool — read it directly when available.
+    # Fall back to JSON parsing for test stubs that return generic objects.
+    if hasattr(out, "approved"):
+        approved = bool(out.approved)
+    else:
+        payload_text = out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
+        try:
+            payload = json.loads(payload_text)
+            approved = bool(payload.get("approved", False))
+        except (ValueError, TypeError):
+            log.error("plan_synthesis.phase_5.payload_unparseable",
+                      decision_run_id=decision_run_id, payload=payload_text)
+            return False
 
     log.info("plan_synthesis.phase_5.verdict",
              user_id=user_id, decision_run_id=decision_run_id,
