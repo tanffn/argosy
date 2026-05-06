@@ -60,6 +60,30 @@ log = get_logger(__name__)
 Trigger = Literal["scheduled", "check_in", "quarterly", "annual"]
 
 
+def _emit_event(event_type: str, payload: dict) -> None:
+    """Best-effort fire-and-forget publish from sync code.
+
+    ADAPTATION (T2.16): the spec referenced ``argosy.api.websocket`` but the
+    actual module is ``argosy.api.events`` and ``publish_event`` is async.
+    We bridge by either scheduling on a running loop or running a one-shot
+    loop. Any failure is swallowed — synthesis must never break because of
+    a flaky event subscriber.
+    """
+    try:
+        import asyncio
+
+        from argosy.api.events import publish_event
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(publish_event(event_type, payload))
+            return
+        loop.create_task(publish_event(event_type, payload))
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
 class NoBaselineError(Exception):
     """Raised when a user has no active baseline plan."""
 
@@ -100,6 +124,7 @@ def run_synthesis(
         trigger=trigger,
         decision_run_id=decision_run_id,
     )
+    _emit_event("plan.draft.started", {"user_id": user_id, "trigger": trigger})
 
     # Idempotency: demote any existing draft.
     existing = get_pending_draft(session, user_id)
@@ -189,6 +214,7 @@ def run_synthesis(
 
     log.info("plan_synthesis.draft_persisted",
              user_id=user_id, draft_id=draft.id, decision_run_id=decision_run_id)
+    _emit_event("plan.draft.completed", {"user_id": user_id, "draft_id": draft.id})
     return SynthesisResult(decision_run_id=decision_run_id, draft_id=draft.id)
 
 

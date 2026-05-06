@@ -218,3 +218,19 @@ def test_post_delta_accept_404_when_item_id_missing(app_with_draft):
         f"/api/plan/draft/{draft_id}/items/nope/accept?user_id=ariel"
     )
     assert r.status_code == 404
+
+
+def test_accept_publishes_plan_current_changed(app_with_draft, monkeypatch):
+    """Accepting a draft must publish plan.current.changed."""
+    from argosy.api.routes import plan as plan_routes
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(plan_routes, "_publish", lambda et, payload: events.append((et, payload)))
+
+    r1 = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    draft_id = r1.json()["plan_version_id"]
+    app_with_draft.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+
+    types = [e[0] for e in events]
+    assert "plan.draft.accepted" in types
+    assert "plan.current.changed" in types

@@ -36,6 +36,45 @@ router = APIRouter(prefix="/plan", tags=["plan"])
 
 
 # ---------------------------------------------------------------------------
+# WebSocket event publish indirection (T2.16).
+# ---------------------------------------------------------------------------
+
+
+def _publish(event_type: str, payload: dict) -> None:
+    """Publish a plan-lifecycle event via the in-process WebSocket layer.
+
+    Indirection point so tests can monkeypatch this symbol on the module
+    directly. Production behavior delegates to ``argosy.api.events`` (the
+    actual module name in this codebase; the original spec referenced
+    ``argosy.api.websocket`` which does not exist here).
+
+    The underlying ``publish_event`` is async, but plan draft routes are
+    sync, so we bridge by either scheduling on a running loop (when called
+    inside an async context) or running a one-shot loop. Any failure is
+    swallowed — event publishing must never break the route's primary work.
+
+    Wave 2: if the events module is missing or anything else goes wrong,
+    this is a best-effort no-op.
+    """
+    try:
+        from argosy.api.events import publish_event
+    except ImportError:
+        return
+    try:
+        import asyncio
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — run the coroutine in a fresh one.
+            asyncio.run(publish_event(event_type, payload))
+            return
+        loop.create_task(publish_event(event_type, payload))
+    except Exception:  # pragma: no cover - defensive
+        return
+
+
+# ---------------------------------------------------------------------------
 # Sync DB dependency — used by Wave 1 routes.
 # The existing Phase 2 routes use the async db_mod.get_session() pattern.
 # Wave 1 routes use sync def handlers + a sync SQLAlchemy session so they
@@ -433,6 +472,9 @@ def post_draft_accept(
     pv.accepted_by_user_id = user_id
     db.commit()
 
+    _publish("plan.draft.accepted", {"user_id": user_id, "draft_id": draft_id})
+    _publish("plan.current.changed", {"user_id": user_id, "current_id": pv.id})
+
     return AcceptResponse(status="accepted", new_current_id=pv.id)
 
 
@@ -455,6 +497,10 @@ def post_draft_reject(
     inputs["rejection_guidance"] = body.guidance
     pv.synthesis_inputs_json = json.dumps(inputs)
     db.commit()
+    _publish(
+        "plan.draft.rejected",
+        {"user_id": user_id, "draft_id": draft_id, "reason": body.reason},
+    )
     return {"status": "rejected", "draft_id": draft_id}
 
 
@@ -498,6 +544,10 @@ def post_delta_accept(
     delta["accepted"] = True
     setattr(pv, field, json.dumps(payload))
     db.commit()
+    _publish(
+        "plan.draft.delta.accepted",
+        {"user_id": user_id, "draft_id": draft_id, "item_id": item_id},
+    )
     return {"status": "accepted", "draft_id": draft_id, "item_id": item_id}
 
 
@@ -523,6 +573,10 @@ def patch_delta_edit(
     delta["user_edited"] = True
     setattr(pv, field, json.dumps(payload))
     db.commit()
+    _publish(
+        "plan.draft.delta.edited",
+        {"user_id": user_id, "draft_id": draft_id, "item_id": item_id},
+    )
     return {"status": "edited", "draft_id": draft_id, "item_id": item_id}
 
 
@@ -534,6 +588,7 @@ __all__ = [
     "DraftResponse",
     "HorizonSectionView",
     "RejectRequest",
+    "_publish",
     "get_db",
     "router",
 ]
