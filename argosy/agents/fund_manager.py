@@ -60,6 +60,24 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
     def build_prompt(
         self,
         *,
+        decision_kind: str = "trade_proposal",
+        **kw,
+    ) -> tuple[str, str]:
+        """Dispatch on ``decision_kind``.
+
+        - ``"trade_proposal"`` (default): legacy execution-time integrity
+          check used by Phase 3 trade-execution flow.
+        - ``"plan_revision"``: plan-revision integrity check used by the
+          plan_synthesis flow's Phase 5 (Wave 2). Emits a different
+          schema: ``{ approved: bool, reasons: list[str] }``.
+        """
+        if decision_kind == "plan_revision":
+            return self._build_plan_revision_prompt(**kw)
+        return self._build_trade_proposal_prompt(**kw)
+
+    def _build_trade_proposal_prompt(
+        self,
+        *,
         proposal: dict,
         risk_outcome: dict,
         plan_critique: dict | None,
@@ -97,6 +115,37 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
             "USER CONSTRAINTS:\n"
             f"{user_constraints}\n\n"
             "Produce the FundManagerDecision JSON now."
+        )
+        return system, user
+
+    def _build_plan_revision_prompt(
+        self,
+        *,
+        draft_plan: str,
+        risk_verdict: str,
+    ) -> tuple[str, str]:
+        """Plan-revision integrity check (Wave 2 Phase 5).
+
+        This is NOT a trade approval — it asks the fund manager to verify
+        the synthesized plan honours hard constraints, that the three
+        horizons cohere, and that every claimed target has rationale and
+        cited evidence.
+        """
+        from argosy.agents._plan_authority import AUTHORITY_DISCLAIMER
+
+        system = (
+            "You are the fund manager on the Argosy fleet. This is a "
+            "plan-revision integrity check, not a trade approval.\n\n"
+            f"{AUTHORITY_DISCLAIMER}\n\n"
+            "Validate: (a) distillate hard-constraints honored; (b) three "
+            "horizons cohere; (c) every target has rationale + cited source; "
+            "(d) 'no_change' is justified by evidence if claimed.\n\n"
+            "Output a JSON object: { approved: bool, reasons: list[str] }."
+        )
+        user = (
+            f"=== DRAFT PLAN ===\n{draft_plan}\n\n"
+            f"=== CONSOLIDATED RISK VERDICT ===\n{risk_verdict}\n\n"
+            "Return your JSON verdict now."
         )
         return system, user
 

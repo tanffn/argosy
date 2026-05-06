@@ -214,3 +214,30 @@ def test_phase_4_risk_runs_three_perspectives(monkeypatch, session):
     assert sorted(perspectives) == ["aggressive", "conservative", "neutral"]
     for s in ("aggressive", "neutral", "conservative"):
         assert f"{s} review" in text
+
+
+def test_phase_5_fund_manager_green_lights_or_rejects(monkeypatch, session):
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    class _FakeFM:
+        def __init__(self, ok):
+            self.ok = ok
+        def run_sync(self, **kw):
+            class _Out:
+                def __init__(s, ok): s.ok = ok
+                def model_dump_json(self): return f'{{"approved": {str(self.ok).lower()}}}'
+            return type("R", (), {"output": _Out(self.ok), "model": "fake"})()
+
+    out = _stub_synthesis_output()
+
+    monkeypatch.setattr(flow, "_make_fund_manager", lambda: _FakeFM(True))
+    assert flow._run_phase_5_fund_manager(
+        session=session, user_id="ariel", draft_output=out,
+        risk_verdict="(ok)", decision_run_id="test",
+    ) is True
+
+    monkeypatch.setattr(flow, "_make_fund_manager", lambda: _FakeFM(False))
+    assert flow._run_phase_5_fund_manager(
+        session=session, user_id="ariel", draft_output=out,
+        risk_verdict="(ok)", decision_run_id="test",
+    ) is False

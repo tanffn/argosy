@@ -634,12 +634,60 @@ def _run_one_risk_perspective(*, stance: str, user_id: str,
     return out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
 
 
+def _make_fund_manager():
+    """Factory seam for the fund manager agent.
+
+    Zero-arg by design so tests can monkeypatch with a bare lambda.
+    A hardcoded ``user_id="system"`` is used because the plan-revision
+    integrity check is a system-level decision (not attributable to an
+    individual user's run); the per-user audit trail is captured via the
+    decision_run_id and the caller's ``user_id`` kwarg threaded into the
+    log line below.
+
+    ADAPTATION vs spec: ``BaseAgent.__init__`` requires ``user_id`` as a
+    mandatory keyword (see Tasks 2.5/2.7-2.9), so ``FundManagerAgent()``
+    with no args from the spec would TypeError. We pass a fixed sentinel
+    here; the test's monkeypatched lambda ignores it entirely.
+    """
+    from argosy.agents.fund_manager import FundManagerAgent
+    return FundManagerAgent(user_id="system")
+
+
 def _run_phase_5_fund_manager(*, session, user_id,
                               draft_output: PlanSynthesisOutput,
                               risk_verdict: str, decision_run_id: str) -> bool:
-    """Final integrity check. Returns True to green-light."""
-    log.info("plan_synthesis.phase_5_stub", user_id=user_id, decision_run_id=decision_run_id)
-    return True
+    """Final integrity check.
+
+    Validates:
+      - distillate hard-constraints honored
+      - three horizons cohere
+      - every target has rationale + cited source
+      - 'no_change' justified by evidence if claimed
+
+    Returns True to green-light the draft, False to reject.
+    """
+    log.info("plan_synthesis.phase_5.start",
+             user_id=user_id, decision_run_id=decision_run_id)
+    fm = _make_fund_manager()
+    result = fm.run_sync(
+        decision_kind="plan_revision",
+        draft_plan=draft_output.model_dump_json(),
+        risk_verdict=risk_verdict,
+    )
+    out = result.output
+    payload_text = out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
+    try:
+        payload = json.loads(payload_text)
+        approved = bool(payload.get("approved", False))
+    except (ValueError, TypeError):
+        log.error("plan_synthesis.phase_5.payload_unparseable",
+                  decision_run_id=decision_run_id, payload=payload_text)
+        return False
+
+    log.info("plan_synthesis.phase_5.verdict",
+             user_id=user_id, decision_run_id=decision_run_id,
+             approved=approved)
+    return approved
 
 
 # ----------------------------------------------------------------------
