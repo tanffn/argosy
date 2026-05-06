@@ -1,36 +1,29 @@
-"""plan_synthesis_flow — five-phase orchestration that produces a
-draft long/medium/short plan from current state + agent fleet review.
+"""plan_synthesis orchestrator — five-phase entry point and phase implementations.
 
-Triggers (one of):
-  - scheduled (monthly_cycle on the 1st)
-  - check_in (user-initiated via /api/advisor/check-in)
-  - quarterly (extra prompt weight on medium horizon)
-  - annual   (extra prompt weight on long horizon)
+Calling convention for monkeypatch compatibility
+-------------------------------------------------
+All helpers that tests may monkeypatch are called via the package namespace
+(``_pkg.<name>``) rather than as bare module-level names.  This means when a
+test does::
 
-Phases:
-  1. Analyst reports (parallel) — 9 specialists run concurrently
-  2. Researcher debate (per-horizon) — 3 horizons in parallel
-  3. Synthesizer — produces the three HorizonSection drafts
-  4. Risk team review — plan-level verdict
-  5. Fund manager integrity check — green-lights as role=draft
+    monkeypatch.setattr(flow, "_run_phase_3_synthesizer", ...)
 
-Per spec §4. Output: a new role='draft' PlanVersion row.
+the attribute on the *package* ``__init__`` is replaced, and the call site
+here resolves through that same namespace — so the patch takes effect.
 
-Idempotency: if a draft already exists for the user, it is moved to
-role='superseded' and a fresh draft is written.
-
-Phase implementations are pluggable (each has a default that calls
-the existing fleet agents with plan-revision prompts; tests stub them).
+Import: ``from argosy.orchestrator.flows import plan_synthesis as _pkg``
+is performed lazily inside each function to avoid circular-import risk
+(the package's ``__init__`` imports from this module).
 """
 
 from __future__ import annotations
 
 import inspect
 import json
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, cast
+from typing import cast
 
 from sqlalchemy.orm import Session
 
@@ -47,6 +40,11 @@ from argosy.agents.plan_synthesizer_types import (
     PlanSynthesisOutput,
     SynthesisInputs,
 )
+from argosy.orchestrator.flows.plan_synthesis._types import (
+    NoBaselineError,
+    SynthesisResult,
+    Trigger,
+)
 from argosy.agents.sentiment_analyst import SentimentAnalystAgent
 from argosy.agents.tax_analyst import TaxAnalystAgent
 from argosy.agents.technical_analyst import TechnicalAnalystAgent
@@ -55,9 +53,6 @@ from argosy.state.models import DecisionRun, PlanVersion
 from argosy.state.queries import get_active_baseline, get_current_plan, get_pending_draft
 
 log = get_logger(__name__)
-
-
-Trigger = Literal["scheduled", "check_in", "quarterly", "annual"]
 
 
 def _emit_event(event_type: str, payload: dict) -> None:
@@ -74,16 +69,6 @@ def _emit_event(event_type: str, payload: dict) -> None:
     publish_event_threadsafe(event_type, payload)
 
 
-class NoBaselineError(Exception):
-    """Raised when a user has no active baseline plan."""
-
-
-@dataclass
-class SynthesisResult:
-    decision_run_id: int
-    draft_id: int
-
-
 # ----------------------------------------------------------------------
 # Public entry point
 # ----------------------------------------------------------------------
@@ -95,13 +80,15 @@ def run_synthesis(
     user_id: str,
     trigger: Trigger,
     guidance: str = "",
-) -> SynthesisResult:
+):
     """Execute the 5-phase synthesis. Writes a role='draft' row.
 
     Args:
         guidance: optional free-text from the user's check-in to weight
             the synthesis (e.g. "weight tax analyst more heavily").
     """
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
+
     baseline = get_active_baseline(session, user_id)
     if baseline is None:
         raise NoBaselineError(f"user {user_id!r} has no active baseline plan")
@@ -153,18 +140,18 @@ def run_synthesis(
     # Phases 1-5 receive the string audit token (used for log annotations and
     # agent_reports.decision_id which is a String column). The integer FK is
     # only written to PlanVersion and SynthesisInputs below.
-    analyst_reports_text = _run_phase_1_analysts(
+    analyst_reports_text = _pkg._run_phase_1_analysts(
         session=session, user_id=user_id, baseline=baseline,
         prior_current=prior_current, decision_run_id=decision_audit_token,
         guidance=guidance,
     )
 
     # Assemble inputs for Phases 2+.
-    portfolio_summary = _assemble_portfolio_summary(session=session, user_id=user_id)
-    fills_summary = _assemble_fills_summary(session=session, user_id=user_id)
+    portfolio_summary = _pkg._assemble_portfolio_summary(session=session, user_id=user_id)
+    fills_summary = _pkg._assemble_fills_summary(session=session, user_id=user_id)
 
     # Phase 2: per-horizon debates.
-    debate_outcomes_text = _run_phase_2_debates(
+    debate_outcomes_text = _pkg._run_phase_2_debates(
         session=session, user_id=user_id,
         analyst_reports_text=analyst_reports_text,
         baseline=baseline, prior_current=prior_current,
@@ -172,7 +159,7 @@ def run_synthesis(
     )
 
     # Phase 3: synthesize.
-    output: PlanSynthesisOutput = _run_phase_3_synthesizer(
+    output: PlanSynthesisOutput = _pkg._run_phase_3_synthesizer(
         session=session, user_id=user_id,
         baseline=baseline, prior_current=prior_current,
         analyst_reports_text=analyst_reports_text,
@@ -183,14 +170,14 @@ def run_synthesis(
     )
 
     # Phase 4: risk team plan-level review.
-    risk_verdict = _run_phase_4_risk(
+    risk_verdict = _pkg._run_phase_4_risk(
         session=session, user_id=user_id, draft_output=output,
         analyst_reports_text=analyst_reports_text,
         decision_run_id=decision_audit_token,
     )
 
     # Phase 5: fund manager integrity check.
-    approved = _run_phase_5_fund_manager(
+    approved = _pkg._run_phase_5_fund_manager(
         session=session, user_id=user_id, draft_output=output,
         risk_verdict=risk_verdict, decision_run_id=decision_audit_token,
     )
@@ -219,9 +206,9 @@ def run_synthesis(
         horizon_long_json=output.long.model_dump_json(),
         horizon_medium_json=output.medium.model_dump_json(),
         horizon_short_json=output.short.model_dump_json(),
-        horizon_long_md=_horizon_md(output.long),
-        horizon_medium_md=_horizon_md(output.medium),
-        horizon_short_md=_horizon_md(output.short),
+        horizon_long_md=_pkg._horizon_md(output.long),
+        horizon_medium_md=_pkg._horizon_md(output.medium),
+        horizon_short_md=_pkg._horizon_md(output.short),
         synthesis_inputs_json=inputs.model_dump_json(),
     )
     session.add(draft)
@@ -253,10 +240,10 @@ def run_synthesis(
 # ----------------------------------------------------------------------
 
 
-# Resolved at call time via sys.modules[__name__] so monkeypatch.setattr
-# on the module-level names (used by tests) takes effect. Capturing the
-# class refs in a tuple at import time would freeze them and bypass the
-# patch.
+# Resolved at call time via the package's sys.modules entry so
+# monkeypatch.setattr on the package-level names (used by tests) takes effect.
+# Capturing the class refs in a tuple at import time would freeze them and
+# bypass the patch.
 # Names are alphabetical for deterministic log output.
 _PHASE_1_AGENT_NAMES = (
     "ConcentrationAnalystAgent",
@@ -277,22 +264,23 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
     log.info("plan_synthesis.phase_1.start",
              user_id=user_id, decision_run_id=decision_run_id)
 
-    # Resolve agent classes via this module's namespace so tests that
-    # monkeypatch `argosy.orchestrator.flows.plan_synthesis.<Name>` are
-    # honoured.
-    import sys
-    mod = sys.modules[__name__]
-    phase_1_agents = tuple(getattr(mod, name) for name in _PHASE_1_AGENT_NAMES)
+    # Resolve agent classes via the *package* module (argosy.orchestrator.flows.plan_synthesis)
+    # so tests that monkeypatch ``argosy.orchestrator.flows.plan_synthesis.<Name>`` are
+    # honoured.  We cannot use sys.modules[__name__] here because __name__ is
+    # the submodule (…plan_synthesis.orchestrator), not the package.
+    _pkg_mod = sys.modules["argosy.orchestrator.flows.plan_synthesis"]
+    phase_1_agents = tuple(getattr(_pkg_mod, name) for name in _PHASE_1_AGENT_NAMES)
 
     # Each agent's run_sync(...) signature varies; we pass a shared kwargs
     # bag and rely on each agent's build_prompt to consume what it needs.
     # The base agents' run_sync forwards **kwargs to build_prompt.
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
     common_kwargs = dict(
         plan_label=baseline.version_label or "Imported plan",
         plan_markdown=baseline.distillate_rendered or "",
         snapshot_label=f"synthesis-{decision_run_id}",
-        snapshot_summary=_assemble_portfolio_summary(session=session, user_id=user_id),
-        user_context_yaml=_load_user_context_yaml(session=session, user_id=user_id),
+        snapshot_summary=_pkg._assemble_portfolio_summary(session=session, user_id=user_id),
+        user_context_yaml=_pkg._load_user_context_yaml(session=session, user_id=user_id),
         domain_kb_files={},  # Each analyst's prompt picks its own; pass empty.
         recent_events="",
     )
@@ -361,22 +349,6 @@ def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
         return str(out) if out is not None else ""
 
 
-def _load_user_context_yaml(*, session, user_id) -> str:
-    """Concatenate identity + goals + constraints YAML for the user."""
-    from argosy.state.models import UserContext
-    ctx = session.get(UserContext, user_id)
-    if ctx is None:
-        return ""
-    parts = []
-    if ctx.identity_yaml:
-        parts.append(ctx.identity_yaml)
-    if ctx.goals_yaml:
-        parts.append(ctx.goals_yaml)
-    if ctx.constraints_yaml:
-        parts.append(ctx.constraints_yaml)
-    return "\n".join(parts)
-
-
 def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
                          baseline, prior_current, decision_run_id, trigger) -> str:
     """Run bull/bear/facilitator across all three horizons in parallel.
@@ -384,6 +356,8 @@ def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
     Each horizon argues theses, not trades. Per-horizon facilitator
     extracts a structured DebateOutcome record.
     """
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
+
     log.info("plan_synthesis.phase_2.start",
              user_id=user_id, decision_run_id=decision_run_id)
 
@@ -391,7 +365,7 @@ def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
     with ThreadPoolExecutor(max_workers=3) as ex:
         futures = {
             ex.submit(
-                _run_one_horizon_debate,
+                _pkg._run_one_horizon_debate,
                 horizon=h,
                 user_id=user_id,
                 analyst_reports_text=analyst_reports_text,
@@ -565,6 +539,8 @@ def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
         on parse failure we fall back to a sentinel dict so the
         facilitator at least sees the perspective.
     """
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
+
     log.info("plan_synthesis.phase_4.start",
              user_id=user_id, decision_run_id=decision_run_id)
 
@@ -660,11 +636,16 @@ def _run_one_risk_perspective(*, stance: str, user_id: str,
     back to the bare positional form when the patched stub doesn't
     accept it. Mirrors the ``_safe_run_agent`` retry pattern used in
     Phase 1.
+
+    Resolves ``_make_risk_officer`` through the package namespace so that
+    ``monkeypatch.setattr(flow, "_make_risk_officer", ...)`` intercepts
+    the call.
     """
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
     try:
-        officer = _make_risk_officer(stance, user_id=user_id)
+        officer = _pkg._make_risk_officer(stance, user_id=user_id)
     except TypeError:
-        officer = _make_risk_officer(stance)
+        officer = _pkg._make_risk_officer(stance)
 
     # Real RiskOfficerAgent.build_prompt expects:
     #   proposal: dict, analyst_reports: list[dict], user_constraints: str,
@@ -725,9 +706,11 @@ def _run_phase_5_fund_manager(*, session, user_id,
 
     Returns True to green-light the draft, False to reject.
     """
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
+
     log.info("plan_synthesis.phase_5.start",
              user_id=user_id, decision_run_id=decision_run_id)
-    fm = _make_fund_manager(user_id=user_id)
+    fm = _pkg._make_fund_manager(user_id=user_id)
     result = fm.run_sync(
         decision_kind="plan_revision",
         draft_plan=draft_output.model_dump_json(),
@@ -754,81 +737,3 @@ def _run_phase_5_fund_manager(*, session, user_id,
              user_id=user_id, decision_run_id=decision_run_id,
              approved=approved)
     return approved
-
-
-# ----------------------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------------------
-
-
-def _horizon_md(section) -> str:
-    """Render a HorizonSection to a markdown view used by the UI side sheet."""
-    lines = [f"# {section.horizon.title()} horizon — status: {section.status}"]
-    lines.append("")
-    if section.posture:
-        lines.append(f"**Posture.** {section.posture}")
-        lines.append("")
-    if section.targets:
-        lines.append("## Targets")
-        for t in section.targets:
-            suffix = f" — {t.rationale}" if t.rationale else ""
-            lines.append(
-                f"- **{t.label}**: {t.value} {t.unit} "
-                f"(stated {t.stated_at.isoformat()}; revisit {t.revisit_after.isoformat()})"
-                f"{suffix}"
-            )
-        lines.append("")
-    if section.themes:
-        lines.append("## Themes")
-        for th in section.themes:
-            th_suffix = f" — {th.rationale}" if th.rationale else ""
-            lines.append(f"- **{th.label}** ({th.direction}){th_suffix}")
-        lines.append("")
-    if section.actions:
-        lines.append("## Actions")
-        for a in section.actions:
-            trigger = f" [{a.trigger_or_date}]" if a.trigger_or_date else ""
-            lines.append(f"- **{a.label}**{trigger}: {a.detail} — {a.rationale}")
-        lines.append("")
-    if section.horizon == "short" and section.speculative_candidates:
-        lines.append("## Speculative candidates")
-        for sc in section.speculative_candidates:
-            lines.append(
-                f"- **{sc.ticker}**: max ${sc.suggested_position_usd:,.0f} "
-                f"(= {sc.suggested_position_pct_of_net_worth*100:.2f}% NW) · "
-                f"{sc.thesis_summary} · exit: {sc.exit_trigger}"
-            )
-        lines.append("")
-    if section.deltas_from_prior:
-        lines.append("## Deltas vs. prior current")
-        for d in section.deltas_from_prior:
-            lines.append(
-                f"- [{d.change_kind}] {d.summary} ({d.item_kind} `{d.item_id}`)"
-            )
-        lines.append("")
-    if section.rationale:
-        lines.append("## Rationale")
-        lines.append(section.rationale)
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def _assemble_portfolio_summary(*, session, user_id) -> str:
-    """Build a compact portfolio-state summary for synthesis input.
-
-    Wave 2: read latest TSV/CSV ingest + IBKR positions per SDD §8.
-    Tests stub this.
-    """
-    return "(portfolio snapshot — wired against existing positions ingest)"
-
-
-def _assemble_fills_summary(*, session, user_id) -> str:
-    """Last 90 days of fills + decisions, summarized."""
-    return "(fills summary — wired against fills + proposals tables)"
-
-
-__all__ = [
-    "NoBaselineError",
-    "SynthesisResult",
-    "Trigger",
-    "run_synthesis",
-]
