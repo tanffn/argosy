@@ -727,7 +727,11 @@ export interface AdvisorGapsResponse {
   counts: { fresh: number; missing: number; stale: number };
 }
 
-export type AdvisorBriefBulletKind = "gap" | "portfolio" | "signal";
+export type AdvisorBriefBulletKind =
+  | "draft_plan"
+  | "gap"
+  | "portfolio"
+  | "signal";
 
 export interface AdvisorBriefBullet {
   kind: AdvisorBriefBulletKind;

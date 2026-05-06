@@ -38,7 +38,13 @@ from argosy.agents.intake_fields import stage_status
 from argosy.logging import get_logger
 from argosy.state import db as db_mod
 from argosy.state.models import AgentReport as AgentReportRow
-from argosy.state.models import DailyBrief, PensionFundSnapshot, User, UserContext
+from argosy.state.models import (
+    DailyBrief,
+    PensionFundSnapshot,
+    PlanVersion,
+    User,
+    UserContext,
+)
 from argosy.state.queries import get_latest_investor_event
 
 _log = get_logger("argosy.api.advisor")
@@ -584,7 +590,7 @@ _GAP_REASON: dict[str, str] = {
 
 
 class HomeBriefBullet(BaseModel):
-    kind: str  # "gap" | "portfolio" | "signal"
+    kind: str  # "draft_plan" | "gap" | "portfolio" | "signal"
     text: str
 
 
@@ -618,6 +624,43 @@ def _trim_summary(text: str, max_len: int = 140) -> str:
     if len(line) <= max_len:
         return line
     return line[: max_len - 1].rstrip() + "…"
+
+
+async def _draft_bullet(user_id: str) -> HomeBriefBullet | None:
+    """If the user has a pending draft, surface it as the top bullet.
+
+    Mirrors ``argosy.state.queries.get_pending_draft`` but executes against
+    the async session because the home-brief route is fully async. Defensive
+    on DB hiccups (missing table on stale dev schemas, etc.) — degrades to
+    None rather than 500-ing the home page.
+    """
+    from sqlalchemy.exc import OperationalError, SQLAlchemyError
+
+    try:
+        async with db_mod.get_session() as session:
+            pv = (
+                await session.execute(
+                    select(PlanVersion).where(
+                        PlanVersion.user_id == user_id,
+                        PlanVersion.role == "draft",
+                    )
+                )
+            ).scalar_one_or_none()
+    except (SQLAlchemyError, OperationalError):
+        _log.debug(
+            "home_brief.draft_bullet_db_skipped", user_id=user_id, exc_info=True
+        )
+        return None
+    if pv is None:
+        return None
+    imported = pv.imported_at
+    date_str = imported.strftime("%Y-%m-%d") if imported is not None else "recently"
+    return HomeBriefBullet(
+        kind="draft_plan",
+        text=(
+            f"Monthly plan revision drafted on {date_str} — ready to review."
+        ),
+    )
 
 
 async def _gap_bullet(user_id: str) -> HomeBriefBullet | None:
@@ -842,6 +885,9 @@ async def _compose_home_brief_cacheable(user_id: str) -> dict[str, Any]:
     now = datetime.now(UTC)
 
     bullets: list[HomeBriefBullet] = []
+    draft = await _draft_bullet(user_id)
+    if draft is not None:
+        bullets.append(draft)
     gap = await _gap_bullet(user_id)
     if gap is not None:
         bullets.append(gap)
@@ -852,9 +898,19 @@ async def _compose_home_brief_cacheable(user_id: str) -> dict[str, Any]:
     if signal is not None:
         bullets.append(signal)
 
+    # When a draft is pending, swap the CTA so the user lands on the
+    # review-draft action rather than the generic advisor entry point.
+    cta = (
+        HomeBriefCTA(
+            label="Review monthly plan", href="/advisor?action=review-draft"
+        )
+        if draft is not None
+        else HomeBriefCTA(label="Talk to advisor", href="/advisor")
+    )
+
     return {
         "bullets": [b.model_dump() for b in bullets],
-        "cta": HomeBriefCTA(label="Talk to advisor", href="/advisor").model_dump(),
+        "cta": cta.model_dump(),
         "generated_at": now.isoformat(),
     }
 

@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  FileCheck,
   Headphones,
   RadioTower,
   TrendingUp,
@@ -30,6 +31,11 @@ const KIND_META: Record<
     label: string;
   }
 > = {
+  draft_plan: {
+    Icon: FileCheck,
+    iconClass: "text-rose-400",
+    label: "draft",
+  },
   gap: {
     Icon: AlertTriangle,
     iconClass: "text-amber-400",
@@ -178,11 +184,13 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
                   <span className="min-w-0">
                     <StatusPill
                       tone={
-                        b.kind === "gap"
-                          ? "warning"
-                          : b.kind === "portfolio"
-                            ? "success"
-                            : "accent"
+                        b.kind === "draft_plan"
+                          ? "error"
+                          : b.kind === "gap"
+                            ? "warning"
+                            : b.kind === "portfolio"
+                              ? "success"
+                              : "accent"
                       }
                       mono
                       className="mr-2"

@@ -1306,3 +1306,37 @@ def test_post_advisor_checkin_404_when_no_baseline(client_with_db):
     body = {"user_id": "ghost", "guidance": "", "urgency": "now"}
     r = client_with_db.post("/api/advisor/check-in", json=body)
     assert r.status_code == 404
+
+
+# ----------------------------------------------------------------------
+# /api/advisor/home-brief — draft_plan bullet (Wave 2 T2.18)
+# ----------------------------------------------------------------------
+
+
+def test_home_brief_surfaces_draft_plan_bullet(client_with_db):
+    """When a draft is pending, the home brief surfaces it as a bullet
+    and overrides the CTA to ``Review monthly plan``."""
+    from argosy.state.models import PlanVersion, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+        sess.add(PlanVersion(user_id="ariel", role="baseline", raw_markdown="# Plan"))
+        sess.add(PlanVersion(
+            user_id="ariel", role="draft", version_label="synth-x", raw_markdown="",
+            horizon_long_json='{"horizon":"long","freshness_expected":"annual","status":"no_change","posture":"x"}',
+            horizon_medium_json='{"horizon":"medium","freshness_expected":"quarterly","status":"no_change","posture":"x"}',
+            horizon_short_json='{"horizon":"short","freshness_expected":"monthly","status":"no_change","posture":"x"}',
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/advisor/home-brief?user_id=ariel")
+    assert r.status_code == 200
+    body = r.json()
+    kinds = [b["kind"] for b in body["bullets"]]
+    assert "draft_plan" in kinds
+    assert body["cta"]["label"] == "Review monthly plan"
+    assert body["cta"]["href"].startswith("/advisor")
