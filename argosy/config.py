@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -150,3 +151,60 @@ def reload_settings() -> Settings:
     """Force reload (useful in tests)."""
     get_settings.cache_clear()
     return get_settings()
+
+
+# ----------------------------------------------------------------------
+# Speculation cap (Wave 3 of plan-distillate work)
+# ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SpeculationCap:
+    """Per-user speculation guardrails (Wave 3 of plan-distillate work).
+
+    Loaded from agent_settings.yaml::
+
+        speculation:
+          max_pct_of_net_worth: 0.001       # 0.1% NW, very tight
+          max_concurrent_positions: 3
+          allowed_account_classes: ["argonaut"]
+
+    These values constrain the synthesizer (it must never emit a
+    SpeculativeCandidate that would breach the cap) AND the routing
+    layer (preflight enforcement before any broker call).
+    """
+
+    max_pct_of_net_worth: float = 0.001  # 0.1% default — conservative
+    max_concurrent_positions: int = 3
+    allowed_account_classes: tuple[str, ...] = ("argonaut",)
+
+    def validate(self) -> None:
+        if self.max_pct_of_net_worth <= 0:
+            raise ValueError(
+                f"speculation.max_pct_of_net_worth must be > 0, got {self.max_pct_of_net_worth}"
+            )
+        if self.max_pct_of_net_worth > 0.05:
+            raise ValueError(
+                f"speculation.max_pct_of_net_worth must be <= 0.05 (5% NW); "
+                f"above that it's not speculation, it's a position. Got "
+                f"{self.max_pct_of_net_worth}"
+            )
+        if self.max_concurrent_positions < 0:
+            raise ValueError(
+                f"speculation.max_concurrent_positions must be >= 0, got "
+                f"{self.max_concurrent_positions}"
+            )
+
+
+def load_speculation_cap(*, user_id: str, agent_settings: dict) -> SpeculationCap:
+    """Build a SpeculationCap from a parsed agent_settings.yaml dict."""
+    block = agent_settings.get("speculation") or {}
+    cap = SpeculationCap(
+        max_pct_of_net_worth=float(block.get("max_pct_of_net_worth", 0.001)),
+        max_concurrent_positions=int(block.get("max_concurrent_positions", 3)),
+        allowed_account_classes=tuple(
+            block.get("allowed_account_classes", ("argonaut",))
+        ),
+    )
+    cap.validate()
+    return cap
