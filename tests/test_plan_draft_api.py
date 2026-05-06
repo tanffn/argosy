@@ -234,3 +234,130 @@ def test_accept_publishes_plan_current_changed(app_with_draft, monkeypatch):
     types = [e[0] for e in events]
     assert "plan.draft.accepted" in types
     assert "plan.current.changed" in types
+
+
+# ---------------------------------------------------------------------------
+# I1 — home-brief cache invalidation on draft lifecycle changes
+# ---------------------------------------------------------------------------
+
+
+def test_accept_invalidates_home_brief_cache(app_with_draft, monkeypatch):
+    """post_draft_accept must call invalidate_home_brief after commit."""
+    from argosy.api.routes import plan as plan_routes
+
+    purged: list[str] = []
+    monkeypatch.setattr(
+        plan_routes, "invalidate_home_brief", lambda uid: purged.append(uid)
+    )
+
+    r1 = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    draft_id = r1.json()["plan_version_id"]
+    app_with_draft.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+
+    assert "ariel" in purged, f"cache purge not called; purged={purged}"
+
+
+def test_reject_invalidates_home_brief_cache(app_with_draft, monkeypatch):
+    """post_draft_reject must call invalidate_home_brief after commit."""
+    from argosy.api.routes import plan as plan_routes
+
+    purged: list[str] = []
+    monkeypatch.setattr(
+        plan_routes, "invalidate_home_brief", lambda uid: purged.append(uid)
+    )
+
+    r1 = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    draft_id = r1.json()["plan_version_id"]
+    app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/reject?user_id=ariel",
+        json={"reason": "too cautious"},
+    )
+
+    assert "ariel" in purged, f"cache purge not called; purged={purged}"
+
+
+def test_delta_accept_invalidates_home_brief_cache(app_with_draft, monkeypatch):
+    """post_delta_accept must call invalidate_home_brief after commit."""
+    from argosy.api.routes import plan as plan_routes
+
+    # Inject a delta first.
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        from argosy.state.queries import get_pending_draft
+        import json as _j
+        pv = get_pending_draft(sess, "ariel")
+        med = _j.loads(pv.horizon_medium_json)
+        med["deltas_from_prior"] = [{
+            "item_kind": "target",
+            "item_id": "medium.targets.nvda",
+            "horizon": "medium",
+            "change_kind": "modified",
+            "summary": "test",
+            "prior": {"value": 0.15},
+            "proposed": {"value": 0.12},
+            "rationale": "test",
+            "cited_sources": [],
+            "accepted": False,
+            "user_edited": False,
+            "user_edit_note": None,
+        }]
+        pv.horizon_medium_json = _j.dumps(med)
+        sess.commit()
+        draft_id = pv.id
+    finally:
+        sess.close()
+
+    purged: list[str] = []
+    monkeypatch.setattr(
+        plan_routes, "invalidate_home_brief", lambda uid: purged.append(uid)
+    )
+
+    app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/items/medium.targets.nvda/accept?user_id=ariel"
+    )
+
+    assert "ariel" in purged, f"cache purge not called; purged={purged}"
+
+
+def test_delta_edit_invalidates_home_brief_cache(app_with_draft, monkeypatch):
+    """patch_delta_edit must call invalidate_home_brief after commit."""
+    from argosy.api.routes import plan as plan_routes
+
+    # Inject a delta first.
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        from argosy.state.queries import get_pending_draft
+        import json as _j
+        pv = get_pending_draft(sess, "ariel")
+        med = _j.loads(pv.horizon_medium_json)
+        med["deltas_from_prior"] = [{
+            "item_kind": "target",
+            "item_id": "medium.targets.nvda",
+            "horizon": "medium",
+            "change_kind": "modified",
+            "summary": "test",
+            "prior": {"value": 0.15},
+            "proposed": {"value": 0.12},
+            "rationale": "test",
+            "cited_sources": [],
+            "accepted": False,
+            "user_edited": False,
+            "user_edit_note": None,
+        }]
+        pv.horizon_medium_json = _j.dumps(med)
+        sess.commit()
+        draft_id = pv.id
+    finally:
+        sess.close()
+
+    purged: list[str] = []
+    monkeypatch.setattr(
+        plan_routes, "invalidate_home_brief", lambda uid: purged.append(uid)
+    )
+
+    app_with_draft.patch(
+        f"/api/plan/draft/{draft_id}/items/medium.targets.nvda?user_id=ariel",
+        json={"proposed": {"value": 0.11}},
+    )
+
+    assert "ariel" in purged, f"cache purge not called; purged={purged}"

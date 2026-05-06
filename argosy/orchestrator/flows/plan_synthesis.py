@@ -234,6 +234,13 @@ def run_synthesis(
     decision_run.status = "completed"
     session.commit()
 
+    # Invalidate the home-brief cache so the "ready to review" draft bullet
+    # surfaces immediately (within the same request cycle) rather than waiting
+    # for the 30-minute TTL to expire.  Failure is swallowed — synthesis must
+    # never abort because of a flaky cache layer.
+    from argosy.adapters.data.cache import invalidate_home_brief
+    invalidate_home_brief(user_id)
+
     log.info("plan_synthesis.draft_persisted",
              user_id=user_id, draft_id=draft.id, decision_run_id=decision_run_id)
     _emit_event("plan.draft.completed", {"user_id": user_id, "draft_id": draft.id})

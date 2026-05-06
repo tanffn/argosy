@@ -37,8 +37,11 @@ from typing import Any, TypeVar
 
 from sqlalchemy import select
 
+from argosy.logging import get_logger
 from argosy.state import db as db_mod
 from argosy.state.models import KvCacheEntry, MacroCache, NewsCache
+
+_log = get_logger("argosy.adapters.cache")
 
 T = TypeVar("T")
 
@@ -174,4 +177,46 @@ async def cached_call(
     return fetched
 
 
-__all__ = ["CacheKind", "cached_call"]
+def purge_cache_entry(provider: str, key: str) -> None:
+    """Delete a single cached entry by (provider, key). No-op if absent.
+
+    Executes a synchronous DELETE against the ``kv_cache`` table using a
+    short-lived sync SQLAlchemy connection so it can be called from sync
+    code (plan routes, synthesis flow) without bridging back to an event
+    loop. The URL is derived from the async URL stored in settings by
+    stripping the ``+aiosqlite`` driver segment — the same pattern used
+    by ``argosy.api.routes.plan.get_db``.
+    """
+    from sqlalchemy import create_engine, delete
+
+    from argosy.config import get_settings
+
+    settings = get_settings()
+    sync_url = settings.database_url.replace("+aiosqlite", "")
+    engine = create_engine(sync_url, connect_args={"check_same_thread": False})
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                delete(KvCacheEntry).where(
+                    (KvCacheEntry.provider == provider) & (KvCacheEntry.key == key)
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def invalidate_home_brief(user_id: str) -> None:
+    """Purge the advisor_home_brief cache entry for *user_id*.
+
+    Must be called after any mutation that changes what the home-brief
+    route would return: draft created, accepted, rejected, or per-delta
+    edits.  Cache-purge failure is logged at WARNING but never propagated
+    — the primary write must succeed regardless of cache state.
+    """
+    try:
+        purge_cache_entry("advisor_home_brief", f"user:{user_id}")
+    except Exception:  # noqa: BLE001
+        _log.warning("home_brief.cache_purge_failed", user_id=user_id)
+
+
+__all__ = ["CacheKind", "cached_call", "invalidate_home_brief", "purge_cache_entry"]

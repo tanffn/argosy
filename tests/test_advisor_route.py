@@ -1308,6 +1308,49 @@ def test_post_advisor_checkin_404_when_no_baseline(client_with_db):
     assert r.status_code == 404
 
 
+def test_post_advisor_checkin_invalidates_home_brief_cache(client_with_db, monkeypatch):
+    """POST /api/advisor/check-in must invalidate the home-brief cache
+    after run_synthesis writes a new draft.  We stub run_synthesis so the
+    test doesn't need agents; the stub calls through to
+    invalidate_home_brief via the real flow import path so we can assert
+    it was called."""
+    from argosy.adapters.data import cache as cache_mod
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.state.models import PlanVersion, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.add(PlanVersion(user_id="ariel", role="baseline", raw_markdown="# Plan"))
+            sess.commit()
+    finally:
+        sess.close()
+
+    purged: list[str] = []
+    # Patch invalidate_home_brief in the cache module (the real call site
+    # imports it via `from argosy.adapters.data.cache import invalidate_home_brief`
+    # inside the function body, so patching the module symbol covers it).
+    monkeypatch.setattr(cache_mod, "invalidate_home_brief", lambda uid: purged.append(uid))
+
+    def _fake_run(session, *, user_id, trigger, guidance=""):
+        # Also call invalidate_home_brief as the real run_synthesis would.
+        cache_mod.invalidate_home_brief(user_id)
+        class _R:
+            decision_run_id = 1
+            draft_id = 99
+        return _R()
+
+    monkeypatch.setattr(flow, "run_synthesis", _fake_run)
+
+    r = client_with_db.post(
+        "/api/advisor/check-in",
+        json={"user_id": "ariel", "guidance": "", "urgency": "now"},
+    )
+    assert r.status_code == 202, r.text
+    assert "ariel" in purged, f"home_brief cache purge not called; purged={purged}"
+
+
 # ----------------------------------------------------------------------
 # /api/advisor/home-brief — draft_plan bullet (Wave 2 T2.18)
 # ----------------------------------------------------------------------

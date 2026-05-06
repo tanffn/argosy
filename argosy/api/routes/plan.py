@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from argosy.adapters.data.cache import invalidate_home_brief
 from argosy.agents.errors import AgentRunError, MissingAPIKeyError
 from argosy.agents.plan_critique import PlanCritiqueAgent
 from argosy.api.events import publish_event, publish_event_threadsafe
@@ -447,6 +448,7 @@ def post_draft_accept(
     pv.accepted_at = now
     pv.accepted_by_user_id = user_id
     db.commit()
+    invalidate_home_brief(user_id)
 
     _publish("plan.draft.accepted", {"user_id": user_id, "draft_id": draft_id})
     _publish("plan.current.changed", {"user_id": user_id, "current_id": pv.id})
@@ -473,6 +475,7 @@ def post_draft_reject(
     inputs["rejection_guidance"] = body.guidance
     pv.synthesis_inputs_json = json.dumps(inputs)
     db.commit()
+    invalidate_home_brief(user_id)
     _publish(
         "plan.draft.rejected",
         {"user_id": user_id, "draft_id": draft_id, "reason": body.reason},
@@ -520,6 +523,7 @@ def post_delta_accept(
     delta["accepted"] = True
     setattr(pv, field, json.dumps(payload))
     db.commit()
+    invalidate_home_brief(user_id)
     _publish(
         "plan.draft.delta.accepted",
         {"user_id": user_id, "draft_id": draft_id, "item_id": item_id},
@@ -549,6 +553,7 @@ def patch_delta_edit(
     delta["user_edited"] = True
     setattr(pv, field, json.dumps(payload))
     db.commit()
+    invalidate_home_brief(user_id)
     _publish(
         "plan.draft.delta.edited",
         {"user_id": user_id, "draft_id": draft_id, "item_id": item_id},
