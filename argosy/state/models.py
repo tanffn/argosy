@@ -134,6 +134,15 @@ class PlanVersion(Base):
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     distilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Synthesis (migration 0017) — populated only when role in {draft,current,superseded}.
+    horizon_long_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    horizon_medium_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    horizon_short_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    horizon_long_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    horizon_medium_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    horizon_short_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    synthesis_inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     critiques: Mapped[list["PlanCritique"]] = relationship(
         back_populates="plan_version", cascade="all, delete-orphan"
     )
