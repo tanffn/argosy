@@ -208,3 +208,21 @@ def load_speculation_cap(*, user_id: str, agent_settings: dict) -> SpeculationCa
     )
     cap.validate()
     return cap
+
+
+def get_user_agent_settings(user_id: str) -> dict:
+    """Read configs/<user_id>/agent_settings.yaml. Returns empty dict if missing.
+
+    ADAPTATION: the existing settings model already exposes a tailored
+    helper at ``Settings.agent_settings_path(user_id)`` (line 110-112),
+    so we delegate there rather than rebuilding the path from
+    ``argosy_home`` + ``configs`` literals.  Falls back to an empty dict
+    when the file is absent or empty so callers can rely on
+    ``load_speculation_cap`` defaulting cleanly.
+    """
+    import yaml
+
+    path = get_settings().agent_settings_path(user_id)
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}

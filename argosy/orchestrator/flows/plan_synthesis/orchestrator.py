@@ -158,6 +158,25 @@ def run_synthesis(
         decision_run_id=decision_audit_token, trigger=trigger,
     )
 
+    # Wave 3 / Task 3.2: load the per-user speculation cap so we can both
+    # (a) tell the synthesizer prompt about it and (b) post-validate the
+    # candidates the model emits.  Failure to load a cap is non-fatal —
+    # we fall back to ``SpeculationCap()`` defaults (0.1% NW, 3 positions),
+    # which the validator still applies.  Speculation caps must NEVER
+    # silently disable themselves on a config blip.
+    from argosy.config import SpeculationCap, get_user_agent_settings, load_speculation_cap
+    try:
+        cap = load_speculation_cap(
+            user_id=user_id,
+            agent_settings=get_user_agent_settings(user_id),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "plan_synthesis.speculation_cap_load_failed_using_default",
+            user_id=user_id, error=str(exc),
+        )
+        cap = SpeculationCap()  # conservative default — never disable the cap.
+
     # Phase 3: synthesize.
     output: PlanSynthesisOutput = _pkg._run_phase_3_synthesizer(
         session=session, user_id=user_id,
@@ -167,6 +186,18 @@ def run_synthesis(
         portfolio_summary=portfolio_summary,
         fills_summary=fills_summary,
         decision_run_id=decision_audit_token,
+        speculation_cap_pct=cap.max_pct_of_net_worth,
+        speculation_cap_concurrent=cap.max_concurrent_positions,
+    )
+
+    # Defense-in-depth: post-filter speculative candidates that breach
+    # the cap or lack ``risk_ceiling_check``.  Resolved via the package
+    # namespace so tests that monkeypatch ``flow._enforce_speculation_cap``
+    # are honoured.
+    output = _pkg._enforce_speculation_cap(
+        output,
+        max_pct_of_net_worth=cap.max_pct_of_net_worth,
+        max_concurrent_positions=cap.max_concurrent_positions,
     )
 
     # Phase 4: risk team plan-level review.
@@ -487,8 +518,20 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
 def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
                              analyst_reports_text, debate_outcomes_text,
                              portfolio_summary, fills_summary,
-                             decision_run_id) -> PlanSynthesisOutput:
-    """Default Phase 3: call PlanSynthesizerAgent."""
+                             decision_run_id,
+                             speculation_cap_pct: float | None = None,
+                             speculation_cap_concurrent: int | None = None,
+                             ) -> PlanSynthesisOutput:
+    """Default Phase 3: call PlanSynthesizerAgent.
+
+    ``speculation_cap_pct`` / ``speculation_cap_concurrent`` (Wave 3, Task
+    3.2): when set, the synthesizer prompt includes a HARD CONSTRAINT
+    block telling the model to keep speculative_candidates within those
+    bounds.  Defense-in-depth: ``_enforce_speculation_cap`` re-validates
+    after the model returns, so a model that fluffs the constraint cannot
+    harm the user.  Both kwargs default to None for backwards compat with
+    tests / call sites that don't load the cap.
+    """
     # ADAPTATION: spec wrote PlanSynthesizerAgent() but BaseAgent.__init__
     # requires user_id as a mandatory keyword argument.
     agent = PlanSynthesizerAgent(user_id=user_id)
@@ -507,8 +550,59 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
         debate_outcomes_text=debate_outcomes_text,
         portfolio_snapshot_summary=portfolio_summary,
         recent_fills_summary=fills_summary,
+        speculation_cap_pct=speculation_cap_pct,
+        speculation_cap_concurrent=speculation_cap_concurrent,
     )
     return result.output  # type: ignore[attr-defined]
+
+
+def _enforce_speculation_cap(
+    output: PlanSynthesisOutput,
+    *,
+    max_pct_of_net_worth: float,
+    max_concurrent_positions: int,
+) -> PlanSynthesisOutput:
+    """Drop any speculative candidates that breach the cap.
+
+    The synthesizer prompt is told the cap, but defense-in-depth: we
+    enforce it here so a model that fluffs the constraint cannot harm
+    the user.
+
+    Drops candidates that:
+      - exceed ``max_pct_of_net_worth``
+      - lack ``risk_ceiling_check`` (i.e. the synthesizer didn't
+        affirmatively confirm the position fits the user's bound)
+    Also enforces the concurrent-position limit by truncating after
+    ``max_concurrent_positions`` survivors (deterministic order — first
+    candidates emitted by the model win).
+    """
+    if not output.short.speculative_candidates:
+        return output
+
+    kept = []
+    for c in output.short.speculative_candidates:
+        if c.suggested_position_pct_of_net_worth > max_pct_of_net_worth:
+            log.warning(
+                "plan_synthesis.speculative_dropped_over_cap",
+                ticker=c.ticker,
+                pct=c.suggested_position_pct_of_net_worth,
+                cap=max_pct_of_net_worth,
+            )
+            continue
+        if not c.risk_ceiling_check:
+            log.warning(
+                "plan_synthesis.speculative_dropped_no_ceiling_check",
+                ticker=c.ticker,
+            )
+            continue
+        kept.append(c)
+        if len(kept) >= max_concurrent_positions:
+            break
+
+    if len(kept) == len(output.short.speculative_candidates):
+        return output
+    new_short = output.short.model_copy(update={"speculative_candidates": kept})
+    return output.model_copy(update={"short": new_short})
 
 
 def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,

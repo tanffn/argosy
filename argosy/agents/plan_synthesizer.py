@@ -39,6 +39,8 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
         debate_outcomes_text: str,
         portfolio_snapshot_summary: str,
         recent_fills_summary: str,
+        speculation_cap_pct: float | None = None,
+        speculation_cap_concurrent: int | None = None,
     ) -> tuple[str, str]:
         system = (
             "You are the plan synthesizer on the Argosy fleet — Phase 3 of the "
@@ -71,6 +73,22 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "OUTPUT must be a JSON object conforming to:\n"
             f"{PlanSynthesisOutput.model_json_schema()}\n"
         )
+
+        if speculation_cap_pct is not None:
+            cap_block = (
+                "\n\nSPECULATION CAP (HARD CONSTRAINT):\n"
+                f"  - max position size: {speculation_cap_pct:.4f} of net worth "
+                f"(= {speculation_cap_pct*100:.2f}%)\n"
+                f"  - max concurrent positions: {speculation_cap_concurrent}\n"
+                "\n"
+                "If you surface a SpeculativeCandidate, EVERY candidate must "
+                "have suggested_position_pct_of_net_worth <= the cap, AND "
+                "risk_ceiling_check=true. Do NOT recommend candidates that "
+                "would breach the cap. The orchestrator will silently drop "
+                "any over-cap candidates anyway, so you save the user a "
+                "confused glance by getting it right here.\n"
+            )
+            system = system + cap_block
 
         usr = "\n\n".join([
             "=== BASELINE DISTILLATE ===\n" + (baseline_distillate_md or "(no baseline)"),
