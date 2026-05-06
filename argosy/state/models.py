@@ -86,10 +86,19 @@ class UserContext(Base):
 
 
 class PlanVersion(Base):
-    """An imported plan document (markdown) with a user-supplied label.
+    """An imported or synthesized plan, with explicit lifecycle role.
 
-    A user typically has multiple versions over time (v1.0, v2.0, v2.1...).
-    The plan-critique agent reads the latest version by default.
+    Roles per SDD §6.10:
+      - baseline: user-imported source (Jacobs Wealth Plan v2.0). Carries
+        distillate_json + distillate_rendered + source_hash. One active
+        per user (partial unique index).
+      - draft: synthesis output awaiting user accept. Carries horizon_*_*
+        columns (added in 0017). One in-flight per user.
+      - current: accepted draft, the canonical plan the advisor anchors on.
+      - superseded: historical; demoted from baseline/current/draft.
+
+    Lineage: derived_from_id points back to the source row a synthesized
+    plan was built from (typically the active baseline at synthesis time).
     """
 
     __tablename__ = "plan_versions"
@@ -104,6 +113,26 @@ class PlanVersion(Base):
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+
+    # Lifecycle (migration 0015).
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="baseline", server_default="baseline"
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    derived_from_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("plan_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    decision_run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("decision_runs.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Distillate (migration 0016) — populated only when role='baseline'.
+    distillate_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    distillate_rendered: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    distilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     critiques: Mapped[list["PlanCritique"]] = relationship(
         back_populates="plan_version", cascade="all, delete-orphan"

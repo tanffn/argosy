@@ -95,3 +95,24 @@ async def test_user_context_current_stage_nullable(engine: None) -> None:
     async with db_mod.get_session() as session:
         ctx = (await session.execute(select(UserContext).where(UserContext.user_id == "bob"))).scalar_one()
         assert ctx.current_stage is None
+
+
+def test_plan_version_has_lifecycle_and_distillate_fields():
+    """Spec §5: PlanVersion now carries role + lifecycle + distillate columns."""
+    from argosy.state.models import PlanVersion
+
+    expected_fields = {
+        "role",
+        "accepted_at",
+        "accepted_by_user_id",
+        "superseded_at",
+        "derived_from_id",
+        "decision_run_id",
+        "distillate_json",
+        "distillate_rendered",
+        "source_hash",
+        "distilled_at",
+    }
+    actual = set(PlanVersion.__table__.columns.keys())
+    missing = expected_fields - actual
+    assert not missing, f"PlanVersion missing fields: {missing}"
