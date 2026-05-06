@@ -541,8 +541,64 @@ async def get_latest_investor_event(user_id: str) -> dict[str, Any] | None:
     }
 
 
+# ----------------------------------------------------------------------
+# Plan-versions lifecycle queries (spec §5)
+# ----------------------------------------------------------------------
+
+
+def get_active_baseline(session, user_id: str):
+    """Return the user's active baseline plan, or None.
+
+    Partial unique index ``uq_plan_versions_baseline_per_user`` guarantees
+    at most one row matches.
+    """
+    from argosy.state.models import PlanVersion
+
+    return session.execute(
+        select(PlanVersion).where(
+            PlanVersion.user_id == user_id,
+            PlanVersion.role == "baseline",
+        )
+    ).scalar_one_or_none()
+
+
+def get_current_plan(session, user_id: str):
+    """Return the user's currently-accepted plan (role='current'), or None.
+
+    Partial unique index ``uq_plan_versions_current_per_user`` guarantees
+    at most one row matches.
+    """
+    from argosy.state.models import PlanVersion
+
+    return session.execute(
+        select(PlanVersion).where(
+            PlanVersion.user_id == user_id,
+            PlanVersion.role == "current",
+        )
+    ).scalar_one_or_none()
+
+
+def get_pending_draft(session, user_id: str):
+    """Return the user's in-flight draft plan, or None.
+
+    Partial unique index ``uq_plan_versions_draft_per_user`` guarantees
+    at most one row matches.
+    """
+    from argosy.state.models import PlanVersion
+
+    return session.execute(
+        select(PlanVersion).where(
+            PlanVersion.user_id == user_id,
+            PlanVersion.role == "draft",
+        )
+    ).scalar_one_or_none()
+
+
 __all__ = [
+    "get_active_baseline",
+    "get_current_plan",
     "get_latest_investor_event",
+    "get_pending_draft",
     "get_user_pension_snapshots",
     "record_investor_events",
 ]
