@@ -32,6 +32,7 @@ from argosy.orchestrator.loops.minute_loop import MinuteLoop
 from argosy.orchestrator.loops.monthly_cycle import MonthlyCycleLoop
 from argosy.orchestrator.loops.process_cooling import ProcessCoolingLoop
 from argosy.orchestrator.loops.quarterly import QuarterlyLoop
+from argosy.orchestrator.loops.plan_watcher import PlanWatcherLoop
 from argosy.orchestrator.loops.watchlist import WatchlistLoop
 from argosy.orchestrator.loops.weekly_review import WeeklyReviewLoop
 from argosy.orchestrator.triggers import is_market_open
@@ -205,6 +206,14 @@ class Scheduler:
             self.register_loop(
                 WatchlistLoop(
                     schedule=LoopSchedule.from_config(cadences.watchlist),
+                    enabled=True,
+                    user_id=self.user_id,
+                )
+            )
+        if cadences.plan_watcher.enabled:
+            self.register_loop(
+                PlanWatcherLoop(
+                    schedule=LoopSchedule.from_config(cadences.plan_watcher),
                     enabled=True,
                     user_id=self.user_id,
                 )

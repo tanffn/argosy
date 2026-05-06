@@ -77,6 +77,11 @@ class CadencesBlock(BaseModel):
     watchlist: CadenceConfig = Field(
         default_factory=lambda: CadenceConfig(enabled=True, cron="30 8 * * *")
     )
+    plan_watcher: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(
+            enabled=True, cron="0 7 * * *", timezone="Asia/Jerusalem"
+        )
+    )
 
 
 class BackupsBlock(BaseModel):
