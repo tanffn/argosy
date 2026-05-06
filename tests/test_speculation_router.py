@@ -87,3 +87,53 @@ def test_route_speculative_blocks_when_cap_breached(session_with_current, monkey
         router.route_accepted_candidate(
             sess, user_id="ariel", ticker="HOOD", execution_mode="paper",
         )
+
+
+def test_route_speculative_blocks_when_allowed_account_classes_empty(
+    session_with_current, monkeypatch,
+):
+    """Wave 3 spec-compliance fix: an empty ``allowed_account_classes``
+    means speculation is disabled — the router refuses to route.
+    """
+    from argosy.orchestrator import speculation_router as router
+    from argosy.config import SpeculationCap
+
+    monkeypatch.setattr(
+        router, "load_speculation_cap",
+        lambda **_kw: SpeculationCap(allowed_account_classes=()),
+    )
+    monkeypatch.setattr(router, "get_user_agent_settings", lambda _uid: {})
+
+    with pytest.raises(router.CapBreachError, match="allowed_account_classes"):
+        router.route_accepted_candidate(
+            session_with_current,
+            user_id="ariel", ticker="HOOD", execution_mode="paper",
+        )
+
+
+def test_route_speculative_uses_first_allowed_account_class(
+    session_with_current, monkeypatch,
+):
+    """Wave 3 spec-compliance fix: the router routes to the first entry
+    of ``allowed_account_classes`` rather than hardcoding ``argonaut``.
+    """
+    from argosy.orchestrator import speculation_router as router
+    from argosy.config import SpeculationCap
+
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        router, "_create_proposal",
+        lambda **kw: (captured.append(kw) or type("P", (), {"id": 7})()),
+    )
+    monkeypatch.setattr(
+        router, "load_speculation_cap",
+        lambda **_kw: SpeculationCap(allowed_account_classes=("limited",)),
+    )
+    monkeypatch.setattr(router, "get_user_agent_settings", lambda _uid: {})
+
+    out = router.route_accepted_candidate(
+        session_with_current,
+        user_id="ariel", ticker="HOOD", execution_mode="paper",
+    )
+    assert out.proposal_id == 7
+    assert captured[0]["account_class"] == "limited"

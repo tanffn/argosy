@@ -66,19 +66,31 @@ def create_speculative_proposal(
         the return tuple via ``RouteResult`` so the caller can stamp
         downstream PaperFill/audit records correctly.
       - ``exit_trigger`` and ``execution_mode`` are stashed inside
-        ``rationale_summary`` (prefix-tagged) so the existing schema
-        carries them without a migration. A future migration may move
-        them to dedicated columns.
+        ``rationale_summary`` (prefix-tagged with ``[exit]`` / ``[mode]``)
+        so the existing schema carries them without a migration. A
+        future migration may move them to dedicated columns.
 
     Requires a ``session`` keyword argument bound to an open
-    SQLAlchemy session. The router constructs and commits the session;
-    this helper just adds the rows and flushes for the row id.
+    SQLAlchemy session.
+
+    .. note::
+       This helper **commits the session itself** (see ``session.commit()``
+       below). Callers must therefore not have uncommitted state that
+       should remain pending — any pending writes will be flushed and
+       committed together with the proposal + history rows. If the caller
+       wants transactional isolation, it must use a separate session.
     """
     if session is None:
         raise ValueError(
             "create_speculative_proposal requires session="
         )
 
+    # TODO(plan-distillate-wave4): promote ``exit_trigger`` and
+    # ``execution_mode`` to dedicated columns on the ``proposals`` table
+    # so we no longer have to stash them as ``[exit]`` / ``[mode]``
+    # prefix-tagged lines inside ``rationale_summary``. This requires an
+    # alembic migration + a backfill step that parses the prefixes out of
+    # existing speculation-origin rows.
     summary = rationale_summary or ""
     if exit_trigger:
         summary = f"{summary}\n[exit] {exit_trigger}".strip()

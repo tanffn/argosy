@@ -79,6 +79,18 @@ def route_accepted_candidate(
             f"candidate {ticker} risk_ceiling_check is false"
         )
 
+    # Wave 3 spec-compliance fix: honour the user's
+    # ``cap.allowed_account_classes``.  An empty tuple means "speculation
+    # disabled" — the router refuses to route.  Otherwise we route to the
+    # first allowed class (the spec frames this as a configured class, not
+    # a per-candidate selection — there is no per-candidate account-class
+    # field).
+    if not cap.allowed_account_classes:
+        raise CapBreachError(
+            "speculation disabled — allowed_account_classes is empty"
+        )
+    target_account_class = cap.allowed_account_classes[0]
+
     paper = execution_mode != "live"
     proposal = _create_proposal(
         session=session,
@@ -88,7 +100,7 @@ def route_accepted_candidate(
         size_usd=float(candidate["suggested_position_usd"]),
         order_type="limit",
         tier="T0",
-        account_class="argonaut",
+        account_class=target_account_class,
         rationale_summary=candidate.get("thesis_summary", ""),
         exit_trigger=candidate.get("exit_trigger", ""),
         execution_mode=execution_mode,

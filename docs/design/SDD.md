@@ -838,6 +838,15 @@ Configuration in `agent_settings.yaml`::
       max_concurrent_positions: 3
       allowed_account_classes: ["argonaut"]
 
+**Two proposal-creation paths (current state):** speculation-origin
+proposals use a sync helper at
+`argosy/orchestrator/proposal_lifecycle.py::create_speculative_proposal`
+because the synthesizer has already chosen ticker / size / exit and the
+candidate just needs a `proposals` row. Trade-flow-originated proposals
+(analyst → trader → fund manager pipeline) flow through the full async
+`DecisionFlow._persist_proposal`. Future TODO: consolidate the two paths
+once the sync helper grows enough features to justify the merge.
+
 ---
 
 ## 7. Domain Knowledge Base

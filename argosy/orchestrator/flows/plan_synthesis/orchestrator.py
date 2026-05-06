@@ -171,9 +171,20 @@ def run_synthesis(
             agent_settings=get_user_agent_settings(user_id),
         )
     except Exception as exc:  # noqa: BLE001
+        # Logs and events are complementary: the warning lives in stderr /
+        # log aggregation for ops, and the structured event lets a UI
+        # subscriber raise a user-visible alert ("we couldn't load your
+        # speculation cap; reverting to defaults — please review your
+        # agent_settings.yaml").  Wave 2 fix I3 introduced
+        # ``publish_event_threadsafe`` precisely so synthesis (which can
+        # run on a worker thread via monthly_cycle) can emit cleanly.
         log.warning(
             "plan_synthesis.speculation_cap_load_failed_using_default",
             user_id=user_id, error=str(exc),
+        )
+        _emit_event(
+            "plan.synthesis.cap_load_failed",
+            {"user_id": user_id, "error": str(exc)},
         )
         cap = SpeculationCap()  # conservative default — never disable the cap.
 
