@@ -329,6 +329,7 @@ Run on their own cadences; not part of any decision team.
 | **Domain refresh** | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet |
 | **Audit** | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus |
 | **Plan distiller** | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet |
+| **Plan synthesizer** | Phase 3 of plan_synthesis_flow — produces the three HorizonSection drafts. See §6.11. | Monthly + quarterly + annual + on user check-in | Opus |
 | **Watchlist** | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Haiku |
 
 ### 3.7 Cost shape
@@ -423,17 +424,17 @@ The orchestrator runs these loops independently. Each is a Python coroutine doin
 
 ### 5.1 Loop catalog
 
-| Loop | Tick rate | What polls / checks (cheap) | What triggers an LLM decision flow |
-|---|---|---|---|
-| **Minute** | 60s during market hours only | Open-order status from broker; price vs limits on watchlist; volatility-band breach detection | Limit-price re-evaluation (T0); breach of stop/target (T0/T1); flash-crash detection (T2) |
-| **Hour** | 60min, 24/7 | News-feed delta; macro release calendar; corp-actions feed; FX move > threshold | Material news on holding (T1+); macro print surprise (T1); FX threshold breach (T1) |
-| **Daily brief** | 09:00 user TZ | Always runs; ingest overnight news, EOD prices, world markets, calendar for the day | Always runs; produces a daily brief; flags candidates for action |
-| **Plan watcher** | Daily 07:00 user TZ | Hashes each user's baseline `source_path`; detects file change | Re-distill on diff (preserves user edits) |
-| **Weekly review** | Sun 18:00 | Domain-knowledge freshness check; audit-agent self-review of past week's decisions; concentration drift; plan-adherence delta | Plan-critique YELLOW or RED items (T2); concentration cap breach (T2/T3 depending on size) |
-| **Monthly cycle** | 1st of month | Statement reconciliation; RSU vest pulled in; gap-weighted buy template; full plan critique re-run | Buy plan execution (T1-T3 depending on size); rebalance proposals (T2/T3); tax calendar items |
-| **Quarterly** | After quarter close | Real estate P&L update; bonus event ingest; plan-drift check vs targets | Plan revision proposal (T3) |
-| **Annual** | January 2nd | Tax filing prep; W-8BEN refresh prompt; insurance renewal; full domain re-verify | Plan re-formulation pass (T3); year-end TLH harvest (T2); 102-plan election deadline (T2) |
-| **Ad-hoc** | On user signal | — | Anything user-initiated; tier auto-selected from size |
+| Loop | Tick rate | What polls / checks (cheap) | What triggers an LLM decision flow | Triggers plan synthesis |
+|---|---|---|---|---|
+| **Minute** | 60s during market hours only | Open-order status from broker; price vs limits on watchlist; volatility-band breach detection | Limit-price re-evaluation (T0); breach of stop/target (T0/T1); flash-crash detection (T2) | — |
+| **Hour** | 60min, 24/7 | News-feed delta; macro release calendar; corp-actions feed; FX move > threshold | Material news on holding (T1+); macro print surprise (T1); FX threshold breach (T1) | — |
+| **Daily brief** | 09:00 user TZ | Always runs; ingest overnight news, EOD prices, world markets, calendar for the day | Always runs; produces a daily brief; flags candidates for action | — |
+| **Plan watcher** | Daily 07:00 user TZ | Hashes each user's baseline `source_path`; detects file change | Re-distill on diff (preserves user edits) | — |
+| **Weekly review** | Sun 18:00 | Domain-knowledge freshness check; audit-agent self-review of past week's decisions; concentration drift; plan-adherence delta | Plan-critique YELLOW or RED items (T2); concentration cap breach (T2/T3 depending on size) | — |
+| **Monthly cycle** | 1st of month | Statement reconciliation; RSU vest pulled in; gap-weighted buy template; full plan critique re-run | Buy plan execution (T1-T3 depending on size); rebalance proposals (T2/T3); tax calendar items | Yes — fires `plan_synthesis_flow` (§6.11); produces a fresh `role='draft'` for user acceptance |
+| **Quarterly** | After quarter close | Real estate P&L update; bonus event ingest; plan-drift check vs targets | Plan revision proposal (T3) | Yes — quarterly synthesis (§6.11) with extra prompt weight on the medium horizon |
+| **Annual** | January 2nd | Tax filing prep; W-8BEN refresh prompt; insurance renewal; full domain re-verify | Plan re-formulation pass (T3); year-end TLH harvest (T2); 102-plan election deadline (T2) | Yes — annual synthesis (§6.11) with extra prompt weight on the long horizon |
+| **Ad-hoc** | On user signal | — | Anything user-initiated; tier auto-selected from size | On `POST /api/advisor/check-in` only (§6.11) |
 
 ### 5.2 Loop coordination rules
 
@@ -751,6 +752,70 @@ would raise inside the existing event loop.
 See `docs/superpowers/specs/2026-05-05-plan-distillate-design.md` for
 the full design and `docs/superpowers/plans/2026-05-05-plan-distillate-implementation.md`
 for the Wave 1 task breakdown.
+
+### 6.11 Plan synthesis flow (Wave 2 of plan-distillate work)
+
+The advisor never reads the baseline plan directly. Each month a fleet
+synthesis re-derives a fresh **long / medium / short** plan from
+{baseline distillate + current portfolio state + recent fills + analyst
+reports + researcher debates}, the user accepts (or rejects) it, and
+the resulting `role='current'` plan is what every other agent in the
+system anchors on.
+
+**Triggers.**
+
+- `monthly_cycle` on the 1st of each month (auto-scheduled per §5.1)
+- `quarterly` after each quarter close — extra prompt weight on medium
+  horizon
+- `annual` (January) — extra prompt weight on long horizon
+- User-initiated via `POST /api/advisor/check-in` (any time)
+
+**Five-phase fleet review** (a new T3-depth flow, distinct from the
+per-trade `decision_flow` of §3 / §10):
+
+1. Analyst reports (parallel, ~3-5 min) — 9 specialists run concurrently
+2. Researcher debate (per-horizon, ~5 min) — bull/bear/facilitator argue
+   theses (long/medium/short) in parallel
+3. Synthesizer (Opus, ~1-2 min) — produces three `HorizonSection` drafts
+4. Risk team review (parallel, ~2 min) — aggressive/neutral/conservative
+   plan-level verdicts + facilitator merge
+5. Fund manager integrity check (~1 min) — green-lights as `role='draft'`
+
+Total wall-clock ~12-15 minutes from trigger to draft-ready.
+
+**Idempotency.** Re-running synthesis when an unaccepted draft already
+exists demotes the prior draft to `role='superseded'` and writes a
+fresh draft. Single user, single in-flight draft.
+
+**Output.** A new `plan_versions` row with `role='draft'` and three
+`HorizonSection` JSON payloads (`horizon_long_json`,
+`horizon_medium_json`, `horizon_short_json`) plus pre-rendered markdown
+views. Lineage via `derived_from_id` (-> baseline) and `decision_run_id`
+(-> the `decision_runs` row tying every analyst/debate/risk/FM call
+together for audit reconstruction).
+
+**Authority framing.** Every plan-touching agent imports the shared
+`AUTHORITY_DISCLAIMER` from `argosy/agents/_plan_authority.py`. The
+plan is one input; the fleet is empowered to disagree.
+
+**Per-horizon character:**
+
+- **Long (5+ yrs)** — posture-heavy, few targets, directional actions;
+  `status='no_change'` is the common case.
+- **Medium (1-2 yrs)** — *strategic centerpiece*; tactical targets,
+  themed actions, parameterized triggers. Bull/bear debate at this
+  horizon gets the most prompt weight.
+- **Short (~30 days)** — dated, concrete, replaced every monthly cycle.
+  Includes `speculative_candidates` (Wave 3).
+
+**Acceptance UI.** A right-side `Sheet` on the Advisor page renders the
+draft (deltas tab + per-horizon tabs). Per-delta `[✓ Accept]`,
+`[✗ Reject]`, `[✎ Edit]` buttons; `[Accept all remaining]` promotes the
+draft to `role='current'`; `[Reject draft + re-synthesize]` opens a
+guidance prompt and fires another check-in.
+
+See `docs/superpowers/specs/2026-05-05-plan-distillate-design.md` for
+full design.
 
 ---
 
@@ -1100,6 +1165,7 @@ Everything *after* the agent team produces an `ApprovedProposal`: external appro
 | T2 | Any | paper | PaperFill + review record |
 | T3 | Any | live | Human queue + **24h cooling-off** + next-day re-check |
 | T3 | Any | paper | PaperFill + cooling-off + next-day paper re-check |
+| `plan_revision` | Any | Any | Human queue, **always T3 depth, never auto-execute** |
 
 Hard rule: `queue_only` mode disables every "auto-execute" cell — no exceptions.
 
@@ -1219,6 +1285,10 @@ alert.created         alert.cleared
 position.updated      account.balance.changed
 price.updated         (throttled, visible-tickers only)
 plan.critique.updated cadence.tick.fired
+plan.draft.started        plan.draft.completed
+plan.draft.delta.accepted plan.draft.delta.edited
+plan.draft.accepted       plan.draft.rejected
+plan.current.changed
 ```
 
 Frontend subscribes selectively per screen: Proposals queue subscribes to `proposal.*`; Portfolio subscribes to `position.*` and `price.*` for visible tickers; etc.
@@ -1737,6 +1807,9 @@ cadences:
   annual:        { enabled: true }
 
 # Cost caps
+# Note: monthly_budget_usd should account for ~$15-20/month of plan-synthesis
+# LLM spend (one scheduled monthly_cycle run ~$5-8 + two ad-hoc check-ins).
+# See §6.11.
 cost:
   monthly_budget_usd: 200.00
   alert_at_pct: 80
