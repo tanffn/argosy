@@ -1,0 +1,32 @@
+{
+  "must_include": {
+    "goals": [
+      {"label_contains": "retirement", "value_contains": "2031"},
+      {"label_contains": "income", "value_contains": "360"}
+    ],
+    "principles": [
+      {"label_contains": "ucits"},
+      {"label_contains": "concentration"},
+      {"label_contains": "natural"}
+    ],
+    "risk_priorities_any_contains": ["concentration", "sequence"],
+    "decision_rules_any_label_contains": [
+      "rsu", "gap", "defensive"
+    ],
+    "targets_labels_any_contains": [
+      "defensive", "international", "income"
+    ],
+    "constraints_any_label_contains": [
+      "ucits"
+    ],
+    "stress_tolerance_contains": "drawdown"
+  },
+  "must_exclude_in_serialized_text": [
+    "66%",
+    "3.09",
+    "12,748",
+    "$171.81",
+    "Q1 2026 sells 2,500",
+    "next 30 days"
+  ]
+}

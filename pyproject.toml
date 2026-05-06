@@ -70,6 +70,9 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "llm_eval: marks tests that call the live Anthropic API (deselect with -m 'not llm_eval')",
+]
 
 [tool.ruff]
 line-length = 100
