@@ -60,3 +60,21 @@ def test_0015_role_default_is_baseline_for_existing_rows(
     with eng.connect() as conn:
         rows = conn.execute(sa.text("SELECT role FROM plan_versions")).fetchall()
     assert all(r[0] == "baseline" for r in rows), rows
+
+
+def test_0015_decision_run_id_is_integer(alembic_engine_at_head):
+    """Spec §5.1: decision_run_id must be Integer (matches decision_runs.id type)."""
+    cols = _columns(alembic_engine_at_head, "plan_versions")
+    col_type = str(cols["decision_run_id"]["type"]).upper()
+    assert "INT" in col_type, f"expected INTEGER for decision_run_id, got {col_type!r}"
+
+
+def test_0015_role_column_width_is_20_or_more(alembic_engine_at_head):
+    """Bump from 16 -> 20 to leave room for future role values."""
+    cols = _columns(alembic_engine_at_head, "plan_versions")
+    col_type = str(cols["role"]["type"])  # e.g. "VARCHAR(20)"
+    # SQLite often returns just "VARCHAR" without length; pull length if present.
+    import re
+    m = re.search(r"\((\d+)\)", col_type)
+    length = int(m.group(1)) if m else 16
+    assert length >= 20, f"role column too narrow: {col_type}"

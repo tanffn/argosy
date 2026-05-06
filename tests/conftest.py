@@ -51,12 +51,12 @@ def project_root() -> str:
 # These fixtures provide a real SQLite database that has been taken through
 # the Alembic migration chain so migration tests can verify schema shape.
 #
-# IMPORTANT: alembic/env.py calls get_settings() at module-execution time and
-# overwrites sqlalchemy.url with the production DB path.  We must patch
-# get_settings before calling command.upgrade so the temp DB path wins.
+# Isolation pattern: set ARGOSY_HOME to a per-test tmp_path, then call
+# reload_settings() to clear the lru_cache.  alembic/env.py re-executes on
+# each command.upgrade() call (alembic uses runpy, not Python's import cache)
+# and calls get_settings() fresh, picking up the tmp_path DB URL.  The sync
+# engine for inspection uses the same path with the aiosqlite driver stripped.
 # ---------------------------------------------------------------------------
-
-import unittest.mock
 
 import sqlalchemy as sa
 from alembic import command
@@ -64,61 +64,47 @@ from alembic.config import Config
 from sqlalchemy import create_engine
 
 
-def _make_alembic_config(async_db_url: str) -> Config:
-    """Build an Alembic Config pointing at async_db_url (sqlite+aiosqlite://)."""
-    cfg = Config("alembic.ini")
-    cfg.set_main_option("sqlalchemy.url", async_db_url)
-    return cfg
-
-
-def _patched_settings(async_db_url: str):
-    """Return a mock Settings whose database_url is async_db_url.
-
-    alembic/env.py executes at migration time and does:
-        settings = get_settings()
-        config.set_main_option("sqlalchemy.url", settings.database_url)
-
-    By patching get_settings we ensure env.py uses our temp DB rather than
-    the production DB.  The URL must be the aiosqlite variant because
-    env.py calls async_engine_from_config.
-    """
-    from argosy.config import get_settings
-
-    real = get_settings()
-    mock_settings = unittest.mock.MagicMock(wraps=real)
-    mock_settings.database_url = async_db_url
-    return mock_settings
-
-
 @pytest.fixture
-def alembic_engine_at_head(tmp_path):
-    """A fresh SQLite DB upgraded to alembic head."""
-    db_path = tmp_path / "argosy_test.db"
-    # Alembic env.py needs the async driver; inspection uses the sync driver.
-    async_url = f"sqlite+aiosqlite:///{db_path}"
-    sync_url = f"sqlite:///{db_path}"
-    cfg = _make_alembic_config(async_url)
-    with unittest.mock.patch("argosy.config.get_settings", return_value=_patched_settings(async_url)):
-        command.upgrade(cfg, "head")
+def alembic_engine_at_head(tmp_path, monkeypatch):
+    """A fresh SQLite DB at alembic head, isolated via ARGOSY_HOME."""
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings, get_settings
+    reload_settings()
+    # Settings derives db_file as <ARGOSY_HOME>/db/argosy.db; ensure the dir exists.
+    db_url = get_settings().database_url
+    sync_url = db_url.replace("+aiosqlite", "")
+    db_path = sync_url.replace("sqlite:///", "")
+    import os
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "head")
     eng = create_engine(sync_url)
     yield eng
     eng.dispose()
 
 
 @pytest.fixture
-def alembic_engine_with_existing_plan_row(tmp_path):
+def alembic_engine_with_existing_plan_row(tmp_path, monkeypatch):
     """DB upgraded to 0014, a plan_versions row inserted, THEN upgraded to head.
 
     Verifies backfill of new columns on existing data.
     """
-    db_path = tmp_path / "argosy_test.db"
-    async_url = f"sqlite+aiosqlite:///{db_path}"
-    sync_url = f"sqlite:///{db_path}"
-    cfg = _make_alembic_config(async_url)
-    with unittest.mock.patch("argosy.config.get_settings", return_value=_patched_settings(async_url)):
-        command.upgrade(cfg, "0014_investor_events_dedup")
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings, get_settings
+    reload_settings()
+    # Settings derives db_file as <ARGOSY_HOME>/db/argosy.db; ensure the dir exists.
+    db_url = get_settings().database_url
+    sync_url = db_url.replace("+aiosqlite", "")
+    db_path = sync_url.replace("sqlite:///", "")
+    import os
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "0014_investor_events_dedup")
     eng = create_engine(sync_url)
     with eng.begin() as conn:
+        # Inserts use raw SQL because the fixture operates at the 0014 migration
+        # boundary; the SQLAlchemy ORM models reflect post-0015 columns and would
+        # fail if used here. Switch to ORM only for fixtures that target head.
         conn.execute(sa.text(
             "INSERT INTO users (id, plan, created_at) VALUES ('ariel', 'free', :now)"
         ), {"now": "2026-01-01"})
@@ -126,7 +112,6 @@ def alembic_engine_with_existing_plan_row(tmp_path):
             "INSERT INTO plan_versions (user_id, version_label, source_path, raw_markdown, imported_at) "
             "VALUES ('ariel', 'Jacobs v2.0', '', '# Plan', :now)"
         ), {"now": "2026-02-01"})
-    with unittest.mock.patch("argosy.config.get_settings", return_value=_patched_settings(async_url)):
-        command.upgrade(cfg, "head")
+    command.upgrade(cfg, "head")
     yield eng
     eng.dispose()

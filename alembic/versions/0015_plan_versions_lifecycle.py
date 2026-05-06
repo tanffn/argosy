@@ -40,12 +40,12 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     # 1. Add columns nullable so we can backfill, then tighten where needed.
     with op.batch_alter_table("plan_versions") as batch:
-        batch.add_column(sa.Column("role", sa.String(length=16), nullable=True))
+        batch.add_column(sa.Column("role", sa.String(length=20), nullable=True))
         batch.add_column(sa.Column("accepted_at", sa.DateTime(timezone=True), nullable=True))
         batch.add_column(sa.Column("accepted_by_user_id", sa.String(length=64), nullable=True))
         batch.add_column(sa.Column("superseded_at", sa.DateTime(timezone=True), nullable=True))
         batch.add_column(sa.Column("derived_from_id", sa.Integer(), nullable=True))
-        batch.add_column(sa.Column("decision_run_id", sa.String(length=64), nullable=True))
+        batch.add_column(sa.Column("decision_run_id", sa.Integer(), nullable=True))
 
     # 2. Backfill role='baseline' for all existing rows.
     op.execute("UPDATE plan_versions SET role = 'baseline' WHERE role IS NULL")
@@ -54,7 +54,7 @@ def upgrade() -> None:
     with op.batch_alter_table("plan_versions") as batch:
         batch.alter_column(
             "role",
-            existing_type=sa.String(length=16),
+            existing_type=sa.String(length=20),
             nullable=False,
             server_default="baseline",
         )
@@ -63,6 +63,14 @@ def upgrade() -> None:
             "fk_plan_versions_derived_from",
             "plan_versions",
             ["derived_from_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
+        # FK on decision_run_id -> decision_runs.id (mirrors proposals.decision_run_id in 0004).
+        batch.create_foreign_key(
+            "fk_plan_versions_decision_run_id",
+            "decision_runs",
+            ["decision_run_id"],
             ["id"],
             ondelete="SET NULL",
         )
@@ -133,6 +141,7 @@ def downgrade() -> None:
     op.drop_index("uq_plan_versions_baseline_per_user", table_name="plan_versions")
 
     with op.batch_alter_table("plan_versions") as batch:
+        batch.drop_constraint("fk_plan_versions_decision_run_id", type_="foreignkey")
         batch.drop_constraint("fk_plan_versions_derived_from", type_="foreignkey")
         batch.drop_column("decision_run_id")
         batch.drop_column("derived_from_id")
