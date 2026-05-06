@@ -74,3 +74,42 @@ def test_plan_distillate_round_trips_minimal():
     assert d2.plan_label == d.plan_label
     assert d2.targets[0].unit == "pct_of_portfolio"
     assert d2.risk_priorities[0] == "concentration"
+
+
+def test_plan_distiller_agent_basic_shape():
+    """The agent declares the right role, output model, and citation policy."""
+    from argosy.agents.plan_distiller import PlanDistillerAgent
+    from argosy.agents.plan_distiller_types import PlanDistillate
+
+    agent = PlanDistillerAgent(user_id="test")
+    assert agent.agent_role == "plan_distiller"
+    assert agent.output_model is PlanDistillate
+    # Source IS the plan -> external citations not required, but the
+    # source_section provenance is expected per item.
+    assert agent.require_citations is False
+
+
+def test_plan_distiller_build_prompt_contains_exclusion_list():
+    """The system prompt must enumerate excluded categories explicitly."""
+    from argosy.agents.plan_distiller import PlanDistillerAgent
+
+    agent = PlanDistillerAgent(user_id="test")
+    sys, usr = agent.build_prompt(
+        plan_label="Jacobs Wealth Plan v2.0",
+        plan_markdown="# Plan\n\nNVDA at 66% today.\n",
+    )
+    # Exclusion list — these phrases must appear so the agent knows
+    # what to drop:
+    for phrase in (
+        "current portfolio percentages",
+        "current FX rates",
+        "specific dollar amounts",
+        "dated tranche schedules",
+        "share counts",
+    ):
+        assert phrase.lower() in sys.lower(), f"missing exclusion: {phrase}"
+    # Plan markdown must be in the user prompt (not the system prompt —
+    # makes prompt-cache friendliness easier later).
+    assert "NVDA at 66% today" in usr
+    # Plan label must be passed through.
+    assert "Jacobs Wealth Plan v2.0" in usr

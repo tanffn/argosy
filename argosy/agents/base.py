@@ -57,6 +57,9 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # fabrication is prevented by an explicit prompt rule.
     "intake_extractor": "claude-sonnet-4-6",
     "plan_critique": "claude-sonnet-4-6",
+    # Plan-distiller: extracts durable principles + targets from a
+    # baseline plan markdown. Single-pass; structured output. Sonnet.
+    "plan_distiller": "claude-sonnet-4-6",
     # Phase 2 analyst team:
     "news": "claude-sonnet-4-6",
     "macro": "claude-sonnet-4-6",
