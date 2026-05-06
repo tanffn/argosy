@@ -126,3 +126,43 @@ def test_synthesis_flow_fails_loudly_when_no_baseline(alembic_engine_at_head, mo
     with pytest.raises(flow.NoBaselineError):
         flow.run_synthesis(sess, user_id="newcomer", trigger="scheduled")
     sess.close()
+
+
+def test_phase_1_runs_all_nine_analysts(session, monkeypatch):
+    """Phase 1 should invoke each of the 9 analyst agents once.
+
+    We track invocations via a side-effect list. Real calls are stubbed.
+    """
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    invoked = []
+
+    class _Stub:
+        agent_role = "stub"
+        def run_sync(self, **kw):
+            invoked.append(self.__class__.__name__)
+            return type("R", (), {"output": type("O", (), {"model_dump_json": lambda self: "{}"})(), "model": "fake"})()
+
+    # Build stubs for all 9 analyst classes; monkeypatch the import points.
+    for name in (
+        "FundamentalsAnalystAgent", "TechnicalAnalystAgent",
+        "NewsAnalystAgent", "SentimentAnalystAgent",
+        "MacroAnalystAgent", "PlanCritiqueAgent",
+        "ConcentrationAnalystAgent", "TaxAnalystAgent", "FxAnalystAgent",
+    ):
+        cls = type(name, (_Stub,), {})
+        monkeypatch.setattr(f"argosy.orchestrator.flows.plan_synthesis.{name}", cls, raising=False)
+
+    baseline = next(iter(session.query(PlanVersion).filter_by(role="baseline").all()))
+    out = flow._run_phase_1_analysts(
+        session=session,
+        user_id="ariel",
+        baseline=baseline,
+        prior_current=None,
+        decision_run_id="test-run",
+        guidance="",
+    )
+    # All 9 must have been invoked exactly once.
+    assert len(invoked) == 9, f"expected 9 analyst calls, got {len(invoked)}: {invoked}"
+    assert isinstance(out, str)
+    assert len(out) > 0

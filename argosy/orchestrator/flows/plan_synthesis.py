@@ -27,17 +27,29 @@ from __future__ import annotations
 
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
 from sqlalchemy.orm import Session
 
+from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
+from argosy.agents.fundamentals_analyst import FundamentalsAnalystAgent
+# The FX analyst class is `FXAnalystAgent` in source; the synthesis flow
+# (and its tests) refer to it as `FxAnalystAgent`. Aliased on import.
+from argosy.agents.fx_analyst import FXAnalystAgent as FxAnalystAgent
+from argosy.agents.macro_analyst import MacroAnalystAgent
+from argosy.agents.news_analyst import NewsAnalystAgent
+from argosy.agents.plan_critique import PlanCritiqueAgent
 from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
 from argosy.agents.plan_synthesizer_types import (
     PlanSynthesisOutput,
     SynthesisInputs,
 )
+from argosy.agents.sentiment_analyst import SentimentAnalystAgent
+from argosy.agents.tax_analyst import TaxAnalystAgent
+from argosy.agents.technical_analyst import TechnicalAnalystAgent
 from argosy.logging import get_logger
 from argosy.state.models import PlanVersion
 from argosy.state.queries import get_active_baseline, get_current_plan, get_pending_draft
@@ -185,32 +197,125 @@ def run_synthesis(
 # ----------------------------------------------------------------------
 
 
+# Module-level tuple — the test resolves each name via attribute lookup
+# on this module (monkeypatch.setattr("...plan_synthesis.<Name>", stub)),
+# so we build the iteration list lazily inside _run_phase_1_analysts to
+# pick up monkeypatched replacements.
+_PHASE_1_AGENT_NAMES = (
+    "FundamentalsAnalystAgent",
+    "TechnicalAnalystAgent",
+    "NewsAnalystAgent",
+    "SentimentAnalystAgent",
+    "MacroAnalystAgent",
+    "PlanCritiqueAgent",
+    "ConcentrationAnalystAgent",
+    "TaxAnalystAgent",
+    "FxAnalystAgent",
+)
+
+
 def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
                            decision_run_id, guidance) -> str:
-    """Run all 9 analysts in parallel against current state.
+    """Run all 9 analysts in parallel. Concatenate their reports as text."""
+    log.info("plan_synthesis.phase_1.start",
+             user_id=user_id, decision_run_id=decision_run_id)
 
-    Returns a concatenated string of analyst reports for downstream
-    phases. Each agent's full structured output is also written to
-    agent_reports stamped with decision_run_id.
+    # Resolve agent classes via this module's namespace so tests that
+    # monkeypatch `argosy.orchestrator.flows.plan_synthesis.<Name>` are
+    # honoured.
+    import sys
+    mod = sys.modules[__name__]
+    phase_1_agents = tuple(getattr(mod, name) for name in _PHASE_1_AGENT_NAMES)
 
-    For Wave 2 first cut, this delegates to existing analyst agents
-    (news/macro/concentration/plan_critique/tax/fx/sentiment/technical/
-    fundamentals). We do not re-implement them. The plan-revision shape
-    of their inputs/outputs is the same — they read state, produce
-    structured reports.
-
-    Tests monkeypatch this whole function to a stub.
-    """
-    # Wave 2 implementation note: this function will be expanded to call
-    # each analyst's run_sync method in parallel via concurrent.futures
-    # and concatenate their .output.model_dump_json() outputs. For the
-    # initial scaffold we return a TODO marker — the real wiring lands
-    # alongside Phase 3 agent-fleet readiness.
-    log.info("plan_synthesis.phase_1_stub", user_id=user_id, decision_run_id=decision_run_id)
-    return (
-        "(Phase 1 analyst reports — wired against the live fleet "
-        "in Phase 3 of SDD; see plan task 2.6 phase-stub note.)"
+    # Each agent's run_sync(...) signature varies; we pass a shared kwargs
+    # bag and rely on each agent's build_prompt to consume what it needs.
+    # The base agents' run_sync forwards **kwargs to build_prompt.
+    common_kwargs = dict(
+        plan_label=baseline.version_label or "Imported plan",
+        plan_markdown=baseline.distillate_rendered or "",
+        snapshot_label=f"synthesis-{decision_run_id}",
+        snapshot_summary=_assemble_portfolio_summary(session=session, user_id=user_id),
+        user_context_yaml=_load_user_context_yaml(session=session, user_id=user_id),
+        domain_kb_files={},  # Each analyst's prompt picks its own; pass empty.
+        recent_events="",
     )
+
+    reports: list[str] = []
+    with ThreadPoolExecutor(max_workers=len(phase_1_agents)) as ex:
+        futures = {
+            ex.submit(_safe_run_agent, AgentCls, user_id, common_kwargs, decision_run_id): AgentCls
+            for AgentCls in phase_1_agents
+        }
+        for fut in as_completed(futures):
+            cls = futures[fut]
+            try:
+                payload = fut.result()
+                reports.append(f"=== {cls.__name__} ===\n{payload}")
+            except Exception as exc:  # noqa: BLE001
+                log.error("plan_synthesis.phase_1.agent_failed",
+                          agent=cls.__name__, error=str(exc),
+                          decision_run_id=decision_run_id)
+                # Failure of one analyst is recoverable — continue with
+                # the others. Note in the concatenated text so the
+                # synthesizer knows.
+                reports.append(f"=== {cls.__name__} (FAILED) ===\n{exc}")
+
+    log.info("plan_synthesis.phase_1.done",
+             user_id=user_id, decision_run_id=decision_run_id,
+             reports_count=len(reports))
+    return "\n\n".join(reports)
+
+
+def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
+                    decision_run_id: str) -> str:
+    """Instantiate an analyst, run it, return JSON of its output.
+
+    ADAPTATION (vs spec): BaseAgent.__init__ takes a mandatory ``user_id``
+    keyword — the spec wrote ``AgentCls()`` which would raise on any real
+    agent. We try ``AgentCls(user_id=user_id)`` first and fall back to
+    ``AgentCls()`` for stubs/tests whose constructors don't accept it.
+
+    On a TypeError from ``run_sync`` (i.e. the agent's ``build_prompt``
+    rejects one of our common kwargs), we narrow the kwargs to only those
+    explicitly named in the agent's ``build_prompt`` signature and retry.
+    """
+    try:
+        agent = AgentCls(user_id=user_id)
+    except TypeError:
+        agent = AgentCls()
+    try:
+        result = agent.run_sync(**kwargs)
+        out = getattr(result, "output", None)
+        if out is not None and hasattr(out, "model_dump_json"):
+            return out.model_dump_json()
+        return str(out) if out is not None else ""
+    except TypeError:
+        # If the agent doesn't accept all the common kwargs, retry with
+        # only the ones it explicitly declares. Cheap defensive retry.
+        sig = getattr(agent.build_prompt, "__code__", None)
+        accepted = set(sig.co_varnames if sig else ())
+        narrowed = {k: v for k, v in kwargs.items() if k in accepted}
+        result = agent.run_sync(**narrowed)
+        out = getattr(result, "output", None)
+        if out is not None and hasattr(out, "model_dump_json"):
+            return out.model_dump_json()
+        return str(out) if out is not None else ""
+
+
+def _load_user_context_yaml(*, session, user_id) -> str:
+    """Concatenate identity + goals + constraints YAML for the user."""
+    from argosy.state.models import UserContext
+    ctx = session.get(UserContext, user_id)
+    if ctx is None:
+        return ""
+    parts = []
+    if ctx.identity_yaml:
+        parts.append(ctx.identity_yaml)
+    if ctx.goals_yaml:
+        parts.append(ctx.goals_yaml)
+    if ctx.constraints_yaml:
+        parts.append(ctx.constraints_yaml)
+    return "\n".join(parts)
 
 
 def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
