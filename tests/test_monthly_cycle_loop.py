@@ -110,3 +110,125 @@ async def test_monthly_cycle_skips_critique_when_no_plan(engine: None) -> None:
         ).scalars().all()
     assert critiques == []
     assert len(audits) == 1  # cycle still completed
+
+
+# ---------------------------------------------------------------------------
+# Task 2.11: monthly_cycle fires plan_synthesis for every baseline user.
+#
+# These tests exercise the new sync module-level ``tick(session)`` entry
+# point added in Task 2.11 (mirrors the plan_watcher pattern: a sync
+# helper that the async ``MonthlyCycleLoop.tick`` bridges into via
+# ``asyncio.to_thread``). The new entry point iterates every user with an
+# active baseline plan and calls ``plan_synthesis.run_synthesis(...,
+# trigger='scheduled')`` for each.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def session_with_baseline(alembic_engine_at_head):
+    from sqlalchemy.orm import sessionmaker
+    from argosy.state.models import PlanVersion, User
+
+    SessionLocal = sessionmaker(bind=alembic_engine_at_head, expire_on_commit=False)
+    s = SessionLocal()
+    s.add(User(id="ariel", plan="free"))
+    s.add(PlanVersion(user_id="ariel", role="baseline", raw_markdown="# Plan"))
+    s.commit()
+    yield s
+    s.close()
+
+
+def test_monthly_cycle_triggers_plan_synthesis(monkeypatch, session_with_baseline):
+    """On the 1st of the month, monthly_cycle.tick must call run_synthesis."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.loops import monthly_cycle
+
+    calls = []
+
+    def _fake_run(session, *, user_id, trigger, guidance=""):
+        calls.append({"user_id": user_id, "trigger": trigger})
+        class _R:
+            decision_run_id = "test-run"
+            draft_id = 999
+        return _R()
+
+    monkeypatch.setattr(flow, "run_synthesis", _fake_run)
+
+    monthly_cycle.tick(session_with_baseline)
+
+    user_ids = [c["user_id"] for c in calls]
+    assert "ariel" in user_ids
+    assert all(c["trigger"] == "scheduled" for c in calls)
+
+
+def test_monthly_cycle_continues_after_one_user_fails(
+    monkeypatch, alembic_engine_at_head
+):
+    """If run_synthesis raises for one user, the loop must continue for others."""
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.loops import monthly_cycle
+    from argosy.state.models import PlanVersion, User
+
+    SessionLocal = sessionmaker(bind=alembic_engine_at_head, expire_on_commit=False)
+    s = SessionLocal()
+    try:
+        s.add(User(id="ariel", plan="free"))
+        s.add(User(id="bob", plan="free"))
+        s.add(PlanVersion(user_id="ariel", role="baseline", raw_markdown="# Plan"))
+        s.add(PlanVersion(user_id="bob", role="baseline", raw_markdown="# Plan"))
+        s.commit()
+
+        seen: list[str] = []
+
+        def _fake_run(session, *, user_id, trigger, guidance=""):
+            seen.append(user_id)
+            if user_id == "ariel":
+                raise RuntimeError("boom")
+            class _R:
+                decision_run_id = "test-run"
+                draft_id = 999
+            return _R()
+
+        monkeypatch.setattr(flow, "run_synthesis", _fake_run)
+
+        # Must not raise — one user's failure must not stop the loop.
+        monthly_cycle.tick(s)
+
+        assert set(seen) == {"ariel", "bob"}
+    finally:
+        s.close()
+
+
+def test_monthly_cycle_skips_users_with_no_baseline(
+    monkeypatch, alembic_engine_at_head
+):
+    """Users without a role='baseline' row are simply not iterated."""
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.loops import monthly_cycle
+    from argosy.state.models import User
+
+    SessionLocal = sessionmaker(bind=alembic_engine_at_head, expire_on_commit=False)
+    s = SessionLocal()
+    try:
+        s.add(User(id="newcomer", plan="free"))
+        s.commit()
+
+        calls: list[str] = []
+
+        def _fake_run(session, *, user_id, trigger, guidance=""):
+            calls.append(user_id)
+            class _R:
+                decision_run_id = "test-run"
+                draft_id = 999
+            return _R()
+
+        monkeypatch.setattr(flow, "run_synthesis", _fake_run)
+
+        monthly_cycle.tick(s)
+        assert calls == []
+    finally:
+        s.close()

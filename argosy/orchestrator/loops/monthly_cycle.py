@@ -6,6 +6,10 @@ Cron `0 8 1 * *`. Performs:
   - RSU vest pulled in (placeholder — a real RSU calendar is OPEN).
   - Gap-weighted buy template generation.
   - Full plan-critique re-run (delegates to `PlanCritiqueAgent`).
+  - Plan-synthesis trigger (Wave 2, Task 2.11): for every user with an
+    active baseline, fire ``plan_synthesis.run_synthesis(...,
+    trigger='scheduled')`` so the monthly check-in produces a fresh
+    role='draft' PlanVersion.
 
 Records `monthly_cycle.completed` audit event. Honors the cost-guard
 pause and kill switch.
@@ -17,7 +21,9 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+import sqlalchemy as sa
 from sqlalchemy import desc, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from argosy.agents.plan_critique import PlanCritiqueAgent
 from argosy.api.events import publish_event
@@ -29,6 +35,56 @@ from argosy.state import db as db_mod
 from argosy.state.models import PlanCritique, PlanVersion
 
 _log = get_logger("argosy.loops.monthly_cycle")
+
+
+# ---------------------------------------------------------------------------
+# Sync entry point — Task 2.11
+#
+# Mirrors the ``plan_watcher.tick`` pattern: a synchronous module-level
+# function the async ``MonthlyCycleLoop.tick`` bridges into via
+# ``asyncio.to_thread``. ``run_synthesis`` is a sync function that calls
+# agent ``run_sync`` internally (which itself wraps ``asyncio.run``), so
+# it must not be called from an event-loop thread.
+# ---------------------------------------------------------------------------
+
+
+def tick(session: Session) -> None:
+    """Sync entry point for the monthly cycle's synthesis trigger.
+
+    Iterates every user with an active baseline plan and fires
+    ``plan_synthesis.run_synthesis(..., trigger='scheduled')`` for each.
+    A failure for one user does not stop the loop for others.
+
+    Async pre/post-work (statement reconciliation, RSU vest, plan
+    critique, audit + publish) lives on ``MonthlyCycleLoop.tick``; that
+    method calls into this function via ``asyncio.to_thread`` after the
+    async work completes.
+    """
+    _trigger_plan_synthesis_for_all(session)
+
+
+def _trigger_plan_synthesis_for_all(session: Session) -> None:
+    """Fire ``plan_synthesis.run_synthesis`` for each eligible user."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    rows = (
+        session.query(PlanVersion.user_id)
+        .filter(PlanVersion.role == "baseline")
+        .distinct()
+        .all()
+    )
+    for (user_id,) in rows:
+        try:
+            flow.run_synthesis(session, user_id=user_id, trigger="scheduled")
+        except flow.NoBaselineError:
+            # Race: row was demoted between query and call. Skip.
+            continue
+        except Exception as exc:  # noqa: BLE001 — one user's failure must not stop others
+            _log.error(
+                "monthly_cycle.synthesis_failed",
+                user_id=user_id,
+                error=str(exc),
+            )
 
 
 def _utcnow() -> datetime:
@@ -155,6 +211,33 @@ class MonthlyCycleLoop(CadenceLoop):
         except Exception:  # pragma: no cover - defensive
             _log.exception("monthly_cycle.publish_failed")
 
+        # Wave 2 (Task 2.11): trigger plan synthesis for every user with
+        # an active baseline. Bridged via asyncio.to_thread because
+        # run_synthesis (and the agents it calls via run_sync) cannot run
+        # inside the active event loop.
+        import asyncio
+
+        from argosy.config import get_settings
+
+        def _run_sync_tick() -> None:
+            settings = get_settings()
+            sync_url = settings.database_url.replace("+aiosqlite", "")
+            engine = sa.create_engine(
+                sync_url, connect_args={"check_same_thread": False}
+            )
+            SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+            sess = SessionLocal()
+            try:
+                tick(sess)
+            finally:
+                sess.close()
+                engine.dispose()
+
+        try:
+            await asyncio.to_thread(_run_sync_tick)
+        except Exception:  # pragma: no cover - defensive
+            _log.exception("monthly_cycle.synthesis_trigger_failed")
+
 
 async def _noop_reconcile(_uid: str) -> dict[str, Any]:
     return {"status": "skipped", "reason": "no reconcile callable wired"}
@@ -175,4 +258,4 @@ async def _default_buy_template(_uid: str) -> dict[str, Any]:
     return {"template": "flat", "items": []}
 
 
-__all__ = ["MonthlyCycleLoop"]
+__all__ = ["MonthlyCycleLoop", "tick"]
