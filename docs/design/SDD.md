@@ -328,6 +328,7 @@ Run on their own cadences; not part of any decision team.
 | **Advisor** | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. See §6.5. | Per-turn (user-initiated) | Sonnet |
 | **Domain refresh** | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet |
 | **Audit** | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus |
+| **Plan distiller** | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet |
 | **Watchlist** | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Haiku |
 
 ### 3.7 Cost shape
@@ -427,6 +428,7 @@ The orchestrator runs these loops independently. Each is a Python coroutine doin
 | **Minute** | 60s during market hours only | Open-order status from broker; price vs limits on watchlist; volatility-band breach detection | Limit-price re-evaluation (T0); breach of stop/target (T0/T1); flash-crash detection (T2) |
 | **Hour** | 60min, 24/7 | News-feed delta; macro release calendar; corp-actions feed; FX move > threshold | Material news on holding (T1+); macro print surprise (T1); FX threshold breach (T1) |
 | **Daily brief** | 09:00 user TZ | Always runs; ingest overnight news, EOD prices, world markets, calendar for the day | Always runs; produces a daily brief; flags candidates for action |
+| **Plan watcher** | Daily 07:00 user TZ | Hashes each user's baseline `source_path`; detects file change | Re-distill on diff (preserves user edits) |
 | **Weekly review** | Sun 18:00 | Domain-knowledge freshness check; audit-agent self-review of past week's decisions; concentration drift; plan-adherence delta | Plan-critique YELLOW or RED items (T2); concentration cap breach (T2/T3 depending on size) |
 | **Monthly cycle** | 1st of month | Statement reconciliation; RSU vest pulled in; gap-weighted buy template; full plan critique re-run | Buy plan execution (T1-T3 depending on size); rebalance proposals (T2/T3); tax calendar items |
 | **Quarterly** | After quarter close | Real estate P&L update; bonus event ingest; plan-drift check vs targets | Plan revision proposal (T3) |
@@ -667,6 +669,88 @@ Bullet composition (in `argosy.api.routes.advisor`):
 **Headline freshness.** `_time_of_day_greeting(now)` is computed fresh on every request — never cached. A "Good morning" generated at 7am must NOT serve back at 11pm just because the bullets are still warm. Only the bullets / cta / `generated_at` are cached; the headline is rebuilt per-call.
 
 **CTA.** Always `{label: "Talk to advisor", href: "/advisor"}`.
+
+---
+
+### 6.10 Plan as baseline input (Wave 1 of plan-distillate work)
+
+The user-imported plan (Jacobs Wealth Plan v2.0 today) is treated as a
+**starting line, not a north star**. The full markdown is preserved in
+`plan_versions.raw_markdown` for forensic lookups, but the only thing
+downstream synthesis ever consumes is a compressed **distillate** —
+durable principles, decision rules, and targets-as-stated, with explicit
+exclusion of time-stamped numbers.
+
+**The distillate captures (durable):**
+
+- Goals (retirement target year, target income, FI status, employment horizon)
+- Principles (UCITS-first for estate safety, NIS-USD natural hedge, real-returns framework, concentration-as-load-bearing-risk)
+- Risk priorities (ordered list; first item dominates)
+- Decision rules (bracket-aware RSU sales, gap-weighted deployment, etc.)
+- Targets-as-stated (each carries `stated_at` + `revisit_after`)
+- Constraints (no consolidate brokers, UCITS preferred, speculation cap)
+- Stress tolerance
+
+**The distillate explicitly excludes (decay-prone):**
+
+- Current portfolio percentages (66% NVDA today)
+- Current FX rates (3.09 NIS/USD)
+- Specific dollar amounts at point-in-time
+- Dated tranche schedules (Q1 2026 sells 2,500 shares)
+- Share counts
+- "Next 30/90 days" implementation roadmap sections
+
+These are re-derived monthly by the synthesis flow (§6.11, Wave 2) from
+current state.
+
+**Pipeline:**
+
+1. User uploads `Jacobs_Wealth_Plan.md` via `/api/intake/upload` — the
+   row lands in `plan_versions` with `role='baseline'`.
+2. The intake route asynchronously calls `PlanDistillerAgent` (Sonnet,
+   ~$0.30) and writes `distillate_json` + `distillate_rendered` +
+   `source_hash` + `distilled_at` on the same row. Failure of distillation
+   is non-fatal — the upload still succeeds; the user can retry via the
+   "Re-distill" button.
+3. The advisor page shows the structured distillate via
+   `<PlanInScopeCard>`; each item is editable inline with a
+   `user_edited=true` flag preserved across re-distillations.
+4. A daily `plan_watcher` cadence loop (07:00 user TZ) hashes the
+   configured `source_path`. On diff, re-runs distillation with
+   `preserve_user_edits=true`.
+5. The advisor's working memory NEVER reads the distillate directly —
+   it anchors only on the synthesized `current` plan (Wave 2).
+
+**API surface (Wave 1):**
+
+- `GET /api/plan/baseline` — returns the active baseline + distillate JSON + rendered MD
+- `POST /api/plan/baseline/distill` — manual re-distill; `preserve_user_edits=true` by default
+- `PATCH /api/plan/baseline/distillate/{category}/{item_label}` — apply user edit; sets `user_edited=true`
+
+**Schema** (migrations 0015 + 0016): the `plan_versions` table gains
+`role`, `accepted_at`, `accepted_by_user_id`, `superseded_at`,
+`derived_from_id`, `decision_run_id`, `distillate_json`,
+`distillate_rendered`, `source_hash`, `distilled_at`. Three partial
+unique indexes enforce one baseline / current / draft per user.
+`decision_runs` gains `decision_kind` (values `trade_proposal` |
+`plan_revision`).
+
+**Authority framing.** Every plan-touching agent imports a shared
+authority disclaimer (Wave 2): the plan is one input; cite it; disagree
+when evidence warrants; loyalty is to the user, not to the plan. The
+distillate is only the seed of the conversation.
+
+**Async/sync split.** The service has two entry points:
+`distill_baseline_plan` (sync; called from `plan_watcher` and any other
+sync caller) and `distill_baseline_plan_async` (async; called from the
+FastAPI upload route). Both delegate to `PlanDistillerAgent.run_sync`,
+but the async variant uses `asyncio.to_thread` to avoid the
+`RuntimeError: This event loop is already running` that `asyncio.run`
+would raise inside the existing event loop.
+
+See `docs/superpowers/specs/2026-05-05-plan-distillate-design.md` for
+the full design and `docs/superpowers/plans/2026-05-05-plan-distillate-implementation.md`
+for the Wave 1 task breakdown.
 
 ---
 
@@ -913,6 +997,8 @@ Alembic, linear chain. Each revision is small and rollback-tested.
 | `0012_investor_events` | Phase 4 signal persistence — see §8.1 above |
 | `0013_pensions_to_dict_shape` | Convert `identity.pensions` from list to vehicle-keyed dict in `user_context.identity_yaml` so the gap-tracker's `_lookup` walker can traverse it |
 | `0014_investor_events_dedup` | Add `unique_key` column + `UniqueConstraint(user_id, source, unique_key)` for idempotent persistence; backfill mirrors the keying logic in `argosy.state.queries._unique_key` |
+| `0015_plan_versions_lifecycle` | `plan_versions.role` + acceptance/lineage columns; `decision_runs.decision_kind`; partial unique indexes (one baseline/current/draft per user) |
+| `0016_plan_versions_distillate` | `plan_versions.{distillate_json,distillate_rendered,source_hash,distilled_at}` (Wave 1 of plan-distillate work) |
 
 ---
 
@@ -1560,6 +1646,8 @@ These are deferred from the design phase. Each carries a status, an owner phase 
 | **Tier 1 source** | Authoritative primary source (regulator, official broker doc, etc.). |
 | **Eval harness** | The agent-output regression test framework; ensures prompt changes don't degrade quality. |
 | **Soak** | A mandated paper-mode period (Phase 3.5: 2 weeks; Phase 5: 4 weeks) before promoting to the next phase. |
+| **Distillate** | Compressed structured extract of a baseline plan (~1500-2500 tokens), capturing durable principles + targets-as-stated; the only representation of the baseline that downstream synthesis consumes. See §6.10. |
+| **Plan watcher** | Daily cadence loop that detects when a user's baseline plan source file has changed and re-runs distillation while preserving user edits. |
 
 ---
 
