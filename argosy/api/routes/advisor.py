@@ -971,7 +971,7 @@ class CheckInRequest(BaseModel):
 
 class CheckInResponse(BaseModel):
     status: str
-    decision_run_id: str
+    decision_run_id: int
     draft_id: int
 
 

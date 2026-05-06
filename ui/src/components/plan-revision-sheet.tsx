@@ -96,7 +96,7 @@ export function PlanRevisionSheet(props: PlanRevisionSheetProps) {
           <SheetDescription>
             Synthesized {new Date(draft.drafted_at).toLocaleString()} · derived
             from baseline #{draft.derived_from_id} · run{" "}
-            {draft.decision_run_id?.slice(0, 12)}
+            {draft.decision_run_id != null ? `#${draft.decision_run_id}` : null}
           </SheetDescription>
         </SheetHeader>
 

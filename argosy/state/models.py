@@ -429,6 +429,11 @@ class DecisionRun(Base):
     )
     ticker: Mapped[str] = mapped_column(String(32), nullable=False)
     tier: Mapped[str] = mapped_column(String(4), nullable=False)
+    # decision_kind: "trade_proposal" (default, per-trade runs) or "plan_revision"
+    # (synthesis runs). Added by migration 0015_plan_versions_lifecycle.
+    decision_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="trade_proposal", server_default="trade_proposal"
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )

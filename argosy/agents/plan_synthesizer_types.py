@@ -134,7 +134,7 @@ class SynthesisInputs(BaseModel):
     fill_ids: list[int] = Field(default_factory=list)
     agent_report_ids: list[int] = Field(default_factory=list)
     debate_outcome_ids: list[int] = Field(default_factory=list)
-    decision_run_id: str | None = None
+    decision_run_id: int | None = None
 
 
 class PlanSynthesisOutput(BaseModel):

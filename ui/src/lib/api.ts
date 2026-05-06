@@ -618,7 +618,7 @@ export const api = {
       return (await r.json()) as { status: string };
     }),
   advisorCheckIn: (userId: string, guidance = "") =>
-    postJSON<{ status: string; decision_run_id: string; draft_id: number }>(
+    postJSON<{ status: string; decision_run_id: number; draft_id: number }>(
       `/api/advisor/check-in`,
       { user_id: userId, guidance, urgency: "now" },
     ),
@@ -858,7 +858,7 @@ export interface DraftResponse {
   plan_version_id: number;
   drafted_at: string;
   derived_from_id: number | null;
-  decision_run_id: string | null;
+  decision_run_id: number | null;
   horizon_long: HorizonView | null;
   horizon_medium: HorizonView | null;
   horizon_short: HorizonView | null;

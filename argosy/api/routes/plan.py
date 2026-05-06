@@ -402,7 +402,7 @@ class DraftResponse(BaseModel):
     plan_version_id: int
     drafted_at: str
     derived_from_id: int | None
-    decision_run_id: str | None
+    decision_run_id: int | None
     horizon_long: HorizonSectionView | None
     horizon_medium: HorizonSectionView | None
     horizon_short: HorizonSectionView | None

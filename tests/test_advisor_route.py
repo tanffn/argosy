@@ -1285,7 +1285,7 @@ def test_post_advisor_checkin_returns_decision_run_id(client_with_db, monkeypatc
         captured["trigger"] = trigger
         captured["guidance"] = guidance
         class _R:
-            decision_run_id = "test-cr-1"
+            decision_run_id = 1  # int: mirrors the real Integer FK to decision_runs.id
             draft_id = 42
         return _R()
 
@@ -1295,7 +1295,7 @@ def test_post_advisor_checkin_returns_decision_run_id(client_with_db, monkeypatc
     r = client_with_db.post("/api/advisor/check-in", json=body)
     assert r.status_code == 202, r.text
     out = r.json()
-    assert out["decision_run_id"] == "test-cr-1"
+    assert out["decision_run_id"] == 1
     assert out["draft_id"] == 42
     assert captured["user_id"] == "ariel"
     assert captured["trigger"] == "check_in"

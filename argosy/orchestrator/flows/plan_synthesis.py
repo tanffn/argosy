@@ -26,7 +26,6 @@ the existing fleet agents with plan-revision prompts; tests stub them).
 from __future__ import annotations
 
 import json
-import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -51,7 +50,7 @@ from argosy.agents.sentiment_analyst import SentimentAnalystAgent
 from argosy.agents.tax_analyst import TaxAnalystAgent
 from argosy.agents.technical_analyst import TechnicalAnalystAgent
 from argosy.logging import get_logger
-from argosy.state.models import PlanVersion
+from argosy.state.models import DecisionRun, PlanVersion
 from argosy.state.queries import get_active_baseline, get_current_plan, get_pending_draft
 
 log = get_logger(__name__)
@@ -90,7 +89,7 @@ class NoBaselineError(Exception):
 
 @dataclass
 class SynthesisResult:
-    decision_run_id: str
+    decision_run_id: int
     draft_id: int
 
 
@@ -117,7 +116,28 @@ def run_synthesis(
         raise NoBaselineError(f"user {user_id!r} has no active baseline plan")
 
     prior_current = get_current_plan(session, user_id)
-    decision_run_id = f"plan-synth-{uuid.uuid4().hex[:12]}"
+
+    # Open a real DecisionRun row so PlanVersion.decision_run_id (Integer FK)
+    # is valid and the SDD §6.11 audit lineage is real, not fictitious.
+    # ticker="(plan)" and tier="T3" are sentinels for plan-revision runs
+    # (distinct from per-trade runs which carry the actual ticker + tier).
+    decision_run = DecisionRun(
+        user_id=user_id,
+        ticker="(plan)",
+        tier="T3",
+        decision_kind="plan_revision",
+        started_at=datetime.now(timezone.utc),
+        status="running",
+    )
+    session.add(decision_run)
+    session.commit()
+    session.refresh(decision_run)
+    decision_run_id: int = decision_run.id  # integer PK — used for PlanVersion FK
+
+    # String-form audit token for agent_reports.decision_id (String column).
+    # Kept separate so the agent_reports audit trail has a human-readable ref.
+    decision_audit_token: str = f"plan-synth-{decision_run_id}"
+
     log.info(
         "plan_synthesis.start",
         user_id=user_id,
@@ -139,9 +159,12 @@ def run_synthesis(
         )
 
     # Phase 1: analyst reports.
+    # Phases 1-5 receive the string audit token (used for log annotations and
+    # agent_reports.decision_id which is a String column). The integer FK is
+    # only written to PlanVersion and SynthesisInputs below.
     analyst_reports_text = _run_phase_1_analysts(
         session=session, user_id=user_id, baseline=baseline,
-        prior_current=prior_current, decision_run_id=decision_run_id,
+        prior_current=prior_current, decision_run_id=decision_audit_token,
         guidance=guidance,
     )
 
@@ -154,7 +177,7 @@ def run_synthesis(
         session=session, user_id=user_id,
         analyst_reports_text=analyst_reports_text,
         baseline=baseline, prior_current=prior_current,
-        decision_run_id=decision_run_id, trigger=trigger,
+        decision_run_id=decision_audit_token, trigger=trigger,
     )
 
     # Phase 3: synthesize.
@@ -165,20 +188,20 @@ def run_synthesis(
         debate_outcomes_text=debate_outcomes_text,
         portfolio_summary=portfolio_summary,
         fills_summary=fills_summary,
-        decision_run_id=decision_run_id,
+        decision_run_id=decision_audit_token,
     )
 
     # Phase 4: risk team plan-level review.
     risk_verdict = _run_phase_4_risk(
         session=session, user_id=user_id, draft_output=output,
         analyst_reports_text=analyst_reports_text,
-        decision_run_id=decision_run_id,
+        decision_run_id=decision_audit_token,
     )
 
     # Phase 5: fund manager integrity check.
     approved = _run_phase_5_fund_manager(
         session=session, user_id=user_id, draft_output=output,
-        risk_verdict=risk_verdict, decision_run_id=decision_run_id,
+        risk_verdict=risk_verdict, decision_run_id=decision_audit_token,
     )
     if not approved:
         log.error("plan_synthesis.fm_rejected",
@@ -186,10 +209,12 @@ def run_synthesis(
         raise RuntimeError("fund manager rejected synthesized plan")
 
     # Persist as role='draft'.
+    # decision_run_id here is the integer PK — aligns with the Integer FK on
+    # plan_versions.decision_run_id and satisfies Postgres type checking.
     inputs = output.inputs.model_copy(update={
         "baseline_id": baseline.id,
         "prior_current_id": prior_current.id if prior_current else None,
-        "decision_run_id": decision_run_id,
+        "decision_run_id": decision_run_id,  # int
     })
 
     draft = PlanVersion(
@@ -198,7 +223,7 @@ def run_synthesis(
         version_label=f"synth-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M')}",
         source_path="",
         raw_markdown="",
-        decision_run_id=decision_run_id,
+        decision_run_id=decision_run_id,  # int FK
         derived_from_id=baseline.id,
         horizon_long_json=output.long.model_dump_json(),
         horizon_medium_json=output.medium.model_dump_json(),
@@ -211,6 +236,13 @@ def run_synthesis(
     session.add(draft)
     session.commit()
     session.refresh(draft)
+
+    # Stamp the DecisionRun row as finished — provides the audit lineage
+    # SDD §6.11 promises: you can reconstruct the full synthesis by joining
+    # plan_versions.decision_run_id → decision_runs.id.
+    decision_run.finished_at = datetime.now(timezone.utc)
+    decision_run.status = "completed"
+    session.commit()
 
     log.info("plan_synthesis.draft_persisted",
              user_id=user_id, draft_id=draft.id, decision_run_id=decision_run_id)
