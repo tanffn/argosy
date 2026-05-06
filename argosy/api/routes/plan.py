@@ -568,6 +568,46 @@ def patch_delta_edit(
     return {"status": "edited", "draft_id": draft_id, "item_id": item_id}
 
 
+# ---------------------------------------------------------------------------
+# Wave 3 — speculative-candidate "Take a swing" endpoint (T3.4)
+# ---------------------------------------------------------------------------
+
+
+class TakeSpeculativeResponse(BaseModel):
+    status: str
+    proposal_id: int
+    ticker: str
+    paper: bool
+
+
+@router.post("/current/speculative/{ticker}/take", response_model=TakeSpeculativeResponse)
+def post_take_speculative(
+    ticker: str,
+    user_id: str,
+    execution_mode: str = "paper",
+    db: Session = Depends(get_db),
+) -> TakeSpeculativeResponse:
+    """Route an accepted speculative candidate -> Argonaut T0 proposal."""
+    from argosy.orchestrator.speculation_router import (
+        CapBreachError,
+        UnknownCandidateError,
+        route_accepted_candidate,
+    )
+
+    try:
+        out = route_accepted_candidate(
+            db, user_id=user_id, ticker=ticker, execution_mode=execution_mode,
+        )
+    except UnknownCandidateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CapBreachError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return TakeSpeculativeResponse(
+        status="routed", proposal_id=out.proposal_id, ticker=out.ticker, paper=out.paper,
+    )
+
+
 __all__ = [
     "AcceptResponse",
     "BaselineResponse",
@@ -576,6 +616,7 @@ __all__ = [
     "DraftResponse",
     "HorizonSectionView",
     "RejectRequest",
+    "TakeSpeculativeResponse",
     "_publish",
     "get_db",
     "router",
