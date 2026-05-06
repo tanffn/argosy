@@ -458,9 +458,78 @@ def post_draft_reject(
     return {"status": "rejected", "draft_id": draft_id}
 
 
+# ---------------------------------------------------------------------------
+# Wave 2 — per-delta accept + edit endpoints (T2.14)
+# ---------------------------------------------------------------------------
+
+
+class DeltaEditRequest(BaseModel):
+    proposed: dict | None = None
+    user_edit_note: str | None = None
+
+
+def _find_delta_horizon_field(pv, item_id: str) -> tuple[str, dict, dict] | None:
+    """Find which horizon contains the given item_id; return (field, payload, delta)."""
+    for field in ("horizon_long_json", "horizon_medium_json", "horizon_short_json"):
+        raw = getattr(pv, field)
+        if not raw:
+            continue
+        payload = json.loads(raw)
+        for d in payload.get("deltas_from_prior") or []:
+            if d.get("item_id") == item_id:
+                return field, payload, d
+    return None
+
+
+@router.post("/draft/{draft_id}/items/{item_id}/accept")
+def post_delta_accept(
+    draft_id: int,
+    item_id: str,
+    user_id: str,
+    db: Session = Depends(get_db),
+):
+    pv = db.get(PlanVersion, draft_id)
+    if pv is None or pv.user_id != user_id or pv.role != "draft":
+        raise HTTPException(status_code=404, detail="draft not found")
+    found = _find_delta_horizon_field(pv, item_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="item_id not found in any horizon delta list")
+    field, payload, delta = found
+    delta["accepted"] = True
+    setattr(pv, field, json.dumps(payload))
+    db.commit()
+    return {"status": "accepted", "draft_id": draft_id, "item_id": item_id}
+
+
+@router.patch("/draft/{draft_id}/items/{item_id}")
+def patch_delta_edit(
+    draft_id: int,
+    item_id: str,
+    user_id: str,
+    body: DeltaEditRequest,
+    db: Session = Depends(get_db),
+):
+    pv = db.get(PlanVersion, draft_id)
+    if pv is None or pv.user_id != user_id or pv.role != "draft":
+        raise HTTPException(status_code=404, detail="draft not found")
+    found = _find_delta_horizon_field(pv, item_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="item_id not found")
+    field, payload, delta = found
+    if body.proposed is not None:
+        delta["proposed"] = body.proposed
+    if body.user_edit_note is not None:
+        delta["user_edit_note"] = body.user_edit_note
+    delta["user_edited"] = True
+    setattr(pv, field, json.dumps(payload))
+    db.commit()
+    return {"status": "edited", "draft_id": draft_id, "item_id": item_id}
+
+
 __all__ = [
     "AcceptResponse",
     "BaselineResponse",
+    "DeltaEditRequest",
     "DistillateItemEditRequest",
     "DraftResponse",
     "HorizonSectionView",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy.orm import sessionmaker
 
@@ -111,3 +113,108 @@ def test_post_draft_reject_marks_superseded(app_with_draft):
         assert pv.superseded_at is not None
     finally:
         sess.close()
+
+
+def test_post_delta_accept_marks_item_accepted(app_with_draft):
+    """Per-delta accept flips the `accepted` flag on a Delta within a horizon."""
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        # Inject a delta into the draft's horizon_medium_json.
+        from argosy.state.queries import get_pending_draft
+        pv = get_pending_draft(sess, "ariel")
+        import json as _j
+        med = _j.loads(pv.horizon_medium_json)
+        med["deltas_from_prior"] = [{
+            "item_kind": "target",
+            "item_id": "medium.targets.nvda",
+            "horizon": "medium",
+            "change_kind": "modified",
+            "summary": "NVDA target tightened 15% -> 12%",
+            "prior": {"value": 0.15},
+            "proposed": {"value": 0.12},
+            "rationale": "macro analyst flagged DeepSeek + tariff overhang",
+            "cited_sources": [],
+            "accepted": False,
+            "user_edited": False,
+            "user_edit_note": None,
+        }]
+        pv.horizon_medium_json = _j.dumps(med)
+        sess.commit()
+        draft_id = pv.id
+    finally:
+        sess.close()
+
+    r = app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/items/medium.targets.nvda/accept?user_id=ariel"
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["status"] == "accepted"
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        med = json.loads(pv.horizon_medium_json)
+        delta = next(d for d in med["deltas_from_prior"] if d["item_id"] == "medium.targets.nvda")
+        assert delta["accepted"] is True
+    finally:
+        sess.close()
+
+
+def test_patch_delta_user_edit_records_change(app_with_draft):
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        from argosy.state.queries import get_pending_draft
+        pv = get_pending_draft(sess, "ariel")
+        import json as _j
+        med = _j.loads(pv.horizon_medium_json)
+        med["deltas_from_prior"] = [{
+            "item_kind": "target",
+            "item_id": "medium.targets.nvda",
+            "horizon": "medium",
+            "change_kind": "modified",
+            "summary": "...",
+            "prior": {"value": 0.15},
+            "proposed": {"value": 0.12},
+            "rationale": "...",
+            "cited_sources": [],
+            "accepted": False,
+            "user_edited": False,
+            "user_edit_note": None,
+        }]
+        pv.horizon_medium_json = _j.dumps(med)
+        sess.commit()
+        draft_id = pv.id
+    finally:
+        sess.close()
+
+    r = app_with_draft.patch(
+        f"/api/plan/draft/{draft_id}/items/medium.targets.nvda?user_id=ariel",
+        json={"proposed": {"value": 0.13}, "user_edit_note": "tighter, but 13%"},
+    )
+    assert r.status_code == 200, r.text
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        med = json.loads(pv.horizon_medium_json)
+        delta = next(d for d in med["deltas_from_prior"] if d["item_id"] == "medium.targets.nvda")
+        assert delta["proposed"]["value"] == 0.13
+        assert delta["user_edited"] is True
+        assert delta["user_edit_note"] == "tighter, but 13%"
+    finally:
+        sess.close()
+
+
+def test_post_delta_accept_404_when_item_id_missing(app_with_draft):
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        from argosy.state.queries import get_pending_draft
+        draft_id = get_pending_draft(sess, "ariel").id
+    finally:
+        sess.close()
+
+    r = app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/items/nope/accept?user_id=ariel"
+    )
+    assert r.status_code == 404
