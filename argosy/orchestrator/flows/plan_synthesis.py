@@ -480,13 +480,158 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
 
 def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
                       analyst_reports_text: str, decision_run_id: str) -> str:
-    """Run aggressive/neutral/conservative risk officers against the draft.
+    """Plan-level risk verdict from three perspectives + facilitator merge.
 
-    Plan-level verdicts (not per-trade). Returns a consolidated text.
-    Stubbed for tests.
+    Runs the aggressive / neutral / conservative ``RiskOfficerAgent`` in
+    parallel (one verdict per perspective) and then asks the
+    ``RiskFacilitatorAgent`` to consolidate. Returns a single text blob
+    that the synthesizer's downstream steps embed in the draft transcript.
+
+    ADAPTATIONS vs spec:
+      * Spec used ``RiskOfficerAgent(stance=...)``; the actual class is
+        constructed as ``RiskOfficerAgent(user_id=..., perspective=...)``
+        (kwarg renamed; ``user_id`` now mandatory). ``_make_risk_officer``
+        normalises the kwarg.
+      * Spec called the officer with ``run_sync(draft_plan=...,
+        analyst_reports=...)``; the actual ``build_prompt`` signature is
+        ``(proposal, analyst_reports: list[dict], user_constraints,
+        risk_caps, prior_rounds, round_index, n_max)``. We adapt by
+        passing the draft plan as the ``proposal`` dict and wrapping the
+        upstream concatenated text in a single synthetic analyst report
+        dict (mirroring the Phase-2 adaptation).
+      * Spec called the facilitator with ``run_sync(draft_plan=...,
+        risk_reviews=...)``; the actual ``build_prompt`` signature is
+        ``(verdicts: list[dict], rounds_run: int)``. We parse each
+        per-perspective JSON output back into a dict and pass it through;
+        on parse failure we fall back to a sentinel dict so the
+        facilitator at least sees the perspective.
     """
-    log.info("plan_synthesis.phase_4_stub", user_id=user_id, decision_run_id=decision_run_id)
-    return "(Phase 4 risk verdict — wired against the existing risk team flow.)"
+    log.info("plan_synthesis.phase_4.start",
+             user_id=user_id, decision_run_id=decision_run_id)
+
+    parts: list[str] = []
+    raw_outputs: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        futures = {
+            ex.submit(_run_one_risk_perspective,
+                      stance=stance, user_id=user_id,
+                      draft_output=draft_output,
+                      analyst_reports_text=analyst_reports_text,
+                      decision_run_id=decision_run_id): stance
+            for stance in ("aggressive", "neutral", "conservative")
+        }
+        for fut in as_completed(futures):
+            stance = futures[fut]
+            try:
+                payload = fut.result()
+                raw_outputs[stance] = payload
+                parts.append(f"=== Risk {stance} ===\n{payload}")
+            except Exception as exc:  # noqa: BLE001
+                log.error("plan_synthesis.phase_4.risk_failed",
+                          stance=stance, decision_run_id=decision_run_id,
+                          error=str(exc))
+                parts.append(f"=== Risk {stance} (FAILED) ===\n{exc}")
+
+    # Facilitator merge.
+    from argosy.agents.risk_facilitator import RiskFacilitatorAgent
+    try:
+        facilitator = RiskFacilitatorAgent(user_id=user_id)
+    except TypeError:
+        # Fallback for stubbed/legacy constructors that don't accept user_id.
+        facilitator = RiskFacilitatorAgent()  # type: ignore[call-arg]
+
+    # Build a list[dict] of verdicts for the real facilitator signature.
+    # Best-effort JSON parse; on failure the facilitator still sees the
+    # perspective so it can ESCALATE rather than silently drop the voice.
+    verdicts: list[dict] = []
+    for stance, raw in raw_outputs.items():
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                parsed.setdefault("perspective", stance)
+                parsed.setdefault("round_index", 1)
+                verdicts.append(parsed)
+            else:
+                verdicts.append({"perspective": stance, "round_index": 1,
+                                 "verdict": "ESCALATE", "raw": raw})
+        except (ValueError, TypeError):
+            verdicts.append({"perspective": stance, "round_index": 1,
+                             "verdict": "ESCALATE", "raw": raw})
+
+    try:
+        merged = facilitator.run_sync(verdicts=verdicts, rounds_run=1)
+        merged_out = getattr(merged, "output", merged)
+        merged_text = (
+            merged_out.model_dump_json()
+            if hasattr(merged_out, "model_dump_json") else str(merged_out)
+        )
+        parts.append(f"=== Risk facilitator verdict ===\n{merged_text}")
+    except Exception as exc:  # noqa: BLE001
+        log.error("plan_synthesis.phase_4.facilitator_failed",
+                  decision_run_id=decision_run_id, error=str(exc))
+        parts.append(f"=== Risk facilitator (FAILED) ===\n{exc}")
+
+    return "\n\n".join(parts)
+
+
+def _make_risk_officer(stance: str, *, user_id: str | None = None):
+    """Return a ``RiskOfficerAgent`` configured for the requested stance.
+
+    ADAPTATION: the real ``RiskOfficerAgent.__init__`` signature is
+    ``(user_id: str, perspective: Perspective)`` — the spec used a
+    ``stance`` kwarg with no ``user_id``. We accept ``stance`` as a
+    positional argument (to match the test stub
+    ``_fake_officer(stance)``) and translate to ``perspective``;
+    ``user_id`` is keyword-only because the test monkeypatches this
+    helper and never passes one.
+    """
+    from argosy.agents.risk_officer import RiskOfficerAgent
+    return RiskOfficerAgent(user_id=user_id or "system", perspective=stance)  # type: ignore[arg-type]
+
+
+def _run_one_risk_perspective(*, stance: str, user_id: str,
+                              draft_output: PlanSynthesisOutput,
+                              analyst_reports_text: str,
+                              decision_run_id: str) -> str:
+    """Run one risk-officer perspective and return its output as text.
+
+    ADAPTATION: ``_make_risk_officer`` is a documented monkeypatch seam
+    used by tests; the spec test's stub has signature ``(stance)`` only,
+    so we attempt the keyword-arg path (``user_id``) first and fall
+    back to the bare positional form when the patched stub doesn't
+    accept it. Mirrors the ``_safe_run_agent`` retry pattern used in
+    Phase 1.
+    """
+    try:
+        officer = _make_risk_officer(stance, user_id=user_id)
+    except TypeError:
+        officer = _make_risk_officer(stance)
+
+    # Real RiskOfficerAgent.build_prompt expects:
+    #   proposal: dict, analyst_reports: list[dict], user_constraints: str,
+    #   risk_caps: dict, prior_rounds: list[dict], round_index: int, n_max: int
+    # The test stub accepts **kw, so it ignores anything we pass.
+    try:
+        proposal = json.loads(draft_output.model_dump_json())
+    except (ValueError, TypeError):
+        proposal = {"raw": str(draft_output)}
+
+    analyst_reports_payload = [{
+        "agent_role": "phase_1_aggregated",
+        "report_text": analyst_reports_text,
+    }]
+
+    result = officer.run_sync(
+        proposal=proposal,
+        analyst_reports=analyst_reports_payload,
+        user_constraints="",
+        risk_caps={},
+        prior_rounds=[],
+        round_index=1,
+        n_max=1,
+    )
+    out = getattr(result, "output", result)
+    return out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
 
 
 def _run_phase_5_fund_manager(*, session, user_id,

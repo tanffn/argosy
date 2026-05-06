@@ -189,3 +189,28 @@ def test_phase_2_debates_runs_three_horizons(session, monkeypatch):
     assert sorted(horizons_seen) == ["long", "medium", "short"]
     for h in ("long", "medium", "short"):
         assert f"DEBATE OUTCOME for {h}" in out
+
+
+def test_phase_4_risk_runs_three_perspectives(monkeypatch, session):
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    perspectives: list[str] = []
+
+    def _fake_officer(stance):
+        class _Stub:
+            agent_role = f"risk_{stance}"
+            def run_sync(self, **kw):
+                perspectives.append(stance)
+                return type("R", (), {"output": type("O", (), {"model_dump_json": lambda self: f"{stance} review"})(), "model": "fake"})()
+        return _Stub()
+
+    monkeypatch.setattr(flow, "_make_risk_officer", _fake_officer)
+
+    out = _stub_synthesis_output()
+    text = flow._run_phase_4_risk(
+        session=session, user_id="ariel", draft_output=out,
+        analyst_reports_text="(stub)", decision_run_id="test",
+    )
+    assert sorted(perspectives) == ["aggressive", "conservative", "neutral"]
+    for s in ("aggressive", "neutral", "conservative"):
+        assert f"{s} review" in text
