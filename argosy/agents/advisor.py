@@ -33,6 +33,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from argosy.agents.advisor_amendment_types import AmendmentIntent
 from argosy.agents.intake import (
     INTAKE_STAGES,
     STAGE_PURPOSE,
@@ -53,6 +54,17 @@ class AdvisorTurnOutput(IntakeTurnOutput):
             "Which path produced this turn. The route sets this based on "
             "request shape; the agent echoes it back so downstream callers "
             "can branch without re-deriving."
+        ),
+    )
+
+    amendment: AmendmentIntent | None = Field(
+        default=None,
+        description=(
+            "Wave 4: optional plan-amendment classification. Populated only "
+            "when the system prompt's amendment-classification instructions "
+            "are active (i.e., the user has a current plan) AND the latest "
+            "user message asks to change something about that plan. The "
+            "API route reads this and dispatches accordingly."
         ),
     )
 
@@ -82,6 +94,7 @@ class AdvisorAgent(IntakeAgent):
         missing_fields: list[str] | None = None,
         mode: Literal["gap_driven", "user_driven"] = "gap_driven",
         target_field: str | None = None,
+        has_current_plan: bool = False,
     ) -> tuple[str, str]:
         """Construct (system_addendum, user_prompt) for one advisor turn.
 
@@ -93,6 +106,11 @@ class AdvisorAgent(IntakeAgent):
             target_field: optional dotted-path the route wants the agent
                 to focus on (e.g., the user clicked a sidebar row). Only
                 meaningful for gap_driven mode.
+            has_current_plan: Wave 4. When True, the advisor has a current
+                plan to amend; the system prompt grows an AMENDMENT INTENT
+                DETECTION block instructing the model to classify any
+                plan-change request into small/medium/large tiers. Defaults
+                False so legacy intake-only flows are unchanged.
         """
         if current_stage not in STAGE_PURPOSE:
             raise ValueError(f"Unknown advisor stage: {current_stage!r}")
@@ -165,6 +183,28 @@ class AdvisorAgent(IntakeAgent):
             "OUTPUT must conform exactly to this JSON schema:\n"
             f"{AdvisorTurnOutput.model_json_schema()}\n"
         )
+
+        if has_current_plan:
+            system = system + (
+                "\n\nAMENDMENT INTENT DETECTION\n\n"
+                "If the user's latest message asks to change something about their current "
+                "plan (a target, theme, action, or speculative candidate), classify it:\n"
+                "  small  - strict tightening of one specific target/action they reference\n"
+                "           directly. Direction must be \"tighten\" (lowers risk surface);\n"
+                "           \"loosen\" or \"ambiguous\" - use medium instead.\n"
+                "  medium - theme shift on one horizon, multi-target tweak, loosening, or\n"
+                "           any change that involves cross-target reasoning.\n"
+                "  large  - structural rethink, cross-horizon, \"re-evaluate everything\",\n"
+                "           \"run synthesis\", or any request that asks the fleet to\n"
+                "           reconsider.\n\n"
+                "Emit the classification in the `amendment` field of your structured output.\n"
+                "For small with direction=tighten, also emit a fully-formed `proposed_delta`\n"
+                "with item_id, item_kind, horizon, change_kind, summary, prior, proposed,\n"
+                "rationale, and accepted=true.\n\n"
+                "Be conservative: when in doubt, classify as medium. The user can always say\n"
+                "\"do a full synthesis\" to escalate to large; they cannot easily reverse a\n"
+                "hasty small Delta.\n"
+            )
 
         if answered_fields is None:
             answered_block = "  (route did not compute — derive from YAML below as best you can)"

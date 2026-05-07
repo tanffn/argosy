@@ -151,3 +151,92 @@ def test_advisor_output_inherits_intake_shape() -> None:
     advisor_fields = set(AdvisorTurnOutput.model_fields.keys())
     assert intake_fields.issubset(advisor_fields)
     assert "mode" in advisor_fields - intake_fields
+
+
+# --- Wave 4 Task 4.3: amendment field + amendment classification prompt block ---
+
+
+def test_advisor_turn_carries_optional_amendment_field() -> None:
+    """AdvisorTurnOutput now has an optional `amendment: AmendmentIntent | None`
+    field so the advisor can emit a plan-amendment classification inline with
+    its turn output. The field must round-trip through JSON cleanly."""
+    from argosy.agents.advisor_amendment_types import AmendmentIntent
+
+    turn = AdvisorTurnOutput(
+        stage="stage_1",
+        question_for_user="I'll apply this as a small tightening.",
+        context_updates=[],
+        stage_complete=False,
+        next_stage=None,
+        confidence="MEDIUM",
+        cited_sources=[],
+        notes_for_orchestrator="",
+        mode="user_driven",
+        amendment=AmendmentIntent(
+            tier="small",
+            direction="tighten",
+            rationale="single target, explicit numbers",
+        ),
+    )
+    payload = turn.model_dump_json()
+    turn2 = AdvisorTurnOutput.model_validate_json(payload)
+    assert turn2.amendment is not None
+    assert turn2.amendment.tier == "small"
+    assert turn2.amendment.direction == "tighten"
+
+
+def test_advisor_turn_amendment_optional_is_none_by_default() -> None:
+    """If the model doesn't emit an amendment, the field defaults to None
+    so legacy turns (intake gap-filling, plain Q&A) keep their old shape."""
+    turn = AdvisorTurnOutput(
+        stage="stage_1",
+        question_for_user="just chatting",
+        context_updates=[],
+        stage_complete=False,
+        next_stage=None,
+        confidence="MEDIUM",
+        cited_sources=[],
+        notes_for_orchestrator="",
+        mode="user_driven",
+    )
+    assert turn.amendment is None
+
+
+def test_advisor_prompt_includes_amendment_classification_block() -> None:
+    """When the user has a current plan (`has_current_plan=True`), the system
+    prompt must include the AMENDMENT INTENT DETECTION instructions so the
+    advisor knows to classify amendment requests into small/medium/large."""
+    agent = AdvisorAgent(user_id="ariel")
+    sys, _usr = agent.build_prompt(
+        current_stage="stage_1",
+        accumulated_context="",
+        last_user_message="tighten NVDA cap to 12%",
+        history_excerpt="",
+        answered_fields=[],
+        missing_fields=["identity.tax_residency"],
+        mode="user_driven",
+        has_current_plan=True,
+    )
+    assert "AMENDMENT INTENT DETECTION" in sys
+    sys_lower = sys.lower()
+    assert "small" in sys_lower
+    assert "medium" in sys_lower
+    assert "large" in sys_lower
+
+
+def test_advisor_prompt_omits_amendment_block_without_current_plan() -> None:
+    """If the user has no current plan, the amendment block is omitted —
+    no point asking the model to classify amendments to a plan that
+    doesn't exist yet."""
+    agent = AdvisorAgent(user_id="ariel")
+    sys, _usr = agent.build_prompt(
+        current_stage="stage_1",
+        accumulated_context="",
+        last_user_message="hello",
+        history_excerpt="",
+        answered_fields=[],
+        missing_fields=["identity.tax_residency"],
+        mode="user_driven",
+        has_current_plan=False,
+    )
+    assert "AMENDMENT INTENT DETECTION" not in sys
