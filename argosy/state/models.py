@@ -428,9 +428,15 @@ class DecisionRun(Base):
         String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     ticker: Mapped[str] = mapped_column(String(32), nullable=False)
-    tier: Mapped[str] = mapped_column(String(4), nullable=False)
-    # decision_kind: "trade_proposal" (default, per-trade runs) or "plan_revision"
-    # (synthesis runs). Added by migration 0015_plan_versions_lifecycle.
+    # tier: originally a 4-char trade-tier sentinel ("T0"/"T3"); migration
+    # 0018 widened it to String(8) and made it nullable so the same column
+    # can also carry amendment-tier values ("small"/"medium"/"large") for
+    # plan-amendment-chat runs (Wave 4). decision_kind disambiguates which
+    # value shape is in play.
+    tier: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    # decision_kind: "trade_proposal" (default, per-trade runs), "plan_revision"
+    # (synthesis runs), or "plan_amendment_chat" (Wave 4 chat-driven amendment
+    # runs). Added by migration 0015_plan_versions_lifecycle.
     decision_kind: Mapped[str] = mapped_column(
         String(32), nullable=False, default="trade_proposal", server_default="trade_proposal"
     )
@@ -445,6 +451,11 @@ class DecisionRun(Base):
     proposal_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("proposals.id", ondelete="SET NULL"), nullable=True
     )
+    # notes_json: free-form JSON-serialized notes for plan-amendment-chat
+    # runs (the user's amendment message + the parsed AmendmentIntent for
+    # replay). Added by migration 0018. NULL for trade_proposal /
+    # plan_revision runs.
+    notes_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ----------------------------------------------------------------------
