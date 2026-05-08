@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import type { ComponentType, SVGProps } from "react";
 
 import { LiveClock } from "@/components/live-clock";
-import { StatusPill } from "@/components/ui/status-pill";
 import { cn } from "@/lib/utils";
 
 interface NavTab {
@@ -47,9 +46,6 @@ export function NavBar() {
             Argosy
           </span>
         </Link>
-        <StatusPill tone="neutral" mono>
-          v0.1.0
-        </StatusPill>
         <ul className="flex items-center gap-1 flex-wrap">
           {TABS.map((t) => {
             const active = pathname === t.href;
