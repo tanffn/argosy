@@ -122,6 +122,38 @@ def run_small(
         run.finished_at = datetime.now(timezone.utc)
         session.commit()
 
+        # Provenance Wave C — record the small-amendment phase. No agent
+        # debate (small amendments are applied directly), so the verdict
+        # is a synthesized FundManagerPlanRevisionDecision capturing the
+        # delta. Best-effort.
+        try:
+            import asyncio
+            from argosy.agents.fund_manager import (
+                FundManagerPlanRevisionDecision,
+            )
+            from argosy.services.negotiation_recorder import (
+                record_negotiation_phase,
+            )
+
+            verdict = FundManagerPlanRevisionDecision(
+                approved=True,
+                reasons=[
+                    f"small-amendment delta applied: {delta.item_id}",
+                    f"horizon={delta.horizon}",
+                ],
+                cited_sources=["docs/design/SDD.md#§6.13"],
+            )
+            asyncio.run(record_negotiation_phase(
+                user_id=user_id, decision_run_id=run.id,
+                kind="amend_apply", started_at=run.started_at,
+                agent_report_ids=[], verdict=verdict,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "plan_amendment.small.record_phase_failed",
+                decision_run_id=run.id, error=str(exc),
+            )
+
         publish_event_threadsafe("plan.amendment.completed", {
             "user_id": user_id,
             "decision_run_id": run.id,

@@ -48,6 +48,7 @@ from argosy.api.events import publish_event
 from argosy.decisions.proposals import Proposal, ProposalStatus
 from argosy.decisions.tiers import Tier
 from argosy.logging import get_logger
+from argosy.services.negotiation_recorder import record_negotiation_phase
 from argosy.state import db as db_mod
 from argosy.state.models import (
     AgentReport as AgentReportRow,
@@ -210,19 +211,40 @@ class DecisionFlow:
             for r in analyst_reports
         ]
 
+        analysts_started_at = clock()
         decision_run_id = await self._open_decision_run(
-            ticker=ticker, tier=tier, started_at=clock()
+            ticker=ticker, tier=tier, started_at=analysts_started_at
         )
 
         # Persist analyst reports under this decision_id (so the API can
         # join them later).
-        await self._persist_agent_reports(decision_run_id, analyst_reports)
+        analyst_ids = await self._persist_agent_reports(
+            decision_run_id, analyst_reports
+        )
+        # Provenance Wave C — record analyst phase. No facilitator verdict;
+        # the TL;DR will list the participating analysts and confidences.
+        try:
+            await record_negotiation_phase(
+                user_id=self.user_id, decision_run_id=decision_run_id,
+                kind="analysts", started_at=analysts_started_at,
+                finished_at=clock(),
+                agent_report_ids=analyst_ids, verdict=None,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _log.warning(
+                "decision_flow.record_phase_failed",
+                phase="analysts", run_id=decision_run_id, error=str(exc),
+            )
 
         # ---------------- Researcher debate ----------------
         debate_outcome: DebateOutcome | None = None
         bull_turns: list[dict] = []
         bear_turns: list[dict] = []
+        debate_ids: list[int] = []
+        debate_side: dict[int, str] = {}
+        debate_round: dict[int, int] = {}
         if tier in (Tier.T1, Tier.T2, Tier.T3):
+            debate_started_at = clock()
             n_rounds = self._rounds_for(tier)
             for r_idx in range(1, n_rounds + 1):
                 bull_agent = self._bull()
@@ -234,7 +256,13 @@ class DecisionFlow:
                     n_max=n_rounds,
                     ticker=ticker,
                 )
-                await self._persist_agent_reports(decision_run_id, [bull_turn])
+                bull_ids = await self._persist_agent_reports(
+                    decision_run_id, [bull_turn]
+                )
+                debate_ids.extend(bull_ids)
+                for bid in bull_ids:
+                    debate_side[bid] = "bull"
+                    debate_round[bid] = r_idx
                 bull_turns.append(bull_turn.output.model_dump())
 
                 bear_agent = self._bear()
@@ -246,7 +274,13 @@ class DecisionFlow:
                     n_max=n_rounds,
                     ticker=ticker,
                 )
-                await self._persist_agent_reports(decision_run_id, [bear_turn])
+                bear_ids = await self._persist_agent_reports(
+                    decision_run_id, [bear_turn]
+                )
+                debate_ids.extend(bear_ids)
+                for bid in bear_ids:
+                    debate_side[bid] = "bear"
+                    debate_round[bid] = r_idx
                 bear_turns.append(bear_turn.output.model_dump())
 
             facilitator = self._researcher_fac()
@@ -256,10 +290,28 @@ class DecisionFlow:
                 rounds_run=n_rounds,
                 ticker=ticker,
             )
-            await self._persist_agent_reports(decision_run_id, [fac_report])
+            fac_ids = await self._persist_agent_reports(
+                decision_run_id, [fac_report]
+            )
+            debate_ids.extend(fac_ids)
             debate_outcome = fac_report.output  # type: ignore[assignment]
+            try:
+                await record_negotiation_phase(
+                    user_id=self.user_id, decision_run_id=decision_run_id,
+                    kind="researcher_debate", started_at=debate_started_at,
+                    finished_at=clock(), agent_report_ids=debate_ids,
+                    verdict=debate_outcome,
+                    side_by_id=debate_side, round_by_id=debate_round,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "decision_flow.record_phase_failed",
+                    phase="researcher_debate", run_id=decision_run_id,
+                    error=str(exc),
+                )
 
         # ---------------- Trader ----------------
+        trader_started_at = clock()
         trader = self._trader(tier.value)
         trader_report = await trader.run(
             analyst_reports=analyst_dicts,
@@ -269,8 +321,22 @@ class DecisionFlow:
             tier=tier.value,
             ticker=ticker,
         )
-        await self._persist_agent_reports(decision_run_id, [trader_report])
+        trader_ids = await self._persist_agent_reports(
+            decision_run_id, [trader_report]
+        )
         trader_proposal: TraderProposal = trader_report.output  # type: ignore[assignment]
+        try:
+            await record_negotiation_phase(
+                user_id=self.user_id, decision_run_id=decision_run_id,
+                kind="trader", started_at=trader_started_at,
+                finished_at=clock(), agent_report_ids=trader_ids,
+                verdict=trader_proposal,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "decision_flow.record_phase_failed",
+                phase="trader", run_id=decision_run_id, error=str(exc),
+            )
 
         if trader_proposal.action == "hold":
             await self._close_decision_run(
@@ -292,6 +358,10 @@ class DecisionFlow:
             # read).
             risk_outcome = None
         else:
+            risk_started_at = clock()
+            risk_ids: list[int] = []
+            risk_perspective: dict[int, str] = {}
+            risk_round: dict[int, int] = {}
             verdicts: list[dict] = []
             n_rounds = self._rounds_for(tier)
             perspectives_for_tier: list[Perspective] = (
@@ -311,7 +381,13 @@ class DecisionFlow:
                         round_index=r_idx,
                         n_max=n_rounds,
                     )
-                    await self._persist_agent_reports(decision_run_id, [rep])
+                    rep_ids = await self._persist_agent_reports(
+                        decision_run_id, [rep]
+                    )
+                    risk_ids.extend(rep_ids)
+                    for rid in rep_ids:
+                        risk_perspective[rid] = perspective
+                        risk_round[rid] = r_idx
                     round_verdicts.append(rep.output.model_dump())
                 verdicts.extend(round_verdicts)
 
@@ -319,8 +395,24 @@ class DecisionFlow:
             risk_fac_report = await facilitator.run(
                 verdicts=verdicts, rounds_run=n_rounds
             )
-            await self._persist_agent_reports(decision_run_id, [risk_fac_report])
+            risk_fac_ids = await self._persist_agent_reports(
+                decision_run_id, [risk_fac_report]
+            )
+            risk_ids.extend(risk_fac_ids)
             risk_outcome = risk_fac_report.output  # type: ignore[assignment]
+            try:
+                await record_negotiation_phase(
+                    user_id=self.user_id, decision_run_id=decision_run_id,
+                    kind="risk_team", started_at=risk_started_at,
+                    finished_at=clock(), agent_report_ids=risk_ids,
+                    verdict=risk_outcome,
+                    perspective_by_id=risk_perspective, round_by_id=risk_round,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "decision_flow.record_phase_failed",
+                    phase="risk_team", run_id=decision_run_id, error=str(exc),
+                )
 
             if risk_outcome.consensus_verdict == "REJECT":
                 await self._close_decision_run(
@@ -367,6 +459,7 @@ class DecisionFlow:
         # tiers where the cost (~Opus) is justified.
         fm_decision: FundManagerDecision | None = None
         if tier in (Tier.T2, Tier.T3):
+            fm_started_at = clock()
             fm_agent = self._fund_manager()
             fm_report = await fm_agent.run(
                 proposal=trader_proposal.model_dump(),
@@ -375,8 +468,22 @@ class DecisionFlow:
                 user_constraints=user_constraints,
                 tier=tier.value,
             )
-            await self._persist_agent_reports(decision_run_id, [fm_report])
+            fm_ids = await self._persist_agent_reports(
+                decision_run_id, [fm_report]
+            )
             fm_decision = fm_report.output  # type: ignore[assignment]
+            try:
+                await record_negotiation_phase(
+                    user_id=self.user_id, decision_run_id=decision_run_id,
+                    kind="fund_manager", started_at=fm_started_at,
+                    finished_at=clock(), agent_report_ids=fm_ids,
+                    verdict=fm_decision,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "decision_flow.record_phase_failed",
+                    phase="fund_manager", run_id=decision_run_id, error=str(exc),
+                )
 
             if fm_decision.decision == "block":
                 await self._close_decision_run(
@@ -551,9 +658,16 @@ class DecisionFlow:
 
     async def _persist_agent_reports(
         self, decision_run_id: int, reports: list[AgentReport]
-    ) -> None:
+    ) -> list[int]:
+        """Persist agent reports under this decision_run_id.
+
+        Returns the list of inserted ``agent_reports.id`` values in the
+        same order as ``reports`` so callers can hand them to the
+        provenance recorder (Wave C).
+        """
         if self.config.skip_persistence or decision_run_id == 0:
-            return
+            return []
+        ids: list[int] = []
         async with db_mod.get_session() as session:
             for r in reports:
                 row = AgentReportRow(
@@ -569,7 +683,10 @@ class DecisionFlow:
                     confidence=r.confidence.value if r.confidence else None,
                 )
                 session.add(row)
+                await session.flush()
+                ids.append(row.id)
             await session.commit()
+        return ids
 
     async def _persist_proposal(
         self,

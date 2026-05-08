@@ -185,6 +185,35 @@ def _medium_worker(*, session: Session, user_id: str,
         session.commit()
         session.refresh(draft)
 
+        # Provenance Wave C — record medium-amendment synthesis phase.
+        # Best-effort: must never fail the underlying flow.
+        try:
+            import asyncio
+            from argosy.agents.fund_manager import (
+                FundManagerPlanRevisionDecision,
+            )
+            from argosy.services.negotiation_recorder import (
+                record_negotiation_phase,
+            )
+
+            verdict = FundManagerPlanRevisionDecision(
+                approved=True,
+                reasons=[
+                    f"medium amendment synthesized; draft_id={draft.id}",
+                ],
+                cited_sources=["docs/design/SDD.md#§6.13"],
+            )
+            asyncio.run(record_negotiation_phase(
+                user_id=user_id, decision_run_id=decision_run.id,
+                kind="amend_synth", started_at=decision_run.started_at,
+                agent_report_ids=[], verdict=verdict,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "plan_amendment.medium.record_phase_failed",
+                decision_run_id=decision_run.id, error=str(exc),
+            )
+
         publish_event_threadsafe("plan.amendment.completed", {
             "user_id": user_id,
             "decision_run_id": decision_run.id,

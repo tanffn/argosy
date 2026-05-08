@@ -265,9 +265,66 @@ class AgentReport(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+    # Provenance Wave C — back-link to the negotiation phase this run
+    # participated in (NULL for one-shot agents that aren't part of a
+    # multi-agent debate). Migration 0020.
+    phase_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("decision_phases.id", ondelete="SET NULL"), nullable=True
+    )
 
     blobs: Mapped[list["AgentReportBlob"]] = relationship(
         back_populates="report", cascade="all, delete-orphan"
+    )
+
+
+class DecisionPhase(Base):
+    """One row per phase boundary in a multi-agent flow (Wave C — provenance).
+
+    A *phase* aggregates the agent runs that produced one structured
+    verdict — e.g. the bull/bear debate + facilitator → ``DebateOutcome``,
+    the three risk officers + facilitator → ``RiskOutcome``, the trader's
+    proposal → ``TraderProposal``, the fund manager's call →
+    ``FundManagerDecision``. Plan-synthesis 5-phase and amendment
+    Medium/Large workers also write rows.
+
+    ``verdict_json`` is the ``model_dump_json()`` of the corresponding
+    pydantic DTO (no DTOs redefined for the catalog — they live next to
+    their agents in ``argosy/agents/``). ``verdict_kind`` is the DTO class
+    name so the UI picks a renderer without sniffing fields.
+
+    ``bundle_dir`` is the absolute filesystem path under
+    ``<ARGOSY_HOME>/transcripts/<user_id>/<YYYY-MM-DD>/<run_id>__<kind>/``
+    containing the full ``TLDR.md`` / ``transcript.md`` / ``verdict.json``
+    / ``sequence.mmd`` mirror.
+    """
+
+    __tablename__ = "decision_phases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    decision_run_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("decision_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(48), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # JSON list of {agent_role, agent_report_id, side?, perspective?, round?}.
+    participants_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # JSON of model_dump_json() of the parsed pydantic DTO; NULL when the
+    # phase has no facilitator (e.g. analyst phase with no aggregator).
+    verdict_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verdict_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tldr_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bundle_dir: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
     )
 
 

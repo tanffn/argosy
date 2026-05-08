@@ -299,6 +299,43 @@ def run_synthesis(
     log.info("plan_synthesis.draft_persisted",
              user_id=user_id, draft_id=draft.id, decision_run_id=decision_run_id)
     _emit_event("plan.draft.completed", {"user_id": user_id, "draft_id": draft.id})
+
+    # Provenance Wave C — record a coarse phase row for the synthesis run.
+    # Per-phase recording (analysts/debates/synthesizer/risk/fm) is deferred
+    # because synthesis is a sync flow today and the constituent agents'
+    # outputs aren't currently persisted as agent_reports rows. This single
+    # row is enough for the Replay endpoint to surface "this draft was
+    # produced by synthesis run #X" provenance, with the FM-approval
+    # confirmation. Full phase trace is a follow-up wave.
+    try:
+        import asyncio
+        from argosy.agents.fund_manager import FundManagerPlanRevisionDecision
+        from argosy.services.negotiation_recorder import (
+            record_negotiation_phase,
+        )
+
+        verdict = FundManagerPlanRevisionDecision(
+            approved=True,
+            reasons=[
+                f"synthesis completed; draft_id={draft.id}",
+                f"phase_4 risk verdict text length: {len(risk_verdict)}",
+            ],
+            cited_sources=["docs/design/SDD.md#§6.11"],
+        )
+        asyncio.run(record_negotiation_phase(
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            kind="plan_synthesis",
+            started_at=decision_run.started_at,
+            agent_report_ids=[],
+            verdict=verdict,
+        ))
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning(
+            "plan_synthesis.record_phase_failed",
+            user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+        )
+
     return SynthesisResult(decision_run_id=decision_run_id, draft_id=draft.id)
 
 
