@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-08 — Wave 5 (unified chat upload + image attachments on both backends) merged after a post-review fix sweep (I1-I4 + M-sweep). |
+| **Last updated** | 2026-05-08 — Provenance system (Waves A-F): user_files catalog, decision_phases negotiation log, /files + /decisions/[id] replay UI with Mermaid timelines, new SDD §17. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -139,6 +139,7 @@ If you find a binding policy not listed above that you've inferred from the code
 14. [Operational Concerns](#14-operational-concerns)
 15. [Risks & Open Questions](#15-risks--open-questions)
 16. [References & Glossary](#16-references--glossary)
+17. [Provenance & accountability](#17-provenance--accountability)
 
 **Appendices**
 
@@ -2247,6 +2248,217 @@ Items deliberately deferred — listed here so a fresh agent doesn't waste cycle
 | **Soak** | A mandated paper-mode period (Phase 3.5: 2 weeks; Phase 5: 4 weeks) before promoting to the next phase. |
 | **Distillate** | Compressed structured extract of a baseline plan (~1500-2500 tokens), capturing durable principles + targets-as-stated; the only representation of the baseline that downstream synthesis consumes. See §6.10. |
 | **Plan watcher** | Daily cadence loop that detects when a user's baseline plan source file has changed and re-runs distillation while preserving user edits. |
+
+---
+
+## 17. Provenance & accountability
+
+Argosy makes multi-million-dollar wealth decisions. The data layer (§8)
+already records every agent run, every decision_run, every plan_versions
+row, every fill, every audit event. §17 stitches those rows together
+into a **first-class provenance surface** so the user can answer, for
+any decision: *what did the system see, what did the agents argue, how
+did it decide, and what did it execute*.
+
+Three pillars: a **catalog** of every user-supplied file, a structured
+**negotiation transcript** for every multi-agent flow, and a
+**visualization** layer that renders the two together. The pillars are
+additive over the existing schema — no breaking changes to §8.
+
+### 17.1 Catalog (`user_files`)
+
+Every byte-blob a user hands the system flows through one boundary
+helper, ``argosy/services/file_catalog.py::catalog_upload``:
+
+```mermaid
+flowchart LR
+  A[Chat attachments<br>argosy/services/turn_attachments.py] --> H
+  B[Intake plan upload<br>argosy/api/routes/intake.py::post_upload] --> H
+  C[Intake file-to-text<br>argosy/api/routes/intake.py::post_file_to_text] --> H
+  D[Cost-basis CSV<br>argosy/adapters/brokers/schwab_csv.py] --> H
+  H[catalog_upload<br>sha256 dedup + write] --> R[(user_files)]
+  H --> F[<ARGOSY_HOME>/uploads/<br>YYYY/YYYY-MM-DD/<br>HHMMSS__sha8__sanitized]
+  H --> AL[(audit_log<br>provenance.upload.cataloged)]
+```
+
+**Schema** (migration 0019):
+- `user_files(id, user_id FK, sha256, original_name, sanitized_name, mime_type, kind, size_bytes, storage_path, source, turn_uuid, intake_session_id, plan_version_id FK, decision_run_id FK, created_at, deleted_at)`.
+- Index `(user_id, created_at DESC)` drives the Files page list.
+- Partial unique index on `(user_id, sha256) WHERE deleted_at IS NULL`
+  enforces content-addressed dedup per user (releases on soft-delete).
+- New `plan_versions.source_file_id` FK so a baseline plan points back
+  at its catalog row. Existing `plan_versions.source_path` (a string
+  filename) stays for back-compat.
+
+**Allowed values:**
+- `kind ∈ {text, image, plan_markdown, broker_csv, other}`.
+- `source ∈ {chat_attachment, intake_upload, intake_file_to_text, cost_basis_import}`.
+
+**Filesystem layout:**
+`<ARGOSY_HOME>/uploads/<user_id>/<YYYY>/<YYYY-MM-DD>/<HHMMSS>__<sha8>__<sanitized>`.
+Legacy Wave-5 paths under `<turn_uuid>/<file>` continue to work — the
+backfill CLI inserts catalog rows pointing at them without relocating.
+
+**Backfill** (`argosy admin catalog-backfill [--user-id <id>] [--dry-run]`):
+walks legacy uploads dirs, hashes each file, INSERTs `user_files` rows,
+and links existing `plan_versions.source_path` to the matching catalog
+row when there is exactly one match. Idempotent — running twice does
+not double-insert.
+
+**Dedup contract** (note for future maintainers):
+`user_files` is content-addressed by sha256; `plan_versions` is
+lifecycle-addressed by role (`baseline`/`draft`/`current`/`superseded`).
+Two `plan_versions` rows can point at the same `user_files` row (same
+bytes re-imported after `superseded` demotion). This is intentional —
+catalog tracks bytes, plan_versions tracks lifecycle.
+
+### 17.2 Phase recording (`decision_phases`)
+
+Every multi-agent flow records one row per **phase boundary** —
+the points where a structured pydantic verdict DTO (`DebateOutcome`,
+`RiskOutcome`, `FundManagerDecision`, `FundManagerPlanRevisionDecision`,
+…) is produced.
+
+```mermaid
+flowchart TB
+  subgraph Trade["Trade decision flow (T1-T3)"]
+    direction TB
+    A0[analysts<br>Phase 1] --> RD[researcher_debate<br>Phase 2]
+    RD --> TR[trader<br>Phase 3]
+    TR --> RT[risk_team<br>Phase 4]
+    RT --> FM[fund_manager<br>Phase 5]
+  end
+  subgraph Synth["Plan synthesis flow"]
+    direction TB
+    PS[plan_synthesis<br>coarse phase]
+  end
+  subgraph Amend["Amendment chat"]
+    direction TB
+    AA[amend_apply<br>small]
+    AS[amend_synth<br>medium]
+  end
+  Trade --> DP[(decision_phases)]
+  Synth --> DP
+  Amend --> DP
+  DP --> AR[agent_reports.phase_id]
+  DP --> FS[<ARGOSY_HOME>/transcripts/<br><user_id>/YYYY-MM-DD/<br>run_id__kind/]
+  FS --> T1[TLDR.md]
+  FS --> T2[transcript.md]
+  FS --> T3[verdict.json]
+  FS --> T4[sequence.mmd]
+  DP --> AL[(audit_log<br>provenance.phase.finished)]
+```
+
+**Schema** (migration 0020):
+- `decision_phases(id, decision_run_id FK CASCADE, user_id FK, seq, kind, started_at, finished_at, participants_json, verdict_json, verdict_kind, tldr_md, bundle_dir, created_at)`.
+- Indexes `(decision_run_id, seq)` (drives the Replay endpoint) and
+  `(user_id, kind, started_at DESC)`.
+- New nullable `agent_reports.phase_id` FK so participants link back to
+  the phase they ran in.
+
+**Phase kinds** (taxonomy):
+- Trade flow: `analysts`, `researcher_debate`, `trader`, `risk_team`,
+  `fund_manager`.
+- Plan synthesis (coarse): `plan_synthesis`. Per-phase recording of
+  the 5-phase fleet review is deferred — the constituent agents'
+  outputs aren't yet persisted as `agent_reports` rows.
+- Amendment: `amend_apply` (small), `amend_synth` (medium). Large
+  amendments delegate to `run_synthesis`, whose own phase covers them.
+
+**`verdict_json`** is the `model_dump_json()` of the parsed pydantic
+DTO. **`verdict_kind`** is the DTO class name (e.g. `"DebateOutcome"`),
+so the UI can pick a renderer without sniffing field shapes.
+
+**Filesystem mirror**:
+`<ARGOSY_HOME>/transcripts/<user_id>/<YYYY-MM-DD>/<decision_run_id>__<kind>/`
+contains four files per phase:
+- `TLDR.md` — deterministic, template-rendered (no LLM) markdown
+  scoped to the verdict's DTO type. The `decision_phases.tldr_md`
+  column carries the same content for queryability.
+- `transcript.md` — chronological dump of every participant's
+  `response_text`, headed by `## Round N — {agent_role} (side?/perspective?)`.
+- `verdict.json` — `verdict.model_dump()` (or `{}` if no verdict).
+- `sequence.mmd` — Mermaid `sequenceDiagram` of the agent timeline,
+  rendered inline by the UI.
+
+**Recorder helper** (`argosy/services/negotiation_recorder.py::record_negotiation_phase`):
+async; called from each phase boundary in
+- `argosy/decisions/flow.py` (5 boundaries),
+- `argosy/orchestrator/flows/plan_synthesis/orchestrator.py::run_synthesis`
+  (1 coarse boundary, end-of-run),
+- `argosy/orchestrator/flows/plan_amendment/dispatcher.py` and
+  `argosy/orchestrator/flows/plan_amendment/workers.py` (1 boundary
+  each, post-completion).
+
+All call sites wrap the recorder in `try/except` and log on failure —
+provenance is a value-add that must **never** block the underlying flow.
+
+### 17.3 Replay & visualization
+
+**REST surface** (in `argosy/api/routes/decisions.py` and
+`argosy/api/routes/files.py`):
+
+| Method | Path | Returns |
+|---|---|---|
+| `GET` | `/api/files` | List user's catalog rows (filters: `kind`, `source`, `since`, `until`, `include_deleted`, `limit`, `offset`). |
+| `GET` | `/api/files/{id}/content` | Stream the bytes of one catalog row. ACL on `user_id`. 410 if the on-disk file is missing. |
+| `GET` | `/api/decisions/{id}/replay` | Full replay payload: decision_run + all phases (verdict, TL;DR, sequence_mmd, participants), inputs (user_files for this run), `sequence_mmd_full` (concat). |
+| `GET` | `/api/decisions/{id}/phases/{phase_id}/transcript` | Stream the on-disk `transcript.md` for one phase. 410 if missing. |
+
+**UI surfaces** (Next.js 15, React 19, Tailwind v4):
+
+- **`/files`** — table of every cataloged file, kind icon, size,
+  source, ISO timestamp, click-to-open (streams the bytes), deep-link
+  to `/decisions/{id}` for files associated with a run.
+- **`/decisions/[id]`** — Decision Replay page:
+  - Run metadata (kind, ticker, tier, started/finished, duration, FM
+    call, deep-link to the proposal).
+  - Inputs section listing `user_files` rows for this run.
+  - **Full-run Mermaid sequence diagram** rendered client-side via the
+    `MermaidDiagram` component (lazy-imported, `ssr:false`).
+  - **Negotiation timeline** — collapsible cards per phase, each
+    expanding to show a typed `<VerdictCard>` (DebateOutcome /
+    RiskOutcome / FundManagerDecision / FundManagerPlanRevisionDecision
+    each get a custom renderer; unknown DTOs fall back to a JSON
+    block), TL;DR markdown, participants table (role, side/perspective,
+    round, confidence, model, tokens, cost), per-phase Mermaid sequence
+    diagram, and a lazy-loaded transcript.md.
+- **Proposals detail** (existing page) — adds a *"view full replay →"*
+  link to `/decisions/[id]` when the proposal has a decision_run.
+
+**New shared components** (`ui/src/components/`):
+- `mermaid-diagram.tsx` — wraps mermaid v11 with lazy import, dark
+  theme, error fallback to a legible `<pre>` source view.
+- `verdict-card.tsx` — switch on `verdict_kind` and render a typed
+  card per DTO (icons from lucide-react: `CheckCircle2`,
+  `AlertTriangle`, `Ban`, `ShieldCheck`).
+
+**Note on diagrams**: this section embeds Mermaid for inline
+readability. A drawio source equivalent (`docs/design/diagrams/17-provenance-flow.drawio`)
+is a deferred follow-up; the Mermaid blocks above already render in
+GitHub / IDE markdown previews and serve as the canonical visual.
+
+### 17.4 Privacy & retention
+
+- **Uploaded files may contain PII** (account numbers, broker
+  statements, tax forms). The catalog persists raw bytes that
+  previously lived only as transient `chat_attachment` files. The
+  underlying privacy posture is unchanged from §14 (`agent_reports.response_text`
+  has always echoed extracted facts), but a future "delete my data"
+  feature must scrub `user_files` (soft-delete via `deleted_at`),
+  `agent_reports`, `decision_phases.tldr_md`, and the on-disk
+  `<ARGOSY_HOME>/uploads` and `<ARGOSY_HOME>/transcripts` trees together.
+- **Soft-delete is the canonical removal pattern**: `user_files.deleted_at`
+  releases the partial unique index so re-uploads succeed, while the
+  row itself stays for audit.
+- **Storage growth**: transcripts mirror is unbounded but small in
+  practice (~30 KB/T3 trade decision, ~150 KB/synthesis run). At 10
+  decisions/day that's ~50 MB/year; ship without rotation, defer a
+  tar/offload CLI to Phase 8+.
+- **Audit-log overlap**: the universal `audit_log` (§14.1) absorbs the
+  new event types `provenance.upload.cataloged`,
+  `provenance.phase.started`, `provenance.phase.finished`,
+  `provenance.phase.failed`. No second events table.
 
 ---
 
