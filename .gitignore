@@ -37,6 +37,7 @@ backups/
 logs/
 secrets/
 uploads/
+transcripts/
 *.db
 *.db-journal
 *.db-wal
