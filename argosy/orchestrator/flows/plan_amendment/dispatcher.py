@@ -41,6 +41,8 @@ def run_small(
     if intent.proposed_delta is None:
         raise ValueError("run_small requires intent.proposed_delta")
 
+    _validate_tightening(intent.proposed_delta)
+
     # Open a DecisionRun row for audit lineage even on the inline path.
     run = DecisionRun(
         user_id=user_id, ticker="(plan)", tier="small",
@@ -224,6 +226,42 @@ def cancel(session: Session, *, user_id: str, decision_run_id: int) -> bool:
         "tier": run.tier,
     })
     return True
+
+
+def _validate_tightening(delta) -> None:
+    """Defensive: confirm numeric values move in the tightening direction.
+
+    Tightening rules (aligned with the spec's "lowers risk surface"):
+      - kind in {cap, max_*}: proposed.value < prior.value
+      - kind in {floor, min_*}: proposed.value > prior.value
+      - if kind absent or prior/proposed missing: trust the advisor's classification
+    """
+    prior = (delta.prior or {})
+    proposed = (delta.proposed or {})
+    pv = prior.get("value")
+    qv = proposed.get("value")
+    if pv is None or qv is None:
+        return  # not enough info; trust the advisor
+
+    kind = (proposed.get("kind") or prior.get("kind") or "").lower()
+    if not isinstance(pv, (int, float)) or not isinstance(qv, (int, float)):
+        return
+
+    is_floor_like = any(k in kind for k in ("floor", "min"))
+    is_cap_like = any(k in kind for k in ("cap", "max", "ceiling"))
+
+    if is_cap_like:
+        if qv >= pv:
+            raise ValueError(
+                f"intent claims tightening but proposed value {qv} >= prior {pv} on a cap-like target"
+            )
+    elif is_floor_like:
+        if qv <= pv:
+            raise ValueError(
+                f"intent claims tightening but proposed value {qv} <= prior {pv} on a floor-like target"
+            )
+    # If kind is unrecognized, no numeric check — but the API still ran the
+    # classifier's direction filter, which is the primary gate.
 
 
 __all__ = ["run_small", "dispatch_async", "cancel", "_spawn_worker"]

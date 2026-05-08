@@ -152,3 +152,28 @@ def test_dispatch_async_large_eta_is_900s(session_with_current, monkeypatch):
 
     assert result.tier == "large"
     assert result.eta_seconds == 900
+
+
+def test_run_small_rejects_loosening_numbers(session_with_current):
+    """Even if intent claims direction=tighten, if the numbers loosen we refuse."""
+    from argosy.orchestrator.flows.plan_amendment.dispatcher import run_small
+    from argosy.agents.advisor_amendment_types import AmendmentIntent
+    from argosy.agents.plan_synthesizer_types import Delta
+
+    sess, _pv = session_with_current
+
+    # Spec says cap "tightening", but proposed > prior — actually loosening.
+    bad_delta = Delta(
+        item_kind="target", item_id="medium.targets.nvda", horizon="medium",
+        change_kind="modified", summary="x",
+        prior={"value": 0.15, "kind": "cap"},
+        proposed={"value": 0.18, "kind": "cap"},
+        rationale="claims tightening but numbers loosen",
+    )
+    intent = AmendmentIntent(
+        tier="small", direction="tighten", proposed_delta=bad_delta, rationale="x",
+    )
+
+    import pytest
+    with pytest.raises(ValueError, match="tightening"):
+        run_small(sess, user_id="ariel", message="x", intent=intent)
