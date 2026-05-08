@@ -5,6 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
+| **Last updated** | 2026-05-08 — post-Wave-4 audit: brought REST surface, agent fleet, migration list, event inventory, and §6.11/§6.13 in-line with merged code (commits ending at `074ff66`). |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -324,15 +325,25 @@ Run on their own cadences; not part of any decision team.
 
 | Agent | Role | Cadence | Default model |
 |---|---|---|---|
-| **Intake** | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Sonnet |
-| **Advisor** | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. See §6.5. | Per-turn (user-initiated) | Sonnet |
-| **Domain refresh** | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet |
-| **Audit** | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus |
-| **Plan distiller** | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet |
-| **Plan synthesizer** | Phase 3 of plan_synthesis_flow — produces the three HorizonSection drafts. See §6.11. | Monthly + quarterly + annual + on user check-in | Opus |
-| **Watchlist** | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Haiku |
+| **Intake** (`IntakeAgent`) | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Sonnet |
+| **Intake extractor** (`IntakeExtractorAgent`) | Single-pass markdown extractor for user-supplied plan/intake docs; populates `user_context` from a self-described file. Citations not required (the source IS the user's doc). | On upload | Sonnet |
+| **Advisor** (`AdvisorAgent`) | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. Wave 4: emits an optional `amendment` field in its turn output (`AmendmentIntent`) when the latest user message asks for a structural plan change; the route layer routes through `argosy.orchestrator.flows.plan_amendment` (§6.13). The route only enables the LLM amendment-classification block when `has_current_plan=True` (Wave 4 fix C1). See §6.5. | Per-turn (user-initiated) | Sonnet |
+| **Domain refresh** (`DomainRefreshAgent`) | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet |
+| **Audit** (`AuditAgent`) | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus |
+| **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Sonnet (Opus on RED) |
+| **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet |
+| **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts. See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus |
+| **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Sonnet (was Haiku; bumped — see §3.8) |
+
+**Decision-team agents (referenced from §3.1–§3.5) — code names for fresh-agent grep**:
+
+`FundamentalsAnalystAgent`, `TechnicalAnalystAgent`, `NewsAnalystAgent`, `SentimentAnalystAgent`, `MacroAnalystAgent`, `PlanCritiqueAgent`, `ConcentrationAnalystAgent`, `TaxAnalystAgent`, `FXAnalystAgent` (capital `FX`! note that `argosy.orchestrator.flows.plan_synthesis` re-exports it as `FxAnalystAgent` for ergonomic test monkey-patching), `BullResearcherAgent`, `BearResearcherAgent`, `ResearcherFacilitatorAgent`, `TraderAgent`, `RiskOfficerAgent` (single class; `perspective` kwarg in {`aggressive`, `neutral`, `conservative`} selects voice), `RiskFacilitatorAgent`, `FundManagerAgent`.
+
+**FundManagerAgent dispatch** (Wave 2 C1 fix). `FundManagerAgent.build_prompt` dispatches on a `decision_kind` kwarg: `"trade_proposal"` (default) builds the per-trade green-light/block prompt, `"plan_revision"` builds the plan-level integrity prompt used by `plan_synthesis_flow` Phase 5. Output schema flips accordingly. Plan-amendment-chat large runs reuse `plan_revision`.
 
 ### 3.7 Cost shape
+
+**Per-trade decisions** (per §10.3 sequence; analyst → debate → trader → risk → fund-manager):
 
 | Decision tier | LLM calls per decision | Estimated cost |
 |---|---|---|
@@ -341,13 +352,28 @@ Run on their own cadences; not part of any decision team.
 | T2 — Material | ~15 | ~$2 |
 | T3 — Strategic | ~23 | ~$3-5 |
 
+**Plan-level work** (§6.11–§6.13):
+
+| Path | LLM shape | Estimated cost |
+|---|---|---|
+| Plan distillation (§6.10) | Single PlanDistillerAgent call (Sonnet) | ~$0.30 |
+| Full plan synthesis (§6.11; monthly_cycle / quarterly / annual / `/api/advisor/check-in`) | 9 analysts (parallel) + 3 horizon debates (parallel) + 1 synthesizer (Opus) + 3 risk perspectives + 1 fund-manager | ~$5–8 |
+| Amendment chat — small (§6.13) | None — applies advisor-emitted Delta inline | $0 marginal (advisor turn cost already paid) |
+| Amendment chat — medium (§6.13) | 1 PlanSynthesizerAgent call (Opus) only | ~$0.50 |
+| Amendment chat — large (§6.13) | Full synthesis path | ~$5–8 |
+
+A budget that absorbs one scheduled monthly synthesis plus 1–2 ad-hoc amendments lands at roughly $15–20/month of plan-synthesis spend. See `cost.monthly_budget_usd` in §A.2.
+
 ### 3.8 Model assignment policy
 
-Default model per agent role is configurable; user can override at any layer. The policy:
+Default model per agent role is configurable; user can override at any layer.
 
-- **Haiku** — deterministic formatting, RSI/MACD classification, sentiment scoring, watchlist maintenance
-- **Sonnet** — reasoned analyst reports, risk-officer assessments, routine plan-critique, intake interviews, facilitators
-- **Opus** — adversarial debate (bull/bear), trader synthesis under contradiction, fund-manager integrity check, plan-critique on RED flags, audit agent
+**Current defaults** (canonical source: `argosy.agents.base.DEFAULT_MODEL_BY_ROLE`):
+
+- **Sonnet** (`claude-sonnet-4-6`) — every analyst (fundamentals, technical, news, sentiment, macro, concentration, tax, fx), plan-critique, intake / intake_extractor, advisor (subclass of intake), researcher_facilitator, all three risk_officer perspectives, risk_facilitator, plan_distiller, domain_refresh, watchlist.
+- **Opus** (`claude-opus-4-7`) — bull_researcher, bear_researcher (adversarial debate), trader (synthesis under contradiction), fund_manager (final integrity check), audit (weekly post-mortem), plan_synthesizer (monthly/amendment Phase 3).
+
+**Why Haiku is no longer a default.** The original SDD policy slotted Haiku into deterministic formatting roles (technical, sentiment, watchlist, concentration, fx). In practice, Argosy's prompts are heavily structured (multi-question batched intake, citation-required analysts, JSON-schema-constrained outputs). Haiku's instruction-following ceiling could not reliably (a) honor "do not re-ask answered fields" given an explicit ALREADY-ANSWERED list, (b) emit yaml_patch entries that match the canonical key shape, (c) hold the batched-question structure without drift. Sonnet halves the number of turns in practice despite being 2–3× slower per turn, and the "accuracy over LLM cost" policy (memory: `feedback_accuracy_over_cost.md`) explicitly prefers it. Override to Haiku is still possible per-role via `agent_settings.yaml` for cost-sensitive tenants — the pricing entry is preserved in `APPROX_PRICING_USD_PER_MTOK` so historical agent_reports rows still cost-track correctly.
 
 Set `models.override: {all: opus}` in `agent_settings.yaml` for quality-first regardless of cost; or override per-role.
 
@@ -434,7 +460,7 @@ The orchestrator runs these loops independently. Each is a Python coroutine doin
 | **Monthly cycle** | 1st of month | Statement reconciliation; RSU vest pulled in; gap-weighted buy template; full plan critique re-run | Buy plan execution (T1-T3 depending on size); rebalance proposals (T2/T3); tax calendar items | Yes — fires `plan_synthesis_flow` (§6.11); produces a fresh `role='draft'` for user acceptance |
 | **Quarterly** | After quarter close | Real estate P&L update; bonus event ingest; plan-drift check vs targets | Plan revision proposal (T3) | Yes — quarterly synthesis (§6.11) with extra prompt weight on the medium horizon |
 | **Annual** | January 2nd | Tax filing prep; W-8BEN refresh prompt; insurance renewal; full domain re-verify | Plan re-formulation pass (T3); year-end TLH harvest (T2); 102-plan election deadline (T2) | Yes — annual synthesis (§6.11) with extra prompt weight on the long horizon |
-| **Ad-hoc** | On user signal | — | Anything user-initiated; tier auto-selected from size | On `POST /api/advisor/check-in` only (§6.11) |
+| **Ad-hoc** | On user signal | — | Anything user-initiated; tier auto-selected from size | On `POST /api/advisor/check-in` (full 5-phase synthesis, §6.11) and on `POST /api/advisor/turn` carrying an amendment intent (§6.13 — Small applies inline; Medium runs Phase 3 only; Large dispatches full synthesis with the user's message as `guidance`). |
 
 ### 5.2 Loop coordination rules
 
@@ -791,8 +817,31 @@ fresh draft. Single user, single in-flight draft.
 `HorizonSection` JSON payloads (`horizon_long_json`,
 `horizon_medium_json`, `horizon_short_json`) plus pre-rendered markdown
 views. Lineage via `derived_from_id` (-> baseline) and `decision_run_id`
-(-> the `decision_runs` row tying every analyst/debate/risk/FM call
-together for audit reconstruction).
+(an *Integer FK* -> the `decision_runs` row).
+
+**Audit lineage is real, not fictional** (Wave 2 fix C2). At the start
+of `run_synthesis(...)`, the orchestrator opens an actual
+`DecisionRun` row with `decision_kind='plan_revision'`, `ticker='(plan)'`,
+`tier='T3'`, and `status='running'`. Phase 1–5 helpers receive a
+string audit token (`f"plan-synth-{decision_run_id}"`) for
+`agent_reports.decision_id` (which is a String column) — the integer PK
+is what gets persisted on `PlanVersion.decision_run_id` and
+`Proposal.decision_run_id`. On completion the row is stamped
+`finished_at` + `status='completed'`. A new agent reading the SDD
+should be able to reconstruct any synthesis by joining
+`plan_versions.decision_run_id → decision_runs.id` and following the
+audit token through `agent_reports.decision_id` to recover every
+analyst / debate / risk / FM call.
+
+**Lineage hand-off** (Wave 4 I1 fix). `run_synthesis` accepts an
+optional `existing_decision_run_id: int | None` parameter. When set,
+the function reuses the caller's `DecisionRun` row instead of opening
+a fresh one — used by the plan-amendment-chat large worker (§6.13) so
+the chain "chat-turn → DecisionRun → draft" is one row, not two
+unrelated rows tied together by convention. When `existing_decision_run_id`
+is set, `run_synthesis` *skips* stamping `finished_at`/`status='completed'`
+on the row — the caller owns the lifecycle and may need to re-check
+cancellation between synthesis-end and the completed stamp.
 
 **Authority framing.** Every plan-touching agent imports the shared
 `AUTHORITY_DISCLAIMER` from `argosy/agents/_plan_authority.py`. The
@@ -859,51 +908,120 @@ Between scheduled syntheses, the user can ask the advisor in chat for a
 structural plan change. The advisor classifies the request as `small`,
 `medium`, or `large` and dispatches accordingly.
 
+**Code surface.**
+
+- `argosy/orchestrator/flows/plan_amendment/` — package with `classifier.py`
+  (pure logic, no LLM), `dispatcher.py` (`run_small`, `dispatch_async`,
+  `cancel`, `_spawn_worker`), `workers.py` (`_medium_worker`,
+  `_large_worker`, `_run_phase_3_synthesizer`), and `_types.py`
+  (`ClassificationResult`, `EffectiveTier`).
+- `argosy/agents/advisor_amendment_types.py` — `AmendmentIntent` (the
+  advisor's structured turn-output sub-field) and `AmendmentResultDTO`
+  (the route response shape).
+
+**Advisor LLM gate** (Wave 4 fix C1). The `/api/advisor/turn` route only
+asks the advisor to perform amendment-intent detection when the user
+already has a `role='current'` plan to amend — the route threads
+`has_current_plan: bool` into `AdvisorAgent.run(...)`. Without this
+gate, the dispatcher path is dead code: the LLM never sees the
+classification instructions and never emits an `amendment` field.
+
 **Tiers:**
 
 - **small** (~5s, inline) — strict-tightening Delta on one specific target/
   action/theme. Direction must reduce risk surface (lower cap, raise floor,
   shorten horizon, narrower drawdown). The advisor emits a fully-formed
-  `Delta` in its turn output; the dispatcher applies it to the existing
-  pending draft (or to a new minimal draft seeded from `current`).
+  `Delta` in its turn output; the dispatcher (`run_small`) applies it to
+  the existing pending draft (or to a new minimal draft seeded from
+  `current`). The classifier escalates to medium if `direction != "tighten"`
+  or `proposed_delta is None`. The dispatcher additionally validates
+  numeric tightening direction — for cap/max/ceiling/limit/ratio/threshold
+  kinds the proposed value must be `<` prior; for floor/min kinds the
+  proposed value must be `>` prior.
 - **medium** (~30s, async) — theme shift on one horizon, multi-target
   tweak, loosening, or anything that needs cross-target reasoning. Runs
-  Phase 3 of `plan_synthesis_flow` only — the synthesizer with the user's
-  message as `guidance`. Skips analysts/debate/risk/FM phases. Cost ~$0.50.
+  Phase 3 of `plan_synthesis_flow` only — `_run_phase_3_synthesizer`
+  (an indirection seam in `workers.py` so tests can monkeypatch) calls
+  `PlanSynthesizerAgent.run_sync(...)` with the user's message as the
+  guidance bullet. Skips analysts/debate/risk/FM phases. Cost ~$0.50.
 - **large** (~15 min, async) — structural rethink, "re-evaluate everything",
-  cross-horizon. Runs the full 5-phase `plan_synthesis_flow.run_synthesis(...)`
-  with `trigger="check_in"` and the user's message as `guidance`. Functionally
-  equivalent to `POST /api/advisor/check-in`.
+  cross-horizon. `_large_worker` calls `run_synthesis(...,
+  trigger="check_in", guidance=<user_message>,
+  existing_decision_run_id=<run.id>)`. Functionally equivalent to
+  `POST /api/advisor/check-in`, but the existing-decision-run-id wiring
+  (Wave 4 I1 fix) keeps audit lineage on a single row instead of opening
+  a second orphan one.
 
-**Async UX.** Medium and Large dispatch a worker on `asyncio.to_thread`,
-return `202` to the chat with `decision_run_id` + `eta_seconds`, and emit
-`plan.amendment.completed` (plus `plan.draft.completed` for Large) when
-done. The advisor page shows a status pill while the run is in flight and
-fires a browser-level Web Notification on completion (opt-in; in-app
-banner is the always-on fallback).
+**API contract.**
+
+- Request: the existing `POST /api/advisor/turn` request shape — no new
+  field. The advisor's structured turn output gains an `amendment:
+  AmendmentIntent | None` field.
+- `AmendmentIntent` fields: `tier: "small"|"medium"|"large"`,
+  `direction: "tighten"|"loosen"|"ambiguous"|None`,
+  `proposed_delta: Delta | None`, `rationale: str`,
+  `requires_confirmation: bool`, `cancel_existing: bool`. The
+  `cancel_existing` field is set by the route layer when the user has
+  explicitly answered "yes, cancel and restart" in a prior chat turn —
+  it tells the dispatcher to cancel any in-flight amendment for this
+  user before opening a new one (instead of returning
+  `needs_confirmation`).
+- Response: `AdvisorTurnResponse.amendment: AmendmentResultDTO | None`
+  with `status in {"applied","running","needs_confirmation","cancelled_existing"}`,
+  `decision_run_id: int`, optional `draft_id: int`, optional
+  `eta_seconds: int`.
+- Cancellation route: `POST /api/advisor/amendment/{decision_run_id}/cancel`.
+  404 when the run doesn't exist / isn't owned / isn't a
+  plan-amendment-chat run; 409 when not in `running` status.
+
+**Async UX.** Medium and Large dispatch a worker on a daemon thread (via
+`_spawn_worker`, which builds a fresh sync session from the engine —
+the calling thread's session is bound to its own thread), return `202`
+to the chat with `decision_run_id` + `eta_seconds`, and emit
+`plan.amendment.started` immediately, `plan.amendment.completed` (plus
+`plan.draft.completed` for Large) on success, `plan.amendment.failed`
+on exception, or `plan.amendment.cancelled` if cancellation lands
+mid-run. The advisor page shows a status pill while the run is in
+flight and fires a browser-level Web Notification on completion
+(opt-in; in-app banner is the always-on fallback).
 
 **Concurrency.** One in-flight async amendment per user, enforced by the
 partial unique index `ix_decision_runs_one_amendment_running_per_user`
-(migration 0018). A second amendment while one is running returns
-`needs_confirmation` so the chat asks the user to cancel-and-restart vs
-queue.
+(migration 0018) over rows where
+`decision_kind='plan_amendment_chat' AND status='running'`. A second
+amendment while one is running returns `status='needs_confirmation'`
+when `cancel_existing=False`. If two concurrent dispatch calls both
+pass the in-Python existence check, the partial index makes the loser
+raise `IntegrityError`; the dispatcher catches it, refetches the
+surviving running row, and degrades to `needs_confirmation` so user-
+facing semantics match.
 
 **Cancellation.** `POST /api/advisor/amendment/{decision_run_id}/cancel`
-flips the row to `status='cancelled'`. Workers check status before and
-after each major step (start, mid-synthesis re-check) and bail. Mid-LLM
-cancellation is best-effort: an in-flight model call finishes before the
-worker re-checks status. If a Large run is cancelled while Phase 3+
-synthesis is already running, the synthesis-produced draft is left in
-place for forensic recovery rather than rolled back; the DecisionRun
-keeps its `cancelled` status and the UI does not surface the draft.
-(Future: explicitly demote the partial draft to `role='superseded'`.)
+flips the row to `status='cancelled'`. Workers check status before
+each major step (pre-start, mid-synthesis re-check, pre-persist) and
+bail. Mid-LLM cancellation is best-effort: an in-flight model call
+finishes before the worker re-checks status. If a Large run is
+cancelled while Phase 3+ synthesis is already running, the
+synthesis-produced draft is left in place for forensic recovery rather
+than rolled back; the DecisionRun keeps its `cancelled` status and the
+UI does not surface the draft. (Future: explicitly demote the partial
+draft to `role='superseded'` — see §15.4.)
 
 **Audit lineage.** Each amendment opens a `decision_runs` row with
 `decision_kind='plan_amendment_chat'` and `tier in {small,medium,large}`.
 The `decision_runs.tier` column is shared across kinds: T0/T3 for
 trade-flow rows, small/medium/large for amendment-chat rows; `decision_kind`
 discriminates (migration 0018 widened `tier` to `String(8)` and made it
-nullable to accommodate both vocabularies). The resulting `plan_versions`
+nullable to accommodate both vocabularies). The free-form `notes_json`
+column persists `{"message": <user text>, "intent": <AmendmentIntent
+JSON>}` so failed runs can be replayed for debugging; on failure, the
+worker merges `{"error": str(exc)}` into existing notes rather than
+clobbering the message+intent (Wave 4 fix I2).
+
+For Large, the lineage `chat-turn → DecisionRun → draft` is *one row*
+because the worker passes `existing_decision_run_id=run.id` into
+`run_synthesis` (Wave 4 fix I1). For Medium, the worker writes the draft
+directly with `decision_run_id=run.id`. The resulting `plan_versions`
 row carries `decision_run_id` for end-to-end traceability — chat-turn →
 DecisionRun → draft → (after accept) current.
 
@@ -1157,6 +1275,38 @@ Alembic, linear chain. Each revision is small and rollback-tested.
 | `0014_investor_events_dedup` | Add `unique_key` column + `UniqueConstraint(user_id, source, unique_key)` for idempotent persistence; backfill mirrors the keying logic in `argosy.state.queries._unique_key` |
 | `0015_plan_versions_lifecycle` | `plan_versions.role` + acceptance/lineage columns; `decision_runs.decision_kind`; partial unique indexes (one baseline/current/draft per user) |
 | `0016_plan_versions_distillate` | `plan_versions.{distillate_json,distillate_rendered,source_hash,distilled_at}` (Wave 1 of plan-distillate work) |
+| `0017_plan_versions_synthesis` | `plan_versions.{horizon_long_json, horizon_medium_json, horizon_short_json, horizon_long_md, horizon_medium_md, horizon_short_md, synthesis_inputs_json}` for synthesized rows (role in {draft, current, superseded}); baseline rows leave these NULL (Wave 2 of plan-distillate work) |
+| `0018_decision_runs_amendment` | Widens `decision_runs.tier` from `String(4)` NOT NULL to `String(8)` nullable so the column can carry either trade-tier sentinels (`T0`/`T3`) or amendment-tier values (`small`/`medium`/`large`); `decision_kind` discriminates. Adds `decision_runs.notes_json` for free-form replay payloads. Creates partial unique index `ix_decision_runs_one_amendment_running_per_user` (`decision_kind='plan_amendment_chat' AND status='running'`) so a second concurrent amendment per user is rejected at DB level (Wave 4 of plan-distillate work) |
+
+### 8.6 Decision audit lineage
+
+Every "decision" (per-trade or plan-level) hangs off one `decision_runs` row. This subsection shows the joins a fresh agent needs to reconstruct any decision end-to-end.
+
+**The four lineage anchors:**
+
+```
+decision_runs (id, decision_kind, tier, status, started_at, finished_at, notes_json)
+   ├── agent_reports.decision_id  (String FK; written as "plan-synth-{decision_run_id}" or "T<tier>-{decision_run_id}")
+   ├── plan_versions.decision_run_id  (Integer FK; populated for role in {draft, current, superseded})
+   └── proposals.decision_run_id  (Integer FK; populated for trade-flow proposals AND speculation-origin proposals via Wave 4 fix I1)
+```
+
+**`decision_kind` discriminator** (added by migration 0015, extended by 0018):
+
+| `decision_kind` | What it represents | `tier` values | Where it's opened |
+|---|---|---|---|
+| `trade_proposal` (default) | Per-trade decision flow (analyst → debate → trader → risk → fund-manager) | `T0`, `T1`, `T2`, `T3` | `argosy.decisions.flow.DecisionFlow` |
+| `plan_revision` | Full 5-phase plan synthesis (§6.11) | `T3` (sentinel — synthesis is always treated as strategic) | `argosy.orchestrator.flows.plan_synthesis.run_synthesis` |
+| `plan_amendment_chat` | Wave 4 chat-driven amendment (§6.13) | `small`, `medium`, `large` | `argosy.orchestrator.flows.plan_amendment.dispatcher.{run_small, dispatch_async}` |
+
+**Reconstruction recipes:**
+
+- **"Show me every Claude call from one synthesis"**: `SELECT * FROM agent_reports WHERE decision_id = 'plan-synth-{decision_run_id}'`. The integer is `decision_runs.id`.
+- **"Show me every fill that came from one synthesis"**: `decision_runs.id → plan_versions.decision_run_id → (after accept) plan_versions.role='current' → speculation_router → proposals.decision_run_id → fills.proposal_id`.
+- **"Show me what an amendment chat-turn produced"**: `decision_runs WHERE decision_kind='plan_amendment_chat'` → for Small, the affected draft has `decision_run_id=<run.id>`; for Medium/Large, the resulting draft also has `decision_run_id=<run.id>` (Wave 4 fix I1 ensures no orphaning). Replay: `decision_runs.notes_json` contains `{"message", "intent"}`.
+- **"Show me the speculation lineage"**: a routed speculative proposal carries `proposals.decision_run_id` pointing back to the synthesis run that emitted the candidate (Wave 3 layer-2 + Wave 4 I1 wiring) — so even though the speculation router takes a sync short-circuit past `DecisionFlow`, the audit trail still resolves.
+
+**Wave 4 I1 fix** (`existing_decision_run_id` parameter on `run_synthesis`). The plan-amendment-chat large worker passes its own `DecisionRun.id` into `run_synthesis(...)` so the chat-turn → DecisionRun → draft chain is one row, not two unrelated rows tied together by convention. When `existing_decision_run_id` is set, `run_synthesis` skips stamping `finished_at`/`status='completed'` — the calling worker owns the lifecycle and may need to re-check cancellation between synthesis-end and the completed stamp.
 
 ---
 
@@ -1374,23 +1524,39 @@ Header carries a `Headphones` avatar, the time-of-day greeting headline, and a "
 
 ### 11.3 WebSocket events
 
-```
-proposal.created      proposal.updated      proposal.executed
-agent.report.created  agent.run.started     agent.run.finished
-alert.created         alert.cleared
-position.updated      account.balance.changed
-price.updated         (throttled, visible-tickers only)
-plan.critique.updated cadence.tick.fired
-plan.draft.started        plan.draft.completed
-plan.draft.delta.accepted plan.draft.delta.edited
-plan.draft.accepted       plan.draft.rejected
-plan.current.changed
-plan.speculative.routed   plan.synthesis.cap_load_failed
-plan.amendment.started      plan.amendment.completed
-plan.amendment.failed       plan.amendment.cancelled
-```
+Mounted at `/ws`; canonical pub/sub at `argosy.api.events`. `publish_event` is the async API; `publish_event_threadsafe` (Wave 2 fix I3) is the sync→async bridge that synthesis / amendment workers (running on `asyncio.to_thread` daemon threads) use to schedule onto the captured main loop.
 
-Frontend subscribes selectively per screen: Proposals queue subscribes to `proposal.*`; Portfolio subscribes to `position.*` and `price.*` for visible tickers; etc.
+**Currently emitted:**
+
+| Event | Emitter | Payload (selected) |
+|---|---|---|
+| `proposal.created` | `decisions.flow.DecisionFlow` | `proposal_id`, `tier`, `ticker` |
+| `proposal.updated` | `api/routes/proposals.py`, `loops/process_cooling.py` | `proposal_id`, `status` |
+| `proposal.executed` | `execution/router.py` | `proposal_id`, `paper`, `fill_id` |
+| `agent.run.finished` | `api/routes/plan.py` (critique queue) | `agent_role`, `decision_run_id` |
+| `daily_brief.ready` | `loops/daily_brief.py` | `brief_id`, `user_id`, `run_at` |
+| `monthly_cycle.completed` | `loops/monthly_cycle.py` | `user_id`, `run_at`, `critique_summary` |
+| `quarterly.prompt`, `annual.prompt` | `loops/{quarterly,annual}.py` | `user_id` |
+| `weekly_review.flagged` | `loops/weekly_review.py` | `user_id`, `flags` |
+| `audit.findings` | `loops/audit.py` | `user_id`, `findings_count` |
+| `watchlist.updated` | `loops/watchlist.py` | `user_id`, `tickers_added`, `tickers_removed` |
+| `argonaut.mode_changed` | `api/routes/argonaut.py` | `user_id`, `mode` |
+| `plan.draft.started`, `plan.draft.completed` | `flows/plan_synthesis/orchestrator.py` (and large amendment via worker) | `user_id`, `trigger` / `draft_id` |
+| `plan.draft.accepted`, `plan.draft.rejected` | `api/routes/plan.py` | `user_id`, `draft_id` |
+| `plan.draft.delta.accepted`, `plan.draft.delta.edited` | `api/routes/plan.py` | `user_id`, `draft_id`, `item_id` |
+| `plan.current.changed` | `api/routes/plan.py` (on accept) | `user_id`, `current_id` |
+| `plan.speculative.routed` | `orchestrator/speculation_router.py` | `user_id`, `ticker`, `proposal_id`, `paper` |
+| `plan.synthesis.cap_load_failed` | `flows/plan_synthesis/orchestrator.py` | `user_id`, `error` |
+| `plan.amendment.started` | `flows/plan_amendment/workers.py` (medium/large) | `user_id`, `decision_run_id`, `tier`, `eta_seconds` |
+| `plan.amendment.completed` | `flows/plan_amendment/{dispatcher,workers}.py` | `user_id`, `decision_run_id`, `tier`, `draft_id` |
+| `plan.amendment.failed` | `flows/plan_amendment/{dispatcher,workers}.py` | `user_id`, `decision_run_id`, `tier`, `error` |
+| `plan.amendment.cancelled` | `flows/plan_amendment/dispatcher.py` (cancel + race), workers (cancel-during-run) | `user_id`, `decision_run_id`, `tier` |
+
+**Documented but not yet emitted** (placeholder names in `argosy.api.events` docstring; reserved for Phase-N expansion):
+
+`agent.report.created`, `agent.run.started`, `alert.created`, `alert.cleared`, `position.updated`, `account.balance.changed`, `price.updated` (throttled, visible-tickers only), `plan.critique.updated`, `cadence.tick.fired`.
+
+Frontend subscribes selectively per screen: Proposals queue subscribes to `proposal.*`; Portfolio subscribes to `position.*` and `price.*` for visible tickers; the Advisor page subscribes to `plan.*` for amendment + draft updates; etc.
 
 ### 11.4 Component inventory (shadcn/ui)
 
@@ -1477,6 +1643,79 @@ sequenceDiagram
 6. **Why each turn is a fresh subprocess:** simplicity and crash-isolation. A long-lived `claude.exe` would be cheaper but harder to reason about across restart, kill switch, and per-tenant isolation. The cost difference (~500 ms subprocess startup × number of turns) is negligible relative to the LLM call latency.
 
 The same pattern applies to every other agent in the fleet — only the prompt content and pydantic schema differ. The IPC plumbing is shared.
+
+### 11.7 REST API surface
+
+All routes mount under `/api` (canonical source: `argosy.api.main.create_app`). Healthcheck is mounted twice — at `/health` (no prefix, for ops probes) and `/api/health` (so the same path works through the Next.js proxy). Internal routes live under `/api/internal` and are deliberately *not* exposed in the main UI.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health`, `/api/health` | Liveness probe; returns version + DB connectivity. |
+| GET | `/api/internal/health/full` | Internal-only deep healthcheck (engine status, cost guard, broker session, last cadence ticks). |
+| POST | `/api/internal/telemetry` | Internal telemetry sink (opt-in; off by default). |
+| GET | `/api/internal/cost-guard` | Internal cost-guard status JSON. |
+| **Intake (legacy; persistent)** | | |
+| POST | `/api/intake/turn` | Drive one intake turn. Backwards-compat shim — delegates persistence to the same `_persist_turn` helper as `/advisor/turn`. |
+| POST | `/api/intake/upload` | Upload a doc (plan markdown, statement, etc.); routes to `IntakeExtractorAgent` (or `PlanDistillerAgent` for plan markdown — see §6.10). |
+| GET | `/api/intake/status` | Current intake stage + completion summary. |
+| POST | `/api/intake/file-to-text` | Lightweight file → text conversion (pdf/docx → markdown) used by upload. |
+| **Advisor (post-Phase-1 reframe)** | | |
+| POST | `/api/advisor/turn` | Drive one advisor turn (gap_driven or user_driven). Wave 4: response carries `amendment: AmendmentResultDTO \| None` when the user's message was classified as a plan-change request. The route threads `has_current_plan: bool` into the agent so the LLM only does amendment-classification when there's a current plan to amend (Wave 4 fix C1). |
+| GET | `/api/advisor/gaps` | Returns the full `GapStatus` (fresh / stale / missing per field) for the sidebar. |
+| GET | `/api/advisor/home-brief` | Three-bullet glance card composed from cached state (gap, portfolio, signal). No new LLM call. Per-user 30-min `kv_cache` (`CacheKind.UI`, `provider="advisor_home_brief"`). |
+| POST | `/api/advisor/check-in` | User-initiated full plan synthesis (§6.11). 202; returns `decision_run_id` + `draft_id`. 404 when no active baseline. |
+| POST | `/api/advisor/amendment/{decision_run_id}/cancel` | Cancel a running plan-amendment-chat run (§6.13). 404 / 409 per §6.13. |
+| **Plan** | | |
+| GET | `/api/plan/current` | Latest `plan_versions` row (legacy shape — by `imported_at DESC`). |
+| GET | `/api/plan/current/structured` | Structured-DTO view of the user's `role='current'` plan with rendered horizon markdown. |
+| POST | `/api/plan/critique` | Queue a plan-critique re-run; returns 202. |
+| GET | `/api/plan/baseline` | Returns the active baseline + distillate JSON + rendered MD (§6.10). |
+| POST | `/api/plan/baseline/distill` | Manual re-distill (`preserve_user_edits=true` by default). |
+| PATCH | `/api/plan/baseline/distillate/{category}/{item_label}` | Apply a user edit to one distillate item; sets `user_edited=true` (§6.10). |
+| GET | `/api/plan/draft` | Returns the user's `role='draft'` plan if any. |
+| POST | `/api/plan/draft/{draft_id}/accept` | Promote draft to `role='current'`; demotes prior current to `role='superseded'`. |
+| POST | `/api/plan/draft/{draft_id}/reject` | Reject the entire draft; emits `plan.draft.rejected`. |
+| POST | `/api/plan/draft/{draft_id}/items/{item_id}/accept` | Accept one delta inline; emits `plan.draft.delta.accepted`. |
+| PATCH | `/api/plan/draft/{draft_id}/items/{item_id}` | Edit one delta; emits `plan.draft.delta.edited`. |
+| POST | `/api/plan/current/speculative/{ticker}/take` | Accept a speculative candidate from `current.short` and route it to Argonaut (§6.12). |
+| **Decisions** | | |
+| POST | `/api/decisions/run` | Manually fire a decision flow (admin/dev). |
+| **Proposals** | | |
+| GET | `/api/proposals` | List proposals (filterable by status / tier / account / ticker / date). |
+| GET | `/api/proposals/{id}` | One proposal with full reasoning trail. |
+| POST | `/api/proposals/{id}/approve` | Approve (single-click for T0/T1, requires 2nd factor for T3 live). |
+| POST | `/api/proposals/{id}/reject` | Reject + reason. |
+| POST | `/api/proposals/{id}/escalate-tier` | Manual tier escalation. |
+| **Execution** (no `/execution` prefix in the route — registered at `/api/...`) | | |
+| POST | `/api/proposals/{id}/execute` | Drive `ExecutionRouter`. Not on the main UI — proposals page wires it. |
+| GET | `/api/proposals/{id}/approve` | Email-link landing endpoint (token-gated; redirects to dashboard). |
+| GET | `/api/lots` | List lots (filterable). |
+| GET | `/api/fills` | List fills (filterable). |
+| GET | `/api/audit` | List audit-log rows (filterable). |
+| **Argonaut** (limited account) | | |
+| GET | `/api/argonaut/status` | Limited-account status (P&L, mode, last fill). |
+| GET | `/api/argonaut/snapshots` | P&L snapshot history. |
+| POST | `/api/argonaut/mode` | Toggle paper/live/queue_only with confirmation. |
+| POST | `/api/argonaut/snapshot` | Manually record an Argonaut snapshot row. |
+| GET | `/api/argonaut/trades` | Recent trades (incl. paper fills). |
+| **Portfolio / brief / agents / domain KB / settings / branding / onboarding / security** | | |
+| GET | `/api/portfolio/snapshot` | Positions per account + drift indicator. |
+| GET | `/api/daily-brief/latest` | Most-recent DailyBrief row (or null). |
+| GET | `/api/agent-activity` | Live timeline of agent invocations + cost. |
+| GET | `/api/domain-kb/tree` | Tree of `domain_knowledge/`. |
+| GET | `/api/domain-kb/file` | One file's content + frontmatter. |
+| GET | `/api/domain-kb/review-queue` | Refresh-agent's pending review items. |
+| POST | `/api/domain-kb/review/{item_id}/approve` | Apply a refresh-agent proposed update. |
+| POST | `/api/domain-kb/review/{item_id}/reject` | Reject a refresh-agent proposed update. |
+| GET | `/api/settings` | Returns the user's `agent_settings.yaml` parsed. |
+| PATCH | `/api/settings` | Partial update of agent settings. |
+| GET | `/api/branding` | Per-user branding (logo, theme tokens). |
+| POST | `/api/onboarding/redeem` | Redeem a setup token (productization Phase 6+). |
+| POST | `/api/security/totp/setup` | Begin TOTP enrollment. |
+| POST | `/api/security/totp/verify` | Verify a TOTP code (T3 live second-factor). |
+| GET | `/api/security/totp/status` | Whether the user has TOTP configured. |
+
+WebSocket: `/ws` — see §11.3 for the event inventory.
 
 ---
 
@@ -1746,6 +1985,21 @@ These are deferred from the design phase. Each carries a status, an owner phase 
 - **Paper mode != live**: paper fills can pass when real fills wouldn't (price moved, liquidity gone). Acknowledged; this is why we soak.
 - **The agent fleet won't beat a buy-and-hold of an index over the long run.** That's not the goal. Goal: disciplined plan execution + concentration reduction + tax efficiency + audit trail. Alpha is a bonus.
 - **Single point of failure (the user's machine)** until productization. The user is the SRE; backup discipline is the protection.
+
+### 15.4 Out of scope / known limitations
+
+Items deliberately deferred — listed here so a fresh agent doesn't waste cycles trying to "fix" things that are scoped out by design.
+
+- **Multi-user concurrency.** Phase 1 is single-user (`ariel`); the engine, FastAPI bind, and approval flow assume one tenant. Productization Phase 6 lifts this — see §12.
+- **Multi-user user-scoping filter on home/proposals.** Latent: the home and proposals pages don't yet filter by `user_id` query param at every layer; the advisor page does. A multi-tenant deployment will need an audit pass to close this gap before going live.
+- **Browser-notification visibility gating.** When the user has multiple Argosy tabs open, all of them fire Web Notifications on `plan.amendment.completed`. Acceptable as-is; the Page Visibility API gating is deferred.
+- **Plan amendment multi-turn refinement.** Wave 4 ships single-shot amendments: the user says "lower the NVDA cap to 5%" and the system either tightens (Small) or runs synthesis (Medium/Large). Multi-turn back-and-forth ("now also shorten the horizon", "no, undo that last one") is not modeled — each turn opens a fresh `DecisionRun`.
+- **Mid-Phase-X cancellation granularity for Large amendments.** When a Large amendment is cancelled mid-synthesis, the worker bails at the next status re-check. If synthesis (Phase 3+) has already produced a draft when cancellation lands, the draft is left in place for forensic recovery — the DecisionRun keeps `cancelled` status and the UI does not surface the draft, but the partial draft is *not* explicitly demoted to `role='superseded'`. A future iteration will rollback the partial draft cleanly.
+- **Per-Phase cancellation telemetry.** Workers don't currently emit a "cancelled at Phase N of 5" event; the UI only sees the final `plan.amendment.cancelled`. Useful for ops dashboards; not essential for the chat surface.
+- **Argonaut Phase 5 paper soak duration.** Spec says 4 weeks (§13.0). Not a constraint on the SDD itself; called out as a known schedule item.
+- **Manual UI smokes deliberately skipped.** Per user instruction, the harness does not run manual UI smoke tests during automated waves. The Wave 4 e2e Playwright scaffold exists but has not been executed live; the Wave 2 e2e LLM eval is the latest empirically-passing run.
+- **Live LLM evals beyond Wave 2's e2e.** Wave 3 / Wave 4 e2e LLM evals are not yet wired into CI. The unit + structural tests assert the plumbing; the live LLM smoke is human-driven for now.
+- **Two proposal-creation paths.** Speculation-origin proposals use the synchronous `argosy/orchestrator/proposal_lifecycle.py::create_speculative_proposal` helper because the synthesizer has already chosen ticker/size/exit. Trade-flow proposals (analyst → trader → fund-manager pipeline) use the full async `DecisionFlow._persist_proposal`. Consolidation is deferred until the sync helper grows enough features to justify the merge — see §6.12.
 
 ---
 
