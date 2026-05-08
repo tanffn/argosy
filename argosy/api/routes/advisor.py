@@ -14,12 +14,14 @@ The two routes share the persist + auto-advance logic via the
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
@@ -361,13 +363,38 @@ async def post_turn(
         from uuid import uuid4 as _u4
 
         form = await request.form()
+
+        # Wave 5 review M2: scalar fields must arrive as strings. If a
+        # caller misuses the form and sends an UploadFile under one of
+        # these names, `str(UploadFile)` would yield "<starlette.UploadFile
+        # object>" and the route would happily run the agent against
+        # garbage. Reject up front with a 422.
+        def _scalar(field: str, *, required: bool = False) -> str | None:
+            if field not in form:
+                if required:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"missing form field: {field!r}",
+                    )
+                return None
+            v = form[field]
+            if not isinstance(v, str):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"form field {field!r} must be a string, got "
+                        f"{type(v).__name__}"
+                    ),
+                )
+            return v
+
         # Form fields: same names as AdvisorTurnRequest.
         req = AdvisorTurnRequest(
-            user_id=str(form.get("user_id") or "ariel"),
-            last_user_message=str(form.get("last_user_message") or ""),
-            history_excerpt=str(form.get("history_excerpt") or ""),
-            current_stage=(str(form["current_stage"]) if "current_stage" in form else None),
-            target_field=(str(form["target_field"]) if "target_field" in form else None),
+            user_id=_scalar("user_id") or "ariel",
+            last_user_message=_scalar("last_user_message") or "",
+            history_excerpt=_scalar("history_excerpt") or "",
+            current_stage=_scalar("current_stage"),
+            target_field=_scalar("target_field"),
         )
         # Collect any UploadFile values under any of the conventional keys.
         uploads = []
@@ -379,8 +406,24 @@ async def post_turn(
                 user_id=req.user_id, turn_uuid=turn_uuid, uploads=uploads,
             )
     else:
-        body = await request.json()
-        req = AdvisorTurnRequest(**body)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"invalid JSON body: {exc.msg} at line {exc.lineno} col {exc.colno}",
+            ) from exc
+        if not isinstance(body, dict):
+            # Syntactically-valid JSON that isn't an object (null, list, string,
+            # number) would crash `Model(**body)` with a TypeError. Treat as 422.
+            raise HTTPException(
+                status_code=422,
+                detail=f"JSON body must be an object, got {type(body).__name__}",
+            )
+        try:
+            req = AdvisorTurnRequest(**body)
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
     return await _run_turn(
         req=req,
@@ -399,24 +442,23 @@ async def _maybe_ingest_plan_attachments(
     """If any text attachment looks like a wealth plan, persist it as a
     role='baseline' PlanVersion and schedule background distillation.
 
-    Plan-shape heuristic: markdown/text extension OR content > 500 chars.
+    Plan-shape heuristic: markdown extension only (`.md` / `.markdown`).
+    Wave 5 review I2 tightened this: the prior `OR size > 500` clause
+    silently promoted any long pasted `.txt` (a forwarded email, a chat
+    log, a long question) to the user's wealth-plan baseline. Restricting
+    to markdown extensions makes the promotion intent explicit while still
+    appending the file content to the user's message in `_run_turn` so
+    the agent can answer questions about it.
+
     Existing baselines for this user are demoted to role='superseded'
     so the most recent upload is authoritative. The distillation runs as
     a FastAPI BackgroundTask so the chat response returns immediately;
     the UI's draft-pending banner will surface the result on next refresh.
     """
-    from datetime import datetime, timezone
-    from pathlib import Path as _Path
-
-    plan_like = []
-    for ta in text_attachments:
-        ext = _Path(ta.original_name).suffix.lower()
-        try:
-            sz = _Path(ta.path).stat().st_size
-        except Exception:  # noqa: BLE001
-            sz = 0
-        if ext in {".md", ".markdown"} or sz > 500:
-            plan_like.append(ta)
+    plan_like = [
+        ta for ta in text_attachments
+        if Path(ta.original_name).suffix.lower() in {".md", ".markdown"}
+    ]
 
     if not plan_like:
         return
@@ -432,7 +474,7 @@ async def _maybe_ingest_plan_attachments(
                 )
             )
         ).scalars().all()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for prior_pv in prior:
             prior_pv.role = "superseded"
             prior_pv.superseded_at = now
@@ -440,7 +482,7 @@ async def _maybe_ingest_plan_attachments(
         new_ids: list[int] = []
         for ta in plan_like:
             try:
-                content = _Path(ta.path).read_text(encoding="utf-8", errors="replace")
+                content = Path(ta.path).read_text(encoding="utf-8", errors="replace")
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
                     "chat_upload.read_failed",
@@ -449,7 +491,7 @@ async def _maybe_ingest_plan_attachments(
                 continue
             label = (
                 f"chat_upload_{now.strftime('%Y%m%dT%H%M%SZ')}_"
-                f"{_Path(ta.original_name).stem[:40]}"
+                f"{Path(ta.original_name).stem[:40]}"
             )
             pv = PlanVersion(
                 user_id=user_id,
@@ -596,12 +638,10 @@ async def _run_turn(
 
     effective_message = req.last_user_message
     if text_attachments:
-        from pathlib import Path as _Path
-
         appended = []
         for ta in text_attachments:
             try:
-                content = _Path(ta.path).read_text(encoding="utf-8", errors="replace")
+                content = Path(ta.path).read_text(encoding="utf-8", errors="replace")
             except Exception as exc:  # noqa: BLE001
                 content = f"(could not read attachment: {exc})"
             appended.append(
@@ -730,9 +770,12 @@ async def _run_turn(
             amendment_dto = None
 
     # Wave 5: if any text attachment looks like a wealth plan (markdown
-    # extension OR > 500 chars), persist it as a baseline PlanVersion and
-    # schedule background distillation. Existing baselines for this user
-    # are demoted to 'superseded' so the new file becomes authoritative.
+    # extension only — `.md` / `.markdown`), persist it as a baseline
+    # PlanVersion and schedule background distillation. Existing baselines
+    # for this user are demoted to 'superseded' so the new file becomes
+    # authoritative. The "or size > 500" clause was dropped in the post-
+    # Wave-5 review (I2) — it silently overwrote baselines on long .txt
+    # uploads. See `_maybe_ingest_plan_attachments` docstring.
     if text_attachments:
         await _maybe_ingest_plan_attachments(
             user_id=req.user_id,

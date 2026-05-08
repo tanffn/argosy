@@ -325,3 +325,157 @@ async def test_turn_multipart_rejects_pdf_with_415(client_with_db):
         assert r.status_code == 415, r.text
     finally:
         adv.reset_advisor_agent_factory()
+
+
+def test_turn_json_malformed_returns_422(client_with_db):
+    """Wave 5 review I3: malformed JSON body must surface a 422, not a 500.
+
+    Pre-fix the route did `body = await request.json(); req = Model(**body)`
+    with no error handler, so a syntactically broken body propagated to
+    FastAPI's generic 500.
+    """
+    r = client_with_db.post(
+        "/api/advisor/turn",
+        content=b"{not valid json",
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_turn_json_pydantic_validation_returns_422(client_with_db):
+    """Wave 5 review I3: pydantic validation failure must surface a 422.
+
+    Sending a non-string value where AdvisorTurnRequest expects `str` used
+    to bubble pydantic's ValidationError to FastAPI's generic 500. Now the
+    route catches it and returns 422 with the validation detail.
+    """
+    r = client_with_db.post(
+        "/api/advisor/turn",
+        json={"user_id": ["not", "a", "string"]},
+    )
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"null",      # json.loads -> None
+        b"[1, 2, 3]", # json.loads -> list
+        b'"hello"',   # json.loads -> str
+        b"42",        # json.loads -> int
+    ],
+    ids=["null", "list", "string", "number"],
+)
+def test_turn_json_non_mapping_returns_422(client_with_db, payload):
+    """Wave 5 follow-up to review I3: a syntactically-valid JSON body that
+    isn't a mapping (null / list / string / number) used to crash with a
+    TypeError ('argument after ** must be a mapping'), bubbling to a 500.
+    The first sweep caught only JSONDecodeError + ValidationError; this
+    closes the non-mapping gap.
+    """
+    r = client_with_db.post(
+        "/api/advisor/turn",
+        content=payload,
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422, r.text
+
+
+def test_turn_multipart_misclassified_user_id_returns_422(client_with_db):
+    """Wave 5 review M2: if a misuse of the form sends an UploadFile under
+    the `user_id` field, the route used to do `str(form.get("user_id"))`
+    and end up with a literal `<starlette.UploadFile object>` as user_id —
+    a real session would then run with garbage. Now the route rejects
+    non-string scalars with a 422.
+    """
+    r = client_with_db.post(
+        "/api/advisor/turn",
+        files={"user_id": ("badname.txt", BytesIO(b"hello"), "text/plain")},
+    )
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_turn_long_txt_does_NOT_promote_to_baseline(
+    client_with_db, monkeypatch,
+):
+    """Wave 5 review I2: a long `.txt` upload must not silently overwrite
+    the user's baseline wealth plan.
+
+    Pre-fix the heuristic was `ext in {.md,.markdown} OR size > 500`, so a
+    501-char support email pasted as plain text became the new baseline.
+    Now the heuristic is extension-only. A `.txt` (or any non-markdown
+    extension) is still appended to the user's chat message — it just
+    doesn't displace the wealth plan.
+    """
+    from argosy.api.routes import advisor as adv
+
+    Stub, captured = _stub_canned_turn_factory()
+    adv.set_advisor_agent_factory(Stub)
+
+    # Pre-existing baseline that should survive the upload.
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+        sess.add(
+            PlanVersion(
+                user_id="ariel",
+                role="baseline",
+                version_label="prior",
+                source_path="wealth_plan.md",
+                raw_markdown="# Real wealth plan\n\nGoal: retire by 2040.",
+            )
+        )
+        sess.commit()
+    finally:
+        sess.close()
+
+    scheduled: list[dict] = []
+
+    async def _capture_distill(**kwargs):
+        scheduled.append(kwargs)
+
+    monkeypatch.setattr(
+        "argosy.services.plan_distiller_service.distill_baseline_plan_async",
+        _capture_distill,
+    )
+
+    try:
+        # 600-byte plain-text email — over the legacy 500-char threshold,
+        # but NOT a markdown extension.
+        long_txt = b"Hi team, just forwarding this support thread for context. " * 12
+        assert len(long_txt) > 500
+        r = client_with_db.post(
+            "/api/advisor/turn",
+            data={"user_id": "ariel", "last_user_message": "what should I do?"},
+            files={"attachments": ("email.txt", BytesIO(long_txt), "text/plain")},
+        )
+        assert r.status_code == 200, r.text
+
+        # The original baseline must still be the active baseline.
+        sess = client_with_db.app.state.session_factory()
+        try:
+            baselines = (
+                sess.query(PlanVersion)
+                .filter_by(user_id="ariel", role="baseline")
+                .all()
+            )
+            assert len(baselines) == 1
+            assert baselines[0].source_path == "wealth_plan.md", (
+                f"long .txt upload silently became the baseline: "
+                f"{baselines[0].source_path}"
+            )
+        finally:
+            sess.close()
+
+        # Distillation must NOT have been scheduled (no new baseline → no distill).
+        assert scheduled == [], f"distillation triggered for plain .txt: {scheduled}"
+
+        # But the .txt content WAS still appended to the user message —
+        # the agent should be able to answer the user's question about it.
+        appended = captured.get("last_user_message", "")
+        assert "[Attached file: email.txt]" in appended
+        assert "support thread for context" in appended
+    finally:
+        adv.reset_advisor_agent_factory()
