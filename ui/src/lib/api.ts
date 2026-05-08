@@ -200,6 +200,35 @@ export interface AuditResponse {
 }
 
 // ----------------------------------------------------------------------
+// Provenance Wave A: user-files catalog
+// ----------------------------------------------------------------------
+
+export interface UserFileItem {
+  id: number;
+  user_id: string;
+  sha256: string;
+  original_name: string;
+  sanitized_name: string;
+  mime_type: string;
+  kind: string; // text | image | plan_markdown | broker_csv | other
+  size_bytes: number;
+  source: string; // chat_attachment | intake_upload | intake_file_to_text | cost_basis_import
+  turn_uuid: string | null;
+  intake_session_id: string | null;
+  plan_version_id: number | null;
+  decision_run_id: number | null;
+  created_at: string;
+  deleted_at: string | null;
+}
+
+export interface FilesListResponse {
+  items: UserFileItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+// ----------------------------------------------------------------------
 // Phase 5: Argonaut + security
 // ----------------------------------------------------------------------
 
@@ -376,6 +405,34 @@ export const api = {
     if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
     return getJSON<AuditResponse>(`/api/audit?${qs.toString()}`);
   },
+
+  // Provenance Wave A — user-files catalog list/stream.
+  listFiles: (
+    userId: string,
+    opts?: {
+      kind?: string;
+      source?: string;
+      since?: string;
+      until?: string;
+      includeDeleted?: boolean;
+      limit?: number;
+      offset?: number;
+    },
+  ) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (opts?.kind) qs.set("kind", opts.kind);
+    if (opts?.source) qs.set("source", opts.source);
+    if (opts?.since) qs.set("since", opts.since);
+    if (opts?.until) qs.set("until", opts.until);
+    if (opts?.includeDeleted) qs.set("include_deleted", "true");
+    if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    if (opts?.offset !== undefined) qs.set("offset", String(opts.offset));
+    return getJSON<FilesListResponse>(`/api/files?${qs.toString()}`);
+  },
+  fileContentUrl: (id: number, userId: string) =>
+    apiUrl(
+      `/api/files/${id}/content?user_id=${encodeURIComponent(userId)}`,
+    ),
 
   // Phase 5: Argonaut limited account
   argonautStatus: (userId: string) =>
