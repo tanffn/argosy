@@ -14,11 +14,11 @@ user to cancel-and-restart vs queue.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import threading
 from datetime import datetime, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from argosy.agents.advisor_amendment_types import (
@@ -37,83 +37,125 @@ log = get_logger(__name__)
 def run_small(
     session: Session, *, user_id: str, message: str, intent: AmendmentIntent,
 ) -> AmendmentResultDTO:
-    """Apply the advisor-emitted Delta inline. Synchronous; returns immediately."""
+    """Apply the advisor-emitted Delta inline. Synchronous; returns immediately.
+
+    Validation order matters: any precondition that can raise (missing
+    delta, claimed-tightening-but-numbers-loosen, no current plan to seed
+    a draft from) is checked BEFORE the DecisionRun row is committed, so
+    a failure does not orphan a `status='running'` row that would
+    permanently jam the partial unique index for this user. Any
+    exception raised AFTER the row is committed flips it to
+    `status='failed'` with the error merged into notes_json.
+    """
     if intent.proposed_delta is None:
         raise ValueError("run_small requires intent.proposed_delta")
 
     _validate_tightening(intent.proposed_delta)
 
+    # Resolve the target draft up-front so a missing precondition raises
+    # BEFORE the DecisionRun is committed (otherwise the "running" row
+    # would permanently jam the partial unique index for this user).
+    pending_draft = get_pending_draft(session, user_id)
+    seed_current: PlanVersion | None = None
+    if pending_draft is None:
+        seed_current = get_current_plan(session, user_id)
+        if seed_current is None:
+            raise RuntimeError(f"user {user_id!r} has no current plan to amend")
+
     # Open a DecisionRun row for audit lineage even on the inline path.
+    notes_payload: dict = {"message": message, "intent": intent.model_dump()}
     run = DecisionRun(
         user_id=user_id, ticker="(plan)", tier="small",
         decision_kind="plan_amendment_chat", status="running",
-        notes_json=json.dumps({"message": message, "intent": intent.model_dump()}),
+        notes_json=json.dumps(notes_payload),
     )
     session.add(run)
     session.commit()
     session.refresh(run)
 
-    # Find target plan: pending draft if exists, else need a fresh minimal draft.
-    target = get_pending_draft(session, user_id)
-    if target is None:
-        # Create a new draft seeded from the current plan + this single delta.
-        current = get_current_plan(session, user_id)
-        if current is None:
-            raise RuntimeError(f"user {user_id!r} has no current plan to amend")
-        target = PlanVersion(
-            user_id=user_id, role="draft",
-            version_label=f"amend-small-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M')}",
-            source_path="", raw_markdown="",
-            decision_run_id=run.id,
-            derived_from_id=current.id,
-            horizon_long_json=current.horizon_long_json,
-            horizon_medium_json=current.horizon_medium_json,
-            horizon_short_json=current.horizon_short_json,
-            horizon_long_md=current.horizon_long_md,
-            horizon_medium_md=current.horizon_medium_md,
-            horizon_short_md=current.horizon_short_md,
+    try:
+        if pending_draft is not None:
+            target = pending_draft
+        else:
+            # Create a new draft seeded from the current plan + this single delta.
+            assert seed_current is not None  # narrowed above
+            target = PlanVersion(
+                user_id=user_id, role="draft",
+                version_label=f"amend-small-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M')}",
+                source_path="", raw_markdown="",
+                decision_run_id=run.id,
+                derived_from_id=seed_current.id,
+                horizon_long_json=seed_current.horizon_long_json,
+                horizon_medium_json=seed_current.horizon_medium_json,
+                horizon_short_json=seed_current.horizon_short_json,
+                horizon_long_md=seed_current.horizon_long_md,
+                horizon_medium_md=seed_current.horizon_medium_md,
+                horizon_short_md=seed_current.horizon_short_md,
+            )
+            session.add(target)
+            session.commit()
+            session.refresh(target)
+
+        # Apply the delta into the target draft.
+        delta = intent.proposed_delta
+        delta_dict = delta.model_dump()
+        delta_dict["accepted"] = True
+        delta_dict["user_edited"] = True
+
+        horizon_field = f"horizon_{delta.horizon}_json"
+        raw = getattr(target, horizon_field) or "{}"
+        payload = json.loads(raw)
+        deltas = payload.get("deltas_from_prior") or []
+        # Replace existing delta with same item_id, else append.
+        existing_idx = next(
+            (i for i, d in enumerate(deltas) if d.get("item_id") == delta.item_id),
+            None,
         )
-        session.add(target)
+        if existing_idx is not None:
+            deltas[existing_idx] = delta_dict
+        else:
+            deltas.append(delta_dict)
+        payload["deltas_from_prior"] = deltas
+        setattr(target, horizon_field, json.dumps(payload))
+
+        run.status = "completed"
+        run.finished_at = datetime.now(timezone.utc)
         session.commit()
-        session.refresh(target)
 
-    # Apply the delta into the target draft.
-    delta = intent.proposed_delta
-    delta_dict = delta.model_dump()
-    delta_dict["accepted"] = True
-    delta_dict["user_edited"] = True
+        publish_event_threadsafe("plan.amendment.completed", {
+            "user_id": user_id,
+            "decision_run_id": run.id,
+            "tier": "small",
+            "draft_id": target.id,
+        })
 
-    horizon_field = f"horizon_{delta.horizon}_json"
-    raw = getattr(target, horizon_field) or "{}"
-    payload = json.loads(raw)
-    deltas = payload.get("deltas_from_prior") or []
-    # Replace existing delta with same item_id, else append.
-    existing_idx = next(
-        (i for i, d in enumerate(deltas) if d.get("item_id") == delta.item_id),
-        None,
-    )
-    if existing_idx is not None:
-        deltas[existing_idx] = delta_dict
-    else:
-        deltas.append(delta_dict)
-    payload["deltas_from_prior"] = deltas
-    setattr(target, horizon_field, json.dumps(payload))
-
-    run.status = "completed"
-    run.finished_at = datetime.now(timezone.utc)
-    session.commit()
-
-    publish_event_threadsafe("plan.amendment.completed", {
-        "user_id": user_id,
-        "decision_run_id": run.id,
-        "tier": "small",
-        "draft_id": target.id,
-    })
-
-    return AmendmentResultDTO(
-        tier="small", decision_run_id=run.id,
-        status="applied", draft_id=target.id,
-    )
+        return AmendmentResultDTO(
+            tier="small", decision_run_id=run.id,
+            status="applied", draft_id=target.id,
+        )
+    except Exception as exc:
+        # Don't leave the DecisionRun in `running` — it would jam the
+        # partial unique index for this user. Merge the error into notes
+        # rather than overwriting the original message+intent (so the
+        # row can still be replayed for debugging).
+        log.error("plan_amendment.small.failed",
+                  decision_run_id=run.id, user_id=user_id, error=str(exc))
+        try:
+            existing_notes = json.loads(run.notes_json or "{}")
+        except (ValueError, TypeError):
+            existing_notes = {}
+        existing_notes["error"] = str(exc)
+        run.notes_json = json.dumps(existing_notes)
+        run.status = "failed"
+        run.finished_at = datetime.now(timezone.utc)
+        session.commit()
+        publish_event_threadsafe("plan.amendment.failed", {
+            "user_id": user_id,
+            "decision_run_id": run.id,
+            "tier": "small",
+            "error": str(exc),
+        })
+        raise
 
 
 def dispatch_async(

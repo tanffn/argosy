@@ -189,6 +189,85 @@ def test_post_amendment_cancel_404_for_unknown_run(client_with_db):
     assert r.status_code == 404
 
 
+def _agent_factory_capturing_system(captured: dict):
+    """Factory that records the assembled system prompt the agent sees.
+
+    Wraps an AdvisorAgent stub so we can assert whether the AMENDMENT
+    INTENT DETECTION block was injected. The prompt is captured in
+    ``_call_model`` (which receives the full ``system`` string the
+    framework would send to the LLM), so we test the actual production
+    path: build_prompt → run → _call_model.
+    """
+    canned = _canned_with_amendment(None)
+
+    def _make(user_id: str):
+        class _Stub(AdvisorAgent):
+            async def _call_model(self, *, system: str, user: str) -> ModelCall:
+                captured["system"] = system
+                captured["user"] = user
+                return ModelCall(
+                    text=json.dumps(canned),
+                    tokens_in=1,
+                    tokens_out=1,
+                    model=self.model,
+                )
+
+        return _Stub(user_id=user_id)
+
+    return _make
+
+
+def test_turn_injects_amendment_block_when_user_has_current_plan(client_with_db):
+    """The /turn route MUST query for a role='current' PlanVersion and pass
+    has_current_plan=True so the AMENDMENT INTENT DETECTION block is in the
+    system prompt the LLM actually sees.
+
+    Without this wiring the entire amendment dispatch path is dead code:
+    build_prompt's amendment block is gated on has_current_plan and the
+    LLM never emits an `amendment` field.
+    """
+    _seed_user_with_current(client_with_db)
+
+    captured: dict = {}
+    set_advisor_agent_factory(_agent_factory_capturing_system(captured))
+    try:
+        r = client_with_db.post(
+            "/api/advisor/turn",
+            json={"user_id": "ariel", "last_user_message": "tighten NVDA"},
+        )
+        assert r.status_code == 200, r.text
+        assert "AMENDMENT INTENT DETECTION" in captured.get("system", ""), (
+            "amendment block must be in the system prompt when the user has "
+            "a current plan; otherwise the dispatcher path is dead code."
+        )
+    finally:
+        reset_advisor_agent_factory()
+
+
+def test_turn_omits_amendment_block_when_user_has_no_current_plan(client_with_db):
+    """User without a current PlanVersion gets the legacy (intake-only)
+    prompt — no amendment block, since there's nothing to amend yet."""
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+        sess.commit()
+    finally:
+        sess.close()
+
+    captured: dict = {}
+    set_advisor_agent_factory(_agent_factory_capturing_system(captured))
+    try:
+        r = client_with_db.post(
+            "/api/advisor/turn",
+            json={"user_id": "ariel", "last_user_message": "hi"},
+        )
+        assert r.status_code == 200, r.text
+        assert "AMENDMENT INTENT DETECTION" not in captured.get("system", "")
+    finally:
+        reset_advisor_agent_factory()
+
+
 def test_post_amendment_cancel_409_for_already_finished(client_with_db):
     sess = client_with_db.app.state.session_factory()
     try:

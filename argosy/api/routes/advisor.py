@@ -451,6 +451,23 @@ async def post_turn(
     # if there's no actual gap to fill.
     agent_stage = "stage_11" if stage == "complete" else stage
 
+    # Wave 4: gate the AMENDMENT INTENT DETECTION block on whether the
+    # user has a current plan. Without this kwarg the dispatcher path is
+    # dead code — the LLM never receives the classification instructions
+    # and never emits an `amendment` field.
+    async with db_mod.get_session() as _hcp_session:
+        _hcp_row = (
+            await _hcp_session.execute(
+                select(PlanVersion.id)
+                .where(
+                    PlanVersion.user_id == req.user_id,
+                    PlanVersion.role == "current",
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    has_current_plan = _hcp_row is not None
+
     try:
         report = await agent.run(
             current_stage=agent_stage,
@@ -461,6 +478,7 @@ async def post_turn(
             missing_fields=missing_paths,
             mode=mode,
             target_field=req.target_field,
+            has_current_plan=has_current_plan,
         )
     except Exception as exc:  # pragma: no cover - defensive
         _log.exception("advisor.turn_failed", intake_session_id=session_id)
