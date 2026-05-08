@@ -10,6 +10,8 @@ Workers are sync (called via asyncio.to_thread). They:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy.orm import sessionmaker
 
@@ -163,8 +165,136 @@ def test_large_worker_delegates_to_run_synthesis(session_with_baseline_and_run, 
 
     assert captured["trigger"] == "check_in"
     assert captured["guidance"] == "re-evaluate everything"
+    # I1: the worker MUST pass its own DecisionRun id through so the
+    # synthesis reuses the row instead of opening a parallel one.
+    assert captured["existing_decision_run_id"] == run.id
     sess.refresh(run)
     assert run.status == "completed"
+
+
+def test_large_worker_lineage_attaches_real_draft(session_with_baseline_and_run, monkeypatch):
+    """M6 / I1: when run_synthesis returns a SynthesisResult pointing at
+    a real PlanVersion in the same session, the worker should leave the
+    DecisionRun in `completed` and the row should retain its
+    plan_amendment_chat kind (not get rewritten by the synthesis path).
+    """
+    from argosy.orchestrator.flows.plan_amendment import workers
+
+    sess, run = session_with_baseline_and_run
+
+    # Pretend the synthesis flow created a real draft attached to the
+    # worker's DecisionRun (the I1 refactor makes this how things really
+    # work — synthesis writes against existing_decision_run_id).
+    real_draft = PlanVersion(
+        user_id="ariel", role="draft", version_label="amend-large-test",
+        source_path="", raw_markdown="", decision_run_id=run.id,
+    )
+    sess.add(real_draft)
+    sess.commit()
+    sess.refresh(real_draft)
+    real_draft_id = real_draft.id
+
+    def _fake_run_synthesis(session, **kw):
+        from argosy.orchestrator.flows.plan_synthesis import SynthesisResult
+        # Synthesis (with existing_decision_run_id) does NOT stamp the
+        # row as completed; the worker is expected to do that.
+        return SynthesisResult(decision_run_id=run.id, draft_id=real_draft_id)
+
+    monkeypatch.setattr(workers, "run_synthesis", _fake_run_synthesis)
+
+    events = []
+    monkeypatch.setattr(
+        workers, "publish_event_threadsafe",
+        lambda name, payload: events.append((name, payload)),
+    )
+
+    workers._large_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+    )
+
+    sess.refresh(run)
+    assert run.status == "completed"
+    assert run.decision_kind == "plan_amendment_chat"
+    sess.refresh(real_draft)
+    assert real_draft.decision_run_id == run.id
+
+    # And the completion event names the right draft.
+    completed = [e for e in events if e[0] == "plan.amendment.completed"]
+    assert completed
+    assert completed[0][1]["draft_id"] == real_draft_id
+
+
+def test_large_worker_cancelled_during_run_does_not_overwrite_status(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """I5: cancellation can land mid-synthesis. Worker must re-check
+    status after run_synthesis and bail without stamping completed."""
+    from argosy.orchestrator.flows.plan_amendment import workers
+
+    sess, run = session_with_baseline_and_run
+
+    def _fake_run_synthesis(session, **kw):
+        # Simulate cancellation arriving during the long synthesis call.
+        run_in_session = session.get(DecisionRun, run.id)
+        run_in_session.status = "cancelled"
+        from datetime import datetime, timezone
+        run_in_session.finished_at = datetime.now(timezone.utc)
+        session.commit()
+        from argosy.orchestrator.flows.plan_synthesis import SynthesisResult
+        return SynthesisResult(decision_run_id=run.id, draft_id=999)
+
+    monkeypatch.setattr(workers, "run_synthesis", _fake_run_synthesis)
+
+    events = []
+    monkeypatch.setattr(
+        workers, "publish_event_threadsafe",
+        lambda name, payload: events.append((name, payload)),
+    )
+
+    workers._large_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+    )
+
+    sess.refresh(run)
+    # Status must remain cancelled; worker must NOT have overwritten it.
+    assert run.status == "cancelled"
+
+    names = [e[0] for e in events]
+    assert "plan.amendment.cancelled" in names
+    assert "plan.amendment.completed" not in names
+
+
+def test_medium_worker_failure_preserves_original_notes(
+    session_with_baseline_and_run, monkeypatch,
+):
+    """I2: on worker failure, the error must be MERGED into notes_json
+    (not overwriting the original message + parsed intent the dispatcher
+    wrote for replay)."""
+    from argosy.orchestrator.flows.plan_amendment import workers
+
+    sess, run = session_with_baseline_and_run
+    # Simulate the dispatcher's notes payload.
+    run.notes_json = json.dumps({
+        "message": "tighten NVDA cap to 12%",
+        "intent": {"tier": "medium", "rationale": "user-asked"},
+    })
+    sess.commit()
+
+    def _boom(**kw):
+        raise RuntimeError("synthesizer down")
+
+    monkeypatch.setattr(workers, "_run_phase_3_synthesizer", _boom)
+
+    workers._medium_worker(
+        session=sess, user_id="ariel", decision_run=run, guidance="x",
+    )
+
+    sess.refresh(run)
+    assert run.status == "failed"
+    notes = json.loads(run.notes_json)
+    assert notes["message"] == "tighten NVDA cap to 12%"
+    assert notes["intent"]["tier"] == "medium"
+    assert notes["error"] == "synthesizer down"
 
 
 def _stub_output():

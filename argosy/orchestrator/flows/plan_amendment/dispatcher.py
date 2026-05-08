@@ -316,9 +316,18 @@ def _validate_tightening(delta) -> None:
     """Defensive: confirm numeric values move in the tightening direction.
 
     Tightening rules (aligned with the spec's "lowers risk surface"):
-      - kind in {cap, max_*}: proposed.value < prior.value
-      - kind in {floor, min_*}: proposed.value > prior.value
-      - if kind absent or prior/proposed missing: trust the advisor's classification
+      - cap-like: ``proposed.value < prior.value``
+        Keywords: ``cap``, ``max``, ``ceiling``, ``limit``, ``ratio``,
+        ``threshold``. ``ratio`` is treated as cap-like — for a quantity
+        like ``expense_ratio``, "lower number = less expense = tightening".
+      - floor-like: ``proposed.value > prior.value``
+        Keywords: ``floor``, ``min``.
+      - if kind absent or prior/proposed missing: trust the advisor's
+        classification (the classifier's direction filter is the primary
+        gate; this is just belt-and-suspenders).
+
+    When neither bucket matches, log at debug so future audits can spot
+    common LLM kind typos that fall through the safety net.
     """
     prior = (delta.prior or {})
     proposed = (delta.proposed or {})
@@ -332,7 +341,12 @@ def _validate_tightening(delta) -> None:
         return
 
     is_floor_like = any(k in kind for k in ("floor", "min"))
-    is_cap_like = any(k in kind for k in ("cap", "max", "ceiling"))
+    # "ratio" and "threshold" semantically behave like caps (lower
+    # number = tighter). "limit" likewise is read as an upper bound.
+    is_cap_like = any(
+        k in kind
+        for k in ("cap", "max", "ceiling", "limit", "ratio", "threshold")
+    )
 
     if is_cap_like:
         if qv >= pv:
@@ -344,8 +358,14 @@ def _validate_tightening(delta) -> None:
             raise ValueError(
                 f"intent claims tightening but proposed value {qv} <= prior {pv} on a floor-like target"
             )
-    # If kind is unrecognized, no numeric check — but the API still ran the
-    # classifier's direction filter, which is the primary gate.
+    else:
+        # Unrecognized kind — the classifier's direction filter still
+        # gated the path, but log so we can spot common LLM typos
+        # (e.g. "maxiumum", "treshhold") that should have been caps.
+        log.debug(
+            "_validate_tightening.no_rule_matched",
+            kind=kind, prior_value=pv, proposed_value=qv,
+        )
 
 
 __all__ = ["run_small", "dispatch_async", "cancel", "_spawn_worker"]

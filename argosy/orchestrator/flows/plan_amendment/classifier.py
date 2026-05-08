@@ -22,10 +22,13 @@ def classify(intent: AmendmentIntent) -> ClassificationResult:
     """Map an advisor-emitted AmendmentIntent to its effective dispatch tier."""
     if intent.tier == "small":
         if intent.direction != "tighten":
+            # Render None explicitly so escalation_reason stays a
+            # readable string rather than embedding the literal "None".
+            direction_str = intent.direction or "missing"
             return ClassificationResult(
                 effective_tier=EffectiveTier.MEDIUM,
                 proposed_delta=None,
-                escalation_reason=f"small_with_{intent.direction}_direction",
+                escalation_reason=f"small_with_{direction_str}_direction",
             )
         if intent.proposed_delta is None:
             return ClassificationResult(

@@ -41,6 +41,19 @@ def test_classify_small_loosen_escalates_to_medium():
     assert out.escalation_reason == "small_with_loosen_direction"
 
 
+def test_classify_small_with_none_direction_escalates_with_missing_reason():
+    """M2: when the advisor emits tier='small' without a direction (None),
+    the escalation_reason must read 'small_with_missing_direction', not
+    'small_with_None_direction' (which embeds Python's literal repr)."""
+    from argosy.orchestrator.flows.plan_amendment.classifier import classify
+    from argosy.orchestrator.flows.plan_amendment._types import EffectiveTier
+
+    intent = _make_intent(tier="small", direction=None, proposed_delta=_make_delta())
+    out = classify(intent)
+    assert out.effective_tier == EffectiveTier.MEDIUM
+    assert out.escalation_reason == "small_with_missing_direction"
+
+
 def test_classify_small_ambiguous_escalates_to_medium():
     from argosy.orchestrator.flows.plan_amendment.classifier import classify
     from argosy.orchestrator.flows.plan_amendment._types import EffectiveTier
