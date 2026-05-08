@@ -332,7 +332,44 @@ class BaseAgent(Generic[T]):
         )
 
     async def _call_via_claude_code(self, *, system: str, user: str) -> ModelCall:
-        """Backend: claude-agent-sdk → local `claude.exe`. No API key needed."""
+        """Backend: claude-agent-sdk → local `claude.exe`. No API key needed.
+
+        On Windows, the calling event loop is typically uvicorn's
+        `SelectorEventLoop`, which raises `NotImplementedError` on
+        `asyncio.create_subprocess_exec`. Since claude-agent-sdk spawns
+        claude.exe via that exact API, we hop into a worker thread with a
+        fresh `ProactorEventLoop` for the duration of the SDK call. On
+        non-Windows the calling loop already supports subprocess, so the
+        inner coroutine runs directly.
+        """
+        import sys
+
+        if sys.platform == "win32":
+            return await asyncio.to_thread(
+                self._call_via_claude_code_thread,
+                system=system,
+                user=user,
+            )
+        return await self._call_via_claude_code_inner(system=system, user=user)
+
+    def _call_via_claude_code_thread(self, *, system: str, user: str) -> ModelCall:
+        """Sync entry that runs the async SDK call on a fresh
+        ProactorEventLoop in a worker thread. Windows-only path."""
+        import asyncio
+
+        loop = asyncio.ProactorEventLoop()
+        try:
+            return loop.run_until_complete(
+                self._call_via_claude_code_inner(system=system, user=user)
+            )
+        finally:
+            loop.close()
+
+    async def _call_via_claude_code_inner(
+        self, *, system: str, user: str
+    ) -> ModelCall:
+        """The actual SDK call. Extracted so it can run on a different event
+        loop on Windows (see `_call_via_claude_code_thread`)."""
         try:
             from claude_agent_sdk import (
                 AssistantMessage,
