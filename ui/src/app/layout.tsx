@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 
 import { LiveClock } from "@/components/live-clock";
 import { NavBar } from "@/components/nav";
+import { VersionBadge } from "@/components/version-badge";
 
 import "./globals.css";
 
@@ -42,9 +43,7 @@ export default function RootLayout({
         <div className="flex-1">{children}</div>
         <footer className="border-t border-border mt-8">
           <div className="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between text-xs text-muted-foreground gap-4 flex-wrap">
-            <span className="font-mono">
-              Argosy v0.1.0 · multi-agent financial advisor
-            </span>
+            <VersionBadge />
             <LiveClock label="Last updated" />
           </div>
         </footer>
