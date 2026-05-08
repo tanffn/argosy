@@ -154,3 +154,57 @@ async def test_save_attachment_handles_directory_traversal_in_filename(tmp_path,
     saved = Path(att.path)
     expected_parent = (tmp_path / "uploads" / "ariel" / "t7").resolve()
     assert saved.resolve().parent == expected_parent
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_sanitizes_windows_illegal_chars(tmp_path, monkeypatch):
+    """Wave 5 review (spec): a filename with NTFS-illegal chars must NOT
+    cause a 500 on Windows. The chars `<>:"|?*` cannot appear in NTFS
+    filenames (`:` opens an alternate data stream and silently corrupts the
+    save). Sanitize them to `_` before writing.
+    """
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+
+    reload_settings()
+
+    upload = _upload(
+        b"hello",
+        filename='weird:name<thing>?.md',
+        content_type="text/markdown",
+    )
+    att = await save_attachment(user_id="ariel", turn_uuid="t8", upload=upload)
+    saved = Path(att.path)
+    name = saved.name
+    for bad in '<>:"|?*':
+        assert bad not in name, f"illegal char {bad!r} survived in {name!r}"
+    assert saved.exists()
+    assert saved.read_bytes() == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_save_attachments_total_cap_actually_exercises_rollback(tmp_path, monkeypatch):
+    """Wave 5 review (spec): the existing total-cap test used 12 MB chunks,
+    which trip the per-FILE 10 MB cap first — `save_attachment` raises
+    before `save_attachments_with_total_cap` ever evaluates the per-turn
+    cap. With 9 MB chunks × 3, files 1-2 land on disk, then file 3 trips
+    the 20 MB per-turn cap and the rollback path runs for real.
+    """
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+
+    reload_settings()
+
+    chunk = b"y" * (9 * 1024 * 1024)
+    uploads = [
+        _upload(chunk, filename=f"f{i}.txt", content_type="text/plain") for i in range(3)
+    ]
+    with pytest.raises(AttachmentTooLargeError):
+        await save_attachments_with_total_cap(
+            user_id="ariel", turn_uuid="t9", uploads=uploads,
+        )
+
+    upload_dir = tmp_path / "uploads" / "ariel" / "t9"
+    if upload_dir.exists():
+        leftover = list(upload_dir.iterdir())
+        assert leftover == [], f"rollback didn't unlink everything: {leftover}"

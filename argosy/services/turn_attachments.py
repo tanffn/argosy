@@ -6,9 +6,10 @@ The advisor chat now accepts file attachments alongside the text message
   - Classifies MIME → kind ("text" | "image")
   - Rejects unsupported MIMEs with a 415-friendly exception
 
-Size limits (from `argosy/config.py::Settings.upload`):
-  - per file: 10 MB
-  - per turn: 20 MB total
+Size limits (hardcoded module constants below; not yet plumbed through
+`argosy.toml`):
+  - per file: 10 MB (`MAX_BYTES_PER_FILE`)
+  - per turn: 20 MB total (`MAX_BYTES_PER_TURN`)
 
 Spec: docs/superpowers/specs (Wave 5 inline; SDD §6.14).
 """
@@ -28,10 +29,21 @@ from argosy.logging import get_logger
 log = get_logger(__name__)
 
 
-# Per-file and per-turn size caps (bytes). Hardcoded for v1; could be
-# promoted to argosy.toml if user wants per-tenant tuning.
+# Per-file and per-turn size caps (bytes). See module docstring.
 MAX_BYTES_PER_FILE = 10 * 1024 * 1024  # 10 MB
 MAX_BYTES_PER_TURN = 20 * 1024 * 1024  # 20 MB
+
+
+# NTFS forbids these in filenames; ext4/APFS tolerate most but `:` is still
+# special on macOS (HFS resource fork). Replace with `_` so an upload from
+# a quirky source doesn't 500 on Windows or silently corrupt on macOS.
+_ILLEGAL_FILENAME_CHARS = '<>:"|?*\x00'
+
+
+def _sanitize_filename(name: str) -> str:
+    """Strip directory components AND replace OS-illegal chars with `_`."""
+    base = os.path.basename(name) or "attachment"
+    return "".join("_" if c in _ILLEGAL_FILENAME_CHARS else c for c in base)
 
 
 _TEXT_MIMES = {
@@ -123,8 +135,10 @@ async def save_attachment(
         )
 
     root = _uploads_root(user_id, turn_uuid)
-    # Sanitize filename — strip directory traversal, keep basename only.
-    safe_name = os.path.basename(original_name) or "attachment"
+    # Sanitize filename — strip directory traversal AND OS-illegal chars
+    # (`<>:"|?*` are forbidden on NTFS; `:` opens an alternate data stream
+    # and silently corrupts the save).
+    safe_name = _sanitize_filename(original_name)
     target = root / safe_name
     # If a file with the same name already exists in this turn dir, suffix it.
     if target.exists():
