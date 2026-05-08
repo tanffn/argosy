@@ -18,6 +18,7 @@ import json
 
 import typer
 
+from argosy.cli.catalog_backfill import catalog_backfill
 from argosy.tenancy.onboarding import (
     ensure_tenant_user_row,
     issue_setup_token,
@@ -47,6 +48,9 @@ admin_app = typer.Typer(
 )
 admin_app.add_typer(tenant_app, name="tenant")
 admin_app.add_typer(watchdog_app, name="watchdog")
+admin_app.command("catalog-backfill", help="Backfill user_files from legacy uploads.")(
+    catalog_backfill
+)
 
 
 @tenant_app.command("create")

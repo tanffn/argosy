@@ -38,6 +38,7 @@ from argosy.api.routes.daily_brief import router as daily_brief_router
 from argosy.api.routes.decisions import router as decisions_router
 from argosy.api.routes.domain_kb import router as domain_kb_router
 from argosy.api.routes.execution import router as execution_router
+from argosy.api.routes.files import router as files_router
 from argosy.api.routes.health import router as health_router
 from argosy.api.routes.intake import router as intake_router
 from argosy.api.routes.internal import router as internal_router
@@ -118,6 +119,9 @@ def create_app() -> FastAPI:
     app.include_router(advisor_router, prefix=api_prefix)
     app.include_router(settings_router, prefix=api_prefix)
     app.include_router(cost_guard_router)
+
+    # Provenance Wave A — user-files catalog list/stream surface.
+    app.include_router(files_router, prefix=api_prefix)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

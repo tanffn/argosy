@@ -72,6 +72,55 @@ def client_with_db(tmp_path):
     engine.dispose()
 
 
+@pytest.fixture
+def argosy_home_db(tmp_path, monkeypatch):
+    """Set ARGOSY_HOME to tmp_path and initialize a file-backed SQLite at
+    the standard db_file path. Use this in tests that exercise services
+    that touch the DB but don't need a FastAPI app/client.
+
+    The fixture also seeds a default user 'ariel' so catalog/audit-log
+    inserts (which FK-CASCADE on users.id) don't fail.
+    """
+    import asyncio
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import get_settings, reload_settings
+
+    reload_settings()
+    settings = get_settings()
+    settings.db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    sync_url = f"sqlite:///{settings.db_file}"
+    async_url = f"sqlite+aiosqlite:///{settings.db_file}"
+
+    sync_engine = sa.create_engine(sync_url, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(sync_engine)
+    SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
+
+    db_module.init_engine(async_url)
+
+    # Seed default 'ariel' user so the catalog/audit FKs don't fail.
+    from argosy.state.models import User
+    sess = SessionLocal()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.commit()
+    finally:
+        sess.close()
+
+    yield tmp_path
+
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(db_module.dispose_engine())
+    finally:
+        loop.close()
+    sync_engine.dispose()
+
+
 @pytest_asyncio.fixture
 async def engine() -> AsyncIterator[None]:
     """Set up an in-memory SQLite engine for the duration of a test."""

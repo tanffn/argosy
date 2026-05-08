@@ -118,10 +118,20 @@ async def save_attachment(
 ) -> Attachment:
     """Persist a single FastAPI UploadFile and return its typed Attachment.
 
+    Wave A (provenance): the body of this function now flows through
+    ``argosy.services.file_catalog.catalog_upload``. The catalog handles
+    sha256-based dedup, the new date-organized storage layout, audit
+    emission, and DB row insertion. The ``Attachment`` shape returned
+    here is preserved so Wave-5 callers don't break.
+
     Raises:
         AttachmentTooLargeError: file > MAX_BYTES_PER_FILE
         AttachmentUnsupportedError: MIME/extension not in allowlist
     """
+    # Local import — avoids a circular at module load (file_catalog imports
+    # this module's `_sanitize_filename`).
+    from argosy.services.file_catalog import catalog_upload
+
     original_name = upload.filename or "attachment"
     mime_type = upload.content_type or "application/octet-stream"
     kind = _classify(mime_type, original_name)
@@ -134,24 +144,15 @@ async def save_attachment(
             f"attachment {original_name!r} is {size} bytes; cap is {MAX_BYTES_PER_FILE}"
         )
 
-    root = _uploads_root(user_id, turn_uuid)
-    # Sanitize filename — strip directory traversal AND OS-illegal chars
-    # (`<>:"|?*` are forbidden on NTFS; `:` opens an alternate data stream
-    # and silently corrupts the save).
-    safe_name = _sanitize_filename(original_name)
-    target = root / safe_name
-    # If a file with the same name already exists in this turn dir, suffix it.
-    if target.exists():
-        stem, ext = os.path.splitext(safe_name)
-        i = 1
-        while True:
-            candidate = root / f"{stem}-{i}{ext}"
-            if not candidate.exists():
-                target = candidate
-                break
-            i += 1
-
-    target.write_bytes(contents)
+    dto = await catalog_upload(
+        user_id=user_id,
+        raw_bytes=contents,
+        original_name=original_name,
+        mime_type=mime_type,
+        kind=kind,
+        source="chat_attachment",
+        turn_uuid=turn_uuid,
+    )
     log.info(
         "turn_attachment.saved",
         user_id=user_id,
@@ -159,10 +160,11 @@ async def save_attachment(
         kind=kind,
         size_bytes=size,
         original_name=original_name,
+        catalog_file_id=dto.id,
     )
     return Attachment(
         kind=kind,
-        path=str(target),
+        path=dto.storage_path,
         mime_type=mime_type,
         original_name=original_name,
         size_bytes=size,

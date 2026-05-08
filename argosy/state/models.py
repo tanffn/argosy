@@ -143,6 +143,13 @@ class PlanVersion(Base):
     horizon_short_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     synthesis_inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Provenance Wave A (migration 0019) — points back at the catalog row
+    # for the bytes this plan was imported from. Optional because synthesized
+    # drafts and superseded historical rows have no source file.
+    source_file_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("user_files.id", ondelete="SET NULL"), nullable=True
+    )
+
     critiques: Mapped[list["PlanCritique"]] = relationship(
         back_populates="plan_version", cascade="all, delete-orphan"
     )
@@ -170,6 +177,59 @@ class PlanCritique(Base):
     )
 
     plan_version: Mapped[PlanVersion] = relationship(back_populates="critiques")
+
+
+class UserFile(Base):
+    """One row per stored byte-blob per user (Wave A — provenance catalog).
+
+    Every user-supplied file flows through the single boundary helper
+    ``argosy/services/file_catalog.py::catalog_upload`` and lands here.
+    Re-uploads of the same content (same sha256, same user) collapse into
+    the existing row instead of creating duplicates — enforced by the
+    partial unique index ``ix_user_files_user_sha256_active`` (see
+    migration 0019). Soft-delete via ``deleted_at`` lets a user remove a
+    file and re-upload identical bytes later without colliding with the
+    tombstone.
+
+    ``storage_path`` is the absolute path on disk. The new layout is
+    ``<ARGOSY_HOME>/uploads/<user_id>/<YYYY>/<YYYY-MM-DD>/<HHMMSS>__<sha8>__<sanitized>``.
+    Existing Wave 5 paths under
+    ``<ARGOSY_HOME>/uploads/<user_id>/<turn_uuid>/<file>`` continue to
+    work — the backfill CLI inserts rows pointing at them.
+    """
+
+    __tablename__ = "user_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    sanitized_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Allowed kinds: text / image / plan_markdown / broker_csv / other.
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_path: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # Allowed sources: chat_attachment / intake_upload / intake_file_to_text
+    # / cost_basis_import. Tracks ingest channel for filtering / audit.
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Optional context fields — set by the helper depending on the source.
+    turn_uuid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    intake_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    plan_version_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("plan_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    decision_run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("decision_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class AgentReport(Base):

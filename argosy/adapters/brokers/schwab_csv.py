@@ -284,7 +284,29 @@ class SchwabCSVAdapter:
         Phase 4 keeps it simple to avoid silently merging changing
         cost-basis data; Phase 5+ may add a deduper keyed on
         `lot_id_external`.
+
+        Provenance Wave A: the raw CSV bytes are recorded in the catalog
+        (kind='broker_csv', source='cost_basis_import') before parsing so
+        the user can later answer "which CSV produced these lots?". Best-
+        effort — catalog failure does not block the import.
         """
+        try:
+            from argosy.services.file_catalog import catalog_upload as _catalog_upload
+            raw = Path(path).read_bytes()
+            await _catalog_upload(
+                user_id=self.user_id,
+                raw_bytes=raw,
+                original_name=Path(path).name,
+                mime_type="text/csv",
+                kind="broker_csv",
+                source="cost_basis_import",
+            )
+        except Exception as exc:  # noqa: BLE001 — non-fatal value-add
+            _log.warning(
+                "schwab_csv.catalog_failed",
+                path=str(path), user_id=self.user_id, error=str(exc),
+            )
+
         parsed = _parse_csv(Path(path))
         if not parsed:
             _log.warning("schwab_csv.empty", path=str(path))

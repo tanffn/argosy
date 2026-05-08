@@ -425,6 +425,21 @@ async def post_upload(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     version_label = f"from_intake_upload_{timestamp}"
 
+    # Provenance Wave A — record every uploaded byte-blob in the catalog so
+    # later UIs (Files page, Decision Replay) can answer "where did this
+    # plan come from?". Idempotent: re-uploading the same bytes for the
+    # same user collapses to the existing catalog row.
+    from argosy.services.file_catalog import catalog_upload as _catalog_upload
+
+    catalog_dto = await _catalog_upload(
+        user_id=user_id,
+        raw_bytes=raw_bytes,
+        original_name=filename,
+        mime_type=(content_type or "text/markdown"),
+        kind="plan_markdown",
+        source="intake_upload",
+    )
+
     accumulated = ""
     plan_version_id: int
     session_id: str
@@ -475,6 +490,7 @@ async def post_upload(
             version_label=version_label,
             source_path=filename,
             raw_markdown=content_str,
+            source_file_id=catalog_dto.id,
         )
         session.add(pv)
         await session.flush()
@@ -624,17 +640,42 @@ class FileToTextResponse(BaseModel):
 
 
 @router.post("/file-to-text", response_model=FileToTextResponse)
-async def post_file_to_text(file: UploadFile = File(...)) -> FileToTextResponse:
+async def post_file_to_text(
+    file: UploadFile = File(...),
+    user_id: str = Form("ariel"),
+) -> FileToTextResponse:
     """Convert an uploaded doc (any supported type) to plain text.
 
-    Stateless. No DB writes, no agent calls. Frontend uses this to
-    pre-process an attached file before posting /api/intake/turn.
+    Provenance Wave A — the file is also recorded in the catalog (kind='other',
+    source='intake_file_to_text') so the user can later see in /files which
+    raw doc fed which intake answer. The text-extraction itself remains
+    stateless from the caller's perspective.
     """
     filename = file.filename or "uploaded"
     content_type = (file.content_type or "").lower()
     raw_bytes = await file.read()
     if len(raw_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # Provenance Wave A: catalog the raw bytes BEFORE conversion so we have
+    # a record even if conversion fails. Best-effort — catalog failure
+    # must not break the conversion (which has been the contract since v1).
+    try:
+        from argosy.services.file_catalog import catalog_upload as _catalog_upload
+        await _catalog_upload(
+            user_id=user_id,
+            raw_bytes=raw_bytes,
+            original_name=filename,
+            mime_type=(content_type or "application/octet-stream"),
+            kind="other",
+            source="intake_file_to_text",
+        )
+    except Exception as exc:  # noqa: BLE001 — non-fatal value-add
+        _log.warning(
+            "intake.file_to_text.catalog_failed",
+            filename=filename, user_id=user_id, error=str(exc),
+        )
+
     try:
         result = convert_to_text(
             filename=filename, content_type=content_type, data=raw_bytes
