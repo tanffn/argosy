@@ -225,12 +225,41 @@ class BaseAgent(Generic[T]):
 
         Subclasses generally do not override `run`; they override
         `build_prompt(...)` and `output_model`.
+
+        Wave 5: optional `image_attachments` kwarg threads through to the
+        model call. Subclasses that want to adjust their prompt when images
+        are present (e.g. AdvisorAgent) declare `image_attachments` in
+        their `build_prompt` signature; otherwise we silently drop it
+        before calling `build_prompt` so legacy agents aren't disturbed.
         """
+        import inspect
+
+        image_attachments = inputs.get("image_attachments")
+        bp_params = inspect.signature(self.build_prompt).parameters
+        bp_accepts_images = (
+            "image_attachments" in bp_params
+            or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in bp_params.values()
+            )
+        )
+        if not bp_accepts_images:
+            inputs.pop("image_attachments", None)
+
         system_prompt, user_prompt = self.build_prompt(**inputs)
         full_system = self.BOILERPLATE_SYSTEM + "\n\n" + system_prompt
 
         prompt_hash = self._hash_prompt(full_system, user_prompt)
-        call = await self._call_model(system=full_system, user=user_prompt)
+        # Only forward image_attachments when present so subclass test mocks
+        # that override `_call_model(system, user)` without the new kwarg
+        # keep working (Wave 5 backward-compat).
+        if image_attachments:
+            call = await self._call_model(
+                system=full_system,
+                user=user_prompt,
+                image_attachments=image_attachments,
+            )
+        else:
+            call = await self._call_model(system=full_system, user=user_prompt)
 
         try:
             output = self._parse_output(call.text)
@@ -310,7 +339,13 @@ class BaseAgent(Generic[T]):
         api_key = self._resolve_api_key()
         return Anthropic(api_key=api_key)
 
-    async def _call_model(self, *, system: str, user: str) -> ModelCall:
+    async def _call_model(
+        self,
+        *,
+        system: str,
+        user: str,
+        image_attachments: list[Any] | None = None,
+    ) -> ModelCall:
         """Invoke the model. Dispatches on the configured backend.
 
         - `claude_code`: routes through the Claude Agent SDK, which spawns
@@ -319,20 +354,36 @@ class BaseAgent(Generic[T]):
         - `api_key`: direct Anthropic API via the `anthropic` SDK; reads
           the key from the OS keychain or the `ANTHROPIC_API_KEY` env var.
 
+        Wave 5: `image_attachments` is the list of `Attachment` rows with
+        `kind="image"` to attach to the model call as content blocks. The
+        api_key backend supports them natively. The claude_code backend
+        does NOT (the SDK's prompt API is text-only); it raises a clear
+        error when images are present.
+
         Tests override this method directly to return a `ModelCall` stub
         without exercising either backend.
         """
         backend = get_settings().anthropic.backend
         if backend == "claude_code":
-            return await self._call_via_claude_code(system=system, user=user)
+            return await self._call_via_claude_code(
+                system=system, user=user, image_attachments=image_attachments,
+            )
         if backend == "api_key":
-            return await self._call_via_api_key(system=system, user=user)
+            return await self._call_via_api_key(
+                system=system, user=user, image_attachments=image_attachments,
+            )
         raise AgentRunError(
             f"{self.agent_role}: unknown anthropic backend {backend!r} "
             "(expected 'claude_code' or 'api_key')"
         )
 
-    async def _call_via_claude_code(self, *, system: str, user: str) -> ModelCall:
+    async def _call_via_claude_code(
+        self,
+        *,
+        system: str,
+        user: str,
+        image_attachments: list[Any] | None = None,
+    ) -> ModelCall:
         """Backend: claude-agent-sdk → local `claude.exe`. No API key needed.
 
         On Windows, the calling event loop is typically uvicorn's
@@ -342,8 +393,23 @@ class BaseAgent(Generic[T]):
         fresh `ProactorEventLoop` for the duration of the SDK call. On
         non-Windows the calling loop already supports subprocess, so the
         inner coroutine runs directly.
+
+        Wave 5: image attachments are NOT yet supported on this backend.
+        The claude-agent-sdk's `query(prompt=...)` API is text-only; the
+        underlying `claude.exe` does not expose a public way to attach
+        images. If the caller passes images, we raise a clear error
+        directing them to the `api_key` backend.
         """
         import sys
+
+        if image_attachments:
+            raise AgentRunError(
+                f"{self.agent_role}: image attachments are not supported on "
+                "the claude_code backend in Wave 5 (claude-agent-sdk's prompt "
+                "API is text-only). Switch to the api_key backend in "
+                "argosy.toml: [anthropic] backend = \"api_key\". "
+                "Text/markdown attachments work on both backends."
+            )
 
         if sys.platform == "win32":
             return await asyncio.to_thread(
@@ -436,13 +502,52 @@ class BaseAgent(Generic[T]):
             raw={"backend": "claude_code", "cost_usd_from_sdk": cost_usd_from_sdk},
         )
 
-    async def _call_via_api_key(self, *, system: str, user: str) -> ModelCall:
-        """Backend: direct Anthropic API. Requires API key in keychain or env."""
+    async def _call_via_api_key(
+        self,
+        *,
+        system: str,
+        user: str,
+        image_attachments: list[Any] | None = None,
+    ) -> ModelCall:
+        """Backend: direct Anthropic API. Requires API key in keychain or env.
+
+        Wave 5: when `image_attachments` is non-empty, builds Anthropic
+        content blocks (`{"type": "image", "source": {...}}`) for each
+        image and prepends them to the user message. Vision-capable
+        models (Sonnet, Opus) handle these natively.
+        """
         import asyncio
+        import base64
+        from pathlib import Path
 
         if self._client is None:
             self._client = self._build_client()
         client = self._client
+
+        # Build the user message content. If no images, use plain string
+        # (cheaper for prompt cache); else use a content-block list.
+        if image_attachments:
+            blocks: list[dict[str, Any]] = []
+            for att in image_attachments:
+                # `att` is an Attachment from argosy.services.turn_attachments,
+                # but we don't import it here to avoid a circular dependency.
+                path = getattr(att, "path", None) or att["path"]
+                mime = getattr(att, "mime_type", None) or att["mime_type"]
+                data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+                blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": data,
+                    },
+                })
+            blocks.append({"type": "text", "text": user})
+            messages_payload: list[dict[str, Any]] = [
+                {"role": "user", "content": blocks},
+            ]
+        else:
+            messages_payload = [{"role": "user", "content": user}]
 
         def _do_call() -> ModelCall:
             try:
@@ -450,7 +555,7 @@ class BaseAgent(Generic[T]):
                     model=self.model,
                     system=system,
                     max_tokens=self.max_tokens,
-                    messages=[{"role": "user", "content": user}],
+                    messages=messages_payload,
                 )
             except Exception as exc:  # pragma: no cover - exercised by integration only
                 raise AgentRunError(f"{self.agent_role}: Anthropic API error: {exc}") from exc

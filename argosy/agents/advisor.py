@@ -29,7 +29,7 @@ new optional `mode` field on output).
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -95,6 +95,7 @@ class AdvisorAgent(IntakeAgent):
         mode: Literal["gap_driven", "user_driven"] = "gap_driven",
         target_field: str | None = None,
         has_current_plan: bool = False,
+        image_attachments: list[Any] | None = None,
     ) -> tuple[str, str]:
         """Construct (system_addendum, user_prompt) for one advisor turn.
 
@@ -183,6 +184,30 @@ class AdvisorAgent(IntakeAgent):
             "OUTPUT must conform exactly to this JSON schema:\n"
             f"{AdvisorTurnOutput.model_json_schema()}\n"
         )
+
+        if image_attachments:
+            system = system + (
+                "\n\nIMAGE ATTACHMENT HANDLING\n\n"
+                f"The user has attached {len(image_attachments)} image(s) to "
+                "this turn. Examine each carefully. Common kinds and how to "
+                "handle them:\n"
+                "  - Brokerage statement screenshots: extract holdings, "
+                "balances, account class. Emit `context_updates` for the "
+                "matching `identity.brokerage_accounts` / "
+                "`identity.bank_accounts` fields.\n"
+                "  - News article screenshots: read the article, decide if "
+                "it's material to the user's positions or plan, and answer "
+                "any embedded question. Cite the publication if visible.\n"
+                "  - Plan / portfolio diagrams: treat as supplementary "
+                "context for the conversation; describe what you see and "
+                "ask follow-up questions if the user's intent isn't obvious.\n"
+                "  - Charts: read the axis labels, identify the trend, and "
+                "respond accordingly.\n"
+                "If the image isn't relevant to financial planning, "
+                "acknowledge it neutrally and move on. Never invent details "
+                "the image doesn't show — set confidence=LOW on any "
+                "context_updates derived from images and say so plainly.\n"
+            )
 
         if has_current_plan:
             system = system + (
