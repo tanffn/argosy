@@ -99,6 +99,7 @@ These are on `main` already; flagged so a fresh reader doesn't think Wave 5 intr
 | Understand a specific wave's intent | §6.10 (W1 distillate), §6.11 (W2 synthesis), §6.12 (W3 speculation), §6.13 (W4 amendment chat) | full design specs at `docs/superpowers/specs/` (historical but rich) |
 | Speculation cap enforcement | `argosy/config.py::SpeculationCap`, `argosy/agents/plan_synthesizer.py` (prompt block), `argosy/orchestrator/flows/plan_synthesis/orchestrator.py::_enforce_speculation_cap`, `argosy/orchestrator/speculation_router.py` (preflight) | §6.12 |
 | Audit lineage walkthrough | §8.6 (the `decision_runs ↔ plan_versions ↔ proposals ↔ agent_reports` map) | grep `decision_kind` |
+| Add another chat-upload attachment kind | `argosy/services/turn_attachments.py::_classify` (MIME allowlist), `argosy/api/routes/advisor.py::_run_turn` (kind dispatch), `argosy/agents/base.py::_call_via_api_key` (image content blocks if vision) | §6.14 |
 
 ### Project-wide conventions / gotchas
 
@@ -1196,6 +1197,67 @@ DecisionRun → draft → (after accept) current.
 See `docs/superpowers/specs/2026-05-07-plan-amendment-chat-flow-design.md`
 for the full design.
 
+### 6.14 Chat upload (Wave 5 of plan-distillate work)
+
+The advisor chat input accepts attachments alongside the text message —
+text/markdown documents and images (screenshots). This replaces the
+former separate "Have an existing plan?" upload widget with a single
+unified surface.
+
+**Surface.** The advisor page's chat input supports four ingest paths:
+typed text, paperclip-button file picker (multiple selection), drag-and-
+drop onto the input, and paste-from-clipboard for screenshots. Attached
+files render as removable pills above the input.
+
+**Endpoint.** `POST /api/advisor/turn` accepts EITHER a JSON body (Wave
+1+ contract, unchanged for back-compat) OR a multipart/form-data body
+with the same fields as form data plus an optional `attachments`
+UploadFile list. Dispatch is by `Content-Type`. The JSON path is
+preserved verbatim so all existing callers keep working.
+
+**MIME allowlist.** `text/*`, `application/json`, `application/x-yaml`,
+plus `image/*`. PDFs / spreadsheets / videos / audio are rejected with
+HTTP 415. Per-file cap 10 MB (HTTP 413), per-turn total 20 MB. Caps
+hardcoded in `argosy/services/turn_attachments.py`.
+
+**Storage.** `<ARGOSY_HOME>/uploads/<user_id>/<turn_uuid>/<filename>`.
+Filenames sanitized against directory traversal; collisions auto-
+suffixed within a turn dir.
+
+**Text attachments** are read and appended to `last_user_message` as
+`[Attached file: <name>]\n<content>` so the advisor sees them inline.
+Plan-shaped text attachments (`.md`/`.markdown` extension OR > 500 chars)
+additionally trigger a side-effect: the route persists a fresh
+`role='baseline'` `plan_versions` row, demotes any prior baseline to
+`role='superseded'`, and schedules `distill_baseline_plan_async` via
+FastAPI `BackgroundTasks`. The chat response returns immediately;
+distillation surfaces via the existing draft-pending banner on next
+refresh.
+
+**Image attachments** thread to the agent as `image_attachments` and
+are forwarded to the model as Anthropic content blocks. The
+`AdvisorAgent` system prompt grows an "IMAGE ATTACHMENT HANDLING"
+section explaining how to extract facts (brokerage statement
+screenshots → `identity.brokerage_accounts` updates; news article
+screenshots → discussion; charts → trend analysis). Image content
+blocks are supported on the `api_key` backend only — the
+`claude_code` backend's prompt API is text-only and raises a clear
+`AgentRunError` if images are present, directing the user to switch
+backends. Text-only attachments work on both backends.
+
+**No new schema.** Wave 5 reuses existing `plan_versions` (with the
+Wave 1 lifecycle columns) and `decision_runs` rows. The future
+`decision_kind="plan_reimport"` value mentioned in the spec is
+deferred — current Wave 5 scope marks the prior baseline `superseded`
+without recording a separate `decision_runs` row. This keeps the
+existing audit lineage simple; if formal reimport audit becomes
+useful, it lands in a follow-up.
+
+See `argosy/services/turn_attachments.py` (storage helper),
+`argosy/api/routes/advisor.py::_run_turn` and
+`_maybe_ingest_plan_attachments` (route + ingest hook), and
+`argosy/agents/base.py::_call_via_api_key` (image content blocks).
+
 ---
 
 ## 7. Domain Knowledge Base
@@ -1828,7 +1890,7 @@ All routes mount under `/api` (canonical source: `argosy.api.main.create_app`). 
 | GET | `/api/intake/status` | Current intake stage + completion summary. |
 | POST | `/api/intake/file-to-text` | Lightweight file → text conversion (pdf/docx → markdown) used by upload. |
 | **Advisor (post-Phase-1 reframe)** | | |
-| POST | `/api/advisor/turn` | Drive one advisor turn (gap_driven or user_driven). Wave 4: response carries `amendment: AmendmentResultDTO \| None` when the user's message was classified as a plan-change request. The route threads `has_current_plan: bool` into the agent so the LLM only does amendment-classification when there's a current plan to amend (Wave 4 fix C1). |
+| POST | `/api/advisor/turn` | Drive one advisor turn (gap_driven or user_driven). Accepts EITHER `application/json` (Wave 1+ contract, unchanged) OR `multipart/form-data` (Wave 5) with optional `attachments: list[UploadFile]` — text/markdown is appended to the message and ingested as a baseline plan when shaped like one; images are forwarded to vision-capable backends (§6.14). Wave 4: response carries `amendment: AmendmentResultDTO \| None` when the user's message was classified as a plan-change request. The route threads `has_current_plan: bool` into the agent so the LLM only does amendment-classification when there's a current plan to amend (Wave 4 fix C1). |
 | GET | `/api/advisor/gaps` | Returns the full `GapStatus` (fresh / stale / missing per field) for the sidebar. |
 | GET | `/api/advisor/home-brief` | Three-bullet glance card composed from cached state (gap, portfolio, signal). No new LLM call. Per-user 30-min `kv_cache` (`CacheKind.UI`, `provider="advisor_home_brief"`). |
 | POST | `/api/advisor/check-in` | User-initiated full plan synthesis (§6.11). 202; returns `decision_run_id` + `draft_id`. 404 when no active baseline. |
