@@ -299,32 +299,60 @@ export default function AdvisorPage() {
     setAttachedFiles((prev) => prev.filter((_, i) => i !== idx));
     if (attachInputRef.current) attachInputRef.current.value = "";
   };
-  // Drag-drop on the chat input
-  const handleChatDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  // Drag-drop on the chat input. Wave 5 review I4: bind handlers to BOTH
+  // the wrapper <div> and the inner <textarea>. The wrapper alone wasn't
+  // enough — some browsers still let the textarea handle the drop natively
+  // and insert the OS file path as text. `stopPropagation` is required so
+  // the textarea's drop event doesn't bubble back to the wrapper and
+  // double-attach (post-review fix).
+  const handleChatDrop = (
+    e: React.DragEvent<HTMLDivElement | HTMLTextAreaElement>,
+  ) => {
     e.preventDefault();
+    e.stopPropagation();
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       handleAttachChosen(e.dataTransfer.files);
     }
   };
-  // Paste a screenshot into the textarea
+  const handleChatDragOver = (
+    e: React.DragEvent<HTMLDivElement | HTMLTextAreaElement>,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  // Paste a screenshot into the textarea. Wave 5 review M4: if the user
+  // pastes a non-image file (PDF, docx, ...), surface a hint instead of
+  // silently swallowing it — the previous handler dropped non-image files
+  // with no feedback at all.
   const handleChatPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items ?? [];
     const imageFiles: File[] = [];
+    let nonImageFileSeen = false;
     for (const item of items) {
-      if (item.kind === "file" && item.type.startsWith("image/")) {
-        const f = item.getAsFile();
-        if (f) {
-          // Synthesize a friendly filename if the clipboard didn't supply one
-          const renamed = f.name && f.name !== ""
-            ? f
-            : new File([f], `pasted-${Date.now()}.png`, { type: f.type });
-          imageFiles.push(renamed);
+      if (item.kind === "file") {
+        if (item.type.startsWith("image/")) {
+          const f = item.getAsFile();
+          if (f) {
+            // Synthesize a friendly filename if the clipboard didn't supply one
+            const renamed = f.name && f.name !== ""
+              ? f
+              : new File([f], `pasted-${Date.now()}.png`, { type: f.type });
+            imageFiles.push(renamed);
+          }
+        } else {
+          nonImageFileSeen = true;
         }
       }
     }
     if (imageFiles.length > 0) {
       e.preventDefault();
       handleAttachChosen(imageFiles);
+    } else if (nonImageFileSeen) {
+      e.preventDefault();
+      setSubmitError(
+        "Pasted file isn't an image. For text/markdown documents, click " +
+        "the paperclip below or drag the file onto the chat box.",
+      );
     }
   };
 
@@ -489,7 +517,7 @@ export default function AdvisorPage() {
                   click the paperclip. */}
               <div
                 className="flex flex-col gap-2"
-                onDragOver={(e) => e.preventDefault()}
+                onDragOver={handleChatDragOver}
                 onDrop={handleChatDrop}
               >
                 <textarea
@@ -497,6 +525,8 @@ export default function AdvisorPage() {
                   value={userInput}
                   onChange={(e) => setUserInput(e.target.value)}
                   onPaste={handleChatPaste}
+                  onDragOver={handleChatDragOver}
+                  onDrop={handleChatDrop}
                   placeholder="Type a question, drop a file, or paste a screenshot..."
                 />
 
