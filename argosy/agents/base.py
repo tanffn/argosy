@@ -25,6 +25,7 @@ Design principles enforced here (so subclasses cannot forget):
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from dataclasses import dataclass, field
