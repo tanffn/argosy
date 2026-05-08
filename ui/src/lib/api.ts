@@ -443,18 +443,54 @@ export const api = {
     }),
 
   // Phase 1 reframe: Advisor (persistent gap-tracker panel)
-  advisorTurn: (
+  // Wave 5: optional `attachments` triggers a multipart POST so the
+  // backend can save them and route to vision / plan-distillation as
+  // appropriate. No attachments → JSON body (cheaper, prompt-cache-friendly).
+  advisorTurn: async (
     userId: string,
     lastUserMessage: string,
-    opts?: { currentStage?: string; targetField?: string; historyExcerpt?: string },
-  ) =>
-    postJSON<AdvisorTurnResponse>(`/api/advisor/turn`, {
-      user_id: userId,
-      last_user_message: lastUserMessage,
-      current_stage: opts?.currentStage,
-      target_field: opts?.targetField,
-      history_excerpt: opts?.historyExcerpt ?? "",
-    }),
+    opts?: {
+      currentStage?: string;
+      targetField?: string;
+      historyExcerpt?: string;
+      attachments?: File[];
+    },
+  ): Promise<AdvisorTurnResponse> => {
+    const attachments = opts?.attachments ?? [];
+    if (attachments.length === 0) {
+      return postJSON<AdvisorTurnResponse>(`/api/advisor/turn`, {
+        user_id: userId,
+        last_user_message: lastUserMessage,
+        current_stage: opts?.currentStage,
+        target_field: opts?.targetField,
+        history_excerpt: opts?.historyExcerpt ?? "",
+      });
+    }
+    const fd = new FormData();
+    fd.append("user_id", userId);
+    fd.append("last_user_message", lastUserMessage);
+    if (opts?.currentStage) fd.append("current_stage", opts.currentStage);
+    if (opts?.targetField) fd.append("target_field", opts.targetField);
+    fd.append("history_excerpt", opts?.historyExcerpt ?? "");
+    for (const f of attachments) {
+      fd.append("attachments", f, f.name);
+    }
+    const res = await fetch(apiUrl(`/api/advisor/turn`), {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j && typeof j.detail === "string") detail = j.detail;
+      } catch {
+        // ignore
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as AdvisorTurnResponse;
+  },
   advisorGaps: (userId: string) =>
     getJSON<AdvisorGapsResponse>(
       `/api/advisor/gaps?user_id=${encodeURIComponent(userId)}`,

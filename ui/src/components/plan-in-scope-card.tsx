@@ -119,8 +119,9 @@ export function PlanInScopeCard({ userId }: PlanInScopeCardProps) {
             <FileText className="h-4 w-4" /> No plan imported yet
           </CardTitle>
           <CardDescription>
-            Upload a Markdown plan below and the advisor will distill the
-            durable principles before our first conversation.
+            Attach a Markdown plan in the conversation below — drop it on
+            the chat input or use the paperclip — and the advisor will
+            distill the durable principles in the background.
           </CardDescription>
         </CardHeader>
       </Card>

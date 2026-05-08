@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Paperclip, X } from "lucide-react";
 
 import { Markdown } from "@/components/markdown";
 import { PlanInScopeCard } from "@/components/plan-in-scope-card";
@@ -21,7 +22,6 @@ import {
   type AmendmentEventPayload,
   type DraftResponse,
   type GapState,
-  type IntakeUploadResponse,
 } from "@/lib/api";
 import {
   ensureNotificationPermission,
@@ -32,7 +32,9 @@ import { useWSEvents } from "@/lib/ws";
 
 // File extensions accepted by the answer-form attachment picker. Mirrors
 // argosy/ingest/file_to_text.py's _EXT_TO_KIND whitelist.
-const ATTACH_ACCEPT = ".md,.markdown,.txt,.csv,.tsv,.pdf,.xlsx";
+// Wave 5: chat upload accepts text/markdown + images. PDFs, spreadsheets,
+// and other docs were dropped — the multipart endpoint rejects them with 415.
+const ATTACH_ACCEPT = ".md,.markdown,.txt,.csv,image/*";
 
 const USER_ID = "ariel";
 
@@ -116,19 +118,9 @@ export default function AdvisorPage() {
   // Sidebar gap-tracker state.
   const [gaps, setGaps] = useState<AdvisorGapsResponse | null>(null);
 
-  // Upload widget (re-used from the legacy intake page).
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadResult, setUploadResult] = useState<IntakeUploadResponse | null>(
-    null,
-  );
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadCollapsed, setUploadCollapsed] = useState(false);
-
   // Answer/question attachment.
   const attachInputRef = useRef<HTMLInputElement | null>(null);
-  const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   // Wave 2: monthly plan-revision draft (banner + side sheet).
@@ -228,7 +220,11 @@ export default function AdvisorPage() {
   const askNext = useCallback(
     async (
       lastUserMessage: string,
-      opts?: { targetField?: string; currentStage?: string },
+      opts?: {
+        targetField?: string;
+        currentStage?: string;
+        attachments?: File[];
+      },
     ) => {
       try {
         setLoading(true);
@@ -253,43 +249,35 @@ export default function AdvisorPage() {
   }, [refreshGaps, askNext]);
 
   const submit = async () => {
-    if (!pending && !userInput.trim() && !attachedFile) return;
+    if (!pending && !userInput.trim() && attachedFiles.length === 0) return;
     setSubmitError(null);
 
-    let augmented = userInput;
-    if (attachedFile) {
-      try {
-        const r = await api.intakeFileToText(attachedFile);
-        const fenced =
-          "I've attached " +
-          r.filename +
-          ":\n```\n" +
-          r.extracted_text +
-          "\n```\n\n";
-        augmented = fenced + (userInput || "");
-      } catch (e: unknown) {
-        setSubmitError(e instanceof Error ? e.message : String(e));
-        return;
-      }
-    }
+    const attachments = attachedFiles.slice();
+    const summary =
+      attachments.length > 0
+        ? `[attached ${attachments.map((f) => f.name).join(", ")}]${
+            userInput ? "\n" + userInput : ""
+          }`
+        : userInput;
 
     setHistory((h) => [
       ...h,
       {
         agent_message: pending?.question_for_user ?? "",
-        user_message: attachedFile
-          ? `[attached ${attachedFile.name}]${userInput ? "\n" + userInput : ""}`
-          : userInput,
+        user_message: summary,
         stage: pending?.stage ?? "stage_1",
         confidence: pending?.confidence ?? "MEDIUM",
         mode: pending?.mode ?? "gap_driven",
       },
     ]);
+    const userText = userInput;
     setUserInput("");
-    setAttachedFile(null);
+    setAttachedFiles([]);
     if (attachInputRef.current) attachInputRef.current.value = "";
     setPending(null);
-    await askNext(augmented);
+    await askNext(userText, {
+      attachments: attachments.length > 0 ? attachments : undefined,
+    });
   };
 
   // Sidebar row click → ask the agent to address THIS specific field
@@ -300,54 +288,44 @@ export default function AdvisorPage() {
     await askNext("", { targetField: item.path });
   };
 
-  const handleAttachChosen = (f: File | null) => {
+  const handleAttachChosen = (files: FileList | File[] | null) => {
     setSubmitError(null);
-    setAttachedFile(f);
+    if (!files) return;
+    const newOnes = Array.from(files);
+    if (newOnes.length === 0) return;
+    setAttachedFiles((prev) => [...prev, ...newOnes]);
   };
-  const removeAttachment = () => {
-    setAttachedFile(null);
+  const removeAttachment = (idx: number) => {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== idx));
     if (attachInputRef.current) attachInputRef.current.value = "";
   };
-
-  // ---- Upload handlers (carried over from legacy intake page) -------
-  const handleFileChosen = (f: File | null) => {
-    setUploadError(null);
-    if (f && !f.name.toLowerCase().endsWith(".md")) {
-      setUploadError("Please choose a Markdown (.md) file.");
-      setSelectedFile(null);
-      return;
-    }
-    setSelectedFile(f);
-  };
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+  // Drag-drop on the chat input
+  const handleChatDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    const f = e.dataTransfer.files?.[0];
-    if (f) handleFileChosen(f);
-  };
-  const onUpload = async () => {
-    if (!selectedFile) return;
-    setUploading(true);
-    setUploadError(null);
-    try {
-      const result = await api.intakeUpload(USER_ID, selectedFile);
-      setUploadResult(result);
-      setSelectedFile(null);
-    } catch (e: unknown) {
-      setUploadError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setUploading(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleAttachChosen(e.dataTransfer.files);
     }
   };
-  const onContinueAfterUpload = async () => {
-    setUploadCollapsed(true);
-    setPending(null);
-    await askNext("");
-  };
-  const reopenUpload = () => {
-    setUploadCollapsed(false);
-    setUploadResult(null);
-    setSelectedFile(null);
-    setUploadError(null);
+  // Paste a screenshot into the textarea
+  const handleChatPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items ?? [];
+    const imageFiles: File[] = [];
+    for (const item of items) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const f = item.getAsFile();
+        if (f) {
+          // Synthesize a friendly filename if the clipboard didn't supply one
+          const renamed = f.name && f.name !== ""
+            ? f
+            : new File([f], `pasted-${Date.now()}.png`, { type: f.type });
+          imageFiles.push(renamed);
+        }
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      handleAttachChosen(imageFiles);
+    }
   };
 
   // ---- Sidebar grouping ---------------------------------------------
@@ -457,102 +435,8 @@ export default function AdvisorPage() {
       <PlanInScopeCard userId={USER_ID} />
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_320px] gap-6">
-        {/* ---- Main column: chat + upload ---- */}
+        {/* ---- Main column: chat (uploads now happen inline below) ---- */}
         <div className="flex flex-col gap-6 min-w-0">
-          {/* Plan-upload widget. */}
-          {uploadCollapsed ? (
-            <p className="text-xs text-muted-foreground">
-              Plan uploaded.{" "}
-              <button
-                type="button"
-                onClick={reopenUpload}
-                className="text-primary underline-offset-4 hover:underline"
-              >
-                Upload another plan
-              </button>
-            </p>
-          ) : (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">
-                  Have an existing plan?
-                </CardTitle>
-                <CardDescription>
-                  Upload a Markdown plan and I&apos;ll only ask about
-                  what&apos;s missing.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-4">
-                {!uploadResult && (
-                  <>
-                    <div
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={handleDrop}
-                      onClick={() => fileInputRef.current?.click()}
-                      className="border border-dashed border-border rounded-md p-6 text-center cursor-pointer hover:bg-accent/30 transition-colors"
-                    >
-                      <p className="text-sm">
-                        {selectedFile
-                          ? selectedFile.name
-                          : "Drop a .md file here, or click to choose"}
-                      </p>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept=".md,text/markdown"
-                        className="hidden"
-                        onChange={(e) =>
-                          handleFileChosen(e.target.files?.[0] ?? null)
-                        }
-                      />
-                    </div>
-
-                    {uploadError && (
-                      <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
-                        <p className="text-sm text-red-500 font-mono">
-                          {uploadError}
-                        </p>
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-end gap-2">
-                      <Button
-                        onClick={onUpload}
-                        disabled={!selectedFile || uploading}
-                        size="sm"
-                      >
-                        {uploading ? (
-                          <span className="inline-flex items-center gap-2">
-                            <span
-                              className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent"
-                              aria-hidden
-                            />
-                            Extracting...
-                          </span>
-                        ) : (
-                          "Upload plan"
-                        )}
-                      </Button>
-                    </div>
-                  </>
-                )}
-
-                {uploadResult && (
-                  <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 p-4 flex flex-col gap-3">
-                    <p className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-                      {uploadResult.summary_for_user}
-                    </p>
-                    <div className="flex justify-end">
-                      <Button onClick={onContinueAfterUpload} size="sm">
-                        Continue
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
           {/* Chat surface. */}
           <Card>
             <CardHeader>
@@ -597,49 +481,68 @@ export default function AdvisorPage() {
                 </p>
               )}
 
-              {/* User input (always available — questions OR answers). */}
-              <div className="flex flex-col gap-2">
+              {/* User input — text + drag-drop + paste-image + file picker.
+                  Wave 5: a single composite surface replaces the separate
+                  "Have an existing plan?" widget. Drop a markdown file
+                  (it'll be ingested as a baseline plan), paste a screenshot
+                  (forwarded as an image to vision-capable backends), or
+                  click the paperclip. */}
+              <div
+                className="flex flex-col gap-2"
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={handleChatDrop}
+              >
                 <textarea
                   className="bg-background border border-border rounded-md px-3 py-2 text-sm font-mono min-h-[80px]"
                   value={userInput}
                   onChange={(e) => setUserInput(e.target.value)}
-                  placeholder="Type a question or share an update..."
+                  onPaste={handleChatPaste}
+                  placeholder="Type a question, drop a file, or paste a screenshot..."
                 />
 
-                {/* Attachment row. */}
-                <div className="flex flex-wrap items-center gap-2 text-xs">
+                {/* Attached-file pills. */}
+                {attachedFiles.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {attachedFiles.map((f, idx) => (
+                      <span
+                        key={`${f.name}-${idx}`}
+                        className="inline-flex items-center gap-1 text-xs bg-secondary/60 border border-border rounded-md px-2 py-1 font-mono"
+                      >
+                        <Paperclip className="h-3 w-3" aria-hidden suppressHydrationWarning />
+                        {f.name}
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(idx)}
+                          aria-label={`remove ${f.name}`}
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="h-3 w-3" aria-hidden suppressHydrationWarning />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Attach button row. */}
+                <div className="flex flex-wrap items-center gap-3 text-xs">
                   <label
                     htmlFor="advisor-attach-input"
-                    className="cursor-pointer text-primary underline-offset-4 hover:underline"
+                    className="cursor-pointer inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
                   >
-                    {attachedFile ? "Replace attachment" : "Attach a file"}
+                    <Paperclip className="h-3 w-3" aria-hidden suppressHydrationWarning />
+                    Attach
                   </label>
                   <input
                     id="advisor-attach-input"
                     ref={attachInputRef}
                     type="file"
                     accept={ATTACH_ACCEPT}
+                    multiple
                     className="hidden"
-                    onChange={(e) =>
-                      handleAttachChosen(e.target.files?.[0] ?? null)
-                    }
+                    onChange={(e) => handleAttachChosen(e.target.files)}
                   />
-                  {attachedFile && (
-                    <>
-                      <span className="text-muted-foreground font-mono">
-                        {attachedFile.name}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={removeAttachment}
-                        className="text-red-500 underline-offset-4 hover:underline"
-                      >
-                        remove
-                      </button>
-                    </>
-                  )}
                   <span className="text-muted-foreground">
-                    (.md, .markdown, .txt, .csv, .tsv, .pdf, .xlsx — 5 MB max)
+                    (text/markdown or images — 10 MB per file, 20 MB total)
                   </span>
                 </div>
 
@@ -664,7 +567,7 @@ export default function AdvisorPage() {
                   <Button
                     onClick={submit}
                     size="sm"
-                    disabled={loading || (!userInput.trim() && !attachedFile)}
+                    disabled={loading || (!userInput.trim() && attachedFiles.length === 0)}
                   >
                     Send
                   </Button>
