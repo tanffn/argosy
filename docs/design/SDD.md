@@ -13,6 +13,67 @@
 
 ---
 
+## Handover note (point-in-time — read this first if resuming)
+
+**Last edit**: 2026-05-08 by Claude (session ~595b8f8d). This is a time-bounded handover, not architectural doc. Once the Wave 5 work below merges, future-you should DELETE this section.
+
+### Where development is at right now
+
+- `main` HEAD: `3684b55` (`fix(agents): add missing asyncio import for ProactorEventLoop fallback`)
+- **Wave 5** (unified chat upload + image support) is **implemented but not yet merged**. Branch: `feat/plan-amendment-chat-upload` → actually `feat/chat-upload`. Worktree: `D:\Projects\financial-advisor\.worktrees\feat-chat-upload`. Last commit: `576fa7a` (`feat(agents): images on claude_code backend via streaming-mode prompt`). 6 commits total. 742/742 tests pass; TS clean.
+- Two reviewers (spec compliance + code quality) reported on Wave 5. Verdict: **Approved with follow-ups** — 0 Critical, 4 Important, ~10 Minor. **Fixes have NOT been dispatched yet.** See the punch list below.
+
+### Wave 5 review punch list (open work)
+
+#### Important (fix before merge to main)
+
+- **I1 — SDD §6.14 doc inconsistency.** §6.14 currently says claude_code rejects images; commit `576fa7a` actually added support (streaming-mode prompt). Update §6.14 prose to describe both backends correctly: api_key uses `messages.content` blocks; claude_code drives the SDK in streaming-input mode with `AsyncIterable[dict]` carrying the same content blocks via `claude.exe`'s stdin.
+- **I2 — Plan-shape heuristic too aggressive.** `argosy/api/routes/advisor.py::_maybe_ingest_plan_attachments` (~line 411-419 in worktree). Current rule: ANY `.md`/`.markdown` extension OR > 500 chars → promote to baseline + supersede prior. Risk: user pastes a long support email as `.txt` and silently overwrites their wealth plan. **Fix**: tighten to extension-only (`.md`, `.markdown`), OR add markdown-shape sniffing (`# ` heading + bulleted list), OR add a soft-undo confirmation in the next turn.
+- **I3 — JSON path regressed 422 → 500.** `argosy/api/routes/advisor.py::post_turn` (~line 382-383). When the request is JSON, code does `body = await request.json(); req = AdvisorTurnRequest(**body)`. Malformed JSON or pydantic validation errors bubble unhandled to a generic 500 instead of FastAPI's structured 422. **Fix**: wrap in `try/except (json.JSONDecodeError, ValidationError) → HTTPException(422, detail=...)`.
+- **I4 — Drop-on-textarea may insert filename text.** `ui/src/app/advisor/page.tsx` (~line 490-501). The wrapper `<div>` has `preventDefault` on `onDragOver`/`onDrop`, but the `<textarea>` child can still receive native default behavior depending on browser. **Fix**: also set `onDragOver`/`onDrop` with `preventDefault` directly on the `<textarea>`, OR move the textarea outside the drop zone.
+
+#### Minor (defer-able, can ship in a follow-up sweep)
+
+- M1: Empty-string `current_stage` in multipart becomes `""` not `None`. Cosmetic.
+- M2: `user_id` from a misclassified UploadFile (form misuse) becomes `<starlette UploadFile object>` string. Defensive `isinstance(form.get("user_id"), str)` check would catch.
+- M3: Import scope inside functions (`asyncio`/`base64`/`Path`) — should be module-top.
+- M4: Paste handler silently drops non-image files. Either widen filter or surface a toast.
+- M5: MIME sniffing trusts browser-provided `content_type`. Reading magic bytes (stdlib `imghdr` or first-N-bytes) would be more robust. Acceptable v1; revisit at multi-tenant.
+- M6: Per-turn cap rollback non-atomic (files briefly exist on disk between save and overflow-delete). Single-user OK.
+- (spec) Filename sanitization missing for NTFS-illegal chars (`<>:"|?*`). Upload of `weird:name.md` → 500 on Windows.
+- (spec) `tests/test_turn_attachments.py::test_save_attachments_total_cap_rolls_back` doesn't actually exercise the rollback path — each chunk is 12 MB which trips the per-FILE 10 MB cap first. Test passes on the wrong code path.
+- (spec) `argosy/services/turn_attachments.py:9` docstring claims caps come from `Settings.upload` but they're hardcoded module constants.
+
+#### Recommended next step
+
+Dispatch one comprehensive fixer (same pattern as Wave 3 + Wave 4 fix sweeps) for I1-I4 + the doable Minor items. Suggested grouping:
+1. I1+I3+spec-doc-drift (doc + 422 path) — small, fast
+2. I2 (plan-shape tightening) — pick markdown-only OR add heading sniff
+3. I4 + M4 (UI drop/paste hardening)
+4. M-sweep (M2 defensive, M3 cosmetic, filename sanitization, fix the rollback test, doc fix in turn_attachments.py)
+
+Then merge `feat/chat-upload` → `main` via fast-forward (same as Waves 1-4).
+
+### Pre-existing watch items (carried into this session, not Wave 5 fault)
+
+- **Live LLM e2e tests are flaky** under the `claude_code` backend on this machine — `tests/test_plan_distiller_golden.py` and `tests/test_plan_synthesis_e2e.py` have surfaced JSON-parsing transients in recent runs. Both pass when run individually with a clean state; flakiness shows up under full-suite runs that share `claude.exe` subprocess state. Not a Wave 5 issue. Worth a separate investigation but not blocking.
+- **Manual UI smokes**: deliberately skipped across all five waves per user direction. The user has never actually exercised any wave's UI end-to-end. Watch for surprises during real use.
+
+### Pre-existing dev-environment fixes that landed mid-session
+
+These are on `main` already; flagged so a fresh reader doesn't think Wave 5 introduced them:
+- **Migrations 0015-0018 applied** to the dev DB at session start. Found alembic at `0014`; applied four pending migrations after deduping 4 stale `plan_versions` rows (test re-uploads of the same Jacobs plan from earlier dev sessions). One row preserved as the active baseline.
+- **Windows asyncio fix** (commits `32835a5` + `3684b55`): claude-agent-sdk subprocess spawn was failing under uvicorn's default `SelectorEventLoop`. The fix wraps `_call_via_claude_code` in a thread-local `ProactorEventLoop` on Windows. Wave 5 inherits this fix.
+- **Version badge** (commit `0c58165`): `/api/health` now returns `git_sha` + `started_at`; UI footer surfaces them via `<VersionBadge />`. Glance at the footer to verify the running uvicorn matches the latest commit.
+- **uvicorn process state**: a fresh uvicorn was started during this session on `127.0.0.1:8000` (PID may have changed). Use the version badge in the footer or `curl /api/health` to confirm the running version.
+
+### Open questions surfaced during this session, not yet decided
+
+- **Path-as-text upload** (user asked "does it work with image path?"): not implemented. Could be a small follow-up that lets users paste a file path in chat and the route picks it up if it's a readable file in the allowlist. ~10 LoC if accepted; out of scope for Wave 5.
+- **`decision_kind="plan_reimport"` audit row** for chat-uploaded baselines: documented as deferred in SDD §6.14 (worktree). When a user uploads a new plan via chat, the prior baseline becomes `superseded` but no separate `decision_runs` row is opened. Current behavior is intentional v1; revisit if audit reconstruction needs it.
+
+---
+
 ## Quickstart for new agents — where to find things
 
 **Read this first.** This SDD is long; you do not need to read the codebase to make a non-trivial change. Use this section as a router from "I need to do X" → "look at file Y."
