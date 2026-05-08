@@ -80,12 +80,19 @@ def run_synthesis(
     user_id: str,
     trigger: Trigger,
     guidance: str = "",
+    existing_decision_run_id: int | None = None,
 ):
     """Execute the 5-phase synthesis. Writes a role='draft' row.
 
     Args:
         guidance: optional free-text from the user's check-in to weight
             the synthesis (e.g. "weight tax analyst more heavily").
+        existing_decision_run_id: when set, reuse this DecisionRun row
+            for audit lineage instead of opening a fresh one. Used by
+            the plan_amendment_chat large worker so a single decision_run
+            spans amendment dispatch + synthesis (no smeared lineage
+            across two unrelated rows). When None, behaves as before:
+            opens a fresh `decision_kind='plan_revision'` row.
     """
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
@@ -95,22 +102,34 @@ def run_synthesis(
 
     prior_current = get_current_plan(session, user_id)
 
-    # Open a real DecisionRun row so PlanVersion.decision_run_id (Integer FK)
-    # is valid and the SDD §6.11 audit lineage is real, not fictitious.
-    # ticker="(plan)" and tier="T3" are sentinels for plan-revision runs
-    # (distinct from per-trade runs which carry the actual ticker + tier).
-    decision_run = DecisionRun(
-        user_id=user_id,
-        ticker="(plan)",
-        tier="T3",
-        decision_kind="plan_revision",
-        started_at=datetime.now(timezone.utc),
-        status="running",
-    )
-    session.add(decision_run)
-    session.commit()
-    session.refresh(decision_run)
-    decision_run_id: int = decision_run.id  # integer PK — used for PlanVersion FK
+    if existing_decision_run_id is not None:
+        # Reuse the caller's row (e.g. plan_amendment_chat large worker)
+        # so the lineage chat-turn → DecisionRun → draft is a single
+        # path, not two rows tied together by convention. The caller is
+        # responsible for stamping the row's started_at + decision_kind.
+        decision_run = session.get(DecisionRun, existing_decision_run_id)
+        if decision_run is None:
+            raise RuntimeError(
+                f"existing_decision_run_id={existing_decision_run_id} not found",
+            )
+        decision_run_id = decision_run.id
+    else:
+        # Open a real DecisionRun row so PlanVersion.decision_run_id (Integer FK)
+        # is valid and the SDD §6.11 audit lineage is real, not fictitious.
+        # ticker="(plan)" and tier="T3" are sentinels for plan-revision runs
+        # (distinct from per-trade runs which carry the actual ticker + tier).
+        decision_run = DecisionRun(
+            user_id=user_id,
+            ticker="(plan)",
+            tier="T3",
+            decision_kind="plan_revision",
+            started_at=datetime.now(timezone.utc),
+            status="running",
+        )
+        session.add(decision_run)
+        session.commit()
+        session.refresh(decision_run)
+        decision_run_id = decision_run.id  # integer PK — used for PlanVersion FK
 
     # String-form audit token for agent_reports.decision_id (String column).
     # Kept separate so the agent_reports audit trail has a human-readable ref.
@@ -260,9 +279,15 @@ def run_synthesis(
     # Stamp the DecisionRun row as finished — provides the audit lineage
     # SDD §6.11 promises: you can reconstruct the full synthesis by joining
     # plan_versions.decision_run_id → decision_runs.id.
-    decision_run.finished_at = datetime.now(timezone.utc)
-    decision_run.status = "completed"
-    session.commit()
+    #
+    # Skipped when the caller passed `existing_decision_run_id` (e.g. the
+    # plan_amendment_chat large worker): the caller owns the row and may
+    # need to re-check cancellation between synthesis-end and the
+    # completed stamp. Stamping here would race that check.
+    if existing_decision_run_id is None:
+        decision_run.finished_at = datetime.now(timezone.utc)
+        decision_run.status = "completed"
+        session.commit()
 
     # Invalidate the home-brief cache so the "ready to review" draft bullet
     # surfaces immediately (within the same request cycle) rather than waiting

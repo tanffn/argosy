@@ -199,8 +199,15 @@ def _medium_worker(*, session: Session, user_id: str,
         log.error("plan_amendment.medium.failed",
                   decision_run_id=decision_run.id, error=str(exc))
         session.refresh(decision_run)
+        # I2: merge error into notes_json rather than clobbering the
+        # original message+intent the dispatcher wrote (we want replay).
+        try:
+            existing_notes = json.loads(decision_run.notes_json or "{}")
+        except (ValueError, TypeError):
+            existing_notes = {}
+        existing_notes["error"] = str(exc)
+        decision_run.notes_json = json.dumps(existing_notes)
         decision_run.status = "failed"
-        decision_run.notes_json = json.dumps({"error": str(exc)})
         decision_run.finished_at = datetime.now(timezone.utc)
         session.commit()
         publish_event_threadsafe("plan.amendment.failed", {
@@ -213,7 +220,12 @@ def _medium_worker(*, session: Session, user_id: str,
 
 def _large_worker(*, session: Session, user_id: str,
                   decision_run: DecisionRun, guidance: str) -> None:
-    """Delegate to run_synthesis (full 5-phase) with guidance."""
+    """Delegate to run_synthesis (full 5-phase) with guidance.
+
+    Reuses the worker's own DecisionRun row for synthesis (via
+    `existing_decision_run_id`) so chat-turn → amendment row → draft is
+    a single audit chain instead of two independent rows.
+    """
     session.refresh(decision_run)
     if decision_run.status == "cancelled":
         log.info("plan_amendment.large.cancelled_before_start",
@@ -230,13 +242,23 @@ def _large_worker(*, session: Session, user_id: str,
     try:
         result = run_synthesis(
             session, user_id=user_id, trigger="check_in", guidance=guidance,
+            existing_decision_run_id=decision_run.id,
         )
-        # run_synthesis opens its OWN DecisionRun; attribute the amendment row
-        # to the same draft.
-        draft = session.get(PlanVersion, result.draft_id)
-        if draft is not None:
-            draft.decision_run_id = decision_run.id
-            session.commit()
+
+        # I5: cancellation can land mid-synthesis (~15 min window). Re-fetch
+        # before stamping completed; if the row was cancelled while we were
+        # running, leave the synthesis-produced draft as-is (forensic
+        # value) but DO NOT overwrite the cancelled status.
+        session.refresh(decision_run)
+        if decision_run.status == "cancelled":
+            log.info("plan_amendment.large.cancelled_during_run",
+                     decision_run_id=decision_run.id)
+            publish_event_threadsafe("plan.amendment.cancelled", {
+                "user_id": user_id,
+                "decision_run_id": decision_run.id,
+                "tier": "large",
+            })
+            return
 
         decision_run.finished_at = datetime.now(timezone.utc)
         decision_run.status = "completed"
@@ -252,8 +274,15 @@ def _large_worker(*, session: Session, user_id: str,
         log.error("plan_amendment.large.failed",
                   decision_run_id=decision_run.id, error=str(exc))
         session.refresh(decision_run)
+        # I2: merge error into notes_json rather than clobbering the
+        # original message+intent the dispatcher wrote (we want replay).
+        try:
+            existing_notes = json.loads(decision_run.notes_json or "{}")
+        except (ValueError, TypeError):
+            existing_notes = {}
+        existing_notes["error"] = str(exc)
+        decision_run.notes_json = json.dumps(existing_notes)
         decision_run.status = "failed"
-        decision_run.notes_json = json.dumps({"error": str(exc)})
         decision_run.finished_at = datetime.now(timezone.utc)
         session.commit()
         publish_event_threadsafe("plan.amendment.failed", {
