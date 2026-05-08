@@ -93,9 +93,30 @@ D:\Projects\financial-advisor\
     superpowers/plans/       # Wave-by-wave implementation plans
 ```
 
-### Memory + onboarding
+### User preferences (verbatim, binding policy)
 
-The user's persistent preferences live at `~/.claude/projects/.../memory/` (Claude Code memory directory). The `feedback_accuracy_over_cost.md` entry is referenced from §3.8. A fresh agent without that directory should treat §3.8 as authoritative.
+These are reproduced inline so a fresh agent never needs to look elsewhere. They override generic engineering heuristics (e.g. "use the cheapest model that works") for this project specifically.
+
+#### Accuracy over LLM cost
+
+> In Argosy design and implementation, prefer accuracy over LLM cost.
+>
+> **Why:** User explicitly said *"I less care about the LLM cost, more about accuracy"* while reviewing the plan-distillate design. The system is a financial advisor handling multi-million-dollar wealth decisions — a wrong answer is catastrophically more expensive than a few extra dollars in tokens.
+>
+> **How to apply:**
+> - When choosing between a cheap-but-fragile option and a thorough-but-expensive option (full-prose injection vs. compact + heuristic; Sonnet vs. Opus for a borderline-judgment role; one-shot vs. multi-pass review), default to the more thorough one.
+> - Don't lead with cost callouts in design discussions — mention them, but don't let them be the decisive factor.
+> - Aggressive prompt caching is fine and encouraged because it improves both axes (faster + cheaper + more consistent).
+> - Reserve cost concerns for guardrails (monthly budget cap per §A.2) and runaway-prevention, not for shaping per-call depth choices.
+
+#### Other binding preferences observed during Waves 1-4
+
+- **Manual UI smokes skipped by default.** The user has consistently chosen to defer manual browser smokes for every wave; backend tests + live LLM e2e are the verification surface. Don't add manual-smoke gates to plans unless the user explicitly asks.
+- **Live LLM tests must be opt-in.** Mark with `@pytest.mark.llm_eval` and gate via `_llm_backend_available()` so they're skipped without a live backend (`claude.exe` on PATH for `claude_code` mode, or `ANTHROPIC_API_KEY` for `api_key` mode).
+- **Local-only operation.** No remote git push has happened in Waves 1-4. Branches merge fast-forward into `main` locally. If a future agent wants to push, ask first.
+- **Solo developer, single-user system.** Multi-tenant concerns are not in scope. The "single in-flight per user" partial unique index (migration 0018) is the level of multi-user safety baked in.
+
+If you find a binding policy not listed above that you've inferred from the codebase, add it here so the next agent doesn't have to re-derive it.
 
 ---
 
