@@ -1,0 +1,154 @@
+"""Tests for plan_amendment dispatcher (Wave 4)."""
+
+from __future__ import annotations
+
+import pytest
+from sqlalchemy.orm import sessionmaker
+
+from argosy.state.models import DecisionRun, PlanVersion, User
+
+
+def _make_delta():
+    from argosy.agents.plan_synthesizer_types import Delta
+    return Delta(
+        item_kind="target", item_id="medium.targets.nvda", horizon="medium",
+        change_kind="modified", summary="NVDA cap 15% -> 12%",
+        prior={"value": 0.15}, proposed={"value": 0.12},
+        rationale="user-initiated tightening",
+    )
+
+
+def _make_intent(**kw):
+    from argosy.agents.advisor_amendment_types import AmendmentIntent
+    base = dict(tier="medium", rationale="x")
+    base.update(kw)
+    return AmendmentIntent(**base)
+
+
+@pytest.fixture
+def session_with_current(alembic_engine_at_head):
+    SessionLocal = sessionmaker(bind=alembic_engine_at_head, expire_on_commit=False)
+    s = SessionLocal()
+    s.add(User(id="ariel", plan="free"))
+    s.add(PlanVersion(
+        user_id="ariel", role="baseline", version_label="x", raw_markdown="# Plan",
+        distillate_rendered="# Plan distillate",
+    ))
+    pv = PlanVersion(
+        user_id="ariel", role="draft", version_label="prior-draft",
+        raw_markdown="",
+        horizon_long_json='{"horizon":"long","freshness_expected":"annual","status":"no_change","posture":"x"}',
+        horizon_medium_json='{"horizon":"medium","freshness_expected":"quarterly","status":"no_change","posture":"x","deltas_from_prior":[]}',
+        horizon_short_json='{"horizon":"short","freshness_expected":"monthly","status":"no_change","posture":"x"}',
+    )
+    s.add(pv)
+    s.commit()
+    s.refresh(pv)
+    yield s, pv
+    s.close()
+
+
+def test_run_small_appends_delta_to_existing_draft(session_with_current):
+    from argosy.orchestrator.flows.plan_amendment.dispatcher import run_small
+
+    sess, pv = session_with_current
+    intent_with_delta = _make_intent(tier="small", direction="tighten", proposed_delta=_make_delta())
+
+    result = run_small(sess, user_id="ariel", message="tighten NVDA", intent=intent_with_delta)
+
+    assert result.tier == "small"
+    assert result.status == "applied"
+    assert result.draft_id == pv.id
+    sess.refresh(pv)
+    import json
+    med = json.loads(pv.horizon_medium_json)
+    item_ids = [d["item_id"] for d in med["deltas_from_prior"]]
+    assert "medium.targets.nvda" in item_ids
+    delta = next(d for d in med["deltas_from_prior"] if d["item_id"] == "medium.targets.nvda")
+    assert delta["accepted"] is True
+    assert delta["user_edited"] is True
+
+
+def test_run_small_creates_decision_run_row(session_with_current):
+    from argosy.orchestrator.flows.plan_amendment.dispatcher import run_small
+
+    sess, _pv = session_with_current
+    intent = _make_intent(tier="small", direction="tighten", proposed_delta=_make_delta())
+
+    result = run_small(sess, user_id="ariel", message="tighten NVDA", intent=intent)
+
+    run = sess.get(DecisionRun, result.decision_run_id)
+    assert run is not None
+    assert run.decision_kind == "plan_amendment_chat"
+    assert run.tier == "small"
+    assert run.status == "completed"
+
+
+def test_dispatch_async_blocks_when_amendment_already_running(session_with_current, monkeypatch):
+    from argosy.orchestrator.flows.plan_amendment.dispatcher import dispatch_async
+
+    sess, _pv = session_with_current
+    # Pre-existing running amendment.
+    sess.add(DecisionRun(
+        user_id="ariel", ticker="(plan)", tier="medium",
+        decision_kind="plan_amendment_chat", status="running",
+    ))
+    sess.commit()
+
+    intent = _make_intent(tier="medium")
+
+    # Worker should NOT be dispatched.
+    spawned = []
+    monkeypatch.setattr(
+        "argosy.orchestrator.flows.plan_amendment.dispatcher._spawn_worker",
+        lambda *a, **kw: spawned.append(kw),
+    )
+
+    result = dispatch_async(
+        sess, user_id="ariel", message="x", tier="medium", intent=intent,
+    )
+
+    assert result.status == "needs_confirmation"
+    assert spawned == []
+
+
+def test_dispatch_async_returns_running_when_no_conflict(session_with_current, monkeypatch):
+    from argosy.orchestrator.flows.plan_amendment.dispatcher import dispatch_async
+
+    sess, _pv = session_with_current
+    spawned = []
+    monkeypatch.setattr(
+        "argosy.orchestrator.flows.plan_amendment.dispatcher._spawn_worker",
+        lambda **kw: spawned.append(kw),
+    )
+
+    intent = _make_intent(tier="medium")
+    result = dispatch_async(
+        sess, user_id="ariel", message="shift growth", tier="medium", intent=intent,
+    )
+
+    assert result.status == "running"
+    assert result.tier == "medium"
+    assert result.eta_seconds == 30
+    assert len(spawned) == 1
+    run = sess.get(DecisionRun, result.decision_run_id)
+    assert run.status == "running"
+    assert run.tier == "medium"
+
+
+def test_dispatch_async_large_eta_is_900s(session_with_current, monkeypatch):
+    from argosy.orchestrator.flows.plan_amendment.dispatcher import dispatch_async
+
+    sess, _pv = session_with_current
+    monkeypatch.setattr(
+        "argosy.orchestrator.flows.plan_amendment.dispatcher._spawn_worker",
+        lambda **kw: None,
+    )
+
+    intent = _make_intent(tier="large")
+    result = dispatch_async(
+        sess, user_id="ariel", message="re-evaluate", tier="large", intent=intent,
+    )
+
+    assert result.tier == "large"
+    assert result.eta_seconds == 900
