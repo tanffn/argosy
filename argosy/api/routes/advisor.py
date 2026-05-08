@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.agents.advisor import AdvisorAgent, AdvisorTurnOutput
+from argosy.agents.advisor_amendment_types import AmendmentResultDTO
 from argosy.agents.gap_tracker import (
     FieldSpec,
     compute_field_timestamps,
@@ -46,6 +47,11 @@ from argosy.state.models import (
     UserContext,
 )
 from argosy.state.queries import get_latest_investor_event
+
+# Sync `get_db` dependency from the plan route. Both /turn (amendment
+# dispatch) and /check-in need a sync Session; the existing
+# `client_with_db` fixture already overrides this dependency.
+from argosy.api.routes.plan import get_db  # noqa: E402
 
 _log = get_logger("argosy.api.advisor")
 router = APIRouter(prefix="/advisor", tags=["advisor"])
@@ -95,6 +101,9 @@ class AdvisorTurnResponse(BaseModel):
     context_updates: list[dict[str, Any]]
     intake_session_id: str
     mode: str
+    # Wave 4: populated when the advisor classified a plan-amendment
+    # request in this turn. None on plain Q&A / gap-driven turns.
+    amendment: AmendmentResultDTO | None = None
 
 
 class GapItemDTO(BaseModel):
@@ -317,12 +326,20 @@ async def _persist_turn(
 
 
 @router.post("/turn", response_model=AdvisorTurnResponse)
-async def post_turn(req: AdvisorTurnRequest) -> AdvisorTurnResponse:
+async def post_turn(
+    req: AdvisorTurnRequest,
+    db: Session = Depends(get_db),
+) -> AdvisorTurnResponse:
     """Drive one advisor turn. Two modes:
 
     - gap_driven: agent asks the next missing/stale gap (batched).
     - user_driven: agent answers the user's message (and may log
       context_updates extracted from it, plus a related follow-up).
+
+    Wave 4: when the agent's structured output carries an `amendment`
+    field (a chat-borne plan-change request), classify and dispatch:
+    Small applies inline; Medium/Large open a DecisionRun row and spawn
+    a worker. The dispatch result rides back on `AdvisorTurnResponse.amendment`.
     """
     # local import to avoid circulars on module load
     from argosy.api.routes.intake import _apply_turn_update
@@ -460,6 +477,59 @@ async def post_turn(req: AdvisorTurnRequest) -> AdvisorTurnResponse:
         apply_turn_update=_apply_turn_update,
     )
 
+    # Wave 4: amendment dispatch.
+    # When the advisor classified a plan-amendment request, route it:
+    #   - Small (after classifier confirms tighten + delta) → run_small inline.
+    #   - Medium/Large (or escalated Small) → dispatch_async opens a
+    #     DecisionRun and spawns a worker thread; we return immediately.
+    # Failures here are logged and swallowed: the chat turn itself
+    # already succeeded and we don't want a dispatcher hiccup to break
+    # the user's conversation. The amendment field stays None.
+    amendment_dto: AmendmentResultDTO | None = None
+    advisor_amendment = getattr(out, "amendment", None)
+    if advisor_amendment is not None:
+        from argosy.orchestrator.flows.plan_amendment import (
+            classify,
+            dispatch_async,
+            run_small,
+        )
+        from argosy.orchestrator.flows.plan_amendment._types import EffectiveTier
+
+        classified = classify(advisor_amendment)
+        try:
+            if classified.effective_tier == EffectiveTier.SMALL:
+                # classified.proposed_delta is guaranteed non-None for SMALL.
+                small_intent = advisor_amendment.model_copy(
+                    update={"proposed_delta": classified.proposed_delta},
+                )
+                amendment_dto = run_small(
+                    db,
+                    user_id=req.user_id,
+                    message=req.last_user_message,
+                    intent=small_intent,
+                )
+            else:
+                # Classifier may have escalated small→medium; rebuild the
+                # intent so the dispatcher sees the effective tier.
+                effective_intent = advisor_amendment.model_copy(
+                    update={"tier": classified.effective_tier.value},
+                )
+                amendment_dto = dispatch_async(
+                    db,
+                    user_id=req.user_id,
+                    message=req.last_user_message,
+                    tier=classified.effective_tier.value,
+                    intent=effective_intent,
+                )
+        except Exception as exc:
+            # Don't fail the chat turn over a dispatch error.
+            _log.error(
+                "advisor.turn.amendment_dispatch_failed",
+                user_id=req.user_id,
+                error=str(exc),
+            )
+            amendment_dto = None
+
     return AdvisorTurnResponse(
         stage=out.stage,
         question_for_user=out.question_for_user,
@@ -471,6 +541,7 @@ async def post_turn(req: AdvisorTurnRequest) -> AdvisorTurnResponse:
         context_updates=[u.model_dump() for u in out.context_updates],
         intake_session_id=session_id or "",
         mode=getattr(out, "mode", mode) or mode,
+        amendment=amendment_dto,
     )
 
 
@@ -958,9 +1029,7 @@ async def get_home_brief(
 # entry covers this route too. `run_synthesis` is synchronous and takes
 # a sync SQLAlchemy `Session`, hence the sync handler here (the rest of
 # this module is async, but mixing is fine — FastAPI handles each route
-# independently).
-
-from argosy.api.routes.plan import get_db
+# independently). `get_db` is imported at module top.
 
 
 class CheckInRequest(BaseModel):
@@ -1009,9 +1078,60 @@ def post_check_in(
     )
 
 
+# ----------------------------------------------------------------------
+# /amendment/{decision_run_id}/cancel — Wave 4
+# ----------------------------------------------------------------------
+#
+# Cancel a running plan-amendment-chat DecisionRun. 404 when the run
+# doesn't exist, isn't owned by the user, or isn't a plan-amendment-chat
+# run. 409 when the run isn't in `running` status (already completed,
+# already cancelled, or failed).
+
+
+class AmendmentCancelResponse(BaseModel):
+    status: str
+    decision_run_id: int
+
+
+@router.post(
+    "/amendment/{decision_run_id}/cancel",
+    response_model=AmendmentCancelResponse,
+)
+def post_amendment_cancel(
+    decision_run_id: int,
+    user_id: str,
+    db: Session = Depends(get_db),
+) -> AmendmentCancelResponse:
+    """Cancel a running plan-amendment-chat DecisionRun."""
+    from argosy.orchestrator.flows.plan_amendment import cancel
+    from argosy.state.models import DecisionRun
+
+    run = db.get(DecisionRun, decision_run_id)
+    if (
+        run is None
+        or run.user_id != user_id
+        or run.decision_kind != "plan_amendment_chat"
+    ):
+        raise HTTPException(status_code=404, detail="amendment not found for user")
+    if run.status != "running":
+        raise HTTPException(
+            status_code=409,
+            detail=f"amendment is in status {run.status!r}; cannot cancel",
+        )
+
+    ok = cancel(db, user_id=user_id, decision_run_id=decision_run_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail="cancel failed")
+
+    return AmendmentCancelResponse(
+        status="cancelled", decision_run_id=decision_run_id,
+    )
+
+
 __all__ = [
     "AdvisorTurnRequest",
     "AdvisorTurnResponse",
+    "AmendmentCancelResponse",
     "CheckInRequest",
     "CheckInResponse",
     "GapItemDTO",
