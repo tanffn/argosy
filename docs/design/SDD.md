@@ -853,6 +853,58 @@ the existing analyst-reports concatenation (sentiment + news + watchlist
 agent outputs) in Phase 1 — `argosy/agents/watchlist.py` requires no
 per-agent change for Wave 3.
 
+### 6.13 Plan amendment chat flow (Wave 4 of plan-distillate work)
+
+Between scheduled syntheses, the user can ask the advisor in chat for a
+structural plan change. The advisor classifies the request as `small`,
+`medium`, or `large` and dispatches accordingly.
+
+**Tiers:**
+
+- **small** (~5s, inline) — strict-tightening Delta on one specific target/
+  action/theme. Direction must reduce risk surface (lower cap, raise floor,
+  shorten horizon, narrower drawdown). The advisor emits a fully-formed
+  `Delta` in its turn output; the dispatcher applies it to the existing
+  pending draft (or to a new minimal draft seeded from `current`).
+- **medium** (~30s, async) — theme shift on one horizon, multi-target
+  tweak, loosening, or anything that needs cross-target reasoning. Runs
+  Phase 3 of `plan_synthesis_flow` only — the synthesizer with the user's
+  message as `guidance`. Skips analysts/debate/risk/FM phases. Cost ~$0.50.
+- **large** (~15 min, async) — structural rethink, "re-evaluate everything",
+  cross-horizon. Runs the full 5-phase `plan_synthesis_flow.run_synthesis(...)`
+  with `trigger="check_in"` and the user's message as `guidance`. Functionally
+  equivalent to `POST /api/advisor/check-in`.
+
+**Async UX.** Medium and Large dispatch a worker on `asyncio.to_thread`,
+return `202` to the chat with `decision_run_id` + `eta_seconds`, and emit
+`plan.amendment.completed` (plus `plan.draft.completed` for Large) when
+done. The advisor page shows a status pill while the run is in flight and
+fires a browser-level Web Notification on completion (opt-in; in-app
+banner is the always-on fallback).
+
+**Concurrency.** One in-flight async amendment per user, enforced by the
+partial unique index `ix_decision_runs_one_amendment_running_per_user`
+(migration 0018). A second amendment while one is running returns
+`needs_confirmation` so the chat asks the user to cancel-and-restart vs
+queue.
+
+**Cancellation.** `POST /api/advisor/amendment/{decision_run_id}/cancel`
+flips the row to `status='cancelled'`. The worker checks status between
+phases and bails. A Large run cancelled past Phase 3 commits the partial
+draft as `role='superseded'` (preserved for audit, not surfaced to UI).
+
+**Audit lineage.** Each amendment opens a `decision_runs` row with
+`decision_kind='plan_amendment_chat'` and `tier in {small,medium,large}`.
+The `decision_runs.tier` column is shared across kinds: T0/T3 for
+trade-flow rows, small/medium/large for amendment-chat rows; `decision_kind`
+discriminates (migration 0018 widened `tier` to `String(8)` and made it
+nullable to accommodate both vocabularies). The resulting `plan_versions`
+row carries `decision_run_id` for end-to-end traceability — chat-turn →
+DecisionRun → draft → (after accept) current.
+
+See `docs/superpowers/specs/2026-05-07-plan-amendment-chat-flow-design.md`
+for the full design.
+
 ---
 
 ## 7. Domain Knowledge Base
@@ -1204,6 +1256,7 @@ Everything *after* the agent team produces an `ApprovedProposal`: external appro
 | `speculative` | limited | live | T0 — auto-execute, paper logged |
 | `speculative` | limited | paper | PaperFill log; cap-enforced preflight |
 | `plan_revision` | Any | Any | Human queue, **always T3 depth, never auto-execute** |
+| `plan_amendment_chat` | Any | Any | T3-equivalent fleet review when tier in {medium, large}; tier=small bypasses fleet (advisor's structured Delta is the audit). |
 
 Hard rule: `queue_only` mode disables every "auto-execute" cell — no exceptions.
 
@@ -1328,6 +1381,8 @@ plan.draft.delta.accepted plan.draft.delta.edited
 plan.draft.accepted       plan.draft.rejected
 plan.current.changed
 plan.speculative.routed   plan.synthesis.cap_load_failed
+plan.amendment.started      plan.amendment.completed
+plan.amendment.failed       plan.amendment.cancelled
 ```
 
 Frontend subscribes selectively per screen: Proposals queue subscribes to `proposal.*`; Portfolio subscribes to `position.*` and `price.*` for visible tickers; etc.
