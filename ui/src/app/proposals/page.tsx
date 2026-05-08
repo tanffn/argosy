@@ -356,6 +356,23 @@ export default function ProposalsPage() {
               <CardDescription>
                 {selected.proposal.action} {selected.proposal.ticker} · tier{" "}
                 {selected.proposal.tier}
+                {/* Provenance Wave E: deep-link to the full negotiation replay
+                    so the user can see the parsed verdicts + transcripts. */}
+                {selected.decision_run &&
+                  typeof (selected.decision_run as { id?: unknown }).id ===
+                    "number" && (
+                    <>
+                      {" · "}
+                      <a
+                        href={`/decisions/${
+                          (selected.decision_run as { id: number }).id
+                        }`}
+                        className="text-primary hover:underline"
+                      >
+                        view full replay →
+                      </a>
+                    </>
+                  )}
               </CardDescription>
             </div>
             <Button variant="outline" size="sm" onClick={() => setSelected(null)}>

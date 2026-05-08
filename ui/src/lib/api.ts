@@ -228,6 +228,63 @@ export interface FilesListResponse {
   offset: number;
 }
 
+export interface ParticipantDTO {
+  agent_role: string;
+  agent_report_id: number;
+  side: string | null;
+  perspective: string | null;
+  round: number | null;
+  confidence: string | null;
+  model: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  cost_usd: number | null;
+}
+
+export interface PhaseDTO {
+  id: number;
+  seq: number;
+  kind: string;
+  started_at: string;
+  finished_at: string | null;
+  verdict_kind: string | null;
+  verdict: Record<string, unknown> | null;
+  tldr_md: string | null;
+  sequence_mmd: string | null;
+  participants: ParticipantDTO[];
+  transcript_md_url: string;
+}
+
+export interface DecisionRunDTO {
+  id: number;
+  user_id: string;
+  decision_kind: string | null;
+  ticker: string | null;
+  tier: string | null;
+  started_at: string;
+  finished_at: string | null;
+  status: string | null;
+  fund_manager_decision: string | null;
+  proposal_id: number | null;
+  notes_json: string | null;
+}
+
+export interface UserFileLite {
+  id: number;
+  original_name: string;
+  kind: string;
+  source: string;
+  size_bytes: number;
+  created_at: string;
+}
+
+export interface ReplayResponse {
+  decision_run: DecisionRunDTO;
+  phases: PhaseDTO[];
+  inputs: { user_files: UserFileLite[] };
+  sequence_mmd_full: string;
+}
+
 // ----------------------------------------------------------------------
 // Phase 5: Argonaut + security
 // ----------------------------------------------------------------------
@@ -432,6 +489,18 @@ export const api = {
   fileContentUrl: (id: number, userId: string) =>
     apiUrl(
       `/api/files/${id}/content?user_id=${encodeURIComponent(userId)}`,
+    ),
+  getDecisionReplay: (decisionRunId: number, userId: string) =>
+    getJSON<ReplayResponse>(
+      `/api/decisions/${decisionRunId}/replay?user_id=${encodeURIComponent(userId)}`,
+    ),
+  getPhaseTranscriptUrl: (
+    decisionRunId: number,
+    phaseId: number,
+    userId: string,
+  ) =>
+    apiUrl(
+      `/api/decisions/${decisionRunId}/phases/${phaseId}/transcript?user_id=${encodeURIComponent(userId)}`,
     ),
 
   // Phase 5: Argonaut limited account
