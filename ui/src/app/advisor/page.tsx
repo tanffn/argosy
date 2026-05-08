@@ -18,10 +18,17 @@ import {
   type AdvisorGapItem,
   type AdvisorGapsResponse,
   type AdvisorTurnResponse,
+  type AmendmentEventPayload,
   type DraftResponse,
   type GapState,
   type IntakeUploadResponse,
 } from "@/lib/api";
+import {
+  ensureNotificationPermission,
+  notify,
+  permission,
+} from "@/lib/notifications";
+import { useWSEvents } from "@/lib/ws";
 
 // File extensions accepted by the answer-form attachment picker. Mirrors
 // argosy/ingest/file_to_text.py's _EXT_TO_KIND whitelist.
@@ -128,6 +135,22 @@ export default function AdvisorPage() {
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
 
+  // Wave 4: plan amendment chat flow.
+  // - `activeAmendment` drives the in-flight status pill (Medium/Large only;
+  //   Small applies inline and never has a "running" phase).
+  // - `amendmentSystemMessage` is the in-app banner shown on completion or
+  //   failure — the always-on fallback when the user did not grant browser
+  //   notification permission.
+  const [activeAmendment, setActiveAmendment] = useState<{
+    decision_run_id: number;
+    tier: "medium" | "large";
+    eta_seconds: number;
+    started_at: number;
+  } | null>(null);
+  const [amendmentSystemMessage, setAmendmentSystemMessage] = useState<
+    string | null
+  >(null);
+
   const refreshDraft = useCallback(async () => {
     try {
       const d = await api.planDraft(USER_ID);
@@ -141,6 +164,56 @@ export default function AdvisorPage() {
   useEffect(() => {
     refreshDraft();
   }, [refreshDraft]);
+
+  // Wave 4: subscribe to plan.amendment.* events via the same /ws hook the
+  // home + proposals pages use. `useWSEvents` returns the most recent
+  // matching event; we react to it via the effect below.
+  const lastAmendmentEvent = useWSEvents<AmendmentEventPayload>([
+    "plan.amendment.started",
+    "plan.amendment.completed",
+    "plan.amendment.failed",
+    "plan.amendment.cancelled",
+  ]);
+
+  useEffect(() => {
+    if (!lastAmendmentEvent) return;
+    const { event, payload } = lastAmendmentEvent;
+    // Filter to this user — the /ws stream is shared across users.
+    if (payload.user_id !== USER_ID) return;
+    if (event === "plan.amendment.started") {
+      if (payload.tier === "medium" || payload.tier === "large") {
+        setActiveAmendment({
+          decision_run_id: payload.decision_run_id,
+          tier: payload.tier,
+          eta_seconds:
+            payload.eta_seconds ?? (payload.tier === "medium" ? 30 : 900),
+          started_at: Date.now(),
+        });
+      }
+    } else if (event === "plan.amendment.completed") {
+      setActiveAmendment(null);
+      setAmendmentSystemMessage("Plan revision ready — review it now.");
+      refreshDraft();
+      notify("Argosy", "Your plan revision is ready — review it now");
+    } else if (event === "plan.amendment.failed") {
+      setActiveAmendment(null);
+      setAmendmentSystemMessage(
+        `Plan amendment failed${payload.error ? `: ${payload.error}` : ""}.`,
+      );
+    } else if (event === "plan.amendment.cancelled") {
+      setActiveAmendment(null);
+      setAmendmentSystemMessage("Plan amendment cancelled.");
+    }
+  }, [lastAmendmentEvent, refreshDraft]);
+
+  // Wave 4: prompt for browser-notification permission the first time a
+  // Medium/Large amendment goes in-flight. Default state means we have not
+  // asked yet; granted/denied skip the prompt.
+  useEffect(() => {
+    if (activeAmendment && permission() === "default") {
+      void ensureNotificationPermission();
+    }
+  }, [activeAmendment]);
 
   const refreshGaps = useCallback(async () => {
     try {
@@ -304,6 +377,47 @@ export default function AdvisorPage() {
       </header>
 
       {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+
+      {activeAmendment && (
+        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 flex items-center justify-between text-sm">
+          <span>
+            Plan amendment in progress (
+            <strong>{activeAmendment.tier}</strong> · ETA{" "}
+            {activeAmendment.tier === "medium" ? "~30s" : "~15 min"})
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={async () => {
+              try {
+                await api.advisorAmendmentCancel(
+                  USER_ID,
+                  activeAmendment.decision_run_id,
+                );
+              } catch {
+                // Server may have completed in the meantime; refresh the
+                // surface so the pill clears regardless.
+                setActiveAmendment(null);
+              }
+            }}
+          >
+            Cancel
+          </Button>
+        </div>
+      )}
+
+      {amendmentSystemMessage && (
+        <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+          {amendmentSystemMessage}
+          <button
+            type="button"
+            className="ml-2 text-xs text-muted-foreground hover:underline"
+            onClick={() => setAmendmentSystemMessage(null)}
+          >
+            dismiss
+          </button>
+        </div>
+      )}
 
       {draft && (
         <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 flex items-center justify-between">

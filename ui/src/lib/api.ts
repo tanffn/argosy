@@ -645,6 +645,16 @@ export const api = {
       `/api/plan/current/speculative/${encodeURIComponent(ticker)}/take?user_id=${encodeURIComponent(userId)}&execution_mode=${executionMode}`,
       {},
     ),
+
+  // ----------------------------------------------------------------------
+  // Wave 4: plan amendment chat flow
+  // ----------------------------------------------------------------------
+
+  advisorAmendmentCancel: (userId: string, decisionRunId: number) =>
+    postJSON<{ status: string; decision_run_id: number }>(
+      `/api/advisor/amendment/${decisionRunId}/cancel?user_id=${encodeURIComponent(userId)}`,
+      {},
+    ),
 };
 
 // ----------------------------------------------------------------------
@@ -729,6 +739,7 @@ export interface AdvisorTurnResponse {
   context_updates: Array<Record<string, unknown>>;
   intake_session_id: string;
   mode: string;
+  amendment?: AmendmentResultDTO | null;
 }
 
 export type GapState = "fresh" | "missing" | "stale";
@@ -907,4 +918,25 @@ export interface DraftResponse {
   horizon_long_md: string | null;
   horizon_medium_md: string | null;
   horizon_short_md: string | null;
+}
+
+// ----------------------------------------------------------------------
+// Wave 4: plan amendment chat flow
+// ----------------------------------------------------------------------
+
+export interface AmendmentResultDTO {
+  tier: "small" | "medium" | "large";
+  decision_run_id: number;
+  status: "applied" | "running" | "needs_confirmation" | "cancelled_existing";
+  draft_id: number | null;
+  eta_seconds: number | null;
+}
+
+export interface AmendmentEventPayload {
+  user_id: string;
+  decision_run_id: number;
+  tier: "small" | "medium" | "large";
+  draft_id?: number;
+  eta_seconds?: number;
+  error?: string;
 }
