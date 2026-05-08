@@ -13,6 +13,92 @@
 
 ---
 
+## Quickstart for new agents — where to find things
+
+**Read this first.** This SDD is long; you do not need to read the codebase to make a non-trivial change. Use this section as a router from "I need to do X" → "look at file Y."
+
+### Common tasks → entry points
+
+| Task | Start with | Then look at |
+|---|---|---|
+| Understand the data model | `argosy/state/models.py` | §8.5 (migration history), §8.6 (audit lineage) |
+| Add or modify an agent | `argosy/agents/<role>.py` | `argosy/agents/base.py` (esp. `DEFAULT_MODEL_BY_ROLE`), §3 |
+| Add a structured agent output type | `argosy/agents/<role>_types.py` (or alongside the agent) | existing pydantic types in `plan_synthesizer_types.py` for style |
+| Wire a new orchestration flow | `argosy/orchestrator/flows/` (packages: `plan_synthesis/`, `plan_amendment/`) | §6.11, §6.13 |
+| Add or modify a cadence loop | `argosy/orchestrator/loops/` (`monthly_cycle.py`, `plan_watcher.py`, `daily_brief.py`, …) | §5.1 |
+| Trade-flow per-decision logic | `argosy/decisions/flow.py`, `argosy/decisions/risk_preflight.py`, `argosy/decisions/tiers.py` | §10 |
+| Add a REST endpoint | `argosy/api/routes/<resource>.py`; register in `argosy/api/main.py` | §11.7 (full endpoint inventory) |
+| Emit or subscribe to a WebSocket event | `argosy/api/events.py` (`publish_event_threadsafe`) | §11.3 (event inventory + emitter map) |
+| Read or write user config | `argosy/config.py` (Settings + `load_speculation_cap`, `get_user_agent_settings`) | §A.2 (`agent_settings.yaml` example) |
+| Add a UI surface | `ui/src/app/<page>/page.tsx` | reuse `ui/src/components/ui/*` primitives (plain Tailwind, no Radix) |
+| Add a UI API call | `ui/src/lib/api.ts` (extend `api = { … }` object) | match existing `getJSON` / `postJSON` helpers |
+| Subscribe to WS events from UI | `ui/src/lib/ws.ts` `useWSEvents([...])` hook | filter on `payload.user_id !== USER_ID` (advisor page does this; home/proposals do not — known latent issue, §15.4) |
+| Add a test | `tests/test_<module>.py`, fixtures in `tests/conftest.py` | use `alembic_engine_at_head` for DB-backed; `client_with_db` for FastAPI-backed |
+| Add a live-LLM test | mark `@pytest.mark.llm_eval`; gate via `_llm_backend_available()` | see `tests/test_plan_synthesis_e2e.py` for the pattern |
+| Understand a specific wave's intent | §6.10 (W1 distillate), §6.11 (W2 synthesis), §6.12 (W3 speculation), §6.13 (W4 amendment chat) | full design specs at `docs/superpowers/specs/` (historical but rich) |
+| Speculation cap enforcement | `argosy/config.py::SpeculationCap`, `argosy/agents/plan_synthesizer.py` (prompt block), `argosy/orchestrator/flows/plan_synthesis/orchestrator.py::_enforce_speculation_cap`, `argosy/orchestrator/speculation_router.py` (preflight) | §6.12 |
+| Audit lineage walkthrough | §8.6 (the `decision_runs ↔ plan_versions ↔ proposals ↔ agent_reports` map) | grep `decision_kind` |
+
+### Project-wide conventions / gotchas
+
+These are the things that have bitten the implementation team during Waves 1-4. A new agent should know them before changing code.
+
+- **`BaseAgent.__init__` requires `user_id` (kwarg-only).** Tests instantiate as `AgentClass(user_id="ariel")` (or `"test"` / `"system"`). The original specs forgot this on every wave; every plan ended up adapting it.
+- **`FXAnalystAgent`** has capital `FX` (not `Fx`). The synthesis flow imports it as `from argosy.agents.fx_analyst import FXAnalystAgent as FxAnalystAgent` to match the spec's casing in tests. If you grep for `FxAnalystAgent`, you'll find the alias; the real class is capital-X.
+- **`RiskOfficerAgent` takes `perspective=...`** (not `stance=`). Values: `"aggressive" | "neutral" | "conservative"`. Single class; no per-stance subclasses (unlike researchers, which split into `BullResearcherAgent` / `BearResearcherAgent`).
+- **`account_class="limited"`** is the DB string for the Argonaut account. The feature/UI name "Argonaut" and the DB column value "limited" are different. Wave 3 review fix C1 changed every site that wrote `"argonaut"` to `"limited"` because the broker router (`argosy/execution/router.py:102`) checks `proposal.account_class == "limited"`. Don't write `"argonaut"` to the column.
+- **`decision_run_id` is an `Integer` FK to `decision_runs.id`**, not a string. Synthesis opens a real `DecisionRun` row at start and stamps `finished_at` on completion. Wave 2 review fix C2 corrected this.
+- **`decision_runs.tier` column is shared** across trade-flow (`"T0"`/`"T3"`) and amendment-chat (`"small"`/`"medium"`/`"large"`). `decision_kind` discriminates. Migration 0018 widened it from `String(4) NOT NULL` to `String(8)` nullable.
+- **Sync↔async bridging:** Wave 2 fix I3 added `publish_event_threadsafe(name, payload)` in `argosy/api/events.py`. Use it from any context. Don't call `await publish_event(...)` directly from a worker thread — `_lock` is bound to the main loop.
+- **Two proposal-creation paths exist.** Trade-flow uses async `DecisionFlow._persist_proposal` in `argosy/decisions/flow.py`. Speculative-routing uses sync `proposal_lifecycle.create_speculative_proposal` in `argosy/orchestrator/proposal_lifecycle.py`. They share the `proposals` table but diverge on commit semantics. See §15.4.
+- **`run_synthesis(...)` accepts an optional `existing_decision_run_id`** parameter (Wave 4 fix I1). Pass it when the caller has already opened the DecisionRun (used by `_large_worker` for amendment chat). Otherwise `run_synthesis` opens its own.
+- **`AdvisorAgent.build_prompt(has_current_plan=True/False)`** gates the amendment classification block. Production callers (`POST /api/advisor/turn`) MUST pass it (Wave 4 fix C1). Wave 4 had the bug where the route forgot — the LLM never saw the classification instructions and the entire feature was dead in production.
+- **WebSocket event payloads include `user_id`.** UI subscribers must filter (`payload.user_id !== USER_ID`) to avoid cross-user bleed; only the advisor page does this today.
+
+### User preferences (binding policy)
+
+- **Accuracy over LLM cost.** Synthesizer + bull/bear/trader/fund_manager/audit/plan_synthesizer default to Opus. No Haiku defaults remain. Reviewer agents on Opus too. See §3.8.
+- **Manual UI smokes deliberately skipped** by user request across all four waves; backend tests + live LLM e2e are the verification surface.
+- **Live LLM tests cost-controlled** by the `@pytest.mark.llm_eval` marker; opt-in only.
+
+### Filesystem layout (top level)
+
+```
+D:\Projects\financial-advisor\
+  argosy/                    # Python backend
+    agents/                  # LLM agent classes (one per role)
+    api/                     # FastAPI app + routes + events
+    decisions/               # Trade-flow per-decision logic (T0–T3)
+    execution/               # Broker router + preflight
+    orchestrator/
+      flows/                 # Multi-step orchestration packages
+        plan_synthesis/      # Wave 2 (5-phase fleet review)
+        plan_amendment/      # Wave 4 (Small/Medium/Large amendment chat)
+      loops/                 # Cadence loops (monthly, daily, hourly, …)
+    services/                # Business-logic services (plan distillation, …)
+    state/                   # SQLAlchemy ORM (models.py) + queries.py
+    adapters/                # External integrations (cache, brokers, KB)
+    config.py                # Settings + per-feature loaders (SpeculationCap, …)
+    logging.py               # `get_logger` (structlog)
+  alembic/versions/          # 18 migrations (see §8.5)
+  tests/                     # All Python tests (`pytest -m "not llm_eval"`)
+  ui/                        # Next.js 15 app
+    src/app/                 # Pages
+    src/components/          # Reusable components (incl. `ui/` primitives)
+    src/lib/                 # API client, ws hook, notifications helper
+  docs/
+    design/SDD.md            # This document
+    domain/                  # Israel-resident KB (tax, UCITS, etc.)
+    superpowers/specs/       # Wave-by-wave design specs
+    superpowers/plans/       # Wave-by-wave implementation plans
+```
+
+### Memory + onboarding
+
+The user's persistent preferences live at `~/.claude/projects/.../memory/` (Claude Code memory directory). The `feedback_accuracy_over_cost.md` entry is referenced from §3.8. A fresh agent without that directory should treat §3.8 as authoritative.
+
+---
+
 ## Table of Contents
 
 1. [Overview & Goals](#1-overview--goals)
