@@ -394,32 +394,37 @@ class BaseAgent(Generic[T]):
         non-Windows the calling loop already supports subprocess, so the
         inner coroutine runs directly.
 
-        Wave 5: image attachments are NOT yet supported on this backend.
-        The claude-agent-sdk's `query(prompt=...)` API is text-only; the
-        underlying `claude.exe` does not expose a public way to attach
-        images. If the caller passes images, we raise a clear error
-        directing them to the `api_key` backend.
+        Wave 5: when `image_attachments` is present, we drive the SDK in
+        streaming-input mode (the SDK accepts `prompt: AsyncIterable[dict]`
+        per claude_agent_sdk._internal.client). The dict shape mirrors what
+        the SDK itself emits for a string prompt:
+            {"type": "user", "session_id": "",
+             "message": {"role": "user", "content": [...]},
+             "parent_tool_use_id": None}
+        with `content` as a list of content blocks (image + text). claude.exe
+        forwards them to the Anthropic API, which natively understands image
+        blocks on vision-capable models.
         """
         import sys
-
-        if image_attachments:
-            raise AgentRunError(
-                f"{self.agent_role}: image attachments are not supported on "
-                "the claude_code backend in Wave 5 (claude-agent-sdk's prompt "
-                "API is text-only). Switch to the api_key backend in "
-                "argosy.toml: [anthropic] backend = \"api_key\". "
-                "Text/markdown attachments work on both backends."
-            )
 
         if sys.platform == "win32":
             return await asyncio.to_thread(
                 self._call_via_claude_code_thread,
                 system=system,
                 user=user,
+                image_attachments=image_attachments,
             )
-        return await self._call_via_claude_code_inner(system=system, user=user)
+        return await self._call_via_claude_code_inner(
+            system=system, user=user, image_attachments=image_attachments,
+        )
 
-    def _call_via_claude_code_thread(self, *, system: str, user: str) -> ModelCall:
+    def _call_via_claude_code_thread(
+        self,
+        *,
+        system: str,
+        user: str,
+        image_attachments: list[Any] | None = None,
+    ) -> ModelCall:
         """Sync entry that runs the async SDK call on a fresh
         ProactorEventLoop in a worker thread. Windows-only path."""
         import asyncio
@@ -427,13 +432,19 @@ class BaseAgent(Generic[T]):
         loop = asyncio.ProactorEventLoop()
         try:
             return loop.run_until_complete(
-                self._call_via_claude_code_inner(system=system, user=user)
+                self._call_via_claude_code_inner(
+                    system=system, user=user, image_attachments=image_attachments,
+                )
             )
         finally:
             loop.close()
 
     async def _call_via_claude_code_inner(
-        self, *, system: str, user: str
+        self,
+        *,
+        system: str,
+        user: str,
+        image_attachments: list[Any] | None = None,
     ) -> ModelCall:
         """The actual SDK call. Extracted so it can run on a different event
         loop on Windows (see `_call_via_claude_code_thread`)."""
@@ -462,13 +473,48 @@ class BaseAgent(Generic[T]):
             model=self.model,
         )
 
+        # Build the SDK prompt. Plain string for text-only turns (cheaper);
+        # AsyncIterable[dict] streaming-mode for image turns so we can pass
+        # content blocks. The SDK serializes a string prompt as the same
+        # message dict shape we yield manually here (see client.py:209).
+        if image_attachments:
+            import base64
+            from pathlib import Path as _Path
+
+            content_blocks: list[dict[str, Any]] = []
+            for att in image_attachments:
+                path = getattr(att, "path", None) or att["path"]
+                mime = getattr(att, "mime_type", None) or att["mime_type"]
+                data = base64.b64encode(_Path(path).read_bytes()).decode("ascii")
+                content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,
+                        "data": data,
+                    },
+                })
+            content_blocks.append({"type": "text", "text": user})
+
+            async def _prompt_stream():
+                yield {
+                    "type": "user",
+                    "session_id": "",
+                    "message": {"role": "user", "content": content_blocks},
+                    "parent_tool_use_id": None,
+                }
+
+            sdk_prompt: Any = _prompt_stream()
+        else:
+            sdk_prompt = user
+
         text_parts: list[str] = []
         tokens_in = 0
         tokens_out = 0
         cost_usd_from_sdk = 0.0
 
         try:
-            async for message in query(prompt=user, options=options):
+            async for message in query(prompt=sdk_prompt, options=options):
                 if isinstance(message, AssistantMessage):
                     for block in getattr(message, "content", []) or []:
                         if isinstance(block, TextBlock):

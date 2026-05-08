@@ -65,15 +65,80 @@ def test_advisor_image_block_coexists_with_amendment_block():
 
 
 @pytest.mark.asyncio
-async def test_call_via_claude_code_rejects_images_with_clear_error():
-    """claude_code backend can't pass images through claude.exe today."""
+async def test_call_via_claude_code_streams_image_content_blocks(tmp_path, monkeypatch):
+    """claude_code backend uses streaming-mode prompt when images are present.
+
+    The SDK's prompt API accepts `AsyncIterable[dict]`; we yield a single
+    dict in the message-shape claude.exe expects. Verify the shape by
+    monkeypatching the SDK's `query()` to capture what we pass.
+    """
     from argosy.agents.advisor import AdvisorAgent
 
+    # Real PNG file so base64 encode succeeds
+    img_path = tmp_path / "shot.png"
+    img_path.write_bytes(bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000d4944415478da6300010000000500010d0a2db40000000049454e44ae426082"
+    ))
+
+    captured: dict = {}
+
+    async def _fake_query(*, prompt, options):
+        # Drain the AsyncIterable so we can assert on its yielded shape.
+        if hasattr(prompt, "__aiter__"):
+            captured["mode"] = "streaming"
+            async for item in prompt:
+                captured.setdefault("yields", []).append(item)
+        else:
+            captured["mode"] = "string"
+            captured["string_prompt"] = prompt
+        # Yield nothing — minimal stub. Inner loop ends without producing
+        # text/usage; we just want to assert what was sent in.
+        if False:
+            yield None
+
+    monkeypatch.setattr("claude_agent_sdk.query", _fake_query)
+
     agent = AdvisorAgent(user_id="test")
-    with pytest.raises(AgentRunError, match="image attachments are not supported"):
-        await agent._call_via_claude_code(
-            system="x", user="x", image_attachments=[_att()],
-        )
+    att = _att(path=str(img_path), mime="image/png")
+    await agent._call_via_claude_code_inner(
+        system="sys", user="hello", image_attachments=[att],
+    )
+
+    assert captured["mode"] == "streaming"
+    assert len(captured["yields"]) == 1
+    msg = captured["yields"][0]
+    assert msg["type"] == "user"
+    content = msg["message"]["content"]
+    assert isinstance(content, list)
+    types = [b["type"] for b in content]
+    assert "image" in types
+    assert "text" in types
+    img_block = next(b for b in content if b["type"] == "image")
+    assert img_block["source"]["type"] == "base64"
+    assert img_block["source"]["media_type"] == "image/png"
+    assert len(img_block["source"]["data"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_call_via_claude_code_uses_string_prompt_when_no_images(monkeypatch):
+    """Text-only turns keep the cheaper string-prompt path on claude_code."""
+    from argosy.agents.advisor import AdvisorAgent
+
+    captured: dict = {}
+
+    async def _fake_query(*, prompt, options):
+        captured["prompt"] = prompt
+        if False:
+            yield None
+
+    monkeypatch.setattr("claude_agent_sdk.query", _fake_query)
+
+    agent = AdvisorAgent(user_id="test")
+    await agent._call_via_claude_code_inner(
+        system="sys", user="just text", image_attachments=None,
+    )
+    assert captured["prompt"] == "just text"
 
 
 @pytest.mark.asyncio

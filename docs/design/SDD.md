@@ -1239,11 +1239,16 @@ are forwarded to the model as Anthropic content blocks. The
 `AdvisorAgent` system prompt grows an "IMAGE ATTACHMENT HANDLING"
 section explaining how to extract facts (brokerage statement
 screenshots → `identity.brokerage_accounts` updates; news article
-screenshots → discussion; charts → trend analysis). Image content
-blocks are supported on the `api_key` backend only — the
-`claude_code` backend's prompt API is text-only and raises a clear
-`AgentRunError` if images are present, directing the user to switch
-backends. Text-only attachments work on both backends.
+screenshots → discussion; charts → trend analysis).
+
+Both backends support images. The `api_key` backend uses Anthropic's
+SDK content-block parameter directly. The `claude_code` backend uses
+the SDK's streaming-mode prompt input — `query(prompt=AsyncIterable[dict])`
+— yielding a single message dict whose `content` is the same list of
+content blocks (`{"type": "image", "source": {...}}` + text). The SDK
+forwards the message to `claude.exe` which forwards to the API.
+Text-only turns keep the cheaper string-prompt path on both backends
+for prompt-cache friendliness.
 
 **No new schema.** Wave 5 reuses existing `plan_versions` (with the
 Wave 1 lifecycle columns) and `decision_runs` rows. The future
