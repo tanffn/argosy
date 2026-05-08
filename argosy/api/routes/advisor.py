@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -327,20 +327,172 @@ async def _persist_turn(
 
 @router.post("/turn", response_model=AdvisorTurnResponse)
 async def post_turn(
-    req: AdvisorTurnRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> AdvisorTurnResponse:
-    """Drive one advisor turn. Two modes:
+    """Drive one advisor turn. Accepts EITHER JSON body OR multipart.
 
+    JSON body (Wave 1+): {user_id, last_user_message, ...}.
+    Multipart (Wave 5): same fields as form data PLUS optional
+    `attachments` UploadFile list (text/markdown or images).
+
+    Two modes (selected automatically from message shape):
     - gap_driven: agent asks the next missing/stale gap (batched).
     - user_driven: agent answers the user's message (and may log
       context_updates extracted from it, plus a related follow-up).
 
     Wave 4: when the agent's structured output carries an `amendment`
-    field (a chat-borne plan-change request), classify and dispatch:
-    Small applies inline; Medium/Large open a DecisionRun row and spawn
-    a worker. The dispatch result rides back on `AdvisorTurnResponse.amendment`.
+    field (a chat-borne plan-change request), classify and dispatch.
+    Wave 5: text/markdown attachments are appended to the user message
+    AND, when the file looks like a plan, trigger background
+    distillation that produces a new baseline PlanVersion. Image
+    attachments are passed to vision-capable backends.
     """
+    from argosy.services.turn_attachments import (
+        Attachment,
+        save_attachments_with_total_cap,
+    )
+
+    content_type = (request.headers.get("content-type") or "").lower()
+    attachments: list[Attachment] = []
+
+    if content_type.startswith("multipart/"):
+        from uuid import uuid4 as _u4
+
+        form = await request.form()
+        # Form fields: same names as AdvisorTurnRequest.
+        req = AdvisorTurnRequest(
+            user_id=str(form.get("user_id") or "ariel"),
+            last_user_message=str(form.get("last_user_message") or ""),
+            history_excerpt=str(form.get("history_excerpt") or ""),
+            current_stage=(str(form["current_stage"]) if "current_stage" in form else None),
+            target_field=(str(form["target_field"]) if "target_field" in form else None),
+        )
+        # Collect any UploadFile values under any of the conventional keys.
+        uploads = []
+        for key in ("attachments", "attachments[]", "files", "files[]"):
+            uploads.extend([f for f in form.getlist(key) if hasattr(f, "filename")])
+        if uploads:
+            turn_uuid = _u4().hex
+            attachments = await save_attachments_with_total_cap(
+                user_id=req.user_id, turn_uuid=turn_uuid, uploads=uploads,
+            )
+    else:
+        body = await request.json()
+        req = AdvisorTurnRequest(**body)
+
+    return await _run_turn(
+        req=req,
+        attachments=attachments,
+        db=db,
+        background_tasks=background_tasks,
+    )
+
+
+async def _maybe_ingest_plan_attachments(
+    *,
+    user_id: str,
+    text_attachments: list,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """If any text attachment looks like a wealth plan, persist it as a
+    role='baseline' PlanVersion and schedule background distillation.
+
+    Plan-shape heuristic: markdown/text extension OR content > 500 chars.
+    Existing baselines for this user are demoted to role='superseded'
+    so the most recent upload is authoritative. The distillation runs as
+    a FastAPI BackgroundTask so the chat response returns immediately;
+    the UI's draft-pending banner will surface the result on next refresh.
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path as _Path
+
+    plan_like = []
+    for ta in text_attachments:
+        ext = _Path(ta.original_name).suffix.lower()
+        try:
+            sz = _Path(ta.path).stat().st_size
+        except Exception:  # noqa: BLE001
+            sz = 0
+        if ext in {".md", ".markdown"} or sz > 500:
+            plan_like.append(ta)
+
+    if not plan_like:
+        return
+
+    # Persist each plan-shaped attachment as a fresh baseline. Demote prior
+    # baselines (same user) once per call before inserting new rows.
+    async with db_mod.get_session() as session:
+        prior = (
+            await session.execute(
+                select(PlanVersion).where(
+                    PlanVersion.user_id == user_id,
+                    PlanVersion.role == "baseline",
+                )
+            )
+        ).scalars().all()
+        now = datetime.now(timezone.utc)
+        for prior_pv in prior:
+            prior_pv.role = "superseded"
+            prior_pv.superseded_at = now
+
+        new_ids: list[int] = []
+        for ta in plan_like:
+            try:
+                content = _Path(ta.path).read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "chat_upload.read_failed",
+                    path=ta.path, user_id=user_id, error=str(exc),
+                )
+                continue
+            label = (
+                f"chat_upload_{now.strftime('%Y%m%dT%H%M%SZ')}_"
+                f"{_Path(ta.original_name).stem[:40]}"
+            )
+            pv = PlanVersion(
+                user_id=user_id,
+                version_label=label,
+                source_path=ta.original_name,
+                raw_markdown=content,
+                role="baseline",
+                imported_at=now,
+            )
+            session.add(pv)
+            await session.flush()
+            new_ids.append(pv.id)
+
+        await session.commit()
+
+    # Schedule one background distillation per new baseline. The service
+    # opens its own sessions; we just hand off plan_version_id + user_id.
+    from argosy.services.plan_distiller_service import distill_baseline_plan_async
+
+    for pv_id in new_ids:
+        background_tasks.add_task(
+            distill_baseline_plan_async,
+            plan_version_id=pv_id,
+            user_id=user_id,
+            preserve_user_edits=False,
+        )
+
+    _log.info(
+        "chat_upload.plan_ingested",
+        user_id=user_id,
+        baseline_ids=new_ids,
+        superseded_count=len(prior),
+    )
+
+
+async def _run_turn(
+    *,
+    req: AdvisorTurnRequest,
+    attachments: list,
+    db: Session,
+    background_tasks: BackgroundTasks,
+) -> AdvisorTurnResponse:
+    """Body of /turn — extracted so both JSON and multipart paths share it."""
     # local import to avoid circulars on module load
     from argosy.api.routes.intake import _apply_turn_update
 
@@ -436,7 +588,28 @@ async def post_turn(
     )
     answered_paths, missing_paths = gaps_for_prompt(status)
 
-    mode = classify_mode(req.last_user_message)
+    # Wave 5: text/markdown attachments append to the user message so the
+    # advisor sees them inline. Image attachments thread separately through
+    # the `image_attachments` kwarg into the agent's vision content blocks.
+    text_attachments = [a for a in attachments if getattr(a, "kind", None) == "text"]
+    image_attachments = [a for a in attachments if getattr(a, "kind", None) == "image"]
+
+    effective_message = req.last_user_message
+    if text_attachments:
+        from pathlib import Path as _Path
+
+        appended = []
+        for ta in text_attachments:
+            try:
+                content = _Path(ta.path).read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:  # noqa: BLE001
+                content = f"(could not read attachment: {exc})"
+            appended.append(
+                f"\n\n[Attached file: {ta.original_name}]\n{content}"
+            )
+        effective_message = (effective_message or "") + "".join(appended)
+
+    mode = classify_mode(effective_message)
 
     factory = _AGENT_FACTORY
     if factory is None:
@@ -469,10 +642,10 @@ async def post_turn(
     has_current_plan = _hcp_row is not None
 
     try:
-        report = await agent.run(
+        run_kwargs: dict[str, Any] = dict(
             current_stage=agent_stage,
             accumulated_context=accumulated,
-            last_user_message=req.last_user_message,
+            last_user_message=effective_message,
             history_excerpt=req.history_excerpt,
             answered_fields=answered_paths,
             missing_fields=missing_paths,
@@ -480,6 +653,9 @@ async def post_turn(
             target_field=req.target_field,
             has_current_plan=has_current_plan,
         )
+        if image_attachments:
+            run_kwargs["image_attachments"] = image_attachments
+        report = await agent.run(**run_kwargs)
     except Exception as exc:  # pragma: no cover - defensive
         _log.exception("advisor.turn_failed", intake_session_id=session_id)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -552,6 +728,17 @@ async def post_turn(
                 error=str(exc),
             )
             amendment_dto = None
+
+    # Wave 5: if any text attachment looks like a wealth plan (markdown
+    # extension OR > 500 chars), persist it as a baseline PlanVersion and
+    # schedule background distillation. Existing baselines for this user
+    # are demoted to 'superseded' so the new file becomes authoritative.
+    if text_attachments:
+        await _maybe_ingest_plan_attachments(
+            user_id=req.user_id,
+            text_attachments=text_attachments,
+            background_tasks=background_tasks,
+        )
 
     return AdvisorTurnResponse(
         stage=out.stage,
