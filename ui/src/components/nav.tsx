@@ -66,7 +66,11 @@ export function NavBar() {
                   )}
                 >
                   {Icon ? (
-                    <Icon className="h-3.5 w-3.5" aria-hidden />
+                    <Icon
+                      className="h-3.5 w-3.5"
+                      aria-hidden
+                      suppressHydrationWarning
+                    />
                   ) : null}
                   {t.label}
                 </Link>
