@@ -166,8 +166,21 @@ def dispatch_async(
     """Spawn the medium or large worker; return 202-shaped DTO.
 
     If a running amendment already exists for this user:
-      - cancel_existing=False: return status='needs_confirmation'
-      - cancel_existing=True: cancel the prior, then dispatch this one.
+      - cancel_existing=False: return status='needs_confirmation' so the
+        chat surface can ask the user "cancel and restart vs queue?".
+      - cancel_existing=True: cancel the prior run (emits
+        ``plan.amendment.cancelled`` for that row), then dispatch the new
+        run (emits ``plan.amendment.started`` for the new row), and
+        return status='cancelled_existing' to confirm both events landed.
+        The two events fire back-to-back; the UI is expected to handle
+        latest-event-wins.
+
+    Concurrency belt-and-suspenders: even with the in-Python existing
+    check, two simultaneous dispatch calls can both pass the SELECT and
+    race to insert. The partial unique index on decision_runs (migration
+    0018) makes the loser raise IntegrityError; we catch it, refetch the
+    surviving running row, and return status='needs_confirmation' so
+    user-facing semantics match the slow-path check.
     """
     if tier not in ("medium", "large"):
         raise ValueError(f"dispatch_async expects tier in (medium, large); got {tier!r}")
@@ -179,6 +192,7 @@ def dispatch_async(
         )
         .first()
     )
+    cancelled_a_prior = False
     if existing is not None:
         if not cancel_existing:
             return AmendmentResultDTO(
@@ -194,6 +208,7 @@ def dispatch_async(
             "decision_run_id": existing.id,
             "tier": existing.tier,
         })
+        cancelled_a_prior = True
 
     run = DecisionRun(
         user_id=user_id, ticker="(plan)", tier=tier,
@@ -201,7 +216,34 @@ def dispatch_async(
         notes_json=json.dumps({"message": message, "intent": intent.model_dump()}),
     )
     session.add(run)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # Race: another concurrent dispatch slipped a running row in
+        # between our SELECT and our INSERT. The partial unique index
+        # (migration 0018) caught it. Roll back, refetch the survivor,
+        # and degrade to needs_confirmation so the user gets a coherent
+        # answer regardless of which path they hit.
+        session.rollback()
+        winner = (
+            session.query(DecisionRun)
+            .filter_by(
+                user_id=user_id,
+                decision_kind="plan_amendment_chat",
+                status="running",
+            )
+            .first()
+        )
+        if winner is None:
+            # Extremely unlikely: index fired but no row survives. Re-raise
+            # so the caller sees the underlying IntegrityError rather than
+            # silently swallowing it.
+            raise
+        return AmendmentResultDTO(
+            tier=tier,  # type: ignore[arg-type]
+            decision_run_id=winner.id,
+            status="needs_confirmation",
+        )
     session.refresh(run)
 
     _spawn_worker(
@@ -212,7 +254,7 @@ def dispatch_async(
     return AmendmentResultDTO(
         tier=tier,  # type: ignore[arg-type]
         decision_run_id=run.id,
-        status="running",
+        status="cancelled_existing" if cancelled_a_prior else "running",
         eta_seconds=eta,
     )
 

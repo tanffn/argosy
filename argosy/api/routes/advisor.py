@@ -538,10 +538,15 @@ async def post_turn(
                     message=req.last_user_message,
                     tier=classified.effective_tier.value,
                     intent=effective_intent,
+                    cancel_existing=getattr(
+                        advisor_amendment, "cancel_existing", False,
+                    ),
                 )
         except Exception as exc:
             # Don't fail the chat turn over a dispatch error.
-            _log.error(
+            # _log.exception captures the traceback so the audit log
+            # has enough to debug a dispatcher hiccup post-hoc.
+            _log.exception(
                 "advisor.turn.amendment_dispatch_failed",
                 user_id=req.user_id,
                 error=str(exc),

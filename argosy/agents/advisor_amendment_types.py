@@ -31,6 +31,11 @@ class AmendmentIntent(BaseModel):
     proposed_delta: Delta | None = None
     rationale: str
     requires_confirmation: bool = False
+    # When True, the dispatcher cancels any in-flight amendment for this
+    # user before opening a new one (instead of returning
+    # `needs_confirmation`). Set by the route layer when the user has
+    # explicitly answered "yes, cancel and restart" in a prior chat turn.
+    cancel_existing: bool = False
 
 
 class AmendmentResultDTO(BaseModel):

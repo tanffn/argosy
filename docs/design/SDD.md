@@ -889,9 +889,14 @@ partial unique index `ix_decision_runs_one_amendment_running_per_user`
 queue.
 
 **Cancellation.** `POST /api/advisor/amendment/{decision_run_id}/cancel`
-flips the row to `status='cancelled'`. The worker checks status between
-phases and bails. A Large run cancelled past Phase 3 commits the partial
-draft as `role='superseded'` (preserved for audit, not surfaced to UI).
+flips the row to `status='cancelled'`. Workers check status before and
+after each major step (start, mid-synthesis re-check) and bail. Mid-LLM
+cancellation is best-effort: an in-flight model call finishes before the
+worker re-checks status. If a Large run is cancelled while Phase 3+
+synthesis is already running, the synthesis-produced draft is left in
+place for forensic recovery rather than rolled back; the DecisionRun
+keeps its `cancelled` status and the UI does not surface the draft.
+(Future: explicitly demote the partial draft to `role='superseded'`.)
 
 **Audit lineage.** Each amendment opens a `decision_runs` row with
 `decision_kind='plan_amendment_chat'` and `tier in {small,medium,large}`.

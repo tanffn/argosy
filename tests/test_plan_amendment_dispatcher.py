@@ -154,6 +154,89 @@ def test_dispatch_async_large_eta_is_900s(session_with_current, monkeypatch):
     assert result.eta_seconds == 900
 
 
+def test_dispatch_async_cancel_existing_returns_cancelled_existing(
+    session_with_current, monkeypatch,
+):
+    """When cancel_existing=True and a prior running amendment exists, the
+    dispatcher cancels the prior, opens a new run, and returns
+    status='cancelled_existing' so the UI can confirm both transitions
+    happened atomically (spec §7.1)."""
+    from argosy.orchestrator.flows.plan_amendment.dispatcher import dispatch_async
+
+    sess, _pv = session_with_current
+    sess.add(DecisionRun(
+        user_id="ariel", ticker="(plan)", tier="medium",
+        decision_kind="plan_amendment_chat", status="running",
+    ))
+    sess.commit()
+
+    spawned = []
+    monkeypatch.setattr(
+        "argosy.orchestrator.flows.plan_amendment.dispatcher._spawn_worker",
+        lambda **kw: spawned.append(kw),
+    )
+
+    intent = _make_intent(tier="medium", cancel_existing=True)
+    result = dispatch_async(
+        sess, user_id="ariel", message="restart please", tier="medium",
+        intent=intent, cancel_existing=True,
+    )
+
+    assert result.status == "cancelled_existing"
+    assert result.tier == "medium"
+    assert result.eta_seconds == 30
+    assert len(spawned) == 1
+
+    # Prior run should be cancelled; new run should be running.
+    runs = (
+        sess.query(DecisionRun)
+        .filter_by(user_id="ariel", decision_kind="plan_amendment_chat")
+        .order_by(DecisionRun.id)
+        .all()
+    )
+    assert len(runs) == 2
+    assert runs[0].status == "cancelled"
+    assert runs[1].status == "running"
+
+
+def test_run_small_no_orphan_decision_run_when_no_current_plan(
+    alembic_engine_at_head,
+):
+    """If user has neither pending draft nor current plan, run_small must
+    raise BEFORE writing a `running` DecisionRun row — otherwise the
+    partial unique index permanently jams future amendment attempts.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.orchestrator.flows.plan_amendment.dispatcher import run_small
+
+    SessionLocal = sessionmaker(bind=alembic_engine_at_head, expire_on_commit=False)
+    sess = SessionLocal()
+    try:
+        sess.add(User(id="ariel", plan="free"))
+        sess.commit()
+
+        intent = _make_intent(
+            tier="small", direction="tighten", proposed_delta=_make_delta(),
+        )
+
+        with pytest.raises(RuntimeError, match="no current plan"):
+            run_small(sess, user_id="ariel", message="x", intent=intent)
+
+        # No running row should have been left behind to jam the
+        # partial unique index for this user.
+        runs = (
+            sess.query(DecisionRun)
+            .filter_by(user_id="ariel", decision_kind="plan_amendment_chat")
+            .all()
+        )
+        assert runs == [], (
+            f"orphan DecisionRun rows leaked: {[r.status for r in runs]}"
+        )
+    finally:
+        sess.close()
+
+
 def test_run_small_rejects_loosening_numbers(session_with_current):
     """Even if intent claims direction=tighten, if the numbers loosen we refuse."""
     from argosy.orchestrator.flows.plan_amendment.dispatcher import run_small
