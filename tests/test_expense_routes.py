@@ -185,3 +185,55 @@ def test_monthly_summary_excludes_card_payments(expense_client):
         assert "totals_by_currency" in entry
         assert isinstance(entry["totals_by_currency"], dict)
         assert "transaction_count" in entry
+
+
+def test_list_transactions_passes_through_foreign_amount_nis_null(client_with_db):
+    """Post-EX1.1, foreign rows have amount_nis=None. The endpoint must surface
+    that without TypeError'ing through float()."""
+    from datetime import date
+    from decimal import Decimal
+    from sqlalchemy.orm import Session
+    from argosy.state.models import (
+        ExpenseSource, ExpenseStatement, ExpenseTransaction, User, UserFile,
+    )
+
+    SessionFactory = client_with_db.app.state.session_factory
+    with SessionFactory() as s:
+        s.add(User(id="u_fx", plan="free")); s.flush()
+        f = UserFile(
+            user_id="u_fx", sha256="f"*64, original_name="x", sanitized_name="x",
+            mime_type="x", kind="other", size_bytes=1, storage_path="/tmp/x",
+            source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src = ExpenseSource(
+            user_id="u_fx", kind="card", issuer="isracard",
+            external_id="0000", display_name="test",
+        )
+        s.add(src); s.flush()
+        stmt = ExpenseStatement(
+            user_id="u_fx", source_id=src.id, file_id=f.id,
+            period_start=date(2026, 4, 1), period_end=date(2026, 4, 30),
+            parsed_total_nis=Decimal("0"), parser_name="isracard",
+            parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt); s.flush()
+        # Foreign row with amount_nis NULL.
+        s.add(ExpenseTransaction(
+            user_id="u_fx", source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 4, 5),
+            merchant_raw="NETFLIX", merchant_normalized="netflix",
+            amount_nis=None,
+            amount_orig=Decimal("12.18"), currency_orig="USD",
+            direction="debit", tx_type="regular", raw_row_json="{}",
+        ))
+        s.commit()
+
+    r = client_with_db.get("/api/expenses/transactions?user_id=u_fx")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 1
+    tx = body["transactions"][0]
+    assert tx["amount_nis"] is None
+    assert tx["amount_orig"] == 12.18
+    assert tx["currency_orig"] == "USD"

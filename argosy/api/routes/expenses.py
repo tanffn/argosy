@@ -165,7 +165,9 @@ class TransactionOut(BaseModel):
     id: int
     occurred_on: date
     merchant_raw: str
-    amount_nis: float
+    amount_nis: float | None              # was: float — NULL for foreign rows post-EX1.1
+    amount_orig: float | None = None
+    currency_orig: str | None = None
     direction: str
     tx_type: str
     category_slug: str | None
@@ -226,7 +228,10 @@ def list_transactions(
         transactions=[
             TransactionOut(
                 id=r.id, occurred_on=r.occurred_on, merchant_raw=r.merchant_raw,
-                amount_nis=float(r.amount_nis), direction=r.direction,
+                amount_nis=float(r.amount_nis) if r.amount_nis is not None else None,
+                amount_orig=float(r.amount_orig) if r.amount_orig is not None else None,
+                currency_orig=r.currency_orig,
+                direction=r.direction,
                 tx_type=r.tx_type,
                 category_slug=cat_by_id.get(r.category_id),
                 category_source=r.category_source,
