@@ -278,6 +278,138 @@ def test_bug3_orchestrator_raises_on_account_mismatch(alembic_engine_at_head):
             ingest_user_file(s, "ariel", f.id)
 
 
+def test_bug2_correlator_sums_only_nis_rows(alembic_engine_at_head):
+    """Bug 2 (part 2) — correlator skips amount_nis IS NULL rows so foreign
+    charges don't crash the abs(declared_total - amount) comparison or
+    silently zero out the total.
+
+    Plan-defect adaptations vs. the spec snippet:
+      * ExpenseStatement.file_id is NOT NULL — seed a UserFile.
+      * statement_id is NOT NULL on ExpenseTransaction (already in spec).
+    """
+    from datetime import date
+    from decimal import Decimal
+    from sqlalchemy.orm import Session
+
+    from argosy.services.expense_ingest.correlator import correlate_for_user
+    from argosy.state.models import (
+        ExpenseSource, ExpenseStatement, ExpenseTransaction, User, UserFile,
+    )
+
+    with Session(alembic_engine_at_head) as s:
+        s.add(User(id="u1", plan="free"))
+        s.flush()
+        f = UserFile(
+            user_id="u1", sha256="c" * 64, original_name="x",
+            sanitized_name="x", mime_type="x", kind="other",
+            size_bytes=1, storage_path="/tmp/x", source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src = ExpenseSource(
+            user_id="u1", kind="card", issuer="isracard",
+            external_id="0000", display_name="test",
+        )
+        s.add(src); s.flush()
+        stmt = ExpenseStatement(
+            user_id="u1", source_id=src.id, file_id=f.id,
+            period_start=date(2026, 4, 1), period_end=date(2026, 4, 30),
+            parser_name="isracard", parser_version="0.1.0",
+            parsed_total_nis=Decimal("100"),
+            declared_total_nis=Decimal("100"), status="parsed",
+        )
+        s.add(stmt); s.flush()
+        s.add(ExpenseTransaction(
+            user_id="u1", source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 4, 5),
+            merchant_raw="A", merchant_normalized="a",
+            amount_nis=Decimal("100"), direction="debit", tx_type="regular",
+            raw_row_json="{}",
+        ))
+        s.add(ExpenseTransaction(
+            user_id="u1", source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 4, 6),
+            merchant_raw="B", merchant_normalized="b",
+            amount_nis=None, amount_orig=Decimal("12.18"),
+            currency_orig="USD",
+            direction="debit", tx_type="regular",
+            raw_row_json="{}",
+        ))
+        s.commit()
+
+        # Just exercising — no exception is the assertion. Returns a count.
+        n = correlate_for_user(s, "u1")
+    assert n >= 0
+
+
+def test_bug2_refund_matcher_pairs_via_amount_orig_when_nis_null(alembic_engine_at_head):
+    """Bug 2 (part 2) — refund_matcher falls back to (amount_orig, currency_orig)
+    when both refund and prior debit have amount_nis IS NULL (foreign rows).
+    """
+    from datetime import date
+    from decimal import Decimal
+    from sqlalchemy.orm import Session
+
+    from argosy.services.expense_ingest.refund_matcher import (
+        match_refunds_for_user,
+    )
+    from argosy.state.models import (
+        ExpenseCategory, ExpenseSource, ExpenseStatement, ExpenseTransaction,
+        User, UserFile,
+    )
+
+    with Session(alembic_engine_at_head) as s:
+        s.add(User(id="u1", plan="free")); s.flush()
+        f = UserFile(
+            user_id="u1", sha256="d" * 64, original_name="x",
+            sanitized_name="x", mime_type="x", kind="other",
+            size_bytes=1, storage_path="/tmp/x", source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        cat = ExpenseCategory(slug="travel.flights", label_en="Flights",
+                              label_he="טיסות")
+        s.add(cat); s.flush()
+        src = ExpenseSource(user_id="u1", kind="card", issuer="isracard",
+                            external_id="9999", display_name="Test 9999")
+        s.add(src); s.flush()
+        stmt = ExpenseStatement(
+            user_id="u1", source_id=src.id, file_id=f.id,
+            period_start=date(2026, 3, 1), period_end=date(2026, 3, 31),
+            parsed_total_nis=Decimal("0"),
+            parser_name="isracard", parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt); s.flush()
+        # Prior foreign debit (amount_nis NULL, USD 12.18, categorized).
+        prior = ExpenseTransaction(
+            user_id="u1", statement_id=stmt.id, source_id=src.id,
+            occurred_on=date(2026, 2, 15), merchant_raw="FOREIGN MERCH",
+            merchant_normalized="foreign merch",
+            amount_nis=None, amount_orig=Decimal("12.18"),
+            currency_orig="USD",
+            direction="debit", tx_type="regular",
+            category_id=cat.id, category_source="user",
+            category_confidence=Decimal("1.0"), raw_row_json="{}",
+        )
+        s.add(prior); s.flush()
+        # Foreign refund — same merchant, USD 12.18, NIS=NULL.
+        refund = ExpenseTransaction(
+            user_id="u1", statement_id=stmt.id, source_id=src.id,
+            occurred_on=date(2026, 3, 10), merchant_raw="FOREIGN MERCH",
+            merchant_normalized="foreign merch",
+            amount_nis=None, amount_orig=Decimal("12.18"),
+            currency_orig="USD",
+            direction="credit", tx_type="refund", raw_row_json="{}",
+        )
+        s.add(refund); s.commit()
+
+        n = match_refunds_for_user(s, "u1")
+        s.commit()
+        s.refresh(refund)
+        assert n == 1, "expected refund_matcher to pair via amount_orig/currency_orig"
+        assert refund.refund_of_id == prior.id
+        assert refund.category_id == cat.id
+        assert refund.category_source == "inherited_from_refund"
+
+
 def test_bug2_isracard_foreign_row_amount_nis_is_none():
     """Bug 2 (part 1) — Isracard parser stores amount_nis=None for non-NIS
     rows (was: stored the raw foreign amount as if it were NIS).

@@ -53,6 +53,12 @@ def correlate_for_user(session: Session, user_id: str) -> int:
     for tx in candidates:
         if not _smells_like_card_payment(tx.merchant_raw):
             continue
+        # Bug 2 (part 2): foreign rows carry amount_nis=None. Card-payment
+        # lines on the bank side are denominated in NIS, so a NULL here means
+        # the row isn't a payment-of-card-statement candidate — skip it
+        # rather than risking a TypeError in the abs() comparison below.
+        if tx.amount_nis is None:
+            continue
 
         stmt: ExpenseStatement | None = None
         if tx.reference and tx.reference in by_external:
