@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import math
 import re
+import warnings
 from datetime import date, datetime
 from pathlib import Path
 
@@ -57,7 +58,7 @@ def _to_float(x) -> float:
             return 0.0
 
 
-def parse(path: Path) -> ParseResult:
+def parse(path: Path, *, last4_hint: str | None = None) -> ParseResult:
     xl = pd.ExcelFile(path)
     sheet = next((s for s in xl.sheet_names
                   if s.startswith("לאומי לישראל")), None)
@@ -65,12 +66,24 @@ def parse(path: Path) -> ParseResult:
         raise ValueError(f"Max parser: no 'לאומי לישראל' sheet in {path}, "
                          f"got {xl.sheet_names}")
 
-    # Account number → last-4 of post-dash chunk
-    m_acc = _ACCOUNT_RE.search(sheet)
-    if not m_acc:
-        raise ValueError(f"Max parser: account # not found in sheet name '{sheet}'")
-    account_full = m_acc.group(1)               # e.g. '882-44745280'
-    last4 = account_full.split("-")[-1][-4:]
+    # Card last-4: prefer caller-supplied hint (correct) over sheet-name
+    # bank-account-last-4 (wrong — Max files only carry the bank account
+    # they bill to, not the card number).
+    if last4_hint:
+        last4 = last4_hint
+    else:
+        m_acc = _ACCOUNT_RE.search(sheet)
+        if not m_acc:
+            raise ValueError(
+                f"Max parser: account # not found in sheet name '{sheet}'"
+            )
+        account_full = m_acc.group(1)
+        last4 = account_full.split("-")[-1][-4:]
+        warnings.warn(
+            "Max parser: no last4_hint provided; falling back to bank-account "
+            f"last-4 ({last4}) — likely wrong. Pass last4_hint from the caller.",
+            stacklevel=2,
+        )
 
     df = pd.read_excel(path, sheet_name=sheet, header=None)
     charge_str = str(df.iat[2, 0])

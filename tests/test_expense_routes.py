@@ -41,7 +41,8 @@ def test_upload_max_xlsx_returns_parse_summary(expense_client):
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
             resp = expense_client.post("/api/expenses/upload",
                                        files=files,
-                                       data={"user_id": "ariel"})
+                                       data={"user_id": "ariel",
+                                             "card_last4": "6225"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert len(body["results"]) == 1
@@ -74,7 +75,9 @@ def test_upload_multi_file(expense_client):
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")),
         ]
         resp = expense_client.post("/api/expenses/upload",
-                                    files=files, data={"user_id": "ariel"})
+                                    files=files,
+                                    data={"user_id": "ariel",
+                                          "card_last4": "6225"})
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["results"]) == 2
@@ -107,7 +110,8 @@ def test_list_transactions_filters_by_category(expense_client):
             expense_client.post("/api/expenses/upload",
                                  files={"files": ("max_minimal.xlsx", f.read(),
                                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                                 data={"user_id": "ariel"})
+                                 data={"user_id": "ariel",
+                                       "card_last4": "6225"})
     resp = expense_client.get("/api/expenses/transactions",
                                params={"user_id": "ariel",
                                        "category": "dining_out.restaurants"})
@@ -123,7 +127,8 @@ def test_patch_transaction_category_updates_cache(expense_client):
             expense_client.post("/api/expenses/upload",
                                  files={"files": ("max_minimal.xlsx", f.read(),
                                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                                 data={"user_id": "ariel"})
+                                 data={"user_id": "ariel",
+                                       "card_last4": "6225"})
     resp = expense_client.get("/api/expenses/transactions",
                                params={"user_id": "ariel"})
     tx_id = resp.json()["transactions"][0]["id"]
@@ -143,7 +148,8 @@ def test_list_categories_returns_taxonomy(expense_client):
             expense_client.post("/api/expenses/upload",
                                  files={"files": ("max_minimal.xlsx", f.read(),
                                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                                 data={"user_id": "ariel"})
+                                 data={"user_id": "ariel",
+                                       "card_last4": "6225"})
     resp = expense_client.get("/api/expenses/categories?user_id=ariel")
     assert resp.status_code == 200
     body = resp.json()
@@ -161,7 +167,8 @@ def test_monthly_summary_excludes_card_payments(expense_client):
             expense_client.post("/api/expenses/upload",
                                  files={"files": ("max_minimal.xlsx", f.read(),
                                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-                                 data={"user_id": "ariel"})
+                                 data={"user_id": "ariel",
+                                       "card_last4": "6225"})
     resp = expense_client.get("/api/expenses/monthly-summary",
                                params={"user_id": "ariel", "months": 12})
     assert resp.status_code == 200

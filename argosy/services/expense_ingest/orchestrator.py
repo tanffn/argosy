@@ -117,6 +117,7 @@ def _leumi_source_hint_assert(result: ParseResult) -> SourceHint:
 
 def ingest_user_file(
     session: Session, user_id: str, file_id: int,
+    *, last4_hint: str | None = None,
 ) -> IngestResult:
     """Run the full ingest pipeline for one already-cataloged user file."""
     file = session.get(UserFile, file_id)
@@ -128,7 +129,10 @@ def ingest_user_file(
     parser_name = detect_format(Path(file.storage_path))
     parser_fn = PARSER_DISPATCH[parser_name]
     try:
-        result = parser_fn(Path(file.storage_path))
+        if parser_name == ParserName.MAX:
+            result = parser_fn(Path(file.storage_path), last4_hint=last4_hint)
+        else:
+            result = parser_fn(Path(file.storage_path))
     except Exception as e:
         try:
             from argosy.api.events import publish_event_threadsafe

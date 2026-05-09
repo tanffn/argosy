@@ -45,6 +45,7 @@ class UploadResponse(BaseModel):
 def upload_statements(
     files: list[UploadFile] = File(...),
     user_id: str = Form(...),
+    card_last4: str | None = Form(None),
     db: Annotated[Session, Depends(get_db)] = ...,
 ) -> UploadResponse:
     """Multi-file ingestion. Each file flows through catalog_upload then
@@ -81,8 +82,27 @@ def upload_statements(
             ))
             continue
 
+        # Max issuer requires card_last4 (the file itself only carries the
+        # bank-account it bills to, not the card last-4). Detect format here
+        # so we can fail-fast with a clear message before ingest tries to run.
         try:
-            ing = ingest_user_file(db, user_id, user_file.id)
+            from argosy.services.expense_ingest.sniff import detect_format
+            from argosy.services.expense_ingest.types import ParserName
+            from pathlib import Path as _P
+            detected = detect_format(_P(user_file.storage_path))
+            if detected == ParserName.MAX and not card_last4:
+                results.append(UploadFileResult(
+                    filename=upload.filename, status="failed",
+                    error="card_last4 required for Max uploads",
+                ))
+                continue
+        except Exception:
+            # Sniff failures will be re-raised by ingest_user_file with a
+            # clearer error; don't swallow them silently here.
+            pass
+
+        try:
+            ing = ingest_user_file(db, user_id, user_file.id, last4_hint=card_last4)
             db.commit()
         except Exception as e:
             db.rollback()

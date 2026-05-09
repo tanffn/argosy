@@ -12,6 +12,10 @@ from pathlib import Path
 
 import typer
 
+# Module-level import so tests can monkeypatch
+# `argosy.cli.expenses_admin.ingest_user_file` directly.
+from argosy.services.expense_ingest.orchestrator import ingest_user_file
+
 app = typer.Typer(help="Argosy expenses admin utilities.", no_args_is_help=True)
 
 
@@ -51,8 +55,6 @@ def backfill(
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
-    from argosy.services.expense_ingest.orchestrator import ingest_user_file
-
     successes = 0
     failures = 0
     with SessionLocal() as s:
@@ -64,15 +66,19 @@ def backfill(
         for p in files:
             try:
                 contents = p.read_bytes()
+                # Infer card last-4 from parent folder name when present
+                # (corpus convention: <root>/Cards/<Issuer>/<last4>/<file>).
+                parent = p.parent.name
+                last4_hint = parent if parent.isdigit() and len(parent) == 4 else None
                 user_file = _maybe_async_catalog_upload(
                     s, user_id=user_id, original_name=p.name,
                     contents=contents,
                 )
                 s.commit()
-                ingest_user_file(s, user_id, user_file.id)
+                ingest_user_file(s, user_id, user_file.id, last4_hint=last4_hint)
                 s.commit()
                 successes += 1
-                typer.echo(f"  OK {p.name}")
+                typer.echo(f"  OK {p.name}" + (f" (last4={last4_hint})" if last4_hint else ""))
             except Exception as e:
                 s.rollback()
                 failures += 1

@@ -299,3 +299,104 @@ def test_bug2_isracard_foreign_row_amount_nis_is_none():
         )
         assert tx.amount_orig is not None
         assert tx.currency_orig in {"USD", "EUR", "GBP"}
+
+
+def test_bug1_max_parser_uses_last4_hint_when_provided():
+    """Bug 1 (part 1) — when last4_hint is provided, Max parser uses it as
+    external_id rather than extracting the bank-account last-4 from the sheet
+    name.
+    """
+    from pathlib import Path
+    from argosy.services.expense_ingest.parsers import max as p_max
+
+    fixtures = Path(__file__).parent.parent.parent / "fixtures" / "expenses"
+    max_files = list(fixtures.glob("max_minimal*.xlsx"))
+    if not max_files:
+        import pytest
+        pytest.skip("no Max fixture")
+    result = p_max.parse(max_files[0], last4_hint="6225")
+    assert result.source_hint is not None
+    assert result.source_hint.external_id == "6225"
+
+
+def test_bug1_max_parser_warns_when_last4_hint_missing(caplog):
+    """Bug 1 (part 2) — when no hint is provided, the parser falls back AND
+    emits a warning so callers don't silently use the wrong external_id.
+    """
+    import warnings
+    from pathlib import Path
+    from argosy.services.expense_ingest.parsers import max as p_max
+
+    fixtures = Path(__file__).parent.parent.parent / "fixtures" / "expenses"
+    max_files = list(fixtures.glob("max_minimal*.xlsx"))
+    if not max_files:
+        import pytest
+        pytest.skip("no Max fixture")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        p_max.parse(max_files[0])
+        assert any("last4_hint" in str(w.message) for w in caught), (
+            "expected a UserWarning mentioning 'last4_hint'"
+        )
+
+
+def test_bug1_backfill_walker_passes_folder_name_as_last4_hint(tmp_path, monkeypatch):
+    """Bug 1 (part 3) — `argosy expenses backfill --dir <root>` walks
+    `Cards/Max/<last4>/<file>.xlsx` and threads <last4> through to the
+    orchestrator as last4_hint.
+    """
+    from pathlib import Path
+    from unittest.mock import patch
+    from typer.testing import CliRunner
+
+    from argosy.cli.expenses_admin import app
+
+    fixtures = Path(__file__).parent.parent.parent / "fixtures" / "expenses"
+    max_src = fixtures / "max_minimal.xlsx"
+    if not max_src.exists():
+        import pytest
+        pytest.skip("no Max fixture")
+
+    # Stage a folder structure: <tmp>/Cards/Max/6225/Apr.xlsx
+    target_dir = tmp_path / "Cards" / "Max" / "6225"
+    target_dir.mkdir(parents=True)
+    (target_dir / "Apr.xlsx").write_bytes(max_src.read_bytes())
+
+    captured: dict = {}
+
+    def _spy_ingest(session, user_id, file_id, *, last4_hint=None):
+        captured["last4_hint"] = last4_hint
+        return type("Result", (), {"statement_id": 0, "transactions_inserted": 0,
+                                   "correlations_made": 0, "categories_resolved": 0,
+                                   "refunds_matched": 0, "parser_name": "max"})()
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    with patch("argosy.cli.expenses_admin.ingest_user_file", side_effect=_spy_ingest):
+        runner = CliRunner()
+        runner.invoke(app, ["backfill", "--user-id", "ariel", "--dir", str(tmp_path)])
+
+    assert captured.get("last4_hint") == "6225"
+
+
+def test_bug1_rest_upload_returns_400_for_max_without_card_last4(client_with_db):
+    """Bug 1 (part 4) — the REST upload route returns 400 when a Max statement
+    is uploaded without a card_last4 form field.
+    """
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent.parent.parent / "fixtures" / "expenses"
+    max_src = fixtures / "max_minimal.xlsx"
+    if not max_src.exists():
+        import pytest
+        pytest.skip("no Max fixture")
+
+    response = client_with_db.post(
+        "/api/expenses/upload",
+        data={"user_id": "ariel"},  # no card_last4
+        files={"files": ("max.xlsx", max_src.read_bytes(),
+                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 200  # the route returns 200 with per-file results
+    body = response.json()
+    assert body["results"][0]["status"] == "failed"
+    assert "card_last4 required for Max uploads" in body["results"][0]["error"]

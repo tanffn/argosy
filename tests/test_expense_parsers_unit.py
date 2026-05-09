@@ -115,12 +115,34 @@ def test_max_parser_returns_5_rows():
 
 
 def test_max_parser_extracts_account_last4():
+    """Bug 1 fallback path: when no last4_hint is provided, the parser falls
+    back to the bank-account last-4 from the sheet name AND emits a warning
+    so callers know they're getting the wrong identifier (the bank-account
+    last-4, not the card last-4 — Max files only carry the bank account).
+    """
+    import warnings
     from argosy.services.expense_ingest.parsers.max import parse
-    result = parse(FIXTURES / "max_minimal.xlsx")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = parse(FIXTURES / "max_minimal.xlsx")
     assert result.source_hint is not None
     assert result.source_hint.issuer == "max"
-    # Account is 882-44745280 → last 4 of the post-dash chunk = '5280'
+    # Fallback: account is 882-44745280 → last 4 of the post-dash chunk = '5280'
     assert result.source_hint.external_id == "5280"
+    assert any("last4_hint" in str(w.message) for w in caught), (
+        "expected a UserWarning mentioning 'last4_hint'"
+    )
+
+
+def test_max_parser_uses_last4_hint():
+    """Bug 1 happy path: when last4_hint is provided, the parser uses it as
+    the source's external_id (the actual card last-4).
+    """
+    from argosy.services.expense_ingest.parsers.max import parse
+    result = parse(FIXTURES / "max_minimal.xlsx", last4_hint="6225")
+    assert result.source_hint is not None
+    assert result.source_hint.issuer == "max"
+    assert result.source_hint.external_id == "6225"
 
 
 def test_max_parser_keeps_anaf_as_issuer_category():
