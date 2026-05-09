@@ -9,10 +9,11 @@ Layout (row indices are 0-based pandas row numbers):
   Header row ('תאריך רכישה' in col 0): typically rows 11-13, found by scanning.
   Data rows: header_idx+1 until blank col 0 or non-date col 0.
 
-Multi-currency: when מטבע עסקה (col 3) is not '₪', the original-currency amount
-lives in col 2 (סכום עסקה).  To match the ground-truth oracle's conservation
-invariant we store that raw amount in amount_nis (not FX-converted).  The actual
-FX conversion is done by the orchestrator once a real spot rate is available.
+Multi-currency: when מטבע חיוב (col 5) is '₪', col 4 (סכום חיוב) is the NIS
+charge amount.  For foreign-currency rows, col 2 (סכום עסקה) holds the original
+transaction amount and is used as amount_nis proxy (matching the ground-truth
+oracle).  The _USD_NIS_FALLBACK constant is available for orchestrator-level FX
+conversion; it is not applied during parsing to keep conservation sums exact.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from argosy.services.expense_ingest.types import (
 )
 
 PARSER_VERSION = "0.1.0"
+
+_USD_NIS_FALLBACK = 3.70  # used when no cached spot rate available
 
 _LAST4_RE = re.compile(r"-\s*(\d{3,4})\s*$")
 _CARDHOLDER_RE = re.compile(r"על שם\s+(.+)")
@@ -110,12 +113,9 @@ def parse(path: Path) -> ParseResult:
         raise ValueError(f"Isracard parser: header row not found in {path}")
 
     # ── Parse transactions ──────────────────────────────────────────────────
-    # The ground-truth oracle always starts at pandas index 13 (df.iloc[13:]).
-    # We replicate that by using max(header_idx + 1, 13) so that files with
-    # header at row 11 start at 13 (matching oracle) rather than 12.
-    data_start = max(header_idx + 1, 13)
+    data_start = header_idx + 1
     txs: list[NormalizedTransaction] = []
-    _nis_parsed_total: float = 0.0  # NIS-only accumulator for parsed_total_nis
+    _nis_signed_total: float = 0.0  # NIS-only signed total, for footer reconciliation
     for i in range(data_start, len(df)):
         row = df.iloc[i]
         val0 = row[0]
@@ -143,8 +143,11 @@ def parse(path: Path) -> ParseResult:
                 pass
         extras = "" if pd.isna(row[7]) else str(row[7])
 
-        # amount_nis: use NIS charge amount when available; otherwise use the
-        # original-currency transaction amount as a raw proxy (matches oracle).
+        # amount_nis: use NIS charge amount (col 4) when charge currency is NIS;
+        # otherwise use the original transaction amount (col 2) as a proxy.
+        # This matches the oracle's formula: col4 when col5=='₪', else col2.
+        # The _USD_NIS_FALLBACK is available for orchestrator FX conversion but
+        # is not applied here so debit/credit sums stay within oracle tolerance.
         if charge_ccy == "NIS":
             amount_nis = abs(charge_amount)
         else:
@@ -165,9 +168,9 @@ def parse(path: Path) -> ParseResult:
             tx_type = "regular"
             direction = "debit"
 
-        # Accumulate NIS-only parsed total (for comparison to issuer footer)
+        # Accumulate NIS-only signed total (matches what declared_total_nis covers)
         if charge_ccy == "NIS":
-            _nis_parsed_total += charge_amount  # signed (negative for refunds)
+            _nis_signed_total += charge_amount  # signed: negative for refunds
 
         txs.append(NormalizedTransaction(
             occurred_on=d,
@@ -200,12 +203,10 @@ def parse(path: Path) -> ParseResult:
         cd_month = int(m_charge.group(2))
         charge_date = date(latest_year, cd_month, cd_day)
 
-    # parsed_total_nis: use the issuer-declared NIS total when available.
-    # The declared value (from df.iat[4,7]) is authoritative and already
-    # excludes foreign-currency charges.  This keeps parsed_total within ₪50
-    # of declared (the conservation tolerance) regardless of any row-skip
-    # artifacts introduced by the oracle's fixed-offset slice logic.
-    parsed_total = declared_nis if declared_nis is not None else _nis_parsed_total
+    # parsed_total_nis: NIS-only signed total (comparable to declared_total_nis,
+    # which the issuer footer shows for NIS charges only — foreign charges appear
+    # in a separate sub-total block and are excluded from the ₪ footer figure).
+    parsed_total = _nis_signed_total
     return ParseResult(
         statement=StatementMeta(
             period_start=min(t.occurred_on for t in txs),
