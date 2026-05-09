@@ -19,7 +19,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - we require 3.12+ but keep the fallback
     import tomli as tomllib
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -230,3 +230,78 @@ def get_user_agent_settings(user_id: str) -> dict:
     if not path.exists():
         return {}
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+# ----------------------------------------------------------------------
+# Expenses config (household-expenses subsystem, Wave A)
+# ----------------------------------------------------------------------
+
+
+class ExpensesCategorizationConfig(BaseModel):
+    confidence_threshold: float = 0.85
+    llm_batch_size: int = 50
+    llm_model_override: str | None = None
+
+
+class ExpensesCorrelationConfig(BaseModel):
+    amount_tolerance_nis: float = 50.0
+    date_window_days: int = 2
+    bank_row_keywords_he: list[str] = Field(default_factory=lambda: [
+        "ל.מאסטרקרד", "כרטיסי אשראי", "ויזה", "דיינרס", "אמריקן אקספרס",
+    ])
+
+
+class ExpensesRefundMatcherConfig(BaseModel):
+    amount_tolerance_pct: float = 0.05
+    lookback_days: int = 90
+
+
+class ExpensesAnomalyConfig(BaseModel):
+    mom_category_factor: float = 1.5
+    mom_category_min_baseline_nis: float = 500.0
+    recurring_price_jump_pct: float = 15.0
+    recurring_missed_after_days: int = 7
+    new_recurring_after_n_months: int = 3
+    big_one_off_nis: float = 3000.0
+    coverage_gap_days: int = 35
+    suppress_acknowledged_for_months: int = 3
+
+
+class ExpensesParsersConfig(BaseModel):
+    leumi_osh: bool = True
+    isracard: bool = True
+    max: bool = True
+    cal: bool = False
+    amex: bool = False
+    diners: bool = False
+    discount: bool = False  # Discount Bank Mastercard — parser deferred
+
+
+class ExpensesConfig(BaseModel):
+    enabled: bool = True
+    parsers: ExpensesParsersConfig = Field(default_factory=ExpensesParsersConfig)
+    categorization: ExpensesCategorizationConfig = Field(
+        default_factory=ExpensesCategorizationConfig
+    )
+    correlation: ExpensesCorrelationConfig = Field(
+        default_factory=ExpensesCorrelationConfig
+    )
+    refund_matcher: ExpensesRefundMatcherConfig = Field(
+        default_factory=ExpensesRefundMatcherConfig
+    )
+    anomaly: ExpensesAnomalyConfig = Field(default_factory=ExpensesAnomalyConfig)
+
+
+def load_expenses_config(user_id: str) -> ExpensesConfig:
+    """Load expenses config from configs/<user_id>/agent_settings.yaml.
+    Missing file or missing 'expenses' block → all defaults.
+    """
+    import yaml
+
+    settings = get_settings()
+    cfg_path = settings.agent_settings_path(user_id)
+    if not cfg_path.exists():
+        return ExpensesConfig()
+    raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    block = raw.get("expenses") or {}
+    return ExpensesConfig.model_validate(block)
