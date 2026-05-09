@@ -18,6 +18,7 @@ from argosy.services.file_catalog import catalog_upload
 from argosy.state.models import (
     ExpenseCategory,
     ExpenseSource,
+    ExpenseStatement,
     ExpenseTransaction,
     MerchantCategoryCache,
 )
@@ -416,3 +417,269 @@ def monthly_summary(
 
     sorted_entries = sorted(out.values(), key=lambda e: e.month)
     return sorted_entries[-months:]
+
+
+# ---------------------------------------------------------------------------
+# GET /dashboard-overview
+# ---------------------------------------------------------------------------
+
+class CategorySpend(BaseModel):
+    slug: str
+    label_en: str
+    total_nis: float
+    transaction_count: int
+    percent: float
+
+
+class MerchantSpend(BaseModel):
+    merchant_normalized: str
+    merchant_display: str
+    total_nis: float
+    transaction_count: int
+    category_slug: str | None
+
+
+class AnomalyCard(BaseModel):
+    kind: str                     # uncategorized | novel_merchant | large_outlier | fee_waiver_missed | conservation_gap
+    severity: str                 # red | yellow | info
+    message: str
+    detail: str | None = None
+    link: str | None = None
+
+
+class SourceHealthEntry(BaseModel):
+    source_id: int
+    display_name: str
+    issuer: str
+    external_id: str
+    last_period: date | None
+    parsed_total_nis: float | None
+    declared_total_nis: float | None
+    gap: float | None
+    status: str                   # green | yellow | red | unknown
+    statement_count: int
+    correlated_card_payments: int
+
+
+class DashboardOverview(BaseModel):
+    months: list[MonthlyTotalEntry]
+    current_month_top_categories: list[CategorySpend]
+    top_merchants_current_month: list[MerchantSpend]
+    anomalies: list[AnomalyCard]
+    sources_health: list[SourceHealthEntry]
+    fx_mode: str
+
+
+def _gap_status(gap: float | None) -> str:
+    if gap is None:
+        return "unknown"
+    a = abs(gap)
+    if a < 0.5:
+        return "green"
+    if a < 5.0:
+        return "yellow"
+    return "red"
+
+
+@router.get("/dashboard-overview", response_model=DashboardOverview)
+def dashboard_overview(
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    months: int = Query(default=12, ge=1, le=60),
+    fx: str = Query(default="per_currency", regex="^(per_currency|nis)$"),
+) -> DashboardOverview:
+    # 1. Months — re-use the same SQL as /monthly-summary
+    rows = db.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(ExpenseTransaction.currency_orig, "NIS").label("ccy"),
+            func.sum(case(
+                (ExpenseTransaction.amount_nis.is_not(None),
+                 ExpenseTransaction.amount_nis),
+                else_=ExpenseTransaction.amount_orig,
+            )).label("total"),
+            func.count().label("n"),
+        )
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .group_by("y", "m", "ccy")
+        .order_by("y", "m")
+    ).all()
+    month_acc: dict[str, MonthlyTotalEntry] = {}
+    for y, m, ccy, total, n in rows:
+        if y is None or m is None:
+            continue
+        key = f"{int(y):04d}-{int(m):02d}"
+        e = month_acc.setdefault(key, MonthlyTotalEntry(
+            month=key, totals_by_currency={}, transaction_count=0,
+        ))
+        e.totals_by_currency[ccy or "NIS"] = float(total or 0)
+        e.transaction_count += int(n)
+    months_list = sorted(month_acc.values(), key=lambda e: e.month)[-months:]
+
+    # 2. Current-month top categories (NIS, descending)
+    if months_list:
+        cur = months_list[-1].month  # 'YYYY-MM'
+        cur_y, cur_m = (int(p) for p in cur.split("-"))
+        cat_rows = db.execute(
+            sa_select(
+                ExpenseCategory.slug, ExpenseCategory.label_en,
+                func.sum(ExpenseTransaction.amount_nis).label("total"),
+                func.count().label("n"),
+            )
+            .join(ExpenseTransaction,
+                  ExpenseTransaction.category_id == ExpenseCategory.id)
+            .where(ExpenseTransaction.user_id == user_id)
+            .where(ExpenseTransaction.is_card_payment.is_(False))
+            .where(ExpenseTransaction.amount_nis.is_not(None))
+            .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
+            .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
+            .where(ExpenseCategory.is_excluded_from_spend.is_(False))
+            .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
+            .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
+            .limit(10)
+        ).all()
+        total_month = sum(float(r.total or 0) for r in cat_rows) or 1.0
+        top_cats = [
+            CategorySpend(
+                slug=r.slug, label_en=r.label_en,
+                total_nis=float(r.total or 0),
+                transaction_count=int(r.n or 0),
+                percent=float(r.total or 0) / total_month * 100.0,
+            )
+            for r in cat_rows
+        ]
+    else:
+        top_cats = []
+
+    # 3. Top merchants (current month)
+    if months_list:
+        cur = months_list[-1].month
+        cur_y, cur_m = (int(p) for p in cur.split("-"))
+        mer_rows = db.execute(
+            sa_select(
+                ExpenseTransaction.merchant_normalized,
+                func.max(ExpenseTransaction.merchant_raw).label("display"),
+                func.sum(ExpenseTransaction.amount_nis).label("total"),
+                func.count().label("n"),
+                func.max(ExpenseCategory.slug).label("cat"),
+            )
+            .outerjoin(ExpenseCategory,
+                       ExpenseCategory.id == ExpenseTransaction.category_id)
+            .where(ExpenseTransaction.user_id == user_id)
+            .where(ExpenseTransaction.is_card_payment.is_(False))
+            .where(ExpenseTransaction.amount_nis.is_not(None))
+            .where(ExpenseTransaction.direction == "debit")
+            .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
+            .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
+            .group_by(ExpenseTransaction.merchant_normalized)
+            .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
+            .limit(10)
+        ).all()
+        top_merchants = [
+            MerchantSpend(
+                merchant_normalized=r.merchant_normalized,
+                merchant_display=r.display or r.merchant_normalized,
+                total_nis=float(r.total or 0),
+                transaction_count=int(r.n or 0),
+                category_slug=r.cat,
+            )
+            for r in mer_rows
+        ]
+    else:
+        top_merchants = []
+
+    # 4. Anomalies
+    anomalies: list[AnomalyCard] = []
+    # 4a. Uncategorized count
+    uncat_n = db.query(ExpenseTransaction).filter(
+        ExpenseTransaction.user_id == user_id,
+        ExpenseTransaction.is_card_payment.is_(False),
+    ).join(ExpenseCategory,
+           ExpenseCategory.id == ExpenseTransaction.category_id).filter(
+        ExpenseCategory.slug == "uncategorized",
+    ).count()
+    if uncat_n > 0:
+        anomalies.append(AnomalyCard(
+            kind="uncategorized", severity="yellow" if uncat_n < 50 else "red",
+            message=f"{uncat_n} transactions are uncategorized",
+            link="/expenses/transactions?category=uncategorized",
+        ))
+    # 4b. Conservation gaps (latest statement per source)
+    for src_row in db.query(ExpenseSource).filter_by(user_id=user_id).all():
+        latest = db.query(ExpenseStatement).filter_by(
+            source_id=src_row.id, user_id=user_id,
+        ).order_by(ExpenseStatement.period_end.desc()).first()
+        if latest is None or latest.declared_total_nis is None:
+            continue
+        gap = float(latest.parsed_total_nis or 0) - float(latest.declared_total_nis)
+        if abs(gap) >= 5.0:
+            anomalies.append(AnomalyCard(
+                kind="conservation_gap", severity="red",
+                message=f"{src_row.display_name}: latest gap ₪{gap:+.2f}",
+                detail=f"parsed={latest.parsed_total_nis} declared={latest.declared_total_nis}",
+            ))
+    # 4c. Card 2923 fee-waiver: if discount card has any standing-order fee row
+    #     in latest statement but NO matching credit/refund row → flag.
+    discount = db.query(ExpenseSource).filter_by(
+        user_id=user_id, issuer="discount", external_id="2923",
+    ).one_or_none()
+    if discount is not None:
+        latest = db.query(ExpenseStatement).filter_by(
+            source_id=discount.id, user_id=user_id,
+        ).order_by(ExpenseStatement.period_end.desc()).first()
+        if latest is not None:
+            stmt_txs = db.query(ExpenseTransaction).filter_by(
+                statement_id=latest.id, user_id=user_id,
+            ).all()
+            fees = [t for t in stmt_txs
+                    if t.direction == "debit"
+                    and "כרטיס" in (t.merchant_raw or "")
+                    and t.amount_nis and float(t.amount_nis) > 5]
+            credits = [t for t in stmt_txs if t.direction == "credit"]
+            if fees and not credits:
+                anomalies.append(AnomalyCard(
+                    kind="fee_waiver_missed", severity="red",
+                    message="Discount Card 2923: card-fee charged with NO matching discount credit",
+                    detail="Verify the fee-waiver promotion is still active",
+                ))
+
+    # 5. Sources health
+    sources_health: list[SourceHealthEntry] = []
+    for src_row in db.query(ExpenseSource).filter_by(
+        user_id=user_id, active=True,
+    ).order_by(ExpenseSource.created_at).all():
+        latest = db.query(ExpenseStatement).filter_by(
+            source_id=src_row.id, user_id=user_id,
+        ).order_by(ExpenseStatement.period_end.desc()).first()
+        stmt_n = db.query(ExpenseStatement).filter_by(
+            source_id=src_row.id, user_id=user_id,
+        ).count()
+        gap = (
+            float(latest.parsed_total_nis or 0) - float(latest.declared_total_nis)
+            if latest and latest.declared_total_nis is not None
+            else None
+        )
+        corr_n = db.query(ExpenseTransaction).filter_by(
+            source_id=src_row.id, user_id=user_id, is_card_payment=True,
+        ).count()
+        sources_health.append(SourceHealthEntry(
+            source_id=src_row.id, display_name=src_row.display_name,
+            issuer=src_row.issuer, external_id=src_row.external_id,
+            last_period=latest.period_end if latest else None,
+            parsed_total_nis=float(latest.parsed_total_nis) if latest and latest.parsed_total_nis is not None else None,
+            declared_total_nis=float(latest.declared_total_nis) if latest and latest.declared_total_nis is not None else None,
+            gap=gap, status=_gap_status(gap),
+            statement_count=stmt_n,
+            correlated_card_payments=corr_n,
+        ))
+
+    return DashboardOverview(
+        months=months_list,
+        current_month_top_categories=top_cats,
+        top_merchants_current_month=top_merchants,
+        anomalies=anomalies,
+        sources_health=sources_health,
+        fx_mode=fx,
+    )
