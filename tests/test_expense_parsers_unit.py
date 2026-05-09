@@ -51,3 +51,56 @@ def test_leumi_parser_statement_metadata():
     assert result.statement.period_end == date(2026, 5, 1)
     assert result.statement.declared_total_nis is None
     assert result.statement.charge_date is None
+
+
+def test_isracard_parser_returns_5_rows():
+    from argosy.services.expense_ingest.parsers.isracard import parse
+    result = parse(FIXTURES / "isracard_minimal.xlsx")
+    assert len(result.transactions) == 5
+
+
+def test_isracard_parser_extracts_card_last4():
+    from argosy.services.expense_ingest.parsers.isracard import parse
+    result = parse(FIXTURES / "isracard_minimal.xlsx")
+    assert result.source_hint is not None
+    assert result.source_hint.kind == "card"
+    assert result.source_hint.issuer == "isracard"
+    assert result.source_hint.external_id == "1266"
+    assert "אריאל" in result.source_hint.cardholder_name
+
+
+def test_isracard_parser_charge_date():
+    from argosy.services.expense_ingest.parsers.isracard import parse
+    from datetime import date
+    result = parse(FIXTURES / "isracard_minimal.xlsx")
+    # The fixture says לחיוב ב-15.04 — year inferred from latest tx year
+    assert result.statement.charge_date == date(2026, 4, 15)
+
+
+def test_isracard_parser_handles_usd_row():
+    from argosy.services.expense_ingest.parsers.isracard import parse
+    result = parse(FIXTURES / "isracard_minimal.xlsx")
+    usd = next(t for t in result.transactions
+               if "NAME-CHEAP" in t.merchant_raw)
+    assert usd.currency_orig == "USD"
+    assert usd.amount_orig == 12.18
+    # NIS-approximation must be set (we use a fallback constant in tests)
+    assert usd.amount_nis > 0
+
+
+def test_isracard_parser_detects_refund():
+    from argosy.services.expense_ingest.parsers.isracard import parse
+    result = parse(FIXTURES / "isracard_minimal.xlsx")
+    refund = next(t for t in result.transactions
+                  if "ZARA" in t.merchant_raw)
+    assert refund.tx_type == "refund"
+    assert refund.direction == "credit"
+    assert refund.amount_nis == 50.0  # always positive on storage
+
+
+def test_isracard_parser_detects_standing_order():
+    from argosy.services.expense_ingest.parsers.isracard import parse
+    result = parse(FIXTURES / "isracard_minimal.xlsx")
+    netflix = next(t for t in result.transactions
+                   if "NETFLIX" in t.merchant_raw)
+    assert netflix.tx_type == "standing_order"

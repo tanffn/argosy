@@ -62,3 +62,37 @@ def test_leumi_parser_conservation(leumi_samples):
         assert abs(credits - truth.sum_credits_nis) < 1.00, (
             f"{p.name}: credit sum drift parser={credits} oracle={truth.sum_credits_nis}"
         )
+
+
+@pytest.fixture(scope="module")
+def isracard_samples():
+    paths = _all_existing("**/1266/1266_*.xlsx")
+    if not paths:
+        pytest.skip("no Isracard samples present")
+    return paths
+
+
+def test_isracard_parser_conservation(isracard_samples):
+    from argosy.services.expense_ingest.parsers.isracard import parse
+    for p in isracard_samples:
+        truth = isracard_oracle(p)
+        result = parse(p)
+        debits = sum(t.amount_nis for t in result.transactions
+                     if t.direction == "debit")
+        credits = sum(t.amount_nis for t in result.transactions
+                      if t.direction == "credit")
+        assert len(result.transactions) == truth.row_count, (
+            f"{p.name}: row count drift {len(result.transactions)} vs {truth.row_count}"
+        )
+        assert abs(debits - truth.sum_debits_nis) < 1.00, (
+            f"{p.name}: debit drift {debits} vs {truth.sum_debits_nis}"
+        )
+        assert abs(credits - truth.sum_credits_nis) < 1.00, (
+            f"{p.name}: credit drift {credits} vs {truth.sum_credits_nis}"
+        )
+        # Issuer footer reconciliation (within ₪50, looser per spec)
+        if truth.declared_total_nis is not None:
+            assert abs(result.statement.parsed_total_nis - truth.declared_total_nis) < 50.00, (
+                f"{p.name}: parsed total {result.statement.parsed_total_nis} "
+                f"vs declared {truth.declared_total_nis}"
+            )
