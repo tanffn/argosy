@@ -1002,6 +1002,8 @@ __all__ = [
     "ExpenseTransaction",
     "MerchantCategoryCache",
     "ExpenseReviewQueue",
+    # FX rate cache (Wave EX1.1 — migration 0023)
+    "FxRate",
 ]
 
 
@@ -1228,4 +1230,28 @@ class ExpenseReviewQueue(Base):
     )
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+
+# ----------------------------------------------------------------------
+# FX rate cache (Wave EX1.1 — migration 0023)
+# ----------------------------------------------------------------------
+
+
+class FxRate(Base):
+    """Daily exchange-rate cache. Rates stored as units of ILS per 1 unit of currency.
+
+    Source today: Bank of Israel representative rates (boi.org.il).
+    """
+
+    __tablename__ = "fx_rates"
+
+    date: Mapped[date] = mapped_column(Date, primary_key=True)
+    currency: Mapped[str] = mapped_column(String(8), primary_key=True)
+    rate: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="boi"
+    )
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
