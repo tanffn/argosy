@@ -79,3 +79,92 @@ def test_upload_multi_file(expense_client):
     body = resp.json()
     assert len(body["results"]) == 2
     assert all(r["status"] == "parsed" for r in body["results"])
+
+
+def test_list_sources_returns_active_only(expense_client):
+    """Upload an Isracard file, then list sources — should return one row."""
+    with patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
+               return_value=[]):
+        with open(FIXTURES / "isracard_minimal.xlsx", "rb") as f:
+            expense_client.post("/api/expenses/upload",
+                                 files={"files": ("isracard_minimal.xlsx",
+                                                  f.read(),
+                                                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                                 data={"user_id": "ariel"})
+    resp = expense_client.get("/api/expenses/sources?user_id=ariel")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["sources"]) == 1
+    assert body["sources"][0]["issuer"] == "isracard"
+    assert body["sources"][0]["external_id"] == "1266"
+
+
+def test_list_transactions_filters_by_category(expense_client):
+    """Ingest a Max file (issuer-categorized), filter by dining_out."""
+    with patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
+               return_value=[]):
+        with open(FIXTURES / "max_minimal.xlsx", "rb") as f:
+            expense_client.post("/api/expenses/upload",
+                                 files={"files": ("max_minimal.xlsx", f.read(),
+                                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                                 data={"user_id": "ariel"})
+    resp = expense_client.get("/api/expenses/transactions",
+                               params={"user_id": "ariel",
+                                       "category": "dining_out.restaurants"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert any("ספייס" in t["merchant_raw"] for t in body["transactions"])
+
+
+def test_patch_transaction_category_updates_cache(expense_client):
+    with patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
+               return_value=[]):
+        with open(FIXTURES / "max_minimal.xlsx", "rb") as f:
+            expense_client.post("/api/expenses/upload",
+                                 files={"files": ("max_minimal.xlsx", f.read(),
+                                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                                 data={"user_id": "ariel"})
+    resp = expense_client.get("/api/expenses/transactions",
+                               params={"user_id": "ariel"})
+    tx_id = resp.json()["transactions"][0]["id"]
+    upd = expense_client.patch(f"/api/expenses/transactions/{tx_id}",
+                                json={"user_id": "ariel",
+                                      "category_slug": "discretionary.entertainment"})
+    assert upd.status_code == 200
+    body = upd.json()
+    assert body["category_source"] == "user"
+    assert body["affected_count"] >= 1
+
+
+def test_list_categories_returns_taxonomy(expense_client):
+    with patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
+               return_value=[]):
+        with open(FIXTURES / "max_minimal.xlsx", "rb") as f:
+            expense_client.post("/api/expenses/upload",
+                                 files={"files": ("max_minimal.xlsx", f.read(),
+                                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                                 data={"user_id": "ariel"})
+    resp = expense_client.get("/api/expenses/categories?user_id=ariel")
+    assert resp.status_code == 200
+    body = resp.json()
+    slugs = {c["slug"] for c in body["categories"]}
+    assert "food.groceries" in slugs
+    assert "dining_out.restaurants" in slugs
+    assert "uncategorized" in slugs
+
+
+def test_monthly_summary_excludes_card_payments(expense_client):
+    """Card-payment rows must NOT contribute to category totals."""
+    with patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
+               return_value=[]):
+        with open(FIXTURES / "max_minimal.xlsx", "rb") as f:
+            expense_client.post("/api/expenses/upload",
+                                 files={"files": ("max_minimal.xlsx", f.read(),
+                                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                                 data={"user_id": "ariel"})
+    resp = expense_client.get("/api/expenses/monthly-summary",
+                               params={"user_id": "ariel", "months": 12})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "by_month" in body
+    assert len(body["by_month"]) >= 1
