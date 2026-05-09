@@ -15,7 +15,7 @@ Refunds are filtered out BEFORE this stage; their category is set later by
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -66,7 +66,7 @@ def resolve_categories_for_user(session: Session, user_id: str) -> int:
             tx.category_source = "cache"
             tx.category_confidence = cached.confidence
             cached.hit_count += 1
-            cached.last_hit_at = datetime.utcnow()
+            cached.last_hit_at = datetime.now(timezone.utc)
             resolved += 1
             continue
 
@@ -129,14 +129,14 @@ def resolve_categories_for_user(session: Session, user_id: str) -> int:
                         source="llm",
                         confidence=Decimal(str(r.confidence)),
                         hit_count=1,
-                        last_hit_at=datetime.utcnow(),
+                        last_hit_at=datetime.now(timezone.utc),
                     ))
                 else:
                     # Update in-place: keep the higher-confidence verdict.
                     if Decimal(str(r.confidence)) > existing_cache.confidence:
                         existing_cache.category_id = cat.id
                         existing_cache.confidence = Decimal(str(r.confidence))
-                        existing_cache.last_hit_at = datetime.utcnow()
+                        existing_cache.last_hit_at = datetime.now(timezone.utc)
 
     session.flush()
     return resolved

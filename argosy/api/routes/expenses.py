@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Annotated
 
@@ -258,14 +258,14 @@ def patch_transaction_category(
         db.add(MerchantCategoryCache(
             user_id=body.user_id, merchant_pattern=pattern,
             category_id=cat.id, source="user", confidence=Decimal("1.00"),
-            hit_count=1, last_hit_at=datetime.utcnow(),
+            hit_count=1, last_hit_at=datetime.now(timezone.utc),
         ))
     else:
         cache.category_id = cat.id
         cache.source = "user"
         cache.confidence = Decimal("1.00")
         cache.hit_count += 1
-        cache.last_hit_at = datetime.utcnow()
+        cache.last_hit_at = datetime.now(timezone.utc)
 
     siblings = db.query(ExpenseTransaction).filter(
         ExpenseTransaction.user_id == body.user_id,
