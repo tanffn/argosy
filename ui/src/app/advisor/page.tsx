@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Paperclip, X } from "lucide-react";
+import { Loader2, Paperclip, X } from "lucide-react";
 
 import { Markdown } from "@/components/markdown";
 import { PlanInScopeCard } from "@/components/plan-in-scope-card";
@@ -123,6 +123,25 @@ export default function AdvisorPage() {
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // "Thinking..." liveness — track elapsed seconds so the user sees
+  // the spinner counting up during a long advisor turn rather than a
+  // silent indicator that could pass for a frozen tab.
+  const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(
+    null,
+  );
+  const [thinkingElapsed, setThinkingElapsed] = useState(0);
+  useEffect(() => {
+    if (thinkingStartedAt === null) {
+      setThinkingElapsed(0);
+      return;
+    }
+    const tick = () =>
+      setThinkingElapsed(Math.floor((Date.now() - thinkingStartedAt) / 1000));
+    tick();
+    const id = window.setInterval(tick, 250);
+    return () => window.clearInterval(id);
+  }, [thinkingStartedAt]);
+
   // Wave 2: monthly plan-revision draft (banner + side sheet).
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -228,12 +247,14 @@ export default function AdvisorPage() {
     ) => {
       try {
         setLoading(true);
+        setThinkingStartedAt(Date.now());
         const t = await api.advisorTurn(USER_ID, lastUserMessage, opts);
         setPending(t);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : String(e));
       } finally {
         setLoading(false);
+        setThinkingStartedAt(null);
         // After every turn, re-pull the sidebar so newly-fresh fields
         // light up green and counts stay accurate.
         await refreshGaps();
@@ -364,6 +385,23 @@ export default function AdvisorPage() {
 
   return (
     <main className="max-w-7xl mx-auto p-6 flex flex-col gap-6">
+      {/* Sticky error banner — duplicates the bottom-of-form error so a
+          rejection (e.g. unsupported attachment type) stays visible no
+          matter how far the user has scrolled. Click to dismiss. */}
+      {submitError && (
+        <div
+          role="alert"
+          onClick={() => setSubmitError(null)}
+          className="sticky top-2 z-30 rounded-md border border-red-500/40 bg-red-500/15 backdrop-blur p-3 cursor-pointer hover:bg-red-500/25 transition"
+        >
+          <p className="text-sm text-red-500 font-mono flex items-center justify-between gap-3">
+            <span>{submitError}</span>
+            <span className="text-xs text-red-500/70 shrink-0">
+              click to dismiss
+            </span>
+          </p>
+        </div>
+      )}
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Advisor</h1>
         <p className="text-sm text-muted-foreground">
@@ -495,7 +533,25 @@ export default function AdvisorPage() {
               ))}
 
               {loading && (
-                <p className="text-sm text-muted-foreground">Thinking...</p>
+                <div
+                  className="flex items-center gap-2 text-sm text-muted-foreground"
+                  aria-live="polite"
+                >
+                  <Loader2
+                    className="h-4 w-4 animate-spin"
+                    aria-hidden
+                    suppressHydrationWarning
+                  />
+                  <span>Thinking</span>
+                  <span className="font-mono inline-block w-6 text-left">
+                    {/* Animated dots — one new dot per second mod 3, so the
+                        text alone shows liveness even if CSS animation fails. */}
+                    {".".repeat((thinkingElapsed % 3) + 1)}
+                  </span>
+                  <span className="text-xs font-mono text-muted-foreground/70">
+                    ({thinkingElapsed}s)
+                  </span>
+                </div>
               )}
 
               {pending && pending.question_for_user && (
