@@ -73,6 +73,7 @@ testpaths = ["tests"]
 pythonpath = ["."]
 markers = [
     "llm_eval: marks tests that call the live Anthropic API (deselect with -m 'not llm_eval')",
+    "slow: corpus-replay integration test (touches real fixtures)",
 ]
 
 [tool.ruff]
