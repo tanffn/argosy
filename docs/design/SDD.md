@@ -2567,6 +2567,318 @@ Full design: `docs/superpowers/specs/2026-05-09-household-expenses-design.md`.
 EX2 (anomaly detection + advisor surfacing), EX3 (HouseholdBudgetAnalystAgent
 feeding plan synthesis), and EX4 (UI) are scheduled but not yet implemented.
 
+### 18.0 Visual overview (Mermaid)
+
+These eight diagrams are the canonical visual today. A `docs/design/diagrams/18-expenses-*.drawio` follow-up matching §00–§16 is deferred polish; the embedded Mermaid here renders in GitHub / IDE previews and serves as the entry point to the section.
+
+#### 18.0.1 Subsystem architecture (top-down)
+
+How user statements flow from disk to the queryable DB and outward through the REST/CLI/WS surfaces. Mirrors §1's whole-system architecture but scoped to expenses.
+
+```mermaid
+flowchart TB
+  subgraph Inputs["INPUTS — user-supplied statement files"]
+    F1[Leumi current-account<br/>HTML-as-xls]
+    F2[Isracard xlsx<br/>Ariel 1266 + Noga 0235]
+    F3[Max xlsx<br/>Ariel 6225]
+    F4[Discount Bank xlsx<br/>Noga 2923, 2-sheet]
+    F5[Cal/Amex/Diners<br/>stubs only]
+  end
+
+  CAT["catalog_upload<br/>(Wave A — §17.1)<br/>sha256 dedup, audit"]
+  SNIFF["sniff.detect_format<br/>content-based"]
+  ORCH["orchestrator.ingest_user_file<br/>idempotent on user_files.id"]
+
+  F1 --> CAT
+  F2 --> CAT
+  F3 --> CAT
+  F4 --> CAT
+  F5 --> CAT
+  CAT --> SNIFF
+  SNIFF --> ORCH
+
+  subgraph Pipeline["INGEST PIPELINE (sequential, in-process)"]
+    direction TB
+    P1[parse → ParseResult]
+    P2[register/get ExpenseSource]
+    P3[persist statement + transactions]
+    P4[correlate bank↔card]
+    P5[resolve categories<br/>cascade]
+    P6[match refunds<br/>to prior debits]
+    P1 --> P2 --> P3 --> P4 --> P5 --> P6
+  end
+  ORCH --> Pipeline
+
+  subgraph DB["DB — migration 0021 (six new tables)"]
+    T1[(expense_sources)]
+    T2[(expense_statements)]
+    T3[(expense_transactions)]
+    T4[(expense_categories)]
+    T5[(merchant_category_cache)]
+    T6[(expense_review_queue<br/>EX2)]
+  end
+  Pipeline --> DB
+
+  subgraph Surfaces["SURFACES"]
+    direction LR
+    R["/api/expenses/*<br/>upload, sources, transactions,<br/>categories, monthly-summary"]
+    W[WebSocket events<br/>expense.statement.parsed/failed]
+    C[CLI<br/>argosy expenses verify-file/<br/>backfill/issuer-coverage]
+  end
+  DB --> R
+  DB --> C
+  ORCH --> W
+```
+
+#### 18.0.2 Data model — six new tables
+
+ER for the EX1 schema. The `expense_transactions` table is the heaviest — see §8.5 for the full column list including the `is_card_payment + matched_statement_id` correlation pair and the `refund_of_id` inheritance edge.
+
+```mermaid
+erDiagram
+  USERS ||--o{ EXPENSE_SOURCES         : owns
+  USERS ||--o{ EXPENSE_STATEMENTS      : owns
+  USERS ||--o{ EXPENSE_TRANSACTIONS    : owns
+  USERS ||--o{ EXPENSE_CATEGORIES      : "owns (per-user copy)"
+  USERS ||--o{ MERCHANT_CATEGORY_CACHE : owns
+  USERS ||--o{ EXPENSE_REVIEW_QUEUE    : owns
+
+  USER_FILES ||--o{ EXPENSE_STATEMENTS : "FK file_id (provenance)"
+
+  EXPENSE_SOURCES    ||--o{ EXPENSE_STATEMENTS    : "FK source_id"
+  EXPENSE_SOURCES    ||--o{ EXPENSE_TRANSACTIONS  : "FK source_id"
+  EXPENSE_STATEMENTS ||--o{ EXPENSE_TRANSACTIONS  : "FK statement_id"
+  EXPENSE_STATEMENTS ||--o{ EXPENSE_TRANSACTIONS  : "FK matched_statement_id<br/>(card-payment dedup)"
+
+  EXPENSE_CATEGORIES ||--o{ EXPENSE_CATEGORIES    : "FK parent_id (hierarchical)"
+  EXPENSE_CATEGORIES ||--o{ EXPENSE_TRANSACTIONS  : "FK category_id"
+  EXPENSE_CATEGORIES ||--o{ MERCHANT_CATEGORY_CACHE : "FK category_id"
+
+  EXPENSE_TRANSACTIONS ||--o{ EXPENSE_TRANSACTIONS : "FK refund_of_id<br/>(refund inheritance)"
+
+  EXPENSE_TRANSACTIONS {
+    int id PK
+    text user_id FK
+    int statement_id FK
+    int source_id FK
+    date occurred_on
+    text merchant_raw
+    text merchant_normalized "cache key"
+    decimal amount_nis "raw foreign for non-NIS rows"
+    text direction "debit|credit"
+    text tx_type "regular|standing_order|installment|refund"
+    int category_id FK
+    text category_source "user|cache|issuer|llm|inherited_from_refund"
+    bool is_card_payment
+    int matched_statement_id FK
+    int refund_of_id FK
+    text reference "אסמכתא | voucher#"
+    text raw_row_json
+  }
+```
+
+#### 18.0.3 Ingest pipeline sequence
+
+What happens, in order, when a user POSTs a statement. The orchestrator is sync (so FastAPI runs it in a worker thread); `_invoke_llm` calls `asyncio.run()` from there, which is safe.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant U as User (browser)
+  participant API as POST /api/expenses/upload (sync)
+  participant CAT as catalog_upload (async)
+  participant ORCH as ingest_user_file (sync)
+  participant PARSE as parser_fn
+  participant DB as SQLite
+  participant LLM as HouseholdCategorizerAgent
+
+  U->>API: multipart upload (1..N files)
+  loop per file
+    API->>CAT: bytes + metadata (asyncio.run)
+    CAT->>DB: INSERT user_files (sha256 dedup)
+    CAT-->>API: UserFile DTO
+    API->>ORCH: ingest_user_file(user_id, file_id)
+
+    ORCH->>ORCH: ensure categories seeded (1st time)
+    ORCH->>PARSE: detect_format → dispatch
+    PARSE-->>ORCH: ParseResult (transactions + statement_meta)
+
+    ORCH->>DB: register/get ExpenseSource (by external_id)
+    ORCH->>DB: persist ExpenseStatement (idempotent on period)
+    ORCH->>DB: persist ExpenseTransaction[] (content-hash dedup)
+
+    ORCH->>DB: correlate bank↔card (mark is_card_payment)
+
+    Note over ORCH,LLM: Categorize cascade —<br/>1. user override 2. issuer-seed 3. cache 4. LLM
+    ORCH->>DB: query uncategorized non-refund transactions
+    ORCH->>LLM: categorize_batch (≤50 tx/call)
+    LLM-->>ORCH: [{tx_id, slug, confidence, rationale}]
+    ORCH->>DB: write merchant_category_cache + tx.category_id
+    ORCH->>DB: match refunds (prior debit, ±5%, ≤90d) → inherit category
+
+    ORCH-->>API: IngestResult (counts per stage)
+    API-->>U: UploadFileResult (parsed/failed + counts)
+  end
+```
+
+#### 18.0.4 Parser landscape
+
+Which issuer maps to which file format and which downstream features the parser supports. The `is_card_payment` correlation column applies only to bank-side rows; pre-categorized issuers feed `issuer_category` into the resolver's seed-tier.
+
+```mermaid
+flowchart LR
+  subgraph Banks["Bank account"]
+    LEUMI[Leumi current-account<br/>HTML-as-xls<br/>אסמכתא = card last-4]
+  end
+  subgraph Cards["Credit cards"]
+    ISR[Isracard / Mastercard<br/>xlsx, sheet 'פירוט עסקאות'<br/>multi-currency<br/>NO issuer category]
+    MAX[Max card<br/>xlsx, sheet 'לאומי לישראל ...'<br/>NIS-only<br/>issuer category in 'ענף']
+    DSC[Discount Bank Mastercard<br/>xlsx, 2 sheets<br/>NIS-only export<br/>issuer category in 'קטגוריה'<br/>fee-waiver pattern preserved]
+    STUB[Cal / Amex / Diners<br/>stubs raise<br/>NotImplementedError]
+  end
+
+  LEUMI -->|אסמכתא matches| CORR
+  ISR -.->|charge_total + charge_date<br/>aligns with bank line| CORR
+  MAX -.-> CORR
+  DSC -.-> CORR
+
+  ISR --> RES[category resolver<br/>LLM-only path]
+  MAX --> RES2[category resolver<br/>seed → LLM fallback]
+  DSC --> RES2
+
+  CORR[bank↔card correlator<br/>marks is_card_payment]
+
+  style LEUMI fill:#cce
+  style ISR fill:#fce
+  style MAX fill:#fce
+  style DSC fill:#fce
+  style STUB fill:#eee
+```
+
+#### 18.0.5 Bank↔card correlation algorithm
+
+How the correlator avoids double-counting card spend. A bank's lump-sum debit (e.g., ₪3,319.44 to ל.מאסטרקרד) is matched to the itemized card statement of the same total; the bank row is then flagged `is_card_payment=TRUE` and excluded from spend aggregations because the card's per-row breakdown is the canonical record.
+
+```mermaid
+flowchart TD
+  A[Bank-side ExpenseTransaction]
+  A --> B{merchant smells like<br/>card payment?<br/>ל.מאסטרקרד / כרטיסי אשראי / etc.}
+  B -->|no| Z1[Skip — not a card-payment row]
+  B -->|yes| C{reference is numeric<br/>AND matches an<br/>expense_sources.external_id<br/>kind=card?}
+  C -->|yes — Tier 1| D[Find card statement:<br/>charge_date within ±2d<br/>declared_total_nis within ₪50]
+  D -->|match| MARK
+  D -->|no match| Z3
+  C -->|reference is None| FALLBACK[Tier 2: amount + exact<br/>charge_date across all<br/>card sources]
+  C -->|reference set but<br/>doesn't match any card| Z2[Skip — unknown ref<br/>could be Max IT savings, etc.]
+  FALLBACK -->|exactly 1 candidate| MARK
+  FALLBACK -->|0 or 2+ candidates| Z3[Skip — ambiguous]
+
+  MARK["bank_tx.is_card_payment = TRUE<br/>bank_tx.matched_statement_id = card_stmt.id<br/>→ excluded from spend aggregation"]
+
+  style MARK fill:#9f9
+  style Z1 fill:#fcc
+  style Z2 fill:#fcc
+  style Z3 fill:#fcc
+```
+
+#### 18.0.6 Category resolver cascade
+
+How a non-refund transaction gets its `category_id`. Refunds are filtered out before this stage and inherited from a prior debit later (§18.0.7). The cascade short-circuits on the first hit so the LLM only sees genuinely-novel merchants.
+
+```mermaid
+flowchart TD
+  TX[ExpenseTransaction<br/>direction=debit OR credit-non-refund<br/>category_id IS NULL]
+
+  TX --> Q1{merchant_category_cache hit<br/>for merchant_normalized?}
+  Q1 -->|yes| C1[Use cached category<br/>category_source = 'cache'<br/>++hit_count]
+
+  Q1 -->|no| Q2{raw_row_json.anaf<br/>maps to unambiguous slug?<br/>map_issuer_category}
+  Q2 -->|yes — confidence ≥ 0.85| C2[Use mapped slug<br/>category_source = 'issuer'<br/>confidence = 0.80–0.95]
+
+  Q2 -->|ambiguous / unknown| BATCH["Add to LLM batch<br/>(carry hint=anaf if any)"]
+  BATCH --> Q3[HouseholdCategorizerAgent<br/>categorize_batch<br/>Sonnet, ≤50 tx/call]
+  Q3 --> Q4{confidence ≥ 0.85?}
+  Q4 -->|yes| C3[Use slug<br/>category_source = 'llm'<br/>WRITE merchant_category_cache row]
+  Q4 -->|no| C4[category = 'uncategorized'<br/>category_source = 'llm'<br/>EX2: queue for user review]
+
+  style C1 fill:#9f9
+  style C2 fill:#9f9
+  style C3 fill:#9f9
+  style C4 fill:#fc9
+```
+
+#### 18.0.7 Refund inheritance
+
+Refunds (`tx_type='refund'`, `direction='credit'`) are not categorized as income. Instead they inherit the category of the matching prior debit so they net out within the original spend bucket. Unmatched refunds go to the user-review queue (EX2).
+
+```mermaid
+flowchart TD
+  R[Refund row<br/>direction='credit'<br/>tx_type='refund'<br/>refund_of_id IS NULL]
+  R --> Q[Find prior debit:<br/>same merchant_normalized<br/>amount within ±5%<br/>within 90 days prior<br/>category_id IS NOT NULL]
+  Q -->|exactly 1 match| OK["refund.category_id = prior.category_id<br/>refund.category_source = 'inherited_from_refund'<br/>refund.refund_of_id = prior.id"]
+  Q -->|none / multiple| SKIP[Skip — no inheritance<br/>refund stays uncategorized<br/>EX2: queue for user review]
+
+  OK --> NET[Aggregation: refund nets<br/>against the original purchase<br/>in the same category]
+
+  style OK fill:#9f9
+  style SKIP fill:#fc9
+```
+
+#### 18.0.8 Wave roadmap
+
+Where EX1 sits in the household-expenses arc. Each wave gates on the prior; EX1's gate (deterministic conservation tests on real samples) is met.
+
+```mermaid
+flowchart LR
+  EX1[EX1 — Ingest Core<br/>✅ landed]
+  EX2[EX2 — Anomaly + Advisor<br/>scheduled]
+  EX3[EX3 — Plan Integration<br/>scheduled]
+  EX4[EX4 — UI<br/>scheduled]
+
+  EX1 --> EX2 --> EX3 --> EX4
+
+  subgraph EX1Items["EX1 deliverables"]
+    direction TB
+    E1a[Migration 0021 — 6 tables]
+    E1b[4 working parsers<br/>Leumi/Isracard/Max/Discount]
+    E1c[Ingest pipeline<br/>parse → correlate → categorize → match refunds]
+    E1d[REST /api/expenses/*<br/>+ CLI argosy expenses]
+    E1e[HouseholdCategorizerAgent<br/>Sonnet, batched]
+    E1f[Conservation tests<br/>green on Ariel + Noga corpus]
+  end
+  EX1 -.- EX1Items
+
+  subgraph EX2Items["EX2 plan"]
+    direction TB
+    E2a[anomaly_detector<br/>6 anomaly kinds]
+    E2b[expense_review_queue<br/>UI surface]
+    E2c[advisor gap-driven<br/>'Spend review' group]
+    E2d[Discount fee-waiver flag<br/>per project memory]
+  end
+  EX2 -.- EX2Items
+
+  subgraph EX3Items["EX3 plan"]
+    direction TB
+    E3a[HouseholdBudgetAnalystAgent<br/>Opus, 10th analyst]
+    E3b[Plan synthesizer prompt<br/>extension §6.11]
+    E3c[derived predictables<br/>auto-confirm flow]
+  end
+  EX3 -.- EX3Items
+
+  subgraph EX4Items["EX4 plan"]
+    direction TB
+    E4a["/expenses page<br/>Recharts stacked-bar"]
+    E4b["<CashFlowTile> on Home"]
+    E4c["Plan page 'Cash-flow basis'<br/>panel"]
+  end
+  EX4 -.- EX4Items
+
+  style EX1 fill:#9f9
+  style EX2 fill:#fce
+  style EX3 fill:#fce
+  style EX4 fill:#fce
+```
+
 ### 18.1 EX1 surface (ingest core) — landed
 
 **Schema (migration 0021):** Six new tables — `expense_sources` (registered banks + cards), `expense_statements` (per-upload metadata, idempotent on `(user_id, source_id, period_start, period_end)`), `expense_transactions` (parsed rows with `is_card_payment` + `matched_statement_id` + `refund_of_id` + `category_source` ∈ {`user`, `cache`, `issuer`, `llm`, `inherited_from_refund`}), `expense_categories` (hierarchical, NULL `user_id` = system-default rows lazily copied per-user on first ingest — see `argosy.services.expense_ingest.taxonomy_seed`), `merchant_category_cache` (per-user `merchant_pattern → category` dedup), `expense_review_queue` (anomalies + uncategorized rows pending user review — populated in EX2). See §8.5.
