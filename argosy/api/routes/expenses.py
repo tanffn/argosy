@@ -683,3 +683,72 @@ def dashboard_overview(
         sources_health=sources_health,
         fx_mode=fx,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /source-detail/{source_id}
+# ---------------------------------------------------------------------------
+
+class StatementSummary(BaseModel):
+    id: int
+    period_start: date
+    period_end: date
+    parsed_total_nis: float | None
+    declared_total_nis: float | None
+    gap: float | None
+    status: str
+    parser_name: str
+    parser_version: str
+    transaction_count: int
+    correlated_count: int
+
+
+class SourceDetailResponse(BaseModel):
+    source: SourceOut
+    statements: list[StatementSummary]
+
+
+@router.get("/source-detail/{source_id}", response_model=SourceDetailResponse)
+def source_detail(
+    source_id: int,
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+) -> SourceDetailResponse:
+    src = db.query(ExpenseSource).filter_by(
+        id=source_id, user_id=user_id,
+    ).one_or_none()
+    if src is None:
+        raise HTTPException(status_code=404, detail="source not found")
+    stmts = db.query(ExpenseStatement).filter_by(
+        source_id=src.id, user_id=user_id,
+    ).order_by(ExpenseStatement.period_start).all()
+    out_stmts: list[StatementSummary] = []
+    for st in stmts:
+        tx_n = db.query(ExpenseTransaction).filter_by(
+            statement_id=st.id, user_id=user_id,
+        ).count()
+        corr_n = db.query(ExpenseTransaction).filter_by(
+            statement_id=st.id, user_id=user_id, is_card_payment=True,
+        ).count()
+        gap = (
+            float(st.parsed_total_nis or 0) - float(st.declared_total_nis)
+            if st.declared_total_nis is not None
+            else None
+        )
+        out_stmts.append(StatementSummary(
+            id=st.id,
+            period_start=st.period_start, period_end=st.period_end,
+            parsed_total_nis=float(st.parsed_total_nis) if st.parsed_total_nis is not None else None,
+            declared_total_nis=float(st.declared_total_nis) if st.declared_total_nis is not None else None,
+            gap=gap, status=_gap_status(gap),
+            parser_name=st.parser_name, parser_version=st.parser_version,
+            transaction_count=tx_n, correlated_count=corr_n,
+        ))
+    return SourceDetailResponse(
+        source=SourceOut(
+            id=src.id, kind=src.kind, issuer=src.issuer,
+            external_id=src.external_id, display_name=src.display_name,
+            cardholder_name=src.cardholder_name, active=src.active,
+        ),
+        statements=out_stmts,
+    )
