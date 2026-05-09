@@ -54,6 +54,13 @@ def resolve_categories_for_user(session: Session, user_id: str) -> int:
         r.merchant_pattern: r for r in session.query(MerchantCategoryCache)
         .filter_by(user_id=user_id, is_regex=False).all()
     }
+    # Pre-load all sources referenced by these candidates in one query
+    # (was N+1: session.get per tx in the LLM-batch loop below).
+    source_ids = {tx.source_id for tx in candidates}
+    sources_by_id = {
+        src.id: src for src in session.query(ExpenseSource)
+        .filter(ExpenseSource.id.in_(source_ids)).all()
+    } if source_ids else {}
 
     llm_batch: list[tuple[ExpenseTransaction, str | None]] = []
     resolved = 0
@@ -91,11 +98,11 @@ def resolve_categories_for_user(session: Session, user_id: str) -> int:
                 tx_id=tx.id,
                 merchant_normalized=tx.merchant_normalized,
                 merchant_raw=tx.merchant_raw,
-                amount_nis=float(tx.amount_nis),
+                amount_nis=float(tx.amount_nis) if tx.amount_nis is not None else 0.0,
                 direction=tx.direction,
                 occurred_on=tx.occurred_on,
-                issuer_kind=session.get(ExpenseSource, tx.source_id).kind,
-                issuer_name=session.get(ExpenseSource, tx.source_id).issuer,
+                issuer_kind=sources_by_id[tx.source_id].kind,
+                issuer_name=sources_by_id[tx.source_id].issuer,
                 issuer_category_he=hint,
             )
             for tx, hint in llm_batch

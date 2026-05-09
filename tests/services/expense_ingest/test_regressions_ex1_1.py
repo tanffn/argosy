@@ -120,3 +120,98 @@ def test_bug7_leumi_raw_row_uses_semantic_keys():
     assert not purely_integer_keys, (
         f"raw_row still has positional keys: {purely_integer_keys}"
     )
+
+
+def test_bug4_no_n_plus_1_source_lookup(alembic_engine_at_head):
+    """Bug 4 — `session.get(ExpenseSource, ...)` is called once per LLM-batched
+    tx. With 50 txs across 3 sources, we expect ≤ 3 source lookups, not 50.
+    """
+    from datetime import date
+    from decimal import Decimal
+    from unittest.mock import patch
+    from sqlalchemy.orm import Session
+
+    from argosy.agents.household_categorizer_types import CategorizeResult
+    from argosy.services.expense_ingest.category_resolver import (
+        resolve_categories_for_user,
+    )
+    from argosy.services.expense_ingest.taxonomy_seed import (
+        seed_system_defaults, seed_user_categories,
+    )
+    from argosy.state.models import (
+        ExpenseSource, ExpenseStatement, ExpenseTransaction, User, UserFile,
+    )
+
+    with Session(alembic_engine_at_head) as s:
+        s.add(User(id="u1", plan="free"))
+        s.flush()
+        seed_system_defaults(s); s.flush()
+        seed_user_categories(s, "u1"); s.flush()
+
+        # statement_id is NOT NULL on expense_transactions, so seed a
+        # UserFile + ExpenseStatement per source first (mirrors T7 pattern).
+        src_ids: list[int] = []
+        stmt_ids: list[int] = []
+        for ext in ("1111", "2222", "3333"):
+            src = ExpenseSource(
+                user_id="u1", kind="card", issuer="isracard",
+                external_id=ext, display_name=f"test {ext}",
+            )
+            s.add(src); s.flush()
+            src_ids.append(src.id)
+
+            f = UserFile(
+                user_id="u1", sha256=ext * 16, original_name=f"f{ext}",
+                sanitized_name=f"f{ext}", mime_type="x", kind="other",
+                size_bytes=1, storage_path=f"/tmp/{ext}",
+                source="chat_attachment",
+            )
+            s.add(f); s.flush()
+            stmt = ExpenseStatement(
+                user_id="u1", source_id=src.id, file_id=f.id,
+                period_start=date(2026, 4, 1), period_end=date(2026, 4, 30),
+                parsed_total_nis=Decimal("0"), parser_name="isracard",
+                parser_version="0.1.0", status="parsed",
+            )
+            s.add(stmt); s.flush()
+            stmt_ids.append(stmt.id)
+
+        for i in range(50):
+            s.add(ExpenseTransaction(
+                user_id="u1",
+                source_id=src_ids[i % 3],
+                statement_id=stmt_ids[i % 3],
+                occurred_on=date(2026, 4, (i % 28) + 1),
+                merchant_raw=f"M{i}", merchant_normalized=f"m{i}",
+                amount_nis=Decimal("10"),
+                direction="debit", tx_type="regular",
+                raw_row_json="{}",
+            ))
+        s.commit()
+
+        original_get = Session.get
+        call_count = {"n": 0}
+
+        def _counting_get(self, entity, ident, *args, **kwargs):
+            if entity is ExpenseSource:
+                call_count["n"] += 1
+            return original_get(self, entity, ident, *args, **kwargs)
+
+        def _stub(_uid, rows):
+            return [
+                CategorizeResult(
+                    tx_id=r.tx_id, category_slug="dining", confidence=0.9,
+                    rationale="stub",
+                )
+                for r in rows
+            ]
+
+        with patch.object(Session, "get", _counting_get), \
+             patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
+                   side_effect=_stub):
+            resolve_categories_for_user(s, "u1")
+
+    assert call_count["n"] <= 3, (
+        f"N+1 regression: ExpenseSource fetched {call_count['n']} times "
+        f"for 50 txs across 3 sources (expected ≤ 3)"
+    )
