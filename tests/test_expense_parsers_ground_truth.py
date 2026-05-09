@@ -66,7 +66,8 @@ def test_leumi_parser_conservation(leumi_samples):
 
 @pytest.fixture(scope="module")
 def isracard_samples():
-    paths = _all_existing("**/1266/1266_*.xlsx")
+    # Both Ariel's card 1266 and Noga's card 0235 use the Isracard format.
+    paths = _all_existing("**/1266/*.xlsx") + _all_existing("**/0235/*.xlsx")
     if not paths:
         pytest.skip("no Isracard samples present")
     return paths
