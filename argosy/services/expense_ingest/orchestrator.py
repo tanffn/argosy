@@ -94,16 +94,25 @@ def _ensure_categories_seeded(session: Session, user_id: str) -> None:
     session.flush()
 
 
-def _leumi_source_hint(result: ParseResult) -> SourceHint:
-    """Leumi parser doesn't fill source_hint; derive a default. For multi-tenant
-    we'd parse the account number from the HTML header — left as a follow-up
-    (Task EX2+); EX1 single-user uses a stable placeholder.
+_LEUMI_EXPECTED_ACCT = "44745280"  # single-user guard; multi-tenant deferred
+
+
+def _leumi_source_hint_assert(result: ParseResult) -> SourceHint:
+    """Leumi parser now fills source_hint with the account number it pulled
+    from the HTML header. This guard keeps the single-user simplification
+    (we know your account is 44745280) but BLOWS UP if a statement for a
+    different account is fed in — single-user-but-trip-wired (per spec §4
+    Bug 3 / user sign-off Q6:C).
     """
-    return SourceHint(
-        kind="bank", issuer="leumi",
-        external_id="44745280",          # TODO: extract from HTML header
-        display_name="Leumi current account",
-    )
+    if result.source_hint is None:
+        raise ValueError("Leumi parser did not produce a source_hint")
+    parsed_acct = result.source_hint.external_id
+    if parsed_acct != _LEUMI_EXPECTED_ACCT:
+        raise ValueError(
+            f"Leumi account mismatch: expected {_LEUMI_EXPECTED_ACCT}, "
+            f"got {parsed_acct!r}"
+        )
+    return result.source_hint
 
 
 def ingest_user_file(
@@ -131,7 +140,14 @@ def ingest_user_file(
             pass
         raise
 
-    hint = result.source_hint or _leumi_source_hint(result)
+    if parser_name == ParserName.LEUMI_OSH:
+        hint = _leumi_source_hint_assert(result)
+    else:
+        hint = result.source_hint
+        if hint is None:
+            raise ValueError(
+                f"Parser {parser_name.value} did not produce a source_hint"
+            )
     src = register_or_get_source(session, user_id, hint)
     session.flush()
 

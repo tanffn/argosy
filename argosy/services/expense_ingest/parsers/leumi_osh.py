@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -10,10 +11,46 @@ import pandas as pd
 
 from argosy.services.expense_ingest.normalize import normalize
 from argosy.services.expense_ingest.types import (
-    NormalizedTransaction, ParseResult, ParserName, StatementMeta,
+    NormalizedTransaction, ParseResult, ParserName, SourceHint, StatementMeta,
 )
 
 PARSER_VERSION = "0.1.0"
+
+
+# Captures the account-number block following "חשבון" (Hebrew "account") or
+# "account". Real Leumi exports format the account a few different ways:
+#   "חשבון 882-44745280"      — branch-account, 8-digit account
+#   "מס' חשבון: 882-447452/80" — branch-account/checksum (slash-separated)
+# We accept any run of digits / dashes / slashes; the caller normalizes by
+# stripping non-digits and (if there's a 3-digit branch prefix) dropping it.
+_LEUMI_ACCOUNT_RE = re.compile(
+    r"(?:חשבון|account)[\s:#\-]*([\d/\-]{6,20})", re.IGNORECASE,
+)
+
+
+def _extract_account_number(path: Path) -> str | None:
+    """Read the Leumi HTML and pull the account number from the header.
+
+    Leumi statements include a Hebrew label like 'חשבון 882-44745280' or
+    'מס\' חשבון: 882-447452/80' near the top of the document. We grab the
+    digits following the label, strip non-digits (commonly '/' or '-'),
+    and — if the result is longer than 8 digits — drop the leading branch
+    prefix so the returned external_id is the bare 8-digit account number.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    m = _LEUMI_ACCOUNT_RE.search(text)
+    if not m:
+        return None
+    digits = "".join(c for c in m.group(1) if c.isdigit())
+    if not digits:
+        return None
+    # Leumi accounts are 8 digits. If we captured branch+account
+    # (e.g. 88244745280), drop the leading prefix so callers get just
+    # the account number.
+    return digits[-8:] if len(digits) > 8 else digits
 
 
 def _to_float(x) -> float:
@@ -119,5 +156,10 @@ def parse(path: Path) -> ParseResult:
             parsed_total_nis=parsed_total,
         ),
         transactions=txs,
-        source_hint=None,
+        source_hint=SourceHint(
+            kind="bank",
+            issuer="leumi",
+            external_id=_extract_account_number(path) or "",
+            display_name="Leumi current account",
+        ),
     )

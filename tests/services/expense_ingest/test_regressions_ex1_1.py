@@ -215,3 +215,64 @@ def test_bug4_no_n_plus_1_source_lookup(alembic_engine_at_head):
         f"N+1 regression: ExpenseSource fetched {call_count['n']} times "
         f"for 50 txs across 3 sources (expected ≤ 3)"
     )
+
+
+def test_bug3_leumi_account_extracted_into_source_hint():
+    """Bug 3 (part 1) — Leumi parser populates SourceHint.external_id with the
+    actual account number from the HTML header (was previously None, with the
+    orchestrator hardcoding '44745280').
+    """
+    from pathlib import Path
+    from argosy.services.expense_ingest.parsers import leumi_osh
+
+    fixtures = Path(__file__).parent.parent.parent / "fixtures" / "expenses"
+    leumi_files = list(fixtures.glob("leumi_osh_minimal*.xls"))
+    if not leumi_files:
+        import pytest
+        pytest.skip("no Leumi fixture")
+    result = leumi_osh.parse(leumi_files[0])
+    assert result.source_hint is not None
+    assert result.source_hint.kind == "bank"
+    assert result.source_hint.issuer == "leumi"
+    # The minimal fixture's HTML header contains 'מס' חשבון: 882-447452/80'
+    # → 8-digit account 44745280 (the '882' is Leumi's branch prefix).
+    assert result.source_hint.external_id == "44745280"
+
+
+def test_bug3_orchestrator_raises_on_account_mismatch(alembic_engine_at_head):
+    """Bug 3 (part 2) — orchestrator raises ValueError if the Leumi-parsed
+    account number doesn't match the hardcoded '44745280' single-user value.
+    """
+    import hashlib
+    import pytest
+    from pathlib import Path
+    from sqlalchemy.orm import Session
+    from argosy.services.expense_ingest.orchestrator import ingest_user_file
+    from argosy.state.models import User, UserFile
+
+    fixtures = Path(__file__).parent.parent.parent / "fixtures" / "expenses"
+    wrong_acct = fixtures / "leumi_osh_wrong_acct.xls"
+    if not wrong_acct.exists():
+        pytest.skip("wrong-account Leumi fixture not present")
+
+    # Note: we register the UserFile row directly (mirrors the pattern used in
+    # tests/test_expense_orchestrator.py::_file), rather than going through
+    # `catalog_upload`. catalog_upload is async + uses aiosqlite which conflicts
+    # with the sync session below on the same SQLite file.
+    with Session(alembic_engine_at_head) as s:
+        s.add(User(id="ariel", plan="free"))
+        s.flush()
+        f = UserFile(
+            user_id="ariel",
+            sha256=hashlib.sha256(str(wrong_acct).encode()).hexdigest(),
+            original_name=wrong_acct.name,
+            sanitized_name=wrong_acct.name,
+            mime_type="application/vnd.ms-excel",
+            kind="other",
+            size_bytes=wrong_acct.stat().st_size,
+            storage_path=str(wrong_acct),
+            source="chat_attachment",
+        )
+        s.add(f); s.commit()
+        with pytest.raises(ValueError, match="Leumi account mismatch"):
+            ingest_user_file(s, "ariel", f.id)
