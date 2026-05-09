@@ -111,7 +111,9 @@ def resolve_categories_for_user(session: Session, user_id: str) -> int:
             tx.category_id = cat.id
             tx.category_source = "llm"
             tx.category_confidence = Decimal(str(r.confidence))
-            resolved += 1
+            # Only count rows the LLM was confident about.
+            if r.category_slug != "uncategorized":
+                resolved += 1
             # Cache only confident, slug-bearing results.
             # Guard against duplicate key if the same merchant appears in a
             # prior file that already populated the cache this session.
