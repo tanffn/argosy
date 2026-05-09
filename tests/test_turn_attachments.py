@@ -48,6 +48,24 @@ async def test_save_attachment_classifies_markdown_as_text(argosy_home_db):
 
 
 @pytest.mark.asyncio
+async def test_save_attachment_classifies_tsv_as_text(argosy_home_db):
+    """Tab-separated-values files are tabular text (same shape as CSV).
+
+    Browsers commonly send `application/octet-stream` (no MIME hint) for
+    `.tsv` files, so the extension allowlist is the gate that matters.
+    """
+    upload = _upload(
+        b"col1\tcol2\tcol3\nfoo\tbar\tbaz\n",
+        filename="data.tsv",
+        content_type="application/octet-stream",
+    )
+    att = await save_attachment(user_id="ariel", turn_uuid="t-tsv", upload=upload)
+    assert att.kind == "text"
+    assert att.original_name == "data.tsv"
+    assert Path(att.path).exists()
+
+
+@pytest.mark.asyncio
 async def test_save_attachment_classifies_png_as_image(argosy_home_db):
     # 1x1 transparent PNG (smallest valid PNG)
     png = bytes.fromhex(

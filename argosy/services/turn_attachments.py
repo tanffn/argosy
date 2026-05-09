@@ -54,6 +54,7 @@ _TEXT_MIMES = {
     "application/x-yaml",
     "text/yaml",
     "text/csv",
+    "text/tab-separated-values",
 }
 _IMAGE_MIMES = {
     "image/png",
@@ -62,7 +63,7 @@ _IMAGE_MIMES = {
     "image/webp",
     "image/gif",
 }
-_TEXT_EXTS = {".md", ".markdown", ".txt", ".text", ".yaml", ".yml", ".json", ".csv"}
+_TEXT_EXTS = {".md", ".markdown", ".txt", ".text", ".yaml", ".yml", ".json", ".csv", ".tsv"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 
 
