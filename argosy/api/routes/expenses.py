@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -41,7 +42,7 @@ class UploadResponse(BaseModel):
 
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_statements(
+def upload_statements(
     files: list[UploadFile] = File(...),
     user_id: str = Form(...),
     db: Annotated[Session, Depends(get_db)] = ...,
@@ -49,24 +50,30 @@ async def upload_statements(
     """Multi-file ingestion. Each file flows through catalog_upload then
     ingest_user_file; per-file outcome is reported back.
 
-    Note: catalog_upload is async and manages its own DB session internally
-    (it uses db_mod.get_session() directly). The route's sync ``db`` session
-    is only used by the sync ingest_user_file call that follows.
+    Sync (not async) on purpose: ``ingest_user_file`` → ``resolve_categories_for_user``
+    → ``HouseholdCategorizerAgent._invoke_llm`` calls ``asyncio.run()``, which
+    raises ``RuntimeError`` from inside an already-running event loop. FastAPI
+    runs sync routes in a worker thread, so the inner ``asyncio.run()`` works
+    correctly. ``catalog_upload`` is async, so we drive it from the worker
+    thread via ``asyncio.run()`` here too.
     """
     results: list[UploadFileResult] = []
     for upload in files:
-        contents = await upload.read()
+        # Sync read — `upload.read()` is async; in a sync route we read the
+        # underlying SpooledTemporaryFile directly.
+        contents = upload.file.read()
         try:
             # catalog_upload is async, takes no session arg, uses raw_bytes=
-            # (not contents=), and returns UserFileDTO.
-            user_file = await catalog_upload(
+            # (not contents=), and returns UserFileDTO. Run on this thread's
+            # own event loop so our outer event loop is undisturbed.
+            user_file = asyncio.run(catalog_upload(
                 user_id=user_id,
                 raw_bytes=contents,
                 original_name=upload.filename,
                 mime_type=upload.content_type or "application/octet-stream",
                 kind="other",
                 source="chat_attachment",
-            )
+            ))
         except Exception as e:
             results.append(UploadFileResult(
                 filename=upload.filename, status="failed",
@@ -163,8 +170,8 @@ def list_transactions(
     direction: str | None = None,
     include_card_payments: bool = False,
     search: str | None = None,
-    limit: int = 200,
-    offset: int = 0,
+    limit: int = Query(default=200, ge=1, le=10000),
+    offset: int = Query(default=0, ge=0),
 ) -> TransactionsResponse:
     q = db.query(ExpenseTransaction).filter_by(user_id=user_id)
     if not include_card_payments:
@@ -338,7 +345,7 @@ class MonthlySummaryResponse(BaseModel):
 def monthly_summary(
     user_id: str,
     db: Annotated[Session, Depends(get_db)],
-    months: int = 12,
+    months: int = Query(default=12, ge=1, le=120),
 ) -> MonthlySummaryResponse:
     """Aggregate by (month, category). Excludes is_card_payment rows."""
 
