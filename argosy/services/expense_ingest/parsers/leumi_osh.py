@@ -136,7 +136,9 @@ def parse(path: Path) -> ParseResult:
                 "debit":         (None if pd.isna(row[4]) else str(row[4])),
                 "credit":        (None if pd.isna(row[5]) else str(row[5])),
                 "balance":       (None if pd.isna(row[6]) else str(row[6])),
-                "extra_7":       (None if len(row) <= 7 or pd.isna(row[7]) else str(row[7])),
+                # col 7 is Leumi's 'הערה' (note/remark); col 8 is consistently NaN
+                # padding in observed fixtures — kept as a soft fallback for variants.
+                "note":          (None if len(row) <= 7 or pd.isna(row[7]) else str(row[7])),
                 "extra_8":       (None if len(row) <= 8 or pd.isna(row[8]) else str(row[8])),
             },
         ))
