@@ -92,8 +92,15 @@ def parse(path: Path) -> ParseResult:
             reference=ref,
             issuer_category=None,
             raw_row={
-                str(i): (None if pd.isna(v) else str(v))
-                for i, v in enumerate(row)
+                "date":          (None if pd.isna(row[0]) else str(row[0])),
+                "value_date":    (None if pd.isna(row[1]) else str(row[1])),
+                "description":   (None if pd.isna(row[2]) else str(row[2])),
+                "reference":     (None if pd.isna(row[3]) else str(row[3])),
+                "debit":         (None if pd.isna(row[4]) else str(row[4])),
+                "credit":        (None if pd.isna(row[5]) else str(row[5])),
+                "balance":       (None if pd.isna(row[6]) else str(row[6])),
+                "extra_7":       (None if len(row) <= 7 or pd.isna(row[7]) else str(row[7])),
+                "extra_8":       (None if len(row) <= 8 or pd.isna(row[8]) else str(row[8])),
             },
         ))
 
