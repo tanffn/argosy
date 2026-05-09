@@ -123,6 +123,10 @@ def create_app() -> FastAPI:
     # Provenance Wave A — user-files catalog list/stream surface.
     app.include_router(files_router, prefix=api_prefix)
 
+    # Expenses Wave EX1 — household-expenses ingest surface.
+    from argosy.api.routes import expenses as expenses_routes
+    app.include_router(expenses_routes.router)
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
