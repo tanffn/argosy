@@ -5,11 +5,55 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-08 — Provenance system (Waves A-F): user_files catalog, decision_phases negotiation log, /files + /decisions/[id] replay UI with Mermaid timelines, new SDD §17. |
+| **Last updated** | 2026-05-09 — full SDD audit post-provenance: handover note, §6.14 storage/heuristic/MIME updates, §11.7 provenance endpoints, §8.5 migrations 0019-0020, project-wide gotchas for `catalog_upload` + `record_negotiation_phase`, §17 unchanged from Wave F. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
 | **Reference repos** | `D:\Projects\financial-advisor-references\` (TradingAgents, FinRobot, TradingGoose) |
+
+---
+
+## Handover note (point-in-time — read this first if resuming)
+
+**Last edit:** 2026-05-09 by Claude (session post-provenance-merge). This is a time-bounded handover, not architectural doc. Once the deferred work below either lands or is explicitly dropped, future-you should DELETE this section.
+
+### Where development is at right now
+
+- `main` HEAD: `1a73528` (`feat(services): accept .tsv chat attachments`).
+- Tests: 805 passing under `pytest -m "not llm_eval"` (3 deselected llm_eval). UI `npx tsc --noEmit` clean. Migrations 0001-0020 applied to the dev DB.
+- Running services: uvicorn on `127.0.0.1:8000` (check `/api/health` for the live `git_sha`); Next.js dev on `127.0.0.1:1337`.
+- Dev DB lives at `<ARGOSY_HOME>/db/argosy.db` (SQLite, default `ARGOSY_HOME=D:\Projects\financial-advisor`).
+
+### What just landed (provenance system, Waves A-F)
+
+A first-class provenance / accountability layer was built end-to-end:
+
+- **Wave A** (`8ba2834`) — `user_files` catalog table (migration 0019), `argosy/services/file_catalog.py::catalog_upload` boundary helper, REST surface at `/api/files`, backfill CLI `argosy admin catalog-backfill`. Every user-supplied file (chat attachments, intake plan uploads, intake file-to-text conversions, broker CSV imports) flows through the helper. Sha256 dedup per user; new layout `<ARGOSY_HOME>/uploads/<user_id>/<YYYY>/<YYYY-MM-DD>/<HHMMSS>__<sha8>__<sanitized>`.
+- **Wave B** (`6cb2234`) — `/files` UI page (`ui/src/app/files/page.tsx`) with kind / source / date filters; nav slot between Agents and Audit.
+- **Wave C** (`1c299df`) — `decision_phases` table (migration 0020), `argosy/services/transcript_writer.py` (deterministic TLDR / transcript / mermaid generation per pydantic verdict DTO), `argosy/services/negotiation_recorder.py::record_negotiation_phase`. Wired into the trade flow (5 boundaries: analysts / researcher_debate / trader / risk_team / fund_manager), plan synthesis (1 coarse phase), and amendment dispatcher + workers.
+- **Wave D** (`783e136`) — `GET /api/decisions/{id}/replay` and `GET /api/decisions/{id}/phases/{phase_id}/transcript`.
+- **Wave E** (`e47a444`) — `/decisions/[id]` Replay page with Mermaid sequence diagrams, `<VerdictCard>` typed renderer per DTO, `<MermaidDiagram>` lazy-imported (`mermaid@^11`); `/proposals` detail gets a "view full replay →" deep-link.
+- **Wave F** (`715e307`) — new SDD §17 prose with embedded mermaid diagrams.
+- **`db050de`** — `transcripts/` added to `.gitignore`.
+- **`1a73528`** — `.tsv` added to chat-upload allowlist (was rejecting because browsers send `application/octet-stream` and the extension was missing).
+
+### Deferred / open
+
+These are *intentionally* deferred — not blockers, but the next agent should know they exist before claiming the system is "done":
+
+- **Per-phase plan_synthesis recording.** The 5-phase synthesis flow currently records ONE coarse `plan_synthesis` decision_phase row at the end of `run_synthesis`. Per-phase rows (`plan_synth_p1` … `plan_synth_p5`) require the constituent agents (analysts, debaters, synthesizer, risk officers, FM) to persist `agent_reports` rows during synthesis — they don't today. See `argosy/orchestrator/flows/plan_synthesis/orchestrator.py::run_synthesis` (~line 240-300) for the integration site.
+- **drawio source for §17 diagrams.** The §17 mermaid blocks are the canonical visual today. A `docs/design/diagrams/17-provenance-flow.drawio` + PNG export is the matching follow-up; the existing diagrams 00-16 use that pattern.
+- **Soft-undo for plan-shape ingest.** A long pasted `.txt` no longer silently overwrites the wealth plan (post-Wave-5 fix tightened to extension-only). A friendlier UX would offer "I saw this looked like a plan; want me to import it?" before promoting. Currently the user must rename to `.md`.
+- **Decision_phases.seq monotonicity in synthesis ThreadPoolExecutor.** Phase 1 + 2 use thread executors; the recorder is called *after* `as_completed` returns, so seq is monotonic in practice. If a future refactor moves recorder calls inside the executor, that contract breaks. Documented at `argosy/services/negotiation_recorder.py`.
+
+### Pre-existing watch items (carried; not provenance-Wave fault)
+
+- **Live LLM e2e tests are flaky** under `claude_code` backend on this machine — `tests/test_plan_distiller_golden.py` and `tests/test_plan_synthesis_e2e.py` show JSON-parsing transients in full-suite runs that share `claude.exe` subprocess state. Pass when run individually.
+- **Manual UI smokes deliberately skipped** by user direction across every wave; backend tests + live LLM e2e are the verification surface. The user has actually exercised some surfaces (advisor chat with images works; .tsv upload was caught only because the user tried it).
+
+### Open questions / live decisions for next session
+
+- None currently flagged. The user is in active testing of the merged provenance system.
 
 ---
 
@@ -38,11 +82,13 @@
 | Understand a specific wave's intent | §6.10 (W1 distillate), §6.11 (W2 synthesis), §6.12 (W3 speculation), §6.13 (W4 amendment chat) | full design specs at `docs/superpowers/specs/` (historical but rich) |
 | Speculation cap enforcement | `argosy/config.py::SpeculationCap`, `argosy/agents/plan_synthesizer.py` (prompt block), `argosy/orchestrator/flows/plan_synthesis/orchestrator.py::_enforce_speculation_cap`, `argosy/orchestrator/speculation_router.py` (preflight) | §6.12 |
 | Audit lineage walkthrough | §8.6 (the `decision_runs ↔ plan_versions ↔ proposals ↔ agent_reports` map) | grep `decision_kind` |
-| Add another chat-upload attachment kind | `argosy/services/turn_attachments.py::_classify` (MIME allowlist), `argosy/api/routes/advisor.py::_run_turn` (kind dispatch), `argosy/agents/base.py::_call_via_api_key` + `_call_via_claude_code_inner` (image content blocks on both backends) | §6.14 |
+| Add another chat-upload attachment kind | `argosy/services/turn_attachments.py::_classify` (MIME + extension allowlist), `argosy/api/routes/advisor.py::_run_turn` (kind dispatch), `argosy/agents/base.py::_call_via_api_key` + `_call_via_claude_code_inner` (image content blocks on both backends) | §6.14 |
+| Catalog a new ingest path (any new place a user-supplied byte-blob enters the system) | `argosy/services/file_catalog.py::catalog_upload` is the boundary helper — call it; never bypass it | §17.1 |
+| See a decision's full provenance / negotiation transcript | `GET /api/decisions/{id}/replay` (backend), `ui/src/app/decisions/[id]/page.tsx` (UI), `argosy/services/negotiation_recorder.py` + `transcript_writer.py` (where phases are written) | §17 |
 
 ### Project-wide conventions / gotchas
 
-These are the things that have bitten the implementation team during Waves 1-4. A new agent should know them before changing code.
+These are the things that have bitten the implementation team during Waves 1-5 + the provenance waves (A-F). A new agent should know them before changing code.
 
 - **`BaseAgent.__init__` requires `user_id` (kwarg-only).** Tests instantiate as `AgentClass(user_id="ariel")` (or `"test"` / `"system"`). The original specs forgot this on every wave; every plan ended up adapting it.
 - **`FXAnalystAgent`** has capital `FX` (not `Fx`). The synthesis flow imports it as `from argosy.agents.fx_analyst import FXAnalystAgent as FxAnalystAgent` to match the spec's casing in tests. If you grep for `FxAnalystAgent`, you'll find the alias; the real class is capital-X.
@@ -55,11 +101,15 @@ These are the things that have bitten the implementation team during Waves 1-4. 
 - **`run_synthesis(...)` accepts an optional `existing_decision_run_id`** parameter (Wave 4 fix I1). Pass it when the caller has already opened the DecisionRun (used by `_large_worker` for amendment chat). Otherwise `run_synthesis` opens its own.
 - **`AdvisorAgent.build_prompt(has_current_plan=True/False)`** gates the amendment classification block. Production callers (`POST /api/advisor/turn`) MUST pass it (Wave 4 fix C1). Wave 4 had the bug where the route forgot — the LLM never saw the classification instructions and the entire feature was dead in production.
 - **WebSocket event payloads include `user_id`.** UI subscribers must filter (`payload.user_id !== USER_ID`) to avoid cross-user bleed; only the advisor page does this today.
+- **`catalog_upload(...)` is the single boundary** every user-supplied byte-blob must pass through (Wave A — §17.1). Don't write a new ingest path that calls `Path.write_bytes(...)` directly; route through the helper. The partial unique index (`user_id`, `sha256`) means the helper is idempotent — re-uploading the same bytes returns the existing row. Failure to use the helper means the file is invisible in `/files`, doesn't get an audit row, and can't be replayed in `/decisions/{id}`.
+- **`record_negotiation_phase(...)` is best-effort.** Every call site wraps it in try/except and logs on failure (Wave C — §17.2). Provenance recording must NEVER fail the underlying flow. Same pattern as `argosy/decisions/flow.py:479-491`. Don't refactor a recorder call to be load-bearing.
+- **`_persist_agent_reports` returns `list[int]`** as of Wave C — the inserted `agent_reports.id` values, in input order — so the caller can hand them to `record_negotiation_phase` for participant linking. Pre-Wave-C code returned `None`; if you find a call site still ignoring the return, it's pre-Wave-C and might be missing a recorder call.
+- **Plan synthesis records ONE coarse phase** today (`kind='plan_synthesis'`), not five. The 5-phase fleet review's per-phase recording is deferred — the constituent agents in `argosy/orchestrator/flows/plan_synthesis/orchestrator.py` use `run_sync` and don't currently persist intermediate `agent_reports` rows. Don't be surprised by the lack of granular synthesis phases on the Replay page; it's a known gap, not a bug.
 
 ### User preferences (binding policy)
 
 - **Accuracy over LLM cost.** Synthesizer + bull/bear/trader/fund_manager/audit/plan_synthesizer default to Opus. No Haiku defaults remain. Reviewer agents on Opus too. See §3.8.
-- **Manual UI smokes deliberately skipped** by user request across all four waves; backend tests + live LLM e2e are the verification surface.
+- **Manual UI smokes deliberately skipped** by user request across every wave; backend tests + live LLM e2e are the verification surface.
 - **Live LLM tests cost-controlled** by the `@pytest.mark.llm_eval` marker; opt-in only.
 
 ### Filesystem layout (top level)
@@ -76,12 +126,14 @@ D:\Projects\financial-advisor\
         plan_synthesis/      # Wave 2 (5-phase fleet review)
         plan_amendment/      # Wave 4 (Small/Medium/Large amendment chat)
       loops/                 # Cadence loops (monthly, daily, hourly, …)
-    services/                # Business-logic services (plan distillation, …)
+    services/                # Business-logic services (plan distillation,
+                             #   file_catalog [Wave A], transcript_writer +
+                             #   negotiation_recorder [Wave C], …)
     state/                   # SQLAlchemy ORM (models.py) + queries.py
     adapters/                # External integrations (cache, brokers, KB)
     config.py                # Settings + per-feature loaders (SpeculationCap, …)
     logging.py               # `get_logger` (structlog)
-  alembic/versions/          # 18 migrations (see §8.5)
+  alembic/versions/          # 20 migrations (see §8.5)
   tests/                     # All Python tests (`pytest -m "not llm_eval"`)
   ui/                        # Next.js 15 app
     src/app/                 # Pages
@@ -1155,24 +1207,41 @@ with the same fields as form data plus an optional `attachments`
 UploadFile list. Dispatch is by `Content-Type`. The JSON path is
 preserved verbatim so all existing callers keep working.
 
-**MIME allowlist.** `text/*`, `application/json`, `application/x-yaml`,
-plus `image/*`. PDFs / spreadsheets / videos / audio are rejected with
-HTTP 415. Per-file cap 10 MB (HTTP 413), per-turn total 20 MB. Caps
-hardcoded in `argosy/services/turn_attachments.py`.
+**MIME + extension allowlist.** Acceptance is MIME-OR-extension because
+browsers commonly send `application/octet-stream` with no MIME hint
+(e.g. for `.tsv`). Practical allowlist (canonical source:
+`argosy/services/turn_attachments.py::_TEXT_MIMES`/`_TEXT_EXTS`/`_IMAGE_MIMES`/`_IMAGE_EXTS`):
 
-**Storage.** `<ARGOSY_HOME>/uploads/<user_id>/<turn_uuid>/<filename>`.
-Filenames sanitized against directory traversal; collisions auto-
-suffixed within a turn dir.
+- Text MIMEs: `text/*`, `application/json`, `application/x-yaml`.
+- Text extensions: `.md`, `.markdown`, `.txt`, `.text`, `.yaml`, `.yml`,
+  `.json`, `.csv`, `.tsv`.
+- Image MIMEs: `image/*`.
+- Image extensions: `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`.
+
+PDFs / Excel / videos / audio are rejected with HTTP 415. Per-file cap
+10 MB (HTTP 413), per-turn total 20 MB. Caps hardcoded in
+`argosy/services/turn_attachments.py`.
+
+**Storage.** Provenance Wave A re-shaped the layout to
+`<ARGOSY_HOME>/uploads/<user_id>/<YYYY>/<YYYY-MM-DD>/<HHMMSS>__<sha8>__<sanitized>`,
+and every saved blob now also gets a `user_files` catalog row (sha256
+dedup per user). Wave 5 paths under `<turn_uuid>/<filename>` continue to
+work — the backfill CLI inserts catalog rows pointing at them. See §17.1
+for the full catalog contract; this section's only commitment is that
+`save_attachment(...)` returns an `Attachment` with a `path` pointing at
+real bytes on disk.
 
 **Text attachments** are read and appended to `last_user_message` as
 `[Attached file: <name>]\n<content>` so the advisor sees them inline.
-Plan-shaped text attachments (`.md`/`.markdown` extension OR > 500 chars)
-additionally trigger a side-effect: the route persists a fresh
-`role='baseline'` `plan_versions` row, demotes any prior baseline to
-`role='superseded'`, and schedules `distill_baseline_plan_async` via
+Plan-shaped text attachments (markdown extension only — `.md` /
+`.markdown`) additionally trigger a side-effect: the route persists a
+fresh `role='baseline'` `plan_versions` row, demotes any prior baseline
+to `role='superseded'`, and schedules `distill_baseline_plan_async` via
 FastAPI `BackgroundTasks`. The chat response returns immediately;
 distillation surfaces via the existing draft-pending banner on next
-refresh.
+refresh. The post-Wave-5 review fix (I2) tightened this from "extension
+OR > 500 chars" to extension-only because a long pasted `.txt` (e.g. a
+forwarded email) was silently overwriting the wealth plan.
 
 **Image attachments** thread to the agent as `image_attachments` and
 are forwarded to the model as Anthropic content blocks. The
@@ -1190,17 +1259,20 @@ forwards the message to `claude.exe` which forwards to the API.
 Text-only turns keep the cheaper string-prompt path on both backends
 for prompt-cache friendliness.
 
-**No new schema.** Wave 5 reuses existing `plan_versions` (with the
-Wave 1 lifecycle columns) and `decision_runs` rows. The future
-`decision_kind="plan_reimport"` value mentioned in the spec is
-deferred — current Wave 5 scope marks the prior baseline `superseded`
-without recording a separate `decision_runs` row. This keeps the
-existing audit lineage simple; if formal reimport audit becomes
-useful, it lands in a follow-up.
+**Schema.** Wave 5 reused existing `plan_versions` + `decision_runs`.
+Provenance Wave A added `user_files` (migration 0019) and a new
+`plan_versions.source_file_id` FK so a baseline plan points at the
+catalog row for its bytes. The future `decision_kind="plan_reimport"`
+value mentioned in the original spec is deferred — current scope marks
+the prior baseline `superseded` without recording a separate
+`decision_runs` row. This keeps the audit lineage simple; if formal
+reimport audit becomes useful, it lands in a follow-up.
 
-See `argosy/services/turn_attachments.py` (storage helper),
-`argosy/api/routes/advisor.py::_run_turn` and
-`_maybe_ingest_plan_attachments` (route + ingest hook), and
+See `argosy/services/turn_attachments.py::save_attachment` (entry; now
+delegates to the catalog), `argosy/services/file_catalog.py::catalog_upload`
+(boundary helper that does sha256 dedup, FS write, audit emit, row
+insert — §17.1), `argosy/api/routes/advisor.py::_run_turn` and
+`_maybe_ingest_plan_attachments` (route + plan-ingest hook), and
 `argosy/agents/base.py::_call_via_api_key` (api_key backend image
 content blocks) + `_call_via_claude_code_inner` (claude_code backend
 streaming-mode prompt).
@@ -1454,6 +1526,8 @@ Alembic, linear chain. Each revision is small and rollback-tested.
 | `0016_plan_versions_distillate` | `plan_versions.{distillate_json,distillate_rendered,source_hash,distilled_at}` (Wave 1 of plan-distillate work) |
 | `0017_plan_versions_synthesis` | `plan_versions.{horizon_long_json, horizon_medium_json, horizon_short_json, horizon_long_md, horizon_medium_md, horizon_short_md, synthesis_inputs_json}` for synthesized rows (role in {draft, current, superseded}); baseline rows leave these NULL (Wave 2 of plan-distillate work) |
 | `0018_decision_runs_amendment` | Widens `decision_runs.tier` from `String(4)` NOT NULL to `String(8)` nullable so the column can carry either trade-tier sentinels (`T0`/`T3`) or amendment-tier values (`small`/`medium`/`large`); `decision_kind` discriminates. Adds `decision_runs.notes_json` for free-form replay payloads. Creates partial unique index `ix_decision_runs_one_amendment_running_per_user` (`decision_kind='plan_amendment_chat' AND status='running'`) so a second concurrent amendment per user is rejected at DB level (Wave 4 of plan-distillate work) |
+| `0019_user_files_catalog` | `user_files` table (id, user_id FK, sha256, original_name, sanitized_name, mime_type, kind, size_bytes, storage_path, source, turn_uuid, intake_session_id, plan_version_id FK, decision_run_id FK, created_at, deleted_at). Indexes `(user_id, created_at DESC)` + `(sha256)` + `(intake_session_id)`. Partial unique on `(user_id, sha256) WHERE deleted_at IS NULL` — content-addressed dedup that releases on soft-delete. Adds `plan_versions.source_file_id` FK so a baseline plan points at its catalog row. Wave A of provenance (§17). |
+| `0020_decision_phases` | `decision_phases` table (id, decision_run_id FK CASCADE, user_id FK, seq, kind, started_at, finished_at, participants_json, verdict_json, verdict_kind, tldr_md, bundle_dir, created_at). Indexes `(decision_run_id, seq)` + `(user_id, kind, started_at DESC)`. Adds nullable `agent_reports.phase_id` FK so a participating agent run points back at the phase it ran in. Wave C of provenance (§17). |
 
 ### 8.6 Decision audit lineage
 
@@ -1869,6 +1943,11 @@ All routes mount under `/api` (canonical source: `argosy.api.main.create_app`). 
 | GET | `/api/lots` | List lots (filterable). |
 | GET | `/api/fills` | List fills (filterable). |
 | GET | `/api/audit` | List audit-log rows (filterable). |
+| **Provenance** (Waves A + D — see §17) | | |
+| GET | `/api/files` | List the user's `user_files` catalog rows; filter by `kind` / `source` / `since` / `until` / `include_deleted`; pagination via `limit` / `offset`. |
+| GET | `/api/files/{id}/content` | Stream the bytes of one cataloged file. ACL on `user_id` (404 for the wrong user; doesn't leak existence). 410 when the catalog row points at a missing on-disk file. |
+| GET | `/api/decisions/{id}/replay` | Full replay payload for one decision_run: the run row, every recorded `decision_phases` row (parsed verdict DTO + tldr_md + sequence_mmd + participants), and `inputs.user_files` (rows linked to this run). 404 for unknown / wrong-user. |
+| GET | `/api/decisions/{id}/phases/{phase_id}/transcript` | Stream the on-disk `transcript.md` for one phase from `decision_phases.bundle_dir`. 410 when `bundle_dir` is null or the file is missing. |
 | **Argonaut** (limited account) | | |
 | GET | `/api/argonaut/status` | Limited-account status (P&L, mode, last fill). |
 | GET | `/api/argonaut/snapshots` | P&L snapshot history. |
