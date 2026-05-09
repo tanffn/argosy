@@ -21,6 +21,7 @@ class ParserName(StrEnum):
     CAL = "cal"
     AMEX = "amex"
     DINERS = "diners"
+    DISCOUNT = "discount"
 
 
 Direction = Literal["debit", "credit"]
