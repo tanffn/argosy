@@ -9,6 +9,7 @@ import typer
 
 from argosy.cli.admin import admin_app
 from argosy.cli.argonaut import app as argonaut_app
+from argosy.cli.expenses_admin import app as expenses_app
 from argosy.cli.brief import brief
 from argosy.cli.critique import critique
 from argosy.cli.data import app as data_app
@@ -54,6 +55,8 @@ app.add_typer(gemelnet_app, name="gemelnet",
               help="Israeli pension performance data (gemelnet.mof.gov.il).")
 app.add_typer(data_app, name="data",
               help="Investor-event feeds: 13F, Form 4, capitoltrades, tipranks.")
+app.add_typer(expenses_app, name="expenses",
+              help="Household-expenses admin utilities (verify-file, backfill).")
 
 
 def main() -> None:  # pragma: no cover
