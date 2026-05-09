@@ -15,47 +15,105 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-09 by Claude (session post-EX1). This is a time-bounded handover, not architectural doc. Once the deferred work below either lands or is explicitly dropped, future-you should DELETE this section.
+**Last edit:** 2026-05-09 by Claude (session post-EX1, post-handover). This is a time-bounded handover; once the deferred work below either lands or is explicitly dropped, future-you should DELETE this section.
+
+### Orientation — start here if you have zero context
+
+**What Argosy is, in one sentence:** a Python multi-agent financial-advisor system that watches a single household's portfolio + plan + cash flow continuously, fires LLM "decision teams" only on triggers, persists every reasoning step for audit, and exposes everything through a Next.js dashboard. Single-user today (Ariel + spouse Noga); multi-tenant ready by design. See §0 (novice tour) for the full picture.
+
+**Required reading order for a fresh agent (this is the SDD; pick what's relevant to your task):**
+
+1. **§0 — How Argosy Works (a Novice's Tour)** — start here. ~10 min read; gives architecture, "why" decisions, worked example, what Argosy is NOT.
+2. **§1–§2 — Overview, goals, system architecture** — the formal version of §0.
+3. **§3 — Agent fleet** — every agent role, default model, what they output. Includes EX1's `HouseholdCategorizerAgent` (§3.6).
+4. **§13 — Phasing & milestones** — where in the roadmap we are. Intake + plan-synthesis (Waves 1–5), provenance (Waves A–F), expenses (Waves EX1–EX4 — EX1 just landed).
+5. **§17 — Provenance & accountability** — `user_files` catalog + `decision_phases` + `/api/decisions/{id}/replay`. Durable; landed prior session.
+6. **§18 — Household Budget & Cash-Flow Analysis** — *the wave that just landed*. Has 8 Mermaid diagrams in §18.0 if you want pictures before prose.
+7. **"Quickstart for new agents — where to find things"** (the section *right below this handover*) — task → file router. Don't write code without skimming it.
+8. **"User preferences (binding policy)"** (also in the Quickstart section) — `accuracy > LLM cost` is law; manual UI smokes are skipped; SDD.md is the only canonical SDD (do NOT update `.docx` siblings).
+
+**Spec + plan for the current wave (EX1):**
+- Spec: `docs/superpowers/specs/2026-05-09-household-expenses-design.md` (~1700 lines, §17.1 is the deterministic conservation-test contract).
+- Plan: `docs/superpowers/plans/2026-05-09-household-expenses-implementation.md` (30 tasks, executed across 32 commits).
+
+**Persistent memory (read at session start):**
+- `C:\Users\ariel\.claude\projects\D--Projects-financial-advisor\memory\MEMORY.md` is the index; binding entries today:
+  - `feedback_accuracy_over_cost.md` — Argosy prefers accuracy over LLM cost.
+  - `feedback_sdd_md_canonical.md` — only edit `docs/design/SDD.md`, never `.docx`.
+  - `project_card_2923_fee_waiver.md` — Noga's Discount card has a free-card promo (`charge ₪X + matching discount ₪X = ₪0`); EX2 must flag if the discount line stops.
+
+**Reference repos** (cloned to `D:\Projects\financial-advisor-references\`): TradingAgents, FinRobot, TradingGoose. Inspiration for the multi-agent debate pattern; not in scope unless extending decision-flow architecture.
+
+**Working directory:** `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`). Single-user identity is `ariel`. PowerShell shell on Windows; `&&` doesn't chain — use `;` or rely on the Bash tool for POSIX scripts. Python interpreter in this venv: `D:/Projects/financial-advisor/.venv/Scripts/python.exe`.
 
 ### Where development is at right now
 
-- `main` HEAD: `eb6fc79` (`fix(expenses-api): sync upload route + Query validation`).
-- Tests: ~926 passing under `pytest -m "not llm_eval"` (a few deselected llm_eval). Migrations 0001-0021 applied. UI `npx tsc --noEmit` clean (last verified pre-EX1; EX1 didn't touch UI).
-- Running services: uvicorn on `127.0.0.1:8000` (check `/api/health` for the live `git_sha`); Next.js dev on `127.0.0.1:1337`.
-- Dev DB lives at `<ARGOSY_HOME>/db/argosy.db` (SQLite, default `ARGOSY_HOME=D:\Projects\financial-advisor`).
+- `main` HEAD: `53921ed` (`docs(sdd): add 8 Mermaid diagrams to §18`).
+- Tests: 932 passing under `pytest -m "not llm_eval"` (5 deselected llm_eval), 0 failures. Migrations 0001-0021 applied to dev DB.
+- **Services running but STALE — restart needed before user-facing /api/expenses/* works.** uvicorn on `127.0.0.1:8000` reports `git_sha: 1a73528` (pre-EX1); `GET /api/expenses/sources` returns 404 because the new router isn't loaded. Next.js on `127.0.0.1:1337` running but EX4 (UI) isn't built yet so there's nothing EX1-specific to render.
+- Dev DB lives at `<ARGOSY_HOME>/db/argosy.db` (SQLite). 702 expense_transactions, 4 sources registered, 82 system-default categories seeded.
 
-### Prior-session context (provenance Waves A-F, now durable in §17)
+### Wave EX1 — Household Expenses — landed
 
-Waves A-F built a first-class provenance layer (`user_files` catalog at migration 0019, `decision_phases` at migration 0020, `/api/decisions/{id}/replay` + `/decisions/[id]` UI replay, transcript writer + negotiation recorder). All durable in §17. Deferred provenance items: per-phase plan_synthesis recording (constituent agents don't yet persist agent_reports during synthesis), drawio source for §17 diagrams (mermaid is the canonical visual today), soft-undo for plan-shape ingest. None are EX1 blockers.
-
-### What just landed (Wave EX1 — household expenses)
-
-EX1 ingest-core ships behind `/api/expenses/*`. See §18 for the durable description.
+EX1 ingest-core ships behind `/api/expenses/*` plus an `argosy expenses` CLI. The durable description is §18 (with 8 Mermaid diagrams in §18.0). Highlights:
 
 - Migration `0021_household_expenses` (six tables; §8.5).
 - 4 working parsers: Leumi current-account (`leumi_osh.py`), Isracard (`isracard.py`), Max (`max.py`), Discount Bank Mastercard (`discount.py`). 3 stubs raising `NotImplementedError`: Cal, Amex, Diners.
 - `HouseholdCategorizerAgent` (Sonnet, batched ~50 tx/call, confidence ≥ 0.85 threshold; §3.6).
-- Ingest pipeline assembles parse → register source → persist → bank↔card correlate (via `אסמכתא` reference column) → resolve categories (cascade) → match refunds (inherit category from prior debit). Idempotent on `user_files.id`.
-- REST: `/api/expenses/{upload, sources, transactions, transactions/{id} (PATCH), categories, monthly-summary}` (§11.7).
-- CLI: `argosy expenses {verify-file, backfill, issuer-coverage}` (`argosy/cli/expenses_admin.py`).
+- Ingest pipeline: parse → register source → persist → bank↔card correlate (via `אסמכתא`) → resolve categories (cascade: user → issuer → cache → LLM) → match refunds (inherit from prior debit). Idempotent on `user_files.id`.
+- REST: `/api/expenses/{upload (sync route), sources, transactions, transactions/{id} (PATCH), categories, monthly-summary}` (§11.7).
+- CLI: `argosy expenses {verify-file, backfill, issuer-coverage}`.
 - WebSocket events: `expense.statement.{parsed,failed}` (§11.3).
-- Conservation tests on the user's real corpus pass: 2 Leumi, 33 Isracard (Ariel + Noga), 17 Max, 2 Discount.
+- Conservation tests pass on real corpus: 2 Leumi, 33 Isracard (Ariel 16 + Noga 17), 17 Max, 2 Discount.
+- Spec: `docs/superpowers/specs/2026-05-09-household-expenses-design.md`. Plan: `docs/superpowers/plans/2026-05-09-household-expenses-implementation.md` (32 commits across 30 tasks).
+
+### Live state of the dev DB after EX1 backfill
+
+A backfill ran during the wave-gate but it landed BEFORE the Discount parser (`4910499`), so it's incomplete. Current source rows:
+
+| issuer | external_id | statements | display_name | gap |
+|---|---|---|---|---|
+| `leumi` | `44745280` | 1 | Leumi current account | hardcoded, see below |
+| `isracard` | `1266` | 9 (of 16 expected) | Isracard 1266 (Ariel) | 7 files unaccounted |
+| `isracard` | `0235` | 14 (of 17 expected) | Isracard 0235 (Noga) | 3 files unaccounted |
+| `max` | `5280` | 12 (of 17 expected) | Max 5280 | should be `6225` — see bug below |
+| `discount` | — | 0 | — | parser landed after backfill; not ingested |
+
+Categorization status: 358 LLM, 237 cache-hit, 102 issuer-seed, 3 inherited-from-refund, 2 NULL. `uncategorized` category holds 37 rows totaling ~₪361k — overwhelmingly Leumi bank lines (salary, mortgage, property tax, internal transfers) that LLM-categorize poorly without context. Triage them by reviewing `argosy expenses transactions ?category=uncategorized` after restart.
+
+### Open issues — RESTART, RE-INGEST, AND ONE PARSER BUG
+
+Three concrete things to do before declaring EX1 user-ready (in priority order):
+
+1. **Restart uvicorn so the new `/api/expenses/*` routes load.** Current uvicorn was started before any EX1 commit. Symptom: `curl http://127.0.0.1:8000/api/expenses/sources?user_id=ariel` → `{"detail":"Not Found"}`. Fix: kill the current uvicorn process and re-launch (whatever the project's `argosy serve` / `uvicorn argosy.api.main:create_app` invocation is — check `README` or `Resources/`).
+2. **Re-run backfill to pick up Discount + missing files.** `$env:ARGOSY_EXPENSE_SAMPLES_ROOT = "D:\Google Drive\Family\Finances\Portfolio\Resources"; argosy expenses backfill --user-id ariel --dir "D:\Google Drive\Family\Finances\Portfolio\Resources"`. Idempotent (skips already-ingested files via content-hash + statement-period uniqueness) so it'll only ingest the gaps. Cost: ~$1-2 LLM categorization for the new merchants.
+3. **Parser bug — Max external_id is bank-account last-4, not card last-4.** `parsers/max.py` extracts `last4` from the sheet name `לאומי לישראל 882-44745280` → `5280`, but the actual card number is `6225` (per the user's folder naming). Affected: source row's `external_id` and `display_name` are wrong. Correlator side-effect: when a Leumi line references `6225` as the card last-4 (`אסמכתא = 6225`), it won't match `Max 5280` so the bank↔card dedup fails for Max card-payment rows. Fix path: extract the card last-4 from the file *name* (`Apr.xlsx` doesn't carry it; the folder `6225/` does — so the parser would need a `last4_hint` parameter from the caller). Defer to EX2 polish OR fix as a quick follow-up here.
 
 ### Deferred / open (carried into EX2+)
 
 - **Foreign-currency `amount_nis` for non-NIS Isracard rows** stores raw foreign amount, not NIS-converted. Documented in §15.4. Fix at EX2 boundary by FX-converting in both oracle and parser using a shared constant.
 - **Leumi account-number hardcoded** (`"44745280"`) in `orchestrator.py::_leumi_source_hint`. Acceptable for single-user; multi-tenant fix deferred.
 - **Discount Bank fee-waiver flag** — parser preserves both card-fee + discount-rebate rows (does not pre-net); the `recurring_missed` anomaly that flags promo expiry is EX2 work. See `memory/project_card_2923_fee_waiver.md`.
-- **EX2 (anomaly detection + advisor surfacing)**, **EX3 (`HouseholdBudgetAnalystAgent` feeding plan synthesis)**, **EX4 (UI)** all scheduled but not started. Outlines in spec `docs/superpowers/specs/2026-05-09-household-expenses-design.md` §18.2.
+- **From the retro code-review (commit context only — items NOT fixed in this session):**
+  - **N+1 query** in `category_resolver.py:97-98` — `session.get(ExpenseSource, tx.source_id)` runs once per LLM-batched tx. Pre-load by id-set instead. Cosmetic at single-user scale; matters at multi-tenant.
+  - **Model alias `"sonnet"`** in `argosy/agents/base.py::DEFAULT_MODEL_BY_ROLE["household_categorizer"]`. Live LLM eval passed (claude_code backend resolves the alias), but the api_key backend may reject it. Trivially fix to `"claude-sonnet-4-6"`.
+  - **`categories_resolved` IngestResult counter** overcounts — increments before checking whether the LLM result was actually `uncategorized`. Cosmetic — the metric isn't surfaced to the user, but it'll mislead on operator dashboards.
+  - **Leumi `raw_row` JSON keys** are positional integers (`"0"..."8"`) where every other parser uses semantic keys (`"date"`, `"merchant"`, `"charge_amount"`, etc.). Makes `argosy expenses issuer-coverage` and future anomaly queries harder to write.
+  - **Critical issue (the async-route + asyncio.run() collision in upload) was already fixed** at commit `eb6fc79` — flagging only so you don't re-find it.
+- **EX2 (anomaly detection + advisor surfacing)**, **EX3 (`HouseholdBudgetAnalystAgent` feeding plan synthesis)**, **EX4 (UI)** all scheduled but not started. Outlines in spec §18.2.
 
 ### Pre-existing watch items (carried; not EX1 fault)
 
 - **Live LLM e2e tests are flaky** under `claude_code` backend on this machine — `tests/test_plan_distiller_golden.py` and `tests/test_plan_synthesis_e2e.py` show JSON-parsing transients in full-suite runs that share `claude.exe` subprocess state. Pass when run individually.
-- **Manual UI smokes deliberately skipped** by user direction across every wave; backend tests + live LLM e2e are the verification surface.
+- **Manual UI smokes deliberately skipped** by user direction across every wave.
+
+### Prior-session context (provenance Waves A-F, now durable in §17)
+
+Waves A-F built a first-class provenance layer (`user_files` catalog at migration 0019, `decision_phases` at migration 0020, `/api/decisions/{id}/replay` + `/decisions/[id]` UI replay, transcript writer + negotiation recorder). All durable in §17. Deferred provenance items: per-phase plan_synthesis recording, drawio sources for §17 diagrams, soft-undo for plan-shape ingest. None are EX1 blockers.
 
 ### Open questions / live decisions for next session
 
-- None currently flagged. The user is in active testing of the merged EX1 expenses system.
+- **Action choice the user has not yet picked** (offered at end of last session): A. restart uvicorn so EX1 routes come online; B. re-run backfill including Discount + missing Isracard/Max files; C. fix the Max external_id parser bug; D. just stop. The user's last instruction was to update this handover before context fills, so they may pick one of A/B/C next. If resuming with no new instruction, A is the cheapest forward step (uvicorn restart) and unblocks any UI / curl exploration.
 
 ---
 
