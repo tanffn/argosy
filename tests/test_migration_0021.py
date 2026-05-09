@@ -76,3 +76,61 @@ def test_0021_indexes_are_present(alembic_engine_at_head):
     assert any("merchant_normalized" in n for n in have)
     cache_idx = _indexes(alembic_engine_at_head, "merchant_category_cache")
     assert any("merchant_pattern" in n for n in cache_idx.keys())
+
+
+def test_0021_orm_round_trip(alembic_engine_at_head):
+    """Insert + read each new ORM class to confirm models match the schema."""
+    from sqlalchemy.orm import Session
+    from datetime import date
+
+    from argosy.state.models import (
+        ExpenseSource, ExpenseStatement, ExpenseTransaction,
+        ExpenseCategory, MerchantCategoryCache, ExpenseReviewQueue,
+        User, UserFile,
+    )
+
+    with Session(alembic_engine_at_head) as s:
+        s.add(User(id="ariel", plan="free"))
+        s.flush()
+        s.add(UserFile(
+            user_id="ariel", sha256="a" * 64,
+            original_name="x.xls", sanitized_name="x.xls",
+            mime_type="application/vnd.ms-excel", kind="other",
+            size_bytes=1, storage_path="/tmp/x.xls", source="chat_attachment",
+        ))
+        s.flush()
+        cat = ExpenseCategory(slug="food.groceries", label_en="Groceries",
+                              label_he="מצרכי מזון")
+        s.add(cat)
+        s.flush()
+        src = ExpenseSource(user_id="ariel", kind="card", issuer="isracard",
+                            external_id="1266", display_name="Isracard 1266",
+                            cardholder_name="ariel")
+        s.add(src)
+        s.flush()
+        stmt = ExpenseStatement(
+            user_id="ariel", source_id=src.id, file_id=1,
+            period_start=date(2026, 4, 1), period_end=date(2026, 4, 30),
+            charge_date=date(2026, 4, 15), parsed_total_nis=3319.44,
+            parser_name="isracard", parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt)
+        s.flush()
+        tx = ExpenseTransaction(
+            user_id="ariel", statement_id=stmt.id, source_id=src.id,
+            occurred_on=date(2026, 4, 8), merchant_raw="NETFLIX.COM",
+            merchant_normalized="netflix.com", amount_nis=69.90,
+            direction="debit", tx_type="standing_order", raw_row_json="{}",
+        )
+        s.add(tx)
+        s.add(MerchantCategoryCache(
+            user_id="ariel", merchant_pattern="netflix.com",
+            category_id=cat.id, source="user", confidence=1.00,
+        ))
+        s.add(ExpenseReviewQueue(
+            user_id="ariel", kind="uncategorized",
+            payload_json='{"merchant_normalized": "x"}',
+        ))
+        s.commit()
+        assert s.query(ExpenseTransaction).count() == 1
+        assert s.query(ExpenseReviewQueue).filter_by(status="open").count() == 1

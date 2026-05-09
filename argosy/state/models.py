@@ -16,10 +16,12 @@ pending_orders tracks open broker orders awaiting reconciliation.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -993,4 +995,237 @@ __all__ = [
     "PensionFundSnapshot",
     # Phase 4 (investor events)
     "InvestorEvent",
+    # Household expenses subsystem
+    "ExpenseSource",
+    "ExpenseStatement",
+    "ExpenseCategory",
+    "ExpenseTransaction",
+    "MerchantCategoryCache",
+    "ExpenseReviewQueue",
 ]
+
+
+# ----------------------------------------------------------------------
+# Household expenses subsystem (Wave EX1 — migration 0021)
+# ----------------------------------------------------------------------
+
+
+class ExpenseSource(Base):
+    """A bank account or credit card the user has registered for expense ingest.
+
+    Cardholder is metadata only — household aggregation is the unit; spend rolls
+    to a single pool regardless of `cardholder_name`. ``kind`` distinguishes
+    bank current accounts from credit cards; ``external_id`` is the card last-4
+    or bank account number, stable across months.
+    """
+
+    __tablename__ = "expense_sources"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(8), nullable=False)
+    issuer: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    cardholder_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "kind", "external_id",
+                         name="uq_expense_sources_user_kind_external"),
+    )
+
+
+class ExpenseStatement(Base):
+    """A single uploaded statement file's metadata. Idempotent on
+    (user_id, source_id, period_start, period_end).
+    """
+
+    __tablename__ = "expense_statements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    source_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("expense_sources.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    file_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("user_files.id", ondelete="RESTRICT"),
+        nullable=False
+    )
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    charge_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    declared_total_nis: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    parsed_total_nis: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    parser_name: Mapped[str] = mapped_column(String(32), nullable=False)
+    parser_version: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(8), nullable=False)
+    parse_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_id", "period_start", "period_end",
+                         name="uq_expense_statements_user_source_period"),
+    )
+
+
+class ExpenseCategory(Base):
+    """Hierarchical taxonomy. user_id NULL = system-default row (copied per user
+    on first ingest). is_excluded_from_spend marks rows that render but don't
+    aggregate as 'real spending' (transfers, investments, taxes paid).
+    """
+
+    __tablename__ = "expense_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    label_en: Mapped[str] = mapped_column(String(64), nullable=False)
+    label_he: Mapped[str] = mapped_column(String(64), nullable=False)
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("expense_categories.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    is_excluded_from_spend: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_inflow: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "slug", name="uq_expense_categories_user_slug"),
+    )
+
+
+class ExpenseTransaction(Base):
+    """One transaction row, persisted from a parsed statement.
+
+    Aggregation rules:
+      real_spending(month) = SUM(amount_nis) WHERE direction='debit'
+                             AND category.is_excluded_from_spend = FALSE
+                             AND category.is_inflow = FALSE
+                             AND is_card_payment = FALSE
+      real_income(month)   = SUM(amount_nis) WHERE direction='credit'
+                             AND category.is_inflow = TRUE
+    Refunds offset within their inherited category via refund_of_id.
+    """
+
+    __tablename__ = "expense_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    statement_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("expense_statements.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    source_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("expense_sources.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    occurred_on: Mapped[date] = mapped_column(Date, nullable=False)
+    posted_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    merchant_raw: Mapped[str] = mapped_column(String(512), nullable=False)
+    merchant_normalized: Mapped[str] = mapped_column(String(512), nullable=False)
+    amount_nis: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    amount_orig: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    currency_orig: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    tx_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    category_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("expense_categories.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    category_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    category_confidence: Mapped[Decimal | None] = mapped_column(Numeric(3, 2), nullable=True)
+    is_card_payment: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    matched_statement_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("expense_statements.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    refund_of_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("expense_transactions.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    raw_row_json: Mapped[str] = mapped_column(Text, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class MerchantCategoryCache(Base):
+    """Per-user cache mapping a normalized merchant pattern to a category.
+    User overrides (source='user') always win; LLM results (source='llm')
+    only persist when confidence ≥ 0.85.
+    """
+
+    __tablename__ = "merchant_category_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    merchant_pattern: Mapped[str] = mapped_column(String(512), nullable=False)
+    is_regex: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    category_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("expense_categories.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    confidence: Mapped[Decimal] = mapped_column(Numeric(3, 2), nullable=False)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_hit_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "merchant_pattern", "is_regex",
+                         name="uq_merchant_category_cache"),
+    )
+
+
+class ExpenseReviewQueue(Base):
+    """Anomalies + uncategorized rows pending user review.
+    Built by the anomaly detector (EX2) and the orchestrator (EX1, for
+    uncategorized rows).
+    """
+
+    __tablename__ = "expense_review_queue"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    related_tx_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("expense_transactions.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    related_source_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("expense_sources.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    user_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
