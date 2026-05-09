@@ -91,7 +91,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # Household-expenses categorizer: batched LLM categorization with
     # confidence threshold >= 0.85. Sonnet is accurate enough and far
     # cheaper than Opus for high-volume transaction labeling.
-    "household_categorizer": "sonnet",
+    "household_categorizer": "claude-sonnet-4-6",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
