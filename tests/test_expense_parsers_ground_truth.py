@@ -96,3 +96,30 @@ def test_isracard_parser_conservation(isracard_samples):
                 f"{p.name}: parsed total {result.statement.parsed_total_nis} "
                 f"vs declared {truth.declared_total_nis}"
             )
+
+
+@pytest.fixture(scope="module")
+def max_samples():
+    paths = _all_existing("**/6225/*.xlsx")
+    if not paths:
+        pytest.skip("no Max samples present")
+    return paths
+
+
+def test_max_parser_conservation(max_samples):
+    from argosy.services.expense_ingest.parsers.max import parse
+    for p in max_samples:
+        truth = max_oracle(p)
+        result = parse(p)
+        debits = sum(t.amount_nis for t in result.transactions
+                     if t.direction == "debit")
+        credits = sum(t.amount_nis for t in result.transactions
+                      if t.direction == "credit")
+        assert len(result.transactions) == truth.row_count, (
+            f"{p.name}: row count {len(result.transactions)} vs {truth.row_count}"
+        )
+        assert abs(debits - truth.sum_debits_nis) < 1.00
+        assert abs(credits - truth.sum_credits_nis) < 1.00
+        if truth.declared_total_nis is not None:
+            assert abs(result.statement.parsed_total_nis
+                       - truth.declared_total_nis) < 50.00

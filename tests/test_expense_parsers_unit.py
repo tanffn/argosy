@@ -104,3 +104,44 @@ def test_isracard_parser_detects_standing_order():
     netflix = next(t for t in result.transactions
                    if "NETFLIX" in t.merchant_raw)
     assert netflix.tx_type == "standing_order"
+
+
+def test_max_parser_returns_5_rows():
+    from argosy.services.expense_ingest.parsers.max import parse
+    result = parse(FIXTURES / "max_minimal.xlsx")
+    assert len(result.transactions) == 5
+
+
+def test_max_parser_extracts_account_last4():
+    from argosy.services.expense_ingest.parsers.max import parse
+    result = parse(FIXTURES / "max_minimal.xlsx")
+    assert result.source_hint is not None
+    assert result.source_hint.issuer == "max"
+    # Account is 882-44745280 → last 4 of the post-dash chunk = '5280'
+    assert result.source_hint.external_id == "5280"
+
+
+def test_max_parser_keeps_anaf_as_issuer_category():
+    from argosy.services.expense_ingest.parsers.max import parse
+    result = parse(FIXTURES / "max_minimal.xlsx")
+    rest = next(t for t in result.transactions
+                if "ספייס" in t.merchant_raw)
+    assert rest.issuer_category == "מסעדות"
+
+
+def test_max_parser_detects_refund():
+    from argosy.services.expense_ingest.parsers.max import parse
+    result = parse(FIXTURES / "max_minimal.xlsx")
+    refund = next(t for t in result.transactions
+                  if "WIZZ" in t.merchant_raw)
+    assert refund.tx_type == "refund"
+    assert refund.direction == "credit"
+    assert refund.amount_nis == 2097.83  # always positive
+
+
+def test_max_parser_charge_date_extracted():
+    from argosy.services.expense_ingest.parsers.max import parse
+    from datetime import date
+    result = parse(FIXTURES / "max_minimal.xlsx")
+    assert result.statement.charge_date == date(2026, 4, 15)
+    assert abs(result.statement.declared_total_nis - 654.88) < 0.01
