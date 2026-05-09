@@ -708,10 +708,34 @@ class BaseAgent(Generic[T]):
         return h.hexdigest()
 
 
+def _llm_backend_available() -> bool:
+    """Return True when at least one LLM backend is reachable.
+
+    Used by live-LLM eval tests (``@pytest.mark.llm_eval``) to skip cleanly
+    when no backend is configured.
+
+    - ``claude_code`` backend: checks whether ``claude.exe`` is on PATH.
+    - ``api_key`` backend: checks whether ``ANTHROPIC_API_KEY`` is set.
+    """
+    import shutil
+
+    try:
+        backend = get_settings().anthropic.backend
+    except Exception:
+        backend = "claude_code"
+
+    if backend == "api_key":
+        return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    if backend == "claude_code":
+        return shutil.which("claude") is not None
+    return False
+
+
 __all__ = [
     "AgentReport",
     "BaseAgent",
     "ConfidenceBand",
     "DEFAULT_MODEL_BY_ROLE",
     "ModelCall",
+    "_llm_backend_available",
 ]

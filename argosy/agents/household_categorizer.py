@@ -7,6 +7,7 @@ orchestrator before the batch — the matcher inherits their category later.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from argosy.agents.base import BaseAgent
@@ -27,6 +28,19 @@ Rules:
   rationale='refund — should be matched to prior purchase'.
 - issuer_category_he is a hint, not gospel. Override when wrong.
 - Foreign merchants: use post-prefix substring (PAYPAL *X -> X).
+
+OUTPUT: Return a JSON object with this exact shape — no extra keys, no prose:
+{
+  "results": [
+    {
+      "tx_id": <int>,
+      "category_slug": "<slug from taxonomy or 'uncategorized'>",
+      "confidence": <float 0.0-1.0>,
+      "rationale": "<one sentence>"
+    }
+  ]
+}
+Every input tx_id must appear exactly once in results.
 """
 
 
@@ -52,20 +66,45 @@ class HouseholdCategorizerAgent(BaseAgent):
         return thresholded
 
     def _invoke_llm(self, request: CategorizeRequest) -> CategorizeResponse:
-        """Indirection seam — patched in unit tests. Production path calls
-        the real BaseAgent structured-output via build_prompt + _call_model.
-        Mirror the existing pattern in argosy/agents/plan_synthesizer.py.
+        """Dispatch to the live LLM via BaseAgent._call_model.
 
-        NOTE: NotImplementedError here is intentional for now. Unit tests
-        patch this method directly. The live LLM eval (Task 28) will wire
-        this up using BaseAgent.run_sync / build_prompt, at which point the
-        raise below should be replaced with the real dispatch.
+        Patched in unit tests (they never reach this path). The production
+        path calls BaseAgent._call_model directly — the same dispatch layer
+        used by plan_synthesizer.py and every other Argosy agent — and parses
+        the structured JSON response into a CategorizeResponse.
+
+        The call is synchronous: asyncio.run() is safe here because
+        categorize_batch is always called from sync contexts (service layer,
+        CLI, pytest). Async callers should patch or call _call_model directly.
         """
-        raise NotImplementedError(
-            "Wire up via BaseAgent's structured-output method; mirror "
-            "plan_synthesizer.py. The unit tests patch this method, so a "
-            "raise here is fine for now and the live LLM eval (Task 28) "
-            "will exercise the real wiring."
+        system_prompt, user_prompt = self.build_prompt(request=request)
+        full_system = self.BOILERPLATE_SYSTEM + "\n\n" + system_prompt
+
+        call = asyncio.run(
+            self._call_model(system=full_system, user=user_prompt)
+        )
+
+        # Parse the model output — tolerate fenced code blocks.
+        cleaned = call.text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+
+        data = json.loads(cleaned)
+        # The LLM returns {"results": [...]}.  Populate metadata from the call.
+        results = [CategorizeResult(**r) for r in data["results"]]
+        cost = self._estimate_cost(call.tokens_in, call.tokens_out,
+                                   call.model or self.model)
+        return CategorizeResponse(
+            results=results,
+            model=call.model or self.model,
+            tokens_in=call.tokens_in,
+            tokens_out=call.tokens_out,
+            cost_usd=cost,
         )
 
     def build_prompt(self, **inputs) -> tuple[str, str]:
