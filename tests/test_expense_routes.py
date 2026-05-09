@@ -160,7 +160,12 @@ def test_list_categories_returns_taxonomy(expense_client):
 
 
 def test_monthly_summary_excludes_card_payments(expense_client):
-    """Card-payment rows must NOT contribute to category totals."""
+    """Card-payment rows must NOT contribute to per-currency totals.
+
+    Since T14 the response is a list of {month, totals_by_currency,
+    transaction_count} entries; this test pins the per-currency shape and
+    re-asserts that is_card_payment rows are not summed into totals.
+    """
     with patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
                return_value=[]):
         with open(FIXTURES / "max_minimal.xlsx", "rb") as f:
@@ -173,5 +178,10 @@ def test_monthly_summary_excludes_card_payments(expense_client):
                                params={"user_id": "ariel", "months": 12})
     assert resp.status_code == 200
     body = resp.json()
-    assert "by_month" in body
-    assert len(body["by_month"]) >= 1
+    assert isinstance(body, list)
+    assert len(body) >= 1
+    for entry in body:
+        assert "month" in entry
+        assert "totals_by_currency" in entry
+        assert isinstance(entry["totals_by_currency"], dict)
+        assert "transaction_count" in entry

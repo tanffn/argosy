@@ -9,7 +9,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import case, extract, func, select as sa_select
 from sqlalchemy.orm import Session
 
 from argosy.api.routes.plan import get_db    # reuse the existing get_db dep
@@ -350,60 +350,64 @@ def list_categories(user_id: str,
 # GET /monthly-summary
 # ---------------------------------------------------------------------------
 
-class MonthlySummaryRow(BaseModel):
-    month: str                     # 'YYYY-MM'
-    total_real_spend_nis: float
-    total_real_income_nis: float
-    by_category: dict[str, float]
+class MonthlyTotalEntry(BaseModel):
+    """Per-month aggregate, with totals split by currency.
+
+    Foreign rows (amount_nis IS NULL after T12) contribute to their own
+    currency bucket via amount_orig + currency_orig; native NIS rows
+    populate the 'NIS' bucket via amount_nis.
+    """
+
+    month: str                            # 'YYYY-MM'
+    totals_by_currency: dict[str, float]  # {'NIS': 12345.67, 'USD': 25.0}
+    transaction_count: int
 
 
-class MonthlySummaryResponse(BaseModel):
-    by_month: list[MonthlySummaryRow]
-
-
-@router.get("/monthly-summary", response_model=MonthlySummaryResponse)
+@router.get("/monthly-summary", response_model=list[MonthlyTotalEntry])
 def monthly_summary(
     user_id: str,
     db: Annotated[Session, Depends(get_db)],
     months: int = Query(default=12, ge=1, le=120),
-) -> MonthlySummaryResponse:
-    """Aggregate by (month, category). Excludes is_card_payment rows."""
+) -> list[MonthlyTotalEntry]:
+    """Per-(month, currency) totals. Excludes is_card_payment rows so card
+    settlements don't double-count against per-card transaction totals.
 
-    cats = {c.id: c for c in db.query(ExpenseCategory).filter_by(
-        user_id=user_id
-    ).all()}
-    rows = db.query(
-        func.strftime("%Y-%m", ExpenseTransaction.occurred_on).label("ym"),
-        ExpenseTransaction.category_id,
-        ExpenseTransaction.direction,
-        func.sum(ExpenseTransaction.amount_nis).label("total"),
-    ).filter(
-        ExpenseTransaction.user_id == user_id,
-        ExpenseTransaction.is_card_payment.is_(False),
-    ).group_by("ym", ExpenseTransaction.category_id,
-                ExpenseTransaction.direction).all()
+    The amount used per row is `amount_nis` when present, else `amount_orig`
+    (foreign rows where amount_nis was set to NULL by the parser per Bug 2.1).
+    Currency is `currency_orig` for foreign rows, 'NIS' otherwise.
+    """
 
-    by_month: dict[str, MonthlySummaryRow] = {}
-    for ym, cat_id, direction, total in rows:
-        if ym not in by_month:
-            by_month[ym] = MonthlySummaryRow(
-                month=ym, total_real_spend_nis=0.0,
-                total_real_income_nis=0.0, by_category={},
-            )
-        cat = cats.get(cat_id)
-        slug = cat.slug if cat else "uncategorized"
-        by_month[ym].by_category[slug] = (
-            by_month[ym].by_category.get(slug, 0.0) + float(total)
+    rows = db.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(ExpenseTransaction.currency_orig, "NIS").label("ccy"),
+            func.sum(case(
+                (ExpenseTransaction.amount_nis.is_not(None),
+                 ExpenseTransaction.amount_nis),
+                else_=ExpenseTransaction.amount_orig,
+            )).label("total"),
+            func.count().label("n"),
         )
-        if cat is None:
-            continue
-        if cat.is_inflow and direction == "credit":
-            by_month[ym].total_real_income_nis += float(total)
-        elif (not cat.is_inflow and not cat.is_excluded_from_spend
-              and direction == "debit"):
-            by_month[ym].total_real_spend_nis += float(total)
+        .where(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.is_card_payment.is_(False),
+        )
+        .group_by("y", "m", "ccy")
+        .order_by("y", "m")
+    ).all()
 
-    sorted_months = sorted(by_month.keys(), reverse=True)[:months]
-    return MonthlySummaryResponse(
-        by_month=[by_month[m] for m in sorted(sorted_months)]
-    )
+    out: dict[str, MonthlyTotalEntry] = {}
+    for y, m, ccy, total, n in rows:
+        key = f"{int(y):04d}-{int(m):02d}"
+        entry = out.get(key)
+        if entry is None:
+            entry = MonthlyTotalEntry(
+                month=key, totals_by_currency={}, transaction_count=0,
+            )
+            out[key] = entry
+        entry.totals_by_currency[ccy] = float(total or 0)
+        entry.transaction_count += int(n)
+
+    sorted_entries = sorted(out.values(), key=lambda e: e.month)
+    return sorted_entries[-months:]

@@ -510,6 +510,109 @@ def test_bug1_backfill_walker_passes_folder_name_as_last4_hint(tmp_path, monkeyp
     assert captured.get("last4_hint") == "6225"
 
 
+def test_bug2_monthly_summary_returns_per_currency_map(client_with_db):
+    """Bug 2 (part 3) — /api/expenses/monthly-summary returns per-currency
+    totals so foreign rows (amount_nis IS NULL after T12) don't get silently
+    dropped or summed into NIS.
+
+    Seeds two NIS debits + one foreign (USD) debit in the same month + a NIS
+    debit in a different month, then asserts the response shape:
+
+      [ {month: 'YYYY-MM', totals_by_currency: {'NIS': ..., 'USD': ...},
+         transaction_count: 3}, ... ]
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from argosy.state.models import (
+        ExpenseSource, ExpenseStatement, ExpenseTransaction, User, UserFile,
+    )
+
+    SessionLocal = client_with_db.app.state.session_factory
+    with SessionLocal() as s:
+        if s.get(User, "ariel") is None:
+            s.add(User(id="ariel", plan="free"))
+            s.flush()
+        f = UserFile(
+            user_id="ariel", sha256="e" * 64, original_name="x",
+            sanitized_name="x", mime_type="x", kind="other",
+            size_bytes=1, storage_path="/tmp/x", source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src = ExpenseSource(
+            user_id="ariel", kind="card", issuer="isracard",
+            external_id="0000", display_name="test",
+        )
+        s.add(src); s.flush()
+        stmt = ExpenseStatement(
+            user_id="ariel", source_id=src.id, file_id=f.id,
+            period_start=date(2026, 4, 1), period_end=date(2026, 4, 30),
+            parsed_total_nis=Decimal("0"),
+            parser_name="isracard", parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt); s.flush()
+
+        # Two NIS debits in April 2026 — total NIS = 250.
+        s.add(ExpenseTransaction(
+            user_id="ariel", source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 4, 5),
+            merchant_raw="NIS_A", merchant_normalized="nis_a",
+            amount_nis=Decimal("100"), direction="debit", tx_type="regular",
+            raw_row_json="{}",
+        ))
+        s.add(ExpenseTransaction(
+            user_id="ariel", source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 4, 12),
+            merchant_raw="NIS_B", merchant_normalized="nis_b",
+            amount_nis=Decimal("150"), direction="debit", tx_type="regular",
+            raw_row_json="{}",
+        ))
+        # One foreign USD debit — amount_nis IS NULL per T12.
+        s.add(ExpenseTransaction(
+            user_id="ariel", source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 4, 20),
+            merchant_raw="USD_C", merchant_normalized="usd_c",
+            amount_nis=None, amount_orig=Decimal("25"), currency_orig="USD",
+            direction="debit", tx_type="regular", raw_row_json="{}",
+        ))
+        # A NIS debit in a different month (March) so we exercise the
+        # per-month grouping.
+        s.add(ExpenseTransaction(
+            user_id="ariel", source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 3, 15),
+            merchant_raw="NIS_MAR", merchant_normalized="nis_mar",
+            amount_nis=Decimal("42"), direction="debit", tx_type="regular",
+            raw_row_json="{}",
+        ))
+        s.commit()
+
+    response = client_with_db.get(
+        "/api/expenses/monthly-summary",
+        params={"user_id": "ariel", "months": 12},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # New shape: list of months, each with month + totals_by_currency dict.
+    assert isinstance(body, list), f"expected list, got {type(body).__name__}: {body!r}"
+    months = {row["month"]: row for row in body}
+    assert "2026-04" in months
+    assert "2026-03" in months
+
+    apr = months["2026-04"]
+    assert "totals_by_currency" in apr
+    assert isinstance(apr["totals_by_currency"], dict)
+    # NIS bucket sums the two NIS rows (100 + 150 = 250).
+    assert apr["totals_by_currency"].get("NIS") == 250.0
+    # USD bucket has the foreign row's amount_orig (25.0), separate from NIS.
+    assert apr["totals_by_currency"].get("USD") == 25.0
+    assert apr["transaction_count"] == 3
+
+    mar = months["2026-03"]
+    assert mar["totals_by_currency"].get("NIS") == 42.0
+    assert "USD" not in mar["totals_by_currency"]
+    assert mar["transaction_count"] == 1
+
+
 def test_bug1_rest_upload_returns_400_for_max_without_card_last4(client_with_db):
     """Bug 1 (part 4) — the REST upload route returns 400 when a Max statement
     is uploaded without a card_last4 form field.
