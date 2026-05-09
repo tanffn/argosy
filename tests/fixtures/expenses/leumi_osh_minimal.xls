@@ -1,0 +1,14 @@
+<HTML xmlns="http://www.w3.org/TR/REC-html40" dir="RTL"><head><meta charset="UTF-8"></head>
+<body>
+<table><tr><td>בנק לאומי</td></tr><tr><td>מס' חשבון: 882-447452/80</td></tr></table>
+<table><tr><td>היתרה ₪ 1000</td></tr></table>
+<table>
+<tr><td>תנועות בחשבון</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>תאריך</td><td>תאריך ערך</td><td>תיאור</td><td>אסמכתא</td><td>בחובה</td><td>בזכות</td><td>היתרה בש"ח</td><td>הערה</td><td></td></tr>
+<tr><td>15/04/2026</td><td>15/04/2026</td><td>ל.מאסטרקרד(יש)</td><td>1266</td><td>3319.44</td><td>0</td><td>61131.90</td><td></td><td></td></tr>
+<tr><td>15/04/2026</td><td>15/04/2026</td><td>כרטיסי אשראי-י</td><td>8547</td><td>654.88</td><td>0</td><td>57287.40</td><td></td><td></td></tr>
+<tr><td>10/04/2026</td><td>10/04/2026</td><td>מקס איט פיננ-י</td><td>34685</td><td>9748.85</td><td>0</td><td>64451.34</td><td></td><td></td></tr>
+<tr><td>01/05/2026</td><td>01/05/2026</td><td>מלאנוקס טכנו-י</td><td>61307</td><td>0</td><td>25990.40</td><td>83553.80</td><td></td><td></td></tr>
+<tr><td>20/04/2026</td><td>20/04/2026</td><td>קצבת ילדים-י</td><td>13104</td><td>0</td><td>276.00</td><td>57563.40</td><td></td><td></td></tr>
+</table>
+</body></HTML>
