@@ -72,11 +72,11 @@ def backfill(
                 ingest_user_file(s, user_id, user_file.id)
                 s.commit()
                 successes += 1
-                typer.echo(f"  ✓ {p.name}")
+                typer.echo(f"  OK {p.name}")
             except Exception as e:
                 s.rollback()
                 failures += 1
-                typer.echo(f"  ✗ {p.name}: {e}")
+                typer.echo(f"  FAIL {p.name}: {e}")
 
     typer.echo(f"\nDone. successes={successes} failures={failures}")
 

@@ -2541,6 +2541,36 @@ GitHub / IDE markdown previews and serve as the canonical visual.
 
 ---
 
+## 18. Household Budget & Cash-Flow Analysis
+
+Lands across Waves EX1–EX4. EX1 (this wave) ingests bank + card statements
+through `catalog_upload`, correlates bank credit-card-payment lines to
+itemized card statements via the `אסמכתא` reference column, categorizes
+transactions via a hybrid (issuer-seeded + cache + LLM at confidence ≥
+0.85) pipeline, and exposes the data via `/api/expenses/*`.
+
+Full design: `docs/superpowers/specs/2026-05-09-household-expenses-design.md`.
+EX2 (anomaly detection + advisor surfacing), EX3 (HouseholdBudgetAnalystAgent
+feeding plan synthesis), and EX4 (UI) are scheduled but not yet implemented.
+
+### 18.1 EX1 surface (ingest core)
+
+Six new tables (migration 0021): `expense_sources`, `expense_statements`,
+`expense_transactions`, `expense_categories`, `merchant_category_cache`,
+`expense_review_queue`. New REST routes under `/api/expenses/*`
+(upload, sources, transactions, categories, monthly-summary, transactions
+PATCH for user override). New WebSocket events
+`expense.statement.{parsed,failed}` etc. CLI:
+`argosy expenses verify-file` and `argosy expenses backfill`.
+
+The deterministic ground-truth tests
+(`tests/test_expense_parsers_ground_truth.py`) must pass on every real
+sample before EX1 is considered done. They check row-count exact,
+debit/credit sums within ₪1, parsed totals within ₪50 of issuer-declared
+totals.
+
+---
+
 ## Appendix A: Configuration Reference
 
 ### A.1 `argosy.toml` (top-level config; lives at `${ARGOSY_HOME}/argosy.toml`)

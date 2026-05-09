@@ -112,17 +112,31 @@ def resolve_categories_for_user(session: Session, user_id: str) -> int:
             tx.category_source = "llm"
             tx.category_confidence = Decimal(str(r.confidence))
             resolved += 1
-            # Cache only confident, slug-bearing results
+            # Cache only confident, slug-bearing results.
+            # Guard against duplicate key if the same merchant appears in a
+            # prior file that already populated the cache this session.
             if r.category_slug != "uncategorized":
-                session.add(MerchantCategoryCache(
+                existing_cache = session.query(MerchantCategoryCache).filter_by(
                     user_id=user_id,
                     merchant_pattern=tx.merchant_normalized,
-                    category_id=cat.id,
-                    source="llm",
-                    confidence=Decimal(str(r.confidence)),
-                    hit_count=1,
-                    last_hit_at=datetime.utcnow(),
-                ))
+                    is_regex=False,
+                ).first()
+                if existing_cache is None:
+                    session.add(MerchantCategoryCache(
+                        user_id=user_id,
+                        merchant_pattern=tx.merchant_normalized,
+                        category_id=cat.id,
+                        source="llm",
+                        confidence=Decimal(str(r.confidence)),
+                        hit_count=1,
+                        last_hit_at=datetime.utcnow(),
+                    ))
+                else:
+                    # Update in-place: keep the higher-confidence verdict.
+                    if Decimal(str(r.confidence)) > existing_cache.confidence:
+                        existing_cache.category_id = cat.id
+                        existing_cache.confidence = Decimal(str(r.confidence))
+                        existing_cache.last_hit_at = datetime.utcnow()
 
     session.flush()
     return resolved

@@ -61,3 +61,29 @@ limited_account:
 security:
   t3_second_factor: delay    # totp | delay
   delay_minutes: 60
+
+# Household-expenses subsystem (EX1+). Omit the block to use defaults.
+expenses:
+  enabled: true
+  parsers:
+    leumi_osh: true
+    isracard: true
+    max: true
+    cal: false
+    amex: false
+    diners: false
+    discount: false
+  categorization:
+    confidence_threshold: 0.85
+    llm_batch_size: 50
+  correlation:
+    amount_tolerance_nis: 50
+    date_window_days: 2
+  refund_matcher:
+    amount_tolerance_pct: 0.05
+    lookback_days: 90
+  anomaly:
+    mom_category_factor: 1.5
+    mom_category_min_baseline_nis: 500
+    big_one_off_nis: 3000
+    coverage_gap_days: 35
