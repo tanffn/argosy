@@ -123,24 +123,100 @@ export default function AdvisorPage() {
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // "Thinking..." liveness — track elapsed seconds so the user sees
-  // the spinner counting up during a long advisor turn rather than a
-  // silent indicator that could pass for a frozen tab.
+  // Real liveness signals during a long advisor turn. A bare spinner can
+  // spin forever while the backend is dead; we instead track two
+  // independent positive signals AND surface a red banner if either
+  // breaks.
+  //
+  //   1. Periodic `/api/health` ping while `loading=true` — proves the
+  //      HTTP path is alive end-to-end (uvicorn + DB).
+  //   2. WS subscription to `agent.run.finished` events filtered by our
+  //      USER_ID — proves the agent fleet is making forward progress,
+  //      not just that the network is up.
+  //
+  // The visible "Thinking" panel reflects the latest state of both,
+  // including elapsed-seconds counters for each. If health pings start
+  // failing we override the spinner with a red banner so a dead backend
+  // is impossible to miss.
   const [thinkingStartedAt, setThinkingStartedAt] = useState<number | null>(
     null,
   );
-  const [thinkingElapsed, setThinkingElapsed] = useState(0);
+  const [thinkingNow, setThinkingNow] = useState<number>(() => Date.now());
+  const [backendStatus, setBackendStatus] = useState<
+    "unknown" | "ok" | "unreachable"
+  >("unknown");
+  const [lastHealthAt, setLastHealthAt] = useState<number | null>(null);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [lastAgentStepAt, setLastAgentStepAt] = useState<number | null>(null);
+  const [lastAgentStepRole, setLastAgentStepRole] = useState<string | null>(
+    null,
+  );
+
+  // Tick every 250ms while a turn is in flight so the elapsed counters
+  // visibly advance.
   useEffect(() => {
-    if (thinkingStartedAt === null) {
-      setThinkingElapsed(0);
-      return;
-    }
-    const tick = () =>
-      setThinkingElapsed(Math.floor((Date.now() - thinkingStartedAt) / 1000));
-    tick();
-    const id = window.setInterval(tick, 250);
+    if (thinkingStartedAt === null) return;
+    const id = window.setInterval(() => setThinkingNow(Date.now()), 250);
     return () => window.clearInterval(id);
   }, [thinkingStartedAt]);
+
+  // Periodic /api/health ping while a turn is in flight.
+  useEffect(() => {
+    if (thinkingStartedAt === null) return;
+    let cancelled = false;
+    const ping = async () => {
+      try {
+        const res = await fetch("/api/health", { cache: "no-store" });
+        if (cancelled) return;
+        if (res.ok) {
+          setBackendStatus("ok");
+          setLastHealthAt(Date.now());
+          setHealthError(null);
+        } else {
+          setBackendStatus("unreachable");
+          setHealthError(`HTTP ${res.status}`);
+        }
+      } catch (e: unknown) {
+        if (cancelled) return;
+        setBackendStatus("unreachable");
+        setHealthError(e instanceof Error ? e.message : String(e));
+      }
+    };
+    void ping();
+    const id = window.setInterval(ping, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [thinkingStartedAt]);
+
+  // WS subscription — bumps lastAgentStepAt every time the backend
+  // finishes an agent invocation for this user. This is the "work is
+  // actually progressing" signal, distinct from "the network is up".
+  const lastAgentRunEvent = useWSEvents<{
+    user_id?: string;
+    agent_role?: string;
+  }>(["agent.run.finished"]);
+  useEffect(() => {
+    if (!lastAgentRunEvent) return;
+    const { payload } = lastAgentRunEvent;
+    if (payload.user_id !== USER_ID) return;
+    setLastAgentStepAt(Date.now());
+    setLastAgentStepRole(payload.agent_role ?? null);
+  }, [lastAgentRunEvent]);
+
+  const elapsedTotalS =
+    thinkingStartedAt !== null
+      ? Math.floor((thinkingNow - thinkingStartedAt) / 1000)
+      : 0;
+  const sinceHealthS =
+    lastHealthAt !== null
+      ? Math.floor((thinkingNow - lastHealthAt) / 1000)
+      : null;
+  const sinceAgentStepS =
+    lastAgentStepAt !== null
+      ? Math.floor((thinkingNow - lastAgentStepAt) / 1000)
+      : null;
 
   // Wave 2: monthly plan-revision draft (banner + side sheet).
   const [draft, setDraft] = useState<DraftResponse | null>(null);
@@ -247,7 +323,15 @@ export default function AdvisorPage() {
     ) => {
       try {
         setLoading(true);
+        // Reset all liveness signals — anything carried over from a
+        // prior turn would be misleading.
+        setBackendStatus("unknown");
+        setLastHealthAt(null);
+        setHealthError(null);
+        setLastAgentStepAt(null);
+        setLastAgentStepRole(null);
         setThinkingStartedAt(Date.now());
+        setThinkingNow(Date.now());
         const t = await api.advisorTurn(USER_ID, lastUserMessage, opts);
         setPending(t);
       } catch (e: unknown) {
@@ -534,23 +618,84 @@ export default function AdvisorPage() {
 
               {loading && (
                 <div
-                  className="flex items-center gap-2 text-sm text-muted-foreground"
+                  className={
+                    "rounded-md border p-3 text-xs font-mono " +
+                    (backendStatus === "unreachable"
+                      ? "border-red-500/40 bg-red-500/10 text-red-500"
+                      : "border-border bg-secondary/30 text-muted-foreground")
+                  }
                   aria-live="polite"
                 >
-                  <Loader2
-                    className="h-4 w-4 animate-spin"
-                    aria-hidden
-                    suppressHydrationWarning
-                  />
-                  <span>Thinking</span>
-                  <span className="font-mono inline-block w-6 text-left">
-                    {/* Animated dots — one new dot per second mod 3, so the
-                        text alone shows liveness even if CSS animation fails. */}
-                    {".".repeat((thinkingElapsed % 3) + 1)}
-                  </span>
-                  <span className="text-xs font-mono text-muted-foreground/70">
-                    ({thinkingElapsed}s)
-                  </span>
+                  {backendStatus === "unreachable" ? (
+                    <div className="flex flex-col gap-1">
+                      <p className="text-sm">
+                        ⚠ Backend unreachable
+                        {sinceHealthS !== null && (
+                          <span className="ml-2 text-red-400/80">
+                            (last contact {sinceHealthS}s ago)
+                          </span>
+                        )}
+                      </p>
+                      {healthError && (
+                        <p className="text-[10px] text-red-400/70">
+                          {healthError}
+                        </p>
+                      )}
+                      <p className="text-[10px] text-red-400/70">
+                        The advisor turn may still complete if the backend
+                        comes back; otherwise refresh the page.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2 text-sm text-foreground">
+                        <Loader2
+                          className="h-4 w-4 animate-spin"
+                          aria-hidden
+                          suppressHydrationWarning
+                        />
+                        <span>
+                          Thinking
+                          <span className="inline-block w-6 text-left text-muted-foreground">
+                            {".".repeat((elapsedTotalS % 3) + 1)}
+                          </span>
+                        </span>
+                        <span className="text-muted-foreground">
+                          · {elapsedTotalS}s elapsed
+                        </span>
+                      </div>
+                      <p className="text-[11px]">
+                        {/* Real liveness — these are the actual proofs the
+                            backend is alive AND working, not just a CSS
+                            animation. */}
+                        backend{" "}
+                        {backendStatus === "ok" ? (
+                          <span className="text-emerald-500">
+                            OK
+                            {sinceHealthS !== null && (
+                              <> ({sinceHealthS}s ago)</>
+                            )}
+                          </span>
+                        ) : (
+                          <span>checking…</span>
+                        )}{" "}
+                        ·{" "}
+                        {lastAgentStepAt !== null ? (
+                          <span className="text-emerald-500">
+                            last agent step{" "}
+                            {lastAgentStepRole && (
+                              <span className="text-muted-foreground">
+                                ({lastAgentStepRole})
+                              </span>
+                            )}{" "}
+                            {sinceAgentStepS}s ago
+                          </span>
+                        ) : (
+                          <span>no agent steps yet</span>
+                        )}
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
 
