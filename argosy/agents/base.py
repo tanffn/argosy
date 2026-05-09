@@ -88,6 +88,10 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # per user preference (the synthesizer is the firm's intellectual
     # output; its quality dominates the overall flow's value).
     "plan_synthesizer": "claude-opus-4-7",
+    # Household-expenses categorizer: batched LLM categorization with
+    # confidence threshold >= 0.85. Sonnet is accurate enough and far
+    # cheaper than Opus for high-volume transaction labeling.
+    "household_categorizer": "sonnet",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
