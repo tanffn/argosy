@@ -126,6 +126,43 @@ def isracard_oracle(path: Path) -> GroundTruth:
     )
 
 
+def discount_oracle(path: Path) -> GroundTruth:
+    """Discount Bank Mastercard export. Two sheets, both 16-column with
+    header at row 3 (0-indexed); data from row 4 until first NaN col 0.
+    Sums col 5 (סכום חיוב) across both sheets, signed.
+    """
+    xl = pd.ExcelFile(path)
+    expected_sheets = {"עסקאות במועד החיוב", 'עסקאות חו"ל ומט"ח'}
+    sheets = [s for s in xl.sheet_names if s in expected_sheets]
+    if not sheets:
+        raise ValueError(
+            f"Discount oracle: no recognized sheet in {path}, "
+            f"got {xl.sheet_names}"
+        )
+
+    debits = 0.0
+    credits = 0.0
+    n = 0
+    for sheet in sheets:
+        df = pd.read_excel(path, sheet_name=sheet, header=None)
+        for i in range(4, len(df)):
+            v0 = df.iat[i, 0]
+            if pd.isna(v0):
+                break
+            charge = _to_float(df.iat[i, 5])    # col 5 = סכום חיוב
+            n += 1
+            if charge < 0:
+                credits += abs(charge)
+            else:
+                debits += abs(charge)
+    return GroundTruth(
+        row_count=n,
+        sum_debits_nis=round(debits, 2),
+        sum_credits_nis=round(credits, 2),
+        declared_total_nis=None,        # Discount export has no machine-readable footer total
+    )
+
+
 def max_oracle(path: Path) -> GroundTruth:
     """Max card export. Sheet name starts ``לאומי לישראל`` and ends with the
     account number. Row 0 has the title; row 2 has the declared total in

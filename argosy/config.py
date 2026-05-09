@@ -274,7 +274,7 @@ class ExpensesParsersConfig(BaseModel):
     cal: bool = False
     amex: bool = False
     diners: bool = False
-    discount: bool = False  # Discount Bank Mastercard — parser deferred
+    discount: bool = True   # Discount Bank Mastercard — fully implemented
 
 
 class ExpensesConfig(BaseModel):

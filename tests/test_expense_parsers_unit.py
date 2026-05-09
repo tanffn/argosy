@@ -145,3 +145,46 @@ def test_max_parser_charge_date_extracted():
     result = parse(FIXTURES / "max_minimal.xlsx")
     assert result.statement.charge_date == date(2026, 4, 15)
     assert abs(result.statement.declared_total_nis - 654.88) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Discount Bank Mastercard parser tests
+# ---------------------------------------------------------------------------
+
+def test_discount_parser_reads_both_sheets():
+    from argosy.services.expense_ingest.parsers.discount import parse
+    result = parse(FIXTURES / "discount_minimal.xlsx")
+    # 5 domestic + 2 foreign = 7 rows
+    assert len(result.transactions) == 7
+
+
+def test_discount_parser_extracts_card_last4():
+    from argosy.services.expense_ingest.parsers.discount import parse
+    result = parse(FIXTURES / "discount_minimal.xlsx")
+    assert result.source_hint is not None
+    assert result.source_hint.issuer == "discount"
+    assert result.source_hint.external_id == "2923"
+
+
+def test_discount_parser_preserves_kategoria():
+    from argosy.services.expense_ingest.parsers.discount import parse
+    result = parse(FIXTURES / "discount_minimal.xlsx")
+    rest = next(t for t in result.transactions
+                if "T C" in t.merchant_raw)
+    assert rest.issuer_category == "מסעדות, קפה וברים"
+
+
+def test_discount_parser_detects_refund_by_negative():
+    from argosy.services.expense_ingest.parsers.discount import parse
+    result = parse(FIXTURES / "discount_minimal.xlsx")
+    refund = next(t for t in result.transactions
+                  if "ALIEXPRESS" in t.merchant_raw and abs(t.amount_nis - 25.31) < 0.01)
+    assert refund.tx_type == "refund"
+    assert refund.direction == "credit"
+
+
+def test_discount_parser_no_charge_date_metadata():
+    from argosy.services.expense_ingest.parsers.discount import parse
+    result = parse(FIXTURES / "discount_minimal.xlsx")
+    assert result.statement.charge_date is None
+    assert result.statement.declared_total_nis is None

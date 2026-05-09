@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from tests.expense_ground_truth import (
-    leumi_oracle, isracard_oracle, max_oracle,
+    leumi_oracle, isracard_oracle, max_oracle, discount_oracle,
 )
 
 SAMPLES = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
@@ -124,3 +124,31 @@ def test_max_parser_conservation(max_samples):
         if truth.declared_total_nis is not None:
             assert abs(result.statement.parsed_total_nis
                        - truth.declared_total_nis) < 50.00
+
+
+@pytest.fixture(scope="module")
+def discount_samples():
+    paths = _all_existing("**/2923/transaction-details_export_*.xlsx")
+    if not paths:
+        pytest.skip("no Discount samples present")
+    return paths
+
+
+def test_discount_parser_conservation(discount_samples):
+    from argosy.services.expense_ingest.parsers.discount import parse
+    for p in discount_samples:
+        truth = discount_oracle(p)
+        result = parse(p)
+        debits = sum(t.amount_nis for t in result.transactions
+                     if t.direction == "debit")
+        credits = sum(t.amount_nis for t in result.transactions
+                      if t.direction == "credit")
+        assert len(result.transactions) == truth.row_count, (
+            f"{p.name}: row count {len(result.transactions)} vs {truth.row_count}"
+        )
+        assert abs(debits - truth.sum_debits_nis) < 1.00, (
+            f"{p.name}: debit sum {debits:.2f} vs oracle {truth.sum_debits_nis:.2f}"
+        )
+        assert abs(credits - truth.sum_credits_nis) < 1.00, (
+            f"{p.name}: credit sum {credits:.2f} vs oracle {truth.sum_credits_nis:.2f}"
+        )
