@@ -17,15 +17,21 @@ from argosy.services.expense_ingest.types import (
 PARSER_VERSION = "0.1.0"
 
 
-# Captures the account-number block following "חשבון" (Hebrew "account") or
-# "account". Real Leumi exports format the account a few different ways:
+# Captures the account-number block following "חשבון" (Hebrew "account").
+# Real Leumi exports format the account a few different ways:
 #   "חשבון 882-44745280"      — branch-account, 8-digit account
 #   "מס' חשבון: 882-447452/80" — branch-account/checksum (slash-separated)
-# We accept any run of digits / dashes / slashes; the caller normalizes by
-# stripping non-digits and (if there's a 3-digit branch prefix) dropping it.
+# Real exports also interleave HTML comments (<!---->) and Unicode bidi marks
+# (‎/‏) between the label and the digits. We tolerate any non-digit
+# noise up to 200 chars and lazy-match the first digit run; the caller
+# normalizes by stripping non-digits. We do NOT match English "account" — it
+# false-matches HTML/CSS class names like "account-number" in the wrapper.
 _LEUMI_ACCOUNT_RE = re.compile(
-    r"(?:חשבון|account)[\s:#\-]*([\d/\-]{6,20})", re.IGNORECASE,
+    r"חשבון[\s\S]{0,200}?([\d][\d/\-]{4,20})"
 )
+# Unicode formatting marks Leumi exports interleave between Hebrew labels
+# and Latin digits — strip before regex so digit-runs aren't masked.
+_LEUMI_BIDI_MARKS_RE = re.compile(r"[‎‏‪-‮]")
 
 
 def _extract_account_number(path: Path) -> str | None:
@@ -41,6 +47,7 @@ def _extract_account_number(path: Path) -> str | None:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return None
+    text = _LEUMI_BIDI_MARKS_RE.sub("", text)
     m = _LEUMI_ACCOUNT_RE.search(text)
     if not m:
         return None
