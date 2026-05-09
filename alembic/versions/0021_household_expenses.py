@@ -22,14 +22,14 @@ def upgrade() -> None:
     op.create_table(
         "expense_sources",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-        sa.Column("user_id", sa.String(64),
+        sa.Column("user_id", sa.String(length=64),
                   sa.ForeignKey("users.id", ondelete="CASCADE"),
                   nullable=False),
-        sa.Column("kind", sa.String(8), nullable=False),         # bank | card
-        sa.Column("issuer", sa.String(32), nullable=False),
-        sa.Column("external_id", sa.String(64), nullable=False),
-        sa.Column("display_name", sa.String(128), nullable=False),
-        sa.Column("cardholder_name", sa.String(128), nullable=True),
+        sa.Column("kind", sa.String(length=8), nullable=False),         # bank | card
+        sa.Column("issuer", sa.String(length=32), nullable=False),
+        sa.Column("external_id", sa.String(length=64), nullable=False),
+        sa.Column("display_name", sa.String(length=128), nullable=False),
+        sa.Column("cardholder_name", sa.String(length=128), nullable=True),
         sa.Column("active", sa.Boolean, nullable=False, server_default=sa.true()),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False,
                   server_default=sa.func.now()),
@@ -40,7 +40,7 @@ def upgrade() -> None:
     op.create_table(
         "expense_statements",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-        sa.Column("user_id", sa.String(64),
+        sa.Column("user_id", sa.String(length=64),
                   sa.ForeignKey("users.id", ondelete="CASCADE"),
                   nullable=False),
         sa.Column("source_id", sa.Integer,
@@ -54,9 +54,9 @@ def upgrade() -> None:
         sa.Column("charge_date", sa.Date, nullable=True),
         sa.Column("declared_total_nis", sa.Numeric(12, 2), nullable=True),
         sa.Column("parsed_total_nis", sa.Numeric(12, 2), nullable=False),
-        sa.Column("parser_name", sa.String(32), nullable=False),
-        sa.Column("parser_version", sa.String(16), nullable=False),
-        sa.Column("status", sa.String(8), nullable=False),       # parsed | failed | partial
+        sa.Column("parser_name", sa.String(length=32), nullable=False),
+        sa.Column("parser_version", sa.String(length=16), nullable=False),
+        sa.Column("status", sa.String(length=8), nullable=False),       # parsed | failed | partial
         sa.Column("parse_error", sa.Text, nullable=True),
         sa.Column("ingested_at", sa.DateTime(timezone=True), nullable=False,
                   server_default=sa.func.now()),
@@ -69,12 +69,12 @@ def upgrade() -> None:
     op.create_table(
         "expense_categories",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-        sa.Column("user_id", sa.String(64),
+        sa.Column("user_id", sa.String(length=64),
                   sa.ForeignKey("users.id", ondelete="CASCADE"),
                   nullable=True),                                # NULL = system-default
-        sa.Column("slug", sa.String(64), nullable=False),
-        sa.Column("label_en", sa.String(64), nullable=False),
-        sa.Column("label_he", sa.String(64), nullable=False),
+        sa.Column("slug", sa.String(length=64), nullable=False),
+        sa.Column("label_en", sa.String(length=64), nullable=False),
+        sa.Column("label_he", sa.String(length=64), nullable=False),
         sa.Column("parent_id", sa.Integer,
                   sa.ForeignKey("expense_categories.id", ondelete="SET NULL"),
                   nullable=True),
@@ -90,7 +90,7 @@ def upgrade() -> None:
     op.create_table(
         "expense_transactions",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-        sa.Column("user_id", sa.String(64),
+        sa.Column("user_id", sa.String(length=64),
                   sa.ForeignKey("users.id", ondelete="CASCADE"),
                   nullable=False),
         sa.Column("statement_id", sa.Integer,
@@ -101,18 +101,18 @@ def upgrade() -> None:
                   nullable=False),
         sa.Column("occurred_on", sa.Date, nullable=False),
         sa.Column("posted_on", sa.Date, nullable=True),
-        sa.Column("merchant_raw", sa.String(512), nullable=False),
-        sa.Column("merchant_normalized", sa.String(512), nullable=False),
+        sa.Column("merchant_raw", sa.String(length=512), nullable=False),
+        sa.Column("merchant_normalized", sa.String(length=512), nullable=False),
         sa.Column("amount_nis", sa.Numeric(12, 2), nullable=False),
         sa.Column("amount_orig", sa.Numeric(12, 2), nullable=True),
-        sa.Column("currency_orig", sa.String(3), nullable=True),
-        sa.Column("direction", sa.String(8), nullable=False),    # debit | credit
-        sa.Column("tx_type", sa.String(16), nullable=False),     # regular | standing_order | installment | refund
-        sa.Column("reference", sa.String(64), nullable=True),
+        sa.Column("currency_orig", sa.String(length=3), nullable=True),
+        sa.Column("direction", sa.String(length=8), nullable=False),    # debit | credit
+        sa.Column("tx_type", sa.String(length=16), nullable=False),     # regular | standing_order | installment | refund
+        sa.Column("reference", sa.String(length=64), nullable=True),
         sa.Column("category_id", sa.Integer,
                   sa.ForeignKey("expense_categories.id", ondelete="SET NULL"),
                   nullable=True),
-        sa.Column("category_source", sa.String(32), nullable=True),
+        sa.Column("category_source", sa.String(length=32), nullable=True),
         sa.Column("category_confidence", sa.Numeric(3, 2), nullable=True),
         sa.Column("is_card_payment", sa.Boolean, nullable=False,
                   server_default=sa.false()),
@@ -137,16 +137,16 @@ def upgrade() -> None:
     op.create_table(
         "merchant_category_cache",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-        sa.Column("user_id", sa.String(64),
+        sa.Column("user_id", sa.String(length=64),
                   sa.ForeignKey("users.id", ondelete="CASCADE"),
                   nullable=False),
-        sa.Column("merchant_pattern", sa.String(512), nullable=False),
+        sa.Column("merchant_pattern", sa.String(length=512), nullable=False),
         sa.Column("is_regex", sa.Boolean, nullable=False,
                   server_default=sa.false()),
         sa.Column("category_id", sa.Integer,
                   sa.ForeignKey("expense_categories.id", ondelete="CASCADE"),
                   nullable=False),
-        sa.Column("source", sa.String(16), nullable=False),      # issuer_seed | llm | user
+        sa.Column("source", sa.String(length=16), nullable=False),      # issuer_seed | llm | user
         sa.Column("confidence", sa.Numeric(3, 2), nullable=False),
         sa.Column("hit_count", sa.Integer, nullable=False, server_default="0"),
         sa.Column("last_hit_at", sa.DateTime(timezone=True), nullable=True),
@@ -162,11 +162,11 @@ def upgrade() -> None:
     op.create_table(
         "expense_review_queue",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
-        sa.Column("user_id", sa.String(64),
+        sa.Column("user_id", sa.String(length=64),
                   sa.ForeignKey("users.id", ondelete="CASCADE"),
                   nullable=False),
-        sa.Column("kind", sa.String(32), nullable=False),
-        sa.Column("status", sa.String(16), nullable=False,
+        sa.Column("kind", sa.String(length=32), nullable=False),
+        sa.Column("status", sa.String(length=16), nullable=False,
                   server_default="open"),                         # open | acknowledged | resolved | dismissed
         sa.Column("payload_json", sa.Text, nullable=False),
         sa.Column("related_tx_id", sa.Integer,
