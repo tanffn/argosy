@@ -109,15 +109,16 @@ def isracard_oracle(path: Path) -> GroundTruth:
     credits = 0.0
     for _, row in data.iterrows():
         tx_amount = _to_float(row[2])              # סכום עסקה
-        # סכום חיוב in column 4. If the original currency is NIS, that's our
-        # number directly; if foreign (e.g., USD), col 4 still shows foreign,
-        # so we fall back to סכום חיוב = col 4 with currency col 5 check.
-        charge_nis = _to_float(row[4]) if str(row[5]).strip() == "₪" else None
-        amount = charge_nis if charge_nis is not None else tx_amount
-        if tx_amount < 0 or amount < 0:
-            credits += abs(amount)
+        # NIS-only sums (Bug 2 part 1): foreign rows are excluded — the parser
+        # stores amount_nis=None for them and downstream FX conversion is
+        # responsible for any NIS-equivalent rendering. Oracle mirrors that.
+        if str(row[5]).strip() != "₪":
+            continue
+        charge_nis = _to_float(row[4])
+        if tx_amount < 0 or charge_nis < 0:
+            credits += abs(charge_nis)
         else:
-            debits += abs(amount)
+            debits += abs(charge_nis)
     return GroundTruth(
         row_count=int(len(data)),
         sum_debits_nis=round(debits, 2),

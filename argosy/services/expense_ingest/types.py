@@ -36,7 +36,7 @@ class NormalizedTransaction(BaseModel):
     posted_on: date | None = None
     merchant_raw: str
     merchant_normalized: str
-    amount_nis: float                          # always positive
+    amount_nis: float | None = None            # always positive; None for foreign rows
     amount_orig: float | None = None
     currency_orig: str | None = None           # 'USD' / 'EUR' / None
     direction: Direction

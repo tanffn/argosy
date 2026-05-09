@@ -84,8 +84,10 @@ def test_isracard_parser_handles_usd_row():
                if "NAME-CHEAP" in t.merchant_raw)
     assert usd.currency_orig == "USD"
     assert usd.amount_orig == 12.18
-    # NIS-approximation must be set (we use a fallback constant in tests)
-    assert usd.amount_nis > 0
+    # Bug 2 (part 1): foreign rows must NOT carry a NIS amount — downstream
+    # FX conversion (argosy.services.fx) is responsible for NIS-equivalent
+    # rendering. Storing the raw foreign amount as `amount_nis` was the bug.
+    assert usd.amount_nis is None
 
 
 def test_isracard_parser_detects_refund():

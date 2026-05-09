@@ -143,15 +143,13 @@ def parse(path: Path) -> ParseResult:
                 pass
         extras = "" if pd.isna(row[7]) else str(row[7])
 
-        # amount_nis: use NIS charge amount (col 4) when charge currency is NIS;
-        # otherwise use the original transaction amount (col 2) as a proxy.
-        # This matches the oracle's formula: col4 when col5=='₪', else col2.
-        # The _USD_NIS_FALLBACK is available for orchestrator FX conversion but
-        # is not applied here so debit/credit sums stay within oracle tolerance.
+        # amount_nis carries actual NIS only — never a foreign-amount stand-in.
+        # Foreign rows preserve original amount in `amount_orig`/`currency_orig`;
+        # downstream code converts on demand via `argosy.services.fx`.
         if charge_ccy == "NIS":
-            amount_nis = abs(charge_amount)
+            amount_nis: float | None = abs(charge_amount)
         else:
-            amount_nis = abs(tx_amount)
+            amount_nis = None
 
         # Direction + tx_type derivation
         is_refund = tx_amount < 0

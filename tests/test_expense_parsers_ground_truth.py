@@ -48,10 +48,12 @@ def test_leumi_parser_conservation(leumi_samples):
     for p in leumi_samples:
         truth = leumi_oracle(p)
         result = parse(p)
+        # NIS-only sums (Bug 2 part 1): rows with amount_nis IS NULL (foreign)
+        # are excluded — the oracle mirrors this exclusion.
         debits = sum(t.amount_nis for t in result.transactions
-                     if t.direction == "debit")
+                     if t.direction == "debit" and t.amount_nis is not None)
         credits = sum(t.amount_nis for t in result.transactions
-                      if t.direction == "credit")
+                      if t.direction == "credit" and t.amount_nis is not None)
         assert len(result.transactions) == truth.row_count, (
             f"{p.name}: row count drift parser={len(result.transactions)} "
             f"oracle={truth.row_count}"
@@ -78,10 +80,11 @@ def test_isracard_parser_conservation(isracard_samples):
     for p in isracard_samples:
         truth = isracard_oracle(p)
         result = parse(p)
+        # NIS-only sums (Bug 2 part 1): foreign rows have amount_nis=None.
         debits = sum(t.amount_nis for t in result.transactions
-                     if t.direction == "debit")
+                     if t.direction == "debit" and t.amount_nis is not None)
         credits = sum(t.amount_nis for t in result.transactions
-                      if t.direction == "credit")
+                      if t.direction == "credit" and t.amount_nis is not None)
         assert len(result.transactions) == truth.row_count, (
             f"{p.name}: row count drift {len(result.transactions)} vs {truth.row_count}"
         )
@@ -112,10 +115,12 @@ def test_max_parser_conservation(max_samples):
     for p in max_samples:
         truth = max_oracle(p)
         result = parse(p)
+        # NIS-only sums (Bug 2 part 1) — currently Max parser pre-converts
+        # foreign charges so amount_nis is always non-None, but guard anyway.
         debits = sum(t.amount_nis for t in result.transactions
-                     if t.direction == "debit")
+                     if t.direction == "debit" and t.amount_nis is not None)
         credits = sum(t.amount_nis for t in result.transactions
-                      if t.direction == "credit")
+                      if t.direction == "credit" and t.amount_nis is not None)
         assert len(result.transactions) == truth.row_count, (
             f"{p.name}: row count {len(result.transactions)} vs {truth.row_count}"
         )
@@ -139,10 +144,12 @@ def test_discount_parser_conservation(discount_samples):
     for p in discount_samples:
         truth = discount_oracle(p)
         result = parse(p)
+        # NIS-only sums (Bug 2 part 1) — Discount parser stores converted NIS,
+        # but guard for forward-compat.
         debits = sum(t.amount_nis for t in result.transactions
-                     if t.direction == "debit")
+                     if t.direction == "debit" and t.amount_nis is not None)
         credits = sum(t.amount_nis for t in result.transactions
-                      if t.direction == "credit")
+                      if t.direction == "credit" and t.amount_nis is not None)
         assert len(result.transactions) == truth.row_count, (
             f"{p.name}: row count {len(result.transactions)} vs {truth.row_count}"
         )

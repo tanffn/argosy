@@ -21,11 +21,19 @@ from argosy.state.models import ExpenseStatement, ExpenseTransaction
 
 
 def _content_key(statement_id: int, tx: NormalizedTransaction) -> str:
+    # Foreign rows have amount_nis=None (Bug 2 fix); fall back to amount_orig +
+    # currency_orig so the dedup hash is still stable across re-ingests.
+    if tx.amount_nis is not None:
+        amt_part = f"{tx.amount_nis:.2f}"
+    elif tx.amount_orig is not None:
+        amt_part = f"{tx.amount_orig:.2f}{tx.currency_orig or ''}"
+    else:
+        amt_part = ""
     parts = [
         str(statement_id),
         tx.occurred_on.isoformat(),
         tx.merchant_raw,
-        f"{tx.amount_nis:.2f}",
+        amt_part,
         tx.reference or "",
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
@@ -83,13 +91,27 @@ def persist_transactions(
         if key in seen_keys:
             continue
         seen_keys.add(key)
-        existing = session.query(ExpenseTransaction).filter_by(
+        # Dedup query: foreign rows have amount_nis IS NULL — match on
+        # (amount_orig, currency_orig) instead so re-ingest is idempotent.
+        q = session.query(ExpenseTransaction).filter_by(
             statement_id=stmt.id, occurred_on=tx.occurred_on,
             merchant_raw=tx.merchant_raw,
-        ).filter(
-            ExpenseTransaction.amount_nis == Decimal(str(tx.amount_nis)),
-            ExpenseTransaction.reference == tx.reference,
-        ).first()
+        ).filter(ExpenseTransaction.reference == tx.reference)
+        if tx.amount_nis is not None:
+            q = q.filter(
+                ExpenseTransaction.amount_nis == Decimal(str(tx.amount_nis))
+            )
+        else:
+            q = q.filter(ExpenseTransaction.amount_nis.is_(None))
+            if tx.amount_orig is not None:
+                q = q.filter(
+                    ExpenseTransaction.amount_orig
+                    == Decimal(str(tx.amount_orig))
+                )
+                q = q.filter(
+                    ExpenseTransaction.currency_orig == tx.currency_orig
+                )
+        existing = q.first()
         if existing is not None:
             continue
         row = ExpenseTransaction(
@@ -97,7 +119,8 @@ def persist_transactions(
             occurred_on=tx.occurred_on, posted_on=tx.posted_on,
             merchant_raw=tx.merchant_raw,
             merchant_normalized=tx.merchant_normalized,
-            amount_nis=Decimal(str(tx.amount_nis)),
+            amount_nis=Decimal(str(tx.amount_nis))
+                if tx.amount_nis is not None else None,
             amount_orig=Decimal(str(tx.amount_orig))
                 if tx.amount_orig is not None else None,
             currency_orig=tx.currency_orig,

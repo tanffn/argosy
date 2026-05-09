@@ -192,10 +192,12 @@ def verify_file(
 
     truth = oracle(path)
     result = parser(path)
+    # Foreign rows have amount_nis=None (Bug 2 fix); they are excluded from
+    # the NIS-only debit/credit oracle reconciliation.
     debits = sum(t.amount_nis for t in result.transactions
-                 if t.direction == "debit")
+                 if t.direction == "debit" and t.amount_nis is not None)
     credits = sum(t.amount_nis for t in result.transactions
-                  if t.direction == "credit")
+                  if t.direction == "credit" and t.amount_nis is not None)
 
     typer.echo(f"File:    {path}")
     typer.echo(f"Format:  {fmt.value}")

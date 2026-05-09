@@ -276,3 +276,26 @@ def test_bug3_orchestrator_raises_on_account_mismatch(alembic_engine_at_head):
         s.add(f); s.commit()
         with pytest.raises(ValueError, match="Leumi account mismatch"):
             ingest_user_file(s, "ariel", f.id)
+
+
+def test_bug2_isracard_foreign_row_amount_nis_is_none():
+    """Bug 2 (part 1) — Isracard parser stores amount_nis=None for non-NIS
+    rows (was: stored the raw foreign amount as if it were NIS).
+    """
+    from pathlib import Path
+    from argosy.services.expense_ingest.parsers import isracard
+
+    fixtures = Path(__file__).parent.parent.parent / "fixtures" / "expenses"
+    src = fixtures / "isracard_minimal.xlsx"
+    if not src.exists():
+        import pytest
+        pytest.skip("isracard_minimal fixture not present")
+    result = isracard.parse(src)
+    foreign_rows = [t for t in result.transactions if t.currency_orig is not None]
+    assert foreign_rows, "fixture has no foreign rows — adjust fixture"
+    for tx in foreign_rows:
+        assert tx.amount_nis is None, (
+            f"foreign row stored amount_nis={tx.amount_nis} (expected None)"
+        )
+        assert tx.amount_orig is not None
+        assert tx.currency_orig in {"USD", "EUR", "GBP"}
