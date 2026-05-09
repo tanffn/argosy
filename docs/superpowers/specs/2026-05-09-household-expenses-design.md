@@ -1316,9 +1316,192 @@ The CLI is idempotent: re-running on the same directory produces zero new rows.
 
 ## 17. Test strategy
 
-### 17.1 Unit (parsers)
+### 17.1 Deterministic ground-truth (conservation) tests — non-negotiable
 
-Each parser gets a fixture-driven unit test in `tests/test_expense_ingest_parsers.py`:
+The other test layers below either use synthesized fixtures (unit) or live LLM (eval). Neither catches a *real* parser regression: "did we drop a row, double-count a row, or mis-sum a column on Ariel's actual May 2026 statement?" This sub-section is the test layer that does, and it must hold green at all times — no LLM, no fixture, no flake. Inspired directly by user feedback:
+
+> *I want a deterministic test — a simple script that says there are X lines and Y value, then we expect our pipeline to process X lines and return ~Y value.*
+
+#### 17.1.1 The oracle
+
+`tests/expense_ground_truth.py` — independent of `argosy.services.expense_ingest`. For a given file, it computes `(row_count, sum_debits_nis, sum_credits_nis, declared_total_nis)` straight from the raw spreadsheet cells using pandas, with zero awareness of our parser logic. Per-issuer oracles:
+
+```python
+def leumi_oracle(path: Path) -> GroundTruth:
+    tables = pd.read_html(path, encoding='utf-8')
+    tx = max(tables, key=lambda t: t.shape[0])  # transactions table
+    data = tx.iloc[2:]  # skip 2 header rows
+    data = data.dropna(subset=[0])  # drop blank separators
+    debits = pd.to_numeric(data[4], errors='coerce').fillna(0).sum()
+    credits = pd.to_numeric(data[5], errors='coerce').fillna(0).sum()
+    return GroundTruth(
+        row_count=len(data),
+        sum_debits_nis=round(float(debits), 2),
+        sum_credits_nis=round(float(credits), 2),
+        declared_total_nis=None,   # Leumi doesn't print a "spend total" footer
+    )
+
+def isracard_oracle(path: Path) -> GroundTruth:
+    df = pd.read_excel(path, sheet_name='פירוט עסקאות', header=None)
+    declared = _parse_amount(df.iat[4, 7])   # row 4 col 7: ₪3,319.44
+    data = df.iloc[13:]
+    data = data[data[0].notna()]
+    debits  = data[data[2] >= 0][4].sum()    # col 4 = סכום חיוב; positive = debit
+    credits = -data[data[2] < 0][4].sum()    # negative tx amounts are refunds
+    return GroundTruth(
+        row_count=len(data),
+        sum_debits_nis=round(float(debits), 2),
+        sum_credits_nis=round(float(credits), 2),
+        declared_total_nis=declared,
+    )
+
+def max_oracle(path: Path) -> GroundTruth:
+    xl = pd.ExcelFile(path)
+    sheet = next(s for s in xl.sheet_names if s.startswith('לאומי לישראל'))
+    df = pd.read_excel(path, sheet_name=sheet, header=None)
+    declared = _extract_total_from_header_row(str(df.iat[2, 0]))   # "...654.88 ₪"
+    data = df.iloc[4:]
+    data = data[data[0].notna()]
+    debits  = data[data[3] >= 0][3].sum()    # col 3 = סכום חיוב
+    credits = -data[data[3] < 0][3].sum()
+    return GroundTruth(
+        row_count=len(data),
+        sum_debits_nis=round(float(debits), 2),
+        sum_credits_nis=round(float(credits), 2),
+        declared_total_nis=declared,
+    )
+```
+
+The oracle is intentionally simple — if it has a bug, it'll be obvious from reading. It's the canonical "what the file actually says" computation.
+
+#### 17.1.2 Parser conservation tests
+
+`tests/test_expense_parsers_ground_truth.py` — runs each parser against real sample files and asserts the parsed output matches the oracle:
+
+```python
+@pytest.mark.parametrize('path,oracle_fn', GROUND_TRUTH_FILES)
+def test_parser_matches_oracle(path, oracle_fn):
+    truth = oracle_fn(path)
+    result = orchestrator.parse_file(path)         # our parser
+    parsed_debits  = sum(t.amount_nis for t in result.transactions if t.direction == 'debit')
+    parsed_credits = sum(t.amount_nis for t in result.transactions if t.direction == 'credit')
+
+    assert len(result.transactions) == truth.row_count, (
+        f"row count drift: parser={len(result.transactions)} oracle={truth.row_count}")
+    assert abs(parsed_debits - truth.sum_debits_nis) < 1.00
+    assert abs(parsed_credits - truth.sum_credits_nis) < 1.00
+
+    # When the issuer prints a footer total, parsed_total must reconcile:
+    if truth.declared_total_nis is not None:
+        assert abs(result.statement.parsed_total_nis - truth.declared_total_nis) < 50.00, (
+            f"parsed total {result.statement.parsed_total_nis} drifted from issuer "
+            f"declared {truth.declared_total_nis} by more than ₪50")
+```
+
+`GROUND_TRUTH_FILES` is parameterized over the user's real samples (gitignored — paths configured via env var `ARGOSY_EXPENSE_SAMPLES_ROOT` so the test is opt-in on developer machines without the data and **mandatory** in any CI environment that has access). For each issuer, at least:
+
+```
+GROUND_TRUTH_FILES = [
+  # (path, oracle_fn)
+  (..../2026/Leumi/leumi_2026_May_Osh.xls,  leumi_oracle),
+  (..../2025/Leumi/leumi_2025_Osh.xls,       leumi_oracle),
+  (..../2026/1266/1266_04_2026.xlsx,         isracard_oracle),
+  (..../2026/1266/1266_03_2026.xlsx,         isracard_oracle),
+  (..../2025/1266/1266_12_2025.xlsx,         isracard_oracle),
+  (..../2026/6225/Apr.xlsx,                  max_oracle),
+  (..../2026/6225/Mar.xlsx,                  max_oracle),
+  (..../2025/6225/Dec.xlsx,                  max_oracle),
+]
+```
+
+Tolerance choices:
+- **Row count: exact.** Drift means a row was dropped or duplicated — always a regression.
+- **Debit/credit sums: ±₪1.** Allows for floating-point noise; flags real arithmetic bugs.
+- **Issuer declared total: ±₪50.** Looser because card statements sometimes include annual fees / FX adjustments in the footer that don't appear as their own transaction row. Wider drift means we're materially mis-summing.
+
+Any tolerance breach is a P0 — parsers must be exact-conservation under normal operation.
+
+#### 17.1.3 Pipeline invariants (LLM-independent)
+
+`tests/test_expense_pipeline_invariants.py` — runs the full ingest pipeline (parse → correlate → categorize → refund-match) end-to-end on a fixture corpus, then asserts conservation properties that hold *regardless of what the LLM picks for categories*:
+
+```python
+def test_total_spend_sums_through_categorization():
+    """Sum of amounts is preserved across categorization."""
+    ingest_corpus(fixture_corpus)
+    by_cat = session.execute(text("""
+        SELECT category_id, SUM(amount_nis) FROM expense_transactions
+        WHERE direction = 'debit' AND is_card_payment = FALSE
+        GROUP BY category_id
+    """)).all()
+    raw_total = session.execute(text("""
+        SELECT SUM(amount_nis) FROM expense_transactions
+        WHERE direction = 'debit' AND is_card_payment = FALSE
+    """)).scalar()
+    assert abs(sum(v for _, v in by_cat) - raw_total) < 0.01
+
+def test_card_payment_dedup_is_real():
+    """A bank's card-payment row never double-counts itemized card spend."""
+    ingest_corpus(fixture_corpus_with_correlation)
+    bank_card_payments = session.execute(text("""
+        SELECT amount_nis FROM expense_transactions
+        WHERE is_card_payment = TRUE
+    """)).scalars().all()
+    matched_card_totals = session.execute(text("""
+        SELECT SUM(amount_nis) FROM expense_transactions et
+        JOIN expense_statements s ON s.id = et.statement_id
+        WHERE et.direction = 'debit'
+          AND s.id IN (SELECT matched_statement_id FROM expense_transactions
+                       WHERE is_card_payment = TRUE)
+    """)).scalar()
+    # The bank-line sum and the corresponding card-itemized sum must match
+    # within tolerance — that's exactly what 'this bank line equals that
+    # card statement' means.
+    assert abs(sum(bank_card_payments) - matched_card_totals) < 50.00
+
+def test_refunds_offset_within_category():
+    """A refund linked via refund_of_id sits in the same category as its
+    debit; net category sum reflects the offset."""
+    ingest_corpus(fixture_corpus_with_refunds)
+    refunds = session.execute(text("""
+        SELECT et.category_id, et.refund_of_id, et.amount_nis,
+               prior.category_id AS prior_cat
+        FROM expense_transactions et
+        JOIN expense_transactions prior ON prior.id = et.refund_of_id
+    """)).all()
+    for r in refunds:
+        assert r.category_id == r.prior_cat, (
+            f"refund {r} did not inherit prior debit's category")
+```
+
+These pass even when the LLM categorizer is mocked or stubbed — they verify the *plumbing*, not the model's judgment.
+
+#### 17.1.4 Verify-file CLI
+
+`argosy admin expenses-verify-file <path> [--verbose]` prints oracle vs. parser side-by-side for one file. Used during parser development (especially when implementing Cal/Amex/Diners parsers later) and as a forensic tool when a user reports "the dashboard shows the wrong total for May":
+
+```
+$ argosy admin expenses-verify-file 2026/1266/1266_04_2026.xlsx
+File:                .../2026/1266/1266_04_2026.xlsx
+Format:              isracard
+Oracle:
+  rows               28
+  sum_debits         3319.44
+  sum_credits        0.00
+  declared_total     3319.44
+Parser:
+  rows               28      ✓
+  sum_debits         3319.44 ✓
+  sum_credits        0.00    ✓
+  parsed_total       3319.44 ✓ (vs declared 3319.44)
+Status: PASS
+```
+
+If any cell mismatches, the CLI exits non-zero and prints the diff line-by-line. Cheap to run; honest about what's wrong.
+
+### 17.2 Unit (parsers)
+
+Each parser also gets a fixture-driven unit test in `tests/test_expense_ingest_parsers.py`:
 
 - `tests/fixtures/expenses/leumi_osh_minimal.xls` — synthesized 5-row HTML mimicking the real export.
 - `tests/fixtures/expenses/isracard_minimal.xlsx` — 5 rows including USD + standing-order + refund.
@@ -1331,7 +1514,7 @@ Tests assert:
 - Hebrew normalization round-trips.
 - Issuer-category mapping (`ענף` → slug) is correct or routes to LLM hint.
 
-### 17.2 Integration (correlation + categorization + report)
+### 17.3 Integration (correlation + categorization + report)
 
 `tests/test_expense_ingest_integration.py`:
 
@@ -1342,7 +1525,7 @@ Tests assert:
 - Assert `HouseholdBudgetReport` produces expected `monthly_avg_by_category` (deterministic given fixture).
 - Assert the LLM categorizer is called with the right batch shape (mock the agent).
 
-### 17.3 LLM eval (live)
+### 17.4 LLM eval (live)
 
 `tests/test_household_categorizer_e2e.py`, marked `@pytest.mark.llm_eval`:
 
@@ -1353,14 +1536,14 @@ Tests assert:
 
 - Build a 12-month fixture corpus; run `HouseholdBudgetAnalystAgent` live; assert structural properties on the report (presence of all sections, all derived fields populated, `coverage_gaps=[]` when fixture is complete).
 
-### 17.4 Property-based
+### 17.5 Property-based
 
 `tests/test_expense_aggregation_properties.py` (Hypothesis):
 
 - For random transaction sets, `sum(monthly_summary) == sum(transactions where direction=debit AND not is_card_payment)` minus refund offsets.
 - Anomaly detection produces deterministic output given identical input twice.
 
-### 17.5 UI
+### 17.6 UI
 
 Manual UI smokes deferred per user preference (SDD binding policy). One Playwright scaffold under `ui/tests/expenses.spec.ts` not wired into CI, available for ad-hoc human verification.
 
@@ -1381,7 +1564,7 @@ This design is large enough to land in waves; suggested split:
 
 | Wave | Scope | Gate |
 |---|---|---|
-| **EX1 — Ingest core** | Migration 0021; Leumi + Isracard + Max parsers; correlator; categorizer (LLM + cache); REST + WS for transactions/categories; backfill CLI; tests | Year of backfill produces reasonable totals; unit + integration + 1 live LLM eval pass |
+| **EX1 — Ingest core** | Migration 0021; Leumi + Isracard + Max parsers; correlator; categorizer (LLM + cache); REST + WS for transactions/categories; backfill CLI; tests | **Deterministic ground-truth tests (§17.1) green on every available real sample** (row counts exact; debit/credit sums within ₪1; parsed totals reconcile to issuer-declared totals within ₪50). Year of backfill produces reasonable totals. Unit + integration + 1 live LLM eval pass. |
 | **EX2 — Anomaly + advisor** | Anomaly detector; expense_review_queue; advisor `gap_driven` integration for spend review; refund matcher; user-override flow | Anomalies produce useful items; user resolves a handful end-to-end |
 | **EX3 — Plan integration** | `HouseholdBudgetAnalystAgent`; synthesizer prompt extension; PlanCritiqueAgent extension; derived_household in user_context; advisor confirm-derived-predictables flow | A monthly synthesis run uses the report; one derived predictable lands in user_context.goals |
 | **EX4 — UI** | `/expenses` page; `<CashFlowTile>` on home; Advisor "Spend review" group; Plan "Cash-flow basis" panel; upload widget | Manual user smoke confirms the surface |
