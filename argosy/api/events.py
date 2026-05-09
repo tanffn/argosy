@@ -5,10 +5,15 @@ Dead-simple in-process broadcaster. The FastAPI WebSocket handler at
 `publish_event(name, payload)`. No external broker — everything is
 single-process for now.
 
-Events emitted in Phase 2:
+Events emitted:
   - `daily_brief.ready` — payload: {brief_id, user_id, run_at}
   - `agent.run.finished` — payload: {agent_role, user_id}
   - `cadence.tick.fired` — payload: {loop, status}
+  - `expense.statement.parsed` — orchestrator success; payload: user_id, statement_id, source_id, parsed_total_nis, status
+  - `expense.statement.failed` — orchestrator parse error; payload: user_id, file_id, parse_error
+  - `expense.source.registered` — first-sight new source; payload: user_id, source_id, kind, issuer, external_id, suggested_cardholder
+  - `expense.recategorized` — user override applied; payload: user_id, merchant_pattern, affected_tx_ids
+  - `expense.budget_report.refreshed` — EX3 hook; payload: user_id, report_id, refreshed_at
 """
 
 from __future__ import annotations

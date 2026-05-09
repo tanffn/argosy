@@ -118,7 +118,18 @@ def ingest_user_file(
 
     parser_name = detect_format(Path(file.storage_path))
     parser_fn = PARSER_DISPATCH[parser_name]
-    result = parser_fn(Path(file.storage_path))
+    try:
+        result = parser_fn(Path(file.storage_path))
+    except Exception as e:
+        try:
+            from argosy.api.events import publish_event_threadsafe
+            publish_event_threadsafe(
+                "expense.statement.failed",
+                {"user_id": user_id, "file_id": file.id, "parse_error": str(e)},
+            )
+        except Exception:
+            pass
+        raise
 
     hint = result.source_hint or _leumi_source_hint(result)
     src = register_or_get_source(session, user_id, hint)
@@ -135,6 +146,21 @@ def ingest_user_file(
     correlations = correlate_for_user(session, user_id)
     resolved = resolve_categories_for_user(session, user_id)
     refunds = match_refunds_for_user(session, user_id)
+
+    try:
+        from argosy.api.events import publish_event_threadsafe
+        publish_event_threadsafe(
+            "expense.statement.parsed",
+            {
+                "user_id": user_id,
+                "statement_id": stmt.id,
+                "source_id": src.id,
+                "parsed_total_nis": float(stmt.parsed_total_nis),
+                "status": stmt.status,
+            },
+        )
+    except Exception:
+        pass     # Best-effort — never fail the ingest because of telemetry
 
     return IngestResult(
         statement_id=stmt.id,
