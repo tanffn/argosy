@@ -1138,7 +1138,7 @@ class ExpenseTransaction(Base):
     posted_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     merchant_raw: Mapped[str] = mapped_column(String(512), nullable=False)
     merchant_normalized: Mapped[str] = mapped_column(String(512), nullable=False)
-    amount_nis: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    amount_nis: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     amount_orig: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     currency_orig: Mapped[str | None] = mapped_column(String(3), nullable=True)
     direction: Mapped[str] = mapped_column(String(8), nullable=False)
