@@ -1,0 +1,196 @@
+/**
+ * Expenses API client. Extends @/lib/api with the EX4 endpoints.
+ */
+
+const BASE =
+  typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL
+    ? process.env.NEXT_PUBLIC_API_URL
+    : "http://localhost:8000";
+
+async function getJSON<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`);
+  return (await res.json()) as T;
+}
+
+async function patchJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`);
+  return (await res.json()) as T;
+}
+
+export interface MonthlyTotalEntry {
+  month: string;
+  totals_by_currency: Record<string, number>;
+  transaction_count: number;
+}
+
+export interface CategorySpend {
+  slug: string;
+  label_en: string;
+  total_nis: number;
+  transaction_count: number;
+  percent: number;
+}
+
+export interface MerchantSpend {
+  merchant_normalized: string;
+  merchant_display: string;
+  total_nis: number;
+  transaction_count: number;
+  category_slug: string | null;
+}
+
+export interface AnomalyCard {
+  kind:
+    | "uncategorized"
+    | "novel_merchant"
+    | "large_outlier"
+    | "fee_waiver_missed"
+    | "conservation_gap";
+  severity: "red" | "yellow" | "info";
+  message: string;
+  detail?: string | null;
+  link?: string | null;
+}
+
+export interface SourceHealthEntry {
+  source_id: number;
+  display_name: string;
+  issuer: string;
+  external_id: string;
+  last_period: string | null;
+  parsed_total_nis: number | null;
+  declared_total_nis: number | null;
+  gap: number | null;
+  status: "green" | "yellow" | "red" | "unknown";
+  statement_count: number;
+  correlated_card_payments: number;
+}
+
+export interface DashboardOverview {
+  months: MonthlyTotalEntry[];
+  current_month_top_categories: CategorySpend[];
+  top_merchants_current_month: MerchantSpend[];
+  anomalies: AnomalyCard[];
+  sources_health: SourceHealthEntry[];
+  fx_mode: string;
+}
+
+export interface SourceOut {
+  id: number;
+  kind: string;
+  issuer: string;
+  external_id: string;
+  display_name: string;
+  cardholder_name: string | null;
+  active: boolean;
+}
+
+export interface StatementSummary {
+  id: number;
+  period_start: string;
+  period_end: string;
+  parsed_total_nis: number | null;
+  declared_total_nis: number | null;
+  gap: number | null;
+  status: "green" | "yellow" | "red" | "unknown";
+  parser_name: string;
+  parser_version: string;
+  transaction_count: number;
+  correlated_count: number;
+}
+
+export interface SourceDetailResponse {
+  source: SourceOut;
+  statements: StatementSummary[];
+}
+
+export interface TransactionOut {
+  id: number;
+  occurred_on: string;
+  merchant_raw: string;
+  amount_nis: number | null;
+  amount_orig: number | null;
+  currency_orig: string | null;
+  direction: "debit" | "credit";
+  tx_type: string;
+  category_slug: string | null;
+  category_source: string | null;
+  is_card_payment: boolean;
+  source_id: number;
+}
+
+export interface TransactionsResponse {
+  transactions: TransactionOut[];
+  total: number;
+}
+
+export interface CategoryOut {
+  id: number;
+  slug: string;
+  label_en: string;
+  label_he: string;
+  parent_slug: string | null;
+  is_excluded_from_spend: boolean;
+  is_inflow: boolean;
+}
+
+export interface CategoriesResponse {
+  categories: CategoryOut[];
+}
+
+export interface SourcesResponse {
+  sources: SourceOut[];
+}
+
+export const expensesApi = {
+  dashboardOverview: (userId: string, months = 12, fx: "per_currency" | "nis" = "per_currency") =>
+    getJSON<DashboardOverview>(
+      `/api/expenses/dashboard-overview?user_id=${encodeURIComponent(userId)}&months=${months}&fx=${fx}`,
+    ),
+  sources: (userId: string) =>
+    getJSON<SourcesResponse>(
+      `/api/expenses/sources?user_id=${encodeURIComponent(userId)}`,
+    ),
+  sourceDetail: (sourceId: number, userId: string) =>
+    getJSON<SourceDetailResponse>(
+      `/api/expenses/source-detail/${sourceId}?user_id=${encodeURIComponent(userId)}`,
+    ),
+  transactions: (userId: string, params: Partial<{
+    from_date: string;
+    to_date: string;
+    category: string;
+    source_id: number;
+    direction: "debit" | "credit";
+    include_card_payments: boolean;
+    search: string;
+    limit: number;
+    offset: number;
+  }> = {}) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== "")
+        qs.set(k, String(v));
+    }
+    return getJSON<TransactionsResponse>(`/api/expenses/transactions?${qs.toString()}`);
+  },
+  categories: (userId: string) =>
+    getJSON<CategoriesResponse>(
+      `/api/expenses/categories?user_id=${encodeURIComponent(userId)}`,
+    ),
+  patchTransactionCategory: (txId: number, userId: string, slug: string) =>
+    patchJSON<{
+      transaction_id: number;
+      category_slug: string;
+      category_source: string;
+      affected_count: number;
+    }>(`/api/expenses/transactions/${txId}`, {
+      user_id: userId,
+      category_slug: slug,
+    }),
+};
