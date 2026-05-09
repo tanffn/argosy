@@ -74,9 +74,10 @@ def leumi_oracle(path: Path) -> GroundTruth:
 def isracard_oracle(path: Path) -> GroundTruth:
     """Isracard ``פירוט עסקאות`` export.
 
-    Sheet header at row 12; data from row 13. Header columns:
-    תאריך רכישה | שם בית עסק | סכום עסקה | מטבע עסקה |
-    סכום חיוב | מטבע חיוב | מס' שובר | פירוט נוסף.
+    The header row carries תאריך רכישה | שם בית עסק | סכום עסקה | מטבע עסקה |
+    סכום חיוב | מטבע חיוב | מס' שובר | פירוט נוסף. The header's *index* is not
+    fixed — most files put it at row 12, but some have it at row 11 (when the
+    metadata block has fewer lines). We locate it dynamically.
 
     The declared total appears at row 4 col 7 in NIS.
     """
@@ -85,11 +86,21 @@ def isracard_oracle(path: Path) -> GroundTruth:
     declared_match = _NIS_NUM.search(declared_str.replace(",", ""))
     declared = float(declared_match.group()) if declared_match else None
 
-    # Row 12 is the header; rows 13+ are transactions.
+    # Locate the header row dynamically — col 0 == 'תאריך רכישה'. Hardcoding
+    # row 13 silently dropped the first transaction in files where the header
+    # sat at row 11.
+    header_idx = next(
+        (i for i in range(min(20, len(df)))
+         if str(df.iat[i, 0]).strip() == "תאריך רכישה"),
+        None,
+    )
+    if header_idx is None:
+        raise ValueError(f"Isracard oracle: header row not found in {path}")
+
     # Keep only rows whose col 0 looks like a date string (dd.mm.yy). This
-    # filters out both NaN rows and the trailing legal-disclaimer row that
-    # Isracard appends after the data block with a long string in col 0.
-    data = df.iloc[13:].copy()
+    # filters NaN rows AND the trailing legal-disclaimer row Isracard appends
+    # after the data block with a long string in col 0.
+    data = df.iloc[header_idx + 1:].copy()
     data = data[
         data[0].apply(lambda v: bool(_ISRACARD_DATE.match(str(v))) if pd.notna(v) else False)
     ]
