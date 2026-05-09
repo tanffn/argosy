@@ -45,10 +45,10 @@ export function CategoryDonut({ data, height = 280 }: CategoryDonutProps) {
                   ))}
                 </Pie>
                 <Tooltip
-                  formatter={(value: number, _: string, item: { payload: CategorySpend }) => [
+                  formatter={((value: number, _: string, item: { payload: CategorySpend }) => [
                     `${formatNIS(value)} (${formatPercent(item.payload.percent)})`,
                     item.payload.label_en,
-                  ]}
+                  ]) as unknown as never}
                 />
               </PieChart>
             </ResponsiveContainer>

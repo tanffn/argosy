@@ -48,7 +48,7 @@ export function MonthlySpendChart({ data, fxMode, height = 280 }: MonthlySpendCh
             <XAxis dataKey="month" fontSize={11} />
             <YAxis fontSize={11} tickFormatter={(v: number) => formatNIS(v)} />
             <Tooltip
-              formatter={(value: number, name: string) => [formatNIS(value), name]}
+              formatter={((value: number, name: string) => [formatNIS(value), name]) as unknown as never}
               cursor={{ fill: "var(--secondary)", opacity: 0.4 }}
             />
             {ccyOrder.length > 1 && <Legend wrapperStyle={{ fontSize: 12 }} />}
