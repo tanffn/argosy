@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-09 — full SDD audit post-provenance: handover note, §6.14 storage/heuristic/MIME updates, §11.7 provenance endpoints, §8.5 migrations 0019-0020, project-wide gotchas for `catalog_upload` + `record_negotiation_phase`, §17 unchanged from Wave F. |
+| **Last updated** | 2026-05-09 — EX1 (household expenses) audit: §3.6 + §3.8 add `HouseholdCategorizerAgent`, §8.5 adds migration 0021, §11.3 + §11.7 add `expense.*` events + `/api/expenses/*` endpoints, §15.4 documents foreign-currency `amount_nis` + Leumi-account-hardcoding + Discount fee-waiver carve-outs, §18 expanded with the four working parsers + ingest pipeline + REST/CLI surface that landed. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -15,45 +15,47 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-09 by Claude (session post-provenance-merge). This is a time-bounded handover, not architectural doc. Once the deferred work below either lands or is explicitly dropped, future-you should DELETE this section.
+**Last edit:** 2026-05-09 by Claude (session post-EX1). This is a time-bounded handover, not architectural doc. Once the deferred work below either lands or is explicitly dropped, future-you should DELETE this section.
 
 ### Where development is at right now
 
-- `main` HEAD: `1a73528` (`feat(services): accept .tsv chat attachments`).
-- Tests: 805 passing under `pytest -m "not llm_eval"` (3 deselected llm_eval). UI `npx tsc --noEmit` clean. Migrations 0001-0020 applied to the dev DB.
+- `main` HEAD: `eb6fc79` (`fix(expenses-api): sync upload route + Query validation`).
+- Tests: ~926 passing under `pytest -m "not llm_eval"` (a few deselected llm_eval). Migrations 0001-0021 applied. UI `npx tsc --noEmit` clean (last verified pre-EX1; EX1 didn't touch UI).
 - Running services: uvicorn on `127.0.0.1:8000` (check `/api/health` for the live `git_sha`); Next.js dev on `127.0.0.1:1337`.
 - Dev DB lives at `<ARGOSY_HOME>/db/argosy.db` (SQLite, default `ARGOSY_HOME=D:\Projects\financial-advisor`).
 
-### What just landed (provenance system, Waves A-F)
+### Prior-session context (provenance Waves A-F, now durable in §17)
 
-A first-class provenance / accountability layer was built end-to-end:
+Waves A-F built a first-class provenance layer (`user_files` catalog at migration 0019, `decision_phases` at migration 0020, `/api/decisions/{id}/replay` + `/decisions/[id]` UI replay, transcript writer + negotiation recorder). All durable in §17. Deferred provenance items: per-phase plan_synthesis recording (constituent agents don't yet persist agent_reports during synthesis), drawio source for §17 diagrams (mermaid is the canonical visual today), soft-undo for plan-shape ingest. None are EX1 blockers.
 
-- **Wave A** (`8ba2834`) — `user_files` catalog table (migration 0019), `argosy/services/file_catalog.py::catalog_upload` boundary helper, REST surface at `/api/files`, backfill CLI `argosy admin catalog-backfill`. Every user-supplied file (chat attachments, intake plan uploads, intake file-to-text conversions, broker CSV imports) flows through the helper. Sha256 dedup per user; new layout `<ARGOSY_HOME>/uploads/<user_id>/<YYYY>/<YYYY-MM-DD>/<HHMMSS>__<sha8>__<sanitized>`.
-- **Wave B** (`6cb2234`) — `/files` UI page (`ui/src/app/files/page.tsx`) with kind / source / date filters; nav slot between Agents and Audit.
-- **Wave C** (`1c299df`) — `decision_phases` table (migration 0020), `argosy/services/transcript_writer.py` (deterministic TLDR / transcript / mermaid generation per pydantic verdict DTO), `argosy/services/negotiation_recorder.py::record_negotiation_phase`. Wired into the trade flow (5 boundaries: analysts / researcher_debate / trader / risk_team / fund_manager), plan synthesis (1 coarse phase), and amendment dispatcher + workers.
-- **Wave D** (`783e136`) — `GET /api/decisions/{id}/replay` and `GET /api/decisions/{id}/phases/{phase_id}/transcript`.
-- **Wave E** (`e47a444`) — `/decisions/[id]` Replay page with Mermaid sequence diagrams, `<VerdictCard>` typed renderer per DTO, `<MermaidDiagram>` lazy-imported (`mermaid@^11`); `/proposals` detail gets a "view full replay →" deep-link.
-- **Wave F** (`715e307`) — new SDD §17 prose with embedded mermaid diagrams.
-- **`db050de`** — `transcripts/` added to `.gitignore`.
-- **`1a73528`** — `.tsv` added to chat-upload allowlist (was rejecting because browsers send `application/octet-stream` and the extension was missing).
+### What just landed (Wave EX1 — household expenses)
 
-### Deferred / open
+EX1 ingest-core ships behind `/api/expenses/*`. See §18 for the durable description.
 
-These are *intentionally* deferred — not blockers, but the next agent should know they exist before claiming the system is "done":
+- Migration `0021_household_expenses` (six tables; §8.5).
+- 4 working parsers: Leumi current-account (`leumi_osh.py`), Isracard (`isracard.py`), Max (`max.py`), Discount Bank Mastercard (`discount.py`). 3 stubs raising `NotImplementedError`: Cal, Amex, Diners.
+- `HouseholdCategorizerAgent` (Sonnet, batched ~50 tx/call, confidence ≥ 0.85 threshold; §3.6).
+- Ingest pipeline assembles parse → register source → persist → bank↔card correlate (via `אסמכתא` reference column) → resolve categories (cascade) → match refunds (inherit category from prior debit). Idempotent on `user_files.id`.
+- REST: `/api/expenses/{upload, sources, transactions, transactions/{id} (PATCH), categories, monthly-summary}` (§11.7).
+- CLI: `argosy expenses {verify-file, backfill, issuer-coverage}` (`argosy/cli/expenses_admin.py`).
+- WebSocket events: `expense.statement.{parsed,failed}` (§11.3).
+- Conservation tests on the user's real corpus pass: 2 Leumi, 33 Isracard (Ariel + Noga), 17 Max, 2 Discount.
 
-- **Per-phase plan_synthesis recording.** The 5-phase synthesis flow currently records ONE coarse `plan_synthesis` decision_phase row at the end of `run_synthesis`. Per-phase rows (`plan_synth_p1` … `plan_synth_p5`) require the constituent agents (analysts, debaters, synthesizer, risk officers, FM) to persist `agent_reports` rows during synthesis — they don't today. See `argosy/orchestrator/flows/plan_synthesis/orchestrator.py::run_synthesis` (~line 240-300) for the integration site.
-- **drawio source for §17 diagrams.** The §17 mermaid blocks are the canonical visual today. A `docs/design/diagrams/17-provenance-flow.drawio` + PNG export is the matching follow-up; the existing diagrams 00-16 use that pattern.
-- **Soft-undo for plan-shape ingest.** A long pasted `.txt` no longer silently overwrites the wealth plan (post-Wave-5 fix tightened to extension-only). A friendlier UX would offer "I saw this looked like a plan; want me to import it?" before promoting. Currently the user must rename to `.md`.
-- **Decision_phases.seq monotonicity in synthesis ThreadPoolExecutor.** Phase 1 + 2 use thread executors; the recorder is called *after* `as_completed` returns, so seq is monotonic in practice. If a future refactor moves recorder calls inside the executor, that contract breaks. Documented at `argosy/services/negotiation_recorder.py`.
+### Deferred / open (carried into EX2+)
 
-### Pre-existing watch items (carried; not provenance-Wave fault)
+- **Foreign-currency `amount_nis` for non-NIS Isracard rows** stores raw foreign amount, not NIS-converted. Documented in §15.4. Fix at EX2 boundary by FX-converting in both oracle and parser using a shared constant.
+- **Leumi account-number hardcoded** (`"44745280"`) in `orchestrator.py::_leumi_source_hint`. Acceptable for single-user; multi-tenant fix deferred.
+- **Discount Bank fee-waiver flag** — parser preserves both card-fee + discount-rebate rows (does not pre-net); the `recurring_missed` anomaly that flags promo expiry is EX2 work. See `memory/project_card_2923_fee_waiver.md`.
+- **EX2 (anomaly detection + advisor surfacing)**, **EX3 (`HouseholdBudgetAnalystAgent` feeding plan synthesis)**, **EX4 (UI)** all scheduled but not started. Outlines in spec `docs/superpowers/specs/2026-05-09-household-expenses-design.md` §18.2.
+
+### Pre-existing watch items (carried; not EX1 fault)
 
 - **Live LLM e2e tests are flaky** under `claude_code` backend on this machine — `tests/test_plan_distiller_golden.py` and `tests/test_plan_synthesis_e2e.py` show JSON-parsing transients in full-suite runs that share `claude.exe` subprocess state. Pass when run individually.
-- **Manual UI smokes deliberately skipped** by user direction across every wave; backend tests + live LLM e2e are the verification surface. The user has actually exercised some surfaces (advisor chat with images works; .tsv upload was caught only because the user tried it).
+- **Manual UI smokes deliberately skipped** by user direction across every wave; backend tests + live LLM e2e are the verification surface.
 
 ### Open questions / live decisions for next session
 
-- None currently flagged. The user is in active testing of the merged provenance system.
+- None currently flagged. The user is in active testing of the merged EX1 expenses system.
 
 ---
 
@@ -495,6 +497,7 @@ Run on their own cadences; not part of any decision team.
 | **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet |
 | **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts. See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus |
 | **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Sonnet (was Haiku; bumped — see §3.8) |
+| **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions (Wave EX1 — §18). Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Sonnet |
 
 **Decision-team agents (referenced from §3.1–§3.5) — code names for fresh-agent grep**:
 
@@ -531,7 +534,7 @@ Default model per agent role is configurable; user can override at any layer.
 
 **Current defaults** (canonical source: `argosy.agents.base.DEFAULT_MODEL_BY_ROLE`):
 
-- **Sonnet** (`claude-sonnet-4-6`) — every analyst (fundamentals, technical, news, sentiment, macro, concentration, tax, fx), plan-critique, intake / intake_extractor, advisor (subclass of intake), researcher_facilitator, all three risk_officer perspectives, risk_facilitator, plan_distiller, domain_refresh, watchlist.
+- **Sonnet** (`claude-sonnet-4-6`) — every analyst (fundamentals, technical, news, sentiment, macro, concentration, tax, fx), plan-critique, intake / intake_extractor, advisor (subclass of intake), researcher_facilitator, all three risk_officer perspectives, risk_facilitator, plan_distiller, domain_refresh, watchlist, household_categorizer (Wave EX1 — §18).
 - **Opus** (`claude-opus-4-7`) — bull_researcher, bear_researcher (adversarial debate), trader (synthesis under contradiction), fund_manager (final integrity check), audit (weekly post-mortem), plan_synthesizer (monthly/amendment Phase 3).
 
 **Why Haiku is no longer a default.** The original SDD policy slotted Haiku into deterministic formatting roles (technical, sentiment, watchlist, concentration, fx). In practice, Argosy's prompts are heavily structured (multi-question batched intake, citation-required analysts, JSON-schema-constrained outputs). Haiku's instruction-following ceiling could not reliably (a) honor "do not re-ask answered fields" given an explicit ALREADY-ANSWERED list, (b) emit yaml_patch entries that match the canonical key shape, (c) hold the batched-question structure without drift. Sonnet halves the number of turns in practice despite being 2–3× slower per turn, and the "accuracy over LLM cost" policy (memory: `feedback_accuracy_over_cost.md`) explicitly prefers it. Override to Haiku is still possible per-role via `agent_settings.yaml` for cost-sensitive tenants — the pricing entry is preserved in `APPROX_PRICING_USD_PER_MTOK` so historical agent_reports rows still cost-track correctly.
@@ -1528,6 +1531,7 @@ Alembic, linear chain. Each revision is small and rollback-tested.
 | `0018_decision_runs_amendment` | Widens `decision_runs.tier` from `String(4)` NOT NULL to `String(8)` nullable so the column can carry either trade-tier sentinels (`T0`/`T3`) or amendment-tier values (`small`/`medium`/`large`); `decision_kind` discriminates. Adds `decision_runs.notes_json` for free-form replay payloads. Creates partial unique index `ix_decision_runs_one_amendment_running_per_user` (`decision_kind='plan_amendment_chat' AND status='running'`) so a second concurrent amendment per user is rejected at DB level (Wave 4 of plan-distillate work) |
 | `0019_user_files_catalog` | `user_files` table (id, user_id FK, sha256, original_name, sanitized_name, mime_type, kind, size_bytes, storage_path, source, turn_uuid, intake_session_id, plan_version_id FK, decision_run_id FK, created_at, deleted_at). Indexes `(user_id, created_at DESC)` + `(sha256)` + `(intake_session_id)`. Partial unique on `(user_id, sha256) WHERE deleted_at IS NULL` — content-addressed dedup that releases on soft-delete. Adds `plan_versions.source_file_id` FK so a baseline plan points at its catalog row. Wave A of provenance (§17). |
 | `0020_decision_phases` | `decision_phases` table (id, decision_run_id FK CASCADE, user_id FK, seq, kind, started_at, finished_at, participants_json, verdict_json, verdict_kind, tldr_md, bundle_dir, created_at). Indexes `(decision_run_id, seq)` + `(user_id, kind, started_at DESC)`. Adds nullable `agent_reports.phase_id` FK so a participating agent run points back at the phase it ran in. Wave C of provenance (§17). |
+| `0021_household_expenses` | Six tables for the household-expenses subsystem (§18 — Wave EX1): `expense_sources` (bank+card registry, unique on `(user_id, kind, external_id)`), `expense_statements` (per-upload metadata, idempotent on `(user_id, source_id, period_start, period_end)`), `expense_categories` (hierarchical taxonomy, NULL `user_id` = system-default rows copied per-user on first ingest), `expense_transactions` (parsed rows; `is_card_payment` + `matched_statement_id` for bank↔card correlation; `refund_of_id` for refund inheritance; `category_source` ∈ `{user, cache, issuer, llm, inherited_from_refund}`), `merchant_category_cache` (per-user `merchant_pattern → category` cache; `source` ∈ `{user, llm, issuer_seed}`), `expense_review_queue` (anomalies + uncategorized rows pending user review — populated in EX2). |
 
 ### 8.6 Decision audit lineage
 
@@ -1802,10 +1806,12 @@ Mounted at `/ws`; canonical pub/sub at `argosy.api.events`. `publish_event` is t
 | `plan.amendment.completed` | `flows/plan_amendment/{dispatcher,workers}.py` | `user_id`, `decision_run_id`, `tier`, `draft_id` |
 | `plan.amendment.failed` | `flows/plan_amendment/{dispatcher,workers}.py` | `user_id`, `decision_run_id`, `tier`, `error` |
 | `plan.amendment.cancelled` | `flows/plan_amendment/dispatcher.py` (cancel + race), workers (cancel-during-run) | `user_id`, `decision_run_id`, `tier` |
+| `expense.statement.parsed` | `services/expense_ingest/orchestrator.py` (Wave EX1, §18) | `user_id`, `statement_id`, `source_id`, `parsed_total_nis`, `status` |
+| `expense.statement.failed` | `services/expense_ingest/orchestrator.py` | `user_id`, `file_id`, `parse_error` |
 
 **Documented but not yet emitted** (placeholder names in `argosy.api.events` docstring; reserved for Phase-N expansion):
 
-`agent.report.created`, `agent.run.started`, `alert.created`, `alert.cleared`, `position.updated`, `account.balance.changed`, `price.updated` (throttled, visible-tickers only), `plan.critique.updated`, `cadence.tick.fired`.
+`agent.report.created`, `agent.run.started`, `alert.created`, `alert.cleared`, `position.updated`, `account.balance.changed`, `price.updated` (throttled, visible-tickers only), `plan.critique.updated`, `cadence.tick.fired`, `expense.source.registered`, `expense.recategorized` (Wave EX2 — user override broadcast), `expense.budget_report.refreshed` (Wave EX3 — `HouseholdBudgetAnalystAgent` output).
 
 Frontend subscribes selectively per screen: Proposals queue subscribes to `proposal.*`; Portfolio subscribes to `position.*` and `price.*` for visible tickers; the Advisor page subscribes to `plan.*` for amendment + draft updates; etc.
 
@@ -1970,8 +1976,13 @@ All routes mount under `/api` (canonical source: `argosy.api.main.create_app`). 
 | POST | `/api/security/totp/setup` | Begin TOTP enrollment. |
 | POST | `/api/security/totp/verify` | Verify a TOTP code (T3 live second-factor). |
 | GET | `/api/security/totp/status` | Whether the user has TOTP configured. |
-
-WebSocket: `/ws` — see §11.3 for the event inventory.
+| **Household expenses** (Wave EX1 — see §18) | | |
+| POST | `/api/expenses/upload` | Multi-file ingestion. Each file flows through `catalog_upload` then `ingest_user_file`; per-file outcome (status, statement_id, transactions_inserted, correlations_made, categories_resolved, refunds_matched, parser_name, error) reported back. **Sync route** — runs in FastAPI's worker thread so the inner `asyncio.run()` in `HouseholdCategorizerAgent._invoke_llm` doesn't collide with the request event loop (commit `eb6fc79`). |
+| GET | `/api/expenses/sources` | List active `expense_sources` rows for the user (banks + cards registered by past ingests). |
+| GET | `/api/expenses/transactions` | Filterable list. Query: `from_date`, `to_date`, `category` (slug), `source_id`, `direction` (`debit`/`credit`), `include_card_payments` (default false; bank's lump-sum card-payment lines are excluded from spend aggregations because the itemized card statement is the canonical record), `search` (merchant_raw ILIKE), `limit` (default 200, 1..10000), `offset` (default 0, ≥0). |
+| PATCH | `/api/expenses/transactions/{id}` | Body: `{user_id, category_slug}`. User override — sets `category_source='user'`, writes/updates `merchant_category_cache` row, bulk re-buckets every other transaction with the same `merchant_normalized`. Idempotent. |
+| GET | `/api/expenses/categories` | Full taxonomy for the user (system-default rows copied per-user on first ingest). |
+| GET | `/api/expenses/monthly-summary?months=N` | Per-month per-category aggregate. `total_real_spend_nis` excludes `is_card_payment` rows AND categories with `is_excluded_from_spend=TRUE` (transfers/investments/taxes). `total_real_income_nis` sums `direction='credit'` rows in `is_inflow=TRUE` categories. |
 
 ---
 
@@ -2256,6 +2267,9 @@ Items deliberately deferred — listed here so a fresh agent doesn't waste cycle
 - **Manual UI smokes deliberately skipped.** Per user instruction, the harness does not run manual UI smoke tests during automated waves. The Wave 4 e2e Playwright scaffold exists but has not been executed live; the Wave 2 e2e LLM eval is the latest empirically-passing run.
 - **Live LLM evals beyond Wave 2's e2e.** Wave 3 / Wave 4 e2e LLM evals are not yet wired into CI. The unit + structural tests assert the plumbing; the live LLM smoke is human-driven for now.
 - **Two proposal-creation paths.** Speculation-origin proposals use the synchronous `argosy/orchestrator/proposal_lifecycle.py::create_speculative_proposal` helper because the synthesizer has already chosen ticker/size/exit. Trade-flow proposals (analyst → trader → fund-manager pipeline) use the full async `DecisionFlow._persist_proposal`. Consolidation is deferred until the sync helper grows enough features to justify the merge — see §6.12.
+- **Expense-subsystem foreign-currency `amount_nis` for non-NIS rows** (Wave EX1, §18). The Isracard parser stores the *raw foreign* amount in `expense_transactions.amount_nis` for rows where `currency_orig != "NIS"` (e.g. a $12.18 Netflix charge ends up `amount_nis=12.18`, not `~₪45.07`). `amount_orig` + `currency_orig` preserve the original info; downstream consumers (EX2 anomaly detection, EX3 plan integration) must FX-convert at read time. The parser matches the oracle's behavior exactly so conservation tests are tight (±₪1) — fixing this requires updating both oracle and parser to apply a shared `_USD_NIS_FALLBACK` constant. Deferred to EX2 boundary.
+- **Leumi account-number is hardcoded** (Wave EX1). `argosy/services/expense_ingest/orchestrator.py::_leumi_source_hint` returns `external_id="44745280"` — a placeholder that's correct for the single Phase-1 user. The HTML header carries the real account number; extraction is deferred to multi-tenant productization (Phase 6+ or whenever a second Leumi account joins).
+- **Discount Bank fee-waiver pattern not yet flagged.** Card 2923 (Discount Bank Mastercard) has a free-card promotion: a card-fee charge ₪X paired with a matching discount line ₪X = ₪0 net. The parser preserves both rows (does not pre-net), per the project memory `project_card_2923_fee_waiver.md`. EX2's anomaly detector should fire `recurring_missed` when the discount line disappears without the matching fee also disappearing — that's the user-protection mechanism. Not implemented in EX1; deferred to EX2.
 
 ---
 
@@ -2553,21 +2567,43 @@ Full design: `docs/superpowers/specs/2026-05-09-household-expenses-design.md`.
 EX2 (anomaly detection + advisor surfacing), EX3 (HouseholdBudgetAnalystAgent
 feeding plan synthesis), and EX4 (UI) are scheduled but not yet implemented.
 
-### 18.1 EX1 surface (ingest core)
+### 18.1 EX1 surface (ingest core) — landed
 
-Six new tables (migration 0021): `expense_sources`, `expense_statements`,
-`expense_transactions`, `expense_categories`, `merchant_category_cache`,
-`expense_review_queue`. New REST routes under `/api/expenses/*`
-(upload, sources, transactions, categories, monthly-summary, transactions
-PATCH for user override). New WebSocket events
-`expense.statement.{parsed,failed}` etc. CLI:
-`argosy expenses verify-file` and `argosy expenses backfill`.
+**Schema (migration 0021):** Six new tables — `expense_sources` (registered banks + cards), `expense_statements` (per-upload metadata, idempotent on `(user_id, source_id, period_start, period_end)`), `expense_transactions` (parsed rows with `is_card_payment` + `matched_statement_id` + `refund_of_id` + `category_source` ∈ {`user`, `cache`, `issuer`, `llm`, `inherited_from_refund`}), `expense_categories` (hierarchical, NULL `user_id` = system-default rows lazily copied per-user on first ingest — see `argosy.services.expense_ingest.taxonomy_seed`), `merchant_category_cache` (per-user `merchant_pattern → category` dedup), `expense_review_queue` (anomalies + uncategorized rows pending user review — populated in EX2). See §8.5.
 
-The deterministic ground-truth tests
-(`tests/test_expense_parsers_ground_truth.py`) must pass on every real
-sample before EX1 is considered done. They check row-count exact,
-debit/credit sums within ₪1, parsed totals within ₪50 of issuer-declared
-totals.
+**Parsers** (`argosy/services/expense_ingest/parsers/`):
+- **Working: 4** — `leumi_osh.py` (HTML-as-`.xls` current-account export), `isracard.py` (`פירוט עסקאות` xlsx; multi-currency, refund/standing-order detection), `max.py` (Max card xlsx; preserves `ענף` issuer-category), `discount.py` (Discount Bank Mastercard 2-sheet xlsx; preserves `קטגוריה` issuer-category, handles refund-by-cancellation note `ביטול עסקה`).
+- **Stubs: 3** — `cal.py`, `amex.py`, `diners.py` raise `NotImplementedError`. Sniffer routes their files to these names but ingest fails clearly.
+- **Format detection** (`sniff.py::detect_format`): content-based, filename is hint only. HTML prefix → Leumi; xlsx + sheet `פירוט עסקאות` → Isracard; xlsx + sheet starts `לאומי לישראל` → Max; xlsx + sheet `עסקאות במועד החיוב` → Discount.
+
+**Ingest pipeline** (`orchestrator.py::ingest_user_file(session, user_id, file_id)`, idempotent on `user_files.id`): sniff → parse → register/get source → persist statement → persist transactions (content-hash dedup) → bank↔card correlate (via `אסמכתא` reference + amount/date fallback; spec §17.1) → resolve categories (cascade: user override → issuer-seed → cache → LLM @ ≥ 0.85 confidence; refunds filtered out) → match refunds to prior debits (inherit category). Emits `expense.statement.parsed` on success, `expense.statement.failed` on parse error.
+
+**Categorizer agent** (`argosy.agents.household_categorizer.HouseholdCategorizerAgent`, Sonnet, batched ~50 tx/call): see §3.6. Confidence threshold 0.85; below → `uncategorized`. Issuer-seed Hebrew→slug map in `services/expense_ingest/issuer_seed.py` covers Max `ענף` + Discount `קטגוריה`.
+
+**REST surface** at `/api/expenses/*` (see §11.7): upload (multi-file, sync route — runs in worker thread so the inner `asyncio.run()` in `_invoke_llm` doesn't collide with the request loop), sources/transactions/categories/monthly-summary listings, transaction category PATCH (user override + bulk re-bucket).
+
+**CLI** (`argosy/cli/expenses_admin.py`): `argosy expenses verify-file <path>` (oracle vs parser side-by-side, exit 0/1/2), `argosy expenses backfill --user-id … --dir … [--dry-run]` (bulk-ingest a tree), `argosy expenses issuer-coverage` (lists Max/Discount category values seen in the DB but unmapped — extends `_UNAMBIGUOUS`/`_AMBIGUOUS` driven by real data).
+
+**Test surface (non-LLM):**
+- `tests/expense_ground_truth.py` — parser-independent oracle for each issuer (pandas-only). Conservation tests in `test_expense_parsers_ground_truth.py` assert: row count exact, debit/credit sums within ₪1, parsed totals within ₪50 of issuer-declared totals. Run on the user's real sample corpus when `ARGOSY_EXPENSE_SAMPLES_ROOT` is set (CI without samples skips silently).
+- `tests/test_expense_pipeline_invariants.py` — LLM-mocked conservation: total spend equals raw sum; card-payment dedup holds; refund inheritance consistent.
+- `tests/test_household_categorizer_e2e.py` (`@pytest.mark.llm_eval`, opt-in) — live LLM smoke covering 6 hand-picked Israeli household merchants.
+
+**Coverage of real samples** (Ariel + Noga, as of HEAD):
+- 2 Leumi current-account exports
+- 33 Isracard files (Ariel's 1266: 16 + Noga's 0235: 17)
+- 17 Max files (Ariel's 6225)
+- 2 Discount files (Noga's 2923, per-year)
+All conservation-passing. ~$2-5 of LLM categorization spend on a one-time `argosy expenses backfill` of the full corpus.
+
+**Open at the EX1/EX2 boundary** (full list in §15.4):
+- Foreign-currency `amount_nis` stores raw foreign amount (not NIS-converted) for non-NIS Isracard rows.
+- Leumi account-number is hardcoded `"44745280"` — multi-tenant fix deferred.
+- Discount Bank fee-waiver anomaly (matching card-fee + discount-rebate row pair) is preserved by the parser but the `recurring_missed` anomaly detection that flags promo expiry is EX2 work.
+
+### 18.2 EX2/EX3/EX4 outline
+
+EX2 (anomaly detection + advisor surfacing), EX3 (`HouseholdBudgetAnalystAgent` feeding plan synthesis as the 10th analyst — see §6.11 for the Phase 1 fleet integration point), and EX4 (`/expenses` UI page + `<CashFlowTile>` on home + Plan-page "Cash-flow basis" panel) are scheduled. Full design at `docs/superpowers/specs/2026-05-09-household-expenses-design.md`. EX2 unblocks the user-flagged Discount Bank fee-waiver flag — the spec memo for that is at `memory/project_card_2923_fee_waiver.md`.
 
 ---
 
