@@ -29,3 +29,22 @@ def test_verify_file_unknown_format_exits_nonzero(tmp_path):
     assert result.exit_code != 0
     out = result.stdout.lower()
     assert "unrecognized" in out or "unknown" in out
+
+
+def test_backfill_dry_run_prints_summary(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from argosy.cli.expenses_admin import app as expenses_app
+    src = tmp_path / "samples" / "2026" / "6225"
+    src.mkdir(parents=True)
+    (src / "Apr.xlsx").write_bytes(
+        (FIXTURES / "max_minimal.xlsx").read_bytes()
+    )
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    runner = CliRunner()
+    result = runner.invoke(expenses_app, [
+        "backfill", "--user-id", "ariel", "--dir",
+        str(tmp_path / "samples"), "--dry-run",
+    ])
+    assert result.exit_code == 0
+    out = result.stdout.lower()
+    assert "files: 1" in out or "1 file" in out or "found 1" in out

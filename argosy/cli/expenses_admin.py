@@ -16,24 +16,136 @@ app = typer.Typer(help="Argosy expenses admin utilities.", no_args_is_help=True)
 
 
 # ---------------------------------------------------------------------------
-# Stubs for Task 24 — registered now so the Typer app stays in multi-command
-# mode and dispatches subcommand names correctly.
+# backfill
 # ---------------------------------------------------------------------------
 
 @app.command("backfill")
 def backfill(
-    directory: Path = typer.Argument(..., help="Root directory to scan recursively."),
+    user_id: str = typer.Option(..., "--user-id"),
+    dir: Path = typer.Option(..., "--dir", exists=True),
+    dry_run: bool = typer.Option(False, "--dry-run"),
 ) -> None:
-    """Bulk-ingest a directory tree of statement files (Task 24)."""
-    typer.echo("backfill: not yet implemented (Task 24)", err=True)
-    raise typer.Exit(code=1)
+    """Bulk-ingest every recognized statement file under <dir> for <user_id>.
 
+    Idempotent — re-running on the same tree produces zero new rows.
+    """
+    files = [p for p in dir.rglob("*") if p.is_file()
+             and p.suffix.lower() in {".xls", ".xlsx"}]
+    typer.echo(f"Found {len(files)} files (.xls/.xlsx) under {dir}")
+    if dry_run:
+        for p in files:
+            typer.echo(f"  would ingest: {p}")
+        return
+
+    # Real ingest path. Build a sync session pointing at the configured DB.
+    from argosy.config import reload_settings, get_settings
+    reload_settings()
+    settings = get_settings()
+    settings.db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+    from argosy.state.models import Base
+    sync_url = f"sqlite:///{settings.db_file}"
+    engine = sa.create_engine(sync_url, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+    from argosy.services.expense_ingest.orchestrator import ingest_user_file
+
+    successes = 0
+    failures = 0
+    with SessionLocal() as s:
+        # Ensure the user row exists (FK)
+        from argosy.state.models import User
+        if s.get(User, user_id) is None:
+            s.add(User(id=user_id, plan="free"))
+            s.commit()
+        for p in files:
+            try:
+                contents = p.read_bytes()
+                user_file = _maybe_async_catalog_upload(
+                    s, user_id=user_id, original_name=p.name,
+                    contents=contents,
+                )
+                s.commit()
+                ingest_user_file(s, user_id, user_file.id)
+                s.commit()
+                successes += 1
+                typer.echo(f"  ✓ {p.name}")
+            except Exception as e:
+                s.rollback()
+                failures += 1
+                typer.echo(f"  ✗ {p.name}: {e}")
+
+    typer.echo(f"\nDone. successes={successes} failures={failures}")
+
+
+def _maybe_async_catalog_upload(s, *, user_id, original_name, contents):
+    """Adapter for ``catalog_upload`` whether sync or async."""
+    import inspect
+    from argosy.services.file_catalog import catalog_upload
+    if inspect.iscoroutinefunction(catalog_upload):
+        import asyncio
+        # catalog_upload is async (T19) — manages its own DB session via
+        # db_mod.get_session(). Does NOT take a SQLAlchemy session argument.
+        return asyncio.run(catalog_upload(
+            user_id=user_id, original_name=original_name,
+            raw_bytes=contents, mime_type="application/octet-stream",
+            kind="other", source="chat_attachment",
+        ))
+    return catalog_upload(
+        s, user_id=user_id, original_name=original_name,
+        contents=contents, mime_type="application/octet-stream",
+        kind="other", source="chat_attachment",
+    )
+
+
+# ---------------------------------------------------------------------------
+# issuer-coverage
+# ---------------------------------------------------------------------------
 
 @app.command("issuer-coverage")
 def issuer_coverage() -> None:
-    """List unmapped Max ענף values seen in DB (Task 24)."""
-    typer.echo("issuer-coverage: not yet implemented (Task 24)", err=True)
-    raise typer.Exit(code=1)
+    """List Max-card ענף values seen in DB but not in the unambiguous map."""
+    from argosy.services.expense_ingest.issuer_seed import (
+        _UNAMBIGUOUS, _AMBIGUOUS,
+    )
+    import json as _json
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+    from argosy.config import reload_settings, get_settings
+    from argosy.state.models import ExpenseTransaction
+
+    reload_settings()
+    settings = get_settings()
+    if not settings.db_file.exists():
+        typer.echo("No DB found. Run an ingest first.")
+        return
+    sync_url = f"sqlite:///{settings.db_file}"
+    engine = sa.create_engine(sync_url, connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+    seen: dict[str, int] = {}
+    with SessionLocal() as s:
+        for tx in s.query(ExpenseTransaction).all():
+            try:
+                data = _json.loads(tx.raw_row_json)
+            except Exception:
+                continue
+            anaf = data.get("anaf") if isinstance(data, dict) else None
+            if not anaf:
+                continue
+            seen[anaf] = seen.get(anaf, 0) + 1
+
+    unmapped = {a: n for a, n in seen.items()
+                if a not in _UNAMBIGUOUS and a not in _AMBIGUOUS}
+    if not unmapped:
+        typer.echo("All ענף values are mapped.")
+        return
+    typer.echo("Unmapped ענף values (extend issuer_seed._UNAMBIGUOUS / _AMBIGUOUS):")
+    for anaf, n in sorted(unmapped.items(), key=lambda kv: -kv[1]):
+        typer.echo(f"  {anaf:30s}  {n} txs")
 
 
 # ---------------------------------------------------------------------------
