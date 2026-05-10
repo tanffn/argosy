@@ -19,7 +19,7 @@ interface Props {
 }
 
 export function CurrencyMixCard({ data }: Props) {
-  if (data.length === 0) {
+  if (!data || data.length === 0) {
     return (
       <Card>
         <CardHeader><CardTitle className="text-base">Currency mix</CardTitle></CardHeader>

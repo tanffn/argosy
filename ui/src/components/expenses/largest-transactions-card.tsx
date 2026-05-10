@@ -16,7 +16,7 @@ function fmt(amt: number | null) {
 }
 
 export function LargestTransactionsCard({ transactions, month }: Props) {
-  if (transactions.length === 0) {
+  if (!transactions || transactions.length === 0) {
     return (
       <Card>
         <CardHeader>

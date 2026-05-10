@@ -15,7 +15,7 @@ function fmt(n: number) {
 }
 
 export function CategoriesVsTypicalCard({ data, month }: Props) {
-  if (data.length === 0) {
+  if (!data || data.length === 0) {
     return (
       <Card>
         <CardHeader>

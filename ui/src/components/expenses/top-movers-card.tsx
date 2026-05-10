@@ -36,7 +36,7 @@ function MoverRow({ slug, label, delta_nis, delta_pct }: {
 }
 
 export function TopMoversCard({ data }: Props) {
-  if (data.reason === "insufficient_history") {
+  if (!data || data.reason === "insufficient_history") {
     return (
       <Card>
         <CardHeader>
@@ -48,6 +48,8 @@ export function TopMoversCard({ data }: Props) {
       </Card>
     );
   }
+  const grew = data.grew ?? [];
+  const shrank = data.shrank ?? [];
   return (
     <Card>
       <CardHeader>
@@ -59,15 +61,15 @@ export function TopMoversCard({ data }: Props) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <div className="text-xs uppercase text-muted-foreground mb-1">Grew</div>
-            {data.grew.length === 0 ? (
+            {grew.length === 0 ? (
               <div className="text-xs text-muted-foreground">None.</div>
-            ) : data.grew.map((d) => <MoverRow key={d.slug} {...d} />)}
+            ) : grew.map((d) => <MoverRow key={d.slug} {...d} />)}
           </div>
           <div>
             <div className="text-xs uppercase text-muted-foreground mb-1">Shrank</div>
-            {data.shrank.length === 0 ? (
+            {shrank.length === 0 ? (
               <div className="text-xs text-muted-foreground">None.</div>
-            ) : data.shrank.map((d) => <MoverRow key={d.slug} {...d} />)}
+            ) : shrank.map((d) => <MoverRow key={d.slug} {...d} />)}
           </div>
         </div>
       </CardContent>
