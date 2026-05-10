@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-10 — EX1.1 + EX4 + EX5 + EX4.x dashboard polish + Schwab RSU cross-validator + Leumi USD parser all landed. 28 commits across the day. Migration head at 0024. Full corpus ingested: 6 sources / 56 statements / 2,179 transactions. See §16 handover for wave summaries + open items. |
+| **Last updated** | 2026-05-10 — EX6 — Overview/Monthly split shipped: 5 new insight widgets (savings-rate trend, top movers, currency mix, MoM hero deltas, categories-vs-typical), new `/dashboard-monthly` endpoint, `/expenses/monthly` route. 14 EX6 commits + earlier same-day work (EX1.1 + EX4 + EX4.x + EX5 + Schwab RSU cross-validator + Leumi USD parser). Migration head still at 0024 (EX6 has zero migrations). Full corpus ingested: 6 sources / 56 statements / 2,179 transactions. See handover for wave summaries + open items. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -156,6 +156,26 @@ After dashboard rework + Schwab work, user requested 5 more features. All landed
 3. **Trip tags (Q1B).** Migration `0024_expense_transaction_tags` adds `tags TEXT NOT NULL DEFAULT '[]'` (JSON array). New endpoints: `PATCH /transactions/{id}/tags`, `POST /transactions/{id}/tags/add`, `POST /transactions/{id}/tags/remove`, `GET /tags?prefix=`, `GET /trip-summary?tag=`. Frontend: `TagChip`, `TagEditor`, `/expenses/trips` page. User can tag arbitrary transactions with `trip:greece-2026-aug` etc.; the Trips tab aggregates.
 4. **Dividends + Taxes cards.** `dashboard-overview` returns `DividendsSummary` (USD; detected via `נ"ע רבית/דו` Hebrew + `dividend|DIV ` English match) and `TaxesSummary` (NIS Arnona + `ניכוי מס` + accountant fees + USD Schwab withholdings if `ARGOSY_SCHWAB_CSV_PATH` is set).
 5. **Anomaly oddities.** Two new kinds: `merchant_spike` (single tx > 5× merchant's 12-mo avg) + `new_high_value_merchant` (> ₪500 from never-before-seen merchant). Cap top 5 each.
+
+### Wave EX6 — Overview/Monthly split — LANDED
+
+Spec: `docs/superpowers/specs/2026-05-10-expenses-overview-monthly-split-design.md`. Plan: `docs/superpowers/plans/2026-05-10-expenses-overview-monthly-split-implementation.md`. 14 commits.
+
+User feedback after EX5: the single `/expenses` overview page was trying to be both "how is the year going?" and "what happened this month?", and doing neither well. EX6 splits it into two routes and rebuilds each around its own question.
+
+**What landed:**
+- **Routes.** `/expenses` reshaped to a yearly-focus tab (savings-rate trend, top movers YTD-vs-prior, currency mix bars, yearly summary, dividends/taxes). New sibling `/expenses/monthly` for per-month detail (hero MoM deltas, focal 12-bar chart with sliding window, categories vs typical z-score, largest transactions). Both share the existing `/expenses/transactions`, `/expenses/sources`, `/expenses/income`, `/expenses/trips`, `/expenses/rsu` siblings via the layout.
+- **Endpoints.** `GET /api/expenses/dashboard-overview` reshaped to yearly-only payload (drops `current_month_*`, anomalies, top_merchants_current_month, current_month_top_categories; adds `savings_rate_trend`, `top_movers`, `currency_mix`, `trend_12mo` on dividends + taxes). New `GET /api/expenses/dashboard-monthly?user_id=&month=YYYY-MM` returns hero stats with MoM/trailing-12 deltas, chart-window bars (sliding-A-rule), categories-vs-typical, and largest-transactions for the chosen month.
+- **Services.** 5 new aggregation helpers in `argosy/services/expense_dashboard.py` (`compute_savings_rate_trend`, `compute_top_movers`, `compute_currency_mix`, `compute_chart_window`, `compute_categories_vs_typical`, `compute_hero_stats`, `compute_largest_transactions`). All sync, all DB-only, no LLM. Tested in `tests/test_expense_dashboard.py`.
+- **UI components.** 5 new (`savings-rate-trend.tsx`, `top-movers-card.tsx`, `currency-mix-card.tsx`, `categories-vs-typical-card.tsx`, `largest-transactions-card.tsx`); 3 modified (`hero-stats.tsx` rebuilt around MoM deltas, `monthly-spend-chart.tsx` reworked for the sliding chart-window A-rule, `dividends-card.tsx` + `taxes-card.tsx` gained inline `MiniBars` trend sparklines).
+- **Schema.** Zero migrations. EX6 is pure aggregation + UI on top of the existing model.
+- **Tests.** 1,035 passed / 16 skipped / 5 deselected under `pytest -m "not llm_eval"` (was 1,020+ at start of EX6). New: `test_expense_dashboard.py` (~250 lines), `test_dashboard_monthly_endpoint.py` (~55 lines), expanded `test_dashboard_overview_endpoint.py` (~400 lines).
+
+**What's deferred / out of scope:**
+- **Server-side FX conversion still NOT wired.** `argosy.services.fx` is ready but `?fx=nis` on either endpoint still returns per-currency totals — open item still applies. Currency mix card shows NIS-vs-USD split per month rather than a converted single line.
+- **No schema changes.** Zero migrations in EX6; nothing to roll back.
+
+**Judgment call worth flagging:** the **Dividends card now has both `LineChart` (existing from EX5) and inline `MiniBars` sparkline (new in EX6)** — possible visual redundancy. The MiniBars trend pre-computes server-side from `trend_12mo`; the LineChart re-derives from the existing `monthly_series`. Worth pruning to one on the next polish pass — pick whichever reads better at the card's actual rendered size. Same pattern present on the Taxes card (smaller risk since taxes has no LineChart, just the new MiniBars).
 
 ### Wave EX1.1 — already documented above (still applies)
 
