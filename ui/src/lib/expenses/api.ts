@@ -120,9 +120,18 @@ export interface StatementSummary {
   correlated_count: number;
 }
 
+export interface MonthBucket {
+  month: string;                       // 'YYYY-MM'
+  debit_nis: number;
+  credit_nis: number;
+  transaction_count: number;
+  correlated_count: number;
+}
+
 export interface SourceDetailResponse {
   source: SourceOut;
   statements: StatementSummary[];
+  months: MonthBucket[];
 }
 
 export interface TransactionOut {

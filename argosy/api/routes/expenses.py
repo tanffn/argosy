@@ -910,9 +910,25 @@ class StatementSummary(BaseModel):
     correlated_count: int
 
 
+class MonthBucket(BaseModel):
+    """Per-month aggregate of a source's transactions, derived from
+    tx.occurred_on (NOT statement period). This is the right granularity
+    regardless of how the issuer chunks statements — Discount Bank exports
+    one large file per period; Isracard exports monthly. The chart uses
+    months across sources for consistency.
+    """
+
+    month: str                       # 'YYYY-MM'
+    debit_nis: float                 # outflow (debits, NIS-only)
+    credit_nis: float                # inflow (credits, NIS-only)
+    transaction_count: int
+    correlated_count: int            # is_card_payment rows in this month
+
+
 class SourceDetailResponse(BaseModel):
     source: SourceOut
     statements: list[StatementSummary]
+    months: list[MonthBucket]
 
 
 @router.get("/source-detail/{source_id}", response_model=SourceDetailResponse)
@@ -951,6 +967,54 @@ def source_detail(
             parser_name=st.parser_name, parser_version=st.parser_version,
             transaction_count=tx_n, correlated_count=corr_n,
         ))
+
+    # Per-month buckets — group all the source's transactions by
+    # YYYY-MM(occurred_on) regardless of statement boundaries. This is the
+    # consistent granularity across issuers (Discount exports per-period
+    # files, Isracard per month — both render the same number of bars here).
+    month_rows = db.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(
+                func.sum(case(
+                    (ExpenseTransaction.direction == "debit",
+                     ExpenseTransaction.amount_nis),
+                    else_=0,
+                )), 0,
+            ).label("debit"),
+            func.coalesce(
+                func.sum(case(
+                    (ExpenseTransaction.direction == "credit",
+                     ExpenseTransaction.amount_nis),
+                    else_=0,
+                )), 0,
+            ).label("credit"),
+            func.count().label("n"),
+            func.coalesce(
+                func.sum(case(
+                    (ExpenseTransaction.is_card_payment.is_(True), 1),
+                    else_=0,
+                )), 0,
+            ).label("corr"),
+        )
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.source_id == src.id)
+        .group_by("y", "m")
+        .order_by("y", "m")
+    ).all()
+    months_buckets: list[MonthBucket] = []
+    for y, m, debit, credit, n, corr in month_rows:
+        if y is None or m is None:
+            continue
+        months_buckets.append(MonthBucket(
+            month=f"{int(y):04d}-{int(m):02d}",
+            debit_nis=float(debit or 0),
+            credit_nis=float(credit or 0),
+            transaction_count=int(n or 0),
+            correlated_count=int(corr or 0),
+        ))
+
     return SourceDetailResponse(
         source=SourceOut(
             id=src.id, kind=src.kind, issuer=src.issuer,
@@ -958,4 +1022,5 @@ def source_detail(
             cardholder_name=src.cardholder_name, active=src.active,
         ),
         statements=out_stmts,
+        months=months_buckets,
     )

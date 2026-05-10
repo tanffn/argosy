@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { SourceStatementTimeline } from "@/components/expenses/source-statement-timeline";
+import { SourceMonthlyTimeline } from "@/components/expenses/source-monthly-timeline";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   expensesApi,
@@ -82,8 +82,14 @@ export default function SourcesPage() {
             <CardContent>
               {d ? (
                 <>
-                  <SourceStatementTimeline data={d.statements} />
-                  <table className="w-full text-sm mt-3">
+                  <div className="text-xs text-muted-foreground mb-1">
+                    Monthly activity (derived from transaction dates) — click a bar to drill in
+                  </div>
+                  <SourceMonthlyTimeline data={d.months ?? []} sourceId={s.id} />
+                  <div className="text-xs text-muted-foreground mt-4 mb-1">
+                    Per-statement reconciliation
+                  </div>
+                  <table className="w-full text-sm">
                     <thead>
                       <tr className="text-xs text-muted-foreground border-b border-border">
                         <th className="text-left py-2 pr-2">Period</th>
