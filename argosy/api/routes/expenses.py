@@ -1808,6 +1808,22 @@ class RsuLeumiCredit(BaseModel):
     matched_disbursement_index: int | None  # NULL = unmatched
 
 
+class RsuPendingSale(BaseModel):
+    """A Schwab sale that has not yet been disbursed.
+
+    Surfaced so the UI can show the lag between Schwab settlement (T+1)
+    and disbursement (typically T+2..T+5 business days). A sale is
+    "pending" when no disbursement exists in
+    ``[sale.date, sale.date + 14d]`` whose amount is within 5% of
+    ``sale.net_usd``.
+    """
+    date: date
+    quantity_shares: int
+    gross_usd: float
+    net_usd: float
+    days_since_sale: int                    # today - sale.date
+
+
 class RsuSummary(BaseModel):
     sales_count: int
     sales_total_gross_usd: float
@@ -1820,12 +1836,15 @@ class RsuSummary(BaseModel):
     leumi_credits_count: int
     leumi_credits_unmatched_count: int
     leumi_credits_unmatched_total_usd: float
+    pending_sales_count: int = 0
+    pending_sales_total_gross_usd: float = 0.0
 
 
 class RsuReconciliationResponse(BaseModel):
     sales: list[RsuSale]
     disbursements: list[RsuDisbursement]
     leumi_credits: list[RsuLeumiCredit]
+    pending_sales: list[RsuPendingSale] = []
     summary: RsuSummary
     schwab_csv_paths: list[str]
     warning: str | None = None
@@ -2060,6 +2079,40 @@ def rsu_reconciliation(
     ]
     unmatched_credit_total = sum(c.amount_usd for c in unmatched_credits_in_window)
 
+    # ---- Pending sales: Schwab sold but no disbursement yet ----
+    # Schwab settlement is T+1 and the post-settlement disbursement
+    # typically lands within a few business days. A sale that doesn't
+    # have a disbursement of comparable size in the next 14 days is
+    # "pending" — the user wants to see this state explicitly so they
+    # don't think the wire was lost.
+    today = date.today()
+    pending_sales_models: list[RsuPendingSale] = []
+    for s in sales_sorted:
+        if s.net_usd <= 0:
+            continue
+        window_end = s.date + timedelta(days=14)
+        # 5% net-amount tolerance covers fees + small FX/taxes drift
+        # between Schwab's "net to disburse" and the actual disbursement
+        # row (which already excludes employer-withheld taxes).
+        net_lo = s.net_usd * 0.95
+        net_hi = s.net_usd * 1.05
+        matched = any(
+            s.date <= d.date <= window_end and net_lo <= d.amount_usd <= net_hi
+            for d in merged.disbursements
+        )
+        if matched:
+            continue
+        pending_sales_models.append(RsuPendingSale(
+            date=s.date,
+            quantity_shares=s.quantity_shares,
+            gross_usd=round(s.gross_usd, 2),
+            net_usd=round(s.net_usd, 2),
+            days_since_sale=max(0, (today - s.date).days),
+        ))
+    # Already in desc order (sales_sorted is desc), but be explicit.
+    pending_sales_models.sort(key=lambda p: p.date, reverse=True)
+    pending_gross_total = sum(p.gross_usd for p in pending_sales_models)
+
     summary = RsuSummary(
         sales_count=len(merged.sales),
         sales_total_gross_usd=round(sales_gross, 2),
@@ -2072,12 +2125,15 @@ def rsu_reconciliation(
         leumi_credits_count=len(windowed_credits),
         leumi_credits_unmatched_count=len(unmatched_credits_in_window),
         leumi_credits_unmatched_total_usd=round(unmatched_credit_total, 2),
+        pending_sales_count=len(pending_sales_models),
+        pending_sales_total_gross_usd=round(pending_gross_total, 2),
     )
 
     return RsuReconciliationResponse(
         sales=out_sales,
         disbursements=out_disbs,
         leumi_credits=out_credits,
+        pending_sales=pending_sales_models,
         summary=summary,
         schwab_csv_paths=[str(p) for p in csv_paths],
         warning=warning,

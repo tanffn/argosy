@@ -209,6 +209,63 @@ def test_rsu_reconciliation_filters_leumi_credits_to_wire_transfers_only(
     assert body["summary"]["leumi_credits_unmatched_count"] == 0
 
 
+def test_rsu_reconciliation_surfaces_pending_sales_without_disbursement(
+    client_with_db, tmp_path: Path, monkeypatch,
+):
+    """A Sale without a matching Forced Disbursement in the next 14 days
+    should land in ``pending_sales`` (and the disbursed sale should NOT)."""
+    # Two sales — one with a matching disbursement next day, one without.
+    # The unmatched sale ($121,005 net) is what the user wants to see in
+    # the pending bucket, mirroring the real 2026-05-08 NVDA sale.
+    csv = textwrap.dedent('''\
+"Date","Action","Symbol","Description","Quantity","FeesAndCommissions","DisbursementElection","Amount","Type","Shares","SalePrice","SubscriptionDate","SubscriptionFairMarketValue","PurchaseDate","PurchasePrice","PurchaseFairMarketValue","DispositionType","GrantId","VestDate","VestFairMarketValue","GrossProceeds","TotalCostBasis","RealizedGainLoss","HoldingPeriod","AwardDate","AwardId","FairMarketValuePrice","SharesSoldWithheldForTaxes","NetSharesDeposited","Taxes","TaxWithholdingMethod","SharesWithheld","SharesSold","CashRefund","CarryForward"
+"05/08/2026","Sale","NVDA","Share Sale","600","$5.00","","$121,005.00","","","","","","","","","","","","","","","","","","","","","","","","","","",""
+"","","","","","","","","RS","600","$201.6750","","","","","","","182406","12/13/2023","$48.088","","$121,005.00","$28,852.80","$92,152.20","LONG TERM","","","","","","","","","","",""
+"04/21/2026","Forced Disbursement","NVDA","Debit","","","","-$207,538.02","","","","","","","","","","","","","","","","","","","","","","","","","","",""
+"04/20/2026","Sale","NVDA","Share Sale","1040","$4.48","","$207,538.02","","","","","","","","","","","","","","","","","","","","","","","","","","",""
+"","","","","","","","","RS","1040","$199.5601","","","","","","","182406","12/13/2023","$48.088","","$207,538.02","$50,011.52","$157,526.50","LONG TERM","","","","","","","","","","",""
+''')
+
+    samples_root = tmp_path / "samples"
+    schwab_dir = samples_root / "2026" / "Schwab"
+    schwab_dir.mkdir(parents=True)
+    (schwab_dir / "EquityAwardsCenter_Transactions.csv").write_text(
+        csv, encoding="utf-8",
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(samples_root))
+
+    SessionFactory = client_with_db.app.state.session_factory
+    _seed_user_and_leumi_credit(SessionFactory)
+
+    r = client_with_db.get(
+        "/api/expenses/rsu-reconciliation",
+        params={"user_id": "ariel"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    # ---- pending_sales: only the 2026-05-08 sale (no disbursement yet) ----
+    assert "pending_sales" in body
+    assert len(body["pending_sales"]) == 1
+    pending = body["pending_sales"][0]
+    assert pending["date"] == "2026-05-08"
+    assert pending["quantity_shares"] == 600
+    assert pending["gross_usd"] == pytest.approx(121005.00)
+    # net = gross - fees (no employer taxes withheld at lot level here)
+    assert pending["net_usd"] == pytest.approx(121000.00)
+    # days_since_sale must be >= 0 (today is past 2026-05-08).
+    assert pending["days_since_sale"] >= 0
+
+    # The April 20 sale DID have a disbursement on April 21 → not pending.
+    pending_dates = {p["date"] for p in body["pending_sales"]}
+    assert "2026-04-20" not in pending_dates
+
+    # Summary mirrors the list.
+    s = body["summary"]
+    assert s["pending_sales_count"] == 1
+    assert s["pending_sales_total_gross_usd"] == pytest.approx(121005.00)
+
+
 def test_rsu_reconciliation_without_env_var_returns_warning_and_empty(
     client_with_db, monkeypatch,
 ):

@@ -386,6 +386,14 @@ export interface RsuLeumiCredit {
   matched_disbursement_index: number | null;
 }
 
+export interface RsuPendingSale {
+  date: string;
+  quantity_shares: number;
+  gross_usd: number;
+  net_usd: number;
+  days_since_sale: number;
+}
+
 export interface RsuSummary {
   sales_count: number;
   sales_total_gross_usd: number;
@@ -398,12 +406,15 @@ export interface RsuSummary {
   leumi_credits_count: number;
   leumi_credits_unmatched_count: number;
   leumi_credits_unmatched_total_usd: number;
+  pending_sales_count: number;
+  pending_sales_total_gross_usd: number;
 }
 
 export interface RsuReconciliationResponse {
   sales: RsuSale[];
   disbursements: RsuDisbursement[];
   leumi_credits: RsuLeumiCredit[];
+  pending_sales: RsuPendingSale[];
   summary: RsuSummary;
   schwab_csv_paths: string[];
   warning: string | null;

@@ -9,6 +9,7 @@ import {
   expensesApi,
   type RsuDisbursement,
   type RsuLeumiCredit,
+  type RsuPendingSale,
   type RsuReconciliationResponse,
   type RsuSale,
 } from "@/lib/expenses/api";
@@ -128,7 +129,14 @@ type PairRow =
       haircutPct: number;
     }
   | { kind: "schwab_only"; disb: RsuDisbursement }
-  | { kind: "leumi_only"; credit: RsuLeumiCredit };
+  | { kind: "leumi_only"; credit: RsuLeumiCredit }
+  | { kind: "pending_sale"; sale: RsuPendingSale };
+
+function rowDate(row: PairRow): string {
+  if (row.kind === "leumi_only") return row.credit.date;
+  if (row.kind === "pending_sale") return row.sale.date;
+  return row.disb.date;
+}
 
 function buildPairs(resp: RsuReconciliationResponse): PairRow[] {
   const matchedCreditIds = new Set(
@@ -168,13 +176,13 @@ function buildPairs(resp: RsuReconciliationResponse): PairRow[] {
       rows.push({ kind: "leumi_only", credit: c });
     }
   }
-  rows.sort((a, b) => {
-    const da =
-      a.kind === "leumi_only" ? a.credit.date : a.disb.date;
-    const db =
-      b.kind === "leumi_only" ? b.credit.date : b.disb.date;
-    return db.localeCompare(da);
-  });
+  // Sales without a matching disbursement yet — Schwab settlement is in
+  // flight, the wire to Leumi hasn't kicked off. The user wants these
+  // visible so they don't think the wire was lost.
+  for (const sale of resp.pending_sales ?? []) {
+    rows.push({ kind: "pending_sale", sale });
+  }
+  rows.sort((a, b) => rowDate(b).localeCompare(rowDate(a)));
   return rows;
 }
 
@@ -296,6 +304,48 @@ function PairRowView({ row }: { row: PairRow }) {
           ✗ no match
         </Badge>
         <PlaceholderCell label="no Leumi wire received" />
+      </div>
+    );
+  }
+  if (row.kind === "pending_sale") {
+    // Schwab sold but the Forced Disbursement hasn't shown up yet.
+    // Visually distinct from "?? orphan" (amber, Leumi-only) by sitting
+    // on the LEFT side and using a desaturated yellow tint plus an
+    // hourglass icon, so the user reads "Schwab side, in flight" not
+    // "unexplained Leumi credit".
+    return (
+      <div
+        className={cn(
+          "grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-md border px-3 py-2 text-sm",
+          "border-l-4 border-l-yellow-500 border-yellow-400/60 bg-yellow-50/40 dark:bg-yellow-900/10",
+        )}
+      >
+        <div className="flex flex-col gap-0.5 min-w-0 max-w-full">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-mono text-xs text-muted-foreground tabular-nums shrink-0">
+              {row.sale.date}
+            </span>
+            <span className="font-mono font-medium truncate">
+              {fmtUSD(row.sale.gross_usd)}
+            </span>
+            <span className="text-xs text-muted-foreground shrink-0">
+              · {row.sale.quantity_shares.toLocaleString()} sh
+            </span>
+          </div>
+          <div className="text-[10px] text-muted-foreground italic">
+            Sale, not yet disbursed
+          </div>
+        </div>
+        <Badge
+          className="text-[10px] justify-self-center border-transparent bg-yellow-500 text-black"
+          title="Schwab settlement in flight; expect a Forced Disbursement within a few business days"
+        >
+          ⏳ pending
+          <span className="opacity-80 ml-1">
+            · sold {row.sale.days_since_sale}d ago
+          </span>
+        </Badge>
+        <PlaceholderCell label="awaiting bank credit" />
       </div>
     );
   }
@@ -446,7 +496,7 @@ export default function RsuPage() {
             <div className="text-2xl font-semibold font-mono">
               {fmtUSD(s.disbursements_total_usd)}
             </div>
-            <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
+            <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
               <span>
                 {s.disbursements_count} disbursement
                 {s.disbursements_count !== 1 && "s"}
@@ -463,6 +513,15 @@ export default function RsuPage() {
                       · {unmatchedDisbCount} unaccounted
                     </span>
                   )}
+                </Badge>
+              )}
+              {s.pending_sales_count > 0 && (
+                <Badge
+                  className="text-[10px] border-transparent bg-yellow-500 text-black"
+                  title={`Schwab sold but no Forced Disbursement yet (gross ${fmtUSD(s.pending_sales_total_gross_usd)})`}
+                >
+                  ⏳ {s.pending_sales_count} sale
+                  {s.pending_sales_count !== 1 && "s"} pending
                 </Badge>
               )}
             </div>
@@ -544,17 +603,27 @@ export default function RsuPage() {
                         ? `c-${row.credit.tx_id}`
                         : row.kind === "matched"
                           ? `m-${row.disb.date}-${row.credit.tx_id}`
-                          : `d-${row.disb.date}-${i}`
+                          : row.kind === "pending_sale"
+                            ? `p-${row.sale.date}-${i}`
+                            : `d-${row.disb.date}-${i}`
                     }
                     row={row}
                   />
                 ))}
               </div>
-              <div className="text-[11px] text-muted-foreground px-1 pt-1 leading-relaxed">
-                Pairs flagged with <span className="font-medium">≈</span> are
-                soft-matched — Leumi credit is smaller than the Schwab
-                disbursement by ~28% (consistent with Israeli capital-gains tax
-                withholding). Tolerance: 60-105% of disbursement, ±14 days.
+              <div className="text-[11px] text-muted-foreground px-1 pt-1 leading-relaxed space-y-1">
+                <div>
+                  Pairs flagged with <span className="font-medium">≈</span> are
+                  soft-matched — Leumi credit is smaller than the Schwab
+                  disbursement by ~28% (consistent with Israeli capital-gains
+                  tax withholding). Tolerance: 60-105% of disbursement, ±14
+                  days.
+                </div>
+                <div>
+                  <span className="font-medium">⏳ Pending sales</span>: Schwab
+                  sold but no disbursement yet (typical settlement: T+2
+                  business days; some plans hold longer).
+                </div>
               </div>
             </>
           )}
