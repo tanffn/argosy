@@ -6,6 +6,9 @@ Subcommands:
   issuer-coverage        — list unmapped Max ענף values seen in DB (Task 24)
   audit-corpus <dir>     — deterministic count comparison: oracle vs parser
                            vs DB. NEVER calls the LLM. Read-only diagnostic.
+  verify-rsu             — cross-validate Schwab Equity Awards Center
+                           disbursements against Leumi USD account credits.
+                           Read-only — never writes to the DB.
 """
 
 from __future__ import annotations
@@ -599,4 +602,220 @@ def audit_corpus(
         f"{n_unknown} unrecognized; {n_parser_error} parser errors."
     )
 
+
+# ---------------------------------------------------------------------------
+# verify-rsu
+# ---------------------------------------------------------------------------
+
+@app.command("verify-rsu")
+def verify_rsu(
+    user_id: str = typer.Option(..., "--user-id"),
+    schwab: list[Path] = typer.Option(
+        ..., "--schwab",
+        help="Path(s) to Schwab Equity Awards CSV(s). Pass multiple times.",
+    ),
+    tolerance_usd: float = typer.Option(1.0, "--tolerance-usd"),
+    tolerance_days: int = typer.Option(7, "--tolerance-days"),
+) -> None:
+    """Cross-validate Schwab RSU disbursements against Leumi USD account credits.
+
+    Read-only: parses one or more Schwab Equity Awards Center CSVs, queries
+    the existing ``expense_transactions`` rows for the Leumi USD account
+    (44745200) for the user, then greedy-pairs each Schwab disbursement
+    with the closest unmatched Leumi USD credit inside the
+    ``[date, date+tolerance_days]`` window with USD amount within
+    ``tolerance_usd``. Prints a sales summary, a disbursements-vs-Leumi
+    table, and the unmatched-credits residual.
+
+    Console output is ASCII-safe (``OK``/``FAIL``/``??`` markers) — the
+    Hebrew merchant strings still go out as Unicode, but no fancy box-
+    drawing or check marks (cp1252 console choke risk).
+    """
+    from argosy.config import reload_settings, get_settings
+    from argosy.services.rsu_reconciliation import (
+        LeumiCredit, parse_csv, reconcile,
+    )
+
+    # ---- 1. Parse all Schwab CSVs and merge ----
+    merged = _MergedReport()
+    for p in schwab:
+        if not p.exists():
+            typer.echo(f"FAIL  Schwab CSV not found: {p}")
+            raise typer.Exit(code=2)
+        try:
+            r = parse_csv(p)
+        except Exception as e:
+            typer.echo(f"FAIL  parse error in {p.name}: {type(e).__name__}: {e}")
+            raise typer.Exit(code=2)
+        merged.add(p, r)
+
+    typer.echo(
+        f"Parsed {len(schwab)} Schwab CSV(s): "
+        f"{len(merged.report.sales)} sales, "
+        f"{len(merged.report.disbursements)} disbursements."
+    )
+    if merged.report.unparsed_actions:
+        unparsed = ", ".join(
+            f"{a}={n}" for a, n in sorted(
+                merged.report.unparsed_actions.items(),
+                key=lambda kv: -kv[1],
+            )
+        )
+        typer.echo(f"  (skipped non-modelled actions: {unparsed})")
+    typer.echo("")
+
+    # ---- 2. Pull Leumi USD credits from DB ----
+    reload_settings()
+    settings = get_settings()
+    if not settings.db_file.exists():
+        typer.echo(f"FAIL  no DB file at {settings.db_file} — run an ingest first.")
+        raise typer.Exit(code=2)
+
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+    from argosy.state.models import (
+        ExpenseSource, ExpenseTransaction,
+    )
+
+    sync_url = f"sqlite:///{settings.db_file}"
+    engine = sa.create_engine(sync_url, connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+    leumi_credits: list[LeumiCredit] = []
+    with SessionLocal() as s:
+        rows = (
+            s.query(ExpenseTransaction)
+            .join(ExpenseSource, ExpenseTransaction.source_id == ExpenseSource.id)
+            .filter(
+                ExpenseTransaction.user_id == user_id,
+                ExpenseSource.issuer == "leumi",
+                ExpenseSource.external_id == "44745200",
+                ExpenseTransaction.direction == "credit",
+                ExpenseTransaction.currency_orig == "USD",
+            )
+            .order_by(ExpenseTransaction.occurred_on)
+            .all()
+        )
+        for tx in rows:
+            if tx.amount_orig is None:
+                continue
+            leumi_credits.append(LeumiCredit(
+                date=tx.occurred_on,
+                amount_usd=float(tx.amount_orig),
+                merchant_raw=tx.merchant_raw,
+                reference=tx.reference,
+                tx_id=tx.id,
+            ))
+
+    typer.echo(f"Loaded {len(leumi_credits)} Leumi USD credit(s) from DB "
+               f"(user_id={user_id}, account=44745200).")
+    typer.echo("")
+
+    # ---- 3. Reconcile ----
+    rec = reconcile(
+        merged.report,
+        leumi_credits,
+        tolerance_usd=tolerance_usd,
+        tolerance_days=tolerance_days,
+    )
+
+    # ---- 4. Print disbursements table ----
+    n_d = len(merged.report.disbursements)
+    typer.echo(f"Schwab disbursements ({n_d} found):")
+    typer.echo(f"  {'Date':12s} {'Amount':>14s}   Status")
+    matched_by_disb = {id(m.disbursement): m for m in rec.matches}
+    for disb in sorted(merged.report.disbursements, key=lambda d: d.date):
+        amt = f"${disb.amount_usd:,.2f}"
+        m = matched_by_disb.get(id(disb))
+        if m is not None:
+            status = (
+                f"OK    matched to Leumi {m.credit.date.isoformat()} "
+                f"(delta {m.days_diff:+d} days, "
+                f"{m.amount_diff_usd:+.2f} USD"
+            )
+            if m.credit.reference:
+                status += f", ref {m.credit.reference}"
+            status += ")"
+        else:
+            status = (
+                f"FAIL  NO MATCH — no Leumi USD credit within "
+                f"${tolerance_usd:.2f} / {tolerance_days} days"
+            )
+        typer.echo(f"  {disb.date.isoformat():12s} {amt:>14s}   {status}")
+    typer.echo("")
+
+    # ---- 5. Sales detail (Q&A pane) ----
+    typer.echo("Schwab sales (per-share Q&A):")
+    for sale in sorted(merged.report.sales, key=lambda s: s.date):
+        typer.echo(
+            f"  {sale.date.isoformat()}  {sale.quantity_shares:>5d} shares "
+            f"gross=${sale.gross_usd:,.2f}  fees=${sale.fees_usd:,.2f}  "
+            f"taxes=${sale.total_taxes_usd:,.2f}  net=${sale.net_usd:,.2f}  "
+            f"({len(sale.lots)} lot{'s' if len(sale.lots) != 1 else ''})"
+        )
+    typer.echo("")
+
+    # ---- 6. Unmatched Leumi credits residual ----
+    n_u = len(rec.unmatched_leumi_credits)
+    u_total = sum(c.amount_usd for c in rec.unmatched_leumi_credits)
+    typer.echo(
+        f"Leumi USD credits with no Schwab counterpart "
+        f"({n_u} credits, ${u_total:,.2f} total):"
+    )
+    for c in sorted(rec.unmatched_leumi_credits, key=lambda x: x.date):
+        ref_part = f"  ref {c.reference}" if c.reference else ""
+        typer.echo(
+            f"  {c.date.isoformat()}  ${c.amount_usd:>12,.2f}  "
+            f"{c.merchant_raw}{ref_part}"
+        )
+    typer.echo("")
+    typer.echo("(Unmatched credits are likely non-RSU income — interest, "
+               "securities-account transfers, etc.)")
+    typer.echo("")
+
+    # ---- 7. Summary line ----
+    typer.echo("Summary:")
+    typer.echo(f"  {rec.summary}")
+    if rec.unmatched_disbursements:
+        typer.echo(
+            f"  WARNING: {len(rec.unmatched_disbursements)} disbursement(s) "
+            "did not reconcile — investigate."
+        )
+
+    # Exit non-zero if any disbursement is unmatched (operator signal).
+    if rec.unmatched_disbursements:
+        raise typer.Exit(code=1)
+
+
+class _MergedReport:
+    """Helper: merge multiple SchwabReports while de-duping disbursements
+    and sales by (date, action, amount) — the same CSV is sometimes
+    exported twice (e.g. one snapshot per calendar year), and re-running
+    against overlapping snapshots should not double-count.
+    """
+
+    def __init__(self) -> None:
+        from argosy.services.rsu_reconciliation import SchwabReport
+        self.report = SchwabReport()
+        self._seen_disb: set[tuple] = set()
+        self._seen_sale: set[tuple] = set()
+
+    def add(self, path: Path, r) -> None:
+        for sale in r.sales:
+            key = (sale.date, sale.symbol, sale.quantity_shares,
+                   round(sale.gross_usd, 2), round(sale.fees_usd, 2))
+            if key in self._seen_sale:
+                continue
+            self._seen_sale.add(key)
+            self.report.sales.append(sale)
+        for disb in r.disbursements:
+            key = (disb.date, disb.action, round(disb.amount_usd, 2))
+            if key in self._seen_disb:
+                continue
+            self._seen_disb.add(key)
+            self.report.disbursements.append(disb)
+        for action, n in r.unparsed_actions.items():
+            self.report.unparsed_actions[action] = (
+                self.report.unparsed_actions.get(action, 0) + n
+            )
 
