@@ -281,7 +281,8 @@ def audit_corpus(
     )
     from argosy.services.expense_ingest.types import ParserName
     from argosy.services.expense_ingest.parsers import (
-        leumi_osh as p_leumi, isracard as p_isra, max as p_max,
+        leumi_osh as p_leumi, leumi_usd as p_leumi_usd,
+        isracard as p_isra, max as p_max,
         discount as p_discount,
     )
     # tests/expense_ground_truth.py is the deterministic oracle; add the repo
@@ -294,7 +295,8 @@ def audit_corpus(
         _sys.path.insert(0, str(_repo_root))
     try:
         from tests.expense_ground_truth import (  # type: ignore
-            leumi_oracle, isracard_oracle, max_oracle, discount_oracle,
+            leumi_oracle, leumi_usd_oracle,
+            isracard_oracle, max_oracle, discount_oracle,
         )
     except ImportError as e:
         typer.echo(
@@ -306,12 +308,14 @@ def audit_corpus(
 
     parser_for: dict[ParserName, callable] = {
         ParserName.LEUMI_OSH: p_leumi.parse,
+        ParserName.LEUMI_USD: p_leumi_usd.parse,
         ParserName.ISRACARD:  p_isra.parse,
         ParserName.MAX:       p_max.parse,
         ParserName.DISCOUNT:  p_discount.parse,
     }
     oracle_for: dict[ParserName, callable] = {
         ParserName.LEUMI_OSH: leumi_oracle,
+        ParserName.LEUMI_USD: leumi_usd_oracle,
         ParserName.ISRACARD:  isracard_oracle,
         ParserName.MAX:       max_oracle,
         ParserName.DISCOUNT:  discount_oracle,
@@ -445,14 +449,32 @@ def audit_corpus(
             continue
 
         parsed_rows = len(result.transactions)
-        parsed_debits = sum(
-            t.amount_nis for t in result.transactions
-            if t.direction == "debit" and t.amount_nis is not None
+        # For foreign-currency parsers (e.g. LEUMI_USD) every row has
+        # amount_nis=None and the comparable scalar is amount_orig (USD).
+        # We fall back to amount_orig when no row carries amount_nis;
+        # mixed-currency parsers (Isracard) keep their NIS-only sums by
+        # design — foreign rows are excluded from the oracle, too.
+        all_amount_nis_none = all(
+            t.amount_nis is None for t in result.transactions
         )
-        parsed_credits = sum(
-            t.amount_nis for t in result.transactions
-            if t.direction == "credit" and t.amount_nis is not None
-        )
+        if all_amount_nis_none and result.transactions:
+            parsed_debits = sum(
+                (t.amount_orig or 0.0) for t in result.transactions
+                if t.direction == "debit"
+            )
+            parsed_credits = sum(
+                (t.amount_orig or 0.0) for t in result.transactions
+                if t.direction == "credit"
+            )
+        else:
+            parsed_debits = sum(
+                t.amount_nis for t in result.transactions
+                if t.direction == "debit" and t.amount_nis is not None
+            )
+            parsed_credits = sum(
+                t.amount_nis for t in result.transactions
+                if t.direction == "credit" and t.amount_nis is not None
+            )
         parsed_total = float(result.statement.parsed_total_nis)
         gap_str = (
             "n/a" if truth.declared_total_nis is None

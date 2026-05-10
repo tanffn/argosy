@@ -71,6 +71,33 @@ def leumi_oracle(path: Path) -> GroundTruth:
     )
 
 
+def leumi_usd_oracle(path: Path) -> GroundTruth:
+    """Leumi USD ('פמ"ח') brokerage/holding HTML-as-xls export.
+
+    Same HTML wrapper as the Osh file, but the largest table carries
+    named Hebrew headers (תאריך / תיאור / תאור מורחב / אסמכתא /
+    חובה / זכות / יתרה) and the numbers are USD, not NIS. We sum the
+    debit and credit columns directly from the named-column table.
+
+    NOTE: the field names ``sum_debits_nis`` / ``sum_credits_nis`` are a
+    naming caveat — for the USD oracle these carry USD totals, mirroring
+    the parser's ``parsed_total_nis`` field which also re-uses the NIS
+    name for USD parsers (legacy schema, predates the USD parser).
+    """
+    tables = pd.read_html(path, encoding="utf-8")
+    tx = max(tables, key=lambda t: t.shape[0])
+    # Drop rows whose date column is NaN
+    data = tx[tx["תאריך"].notna()].copy()
+    debits = sum(_to_float(v) for v in data["חובה"])
+    credits = sum(_to_float(v) for v in data["זכות"])
+    return GroundTruth(
+        row_count=int(len(data)),
+        sum_debits_nis=round(debits, 2),    # USD; see docstring caveat
+        sum_credits_nis=round(credits, 2),  # USD; see docstring caveat
+        declared_total_nis=None,
+    )
+
+
 def isracard_oracle(path: Path) -> GroundTruth:
     """Isracard ``פירוט עסקאות`` export.
 
