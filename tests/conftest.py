@@ -612,6 +612,209 @@ def db_session_with_zero_prior(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# /dashboard-monthly endpoint fixtures.
+#
+# These fixtures seed multiple months of expense data through the
+# ``client_with_db`` TestClient so the /api/expenses/dashboard-monthly route
+# can be hit end-to-end. They yield ``(TestClient, user_id, focal_month)``
+# tuples so each test can call the endpoint with a focal month it knows has
+# data.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def client_with_seeded_data(client_with_db):
+    """Seed 14 months of expenses ending 2026-04 for user 'tu1' and yield
+    ``(TestClient, user_id, latest_month)``.
+
+    Each month gets: 10 debit dining-out rows (₪500 each) + a salary credit
+    (₪10000) on alternating months. This is enough for the chart_window to
+    fill (12 of 14 months in view), the hero_stats trailing-12 to engage,
+    and at least one category in top_categories.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from argosy.state.models import (
+        User, UserFile, ExpenseSource, ExpenseStatement,
+        ExpenseTransaction, ExpenseCategory,
+    )
+    from argosy.services.expense_ingest.taxonomy_seed import (
+        seed_system_defaults, seed_user_categories,
+    )
+
+    SF = client_with_db.app.state.session_factory
+    user_id = "tu1"
+    latest_month = "2026-04"
+
+    with SF() as s:
+        s.add(User(id=user_id, plan="free"))
+        s.flush()
+        seed_system_defaults(s)
+        s.flush()
+        seed_user_categories(s, user_id)
+        s.flush()
+
+        f = UserFile(
+            user_id=user_id, sha256="m" * 64,
+            original_name="seed", sanitized_name="seed",
+            mime_type="application/octet-stream", kind="other",
+            size_bytes=1, storage_path="/tmp/seed-monthly",
+            source="chat_attachment",
+        )
+        s.add(f)
+        s.flush()
+
+        src = ExpenseSource(
+            user_id=user_id, kind="card", issuer="isracard",
+            external_id="7777", display_name="monthly-seed-card",
+        )
+        s.add(src)
+        s.flush()
+
+        spend_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="dining_out.restaurants",
+        ).one()
+        income_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="income.salary",
+        ).one()
+
+        # 14 months ending 2026-04, oldest first.
+        anchor = date(2026, 4, 1)
+        months: list[date] = []
+        y, m = anchor.year, anchor.month
+        for _ in range(14):
+            months.append(date(y, m, 1))
+            m -= 1
+            if m == 0:
+                m = 12
+                y -= 1
+        months.reverse()
+
+        for idx, month_start in enumerate(months):
+            period_end = date(month_start.year, month_start.month, 28)
+            stmt = ExpenseStatement(
+                user_id=user_id, source_id=src.id, file_id=f.id,
+                period_start=month_start, period_end=period_end,
+                parsed_total_nis=Decimal("5000"),
+                declared_total_nis=Decimal("5000"),
+                parser_name="isracard", parser_version="0.1.0",
+                status="parsed",
+            )
+            s.add(stmt)
+            s.flush()
+
+            for i in range(10):
+                day = min(i + 1, 28)
+                s.add(ExpenseTransaction(
+                    user_id=user_id, source_id=src.id, statement_id=stmt.id,
+                    occurred_on=date(month_start.year, month_start.month, day),
+                    merchant_raw=f"M{i}", merchant_normalized=f"m{i}",
+                    amount_nis=Decimal("500"),
+                    direction="debit", tx_type="regular",
+                    category_id=spend_cat.id, category_source="user",
+                    category_confidence=Decimal("1.0"),
+                    raw_row_json="{}",
+                ))
+
+            if idx % 2 == 0:
+                s.add(ExpenseTransaction(
+                    user_id=user_id, source_id=src.id, statement_id=stmt.id,
+                    occurred_on=date(month_start.year, month_start.month, 1),
+                    merchant_raw="EMPLOYER", merchant_normalized="employer",
+                    amount_nis=Decimal("10000"),
+                    direction="credit", tx_type="regular",
+                    category_id=income_cat.id, category_source="user",
+                    category_confidence=Decimal("1.0"),
+                    raw_row_json="{}",
+                ))
+        s.commit()
+
+    yield client_with_db, user_id, latest_month
+
+
+@pytest.fixture
+def client_with_short_history(client_with_db):
+    """Seed only 2 months of expenses for user 'tu_short' so the 12-bar
+    chart_window has to use padding bars.
+
+    Yields ``(TestClient, user_id, latest_month)``.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from argosy.state.models import (
+        User, UserFile, ExpenseSource, ExpenseStatement,
+        ExpenseTransaction, ExpenseCategory,
+    )
+    from argosy.services.expense_ingest.taxonomy_seed import (
+        seed_system_defaults, seed_user_categories,
+    )
+
+    SF = client_with_db.app.state.session_factory
+    user_id = "tu_short"
+    latest_month = "2026-04"
+
+    with SF() as s:
+        s.add(User(id=user_id, plan="free"))
+        s.flush()
+        seed_system_defaults(s)
+        s.flush()
+        seed_user_categories(s, user_id)
+        s.flush()
+
+        f = UserFile(
+            user_id=user_id, sha256="s" * 64,
+            original_name="seed", sanitized_name="seed",
+            mime_type="application/octet-stream", kind="other",
+            size_bytes=1, storage_path="/tmp/seed-short",
+            source="chat_attachment",
+        )
+        s.add(f)
+        s.flush()
+
+        src = ExpenseSource(
+            user_id=user_id, kind="card", issuer="isracard",
+            external_id="6666", display_name="short-seed-card",
+        )
+        s.add(src)
+        s.flush()
+
+        spend_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="dining_out.restaurants",
+        ).one()
+
+        # 2 months only: 2026-03 and 2026-04.
+        for month_start in (date(2026, 3, 1), date(2026, 4, 1)):
+            period_end = date(month_start.year, month_start.month, 28)
+            stmt = ExpenseStatement(
+                user_id=user_id, source_id=src.id, file_id=f.id,
+                period_start=month_start, period_end=period_end,
+                parsed_total_nis=Decimal("1500"),
+                declared_total_nis=Decimal("1500"),
+                parser_name="isracard", parser_version="0.1.0",
+                status="parsed",
+            )
+            s.add(stmt)
+            s.flush()
+            for i in range(3):
+                day = min(i + 1, 28)
+                s.add(ExpenseTransaction(
+                    user_id=user_id, source_id=src.id, statement_id=stmt.id,
+                    occurred_on=date(month_start.year, month_start.month, day),
+                    merchant_raw=f"M{i}", merchant_normalized=f"m{i}",
+                    amount_nis=Decimal("500"),
+                    direction="debit", tx_type="regular",
+                    category_id=spend_cat.id, category_source="user",
+                    category_confidence=Decimal("1.0"),
+                    raw_row_json="{}",
+                ))
+        s.commit()
+
+    yield client_with_db, user_id, latest_month
+
+
+# ---------------------------------------------------------------------------
 # Alembic migration test fixtures
 # ---------------------------------------------------------------------------
 # These fixtures provide a real SQLite database that has been taken through

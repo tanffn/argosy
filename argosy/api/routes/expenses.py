@@ -745,6 +745,271 @@ _TAX_KIND_LABEL = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Private helpers shared by /dashboard-monthly. Extracted from what used to
+# live inline in dashboard_overview before EX6 (Task 11 stripped focal-month
+# detail out of /dashboard-overview; Task 12 revives those computations as
+# named helpers for /dashboard-monthly).
+# ---------------------------------------------------------------------------
+
+def _dashboard_top_categories_for_month(
+    db: Session, user_id: str, month: str,
+) -> list[CategorySpend]:
+    """Focal-month top spending categories (SPENDING only — excludes inflows
+    AND excluded-from-spend like transfers/investments).
+
+    Mirrors the old inline ``current_month_top_categories`` logic.
+    """
+    cur_y, cur_m = (int(p) for p in month.split("-"))
+    cat_rows = db.execute(
+        sa_select(
+            ExpenseCategory.slug, ExpenseCategory.label_en,
+            func.sum(ExpenseTransaction.amount_nis).label("total"),
+            func.count().label("n"),
+        )
+        .join(ExpenseTransaction,
+              ExpenseTransaction.category_id == ExpenseCategory.id)
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
+        .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
+        .where(ExpenseCategory.is_excluded_from_spend.is_(False))
+        .where(ExpenseCategory.is_inflow.is_(False))
+        .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
+        .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
+        .limit(10)
+    ).all()
+    total_month = sum(float(r.total or 0) for r in cat_rows) or 1.0
+    return [
+        CategorySpend(
+            slug=r.slug, label_en=r.label_en,
+            total_nis=float(r.total or 0),
+            transaction_count=int(r.n or 0),
+            percent=float(r.total or 0) / total_month * 100.0,
+        )
+        for r in cat_rows
+    ]
+
+
+def _dashboard_top_merchants_for_month(
+    db: Session, user_id: str, month: str,
+) -> list[MerchantSpend]:
+    """Focal-month top merchants by spend (SPENDING only).
+
+    Mirrors the old inline ``top_merchants_current_month`` logic.
+    """
+    cur_y, cur_m = (int(p) for p in month.split("-"))
+    mer_rows = db.execute(
+        sa_select(
+            ExpenseTransaction.merchant_normalized,
+            func.max(ExpenseTransaction.merchant_raw).label("display"),
+            func.sum(ExpenseTransaction.amount_nis).label("total"),
+            func.count().label("n"),
+            func.max(ExpenseCategory.slug).label("cat"),
+        )
+        .outerjoin(ExpenseCategory,
+                   ExpenseCategory.id == ExpenseTransaction.category_id)
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .where(ExpenseTransaction.direction == "debit")
+        .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
+        .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
+        .where((ExpenseCategory.id.is_(None)) |
+               ((ExpenseCategory.is_excluded_from_spend.is_(False)) &
+                (ExpenseCategory.is_inflow.is_(False))))
+        .group_by(ExpenseTransaction.merchant_normalized)
+        .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
+        .limit(10)
+    ).all()
+    return [
+        MerchantSpend(
+            merchant_normalized=r.merchant_normalized,
+            merchant_display=r.display or r.merchant_normalized,
+            total_nis=float(r.total or 0),
+            transaction_count=int(r.n or 0),
+            category_slug=r.cat,
+        )
+        for r in mer_rows
+    ]
+
+
+def _dashboard_anomalies_for_month(
+    db: Session, user_id: str, month: str,
+) -> list[AnomalyCard]:
+    """Anomaly cards scoped to a focal month.
+
+    Reproduces the old inline anomaly block from /dashboard-overview:
+
+      - uncategorized: rows in the 'uncategorized' category (user-wide count).
+      - conservation_gap: per source, |parsed - declared| >= 5 NIS on its
+        latest statement.
+      - fee_waiver_missed: Card 2923 has standing-order fee row(s) in its
+        latest statement but NO matching credit/refund — flags a missed
+        fee-waiver promo (see project_card_2923_fee_waiver memory).
+      - merchant_spike: a focal-month tx > 5x the merchant's prior-12mo avg.
+      - new_high_value_merchant: a focal-month tx >= ₪500 from a merchant
+        unseen in the prior 12 months.
+
+    The merchant_spike / new_high_value_merchant detectors are capped at top
+    5 each, biggest first.
+    """
+    from calendar import monthrange as _mr
+
+    anomalies: list[AnomalyCard] = []
+
+    # 1. Uncategorized count (user-wide, not focal-month-scoped — matches
+    #    the legacy semantics).
+    uncat_n = db.query(ExpenseTransaction).filter(
+        ExpenseTransaction.user_id == user_id,
+        ExpenseTransaction.is_card_payment.is_(False),
+    ).join(
+        ExpenseCategory,
+        ExpenseCategory.id == ExpenseTransaction.category_id,
+    ).filter(
+        ExpenseCategory.slug == "uncategorized",
+    ).count()
+    if uncat_n > 0:
+        anomalies.append(AnomalyCard(
+            kind="uncategorized",
+            severity="yellow" if uncat_n < 50 else "red",
+            message=f"{uncat_n} transactions are uncategorized",
+            link="/expenses/transactions?category=uncategorized",
+        ))
+
+    # 2. Conservation gaps (latest statement per source).
+    for src_row in db.query(ExpenseSource).filter_by(user_id=user_id).all():
+        latest = db.query(ExpenseStatement).filter_by(
+            source_id=src_row.id, user_id=user_id,
+        ).order_by(ExpenseStatement.period_end.desc()).first()
+        if latest is None or latest.declared_total_nis is None:
+            continue
+        gap = float(latest.parsed_total_nis or 0) - float(latest.declared_total_nis)
+        if abs(gap) >= 5.0:
+            anomalies.append(AnomalyCard(
+                kind="conservation_gap", severity="red",
+                message=f"{src_row.display_name}: latest gap ₪{gap:+.2f}",
+                detail=(
+                    f"parsed={latest.parsed_total_nis} "
+                    f"declared={latest.declared_total_nis}"
+                ),
+                link="/expenses/sources",
+            ))
+
+    # 3. Card 2923 fee-waiver detection.
+    discount = db.query(ExpenseSource).filter_by(
+        user_id=user_id, issuer="discount", external_id="2923",
+    ).one_or_none()
+    if discount is not None:
+        latest = db.query(ExpenseStatement).filter_by(
+            source_id=discount.id, user_id=user_id,
+        ).order_by(ExpenseStatement.period_end.desc()).first()
+        if latest is not None:
+            stmt_txs = db.query(ExpenseTransaction).filter_by(
+                statement_id=latest.id, user_id=user_id,
+            ).all()
+            fees = [
+                t for t in stmt_txs
+                if t.direction == "debit"
+                and "כרטיס" in (t.merchant_raw or "")
+                and t.amount_nis and float(t.amount_nis) > 5
+            ]
+            credits = [t for t in stmt_txs if t.direction == "credit"]
+            if fees and not credits:
+                anomalies.append(AnomalyCard(
+                    kind="fee_waiver_missed", severity="red",
+                    message=(
+                        "Discount Card 2923: card-fee charged with NO "
+                        "matching discount credit"
+                    ),
+                    detail="Verify the fee-waiver promotion is still active",
+                    link=(
+                        f"/expenses/transactions?source_id={discount.id}"
+                        "&include_card_payments=1"
+                    ),
+                ))
+
+    # 4. merchant_spike + new_high_value_merchant detectors — focal-month tx
+    #    compared against prior-12-month per-merchant stats.
+    cur_y, cur_m = (int(p) for p in month.split("-"))
+    focal_first = date(cur_y, cur_m, 1)
+    focal_last = date(cur_y, cur_m, _mr(cur_y, cur_m)[1])
+    prior_window_end = focal_first - timedelta(days=1)
+    prior_window_start = prior_window_end - timedelta(days=365)
+
+    focal_txs = db.query(ExpenseTransaction).filter(
+        ExpenseTransaction.user_id == user_id,
+        ExpenseTransaction.is_card_payment.is_(False),
+        ExpenseTransaction.amount_nis.is_not(None),
+        ExpenseTransaction.direction == "debit",
+        ExpenseTransaction.occurred_on >= focal_first,
+        ExpenseTransaction.occurred_on <= focal_last,
+    ).all()
+
+    spikes: list[tuple[float, AnomalyCard]] = []
+    new_high: list[tuple[float, AnomalyCard]] = []
+    merchant_cache: dict[str, dict[str, float | int]] = {}
+    for tx in focal_txs:
+        mn = tx.merchant_normalized or ""
+        if not mn:
+            continue
+        stats = merchant_cache.get(mn)
+        if stats is None:
+            rows = db.execute(
+                sa_select(
+                    func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0),
+                    func.count(),
+                )
+                .where(ExpenseTransaction.user_id == user_id)
+                .where(ExpenseTransaction.is_card_payment.is_(False))
+                .where(ExpenseTransaction.amount_nis.is_not(None))
+                .where(ExpenseTransaction.direction == "debit")
+                .where(ExpenseTransaction.merchant_normalized == mn)
+                .where(ExpenseTransaction.occurred_on >= prior_window_start)
+                .where(ExpenseTransaction.occurred_on <= prior_window_end)
+            ).one()
+            total_prior, n_prior = float(rows[0] or 0), int(rows[1] or 0)
+            stats = {
+                "avg": (total_prior / n_prior) if n_prior else 0.0,
+                "n": n_prior,
+            }
+            merchant_cache[mn] = stats
+        tx_amount = float(tx.amount_nis or 0)
+        display = (tx.merchant_raw or mn).strip()[:40]
+        link = (
+            "/expenses/transactions?search="
+            + (display.replace(" ", "%20") if display else "")
+        )
+        avg_prior = float(stats["avg"])
+        n_prior = int(stats["n"])
+        if avg_prior > 0 and tx_amount > 5 * avg_prior:
+            ratio = tx_amount / avg_prior
+            spikes.append((tx_amount, AnomalyCard(
+                kind="merchant_spike", severity="yellow",
+                message=f"{display}: ₪{tx_amount:,.0f} ({ratio:.1f}× usual)",
+                detail=f"avg over prior 12mo: ₪{avg_prior:,.2f} (n={n_prior})",
+                link=link,
+            )))
+        elif n_prior == 0 and tx_amount >= 500:
+            new_high.append((tx_amount, AnomalyCard(
+                kind="new_high_value_merchant", severity="yellow",
+                message=f"{display}: ₪{tx_amount:,.0f} from a new merchant",
+                detail=(
+                    "No prior activity from this merchant in the last 12 months"
+                ),
+                link=link,
+            )))
+    spikes.sort(key=lambda t: t[0], reverse=True)
+    new_high.sort(key=lambda t: t[0], reverse=True)
+    for _, card in spikes[:5]:
+        anomalies.append(card)
+    for _, card in new_high[:5]:
+        anomalies.append(card)
+
+    return anomalies
+
+
 @router.get("/dashboard-overview", response_model=DashboardOverview)
 def dashboard_overview(
     user_id: str,
@@ -1130,6 +1395,71 @@ def dashboard_overview(
         dividends=dividends,
         taxes=taxes,
         sources_health=sources_health,
+        fx_mode=fx,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /dashboard-monthly — per-month detail bundle (EX6, the Monthly tab).
+# ---------------------------------------------------------------------------
+
+
+@router.get("/dashboard-monthly", response_model=DashboardMonthly)
+def dashboard_monthly(
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    month: str = Query(
+        ...,
+        pattern=r"^\d{4}-\d{2}$",
+        description="Focal month, 'YYYY-MM'.",
+    ),
+    fx: str = Query(default="per_currency", pattern="^(per_currency|nis)$"),
+) -> DashboardMonthly:
+    """Per-month detail bundle.
+
+    All aggregations scoped to the focal month, with hero-stat MoM + trailing-12
+    deltas and a 12-bar sliding chart window per the A-rule (spec §5.3).
+    """
+    from argosy.services.expense_dashboard import (
+        compute_categories_vs_typical,
+        compute_chart_window,
+        compute_hero_stats_monthly,
+        compute_largest_transactions,
+    )
+
+    # available_months: distinct YYYY-MM strings from tx_occurred, asc.
+    rows = db.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+        )
+        .where(ExpenseTransaction.user_id == user_id)
+        .group_by("y", "m")
+        .order_by("y", "m")
+    ).all()
+    available = [f"{int(r.y):04d}-{int(r.m):02d}" for r in rows]
+
+    chart_window = compute_chart_window(db, user_id, focal_month=month)
+    hero_stats = compute_hero_stats_monthly(db, user_id, month=month)
+    categories_vs_typical = compute_categories_vs_typical(db, user_id, month=month)
+    largest_transactions = compute_largest_transactions(
+        db, user_id, month=month, limit=5,
+    )
+
+    top_categories = _dashboard_top_categories_for_month(db, user_id, month)
+    top_merchants = _dashboard_top_merchants_for_month(db, user_id, month)
+    anomalies = _dashboard_anomalies_for_month(db, user_id, month)
+
+    return DashboardMonthly(
+        month=month,
+        available_months=available,
+        chart_window=chart_window,
+        hero_stats=hero_stats,
+        top_categories=top_categories,
+        categories_vs_typical=categories_vs_typical,
+        top_merchants=top_merchants,
+        largest_transactions=largest_transactions,
+        anomalies=anomalies,
         fx_mode=fx,
     )
 
