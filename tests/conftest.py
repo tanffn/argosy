@@ -154,6 +154,129 @@ def project_root() -> str:
     return str(resolve_home())
 
 
+@pytest.fixture
+def db_session_with_seeded_user(tmp_path):
+    """In-memory-style file-backed SQLite session seeded with 14 months of
+    expense transactions for user_id='test'.
+
+    Pattern:
+      - 14 months ending at date(2026, 4, 1), working backwards.
+      - Every month: ~10 debit ₪500 dining_out.restaurants rows (₪5000 spend).
+      - Alternating months: a single ₪10000 income.salary credit. Months
+        without that credit produce income == 0 — the zero-income branch.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import (
+        Base, User, UserFile, ExpenseSource, ExpenseStatement,
+        ExpenseTransaction, ExpenseCategory,
+    )
+    from argosy.services.expense_ingest.taxonomy_seed import (
+        seed_system_defaults, seed_user_categories,
+    )
+
+    db_path = tmp_path / "savings_rate_trend.db"
+    engine = sa.create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    SF = sessionmaker(bind=engine, expire_on_commit=False)
+    s = SF()
+    try:
+        s.add(User(id="test", plan="free"))
+        s.flush()
+        seed_system_defaults(s)
+        s.flush()
+        seed_user_categories(s, "test")
+        s.flush()
+
+        f = UserFile(
+            user_id="test", sha256="b" * 64,
+            original_name="seed", sanitized_name="seed",
+            mime_type="application/octet-stream", kind="other",
+            size_bytes=1, storage_path="/tmp/seed", source="chat_attachment",
+        )
+        s.add(f)
+        s.flush()
+
+        src = ExpenseSource(
+            user_id="test", kind="card", issuer="isracard",
+            external_id="9999", display_name="seed-card",
+        )
+        s.add(src)
+        s.flush()
+
+        spend_cat = s.query(ExpenseCategory).filter_by(
+            user_id="test", slug="dining_out.restaurants",
+        ).one()
+        income_cat = s.query(ExpenseCategory).filter_by(
+            user_id="test", slug="income.salary",
+        ).one()
+
+        # 14 months ending 2026-04, oldest first.
+        anchor = date(2026, 4, 1)
+        months: list[date] = []
+        y, m = anchor.year, anchor.month
+        for _ in range(14):
+            months.append(date(y, m, 1))
+            m -= 1
+            if m == 0:
+                m = 12
+                y -= 1
+        months.reverse()
+
+        for idx, month_start in enumerate(months):
+            # End-of-month bound (use day 28 to stay safe on Feb).
+            period_end = date(month_start.year, month_start.month, 28)
+            stmt = ExpenseStatement(
+                user_id="test", source_id=src.id, file_id=f.id,
+                period_start=month_start, period_end=period_end,
+                parsed_total_nis=Decimal("5000"),
+                declared_total_nis=Decimal("5000"),
+                parser_name="isracard", parser_version="0.1.0",
+                status="parsed",
+            )
+            s.add(stmt)
+            s.flush()
+
+            # 10 debit dining_out.restaurants rows of ₪500 each.
+            for i in range(10):
+                day = min(i + 1, 28)
+                s.add(ExpenseTransaction(
+                    user_id="test", source_id=src.id, statement_id=stmt.id,
+                    occurred_on=date(month_start.year, month_start.month, day),
+                    merchant_raw=f"M{i}", merchant_normalized=f"m{i}",
+                    amount_nis=Decimal("500"),
+                    direction="debit", tx_type="regular",
+                    category_id=spend_cat.id, category_source="user",
+                    category_confidence=Decimal("1.0"),
+                    raw_row_json="{}",
+                ))
+
+            # Alternating months: salary credit. Even idx → income; odd →
+            # zero income (exercises the zero-income branch).
+            if idx % 2 == 0:
+                s.add(ExpenseTransaction(
+                    user_id="test", source_id=src.id, statement_id=stmt.id,
+                    occurred_on=date(month_start.year, month_start.month, 1),
+                    merchant_raw="EMPLOYER", merchant_normalized="employer",
+                    amount_nis=Decimal("10000"),
+                    direction="credit", tx_type="regular",
+                    category_id=income_cat.id, category_source="user",
+                    category_confidence=Decimal("1.0"),
+                    raw_row_json="{}",
+                ))
+        s.commit()
+        yield s
+    finally:
+        s.close()
+        engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # Alembic migration test fixtures
 # ---------------------------------------------------------------------------

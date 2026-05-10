@@ -49,3 +49,22 @@ def test_new_pydantic_types_exist():
         anomalies=[],
     )
     assert dm.month == "2026-04"
+
+
+def test_compute_savings_rate_trend_basic(db_session_with_seeded_user):
+    from argosy.services.expense_dashboard import compute_savings_rate_trend
+    points = compute_savings_rate_trend(db_session_with_seeded_user, "test", months=12)
+    assert len(points) == 12
+    # oldest-first
+    assert points[0].month < points[-1].month
+    # rate is bounded
+    for p in points:
+        assert -10.0 <= p.savings_rate <= 1.0
+    # Months without income should have rate == 0.0
+    for p in points:
+        if p.income_nis == 0:
+            assert p.savings_rate == 0.0
+    # Sanity: at least one income month and one zero-income month exist in
+    # the 12-point window — fixture seeds alternating months across 14 total.
+    assert any(p.income_nis > 0 for p in points)
+    assert any(p.income_nis == 0 for p in points)
