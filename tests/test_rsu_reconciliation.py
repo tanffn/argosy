@@ -144,9 +144,9 @@ def test_reconcile_no_leumi_data() -> None:
 
 
 def test_reconcile_outside_date_window() -> None:
-    """Credit posted 10 days later → outside default 7-day window."""
+    """Credit posted 20 days later → outside default 14-day window."""
     report = SchwabReport(disbursements=[_disb(date(2026, 4, 21), 100.00)])
-    credits = [_credit(1, date(2026, 5, 1), 100.00)]   # +10 days
+    credits = [_credit(1, date(2026, 5, 11), 100.00)]   # +20 days
     rec = reconcile(report, credits)
     assert rec.matches == []
     assert len(rec.unmatched_disbursements) == 1
@@ -154,8 +154,10 @@ def test_reconcile_outside_date_window() -> None:
 
 
 def test_reconcile_outside_amount_tolerance() -> None:
+    """A 50%-of-disbursement credit is too small for either the exact-match
+    tolerance or the haircut soft-match band → no match."""
     report = SchwabReport(disbursements=[_disb(date(2026, 4, 21), 100.00)])
-    credits = [_credit(1, date(2026, 4, 23), 105.00)]  # $5 off > default $1
+    credits = [_credit(1, date(2026, 4, 23), 50.00)]  # 50% of disb — outside both bands
     rec = reconcile(report, credits)
     assert rec.matches == []
 
@@ -183,6 +185,78 @@ def test_reconcile_credit_only_consumed_once() -> None:
     rec = reconcile(report, credits)
     assert len(rec.matches) == 1
     assert len(rec.unmatched_disbursements) == 1
+
+
+# ---------------------------------------------------------------------------
+# Haircut soft-match (Israeli capital-gains tax withholding ~28%)
+# ---------------------------------------------------------------------------
+
+
+def test_reconcile_haircut_pair_apr21() -> None:
+    """The real-world Apr-2026 pair: Schwab disbursed $207,538.02 on
+    2026-04-21, Leumi credited $150,864.02 eight days later (27.3% off the
+    wire — consistent with IL CGT withholding)."""
+    report = SchwabReport(disbursements=[
+        _disb(date(2026, 4, 21), 207538.02),
+    ])
+    credits = [_credit(1, date(2026, 4, 29), 150864.02, "ref-A")]
+    rec = reconcile(report, credits)
+    assert len(rec.matches) == 1
+    m = rec.matches[0]
+    assert m.match_kind == "haircut"
+    assert m.days_diff == 8
+    # haircut_pct = (1 - 150864.02 / 207538.02) * 100 ≈ 27.3093...
+    assert m.haircut_pct == pytest.approx(27.31, abs=0.02)
+    # Signed amount: positive == bank received less than Schwab sent.
+    assert m.amount_diff_usd == pytest.approx(56674.0, abs=1.0)
+    assert rec.unmatched_disbursements == []
+    assert rec.unmatched_leumi_credits == []
+
+
+def test_reconcile_haircut_outside_range() -> None:
+    """A 50%-of-disbursement credit is below the 60% floor → no haircut
+    match. The credit returns to the unmatched pool intact."""
+    report = SchwabReport(disbursements=[_disb(date(2026, 4, 21), 100.00)])
+    credits = [_credit(1, date(2026, 4, 25), 50.00)]   # 50% of disb
+    rec = reconcile(report, credits)
+    assert rec.matches == []
+    assert len(rec.unmatched_disbursements) == 1
+    assert len(rec.unmatched_leumi_credits) == 1
+
+
+def test_reconcile_existing_exact_match_still_works() -> None:
+    """Exact pair stays exact: match_kind="exact", haircut_pct==0,
+    amount_diff_usd≈0. Sign is now disb-credit but at parity that's zero."""
+    report = SchwabReport(disbursements=[_disb(date(2026, 4, 21), 207538.02)])
+    credits = [_credit(1, date(2026, 4, 23), 207538.02, "ref-A")]
+    rec = reconcile(report, credits)
+    assert len(rec.matches) == 1
+    m = rec.matches[0]
+    assert m.match_kind == "exact"
+    assert m.haircut_pct == 0.0
+    assert m.amount_diff_usd == pytest.approx(0.0)
+    assert m.days_diff == 2
+
+
+def test_reconcile_haircut_score_picks_closer_to_27_5_pct() -> None:
+    """Two candidate haircuts (25% and 30%) — matcher picks 30% because
+    its distance from the canonical 27.5% IL CGT rate is smaller."""
+    disb_amt = 100_000.00
+    report = SchwabReport(disbursements=[_disb(date(2026, 4, 21), disb_amt)])
+    credits = [
+        # 25% haircut → ratio 0.75 → distance from 27.5 = 2.5
+        _credit(10, date(2026, 4, 27), disb_amt * 0.75, "ref-25"),
+        # 30% haircut → ratio 0.70 → distance from 27.5 = 2.5 (tie)
+        # Bump the 30% case slightly closer to 27.5 by using 0.705 (29.5%)
+        _credit(11, date(2026, 4, 28), disb_amt * 0.705, "ref-30"),
+    ]
+    rec = reconcile(report, credits)
+    assert len(rec.matches) == 1
+    m = rec.matches[0]
+    assert m.match_kind == "haircut"
+    # 29.5% is 2.0 from 27.5; 25% is 2.5 from 27.5 — 29.5% wins.
+    assert m.credit.tx_id == 11
+    assert m.haircut_pct == pytest.approx(29.5, abs=0.05)
 
 
 def test_reconcile_summary_includes_residual_credits() -> None:

@@ -1792,7 +1792,11 @@ class RsuDisbursement(BaseModel):
     amount_usd: float
     matched_leumi_credit_id: int | None     # NULL = no match
     days_diff: int | None
+    # Signed: positive == bank received less than Schwab disbursed (haircut),
+    # negative == bank received more (FX gain), 0 == perfect match.
     amount_diff_usd: float | None
+    match_kind: str | None = None           # 'exact' | 'haircut' | None
+    haircut_pct: float | None = None        # signed; positive = withheld
 
 
 class RsuLeumiCredit(BaseModel):
@@ -1832,7 +1836,9 @@ def rsu_reconciliation(
     user_id: str,
     db: Annotated[Session, Depends(get_db)],
     tolerance_usd: float = Query(1.0, ge=0.0),
-    tolerance_days: int = Query(7, ge=0, le=90),
+    tolerance_days: int = Query(14, ge=0, le=90),
+    tax_haircut_min: float = Query(0.60, ge=0.0, le=1.0),
+    tax_haircut_max: float = Query(1.05, ge=1.0, le=1.5),
 ) -> RsuReconciliationResponse:
     """Schwab → Leumi USD reconciliation, surfaced for the dashboard.
 
@@ -1945,6 +1951,8 @@ def rsu_reconciliation(
         leumi_credits,
         tolerance_usd=tolerance_usd,
         tolerance_days=tolerance_days,
+        tax_haircut_min=tax_haircut_min,
+        tax_haircut_max=tax_haircut_max,
     )
 
     # ---- Build response ----
@@ -1970,7 +1978,10 @@ def rsu_reconciliation(
             amount_usd=round(disb.amount_usd, 2),
             matched_leumi_credit_id=(m.credit.tx_id if m else None),
             days_diff=(m.days_diff if m else None),
+            # Signed: positive = bank received less than Schwab sent.
             amount_diff_usd=(m.amount_diff_usd if m else None),
+            match_kind=(m.match_kind if m else None),
+            haircut_pct=(m.haircut_pct if m else None),
         ))
 
     # Restrict Leumi credits to a window around the disbursements: ± 30 days
