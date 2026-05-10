@@ -5,10 +5,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { AnomalyHighlights } from "@/components/expenses/anomaly-highlights";
 import { CategoryDonut } from "@/components/expenses/category-donut";
+import { DividendsCard } from "@/components/expenses/dividends-card";
 import { HeroStats } from "@/components/expenses/hero-stats";
 import { MonthlySpendChart } from "@/components/expenses/monthly-spend-chart";
 import { MonthPicker } from "@/components/expenses/month-picker";
 import { SourcesHealthTable } from "@/components/expenses/sources-health-table";
+import { TaxesCard } from "@/components/expenses/taxes-card";
 import { TopMerchantsCard } from "@/components/expenses/top-merchants-card";
 import { YearlySummaryCard } from "@/components/expenses/yearly-summary-card";
 import { Card, CardContent } from "@/components/ui/card";
@@ -78,6 +80,12 @@ function ExpensesOverviewInner() {
       </div>
       <YearlySummaryCard data={data.yearly_summary} />
       <HeroStats overview={data} fxMode={fxMode} />
+      {(data.dividends || data.taxes) && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {data.dividends && <DividendsCard data={data.dividends} />}
+          {data.taxes && <TaxesCard data={data.taxes} />}
+        </div>
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <MonthlySpendChart data={data.months} fxMode={fxMode} />
         <CategoryDonut data={data.current_month_top_categories} month={focal} />

@@ -518,6 +518,35 @@ class YearlySummary(BaseModel):
     current_vs_avg_pct: float | None
 
 
+class DividendsSummary(BaseModel):
+    """Monthly dividends rollup. Detects rows by Hebrew Leumi wording
+    (`נ"ע רבית/דו` / `דיב`) or English (`dividend` / `DIV`).
+
+    `transactions` is the underlying USD-credit rows for the focal month so
+    the user can scan what came in.
+    """
+
+    month: str                                # focal month (latest or query-param)
+    current_month_total_usd: float            # USD dividends in focal month
+    yearly_total_usd: float                   # 12-month rolling
+    monthly_series: list[dict]                # [{month: 'YYYY-MM', total_usd: ...}, ...]
+    transactions: list[TransactionOut]
+
+
+class TaxesSummary(BaseModel):
+    """Taxes paid rollup — NIS direct (income/property/SS) + USD RSU
+    withholding (Schwab) when accessible.
+
+    `by_kind` keys: ``income_tax_paid``, ``social_security_paid``,
+    ``property_tax``, ``rsu_withholding_usd`` (USD). NIS-direct kinds map
+    to NIS sums; ``rsu_withholding_usd`` is in USD (separate currency).
+    """
+
+    yearly_total_nis: float                   # NIS taxes (income+property+SS)
+    yearly_total_usd: float                   # USD taxes (Schwab withholding)
+    by_kind: dict[str, float]
+
+
 class DashboardOverview(BaseModel):
     months: list[MonthlyTotalEntry]
     current_month: str | None                       # 'YYYY-MM' the headline scopes to
@@ -529,6 +558,8 @@ class DashboardOverview(BaseModel):
     anomalies: list[AnomalyCard]
     sources_health: list[SourceHealthEntry]
     yearly_summary: YearlySummary
+    dividends: DividendsSummary
+    taxes: TaxesSummary
     fx_mode: str
 
 
@@ -541,6 +572,45 @@ def _gap_status(gap: float | None) -> str:
     if a < 5.0:
         return "yellow"
     return "red"
+
+
+# Dividend detection: Leumi USD account rows wear Hebrew descriptors
+# ('נ"ע רבית/דו' / 'דיב'); Schwab/etoro brokers use English ('dividend',
+# 'DIV'). We accept either pattern. Direction must be 'credit' and currency
+# 'USD' (the Leumi USD pmach account is the only place these land for now;
+# generalising to other USD accounts is forward-compatible).
+_DIVIDEND_HE = ("דיב", "רבית/דו", "רבית/דב")
+_DIVIDEND_EN = ("dividend", "div ")    # 'div ' to avoid 'divan'/'divine'/etc
+
+def _is_dividend_row(merchant_norm: str | None,
+                      merchant_raw: str | None,
+                      currency_orig: str | None) -> bool:
+    if currency_orig != "USD":
+        return False
+    text = (merchant_norm or "").lower() + " " + (merchant_raw or "").lower()
+    if any(token in text for token in _DIVIDEND_EN):
+        return True
+    raw_he = (merchant_raw or "") + " " + (merchant_norm or "")
+    if any(token in raw_he for token in _DIVIDEND_HE):
+        return True
+    return False
+
+
+# Tax detection: category-driven so we use the user's taxonomy rather than
+# guessing from merchant text.
+_TAX_CATEGORY_SLUGS = {
+    "taxes",
+    "taxes.income_tax_paid",
+    "taxes.social_security_paid",
+    "housing.property_tax",
+}
+# Slug -> by_kind label.
+_TAX_KIND_LABEL = {
+    "taxes": "other_taxes",
+    "taxes.income_tax_paid": "income_tax_paid",
+    "taxes.social_security_paid": "social_security_paid",
+    "housing.property_tax": "property_tax",
+}
 
 
 @router.get("/dashboard-overview", response_model=DashboardOverview)
@@ -908,6 +978,106 @@ def dashboard_overview(
         current_vs_avg_pct=current_vs_avg_pct,
     )
 
+    # 7. Dividends — USD credits whose merchant matches dividend wording.
+    div_candidates = db.query(ExpenseTransaction).filter(
+        ExpenseTransaction.user_id == user_id,
+        ExpenseTransaction.is_card_payment.is_(False),
+        ExpenseTransaction.direction == "credit",
+        ExpenseTransaction.currency_orig == "USD",
+        ExpenseTransaction.occurred_on >= window_start,
+        ExpenseTransaction.occurred_on <= anchor,
+    ).all()
+    div_rows = [
+        r for r in div_candidates
+        if _is_dividend_row(r.merchant_normalized, r.merchant_raw, r.currency_orig)
+    ]
+    yearly_div_usd = sum(float(r.amount_orig or 0) for r in div_rows)
+    div_monthly: dict[str, float] = {}
+    for r in div_rows:
+        key = f"{r.occurred_on.year:04d}-{r.occurred_on.month:02d}"
+        div_monthly[key] = div_monthly.get(key, 0.0) + float(r.amount_orig or 0)
+    div_series = [
+        {"month": k, "total_usd": v}
+        for k, v in sorted(div_monthly.items())
+    ]
+    cur_month_div_usd = (
+        div_monthly.get(focal_month, 0.0) if focal_month is not None else 0.0
+    )
+    cat_by_id_slug = {
+        c.id: c.slug for c in db.query(ExpenseCategory).filter_by(
+            user_id=user_id,
+        ).all()
+    }
+    if focal_month is not None:
+        cur_y, cur_m = (int(p) for p in focal_month.split("-"))
+        focal_div_rows = [
+            r for r in div_rows
+            if r.occurred_on.year == cur_y and r.occurred_on.month == cur_m
+        ]
+    else:
+        focal_div_rows = []
+    div_txs = [_tx_to_out(r, cat_by_id_slug) for r in focal_div_rows]
+    dividends = DividendsSummary(
+        month=focal_month or "",
+        current_month_total_usd=cur_month_div_usd,
+        yearly_total_usd=yearly_div_usd,
+        monthly_series=div_series,
+        transactions=div_txs,
+    )
+
+    # 8. Taxes — by-kind NIS rollup + Schwab USD withholding when present.
+    tax_rows = db.execute(
+        sa_select(
+            ExpenseCategory.slug,
+            func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0).label("total"),
+        )
+        .join(ExpenseTransaction,
+              ExpenseTransaction.category_id == ExpenseCategory.id)
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .where(ExpenseTransaction.direction == "debit")
+        .where(ExpenseTransaction.occurred_on >= window_start)
+        .where(ExpenseTransaction.occurred_on <= anchor)
+        .where(ExpenseCategory.slug.in_(_TAX_CATEGORY_SLUGS))
+        .group_by(ExpenseCategory.slug)
+    ).all()
+    by_kind: dict[str, float] = {}
+    yearly_tax_nis = 0.0
+    for slug, total in tax_rows:
+        kind = _TAX_KIND_LABEL.get(slug, slug)
+        by_kind[kind] = float(by_kind.get(kind, 0.0) + float(total or 0))
+        yearly_tax_nis += float(total or 0)
+
+    # Schwab USD withholding — best-effort. The CSV path is configurable
+    # via env (ARGOSY_SCHWAB_CSV_PATH) and not always present locally; if
+    # parsing fails we report 0 USD rather than erroring out the dashboard.
+    yearly_tax_usd = 0.0
+    try:
+        import os
+        from pathlib import Path as _P
+        from argosy.services.rsu_reconciliation.schwab_csv import parse_csv
+        schwab_path = os.environ.get("ARGOSY_SCHWAB_CSV_PATH")
+        if schwab_path:
+            p = _P(schwab_path)
+            if p.exists():
+                report = parse_csv(p)
+                for sale in report.sales:
+                    if (sale.date and sale.date >= window_start
+                            and sale.date <= anchor):
+                        for lot in sale.lots:
+                            yearly_tax_usd += float(lot.taxes_usd or 0)
+    except Exception:
+        yearly_tax_usd = 0.0
+    if yearly_tax_usd > 0:
+        by_kind["rsu_withholding_usd"] = yearly_tax_usd
+
+    taxes = TaxesSummary(
+        yearly_total_nis=yearly_tax_nis,
+        yearly_total_usd=yearly_tax_usd,
+        by_kind=by_kind,
+    )
+
     return DashboardOverview(
         months=months_list,
         current_month=focal_month,
@@ -919,6 +1089,8 @@ def dashboard_overview(
         anomalies=anomalies,
         sources_health=sources_health,
         yearly_summary=yearly,
+        dividends=dividends,
+        taxes=taxes,
         fx_mode=fx,
     )
 

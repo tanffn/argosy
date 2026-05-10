@@ -92,6 +92,20 @@ export interface YearlySummary {
   current_vs_avg_pct: number | null;
 }
 
+export interface DividendsSummary {
+  month: string;
+  current_month_total_usd: number;
+  yearly_total_usd: number;
+  monthly_series: { month: string; total_usd: number }[];
+  transactions: TransactionOut[];
+}
+
+export interface TaxesSummary {
+  yearly_total_nis: number;
+  yearly_total_usd: number;
+  by_kind: Record<string, number>;
+}
+
 export interface DashboardOverview {
   months: MonthlyTotalEntry[];
   current_month: string | null;        // 'YYYY-MM' the headline scopes to
@@ -103,6 +117,8 @@ export interface DashboardOverview {
   anomalies: AnomalyCard[];
   sources_health: SourceHealthEntry[];
   yearly_summary: YearlySummary;
+  dividends: DividendsSummary;
+  taxes: TaxesSummary;
   fx_mode: string;
 }
 

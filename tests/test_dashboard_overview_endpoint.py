@@ -309,3 +309,278 @@ def test_dashboard_overview_yearly_split_inflow_and_spending(client_with_db):
     assert ys["yearly_spending_total_nis"] != ys["yearly_inflow_total_nis"]
     assert ys["yearly_spending_total_nis"] == pytest.approx(200.0)
     assert ys["yearly_inflow_total_nis"] == pytest.approx(10000.0)
+
+
+# ---------------------------------------------------------------------------
+# Refund vs income split (Feature 1)
+# ---------------------------------------------------------------------------
+
+
+def _seed_income_and_refund(client_with_db, *, user_id: str = "u_refund",
+                             month: tuple[int, int] = (2026, 5)):
+    """Seed: salary credit (10k, regular) + refund credit (50, refund)
+    + dining debit (200) in one month.
+    """
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        s.add(User(id=user_id, plan="free")); s.flush()
+        from argosy.services.expense_ingest.taxonomy_seed import (
+            seed_system_defaults, seed_user_categories,
+        )
+        seed_system_defaults(s); s.flush()
+        seed_user_categories(s, user_id); s.flush()
+        f = UserFile(
+            user_id=user_id, sha256="r"*64, original_name="x", sanitized_name="x",
+            mime_type="x", kind="other", size_bytes=1, storage_path="/tmp/x",
+            source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src = ExpenseSource(
+            user_id=user_id, kind="bank_account", issuer="leumi",
+            external_id="9999", display_name="Leumi checking",
+        )
+        s.add(src); s.flush()
+        y, m = month
+        from calendar import monthrange
+        last_day = monthrange(y, m)[1]
+        stmt = ExpenseStatement(
+            user_id=user_id, source_id=src.id, file_id=f.id,
+            period_start=date(y, m, 1), period_end=date(y, m, last_day),
+            parsed_total_nis=Decimal("10250"),
+            parser_name="leumi", parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt); s.flush()
+        salary_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="income.salary",
+        ).one()
+        dining_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="dining_out.restaurants",
+        ).one()
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(y, m, 1),
+            merchant_raw="SALARY DEPOSIT", merchant_normalized="salary deposit",
+            amount_nis=Decimal("10000"),
+            direction="credit", tx_type="regular",
+            category_id=salary_cat.id, category_source="rule",
+            category_confidence=Decimal("1.0"), raw_row_json="{}",
+        ))
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(y, m, 8),
+            merchant_raw="REFUND BIG MEAL", merchant_normalized="refund big meal",
+            amount_nis=Decimal("50"),
+            direction="credit", tx_type="refund",
+            category_id=dining_cat.id, category_source="rule",
+            category_confidence=Decimal("1.0"), raw_row_json="{}",
+        ))
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(y, m, 5),
+            merchant_raw="RESTAURANT XYZ", merchant_normalized="restaurant xyz",
+            amount_nis=Decimal("200"),
+            direction="debit", tx_type="regular",
+            category_id=dining_cat.id, category_source="rule",
+            category_confidence=Decimal("1.0"), raw_row_json="{}",
+        ))
+        s.commit()
+
+
+def test_dashboard_overview_splits_income_from_refunds(client_with_db):
+    _seed_income_and_refund(client_with_db, user_id="u_inc_ref")
+    r = client_with_db.get(
+        "/api/expenses/dashboard-overview?user_id=u_inc_ref&months=6"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["current_month_income_nis"] == pytest.approx(10000.0)
+    assert body["current_month_refunds_nis"] == pytest.approx(50.0)
+    assert body["current_month_inflow_nis"] == pytest.approx(10050.0)
+    income_slugs = [c["slug"] for c in body["current_month_income"]]
+    assert "income.salary" in income_slugs
+    ys = body["yearly_summary"]
+    assert ys["yearly_income_total_nis"] == pytest.approx(10000.0)
+    assert ys["yearly_refunds_total_nis"] == pytest.approx(50.0)
+    assert ys["yearly_inflow_total_nis"] == pytest.approx(10050.0)
+
+
+def test_income_breakdown_endpoint(client_with_db):
+    _seed_income_and_refund(client_with_db, user_id="u_inc_drill")
+    r = client_with_db.get(
+        "/api/expenses/income-breakdown?user_id=u_inc_drill&month=2026-05"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["month"] == "2026-05"
+    assert body["total_nis"] == pytest.approx(10000.0)
+    assert len(body["by_category"]) == 1
+    assert body["by_category"][0]["slug"] == "income.salary"
+    assert len(body["transactions"]) == 1
+    assert body["transactions"][0]["merchant_raw"] == "SALARY DEPOSIT"
+
+
+def test_income_breakdown_empty_month(client_with_db):
+    _seed_income_and_refund(client_with_db, user_id="u_empty_inc")
+    r = client_with_db.get(
+        "/api/expenses/income-breakdown?user_id=u_empty_inc&month=2024-01"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total_nis"] == 0.0
+    assert body["by_category"] == []
+    assert body["transactions"] == []
+
+
+# ---------------------------------------------------------------------------
+# Dividends + Taxes (Feature 4)
+# ---------------------------------------------------------------------------
+
+
+def _seed_dividends_and_taxes(client_with_db, *, user_id: str = "u_div_tax"):
+    """Seed: USD dividend credit + USD non-dividend credit + property-tax debit
+    + income-tax debit, all in May 2026.
+    """
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        s.add(User(id=user_id, plan="free")); s.flush()
+        from argosy.services.expense_ingest.taxonomy_seed import (
+            seed_system_defaults, seed_user_categories,
+        )
+        seed_system_defaults(s); s.flush()
+        seed_user_categories(s, user_id); s.flush()
+        f = UserFile(
+            user_id=user_id, sha256="d"*64, original_name="x", sanitized_name="x",
+            mime_type="x", kind="other", size_bytes=1, storage_path="/tmp/x",
+            source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src_usd = ExpenseSource(
+            user_id=user_id, kind="bank_account", issuer="leumi",
+            external_id="9991-USD", display_name="Leumi USD",
+        )
+        s.add(src_usd); s.flush()
+        src_nis = ExpenseSource(
+            user_id=user_id, kind="bank_account", issuer="leumi",
+            external_id="9992", display_name="Leumi NIS",
+        )
+        s.add(src_nis); s.flush()
+        stmt_usd = ExpenseStatement(
+            user_id=user_id, source_id=src_usd.id, file_id=f.id,
+            period_start=date(2026, 5, 1), period_end=date(2026, 5, 31),
+            parsed_total_nis=Decimal("0"),
+            parser_name="leumi_usd", parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt_usd); s.flush()
+        stmt_nis = ExpenseStatement(
+            user_id=user_id, source_id=src_nis.id, file_id=f.id,
+            period_start=date(2026, 5, 1), period_end=date(2026, 5, 31),
+            parsed_total_nis=Decimal("2200"),
+            parser_name="leumi", parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt_nis); s.flush()
+        # Dividend (USD credit, English wording).
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src_usd.id, statement_id=stmt_usd.id,
+            occurred_on=date(2026, 5, 10),
+            merchant_raw="DIVIDEND XYZ", merchant_normalized="dividend xyz",
+            amount_nis=None, amount_orig=Decimal("125.50"), currency_orig="USD",
+            direction="credit", tx_type="regular",
+            raw_row_json="{}",
+        ))
+        # Dividend (Hebrew Leumi wording).
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src_usd.id, statement_id=stmt_usd.id,
+            occurred_on=date(2026, 5, 20),
+            merchant_raw='נ"ע רבית/דו', merchant_normalized="נ\"ע רבית/דו",
+            amount_nis=None, amount_orig=Decimal("75.00"), currency_orig="USD",
+            direction="credit", tx_type="regular",
+            raw_row_json="{}",
+        ))
+        # NOT a dividend — USD credit but no dividend wording.
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src_usd.id, statement_id=stmt_usd.id,
+            occurred_on=date(2026, 5, 25),
+            merchant_raw="WIRE FROM SCHWAB", merchant_normalized="wire from schwab",
+            amount_nis=None, amount_orig=Decimal("200000.00"), currency_orig="USD",
+            direction="credit", tx_type="regular",
+            raw_row_json="{}",
+        ))
+        # Property tax (housing.property_tax, debit, NIS).
+        prop_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="housing.property_tax",
+        ).one()
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src_nis.id, statement_id=stmt_nis.id,
+            occurred_on=date(2026, 5, 3),
+            merchant_raw="ARNONA", merchant_normalized="arnona",
+            amount_nis=Decimal("1200"),
+            direction="debit", tx_type="regular",
+            category_id=prop_cat.id, category_source="rule",
+            category_confidence=Decimal("1.0"), raw_row_json="{}",
+        ))
+        # Income tax (taxes.income_tax_paid, debit, NIS).
+        itp_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="taxes.income_tax_paid",
+        ).one()
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src_nis.id, statement_id=stmt_nis.id,
+            occurred_on=date(2026, 5, 5),
+            merchant_raw="MAS HACHNASA", merchant_normalized="mas hachnasa",
+            amount_nis=Decimal("1000"),
+            direction="debit", tx_type="regular",
+            category_id=itp_cat.id, category_source="rule",
+            category_confidence=Decimal("1.0"), raw_row_json="{}",
+        ))
+        s.commit()
+
+
+def test_dashboard_dividends_summary(client_with_db):
+    _seed_dividends_and_taxes(client_with_db, user_id="u_div")
+    r = client_with_db.get(
+        "/api/expenses/dashboard-overview?user_id=u_div&months=12"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "dividends" in body
+    div = body["dividends"]
+    assert div["month"] == "2026-05"
+    # 125.50 + 75 = 200.50; non-dividend wire NOT counted.
+    assert div["current_month_total_usd"] == pytest.approx(200.50)
+    assert div["yearly_total_usd"] == pytest.approx(200.50)
+    # monthly_series: one entry for 2026-05 only.
+    assert len(div["monthly_series"]) == 1
+    assert div["monthly_series"][0]["month"] == "2026-05"
+    assert div["monthly_series"][0]["total_usd"] == pytest.approx(200.50)
+    # Two transaction rows surfaced for the focal month.
+    assert len(div["transactions"]) == 2
+
+
+def test_dashboard_taxes_summary(client_with_db):
+    _seed_dividends_and_taxes(client_with_db, user_id="u_tax")
+    r = client_with_db.get(
+        "/api/expenses/dashboard-overview?user_id=u_tax&months=12"
+    )
+    body = r.json()
+    assert "taxes" in body
+    tax = body["taxes"]
+    # 1200 (property) + 1000 (income tax) = 2200.
+    assert tax["yearly_total_nis"] == pytest.approx(2200.0)
+    # No Schwab CSV path env var set, so USD = 0.
+    assert tax["yearly_total_usd"] == 0.0
+    assert tax["by_kind"]["property_tax"] == pytest.approx(1200.0)
+    assert tax["by_kind"]["income_tax_paid"] == pytest.approx(1000.0)
+    # rsu_withholding_usd should NOT be present since CSV is absent.
+    assert "rsu_withholding_usd" not in tax["by_kind"]
+
+
+def test_dashboard_dividends_empty_corpus(client_with_db):
+    """No data at all — dividends/taxes still render zero/empty (no crash)."""
+    r = client_with_db.get(
+        "/api/expenses/dashboard-overview?user_id=u_void2&months=12"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["dividends"]["yearly_total_usd"] == 0.0
+    assert body["dividends"]["transactions"] == []
+    assert body["taxes"]["yearly_total_nis"] == 0.0
+    assert body["taxes"]["yearly_total_usd"] == 0.0
