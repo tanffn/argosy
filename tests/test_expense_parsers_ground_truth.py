@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from tests.expense_ground_truth import (
-    leumi_oracle, isracard_oracle, max_oracle, discount_oracle,
+    leumi_oracle, leumi_usd_oracle, isracard_oracle, max_oracle, discount_oracle,
 )
 
 SAMPLES = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
@@ -54,6 +54,41 @@ def test_leumi_parser_conservation(leumi_samples):
                      if t.direction == "debit" and t.amount_nis is not None)
         credits = sum(t.amount_nis for t in result.transactions
                       if t.direction == "credit" and t.amount_nis is not None)
+        assert len(result.transactions) == truth.row_count, (
+            f"{p.name}: row count drift parser={len(result.transactions)} "
+            f"oracle={truth.row_count}"
+        )
+        assert abs(debits - truth.sum_debits_nis) < 1.00, (
+            f"{p.name}: debit sum drift parser={debits} oracle={truth.sum_debits_nis}"
+        )
+        assert abs(credits - truth.sum_credits_nis) < 1.00, (
+            f"{p.name}: credit sum drift parser={credits} oracle={truth.sum_credits_nis}"
+        )
+
+
+@pytest.fixture(scope="module")
+def leumi_usd_samples():
+    paths = _all_existing("**/Leumi/usd.xls")
+    if not paths:
+        pytest.skip("no Leumi USD samples present")
+    return paths
+
+
+def test_leumi_usd_parser_conservation(leumi_usd_samples):
+    """Conservation for the USD parser. Note that for foreign-currency
+    parsers ``amount_nis`` is None on every row by design (downstream FX
+    converts) — so the comparable scalar is ``amount_orig``. The oracle
+    fields ``sum_debits_nis`` / ``sum_credits_nis`` carry USD totals
+    (legacy schema name; see leumi_usd_oracle docstring).
+    """
+    from argosy.services.expense_ingest.parsers.leumi_usd import parse
+    for p in leumi_usd_samples:
+        truth = leumi_usd_oracle(p)
+        result = parse(p)
+        debits = sum(t.amount_orig for t in result.transactions
+                     if t.direction == "debit" and t.amount_orig is not None)
+        credits = sum(t.amount_orig for t in result.transactions
+                      if t.direction == "credit" and t.amount_orig is not None)
         assert len(result.transactions) == truth.row_count, (
             f"{p.name}: row count drift parser={len(result.transactions)} "
             f"oracle={truth.row_count}"

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
 from datetime import date
 from pathlib import Path
 
 import pytest
 
 FIXTURES = Path(__file__).parent / "fixtures" / "expenses"
+
+_SAMPLES = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
 
 
 def test_leumi_parser_returns_5_rows():
@@ -212,3 +215,50 @@ def test_discount_parser_no_charge_date_metadata():
     result = parse(FIXTURES / "discount_minimal.xlsx")
     assert result.statement.charge_date is None
     assert result.statement.declared_total_nis is None
+
+
+# ---------------------------------------------------------------------------
+# Leumi USD parser tests — live-fixture gated (no synthetic fixture yet;
+# the HTML wrapper is large enough that hand-rolling one isn't worthwhile).
+# Skip if ARGOSY_EXPENSE_SAMPLES_ROOT is unset.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _SAMPLES, reason="ARGOSY_EXPENSE_SAMPLES_ROOT unset")
+def test_leumi_usd_parser_live_fixture():
+    """Run the parser on the live USD fixture and assert the basic shape:
+    every row carries currency_orig='USD', amount_nis is None, source_hint
+    points at the USD account number 44745200.
+    """
+    from argosy.services.expense_ingest.parsers.leumi_usd import parse
+    samples = Path(_SAMPLES)
+    candidates = sorted(samples.glob("**/Leumi/usd.xls"))
+    if not candidates:
+        pytest.skip("no Leumi USD samples present")
+    result = parse(candidates[0])
+    assert len(result.transactions) > 0
+    assert all(t.currency_orig == "USD" for t in result.transactions)
+    assert all(t.amount_nis is None for t in result.transactions)
+    assert all(t.amount_orig is not None for t in result.transactions)
+    assert result.source_hint is not None
+    assert result.source_hint.kind == "bank"
+    assert result.source_hint.issuer == "leumi"
+    assert result.source_hint.external_id == "44745200"
+    assert result.source_hint.display_name == "Leumi USD account"
+
+
+@pytest.mark.skipif(not _SAMPLES, reason="ARGOSY_EXPENSE_SAMPLES_ROOT unset")
+def test_leumi_usd_parser_extended_description_in_raw_row():
+    """Verify the raw_row dict carries the semantic Hebrew column keys."""
+    from argosy.services.expense_ingest.parsers.leumi_usd import parse
+    samples = Path(_SAMPLES)
+    candidates = sorted(samples.glob("**/Leumi/usd.xls"))
+    if not candidates:
+        pytest.skip("no Leumi USD samples present")
+    result = parse(candidates[0])
+    sample = result.transactions[0].raw_row
+    # All seven expected keys present (see leumi_usd.parse for the schema).
+    expected_keys = {
+        "date", "description", "extended_description", "reference",
+        "debit_usd", "credit_usd", "balance_usd",
+    }
+    assert expected_keys.issubset(sample.keys())

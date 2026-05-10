@@ -1,8 +1,10 @@
 """End-to-end orchestrator tests using synthetic fixture files."""
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from sqlalchemy.orm import Session
 
 from argosy.agents.household_categorizer_types import CategorizeResult
@@ -12,6 +14,8 @@ from argosy.state.models import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "expenses"
+
+_SAMPLES = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
 
 
 def _file(s: Session, *, path: Path, mime: str) -> int:
@@ -107,3 +111,53 @@ def test_orchestrator_correlates_after_both_ingested(alembic_engine_at_head):
         ).one()
         assert bank_tx.is_card_payment is True
         assert bank_tx.matched_statement_id == ica_stmt.id
+
+
+@pytest.mark.skipif(not _SAMPLES, reason="ARGOSY_EXPENSE_SAMPLES_ROOT unset")
+def test_orchestrator_registers_two_leumi_sources(alembic_engine_at_head):
+    """Ingesting one Leumi NIS (Osh) file AND one Leumi USD (פמ"ח) file
+    must register two distinct ExpenseSource rows — same issuer 'leumi',
+    different external_ids (44745280 vs 44745200). Multi-account Leumi
+    guard regression test.
+    """
+    samples_root = Path(_SAMPLES)
+    nis_candidates = [
+        p for p in samples_root.glob("**/Leumi/leumi_*.xls")
+        if p.is_file() and p.name != "usd.xls"
+    ]
+    usd_candidates = sorted(samples_root.glob("**/Leumi/usd.xls"))
+    if not nis_candidates or not usd_candidates:
+        pytest.skip("need both Leumi NIS and USD live samples")
+
+    with Session(alembic_engine_at_head) as s, \
+         patch("argosy.services.expense_ingest.category_resolver"
+               "._categorize_via_llm") as mock_llm:
+        def _stub(_user_id, rows):
+            return [
+                CategorizeResult(tx_id=r.tx_id,
+                                 category_slug="discretionary.shopping_other",
+                                 confidence=0.90, rationale="x")
+                for r in rows
+            ]
+        mock_llm.side_effect = _stub
+
+        nis_file_id = _file(
+            s, path=nis_candidates[0], mime="application/vnd.ms-excel",
+        )
+        s.commit()
+        ingest_user_file(s, "ariel", nis_file_id)
+        s.commit()
+
+        usd_file_id = _file(
+            s, path=usd_candidates[0], mime="application/vnd.ms-excel",
+        )
+        s.commit()
+        ingest_user_file(s, "ariel", usd_file_id)
+        s.commit()
+
+        leumi_sources = s.query(ExpenseSource).filter_by(issuer="leumi").all()
+        assert len(leumi_sources) == 2, (
+            f"expected 2 leumi sources, got {[(x.issuer, x.external_id) for x in leumi_sources]}"
+        )
+        ext_ids = {src.external_id for src in leumi_sources}
+        assert ext_ids == {"44745280", "44745200"}
