@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 class ParserName(StrEnum):
     LEUMI_OSH = "leumi_osh"
+    LEUMI_USD = "leumi_usd"
     ISRACARD = "isracard"
     MAX = "max"
     CAL = "cal"

@@ -23,8 +23,12 @@ def detect_format(path: Path) -> ParserName:
     """Return the parser to use for this file.
 
     Sniff order:
-      1. Read first 512 bytes.
-      2. If starts with '<HTML' / '<html' → assume Leumi HTML-as-xls.
+      1. Read first 512 bytes (header magic).
+      2. If starts with '<HTML' / '<html' → Leumi HTML-as-xls.
+         Read further into the body to disambiguate Leumi NIS (Osh) vs
+         Leumi USD (פמ"ח) accounts: USD files carry a "דולר ארה''ב"
+         currency marker in the account header (typically ~13KB in).
+         NIS files don't have that marker.
       3. If starts with PK zip header → it's an .xlsx; look at sheet names.
          - 'פירוט עסקאות' → Isracard
          - sheet starting with 'לאומי לישראל' → Max
@@ -37,6 +41,18 @@ def detect_format(path: Path) -> ParserName:
 
     stripped = head.lstrip()
     if stripped.startswith(b"<HTML") or stripped.startswith(b"<html"):
+        # Read enough of the body to capture the currency marker. The
+        # account header sits well past the first 512 bytes (Leumi prepends
+        # a large CSS/font block), so we sample a generous prefix.
+        try:
+            body = path.read_bytes()[:65536]
+        except OSError:
+            body = head
+        # 'דולר' in UTF-8 is the unambiguous USD marker — the Hebrew word
+        # "dollar" only appears in פמ"ח (foreign-currency) account headers.
+        # NIS Osh exports never include it.
+        if "דולר".encode("utf-8") in body:
+            return ParserName.LEUMI_USD
         return ParserName.LEUMI_OSH
 
     if head[:4] == b"PK\x03\x04":          # ZIP magic = .xlsx

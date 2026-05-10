@@ -26,7 +26,8 @@ from argosy.services.expense_ingest.category_resolver import (
 )
 from argosy.services.expense_ingest.correlator import correlate_for_user
 from argosy.services.expense_ingest.parsers import (
-    leumi_osh as p_leumi, isracard as p_isra, max as p_max,
+    leumi_osh as p_leumi, leumi_usd as p_leumi_usd,
+    isracard as p_isra, max as p_max,
     cal as p_cal, amex as p_amex, diners as p_diners,
 )
 from argosy.services.expense_ingest.persistence import (
@@ -51,12 +52,14 @@ except ImportError:
 
 PARSER_VERSIONS = {
     ParserName.LEUMI_OSH: p_leumi.PARSER_VERSION,
+    ParserName.LEUMI_USD: p_leumi_usd.PARSER_VERSION,
     ParserName.ISRACARD:  p_isra.PARSER_VERSION,
     ParserName.MAX:       p_max.PARSER_VERSION,
 }
 
 PARSER_DISPATCH = {
     ParserName.LEUMI_OSH: p_leumi.parse,
+    ParserName.LEUMI_USD: p_leumi_usd.parse,
     ParserName.ISRACARD:  p_isra.parse,
     ParserName.MAX:       p_max.parse,
     ParserName.CAL:       p_cal.parse,
@@ -94,23 +97,30 @@ def _ensure_categories_seeded(session: Session, user_id: str) -> None:
     session.flush()
 
 
-_LEUMI_EXPECTED_ACCT = "44745280"  # single-user guard; multi-tenant deferred
+_LEUMI_EXPECTED_ACCTS: frozenset[str] = frozenset({
+    "44745280",  # NIS current account (Osh)
+    "44745200",  # USD brokerage/holding (פמ"ח)
+})
 
 
 def _leumi_source_hint_assert(result: ParseResult) -> SourceHint:
-    """Leumi parser now fills source_hint with the account number it pulled
+    """Leumi parser fills source_hint with the account number it pulled
     from the HTML header. This guard keeps the single-user simplification
-    (we know your account is 44745280) but BLOWS UP if a statement for a
-    different account is fed in — single-user-but-trip-wired (per spec §4
-    Bug 3 / user sign-off Q6:C).
+    (we know which Leumi accounts are Ariel's) but BLOWS UP if a
+    statement for a different account is fed in — single-user-but-
+    trip-wired (per spec §4 Bug 3 / user sign-off Q6:C).
+
+    Both ``LEUMI_OSH`` and ``LEUMI_USD`` parsers route through this
+    asserter — same household, two accounts (NIS Osh + USD פמ"ח),
+    same trip-wire.
     """
     if result.source_hint is None:
         raise ValueError("Leumi parser did not produce a source_hint")
     parsed_acct = result.source_hint.external_id
-    if parsed_acct != _LEUMI_EXPECTED_ACCT:
+    if parsed_acct not in _LEUMI_EXPECTED_ACCTS:
         raise ValueError(
-            f"Leumi account mismatch: expected {_LEUMI_EXPECTED_ACCT}, "
-            f"got {parsed_acct!r}"
+            f"Leumi account mismatch: expected one of "
+            f"{sorted(_LEUMI_EXPECTED_ACCTS)}, got {parsed_acct!r}"
         )
     return result.source_hint
 
@@ -144,7 +154,7 @@ def ingest_user_file(
             pass
         raise
 
-    if parser_name == ParserName.LEUMI_OSH:
+    if parser_name in (ParserName.LEUMI_OSH, ParserName.LEUMI_USD):
         hint = _leumi_source_hint_assert(result)
     else:
         hint = result.source_hint
