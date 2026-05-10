@@ -122,7 +122,10 @@ type PairRow =
       disb: RsuDisbursement;
       credit: RsuLeumiCredit;
       daysDiff: number;
+      // Signed: positive = bank received less than Schwab sent (haircut).
       amountDiff: number;
+      matchKind: "exact" | "haircut";
+      haircutPct: number;
     }
   | { kind: "schwab_only"; disb: RsuDisbursement }
   | { kind: "leumi_only"; credit: RsuLeumiCredit };
@@ -149,6 +152,8 @@ function buildPairs(resp: RsuReconciliationResponse): PairRow[] {
           // The matcher always populates these on a paired disbursement.
           daysDiff: d.days_diff ?? 0,
           amountDiff: d.amount_diff_usd ?? 0,
+          matchKind: d.match_kind ?? "exact",
+          haircutPct: d.haircut_pct ?? 0,
         });
       }
     }
@@ -221,25 +226,48 @@ function PlaceholderCell({ label }: { label: string }) {
 
 function PairRowView({ row }: { row: PairRow }) {
   if (row.kind === "matched") {
+    const isHaircut = row.matchKind === "haircut";
+    // Show the absolute dollar shortfall with a leading minus to make the
+    // "bank received less" direction visually obvious.
+    const haircutAmountText = `−${fmtUSD(Math.abs(row.amountDiff))}`;
     return (
       <div
         className={cn(
           "grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-md border px-3 py-2 text-sm",
-          "border-l-4 border-l-emerald-500 border-emerald-400/60 bg-emerald-50/40 dark:bg-emerald-900/10",
+          isHaircut
+            ? "border-l-4 border-l-sky-500 border-sky-400/60 bg-sky-50/40 dark:bg-sky-900/10"
+            : "border-l-4 border-l-emerald-500 border-emerald-400/60 bg-emerald-50/40 dark:bg-emerald-900/10",
         )}
       >
         <DisbCell disb={row.disb} />
-        <Badge variant="success" className="text-[10px] justify-self-center">
-          ✓ paired
-          <span className="opacity-80 ml-1">
-            {row.daysDiff >= 0 ? "+" : ""}
-            {row.daysDiff}d
-          </span>
-          <span className="opacity-80 ml-1">·</span>
-          <span className="opacity-80 ml-1">
-            Δ {fmtUSD(row.amountDiff)}
-          </span>
-        </Badge>
+        {isHaircut ? (
+          <Badge
+            className="text-[10px] justify-self-center border-transparent bg-sky-500 text-white"
+            title="Likely IL capital-gains tax withholding (~28%)"
+          >
+            ≈ haircut
+            <span className="opacity-80 ml-1">
+              {row.daysDiff >= 0 ? "+" : ""}
+              {row.daysDiff}d
+            </span>
+            <span className="opacity-80 ml-1">·</span>
+            <span className="opacity-90 ml-1">
+              {haircutAmountText} ({row.haircutPct.toFixed(1)}%)
+            </span>
+          </Badge>
+        ) : (
+          <Badge variant="success" className="text-[10px] justify-self-center">
+            ✓ paired
+            <span className="opacity-80 ml-1">
+              {row.daysDiff >= 0 ? "+" : ""}
+              {row.daysDiff}d
+            </span>
+            <span className="opacity-80 ml-1">·</span>
+            <span className="opacity-80 ml-1">
+              Δ {fmtUSD(row.amountDiff)}
+            </span>
+          </Badge>
+        )}
         <CreditCell credit={row.credit} />
       </div>
     );
@@ -510,6 +538,12 @@ export default function RsuPage() {
                     row={row}
                   />
                 ))}
+              </div>
+              <div className="text-[11px] text-muted-foreground px-1 pt-1 leading-relaxed">
+                Pairs flagged with <span className="font-medium">≈</span> are
+                soft-matched — Leumi credit is smaller than the Schwab
+                disbursement by ~28% (consistent with Israeli capital-gains tax
+                withholding). Tolerance: 60-105% of disbursement, ±14 days.
               </div>
             </>
           )}

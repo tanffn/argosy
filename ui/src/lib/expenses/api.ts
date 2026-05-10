@@ -370,7 +370,11 @@ export interface RsuDisbursement {
   amount_usd: number;
   matched_leumi_credit_id: number | null;
   days_diff: number | null;
+  // Signed: positive == bank received less than Schwab disbursed (haircut),
+  // negative == bank received more (FX gain), 0 == perfect match.
   amount_diff_usd: number | null;
+  match_kind: "exact" | "haircut" | null;
+  haircut_pct: number | null;
 }
 
 export interface RsuLeumiCredit {
