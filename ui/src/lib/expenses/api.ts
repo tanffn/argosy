@@ -107,6 +107,7 @@ export interface DividendsSummary {
   current_month_total_usd: number;
   yearly_total_usd: number;
   monthly_series: { month: string; total_usd: number }[];
+  trend_12mo: TrendPoint[];
   transactions: TransactionOut[];
 }
 
@@ -114,24 +115,97 @@ export interface TaxesSummary {
   yearly_total_nis: number;
   yearly_total_usd: number;
   by_kind: Record<string, number>;
+  trend_12mo: TrendPoint[];
+}
+
+export interface SavingsRatePoint {
+  month: string;
+  income_nis: number;
+  spending_nis: number;
+  savings_rate: number;
+}
+
+export interface CategoryDelta {
+  slug: string;
+  label: string;
+  current_nis: number;
+  prior_nis: number;
+  delta_nis: number;
+  delta_pct: number | null;
+}
+
+export interface TopMovers {
+  grew: CategoryDelta[];
+  shrank: CategoryDelta[];
+  reason: string | null;
+}
+
+export interface CurrencyMixPoint {
+  month: string;
+  nis: number;
+  usd: number;
+}
+
+export interface TrendPoint {
+  month: string;
+  total_nis: number;
+  total_usd: number;
+}
+
+export interface ChartWindowBar {
+  month: string;
+  total_nis: number;
+  total_usd: number;
+  is_padding: boolean;
+  is_selected: boolean;
+}
+
+export interface HeroMetric {
+  value_nis: number;
+  mom_delta_pct: number | null;
+  vs_trailing12_pct: number | null;
+}
+
+export interface HeroStatsMonthly {
+  spent: HeroMetric;
+  income: HeroMetric;
+  refunds: HeroMetric;
+  statements_reconciled: number;
+  anomalies_count: number;
+}
+
+export interface CategoryDeviation {
+  slug: string;
+  label: string;
+  this_month_nis: number;
+  typical_mean_nis: number;
+  typical_std_nis: number;
+  z_score: number;
+  delta_pct: number | null;
 }
 
 export interface DashboardOverview {
   months: MonthlyTotalEntry[];
-  current_month: string | null;        // 'YYYY-MM' the headline scopes to
-  current_month_spending_nis: number;
-  current_month_income_nis: number;
-  current_month_refunds_nis: number;
-  current_month_inflow_nis: number;    // deprecated alias = income + refunds
-  current_month_top_categories: CategorySpend[];
-  current_month_income: CategorySpend[];
-  current_month_inflow: CategorySpend[];   // deprecated alias for income
-  top_merchants_current_month: MerchantSpend[];
-  anomalies: AnomalyCard[];
-  sources_health: SourceHealthEntry[];
   yearly_summary: YearlySummary;
-  dividends: DividendsSummary;
-  taxes: TaxesSummary;
+  savings_rate_trend: SavingsRatePoint[];
+  top_movers: TopMovers;
+  currency_mix: CurrencyMixPoint[];
+  dividends: DividendsSummary | null;
+  taxes: TaxesSummary | null;
+  sources_health: SourceHealthEntry[];
+  fx_mode: string;
+}
+
+export interface DashboardMonthly {
+  month: string;
+  available_months: string[];
+  chart_window: ChartWindowBar[];
+  hero_stats: HeroStatsMonthly;
+  top_categories: CategorySpend[];
+  categories_vs_typical: CategoryDeviation[];
+  top_merchants: MerchantSpend[];
+  largest_transactions: TransactionOut[];
+  anomalies: AnomalyCard[];
   fx_mode: string;
 }
 
@@ -224,7 +298,6 @@ export const expensesApi = {
     userId: string,
     months = 12,
     fx: "per_currency" | "nis" = "per_currency",
-    month?: string | null,
     window?: YearlyWindow | null,
   ) => {
     const qs = new URLSearchParams({
@@ -232,10 +305,19 @@ export const expensesApi = {
       months: String(months),
       fx,
     });
-    if (month) qs.set("month", month);
     if (window) qs.set("window", window);
     return getJSON<DashboardOverview>(
       `/api/expenses/dashboard-overview?${qs.toString()}`,
+    );
+  },
+  dashboardMonthly: (
+    userId: string,
+    month: string,
+    fx: "per_currency" | "nis" = "per_currency",
+  ) => {
+    const qs = new URLSearchParams({ user_id: userId, month, fx });
+    return getJSON<DashboardMonthly>(
+      `/api/expenses/dashboard-monthly?${qs.toString()}`,
     );
   },
   sources: (userId: string) =>

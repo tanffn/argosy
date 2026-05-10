@@ -16,9 +16,32 @@ interface DividendsCardProps {
   data: DividendsSummary;
 }
 
+function MiniBars({ values, height = 28 }: { values: number[]; height?: number }) {
+  const max = Math.max(1, ...values);
+  return (
+    <svg width={values.length * 6} height={height} className="block">
+      {values.map((v, i) => {
+        const h = Math.max(1, Math.round((v / max) * (height - 4)));
+        return (
+          <rect
+            key={i}
+            x={i * 6}
+            y={height - h - 2}
+            width={4}
+            height={h}
+            fill="currentColor"
+            className="text-emerald-600"
+          />
+        );
+      })}
+    </svg>
+  );
+}
+
 export function DividendsCard({ data }: DividendsCardProps) {
   const series = data.monthly_series ?? [];
   const hasSeries = series.length > 0;
+  const trend = (data.trend_12mo ?? []).map((p) => p.total_usd);
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -44,6 +67,11 @@ export function DividendsCard({ data }: DividendsCardProps) {
             <div className="text-xs text-muted-foreground">last 12mo</div>
           </div>
         </div>
+        {trend.length > 0 && (
+          <div className="mt-2">
+            <MiniBars values={trend} />
+          </div>
+        )}
         {hasSeries && (
           <div className="mt-3 h-16">
             <ResponsiveContainer width="100%" height="100%">
