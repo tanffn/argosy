@@ -237,3 +237,110 @@ def compute_currency_mix(session: Session, user_id: str, months: int = 12):
     return [
         CurrencyMixPoint(month=k, nis=nis[k], usd=usd[k]) for k in month_keys
     ]
+
+
+def _shift_month_key(s: str, delta: int) -> str:
+    """Shift a 'YYYY-MM' month key by `delta` months (positive = future)."""
+    y, m = int(s[:4]), int(s[5:7])
+    m += delta
+    while m > 12:
+        m -= 12
+        y += 1
+    while m < 1:
+        m += 12
+        y -= 1
+    return f"{y:04d}-{m:02d}"
+
+
+def _months_between(a: str, b: str) -> int:
+    """Return signed count of months from a -> b. b later than a => positive."""
+    ay, am = int(a[:4]), int(a[5:7])
+    by, bm = int(b[:4]), int(b[5:7])
+    return (by - ay) * 12 + (bm - am)
+
+
+def compute_chart_window(session: Session, user_id: str, focal_month: str):
+    """Return 12 ChartWindowBar entries per the A-rule (spec §5.3).
+
+    1. Find oldest/newest months with data for the user.
+    2. Ideal window = focal_month - 6 .. focal_month + 5 (12 months total).
+    3. Slide right at the past edge if ideal_left < oldest.
+    4. Slide left at the future edge if right > newest, but never past oldest.
+    5. Mark out-of-range bars `is_padding=True` with zero totals.
+    6. Mark the focal month `is_selected=True`.
+    """
+    from argosy.api.routes.expenses import ChartWindowBar
+
+    bounds = session.execute(
+        sa_select(
+            func.min(ExpenseTransaction.occurred_on).label("oldest"),
+            func.max(ExpenseTransaction.occurred_on).label("newest"),
+        ).where(ExpenseTransaction.user_id == user_id)
+    ).one()
+    if bounds.oldest is None:
+        return []
+    oldest_key = f"{bounds.oldest.year:04d}-{bounds.oldest.month:02d}"
+    newest_key = f"{bounds.newest.year:04d}-{bounds.newest.month:02d}"
+
+    # Compute ideal window centred on focal.
+    ideal = [_shift_month_key(focal_month, -6 + i) for i in range(12)]
+    left, right = ideal[0], ideal[-1]
+
+    # Slide right at past edge.
+    if left < oldest_key:
+        shift = _months_between(left, oldest_key)
+        ideal = [_shift_month_key(k, shift) for k in ideal]
+        left, right = ideal[0], ideal[-1]
+
+    # Slide left at future edge — but never push left past oldest.
+    if right > newest_key:
+        shift = -_months_between(newest_key, right)
+        ideal = [_shift_month_key(k, shift) for k in ideal]
+        if ideal[0] < oldest_key:
+            shift_back = _months_between(ideal[0], oldest_key)
+            ideal = [_shift_month_key(k, shift_back) for k in ideal]
+
+    # Aggregate per month from DB (spending only — same filters as currency_mix).
+    rows = session.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(ExpenseTransaction.currency_orig, "NIS").label("ccy"),
+            func.coalesce(func.sum(case(
+                (ExpenseTransaction.currency_orig == "USD",
+                 ExpenseTransaction.amount_orig),
+                else_=ExpenseTransaction.amount_nis,
+            )), 0.0).label("amt"),
+        )
+        .join(ExpenseCategory,
+              ExpenseTransaction.category_id == ExpenseCategory.id, isouter=True)
+        .where(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.direction == "debit",
+            (ExpenseCategory.is_inflow.is_(False) |
+             ExpenseCategory.is_inflow.is_(None)),
+            (ExpenseCategory.is_excluded_from_spend.is_(False) |
+             ExpenseCategory.is_excluded_from_spend.is_(None)),
+        )
+        .group_by("y", "m", "ccy")
+    ).all()
+    nis: dict[str, float] = {}
+    usd: dict[str, float] = {}
+    for r in rows:
+        key = f"{int(r.y):04d}-{int(r.m):02d}"
+        if r.ccy == "USD":
+            usd[key] = usd.get(key, 0.0) + float(r.amt or 0.0)
+        else:
+            nis[key] = nis.get(key, 0.0) + float(r.amt or 0.0)
+
+    out = []
+    for key in ideal:
+        is_padding = key < oldest_key or key > newest_key
+        out.append(ChartWindowBar(
+            month=key,
+            total_nis=0.0 if is_padding else nis.get(key, 0.0),
+            total_usd=0.0 if is_padding else usd.get(key, 0.0),
+            is_padding=is_padding,
+            is_selected=(key == focal_month),
+        ))
+    return out

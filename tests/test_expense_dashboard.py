@@ -101,3 +101,56 @@ def test_compute_currency_mix_basic(db_session_with_seeded_user):
     assert points[0].month < points[-1].month
     assert all(p.nis >= 0 for p in points)
     assert all(p.usd >= 0 for p in points)
+
+
+def _shift_month(s: str, delta: int) -> str:
+    y, m = int(s[:4]), int(s[5:7])
+    m += delta
+    while m > 12:
+        m -= 12
+        y += 1
+    while m < 1:
+        m += 12
+        y -= 1
+    return f"{y:04d}-{m:02d}"
+
+
+def test_chart_window_centering_basic(db_session_long_history):
+    """Selected month deep inside data range -> 6 before + 1 selected + 5 after."""
+    from argosy.services.expense_dashboard import compute_chart_window
+    bars = compute_chart_window(db_session_long_history, "test", focal_month="2025-06")
+    assert len(bars) == 12
+    months = [b.month for b in bars]
+    assert months == [_shift_month("2025-06", -6 + i) for i in range(12)]
+    assert sum(1 for b in bars if b.is_selected) == 1
+    assert next(b for b in bars if b.is_selected).month == "2025-06"
+    assert all(not b.is_padding for b in bars)
+
+
+def test_chart_window_slide_at_future_edge(db_session_long_history):
+    """Selected month is the latest month -> window slides left so newest is the rightmost bar."""
+    from argosy.services.expense_dashboard import compute_chart_window
+    # db_session_long_history's newest month is "2026-04"
+    bars = compute_chart_window(db_session_long_history, "test", focal_month="2026-04")
+    assert bars[-1].month == "2026-04"
+    assert bars[-1].is_selected
+    assert all(not b.is_padding for b in bars)
+
+
+def test_chart_window_slide_at_past_edge(db_session_long_history):
+    """Selected month is the earliest -> window slides right so oldest is leftmost bar."""
+    from argosy.services.expense_dashboard import compute_chart_window
+    # db_session_long_history's oldest month is "2024-12"
+    bars = compute_chart_window(db_session_long_history, "test", focal_month="2024-12")
+    assert bars[0].month == "2024-12"
+    assert bars[0].is_selected
+    assert all(not b.is_padding for b in bars)
+
+
+def test_chart_window_short_history_pads_to_12(db_session_short_history):
+    """User with 4 months of data -> 12 bars, 8 with is_padding=True."""
+    from argosy.services.expense_dashboard import compute_chart_window
+    bars = compute_chart_window(db_session_short_history, "test", focal_month="2026-03")
+    assert len(bars) == 12
+    pad_count = sum(1 for b in bars if b.is_padding)
+    assert pad_count == 8

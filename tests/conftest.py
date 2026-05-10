@@ -392,6 +392,108 @@ def db_session_short_history(tmp_path):
         engine.dispose()
 
 
+@pytest.fixture
+def db_session_long_history(tmp_path):
+    """Like ``db_session_with_seeded_user`` but seeds 17 months of data.
+
+    Oldest month: 2024-12. Newest month: 2026-04 (inclusive). Used to
+    exercise the ChartWindow A-rule sliding-window logic with a deep
+    enough range that the centring case has data on both sides.
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import (
+        Base, User, UserFile, ExpenseSource, ExpenseStatement,
+        ExpenseTransaction, ExpenseCategory,
+    )
+    from argosy.services.expense_ingest.taxonomy_seed import (
+        seed_system_defaults, seed_user_categories,
+    )
+
+    db_path = tmp_path / "long_history.db"
+    engine = sa.create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    SF = sessionmaker(bind=engine, expire_on_commit=False)
+    s = SF()
+    try:
+        s.add(User(id="test", plan="free"))
+        s.flush()
+        seed_system_defaults(s)
+        s.flush()
+        seed_user_categories(s, "test")
+        s.flush()
+
+        f = UserFile(
+            user_id="test", sha256="d" * 64,
+            original_name="seed", sanitized_name="seed",
+            mime_type="application/octet-stream", kind="other",
+            size_bytes=1, storage_path="/tmp/seed", source="chat_attachment",
+        )
+        s.add(f)
+        s.flush()
+
+        src = ExpenseSource(
+            user_id="test", kind="card", issuer="isracard",
+            external_id="9999", display_name="seed-card",
+        )
+        s.add(src)
+        s.flush()
+
+        spend_cat = s.query(ExpenseCategory).filter_by(
+            user_id="test", slug="dining_out.restaurants",
+        ).one()
+
+        # 17 months ending 2026-04, oldest first => oldest is 2024-12.
+        anchor = date(2026, 4, 1)
+        months: list[date] = []
+        y, m = anchor.year, anchor.month
+        for _ in range(17):
+            months.append(date(y, m, 1))
+            m -= 1
+            if m == 0:
+                m = 12
+                y -= 1
+        months.reverse()
+
+        for month_start in months:
+            period_end = date(month_start.year, month_start.month, 28)
+            stmt = ExpenseStatement(
+                user_id="test", source_id=src.id, file_id=f.id,
+                period_start=month_start, period_end=period_end,
+                parsed_total_nis=Decimal("2500"),
+                declared_total_nis=Decimal("2500"),
+                parser_name="isracard", parser_version="0.1.0",
+                status="parsed",
+            )
+            s.add(stmt)
+            s.flush()
+
+            # 5 debit dining_out.restaurants rows of ₪500 each (~₪2500/month).
+            for i in range(5):
+                day = min(i + 1, 28)
+                s.add(ExpenseTransaction(
+                    user_id="test", source_id=src.id, statement_id=stmt.id,
+                    occurred_on=date(month_start.year, month_start.month, day),
+                    merchant_raw=f"M{i}", merchant_normalized=f"m{i}",
+                    amount_nis=Decimal("500"),
+                    direction="debit", tx_type="regular",
+                    category_id=spend_cat.id, category_source="user",
+                    category_confidence=Decimal("1.0"),
+                    raw_row_json="{}",
+                ))
+        s.commit()
+        yield s
+    finally:
+        s.close()
+        engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # Alembic migration test fixtures
 # ---------------------------------------------------------------------------
