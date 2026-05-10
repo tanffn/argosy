@@ -10,7 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import case, extract, func, select as sa_select
+from sqlalchemy import case, extract, func, or_, select as sa_select
 from sqlalchemy.orm import Session
 
 from argosy.api.routes.plan import get_db    # reuse the existing get_db dep
@@ -1907,7 +1907,11 @@ def rsu_reconciliation(
             merged.disbursements.append(disb)
 
     # Pull Leumi USD credits from DB for the user (account 44745200).
+    # Filter to wire transfers only ("העברת כספים") — other credits
+    # (dividends, interest) are handled by the dedicated dividend card on
+    # the overview page, not the RSU reconciliation page.
     leumi_credits: list[LeumiCredit] = []
+    wire_pattern = "%העברת כספים%"
     rows = (
         db.query(ExpenseTransaction)
         .join(ExpenseSource, ExpenseTransaction.source_id == ExpenseSource.id)
@@ -1917,6 +1921,10 @@ def rsu_reconciliation(
             ExpenseSource.external_id == "44745200",
             ExpenseTransaction.direction == "credit",
             ExpenseTransaction.currency_orig == "USD",
+            or_(
+                ExpenseTransaction.merchant_raw.like(wire_pattern),
+                ExpenseTransaction.merchant_normalized.like(wire_pattern),
+            ),
         )
         .order_by(ExpenseTransaction.occurred_on)
         .all()

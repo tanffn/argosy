@@ -156,6 +156,59 @@ def test_rsu_reconciliation_with_synthetic_csv_pairs_disbursement(
     )
 
 
+def test_rsu_reconciliation_filters_leumi_credits_to_wire_transfers_only(
+    client_with_db, tmp_path: Path, monkeypatch,
+):
+    """Only ``העברת כספים`` Leumi credits are returned; dividend/interest rows
+    (e.g. ``נ"ע רבית/דו``) must be excluded so the unmatched-credit count
+    stays meaningful for the RSU view."""
+    samples_root = tmp_path / "samples"
+    schwab_dir = samples_root / "2026" / "Schwab"
+    schwab_dir.mkdir(parents=True)
+    (schwab_dir / "EquityAwardsCenter_Transactions.csv").write_text(
+        SYNTHETIC_CSV, encoding="utf-8",
+    )
+    monkeypatch.setenv("ARGOSY_EXPENSE_SAMPLES_ROOT", str(samples_root))
+
+    SessionFactory = client_with_db.app.state.session_factory
+    # Wire-transfer credit (matches the synthetic disbursement).
+    wire_tx_id = _seed_user_and_leumi_credit(SessionFactory)
+    # Dividend / interest credit — must be filtered out.
+    with SessionFactory() as s:
+        src = (
+            s.query(ExpenseSource)
+            .filter_by(user_id="ariel", external_id="44745200")
+            .one()
+        )
+        stmt = s.query(ExpenseStatement).filter_by(source_id=src.id).one()
+        dividend = ExpenseTransaction(
+            user_id="ariel", source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 4, 25),
+            merchant_raw='נ"ע רבית/דו',
+            merchant_normalized='nv ravit/du',
+            amount_nis=None,
+            amount_orig=Decimal("12.34"),
+            currency_orig="USD",
+            direction="credit", tx_type="regular",
+            reference="div-1",
+            raw_row_json="{}",
+        )
+        s.add(dividend); s.commit()
+
+    r = client_with_db.get(
+        "/api/expenses/rsu-reconciliation",
+        params={"user_id": "ariel"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["leumi_credits"]) == 1
+    assert body["leumi_credits"][0]["tx_id"] == wire_tx_id
+    assert body["leumi_credits"][0]["merchant_raw"] == "העברת כספים"
+    # Summary count and unmatched count both reflect the filtered set.
+    assert body["summary"]["leumi_credits_count"] == 1
+    assert body["summary"]["leumi_credits_unmatched_count"] == 0
+
+
 def test_rsu_reconciliation_without_env_var_returns_warning_and_empty(
     client_with_db, monkeypatch,
 ):
