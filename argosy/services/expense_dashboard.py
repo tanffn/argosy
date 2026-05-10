@@ -344,3 +344,166 @@ def compute_chart_window(session: Session, user_id: str, focal_month: str):
             is_selected=(key == focal_month),
         ))
     return out
+
+
+def compute_hero_stats_monthly(session: Session, user_id: str, month: str):
+    """Hero-stat bundle for the Monthly tab.
+
+    `value_nis` mirrors the existing `current_month_*` semantics from the
+    overview endpoint. `mom_delta_pct` is `None` if the prior month is
+    missing or zero. `vs_trailing12_pct` is `None` if fewer than 3 of the
+    12 immediately preceding months had any data, or if their average is 0.
+    """
+    from argosy.api.routes.expenses import HeroMetric, HeroStatsMonthly
+
+    spending_by_month = _spending_by_month_dict(session, user_id)
+    income_by_month = _income_by_month_dict(session, user_id)
+    refunds_by_month = _refunds_by_month_dict(session, user_id)
+
+    def metric(by_month: dict[str, float], key: str) -> "HeroMetric":
+        cur = by_month.get(key, 0.0)
+        prev_key = _shift_month_key(key, -1)
+        prev = by_month.get(prev_key)
+        mom = (cur - prev) / prev if (prev is not None and prev > 0) else None
+
+        # trailing-12 = 12 months immediately before `key`
+        trailing_keys = [_shift_month_key(key, -i) for i in range(1, 13)]
+        prior_vals = [by_month[k] for k in trailing_keys if k in by_month]
+        if len(prior_vals) >= 3 and sum(prior_vals) > 0:
+            avg = sum(prior_vals) / len(prior_vals)
+            vs12 = (cur - avg) / avg if avg > 0 else None
+        else:
+            vs12 = None
+
+        return HeroMetric(value_nis=cur, mom_delta_pct=mom, vs_trailing12_pct=vs12)
+
+    statements_reconciled = _count_reconciled_statements_for_month(session, user_id, month)
+    # Anomalies: 0 placeholder. Surfacing the dashboard-overview's inline
+    # anomaly logic here requires an extraction that is deferred to a later
+    # task; the hero card renders fine with a 0.
+    anomalies_count = 0
+
+    return HeroStatsMonthly(
+        spent=metric(spending_by_month, month),
+        income=metric(income_by_month, month),
+        refunds=metric(refunds_by_month, month),
+        statements_reconciled=statements_reconciled,
+        anomalies_count=anomalies_count,
+    )
+
+
+# ----------------- shared per-month accumulators -----------------
+
+def _spending_by_month_dict(session: Session, user_id: str) -> dict[str, float]:
+    """Sum debits per month, excluding inflow/excluded categories and card payments.
+
+    Mirrors the existing `current_month_spending_nis` filters from the
+    overview endpoint.
+    """
+    rows = session.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0.0).label("nis"),
+        )
+        .join(ExpenseCategory,
+              ExpenseTransaction.category_id == ExpenseCategory.id, isouter=True)
+        .where(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.is_card_payment.is_(False),
+            ExpenseTransaction.amount_nis.is_not(None),
+            ExpenseTransaction.direction == "debit",
+            (ExpenseCategory.is_inflow.is_(False) | ExpenseCategory.is_inflow.is_(None)),
+            (ExpenseCategory.is_excluded_from_spend.is_(False) |
+             ExpenseCategory.is_excluded_from_spend.is_(None)),
+        )
+        .group_by("y", "m")
+    ).all()
+    return {f"{int(r.y):04d}-{int(r.m):02d}": float(r.nis or 0.0) for r in rows}
+
+
+def _income_by_month_dict(session: Session, user_id: str) -> dict[str, float]:
+    """Sum credits per month with is_inflow=True and tx_type != 'refund'."""
+    rows = session.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0.0).label("nis"),
+        )
+        .join(ExpenseCategory,
+              ExpenseTransaction.category_id == ExpenseCategory.id)
+        .where(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.is_card_payment.is_(False),
+            ExpenseTransaction.amount_nis.is_not(None),
+            ExpenseTransaction.direction == "credit",
+            ExpenseTransaction.tx_type != "refund",
+            ExpenseCategory.is_inflow.is_(True),
+        )
+        .group_by("y", "m")
+    ).all()
+    return {f"{int(r.y):04d}-{int(r.m):02d}": float(r.nis or 0.0) for r in rows}
+
+
+def _refunds_by_month_dict(session: Session, user_id: str) -> dict[str, float]:
+    """Sum credits per month with tx_type == 'refund'."""
+    rows = session.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0.0).label("nis"),
+        )
+        .where(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.is_card_payment.is_(False),
+            ExpenseTransaction.amount_nis.is_not(None),
+            ExpenseTransaction.direction == "credit",
+            ExpenseTransaction.tx_type == "refund",
+        )
+        .group_by("y", "m")
+    ).all()
+    return {f"{int(r.y):04d}-{int(r.m):02d}": float(r.nis or 0.0) for r in rows}
+
+
+def _count_reconciled_statements_for_month(
+    session: Session, user_id: str, month: str
+) -> int:
+    """Count statements whose period overlaps `month` and whose declared/parsed
+    totals reconcile (gap < 0.5, matching `_gap_status`'s 'green' band).
+
+    NOTE: the `ExpenseStatement.status` column stores parser-state values
+    like ``'parsed'``, NOT the gap-derived ``'green'/'yellow'/'red'``
+    vocabulary. The "reconciled" hero counter is derived from the
+    parsed-vs-declared gap to match the overview endpoint's `_gap_status`.
+    """
+    from argosy.state.models import ExpenseStatement
+
+    y, m = int(month[:4]), int(month[5:7])
+    first = date(y, m, 1)
+    if m == 12:
+        last_excl = date(y + 1, 1, 1)
+    else:
+        last_excl = date(y, m + 1, 1)
+
+    # Statement overlaps month if period_start < last_excl AND period_end >= first.
+    # "Reconciled" = both totals present and |parsed - declared| < 0.5.
+    rows = session.execute(
+        sa_select(
+            ExpenseStatement.parsed_total_nis,
+            ExpenseStatement.declared_total_nis,
+        )
+        .where(
+            ExpenseStatement.user_id == user_id,
+            ExpenseStatement.period_start < last_excl,
+            ExpenseStatement.period_end >= first,
+            ExpenseStatement.declared_total_nis.is_not(None),
+        )
+    ).all()
+
+    count = 0
+    for parsed, declared in rows:
+        if parsed is None or declared is None:
+            continue
+        if abs(float(parsed) - float(declared)) < 0.5:
+            count += 1
+    return count

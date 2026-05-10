@@ -494,6 +494,123 @@ def db_session_long_history(tmp_path):
         engine.dispose()
 
 
+@pytest.fixture
+def db_session_with_zero_prior(tmp_path):
+    """Two months of data for compute_hero_stats_monthly's zero-prior branch.
+
+    March 2026: a single credit (income) row only — zero spending.
+    April 2026: ten ₪500 debits — ₪5000 spending.
+
+    For ``month='2026-04'`` the prior month (March) has zero spending, so
+    ``mom_delta_pct`` must be ``None`` (not infinity).
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import (
+        Base, User, UserFile, ExpenseSource, ExpenseStatement,
+        ExpenseTransaction, ExpenseCategory,
+    )
+    from argosy.services.expense_ingest.taxonomy_seed import (
+        seed_system_defaults, seed_user_categories,
+    )
+
+    db_path = tmp_path / "zero_prior.db"
+    engine = sa.create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    SF = sessionmaker(bind=engine, expire_on_commit=False)
+    s = SF()
+    try:
+        s.add(User(id="test", plan="free"))
+        s.flush()
+        seed_system_defaults(s)
+        s.flush()
+        seed_user_categories(s, "test")
+        s.flush()
+
+        f = UserFile(
+            user_id="test", sha256="e" * 64,
+            original_name="seed", sanitized_name="seed",
+            mime_type="application/octet-stream", kind="other",
+            size_bytes=1, storage_path="/tmp/seed", source="chat_attachment",
+        )
+        s.add(f)
+        s.flush()
+
+        src = ExpenseSource(
+            user_id="test", kind="card", issuer="isracard",
+            external_id="9999", display_name="seed-card",
+        )
+        s.add(src)
+        s.flush()
+
+        spend_cat = s.query(ExpenseCategory).filter_by(
+            user_id="test", slug="dining_out.restaurants",
+        ).one()
+        income_cat = s.query(ExpenseCategory).filter_by(
+            user_id="test", slug="income.salary",
+        ).one()
+
+        # March 2026: zero spending; one credit/income row exists so the
+        # month is "present" but spending is 0.
+        march = date(2026, 3, 1)
+        stmt_mar = ExpenseStatement(
+            user_id="test", source_id=src.id, file_id=f.id,
+            period_start=march, period_end=date(2026, 3, 28),
+            parsed_total_nis=Decimal("0"),
+            declared_total_nis=Decimal("0"),
+            parser_name="isracard", parser_version="0.1.0",
+            status="parsed",
+        )
+        s.add(stmt_mar)
+        s.flush()
+        s.add(ExpenseTransaction(
+            user_id="test", source_id=src.id, statement_id=stmt_mar.id,
+            occurred_on=date(2026, 3, 1),
+            merchant_raw="EMPLOYER", merchant_normalized="employer",
+            amount_nis=Decimal("10000"),
+            direction="credit", tx_type="regular",
+            category_id=income_cat.id, category_source="user",
+            category_confidence=Decimal("1.0"),
+            raw_row_json="{}",
+        ))
+
+        # April 2026: ₪5000 spending across 10 debits.
+        april = date(2026, 4, 1)
+        stmt_apr = ExpenseStatement(
+            user_id="test", source_id=src.id, file_id=f.id,
+            period_start=april, period_end=date(2026, 4, 28),
+            parsed_total_nis=Decimal("5000"),
+            declared_total_nis=Decimal("5000"),
+            parser_name="isracard", parser_version="0.1.0",
+            status="parsed",
+        )
+        s.add(stmt_apr)
+        s.flush()
+        for i in range(10):
+            day = min(i + 1, 28)
+            s.add(ExpenseTransaction(
+                user_id="test", source_id=src.id, statement_id=stmt_apr.id,
+                occurred_on=date(2026, 4, day),
+                merchant_raw=f"M{i}", merchant_normalized=f"m{i}",
+                amount_nis=Decimal("500"),
+                direction="debit", tx_type="regular",
+                category_id=spend_cat.id, category_source="user",
+                category_confidence=Decimal("1.0"),
+                raw_row_json="{}",
+            ))
+        s.commit()
+        yield s
+    finally:
+        s.close()
+        engine.dispose()
+
+
 # ---------------------------------------------------------------------------
 # Alembic migration test fixtures
 # ---------------------------------------------------------------------------

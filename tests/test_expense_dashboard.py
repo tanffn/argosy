@@ -154,3 +154,20 @@ def test_chart_window_short_history_pads_to_12(db_session_short_history):
     assert len(bars) == 12
     pad_count = sum(1 for b in bars if b.is_padding)
     assert pad_count == 8
+
+
+def test_compute_hero_stats_monthly_basic(db_session_with_seeded_user):
+    from argosy.services.expense_dashboard import compute_hero_stats_monthly
+    h = compute_hero_stats_monthly(db_session_with_seeded_user, "test", month="2026-03")
+    assert h.spent.value_nis >= 0
+    # When no prior month, mom_delta is None
+    h_first = compute_hero_stats_monthly(db_session_with_seeded_user, "test", month="2024-12")
+    assert h_first.spent.mom_delta_pct is None
+    assert h_first.spent.vs_trailing12_pct is None
+
+
+def test_compute_hero_stats_monthly_zero_prior(db_session_with_zero_prior):
+    """If prior month had zero spending → mom_delta_pct is None (not infinity)."""
+    from argosy.services.expense_dashboard import compute_hero_stats_monthly
+    h = compute_hero_stats_monthly(db_session_with_zero_prior, "test", month="2026-04")
+    assert h.spent.mom_delta_pct is None
