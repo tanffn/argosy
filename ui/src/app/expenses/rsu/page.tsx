@@ -28,45 +28,6 @@ function fmtUSD(n: number | null | undefined): string {
   return USD.format(n);
 }
 
-// Small wire-icon glyph for העברת כספים rows.
-function WireIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      className={cn("inline-block shrink-0", className)}
-      aria-hidden="true"
-    >
-      <path
-        fill="currentColor"
-        d="M2 8h8.586l-2.293-2.293 1.414-1.414L14 8.586V9.414L9.707 13.707 8.293 12.293 10.586 10H2V8Z"
-      />
-    </svg>
-  );
-}
-
-function NoiseIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      viewBox="0 0 16 16"
-      width="14"
-      height="14"
-      className={cn("inline-block shrink-0", className)}
-      aria-hidden="true"
-    >
-      <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" strokeWidth="1.5" />
-      <circle cx="8" cy="8" r="2" fill="currentColor" />
-    </svg>
-  );
-}
-
-const WIRE_HEBREW = "העברת כספים";
-
-function isWire(c: RsuLeumiCredit): boolean {
-  return c.merchant_raw.includes(WIRE_HEBREW);
-}
-
 interface SaleRowProps {
   sale: RsuSale;
 }
@@ -152,108 +113,168 @@ function SaleCard({ sale }: SaleRowProps) {
   );
 }
 
-interface DisbRowProps {
-  disb: RsuDisbursement;
-  index: number;
-  hovered: number | null;
-  setHovered: (i: number | null) => void;
-  highlightCreditTxId: number | null;
+// ---------------------------------------------------------------------------
+// Paired rows: one row per matched-pair / Schwab-only / Leumi-only
+// ---------------------------------------------------------------------------
+type PairRow =
+  | {
+      kind: "matched";
+      disb: RsuDisbursement;
+      credit: RsuLeumiCredit;
+      daysDiff: number;
+      amountDiff: number;
+    }
+  | { kind: "schwab_only"; disb: RsuDisbursement }
+  | { kind: "leumi_only"; credit: RsuLeumiCredit };
+
+function buildPairs(resp: RsuReconciliationResponse): PairRow[] {
+  const matchedCreditIds = new Set(
+    resp.disbursements
+      .filter((d) => d.matched_leumi_credit_id !== null)
+      .map((d) => d.matched_leumi_credit_id as number),
+  );
+  const rows: PairRow[] = [];
+  // Matched pairs first, then Schwab-only, then Leumi-only — but we sort the
+  // whole list by primary date desc at the end so all rows interleave by date.
+  for (const d of resp.disbursements) {
+    if (d.matched_leumi_credit_id !== null) {
+      const c = resp.leumi_credits.find(
+        (cr) => cr.tx_id === d.matched_leumi_credit_id,
+      );
+      if (c) {
+        rows.push({
+          kind: "matched",
+          disb: d,
+          credit: c,
+          // The matcher always populates these on a paired disbursement.
+          daysDiff: d.days_diff ?? 0,
+          amountDiff: d.amount_diff_usd ?? 0,
+        });
+      }
+    }
+  }
+  for (const d of resp.disbursements) {
+    if (d.matched_leumi_credit_id === null) {
+      rows.push({ kind: "schwab_only", disb: d });
+    }
+  }
+  for (const c of resp.leumi_credits) {
+    if (!matchedCreditIds.has(c.tx_id)) {
+      rows.push({ kind: "leumi_only", credit: c });
+    }
+  }
+  rows.sort((a, b) => {
+    const da =
+      a.kind === "leumi_only" ? a.credit.date : a.disb.date;
+    const db =
+      b.kind === "leumi_only" ? b.credit.date : b.disb.date;
+    return db.localeCompare(da);
+  });
+  return rows;
 }
 
-function DisbursementRow({
-  disb,
-  index,
-  hovered,
-  setHovered,
-  highlightCreditTxId,
-}: DisbRowProps) {
-  const matched = disb.matched_leumi_credit_id !== null;
-  const isHovered = hovered === index;
-  const isMatchHighlight =
-    highlightCreditTxId !== null &&
-    disb.matched_leumi_credit_id === highlightCreditTxId;
+function DisbCell({ disb }: { disb: RsuDisbursement }) {
   return (
-    <div
-      onMouseEnter={() => setHovered(index)}
-      onMouseLeave={() => setHovered(null)}
-      className={cn(
-        "rounded-md border px-3 py-2 text-sm flex items-center justify-between gap-3 transition-colors",
-        matched
-          ? "border-emerald-400/60 bg-emerald-50/40 dark:bg-emerald-900/10"
-          : "border-rose-400/60 bg-rose-50/40 dark:bg-rose-900/10",
-        (isHovered || isMatchHighlight) && "ring-2 ring-sky-400/60",
-      )}
-    >
-      <div className="flex items-center gap-3 min-w-0">
-        <span className="font-mono text-xs text-muted-foreground">{disb.date}</span>
-        <span className="font-mono font-medium">{fmtUSD(disb.amount_usd)}</span>
-      </div>
-      <div className="flex items-center gap-2">
-        {matched ? (
-          <Badge variant="success" className="text-[10px]">
-            ✓ paired
-            {disb.days_diff !== null && (
-              <span className="opacity-80 ml-1">+{disb.days_diff}d</span>
-            )}
-          </Badge>
-        ) : (
-          <Badge variant="error" className="text-[10px]">✗ no match</Badge>
-        )}
-      </div>
+    <div className="flex items-center gap-2 min-w-0">
+      <span className="font-mono text-xs text-muted-foreground">
+        {disb.date}
+      </span>
+      <span className="font-mono font-medium">
+        {fmtUSD(disb.amount_usd)}
+      </span>
     </div>
   );
 }
 
-interface CreditRowProps {
-  credit: RsuLeumiCredit;
-  highlight: boolean;
-  matched: boolean;
+function CreditCell({ credit }: { credit: RsuLeumiCredit }) {
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <span className="font-mono text-xs text-muted-foreground">
+        {credit.date}
+      </span>
+      <span className="font-mono font-medium">
+        {fmtUSD(credit.amount_usd)}
+      </span>
+      <span
+        dir="rtl"
+        className="text-xs text-muted-foreground truncate max-w-[10rem]"
+        title={credit.merchant_raw}
+      >
+        {credit.merchant_raw}
+      </span>
+      {credit.reference && (
+        <span className="font-mono text-[10px] text-muted-foreground shrink-0">
+          ref {credit.reference}
+        </span>
+      )}
+    </div>
+  );
 }
 
-function CreditRow({ credit, highlight, matched }: CreditRowProps) {
-  const wire = isWire(credit);
+function PlaceholderCell({ label }: { label: string }) {
+  return (
+    <div className="rounded-md border border-dashed border-muted-foreground/30 px-2 py-1 text-xs text-muted-foreground italic">
+      ?? {label}
+    </div>
+  );
+}
+
+function PairRowView({ row }: { row: PairRow }) {
+  if (row.kind === "matched") {
+    return (
+      <div
+        className={cn(
+          "grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-md border px-3 py-2 text-sm",
+          "border-l-4 border-l-emerald-500 border-emerald-400/60 bg-emerald-50/40 dark:bg-emerald-900/10",
+        )}
+      >
+        <DisbCell disb={row.disb} />
+        <Badge variant="success" className="text-[10px] justify-self-center">
+          ✓ paired
+          <span className="opacity-80 ml-1">
+            {row.daysDiff >= 0 ? "+" : ""}
+            {row.daysDiff}d
+          </span>
+          <span className="opacity-80 ml-1">·</span>
+          <span className="opacity-80 ml-1">
+            Δ {fmtUSD(row.amountDiff)}
+          </span>
+        </Badge>
+        <CreditCell credit={row.credit} />
+      </div>
+    );
+  }
+  if (row.kind === "schwab_only") {
+    return (
+      <div
+        className={cn(
+          "grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-md border px-3 py-2 text-sm",
+          "border-l-4 border-l-rose-500 border-rose-400/60 bg-rose-50/40 dark:bg-rose-900/10",
+        )}
+      >
+        <DisbCell disb={row.disb} />
+        <Badge variant="error" className="text-[10px] justify-self-center">
+          ✗ no match
+        </Badge>
+        <PlaceholderCell label="no Leumi wire received" />
+      </div>
+    );
+  }
+  // leumi_only
   return (
     <div
       className={cn(
-        "rounded-md border px-3 py-2 text-sm flex items-center justify-between gap-3 transition-colors",
-        matched
-          ? "border-emerald-400/60 bg-emerald-50/40 dark:bg-emerald-900/10"
-          : "border-border bg-background",
-        highlight && "ring-2 ring-sky-400/60",
+        "grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-md border px-3 py-2 text-sm",
+        "border-r-4 border-r-rose-500 border-amber-400/60 bg-amber-50/40 dark:bg-amber-900/10",
       )}
     >
-      <div className="flex items-center gap-3 min-w-0">
-        <span className="font-mono text-xs text-muted-foreground">{credit.date}</span>
-        <span className="font-mono font-medium">{fmtUSD(credit.amount_usd)}</span>
-        <span
-          className={cn(
-            "shrink-0",
-            wire ? "text-sky-600 dark:text-sky-400" : "text-muted-foreground",
-          )}
-          title={wire ? "Wire transfer" : "Other (dividend / interest)"}
-        >
-          {wire ? <WireIcon /> : <NoiseIcon />}
-        </span>
-        <span
-          dir="rtl"
-          className="text-xs text-muted-foreground truncate max-w-[14rem]"
-          title={credit.merchant_raw}
-        >
-          {credit.merchant_raw}
-        </span>
-        {credit.reference && (
-          <span className="font-mono text-[10px] text-muted-foreground">
-            ref {credit.reference}
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-2">
-        {matched ? (
-          <Badge variant="success" className="text-[10px]">✓ paired</Badge>
-        ) : (
-          <Badge variant="outline" className="text-[10px]">un-paired</Badge>
-        )}
-      </div>
+      <PlaceholderCell label="no Schwab disbursement" />
+      <Badge
+        className="text-[10px] justify-self-center border-transparent bg-amber-500 text-white"
+      >
+        ?? orphan
+      </Badge>
+      <CreditCell credit={row.credit} />
     </div>
   );
 }
@@ -262,7 +283,6 @@ export default function RsuPage() {
   const [data, setData] = useState<RsuReconciliationResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [hoveredDisb, setHoveredDisb] = useState<number | null>(null);
   // Ticking this state forces a refetch from the "Refresh from disk" button.
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -312,36 +332,7 @@ export default function RsuPage() {
   const matchRateOK = s.disbursements_matched_count === s.disbursements_count;
   const unmatchedDisbCount = s.disbursements_count - s.disbursements_matched_count;
 
-  // Compute "nearby Leumi credit" highlight target on disbursement hover:
-  // a credit within 14 days and within 50% of amount.
-  let highlightCreditTxId: number | null = null;
-  let highlightDisbCreditTxId: number | null = null;
-  if (hoveredDisb !== null) {
-    const disb = data.disbursements[hoveredDisb];
-    if (disb) {
-      // If matched, highlight the actual matched credit.
-      if (disb.matched_leumi_credit_id !== null) {
-        highlightCreditTxId = disb.matched_leumi_credit_id;
-      } else {
-        // Find the nearest unmatched credit within 14 days and 50% amount.
-        const dDate = new Date(disb.date).getTime();
-        let best: { txId: number; score: number } | null = null;
-        for (const c of data.leumi_credits) {
-          if (c.matched_disbursement_index !== null) continue;
-          const cDate = new Date(c.date).getTime();
-          const days = Math.abs((cDate - dDate) / 86_400_000);
-          if (days > 14) continue;
-          const amtRatio = Math.abs(c.amount_usd - disb.amount_usd) / disb.amount_usd;
-          if (amtRatio > 0.5) continue;
-          const score = days + amtRatio * 30; // crude composite
-          if (best === null || score < best.score) {
-            best = { txId: c.tx_id, score };
-          }
-        }
-        if (best) highlightDisbCreditTxId = best.txId;
-      }
-    }
-  }
+  const pairRows = buildPairs(data);
 
   return (
     <div className="flex flex-col gap-4">
@@ -452,7 +443,9 @@ export default function RsuPage() {
               )}
             </div>
             <div className="text-xs text-muted-foreground mt-1">
-              {s.leumi_credits_count} credit{s.leumi_credits_count !== 1 && "s"}
+              {s.leumi_credits_count} wire{s.leumi_credits_count !== 1 && "s"}
+              {" "}
+              <span className="opacity-70">(העברת כספים only)</span>
               {s.leumi_credits_unmatched_count > 0 && (
                 <>
                   {" "}
@@ -483,65 +476,43 @@ export default function RsuPage() {
           )}
         </div>
 
-        {/* Right: Disbursements + Leumi credits */}
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <div className="text-sm font-semibold text-muted-foreground px-1">
-              Schwab forced disbursements
-            </div>
-            {data.disbursements.length === 0 ? (
-              <Card>
-                <CardContent className="py-6 text-center text-muted-foreground text-sm">
-                  No disbursements found.
-                </CardContent>
-              </Card>
-            ) : (
+        {/* Right: Paired Schwab disbursement <-> Leumi wire credit */}
+        <div className="flex flex-col gap-2">
+          <div className="text-sm font-semibold text-muted-foreground px-1">
+            Disbursements ↔ Leumi wires (paired view)
+          </div>
+          {pairRows.length === 0 ? (
+            <Card>
+              <CardContent className="py-6 text-center text-muted-foreground text-sm">
+                Nothing to pair yet — no disbursements and no Leumi wires in
+                the window.
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              <div
+                className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 px-3 text-[10px] uppercase tracking-wider text-muted-foreground"
+              >
+                <span>Schwab disbursement</span>
+                <span className="justify-self-center">match</span>
+                <span>Leumi wire credit</span>
+              </div>
               <div className="flex flex-col gap-1.5">
-                {data.disbursements.map((d, i) => (
-                  <DisbursementRow
-                    key={i}
-                    index={i}
-                    disb={d}
-                    hovered={hoveredDisb}
-                    setHovered={setHoveredDisb}
-                    highlightCreditTxId={highlightCreditTxId}
+                {pairRows.map((row, i) => (
+                  <PairRowView
+                    key={
+                      row.kind === "leumi_only"
+                        ? `c-${row.credit.tx_id}`
+                        : row.kind === "matched"
+                          ? `m-${row.disb.date}-${row.credit.tx_id}`
+                          : `d-${row.disb.date}-${i}`
+                    }
+                    row={row}
                   />
                 ))}
               </div>
-            )}
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <div className="text-sm font-semibold text-muted-foreground px-1">
-              Leumi USD credits (± 30 days of disbursements)
-            </div>
-            {data.leumi_credits.length === 0 ? (
-              <Card>
-                <CardContent className="py-6 text-center text-muted-foreground text-sm">
-                  No Leumi USD credits in the disbursement window.
-                </CardContent>
-              </Card>
-            ) : (
-              <div className="flex flex-col gap-1.5">
-                {data.leumi_credits.map((c) => {
-                  const matched = c.matched_disbursement_index !== null;
-                  const highlight =
-                    (highlightCreditTxId !== null &&
-                      c.tx_id === highlightCreditTxId) ||
-                    (highlightDisbCreditTxId !== null &&
-                      c.tx_id === highlightDisbCreditTxId);
-                  return (
-                    <CreditRow
-                      key={c.tx_id}
-                      credit={c}
-                      matched={matched}
-                      highlight={highlight}
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       </div>
 
