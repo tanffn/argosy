@@ -17,13 +17,14 @@ export function HeroStats({ overview }: HeroStatsProps) {
   const monthLabel = overview.current_month
     ? formatMonth(overview.current_month)
     : "—";
-  const spending = overview.current_month_spending_nis;
-  const inflow = overview.current_month_inflow_nis;
-  const avg = overview.yearly_summary.avg_per_month_nis;
-  const trendPct = overview.yearly_summary.current_vs_avg_pct;
-  const sources = overview.sources_health;
+  // Defensive: tolerate older backend payloads that pre-date the inflow split.
+  const spending = overview.current_month_spending_nis ?? 0;
+  const inflow = overview.current_month_inflow_nis ?? 0;
+  const avg = overview.yearly_summary?.avg_per_month_nis ?? 0;
+  const trendPct = overview.yearly_summary?.current_vs_avg_pct ?? null;
+  const sources = overview.sources_health ?? [];
   const reconciled = sources.filter((s) => s.status === "green").length;
-  const inflowCount = overview.current_month_inflow.length;
+  const inflowCount = (overview.current_month_inflow ?? []).length;
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
