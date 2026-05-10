@@ -171,3 +171,13 @@ def test_compute_hero_stats_monthly_zero_prior(db_session_with_zero_prior):
     from argosy.services.expense_dashboard import compute_hero_stats_monthly
     h = compute_hero_stats_monthly(db_session_with_zero_prior, "test", month="2026-04")
     assert h.spent.mom_delta_pct is None
+
+
+def test_compute_categories_vs_typical_z_sort(db_session_with_seeded_user):
+    from argosy.services.expense_dashboard import compute_categories_vs_typical
+    out = compute_categories_vs_typical(db_session_with_seeded_user, "test", month="2026-03")
+    assert len(out) <= 3
+    for a, b in zip(out, out[1:]):
+        assert abs(a.z_score) >= abs(b.z_score)
+    for r in out:
+        assert r.typical_std_nis >= 50.0

@@ -392,6 +392,69 @@ def compute_hero_stats_monthly(session: Session, user_id: str, month: str):
     )
 
 
+def compute_categories_vs_typical(session: Session, user_id: str, month: str):
+    """Top-3 spending categories with the largest |z-score| vs trailing-12 typical.
+
+    For each spending-only category:
+      - mean+std of NIS spending across the 12 months strictly before `month`
+      - std floored at ₪50
+      - excluded if fewer than 3 prior-month observations
+      - z = (this_month_nis - mean) / std
+
+    Returns top-3 by `|z_score|`, sorted by z_score desc (most-positive first).
+    """
+    from argosy.api.routes.expenses import CategoryDeviation
+    import statistics
+
+    # All spending-only rows grouped by (slug, month).
+    rows = session.execute(
+        sa_select(
+            ExpenseCategory.slug,
+            ExpenseCategory.label_en,
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0.0).label("nis"),
+        )
+        .join(ExpenseCategory, ExpenseTransaction.category_id == ExpenseCategory.id)
+        .where(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.direction == "debit",
+            ExpenseCategory.is_inflow.is_(False),
+            ExpenseCategory.is_excluded_from_spend.is_(False),
+        )
+        .group_by(ExpenseCategory.slug, ExpenseCategory.label_en, "y", "m")
+    ).all()
+
+    # Build {slug: {month_key: total}}.
+    by_slug: dict[str, dict[str, float]] = {}
+    labels: dict[str, str] = {}
+    for r in rows:
+        key = f"{int(r.y):04d}-{int(r.m):02d}"
+        by_slug.setdefault(r.slug, {})[key] = float(r.nis or 0.0)
+        labels[r.slug] = r.label_en
+
+    trailing_keys = [_shift_month_key(month, -i) for i in range(1, 13)]
+    out: list[CategoryDeviation] = []
+    for slug, monthly in by_slug.items():
+        prior = [monthly[k] for k in trailing_keys if k in monthly]
+        if len(prior) < 3:
+            continue
+        cur = monthly.get(month, 0.0)
+        mean = sum(prior) / len(prior)
+        std = statistics.pstdev(prior) if len(prior) >= 2 else 0.0
+        std = max(std, 50.0)
+        z = (cur - mean) / std if std > 0 else 0.0
+        delta_pct = (cur - mean) / mean if mean > 0 else None
+        out.append(CategoryDeviation(
+            slug=slug, label=labels[slug], this_month_nis=cur,
+            typical_mean_nis=mean, typical_std_nis=std,
+            z_score=z, delta_pct=delta_pct,
+        ))
+
+    out.sort(key=lambda d: abs(d.z_score), reverse=True)
+    return out[:3]
+
+
 # ----------------- shared per-month accumulators -----------------
 
 def _spending_by_month_dict(session: Session, user_id: str) -> dict[str, float]:
