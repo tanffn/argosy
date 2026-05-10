@@ -619,6 +619,7 @@ def dashboard_overview(
                 kind="conservation_gap", severity="red",
                 message=f"{src_row.display_name}: latest gap ₪{gap:+.2f}",
                 detail=f"parsed={latest.parsed_total_nis} declared={latest.declared_total_nis}",
+                link="/expenses/sources",
             ))
     # 4c. Card 2923 fee-waiver: if discount card has any standing-order fee row
     #     in latest statement but NO matching credit/refund row → flag.
@@ -643,6 +644,7 @@ def dashboard_overview(
                     kind="fee_waiver_missed", severity="red",
                     message="Discount Card 2923: card-fee charged with NO matching discount credit",
                     detail="Verify the fee-waiver promotion is still active",
+                    link=f"/expenses/transactions?source_id={discount.id}&include_card_payments=1",
                 ))
 
     # 5. Sources health

@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, AlertCircle, Info } from "lucide-react";
+import { AlertTriangle, AlertCircle, ChevronRight, Info } from "lucide-react";
 import Link from "next/link";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,8 +38,16 @@ export function AnomalyHighlights({ anomalies }: AnomalyHighlightsProps) {
           <ul className="flex flex-col gap-2">
             {anomalies.map((a, i) => {
               const Icon = ICON_BY_SEVERITY[a.severity];
+              const clickable = Boolean(a.link);
               const inner = (
-                <div className="flex gap-2 items-start p-2 rounded hover:bg-secondary/40">
+                <div
+                  className={cn(
+                    "flex gap-2 items-start p-2 rounded",
+                    clickable
+                      ? "hover:bg-secondary/60 cursor-pointer transition-colors"
+                      : "hover:bg-secondary/40",
+                  )}
+                >
                   <Icon className={cn("h-4 w-4 mt-0.5 shrink-0", COLOR_BY_SEVERITY[a.severity])} />
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium">{a.message}</div>
@@ -47,6 +55,12 @@ export function AnomalyHighlights({ anomalies }: AnomalyHighlightsProps) {
                       <div className="text-xs text-muted-foreground mt-0.5">{a.detail}</div>
                     )}
                   </div>
+                  {clickable && (
+                    <ChevronRight
+                      className="h-4 w-4 mt-0.5 shrink-0 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                  )}
                 </div>
               );
               return (
