@@ -42,6 +42,7 @@ class SchwabSaleLot:
     cost_basis_usd: float | None
     realized_gain_usd: float | None
     taxes_usd: float
+    holding_period: str | None = None     # 'LONG TERM' | 'SHORT TERM' | None
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,7 @@ def parse_csv(path: Path) -> SchwabReport:
             cost_basis = _money(row.get("TotalCostBasis"))
             realized = _money(row.get("RealizedGainLoss"))
             taxes = _money(row.get("Taxes"))
+            holding = (row.get("HoldingPeriod") or "").strip() or None
             pending_lots.append(SchwabSaleLot(
                 shares=shares,
                 sale_price_usd=_f0(sale_price),
@@ -210,6 +212,7 @@ def parse_csv(path: Path) -> SchwabReport:
                 cost_basis_usd=_f(cost_basis),
                 realized_gain_usd=_f(realized),
                 taxes_usd=_f0(taxes),
+                holding_period=holding,
             ))
             continue
 

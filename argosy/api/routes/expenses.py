@@ -1659,3 +1659,313 @@ def trip_summary(
         period_start=period_start,
         period_end=period_end,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /rsu-reconciliation
+# ---------------------------------------------------------------------------
+#
+# Visual surface for ``argosy expenses verify-rsu``: parses Schwab Equity
+# Awards Center CSVs from disk (under ARGOSY_EXPENSE_SAMPLES_ROOT) and
+# pairs each disbursement against Leumi USD account credits in the DB.
+# Read-only — never writes. Mirrors the CLI logic in
+# ``argosy.cli.expenses_admin.verify_rsu``.
+
+class RsuSaleLot(BaseModel):
+    shares: int
+    sale_price_usd: float
+    vest_date: date | None
+    gross_proceeds_usd: float | None
+    cost_basis_usd: float | None
+    realized_gain_usd: float | None
+    taxes_usd: float | None
+    holding_period: str | None             # 'LONG TERM' | 'SHORT TERM' | None
+
+
+class RsuSale(BaseModel):
+    date: date
+    symbol: str
+    quantity_shares: int
+    gross_usd: float
+    fees_usd: float
+    net_usd: float
+    total_taxes_usd: float
+    lots: list[RsuSaleLot]
+
+
+class RsuDisbursement(BaseModel):
+    date: date
+    amount_usd: float
+    matched_leumi_credit_id: int | None     # NULL = no match
+    days_diff: int | None
+    amount_diff_usd: float | None
+
+
+class RsuLeumiCredit(BaseModel):
+    tx_id: int
+    date: date
+    amount_usd: float
+    merchant_raw: str
+    reference: str | None
+    matched_disbursement_index: int | None  # NULL = unmatched
+
+
+class RsuSummary(BaseModel):
+    sales_count: int
+    sales_total_gross_usd: float
+    sales_total_fees_usd: float
+    sales_total_net_usd: float
+    sales_total_taxes_usd: float
+    disbursements_count: int
+    disbursements_matched_count: int
+    disbursements_total_usd: float
+    leumi_credits_count: int
+    leumi_credits_unmatched_count: int
+    leumi_credits_unmatched_total_usd: float
+
+
+class RsuReconciliationResponse(BaseModel):
+    sales: list[RsuSale]
+    disbursements: list[RsuDisbursement]
+    leumi_credits: list[RsuLeumiCredit]
+    summary: RsuSummary
+    schwab_csv_paths: list[str]
+    warning: str | None = None
+
+
+@router.get("/rsu-reconciliation", response_model=RsuReconciliationResponse)
+def rsu_reconciliation(
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    tolerance_usd: float = Query(1.0, ge=0.0),
+    tolerance_days: int = Query(7, ge=0, le=90),
+) -> RsuReconciliationResponse:
+    """Schwab → Leumi USD reconciliation, surfaced for the dashboard.
+
+    Walks ``$ARGOSY_EXPENSE_SAMPLES_ROOT/<year>/Schwab/*.csv`` (any year),
+    parses each via ``rsu_reconciliation.parse_csv``, dedups sales and
+    disbursements, then pairs disbursements against Leumi USD account
+    44745200 credits using the same greedy ``reconcile`` matcher as the
+    ``verify-rsu`` CLI.
+
+    Graceful degradation: if the env var is unset OR no CSVs are found,
+    returns 200 with empty lists and a ``warning`` string so the UI can
+    render an empty-state help card.
+    """
+    import os
+    from pathlib import Path
+
+    from argosy.services.rsu_reconciliation import (
+        LeumiCredit,
+        SchwabReport,
+        parse_csv,
+        reconcile,
+    )
+
+    root_str = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
+    csv_paths: list[Path] = []
+    warning: str | None = None
+    if not root_str:
+        warning = "ARGOSY_EXPENSE_SAMPLES_ROOT not set"
+    else:
+        root = Path(root_str)
+        if not root.exists():
+            warning = f"ARGOSY_EXPENSE_SAMPLES_ROOT does not exist: {root}"
+        else:
+            # Walk <root>/<year>/Schwab/*.csv. We accept any folder name for
+            # the year level so ad-hoc names like 'archive' still work.
+            for year_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+                schwab_dir = year_dir / "Schwab"
+                if not schwab_dir.exists() or not schwab_dir.is_dir():
+                    continue
+                for csv in sorted(schwab_dir.glob("*.csv")):
+                    csv_paths.append(csv)
+            if not csv_paths:
+                warning = (
+                    f"No Schwab CSVs found under {root}/<year>/Schwab/. "
+                    "Drop the EquityAwardsCenter export there to enable "
+                    "reconciliation."
+                )
+
+    # Merge reports across CSVs while de-duping sales and disbursements
+    # on (date, key fields). Same shape as the CLI's _MergedReport.
+    merged = SchwabReport()
+    seen_sale: set[tuple] = set()
+    seen_disb: set[tuple] = set()
+    for p in csv_paths:
+        try:
+            r = parse_csv(p)
+        except Exception:
+            # Skip unreadable CSVs but keep going — don't 500 the dashboard.
+            continue
+        for sale in r.sales:
+            key = (sale.date, sale.symbol, sale.quantity_shares,
+                   round(sale.gross_usd, 2), round(sale.fees_usd, 2))
+            if key in seen_sale:
+                continue
+            seen_sale.add(key)
+            merged.sales.append(sale)
+        for disb in r.disbursements:
+            key = (disb.date, disb.action, round(disb.amount_usd, 2))
+            if key in seen_disb:
+                continue
+            seen_disb.add(key)
+            merged.disbursements.append(disb)
+
+    # Pull Leumi USD credits from DB for the user (account 44745200).
+    leumi_credits: list[LeumiCredit] = []
+    rows = (
+        db.query(ExpenseTransaction)
+        .join(ExpenseSource, ExpenseTransaction.source_id == ExpenseSource.id)
+        .filter(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseSource.issuer == "leumi",
+            ExpenseSource.external_id == "44745200",
+            ExpenseTransaction.direction == "credit",
+            ExpenseTransaction.currency_orig == "USD",
+        )
+        .order_by(ExpenseTransaction.occurred_on)
+        .all()
+    )
+    for tx in rows:
+        if tx.amount_orig is None:
+            continue
+        leumi_credits.append(LeumiCredit(
+            date=tx.occurred_on,
+            amount_usd=float(tx.amount_orig),
+            merchant_raw=tx.merchant_raw,
+            reference=tx.reference,
+            tx_id=tx.id,
+        ))
+
+    rec = reconcile(
+        merged,
+        leumi_credits,
+        tolerance_usd=tolerance_usd,
+        tolerance_days=tolerance_days,
+    )
+
+    # ---- Build response ----
+    # Disbursements sorted desc; assign each a stable index for cross-linking.
+    disbs_sorted = sorted(
+        merged.disbursements, key=lambda d: d.date, reverse=True,
+    )
+    # Map disbursement identity → its position in disbs_sorted so
+    # leumi credits can reference back to the matching disbursement.
+    disb_index: dict[int, int] = {id(d): i for i, d in enumerate(disbs_sorted)}
+    # Map disbursement identity → matching credit (from rec.matches).
+    disb_to_match = {id(m.disbursement): m for m in rec.matches}
+    # Map credit tx_id → matching disbursement identity (from rec.matches).
+    credit_to_disb_id: dict[int, int] = {
+        m.credit.tx_id: id(m.disbursement) for m in rec.matches
+    }
+
+    out_disbs: list[RsuDisbursement] = []
+    for disb in disbs_sorted:
+        m = disb_to_match.get(id(disb))
+        out_disbs.append(RsuDisbursement(
+            date=disb.date,
+            amount_usd=round(disb.amount_usd, 2),
+            matched_leumi_credit_id=(m.credit.tx_id if m else None),
+            days_diff=(m.days_diff if m else None),
+            amount_diff_usd=(m.amount_diff_usd if m else None),
+        ))
+
+    # Restrict Leumi credits to a window around the disbursements: ± 30 days
+    # of any disbursement, OR the entire credit list if there are no
+    # disbursements. This keeps the right-column noise low.
+    if disbs_sorted:
+        min_d = min(d.date for d in disbs_sorted) - timedelta(days=30)
+        max_d = max(d.date for d in disbs_sorted) + timedelta(days=30)
+        windowed_credits = [
+            c for c in leumi_credits if min_d <= c.date <= max_d
+        ]
+    else:
+        windowed_credits = list(leumi_credits)
+
+    windowed_credits.sort(key=lambda c: c.date, reverse=True)
+    out_credits: list[RsuLeumiCredit] = []
+    for c in windowed_credits:
+        matched_disb_obj_id = credit_to_disb_id.get(c.tx_id)
+        matched_idx: int | None = (
+            disb_index.get(matched_disb_obj_id)
+            if matched_disb_obj_id is not None else None
+        )
+        out_credits.append(RsuLeumiCredit(
+            tx_id=c.tx_id,
+            date=c.date,
+            amount_usd=round(c.amount_usd, 2),
+            merchant_raw=c.merchant_raw,
+            reference=c.reference,
+            matched_disbursement_index=matched_idx,
+        ))
+
+    # Sales sorted desc.
+    sales_sorted = sorted(merged.sales, key=lambda s: s.date, reverse=True)
+    out_sales: list[RsuSale] = []
+    for s in sales_sorted:
+        out_sales.append(RsuSale(
+            date=s.date,
+            symbol=s.symbol,
+            quantity_shares=s.quantity_shares,
+            gross_usd=round(s.gross_usd, 2),
+            fees_usd=round(s.fees_usd, 2),
+            net_usd=round(s.net_usd, 2),
+            total_taxes_usd=round(s.total_taxes_usd, 2),
+            lots=[
+                RsuSaleLot(
+                    shares=lot.shares,
+                    sale_price_usd=round(lot.sale_price_usd, 4),
+                    vest_date=lot.vest_date,
+                    gross_proceeds_usd=(
+                        round(lot.gross_proceeds_usd, 2)
+                        if lot.gross_proceeds_usd is not None else None
+                    ),
+                    cost_basis_usd=(
+                        round(lot.cost_basis_usd, 2)
+                        if lot.cost_basis_usd is not None else None
+                    ),
+                    realized_gain_usd=(
+                        round(lot.realized_gain_usd, 2)
+                        if lot.realized_gain_usd is not None else None
+                    ),
+                    taxes_usd=round(lot.taxes_usd, 2),
+                    holding_period=lot.holding_period,
+                )
+                for lot in s.lots
+            ],
+        ))
+
+    # Summary numbers — lightweight aggregates the UI shows in hero cards.
+    sales_gross = sum(s.gross_usd for s in merged.sales)
+    sales_fees = sum(s.fees_usd for s in merged.sales)
+    sales_net = sum(s.net_usd for s in merged.sales)
+    sales_taxes = sum(s.total_taxes_usd for s in merged.sales)
+    disb_total = sum(d.amount_usd for d in merged.disbursements)
+    unmatched_credits_in_window = [
+        c for c in windowed_credits if c.tx_id not in credit_to_disb_id
+    ]
+    unmatched_credit_total = sum(c.amount_usd for c in unmatched_credits_in_window)
+
+    summary = RsuSummary(
+        sales_count=len(merged.sales),
+        sales_total_gross_usd=round(sales_gross, 2),
+        sales_total_fees_usd=round(sales_fees, 2),
+        sales_total_net_usd=round(sales_net, 2),
+        sales_total_taxes_usd=round(sales_taxes, 2),
+        disbursements_count=len(merged.disbursements),
+        disbursements_matched_count=len(rec.matches),
+        disbursements_total_usd=round(disb_total, 2),
+        leumi_credits_count=len(windowed_credits),
+        leumi_credits_unmatched_count=len(unmatched_credits_in_window),
+        leumi_credits_unmatched_total_usd=round(unmatched_credit_total, 2),
+    )
+
+    return RsuReconciliationResponse(
+        sales=out_sales,
+        disbursements=out_disbs,
+        leumi_credits=out_credits,
+        summary=summary,
+        schwab_csv_paths=[str(p) for p in csv_paths],
+        warning=warning,
+    )
