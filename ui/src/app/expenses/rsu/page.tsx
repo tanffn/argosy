@@ -192,26 +192,37 @@ function DisbCell({ disb }: { disb: RsuDisbursement }) {
 }
 
 function CreditCell({ credit }: { credit: RsuLeumiCredit }) {
+  // Two-row layout keeps the (sometimes long) `ref XXXXX` token from
+  // overflowing the right panel: top row is date+amount, bottom row is
+  // the Hebrew merchant + ref, both truncated independently with min-w-0
+  // so the parent grid cell can actually shrink them.
   return (
-    <div className="flex items-center gap-2 min-w-0">
-      <span className="font-mono text-xs text-muted-foreground">
-        {credit.date}
-      </span>
-      <span className="font-mono font-medium">
-        {fmtUSD(credit.amount_usd)}
-      </span>
-      <span
-        dir="rtl"
-        className="text-xs text-muted-foreground truncate max-w-[10rem]"
-        title={credit.merchant_raw}
-      >
-        {credit.merchant_raw}
-      </span>
-      {credit.reference && (
-        <span className="font-mono text-[10px] text-muted-foreground shrink-0">
-          ref {credit.reference}
+    <div className="flex flex-col gap-0.5 min-w-0 max-w-full">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="font-mono text-xs text-muted-foreground tabular-nums shrink-0">
+          {credit.date}
         </span>
-      )}
+        <span className="font-mono font-medium truncate">
+          {fmtUSD(credit.amount_usd)}
+        </span>
+      </div>
+      <div className="flex items-center gap-2 min-w-0 text-[10px] text-muted-foreground">
+        <span
+          dir="rtl"
+          className="truncate min-w-0"
+          title={credit.merchant_raw}
+        >
+          {credit.merchant_raw}
+        </span>
+        {credit.reference && (
+          <span
+            className="font-mono tabular-nums truncate min-w-0"
+            title={`ref ${credit.reference}`}
+          >
+            ref {credit.reference}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
