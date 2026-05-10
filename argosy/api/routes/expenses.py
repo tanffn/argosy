@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Annotated
 
@@ -461,12 +461,30 @@ class SourceHealthEntry(BaseModel):
     correlated_card_payments: int
 
 
+class YearlySummary(BaseModel):
+    """12-month rollup. Uses the last 12 months of months_list (NIS-only;
+    foreign rows excluded since their NIS conversion may be unavailable).
+
+    months_covered is the actual count of distinct months in the rollup
+    (≤ 12). avg_per_month_nis divides total_nis by months_covered (or 0 if
+    no months). current_vs_avg_pct = (current_month_nis / avg) - 1, expressed
+    as a percentage; null when there's no average to compare against.
+    """
+
+    months_covered: int
+    total_nis: float
+    avg_per_month_nis: float
+    top_categories_12m: list[CategorySpend]
+    current_vs_avg_pct: float | None
+
+
 class DashboardOverview(BaseModel):
     months: list[MonthlyTotalEntry]
     current_month_top_categories: list[CategorySpend]
     top_merchants_current_month: list[MerchantSpend]
     anomalies: list[AnomalyCard]
     sources_health: list[SourceHealthEntry]
+    yearly_summary: YearlySummary
     fx_mode: str
 
 
@@ -677,12 +695,83 @@ def dashboard_overview(
             correlated_card_payments=corr_n,
         ))
 
+    # 6. Yearly summary — last-12-months rollup, NIS-only.
+    #    Use the months_list NIS totals so the headline stays consistent with
+    #    what the user already sees in the chart. Anchor "12 months" to the
+    #    last month present in the data (not today) so partial corpora still
+    #    render a sensible number.
+    last_12 = months_list[-12:]
+    total_nis_12m = sum(
+        float(m.totals_by_currency.get("NIS", 0.0)) for m in last_12
+    )
+    months_covered = len(last_12)
+    avg_per_month_nis = (total_nis_12m / months_covered) if months_covered else 0.0
+    cur_month_nis = (
+        float(last_12[-1].totals_by_currency.get("NIS", 0.0))
+        if last_12 else 0.0
+    )
+    current_vs_avg_pct: float | None
+    if avg_per_month_nis > 0:
+        current_vs_avg_pct = (cur_month_nis / avg_per_month_nis - 1.0) * 100.0
+    else:
+        current_vs_avg_pct = None
+
+    # 12-month top categories (NIS-only, excluded categories filtered out).
+    # Anchor the window to the last day of the latest month in the data; if
+    # there's no data, use today.
+    if last_12:
+        last_y, last_m = (int(p) for p in last_12[-1].month.split("-"))
+        # last day of last_m
+        if last_m == 12:
+            anchor = date(last_y, 12, 31)
+        else:
+            anchor = date(last_y, last_m + 1, 1) - timedelta(days=1)
+    else:
+        anchor = date.today()
+    window_start = anchor - timedelta(days=365)
+    cat12_rows = db.execute(
+        sa_select(
+            ExpenseCategory.slug, ExpenseCategory.label_en,
+            func.sum(ExpenseTransaction.amount_nis).label("total"),
+            func.count().label("n"),
+        )
+        .join(ExpenseTransaction,
+              ExpenseTransaction.category_id == ExpenseCategory.id)
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .where(ExpenseTransaction.occurred_on >= window_start)
+        .where(ExpenseTransaction.occurred_on <= anchor)
+        .where(ExpenseCategory.is_excluded_from_spend.is_(False))
+        .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
+        .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
+        .limit(5)
+    ).all()
+    cat12_total = sum(float(r.total or 0) for r in cat12_rows) or 1.0
+    top_cats_12m = [
+        CategorySpend(
+            slug=r.slug, label_en=r.label_en,
+            total_nis=float(r.total or 0),
+            transaction_count=int(r.n or 0),
+            percent=float(r.total or 0) / cat12_total * 100.0,
+        )
+        for r in cat12_rows
+    ]
+    yearly = YearlySummary(
+        months_covered=months_covered,
+        total_nis=total_nis_12m,
+        avg_per_month_nis=avg_per_month_nis,
+        top_categories_12m=top_cats_12m,
+        current_vs_avg_pct=current_vs_avg_pct,
+    )
+
     return DashboardOverview(
         months=months_list,
         current_month_top_categories=top_cats,
         top_merchants_current_month=top_merchants,
         anomalies=anomalies,
         sources_health=sources_health,
+        yearly_summary=yearly,
         fx_mode=fx,
     )
 

@@ -101,3 +101,48 @@ def test_dashboard_overview_sources_health_includes_status(client_with_db):
     # gap < 0.5 → green
     assert src["status"] == "green"
     assert src["gap"] is not None and abs(src["gap"]) < 0.5
+
+
+def test_dashboard_overview_yearly_summary_shape(client_with_db):
+    """yearly_summary is the 12-month rollup that powers the 'Bottom line' card.
+
+    Asserts shape + sane values for a single-month seed: 5 NIS-50 dining-out
+    transactions in May 2026 → total_nis=250, avg_per_month_nis=250 (only
+    1 month in the window), current_vs_avg_pct=0.0 (current == avg), and
+    top_categories_12m holds a single dining_out.restaurants entry.
+    """
+    _seed_minimal(client_with_db, user_id="u_year")
+    r = client_with_db.get("/api/expenses/dashboard-overview?user_id=u_year&months=12")
+    assert r.status_code == 200
+    body = r.json()
+    assert "yearly_summary" in body
+    ys = body["yearly_summary"]
+    assert set(ys.keys()) == {
+        "months_covered", "total_nis", "avg_per_month_nis",
+        "top_categories_12m", "current_vs_avg_pct",
+    }
+    assert ys["months_covered"] == 1
+    assert ys["total_nis"] == pytest.approx(250.0)
+    assert ys["avg_per_month_nis"] == pytest.approx(250.0)
+    # cur month equals the only month present → ratio is 1.0 → pct == 0
+    assert ys["current_vs_avg_pct"] == pytest.approx(0.0)
+    # top categories: list of CategorySpend, sorted desc, top one is dining
+    assert isinstance(ys["top_categories_12m"], list)
+    assert len(ys["top_categories_12m"]) >= 1
+    top = ys["top_categories_12m"][0]
+    assert {"slug", "label_en", "total_nis", "transaction_count", "percent"} <= set(top.keys())
+    assert top["slug"] == "dining_out.restaurants"
+    assert top["total_nis"] == pytest.approx(250.0)
+
+
+def test_dashboard_overview_yearly_summary_empty_corpus(client_with_db):
+    """Empty corpus should not blow up — yearly_summary returns zeros + null."""
+    r = client_with_db.get("/api/expenses/dashboard-overview?user_id=u_void&months=12")
+    assert r.status_code == 200
+    body = r.json()
+    ys = body["yearly_summary"]
+    assert ys["months_covered"] == 0
+    assert ys["total_nis"] == 0.0
+    assert ys["avg_per_month_nis"] == 0.0
+    assert ys["top_categories_12m"] == []
+    assert ys["current_vs_avg_pct"] is None
