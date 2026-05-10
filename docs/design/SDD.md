@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-09 — EX1 (household expenses) audit: §3.6 + §3.8 add `HouseholdCategorizerAgent`, §8.5 adds migration 0021, §11.3 + §11.7 add `expense.*` events + `/api/expenses/*` endpoints, §15.4 documents foreign-currency `amount_nis` + Leumi-account-hardcoding + Discount fee-waiver carve-outs, §18 expanded with the four working parsers + ingest pipeline + REST/CLI surface that landed. |
+| **Last updated** | 2026-05-10 — EX1.1 stabilization wave landed (7 bug-fixes, fx/ module, migrations 0022+0023). EX4 expenses dashboard landed (Next.js `/expenses` route family, 8+ chart/table components, 3 new backend endpoints). Tests at 966 passing. Backfill on real corpus partial — see handover. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-09 by Claude (session post-EX1, post-handover). This is a time-bounded handover; once the deferred work below either lands or is explicitly dropped, future-you should DELETE this section.
+**Last edit:** 2026-05-10 by Claude (session post-EX1.1, post-EX4). User went to bed mid-session and authorized full autonomous execution; this handover summarizes what landed without their direct review. Treat this as a checkpoint, not a sign-off — Ariel reviews in the morning.
 
 ### Orientation — start here if you have zero context
 
@@ -48,72 +48,87 @@
 
 ### Where development is at right now
 
-- `main` HEAD: `53921ed` (`docs(sdd): add 8 Mermaid diagrams to §18`).
-- Tests: 932 passing under `pytest -m "not llm_eval"` (5 deselected llm_eval), 0 failures. Migrations 0001-0021 applied to dev DB.
-- **Services running but STALE — restart needed before user-facing /api/expenses/* works.** uvicorn on `127.0.0.1:8000` reports `git_sha: 1a73528` (pre-EX1); `GET /api/expenses/sources` returns 404 because the new router isn't loaded. Next.js on `127.0.0.1:1337` running but EX4 (UI) isn't built yet so there's nothing EX1-specific to render.
-- Dev DB lives at `<ARGOSY_HOME>/db/argosy.db` (SQLite). 702 expense_transactions, 4 sources registered, 82 system-default categories seeded.
+- `main` HEAD: `3bcd655` (latest of the EX4 cherry-pick chain).
+- Tests: **966 passing** under `pytest -m "not llm_eval"` (was 932 at session start; +34 across EX1.1 + EX4). 0 failures. Migrations 0001-0023 applied to dev DB.
+- **Services need restart.** uvicorn on `127.0.0.1:8000` was killed mid-session (during T16 backfill troubleshooting) — restart so the new `/api/expenses/{dashboard-overview, source-detail/{id}}` routes load. Next.js dev: `cd ui ; npm run dev` on port 1337 — `/expenses` route family is now live.
+- Dev DB lives at `<ARGOSY_HOME>/db/argosy.db` (SQLite). DB was wiped + partially re-ingested during T16. Backup at `db/argosy.db.pre-ex1.1.bak` if rollback needed.
 
-### Wave EX1 — Household Expenses — landed
+### Wave EX1.1 — Stabilization — LANDED
 
-EX1 ingest-core ships behind `/api/expenses/*` plus an `argosy expenses` CLI. The durable description is §18 (with 8 Mermaid diagrams in §18.0). Highlights:
+Spec: `docs/superpowers/specs/2026-05-09-ex1.1-stabilization-design.md`. Plan: `docs/superpowers/plans/2026-05-09-ex1.1-stabilization-implementation.md`. Findings: `docs/superpowers/specs/2026-05-09-ex1.1-verify-findings.md`.
 
-- Migration `0021_household_expenses` (six tables; §8.5).
-- 4 working parsers: Leumi current-account (`leumi_osh.py`), Isracard (`isracard.py`), Max (`max.py`), Discount Bank Mastercard (`discount.py`). 3 stubs raising `NotImplementedError`: Cal, Amex, Diners.
-- `HouseholdCategorizerAgent` (Sonnet, batched ~50 tx/call, confidence ≥ 0.85 threshold; §3.6).
-- Ingest pipeline: parse → register source → persist → bank↔card correlate (via `אסמכתא`) → resolve categories (cascade: user → issuer → cache → LLM) → match refunds (inherit from prior debit). Idempotent on `user_files.id`.
-- REST: `/api/expenses/{upload (sync route), sources, transactions, transactions/{id} (PATCH), categories, monthly-summary}` (§11.7).
-- CLI: `argosy expenses {verify-file, backfill, issuer-coverage}`.
-- WebSocket events: `expense.statement.{parsed,failed}` (§11.3).
-- Conservation tests pass on real corpus: 2 Leumi, 33 Isracard (Ariel 16 + Noga 17), 17 Max, 2 Discount.
-- Spec: `docs/superpowers/specs/2026-05-09-household-expenses-design.md`. Plan: `docs/superpowers/plans/2026-05-09-household-expenses-implementation.md` (32 commits across 30 tasks).
+All 7 listed defects from the prior handover are CLOSED:
 
-### Live state of the dev DB after EX1 backfill
+1. ✅ Max `external_id` — parser now takes `last4_hint`; CLI walker infers from parent folder; REST upload requires `card_last4` form field for Max issuer.
+2. ✅ Foreign `amount_nis` NULL — Isracard parser sets None; correlator/refund_matcher handle NULL; `monthly-summary` returns per-currency map.
+3. ✅ Leumi acct guard — parser extracts account from HTML; orchestrator asserts match against hardcoded `"44745280"`; raises ValueError on mismatch.
+4. ✅ N+1 in category resolver — sources pre-loaded by id-set in one query.
+5. ✅ Model alias `"sonnet"` → `"claude-sonnet-4-6"` (canonical).
+6. ✅ `categories_resolved` counter only increments inside the resolved-non-uncategorized branch.
+7. ✅ Leumi `raw_row` semantic keys (`date`, `value_date`, `description`, `reference`, `debit`, `credit`, `balance`, `note`, `extra_8`).
 
-A backfill ran during the wave-gate but it landed BEFORE the Discount parser (`4910499`), so it's incomplete. Current source rows:
+**New module landed:** `argosy/services/fx/` — DB-cached BoI daily exchange rates. `fx.convert(session, amount, from_ccy, to_ccy, on_date)`. Migration `0023_fx_rates` adds the cache table. Parsers stay FX-naive; conversion is downstream. Used optionally by future dashboard `/dashboard-overview?fx=nis` (server-side conversion not wired yet — endpoint still returns per-currency totals; EX4 frontend has the toggle ready for when conversion wires in).
 
-| issuer | external_id | statements | display_name | gap |
-|---|---|---|---|---|
-| `leumi` | `44745280` | 1 | Leumi current account | hardcoded, see below |
-| `isracard` | `1266` | 9 (of 16 expected) | Isracard 1266 (Ariel) | 7 files unaccounted |
-| `isracard` | `0235` | 14 (of 17 expected) | Isracard 0235 (Noga) | 3 files unaccounted |
-| `max` | `5280` | 12 (of 17 expected) | Max 5280 | should be `6225` — see bug below |
-| `discount` | — | 0 | — | parser landed after backfill; not ingested |
+**New verify-phase findings (from corpus replay test T15):**
 
-Categorization status: 358 LLM, 237 cache-hit, 102 issuer-seed, 3 inherited-from-refund, 2 NULL. `uncategorized` category holds 37 rows totaling ~₪361k — overwhelmingly Leumi bank lines (salary, mortgage, property tax, internal transfers) that LLM-categorize poorly without context. Triage them by reviewing `argosy expenses transactions ?category=uncategorized` after restart.
+- **Leumi parser bidi marks** — real Leumi May 2026 export has `‏`/`‎` and HTML comments around the account number. Parser regex was synthetic-fixture-only; FIXED in commit `2258d39` (strip bidi + HTML comments + lazy-match). All three Leumi fixtures now extract correctly.
+- **Leumi SpreadsheetML format unsupported** — some Leumi files (`Leumi_26_Mar_24.xls`, `Leumi_26_May_01.xls`) are XML SpreadsheetML, not HTML-as-xls. `pd.read_html` fails. **Deferred** — user can re-export from Leumi web in HTML format, OR a future task adds a SpreadsheetML branch in `sniff.py` + parser.
+- Three "plan-stub defects" recurred across EX1.1 implementer agents: `statement_id=None` violates NOT NULL; `CategorizeResult` requires `rationale`; `asyncio.run(catalog_upload(...))` inside sync Session causes "database is locked". All worked-around per task; documented in findings doc.
 
-### Open issues — RESTART, RE-INGEST, AND ONE PARSER BUG
+**Operational reset (T16) — partial completion:**
 
-Three concrete things to do before declaring EX1 user-ready (in priority order):
+- Migrations 0022 + 0023 applied. Per-user expense data wiped (702 txs + 36 statements + 4 sources + 52 expense user_files removed; user_categories + merchant_cache preserved).
+- Backfill stalled after 24 statements / 341 transactions across the 2 Isracard sources only — likely an LLM call hanging on the first Max file. **User should re-run** `argosy expenses backfill --user-id ariel --dir "D:\Google Drive\Family\Finances\Portfolio\Resources"`. With the bidi fix, Leumi May 2026 should now succeed; Max files now thread `last4_hint=6225`. Watch for hangs > 5 min on a single file; if stuck, kill and skip.
 
-1. **Restart uvicorn so the new `/api/expenses/*` routes load.** Current uvicorn was started before any EX1 commit. Symptom: `curl http://127.0.0.1:8000/api/expenses/sources?user_id=ariel` → `{"detail":"Not Found"}`. Fix: kill the current uvicorn process and re-launch (whatever the project's `argosy serve` / `uvicorn argosy.api.main:create_app` invocation is — check `README` or `Resources/`).
-2. **Re-run backfill to pick up Discount + missing files.** `$env:ARGOSY_EXPENSE_SAMPLES_ROOT = "D:\Google Drive\Family\Finances\Portfolio\Resources"; argosy expenses backfill --user-id ariel --dir "D:\Google Drive\Family\Finances\Portfolio\Resources"`. Idempotent (skips already-ingested files via content-hash + statement-period uniqueness) so it'll only ingest the gaps. Cost: ~$1-2 LLM categorization for the new merchants.
-3. **Parser bug — Max external_id is bank-account last-4, not card last-4.** `parsers/max.py` extracts `last4` from the sheet name `לאומי לישראל 882-44745280` → `5280`, but the actual card number is `6225` (per the user's folder naming). Affected: source row's `external_id` and `display_name` are wrong. Correlator side-effect: when a Leumi line references `6225` as the card last-4 (`אסמכתא = 6225`), it won't match `Max 5280` so the bank↔card dedup fails for Max card-payment rows. Fix path: extract the card last-4 from the file *name* (`Apr.xlsx` doesn't carry it; the folder `6225/` does — so the parser would need a `last4_hint` parameter from the caller). Defer to EX2 polish OR fix as a quick follow-up here.
+### Wave EX4 — Expenses Dashboard — LANDED
 
-### Deferred / open (carried into EX2+)
+Spec: `docs/superpowers/specs/2026-05-09-ex4-expenses-dashboard-design.md`. Plan: `docs/superpowers/plans/2026-05-09-ex4-expenses-dashboard-implementation.md`.
 
-- **Foreign-currency `amount_nis` for non-NIS Isracard rows** stores raw foreign amount, not NIS-converted. Documented in §15.4. Fix at EX2 boundary by FX-converting in both oracle and parser using a shared constant.
-- **Leumi account-number hardcoded** (`"44745280"`) in `orchestrator.py::_leumi_source_hint`. Acceptable for single-user; multi-tenant fix deferred.
-- **Discount Bank fee-waiver flag** — parser preserves both card-fee + discount-rebate rows (does not pre-net); the `recurring_missed` anomaly that flags promo expiry is EX2 work. See `memory/project_card_2923_fee_waiver.md`.
-- **From the retro code-review (commit context only — items NOT fixed in this session):**
-  - **N+1 query** in `category_resolver.py:97-98` — `session.get(ExpenseSource, tx.source_id)` runs once per LLM-batched tx. Pre-load by id-set instead. Cosmetic at single-user scale; matters at multi-tenant.
-  - **Model alias `"sonnet"`** in `argosy/agents/base.py::DEFAULT_MODEL_BY_ROLE["household_categorizer"]`. Live LLM eval passed (claude_code backend resolves the alias), but the api_key backend may reject it. Trivially fix to `"claude-sonnet-4-6"`.
-  - **`categories_resolved` IngestResult counter** overcounts — increments before checking whether the LLM result was actually `uncategorized`. Cosmetic — the metric isn't surfaced to the user, but it'll mislead on operator dashboards.
-  - **Leumi `raw_row` JSON keys** are positional integers (`"0"..."8"`) where every other parser uses semantic keys (`"date"`, `"merchant"`, `"charge_amount"`, etc.). Makes `argosy expenses issuer-coverage` and future anomaly queries harder to write.
-  - **Critical issue (the async-route + asyncio.run() collision in upload) was already fixed** at commit `eb6fc79` — flagging only so you don't re-find it.
-- **EX2 (anomaly detection + advisor surfacing)**, **EX3 (`HouseholdBudgetAnalystAgent` feeding plan synthesis)**, **EX4 (UI)** all scheduled but not started. Outlines in spec §18.2.
+**User went to bed mid-session and authorized "do everything, I'll review tomorrow."** This wave was brainstormed + specified + planned + executed entirely autonomously. Decisions log at the bottom of the spec records every judgment call.
 
-### Pre-existing watch items (carried; not EX1 fault)
+Backend (3 commits):
+- Hotfix: `TransactionOut.amount_nis: float | None`; new `amount_orig` + `currency_orig` fields (commit `4cb...`).
+- New `GET /api/expenses/dashboard-overview?user_id=&months=&fx=` returning `{months, current_month_top_categories, top_merchants_current_month, anomalies, sources_health, fx_mode}` (one round-trip for the overview page; computes anomalies including Discount Card 2923 fee-waiver-missed flag).
+- New `GET /api/expenses/source-detail/{source_id}?user_id=` returning `{source, statements: [{period, parsed_total, declared_total, gap, status, transaction_count, correlated_count}]}`.
+- 7 new tests pass (1 hotfix + 4 dashboard-overview + 2 source-detail).
+
+Frontend (12+ commits):
+- New nav tab "Expenses" (between Portfolio and Plan).
+- Routes: `/expenses` (overview), `/expenses/transactions` (browse + filters + inline category edit), `/expenses/sources` (per-source statement timeline + reconciliation table).
+- 9 new components in `ui/src/components/expenses/`: hero-stats, monthly-spend-chart (Recharts BarChart, per-currency stacks), category-donut (PieChart + drill-through links), top-merchants-card, anomaly-highlights, sources-health-table, transactions-table, category-edit-popover (Dialog), source-statement-timeline, fx-toggle.
+- New libs: `ui/src/lib/expenses/{api, format, fx-mode}.ts`.
+- FX toggle (per-currency vs NIS-converted) in localStorage; backend conversion is not yet wired (endpoint still returns per-currency map regardless of `fx` param), but the toggle is ready for it.
+- `npm run build` GREEN; all 18 routes prerender. Lint has ~21 errors total (≈+3 from this wave; balance is pre-existing project-wide).
+
+### Open issues / next-session priority
+
+1. **User reviews EX4 dashboard tomorrow morning.** Open `http://127.0.0.1:1337/expenses` (after restarting `npm run dev` and uvicorn). Spot-check that hero stats render, charts populate, transactions table works, sources page lists 2 Isracard sources (only Isracard data ingested in T16). Inline category edit should persist.
+2. **Re-run backfill manually** — partial corpus today (24 of ~53 statements). Bidi-marks fix means real Leumi files should now ingest. Cost: ~$1-2 LLM categorization.
+3. **SpreadsheetML Leumi parser** — if the older Leumi files matter, build that out.
+4. **Wire server-side FX conversion** — when user wants the NIS-converted toggle to actually convert (today it just sums NIS-only).
+5. **EX2 anomaly detection backend** — recurring-missed flag (Card 2923 promo monitoring), novel-merchant alerts. Some are computed in `dashboard-overview` already (uncategorized count, conservation_gap, fee_waiver_missed). EX2 would add a dedicated agent + persistent anomaly records.
+6. **Wave 2 data verification with user** — was deferred; the dashboard provides a manual review surface but not a structured "is this row correct?" workflow.
+
+### Pre-existing watch items (carried)
 
 - **Live LLM e2e tests are flaky** under `claude_code` backend on this machine — `tests/test_plan_distiller_golden.py` and `tests/test_plan_synthesis_e2e.py` show JSON-parsing transients in full-suite runs that share `claude.exe` subprocess state. Pass when run individually.
-- **Manual UI smokes deliberately skipped** by user direction across every wave.
+- **Manual UI smokes deliberately skipped** by user direction (and didn't happen for EX4 — user is asleep). Worth a smoke pass tomorrow.
+- **`react-hooks/set-state-in-effect` lint noise** is project-wide. Several existing pages and EX4 pages flag it. Not blocking.
+- **Recharts 3.x type quirks** required `as unknown as never` casts on Tooltip formatters in 2 chart components.
 
 ### Prior-session context (provenance Waves A-F, now durable in §17)
 
 Waves A-F built a first-class provenance layer (`user_files` catalog at migration 0019, `decision_phases` at migration 0020, `/api/decisions/{id}/replay` + `/decisions/[id]` UI replay, transcript writer + negotiation recorder). All durable in §17. Deferred provenance items: per-phase plan_synthesis recording, drawio sources for §17 diagrams, soft-undo for plan-shape ingest. None are EX1 blockers.
 
-### Open questions / live decisions for next session
+### Action choices for next session (Ariel picks)
 
-- **Action choice the user has not yet picked** (offered at end of last session): A. restart uvicorn so EX1 routes come online; B. re-run backfill including Discount + missing Isracard/Max files; C. fix the Max external_id parser bug; D. just stop. The user's last instruction was to update this handover before context fills, so they may pick one of A/B/C next. If resuming with no new instruction, A is the cheapest forward step (uvicorn restart) and unblocks any UI / curl exploration.
+A. **Smoke the EX4 dashboard** — open `/expenses`, click around, confirm everything works against the partial corpus.
+B. **Re-run backfill** — get the full corpus loaded so the dashboard shows 5 sources instead of 2.
+C. **Both A then B** — but A first (validates UI works at all).
+D. **Fix something specific** — Ariel reviews + identifies a target.
+E. **Move to next wave** — EX2 anomaly detection, or wave 2 data verification, or something else.
+
+If resuming cold with no new instruction, **C is the cheapest forward step** — open the dashboard to validate, then re-run backfill to populate it.
 
 ---
 
