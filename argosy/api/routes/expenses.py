@@ -488,8 +488,17 @@ class SourceHealthEntry(BaseModel):
 
 
 class YearlySummary(BaseModel):
-    """12-month rollup. Uses the last 12 months of months_list (NIS-only;
-    foreign rows excluded since their NIS conversion may be unavailable).
+    """12-month rollup (NIS-only; foreign rows excluded since their NIS
+    conversion may be unavailable).
+
+    Window selection: see ``DashboardOverview.window`` query param.
+
+      * ``window=trailing_12`` (default): the 12 calendar months ending at
+        the latest month with data. So if the latest month is May 2026,
+        the window is Jun 2025 → May 2026.
+      * ``window=calendar_year``: Jan 1 → Dec 31 of the YEAR of the latest
+        month with data. So in May 2026 the window is Jan-Dec 2026 (which
+        will only have 5 months reflected: Jan-May).
 
     months_covered is the actual count of distinct months in the rollup
     (≤ 12). avg_per_month_nis divides yearly_spending_total_nis by
@@ -506,6 +515,15 @@ class YearlySummary(BaseModel):
                                   back-compat with older UI/tests.
     total_nis                  — DEPRECATED alias for yearly_spending_total_nis;
                                   kept for backward compat with existing UI/tests.
+    top_categories_12m         — ALL spending categories with a non-zero total
+                                  in the window, sorted desc by total_nis. The
+                                  frontend can paginate / show-all as desired.
+                                  (Pre-2026-05 this was top-5 only.)
+    window                     — 'trailing_12' or 'calendar_year'.
+    window_label               — Pretty label for UI: 'Trailing 12 months' or
+                                  '2026 (calendar year)'.
+    window_start_month         — 'YYYY-MM' first month of the window.
+    window_end_month           — 'YYYY-MM' last month of the window.
     """
 
     months_covered: int
@@ -517,6 +535,10 @@ class YearlySummary(BaseModel):
     avg_per_month_nis: float
     top_categories_12m: list[CategorySpend]
     current_vs_avg_pct: float | None
+    window: str = "trailing_12"
+    window_label: str = ""
+    window_start_month: str = ""
+    window_end_month: str = ""
 
 
 class DividendsSummary(BaseModel):
@@ -630,6 +652,16 @@ def dashboard_overview(
             "Optional 'YYYY-MM' to scope current_month_* fields and the "
             "current-vs-avg comparison to a specific month instead of the "
             "latest month with data. Format: YYYY-MM (e.g. '2026-04')."
+        ),
+    ),
+    window: str = Query(
+        default="trailing_12",
+        pattern="^(trailing_12|calendar_year)$",
+        description=(
+            "Yearly-summary window. 'trailing_12' (default): the 12 months "
+            "ending at the latest month with data. 'calendar_year': Jan 1 "
+            "to Dec 31 of the year of the latest month with data (so a "
+            "partial year shows the months it has)."
         ),
     ),
 ) -> DashboardOverview:
@@ -930,25 +962,58 @@ def dashboard_overview(
             correlated_card_payments=corr_n,
         ))
 
-    # 6. Yearly summary — last-12-months rollup, NIS-only.
-    #    Anchor "12 months" to the last month present in the data (not today)
-    #    so partial corpora still render a sensible number.
-    last_12 = months_list[-12:]
-    months_covered = len(last_12)
-    if last_12:
-        last_y, last_m = (int(p) for p in last_12[-1].month.split("-"))
+    # 6. Yearly summary — windowed rollup, NIS-only.
+    #    Anchor the window to the LATEST MONTH WITH DATA (not today) so
+    #    partial corpora render sensible numbers, and so the "current month"
+    #    headline is actually inside the rollup.
+    #
+    #    Two windows supported:
+    #
+    #      trailing_12 (default): the 12 months ending at the latest month
+    #        with data. So if latest month is 2026-05, window is
+    #        2025-06 → 2026-05.
+    #
+    #      calendar_year: Jan 1 → Dec 31 of the YEAR of the latest month
+    #        with data. So if latest month is 2026-05, window is
+    #        2026-01 → 2026-05 in practice (months actually present in the
+    #        data — months_covered counts distinct months with rows).
+    if months_list:
+        last_y, last_m = (int(p) for p in months_list[-1].month.split("-"))
         if last_m == 12:
             anchor = date(last_y, 12, 31)
         else:
             anchor = date(last_y, last_m + 1, 1) - timedelta(days=1)
-        # window_start: first day of the earliest of the last_12 months
-        # (not anchor-365d, to keep the window aligned to month boundaries
-        # so 12 distinct months actually fit).
-        first_y, first_m = (int(p) for p in last_12[0].month.split("-"))
-        window_start = date(first_y, first_m, 1)
+        if window == "calendar_year":
+            window_start = date(last_y, 1, 1)
+            window_label = f"{last_y} (calendar year)"
+            window_start_month = f"{last_y:04d}-01"
+            window_end_month = f"{last_y:04d}-{last_m:02d}"
+        else:
+            # trailing_12: window starts at the first month of the last_12
+            # slice for clean month boundaries.
+            last_12 = months_list[-12:]
+            first_y, first_m = (int(p) for p in last_12[0].month.split("-"))
+            window_start = date(first_y, first_m, 1)
+            window_label = "Trailing 12 months"
+            window_start_month = f"{first_y:04d}-{first_m:02d}"
+            window_end_month = f"{last_y:04d}-{last_m:02d}"
+        # months_covered: distinct months in months_list that fall within
+        # [window_start, anchor]. For trailing_12 that's the len of the slice;
+        # for calendar_year it's the count of months >= window_start.
+        ws_key = f"{window_start.year:04d}-{window_start.month:02d}"
+        in_window = [m for m in months_list
+                     if ws_key <= m.month <= window_end_month]
+        months_covered = len(in_window)
     else:
         anchor = date.today()
         window_start = anchor - timedelta(days=365)
+        window_label = (
+            f"{anchor.year} (calendar year)" if window == "calendar_year"
+            else "Trailing 12 months"
+        )
+        window_start_month = ""
+        window_end_month = ""
+        months_covered = 0
 
     # Yearly SPENDING total + top categories — exclude inflow & excluded.
     spending_12m_rows = db.execute(
@@ -973,6 +1038,9 @@ def dashboard_overview(
         float(r.total or 0) for r in spending_12m_rows
     )
     spending_pct_base = yearly_spending_total_nis or 1.0
+    # ALL spending categories with a non-zero total — sorted desc by total_nis
+    # (the underlying SQL already ORDER BY desc). Frontend may paginate /
+    # show-all as desired. Filter zero-totals defensively.
     top_cats_12m = [
         CategorySpend(
             slug=r.slug, label_en=r.label_en,
@@ -980,7 +1048,8 @@ def dashboard_overview(
             transaction_count=int(r.n or 0),
             percent=float(r.total or 0) / spending_pct_base * 100.0,
         )
-        for r in spending_12m_rows[:5]
+        for r in spending_12m_rows
+        if float(r.total or 0) > 0
     ]
     avg_per_month_nis = (
         (yearly_spending_total_nis / months_covered) if months_covered else 0.0
@@ -1033,6 +1102,10 @@ def dashboard_overview(
         avg_per_month_nis=avg_per_month_nis,
         top_categories_12m=top_cats_12m,
         current_vs_avg_pct=current_vs_avg_pct,
+        window=window,
+        window_label=window_label,
+        window_start_month=window_start_month,
+        window_end_month=window_end_month,
     )
 
     # 6b. Anomaly oddities — sensible defaults the user authorised:

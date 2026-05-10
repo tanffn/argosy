@@ -84,6 +84,8 @@ export interface SourceHealthEntry {
   correlated_card_payments: number;
 }
 
+export type YearlyWindow = "trailing_12" | "calendar_year";
+
 export interface YearlySummary {
   months_covered: number;
   total_nis: number;                   // deprecated alias for yearly_spending_total_nis
@@ -92,8 +94,12 @@ export interface YearlySummary {
   yearly_refunds_total_nis: number;
   yearly_inflow_total_nis: number;     // deprecated alias = income + refunds
   avg_per_month_nis: number;
-  top_categories_12m: CategorySpend[];
+  top_categories_12m: CategorySpend[]; // ALL spending categories, sorted desc
   current_vs_avg_pct: number | null;
+  window: YearlyWindow;
+  window_label: string;
+  window_start_month: string;
+  window_end_month: string;
 }
 
 export interface DividendsSummary {
@@ -219,6 +225,7 @@ export const expensesApi = {
     months = 12,
     fx: "per_currency" | "nis" = "per_currency",
     month?: string | null,
+    window?: YearlyWindow | null,
   ) => {
     const qs = new URLSearchParams({
       user_id: userId,
@@ -226,6 +233,7 @@ export const expensesApi = {
       fx,
     });
     if (month) qs.set("month", month);
+    if (window) qs.set("window", window);
     return getJSON<DashboardOverview>(
       `/api/expenses/dashboard-overview?${qs.toString()}`,
     );

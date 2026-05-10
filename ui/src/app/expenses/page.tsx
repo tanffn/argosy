@@ -14,7 +14,11 @@ import { TaxesCard } from "@/components/expenses/taxes-card";
 import { TopMerchantsCard } from "@/components/expenses/top-merchants-card";
 import { YearlySummaryCard } from "@/components/expenses/yearly-summary-card";
 import { Card, CardContent } from "@/components/ui/card";
-import { expensesApi, type DashboardOverview } from "@/lib/expenses/api";
+import {
+  expensesApi,
+  type DashboardOverview,
+  type YearlyWindow,
+} from "@/lib/expenses/api";
 import { useFxMode } from "@/lib/expenses/fx-mode";
 
 const USER_ID = "ariel";
@@ -30,20 +34,34 @@ function ExpensesOverviewInner() {
   const monthParam = params.get("month");
   const selectedMonth =
     monthParam && /^\d{4}-\d{2}$/.test(monthParam) ? monthParam : null;
+  const windowParam = params.get("window");
+  const selectedWindow: YearlyWindow =
+    windowParam === "calendar_year" ? "calendar_year" : "trailing_12";
 
   useEffect(() => {
     setLoading(true);
     expensesApi
-      .dashboardOverview(USER_ID, 12, fxMode, selectedMonth)
+      .dashboardOverview(USER_ID, 12, fxMode, selectedMonth, selectedWindow)
       .then(setData)
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [fxMode, selectedMonth]);
+  }, [fxMode, selectedMonth, selectedWindow]);
 
   function setMonth(m: string | null) {
     const next = new URLSearchParams(params.toString());
     if (m === null) next.delete("month");
     else next.set("month", m);
+    const qs = next.toString();
+    router.replace(qs ? `/expenses?${qs}` : "/expenses");
+    if (m !== null && typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+
+  function setWindow(w: YearlyWindow) {
+    const next = new URLSearchParams(params.toString());
+    if (w === "trailing_12") next.delete("window");
+    else next.set("window", w);
     const qs = next.toString();
     router.replace(qs ? `/expenses?${qs}` : "/expenses");
   }
@@ -78,7 +96,10 @@ function ExpensesOverviewInner() {
           onChange={setMonth}
         />
       </div>
-      <YearlySummaryCard data={data.yearly_summary} />
+      <YearlySummaryCard
+        data={data.yearly_summary}
+        onWindowChange={setWindow}
+      />
       <HeroStats overview={data} fxMode={fxMode} />
       {(data.dividends || data.taxes) && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

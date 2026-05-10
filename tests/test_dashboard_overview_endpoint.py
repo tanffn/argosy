@@ -124,6 +124,7 @@ def test_dashboard_overview_yearly_summary_shape(client_with_db):
         "yearly_inflow_total_nis",
         "avg_per_month_nis",
         "top_categories_12m", "current_vs_avg_pct",
+        "window", "window_label", "window_start_month", "window_end_month",
     }
     assert ys["months_covered"] == 1
     # total_nis is the (deprecated) alias for yearly_spending_total_nis.
@@ -302,6 +303,161 @@ def test_dashboard_overview_month_param_rescopes_current(client_with_db):
     assert body["current_month"] == "2026-04"
     assert body["current_month_spending_nis"] == pytest.approx(200.0)
     assert body["current_month_inflow_nis"] == pytest.approx(10000.0)
+
+
+def test_dashboard_overview_yearly_summary_window_calendar_year(client_with_db):
+    """?window=calendar_year scopes the rollup to Jan-Dec of the year of the
+    latest month with data. Default (?window=trailing_12) still works."""
+    SF = client_with_db.app.state.session_factory
+    user_id = "u_calyr"
+    with SF() as s:
+        s.add(User(id=user_id, plan="free")); s.flush()
+        from argosy.services.expense_ingest.taxonomy_seed import (
+            seed_system_defaults, seed_user_categories,
+        )
+        seed_system_defaults(s); s.flush()
+        seed_user_categories(s, user_id); s.flush()
+        f = UserFile(
+            user_id=user_id, sha256="y"*64, original_name="x", sanitized_name="x",
+            mime_type="x", kind="other", size_bytes=1, storage_path="/tmp/x",
+            source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src = ExpenseSource(
+            user_id=user_id, kind="bank_account", issuer="leumi",
+            external_id="0099", display_name="x",
+        )
+        s.add(src); s.flush()
+        stmt = ExpenseStatement(
+            user_id=user_id, source_id=src.id, file_id=f.id,
+            period_start=date(2025, 1, 1), period_end=date(2026, 5, 31),
+            parsed_total_nis=Decimal("0"),
+            parser_name="x", parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt); s.flush()
+        cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="dining_out.restaurants",
+        ).one()
+        # 2025-12 = 100 NIS spending (will be EXCLUDED from calendar_year 2026
+        # but included in trailing_12).
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2025, 12, 5),
+            merchant_raw="DEC TX", merchant_normalized="dec tx",
+            amount_nis=Decimal("100"),
+            direction="debit", tx_type="regular",
+            category_id=cat.id, raw_row_json="{}",
+        ))
+        # 2026-03 = 50 NIS spending (in BOTH windows).
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 3, 5),
+            merchant_raw="MAR TX", merchant_normalized="mar tx",
+            amount_nis=Decimal("50"),
+            direction="debit", tx_type="regular",
+            category_id=cat.id, raw_row_json="{}",
+        ))
+        # 2026-05 = 30 NIS spending (in BOTH windows; this is "latest month").
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 5, 10),
+            merchant_raw="MAY TX", merchant_normalized="may tx",
+            amount_nis=Decimal("30"),
+            direction="debit", tx_type="regular",
+            category_id=cat.id, raw_row_json="{}",
+        ))
+        s.commit()
+    # trailing_12 (default) — all three months in window.
+    r = client_with_db.get(
+        f"/api/expenses/dashboard-overview?user_id={user_id}&months=24"
+    )
+    assert r.status_code == 200
+    ys = r.json()["yearly_summary"]
+    assert ys["window"] == "trailing_12"
+    assert ys["window_label"] == "Trailing 12 months"
+    assert ys["window_start_month"] == "2025-12"
+    assert ys["window_end_month"] == "2026-05"
+    assert ys["yearly_spending_total_nis"] == pytest.approx(180.0)  # 100+50+30
+    assert ys["months_covered"] == 3
+    # calendar_year — only 2026 months in window.
+    r = client_with_db.get(
+        f"/api/expenses/dashboard-overview?user_id={user_id}&months=24"
+        "&window=calendar_year"
+    )
+    ys = r.json()["yearly_summary"]
+    assert ys["window"] == "calendar_year"
+    assert ys["window_label"] == "2026 (calendar year)"
+    assert ys["window_start_month"] == "2026-01"
+    assert ys["window_end_month"] == "2026-05"
+    assert ys["yearly_spending_total_nis"] == pytest.approx(80.0)  # 50+30
+    assert ys["months_covered"] == 2  # mar + may
+
+
+def test_dashboard_overview_yearly_summary_top_cats_returns_all(client_with_db):
+    """top_categories_12m now returns ALL categories with non-zero spend
+    sorted desc, not just top 5."""
+    SF = client_with_db.app.state.session_factory
+    user_id = "u_allcats"
+    with SF() as s:
+        s.add(User(id=user_id, plan="free")); s.flush()
+        from argosy.services.expense_ingest.taxonomy_seed import (
+            seed_system_defaults, seed_user_categories,
+        )
+        seed_system_defaults(s); s.flush()
+        seed_user_categories(s, user_id); s.flush()
+        f = UserFile(
+            user_id=user_id, sha256="z"*64, original_name="x", sanitized_name="x",
+            mime_type="x", kind="other", size_bytes=1, storage_path="/tmp/x",
+            source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src = ExpenseSource(
+            user_id=user_id, kind="card", issuer="isracard",
+            external_id="0099", display_name="x",
+        )
+        s.add(src); s.flush()
+        stmt = ExpenseStatement(
+            user_id=user_id, source_id=src.id, file_id=f.id,
+            period_start=date(2026, 5, 1), period_end=date(2026, 5, 31),
+            parsed_total_nis=Decimal("0"),
+            parser_name="x", parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt); s.flush()
+        # Seed 6 distinct categories with descending amounts so we can
+        # assert >5 returned and ordering.
+        slugs = [
+            ("dining_out.restaurants", 600),
+            ("food.groceries", 500),
+            ("transportation.fuel", 400),
+            ("transportation.parking", 300),
+            ("subscriptions.streaming", 200),
+            ("discretionary.shopping_clothing", 100),
+        ]
+        for slug, amt in slugs:
+            cat = s.query(ExpenseCategory).filter_by(
+                user_id=user_id, slug=slug,
+            ).one_or_none()
+            if cat is None:
+                continue
+            s.add(ExpenseTransaction(
+                user_id=user_id, source_id=src.id, statement_id=stmt.id,
+                occurred_on=date(2026, 5, 10),
+                merchant_raw=f"M-{slug}", merchant_normalized=slug,
+                amount_nis=Decimal(str(amt)),
+                direction="debit", tx_type="regular",
+                category_id=cat.id, raw_row_json="{}",
+            ))
+        s.commit()
+    r = client_with_db.get(
+        f"/api/expenses/dashboard-overview?user_id={user_id}&months=12"
+    )
+    body = r.json()
+    cats = body["yearly_summary"]["top_categories_12m"]
+    # >5 categories returned (was capped at 5 before).
+    assert len(cats) > 5
+    # Sorted desc.
+    totals = [c["total_nis"] for c in cats]
+    assert totals == sorted(totals, reverse=True)
 
 
 def test_dashboard_overview_yearly_split_inflow_and_spending(client_with_db):
