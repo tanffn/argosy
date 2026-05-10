@@ -72,12 +72,21 @@ export interface SourceHealthEntry {
   correlated_card_payments: number;
 }
 
+export interface YearlySummary {
+  months_covered: number;
+  total_nis: number;
+  avg_per_month_nis: number;
+  top_categories_12m: CategorySpend[];
+  current_vs_avg_pct: number | null;
+}
+
 export interface DashboardOverview {
   months: MonthlyTotalEntry[];
   current_month_top_categories: CategorySpend[];
   top_merchants_current_month: MerchantSpend[];
   anomalies: AnomalyCard[];
   sources_health: SourceHealthEntry[];
+  yearly_summary: YearlySummary;
   fx_mode: string;
 }
 
