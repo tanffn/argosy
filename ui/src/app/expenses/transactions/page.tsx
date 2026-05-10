@@ -109,19 +109,38 @@ function TransactionsPageInner() {
             value={filterParams.direction ?? ""}
             onChange={(e) => setParam("direction", e.target.value || null)}
             className="bg-background border border-border rounded px-2 py-1.5 text-sm"
+            title="Spending = money out (debit). Money in = income or refunds (credit)."
           >
-            <option value="">Both</option>
-            <option value="debit">Debits</option>
-            <option value="credit">Credits</option>
+            <option value="">All</option>
+            <option value="debit">Spending (out)</option>
+            <option value="credit">Money in (income / refunds)</option>
           </select>
-          <label className="text-xs text-muted-foreground inline-flex items-center gap-1">
-            <input
-              type="checkbox"
-              checked={filterParams.include_card_payments}
-              onChange={(e) => setParam("include_card_payments", e.target.checked ? "1" : null)}
-            />
-            include card-payments
-          </label>
+          <details className="basis-full mt-1">
+            <summary className="text-xs text-muted-foreground cursor-pointer select-none">
+              Advanced
+            </summary>
+            <div className="mt-2 pl-3 border-l border-border">
+              <label
+                className="text-xs text-muted-foreground inline-flex items-center gap-2"
+                title="Bank rows that pay off a card statement — usually filtered to avoid double-counting."
+              >
+                <input
+                  type="checkbox"
+                  checked={filterParams.include_card_payments}
+                  onChange={(e) =>
+                    setParam("include_card_payments", e.target.checked ? "1" : null)
+                  }
+                />
+                <span>
+                  Show card-payment settlements
+                  <span className="ml-1 text-muted-foreground/80">
+                    (bank rows that pay off a card statement — hidden by default to
+                    avoid double-counting)
+                  </span>
+                </span>
+              </label>
+            </div>
+          </details>
         </CardContent>
       </Card>
       <Card>

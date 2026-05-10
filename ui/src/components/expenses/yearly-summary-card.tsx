@@ -70,21 +70,37 @@ export function YearlySummaryCard({ data }: YearlySummaryCardProps) {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div>
-            <div className="text-xs text-muted-foreground">Total spend</div>
+            <div className="text-xs text-muted-foreground">Total spent</div>
             <div className="text-2xl font-semibold tabular-nums">
-              {formatNIS(data.total_nis)}
+              {formatNIS(data.yearly_spending_total_nis)}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Outflow only — excludes salary, transfers, investments
             </div>
           </div>
           <div>
-            <div className="text-xs text-muted-foreground">Per month, on average</div>
+            <div className="text-xs text-muted-foreground">Total income</div>
+            <div className="text-2xl font-semibold tabular-nums text-emerald-600">
+              {formatNIS(data.yearly_inflow_total_nis)}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Salary, RSU, refunds, dividends
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground">
+              Spent per month, on avg
+            </div>
             <div className="text-2xl font-semibold tabular-nums">
               {formatNIS(data.avg_per_month_nis)}
             </div>
           </div>
           <div>
-            <div className="text-xs text-muted-foreground">This month vs average</div>
+            <div className="text-xs text-muted-foreground">
+              This month vs avg
+            </div>
             <div className={`text-2xl font-semibold tabular-nums ${trendColor}`}>
               {trendLabel ?? "—"}
             </div>
@@ -94,7 +110,7 @@ export function YearlySummaryCard({ data }: YearlySummaryCardProps) {
         {data.top_categories_12m.length > 0 && (
           <div className="mt-5">
             <div className="text-xs text-muted-foreground mb-2">
-              Where it goes — top 5 categories (12-month)
+              Where it goes — top 5 spending categories (12-month)
             </div>
             <ul className="flex flex-col gap-1.5">
               {data.top_categories_12m.map((c) => {

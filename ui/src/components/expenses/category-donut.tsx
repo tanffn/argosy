@@ -7,25 +7,35 @@ import {
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type CategorySpend } from "@/lib/expenses/api";
-import { colorForSlug, formatNIS, formatPercent } from "@/lib/expenses/format";
+import {
+  colorForSlug,
+  formatMonth,
+  formatNIS,
+  formatPercent,
+} from "@/lib/expenses/format";
 
 interface CategoryDonutProps {
   data: CategorySpend[];
   height?: number;
+  /** 'YYYY-MM' the data is scoped to; null when corpus is empty. */
+  month?: string | null;
 }
 
-export function CategoryDonut({ data, height = 280 }: CategoryDonutProps) {
+export function CategoryDonut({ data, height = 280, month }: CategoryDonutProps) {
   const total = data.reduce((s, c) => s + c.total_nis, 0);
+  const monthLabel = month ? formatMonth(month) : "current month";
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Categories — current month</CardTitle>
+        <CardTitle className="text-base">
+          Spending categories — {monthLabel}
+        </CardTitle>
       </CardHeader>
       <CardContent>
         {data.length === 0 ? (
           <div className="text-sm text-muted-foreground py-12 text-center">
-            No data this month yet.
+            No spending in {monthLabel}.
           </div>
         ) : (
           <div className="flex flex-col lg:flex-row gap-4 items-center">

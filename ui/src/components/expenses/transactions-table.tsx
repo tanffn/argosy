@@ -37,7 +37,9 @@ export function TransactionsTable({
       <tbody>
         {transactions.map((t) => {
           const src = sourceById.get(t.source_id);
-          const isRefund = t.direction === "credit" || t.tx_type === "refund";
+          // Money-in row: credit (e.g. salary) OR an explicit refund tx_type.
+          // We display credits as "+X in green" and debits as a plain number.
+          const isMoneyIn = t.direction === "credit" || t.tx_type === "refund";
           const amountText = t.amount_nis !== null
             ? formatNIS(t.amount_nis)
             : (t.amount_orig !== null && t.currency_orig !== null
@@ -61,9 +63,12 @@ export function TransactionsTable({
               <td className="py-2 px-2 text-xs text-muted-foreground">
                 {src?.display_name ?? `#${t.source_id}`}
               </td>
-              <td className="py-2 pl-2 text-right tabular-nums whitespace-nowrap">
-                <span className={isRefund ? "text-emerald-600" : ""}>
-                  {isRefund ? "+" : ""}{amountText}
+              <td
+                className="py-2 pl-2 text-right tabular-nums whitespace-nowrap"
+                title={isMoneyIn ? "Money in (credit)" : "Money out (debit)"}
+              >
+                <span className={isMoneyIn ? "text-emerald-600" : ""}>
+                  {isMoneyIn ? `+${amountText}` : amountText}
                 </span>
                 {t.tx_type !== "regular" && (
                   <Badge variant="secondary" className="ml-2 text-xs">

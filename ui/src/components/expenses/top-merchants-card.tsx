@@ -5,22 +5,27 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type MerchantSpend } from "@/lib/expenses/api";
-import { formatNIS } from "@/lib/expenses/format";
+import { formatMonth, formatNIS } from "@/lib/expenses/format";
 
 interface TopMerchantsCardProps {
   data: MerchantSpend[];
+  /** 'YYYY-MM' the data is scoped to; null when corpus is empty. */
+  month?: string | null;
 }
 
-export function TopMerchantsCard({ data }: TopMerchantsCardProps) {
+export function TopMerchantsCard({ data, month }: TopMerchantsCardProps) {
+  const monthLabel = month ? formatMonth(month) : "current month";
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Top merchants — current month</CardTitle>
+        <CardTitle className="text-base">
+          Top merchants — {monthLabel}
+        </CardTitle>
       </CardHeader>
       <CardContent>
         {data.length === 0 ? (
           <div className="text-sm text-muted-foreground py-6 text-center">
-            No merchants yet.
+            No spending in {monthLabel}.
           </div>
         ) : (
           <ol className="divide-y divide-border">

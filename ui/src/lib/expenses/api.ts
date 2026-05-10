@@ -74,7 +74,9 @@ export interface SourceHealthEntry {
 
 export interface YearlySummary {
   months_covered: number;
-  total_nis: number;
+  total_nis: number;                   // deprecated alias for yearly_spending_total_nis
+  yearly_spending_total_nis: number;
+  yearly_inflow_total_nis: number;
   avg_per_month_nis: number;
   top_categories_12m: CategorySpend[];
   current_vs_avg_pct: number | null;
@@ -82,7 +84,11 @@ export interface YearlySummary {
 
 export interface DashboardOverview {
   months: MonthlyTotalEntry[];
+  current_month: string | null;        // 'YYYY-MM' the headline scopes to
+  current_month_spending_nis: number;
+  current_month_inflow_nis: number;
   current_month_top_categories: CategorySpend[];
+  current_month_inflow: CategorySpend[];
   top_merchants_current_month: MerchantSpend[];
   anomalies: AnomalyCard[];
   sources_health: SourceHealthEntry[];
@@ -158,10 +164,22 @@ export interface SourcesResponse {
 }
 
 export const expensesApi = {
-  dashboardOverview: (userId: string, months = 12, fx: "per_currency" | "nis" = "per_currency") =>
-    getJSON<DashboardOverview>(
-      `/api/expenses/dashboard-overview?user_id=${encodeURIComponent(userId)}&months=${months}&fx=${fx}`,
-    ),
+  dashboardOverview: (
+    userId: string,
+    months = 12,
+    fx: "per_currency" | "nis" = "per_currency",
+    month?: string | null,
+  ) => {
+    const qs = new URLSearchParams({
+      user_id: userId,
+      months: String(months),
+      fx,
+    });
+    if (month) qs.set("month", month);
+    return getJSON<DashboardOverview>(
+      `/api/expenses/dashboard-overview?${qs.toString()}`,
+    );
+  },
   sources: (userId: string) =>
     getJSON<SourcesResponse>(
       `/api/expenses/sources?user_id=${encodeURIComponent(userId)}`,
