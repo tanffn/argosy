@@ -181,3 +181,11 @@ def test_compute_categories_vs_typical_z_sort(db_session_with_seeded_user):
         assert abs(a.z_score) >= abs(b.z_score)
     for r in out:
         assert r.typical_std_nis >= 50.0
+
+
+def test_compute_largest_transactions_top5_sorted(db_session_with_seeded_user):
+    from argosy.services.expense_dashboard import compute_largest_transactions
+    txs = compute_largest_transactions(db_session_with_seeded_user, "test", month="2026-03", limit=5)
+    assert len(txs) <= 5
+    for a, b in zip(txs, txs[1:]):
+        assert abs(a.amount_nis or 0) >= abs(b.amount_nis or 0)

@@ -455,6 +455,57 @@ def compute_categories_vs_typical(session: Session, user_id: str, month: str):
     return out[:3]
 
 
+def compute_largest_transactions(
+    session: Session, user_id: str, month: str, limit: int = 5
+):
+    """Top `limit` transactions by |amount_nis| in the focal month.
+
+    Filter: ``direction='debit'`` AND spending-only (non-inflow,
+    non-excluded; uncategorised rows pass via outer-join sieve) AND
+    ``occurred_on`` in the focal month.
+    Order: ``ABS(amount_nis)`` desc, ties broken by ``occurred_on`` desc.
+    """
+    from argosy.api.routes.expenses import _tx_to_out
+
+    y, m = int(month[:4]), int(month[5:7])
+    first = date(y, m, 1)
+    if m == 12:
+        last_excl = date(y + 1, 1, 1)
+    else:
+        last_excl = date(y, m + 1, 1)
+
+    rows = session.execute(
+        sa_select(ExpenseTransaction)
+        .join(
+            ExpenseCategory,
+            ExpenseTransaction.category_id == ExpenseCategory.id,
+            isouter=True,
+        )
+        .where(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.direction == "debit",
+            ExpenseTransaction.occurred_on >= first,
+            ExpenseTransaction.occurred_on < last_excl,
+            (ExpenseCategory.is_inflow.is_(False) |
+             ExpenseCategory.is_inflow.is_(None)),
+            (ExpenseCategory.is_excluded_from_spend.is_(False) |
+             ExpenseCategory.is_excluded_from_spend.is_(None)),
+        )
+        .order_by(
+            func.abs(ExpenseTransaction.amount_nis).desc(),
+            ExpenseTransaction.occurred_on.desc(),
+        )
+        .limit(limit)
+    ).scalars().all()
+
+    cat_by_id = {
+        c.id: c.slug for c in session.query(ExpenseCategory).filter_by(
+            user_id=user_id,
+        ).all()
+    }
+    return [_tx_to_out(r, cat_by_id) for r in rows]
+
+
 # ----------------- shared per-month accumulators -----------------
 
 def _spending_by_month_dict(session: Session, user_id: str) -> dict[str, float]:
