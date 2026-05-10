@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-10 — EX1.1 stabilization wave landed (7 bug-fixes, fx/ module, migrations 0022+0023). EX4 expenses dashboard landed (Next.js `/expenses` route family, 8+ chart/table components, 3 new backend endpoints). Tests at 966 passing. Backfill on real corpus partial — see handover. |
+| **Last updated** | 2026-05-10 — EX1.1 + EX4 + EX5 + EX4.x dashboard polish + Schwab RSU cross-validator + Leumi USD parser all landed. 28 commits across the day. Migration head at 0024. Full corpus ingested: 6 sources / 56 statements / 2,179 transactions. See §16 handover for wave summaries + open items. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-10 by Claude (session post-EX1.1, post-EX4). User went to bed mid-session and authorized full autonomous execution; this handover summarizes what landed without their direct review. Treat this as a checkpoint, not a sign-off — Ariel reviews in the morning.
+**Last edit:** 2026-05-10 (afternoon) by Claude. Big day: EX1.1 → EX4 → multiple EX4.x polish rounds → EX5 (refund/income split, trip tags, dividends/taxes, anomaly oddities) → Leumi USD parser → Schwab RSU cross-validator → audit-corpus CLI → dashboard rework (spending-only chart, calendar/trailing toggle, click-to-rescope, paired-rows RSU view, etc.). 28 commits since the prior handover. Argosy now ingests, categorizes, reconciles, and visualizes the household's full multi-currency expense + brokerage corpus.
 
 ### Orientation — start here if you have zero context
 
@@ -48,10 +48,23 @@
 
 ### Where development is at right now
 
-- `main` HEAD: `3bcd655` (latest of the EX4 cherry-pick chain).
-- Tests: **966 passing** under `pytest -m "not llm_eval"` (was 932 at session start; +34 across EX1.1 + EX4). 0 failures. Migrations 0001-0023 applied to dev DB.
-- **Services need restart.** uvicorn on `127.0.0.1:8000` was killed mid-session (during T16 backfill troubleshooting) — restart so the new `/api/expenses/{dashboard-overview, source-detail/{id}}` routes load. Next.js dev: `cd ui ; npm run dev` on port 1337 — `/expenses` route family is now live.
-- Dev DB lives at `<ARGOSY_HOME>/db/argosy.db` (SQLite). DB was wiped + partially re-ingested during T16. Backup at `db/argosy.db.pre-ex1.1.bak` if rollback needed.
+- `main` HEAD: `cb8d3c6` (after the paired-rows RSU view).
+- Tests: **1,020+ passing** under `pytest -m "not llm_eval"` (was 932 at start of day). 0 failures. Migrations 0001-0024 applied.
+- **Services running.** uvicorn on `127.0.0.1:8000` last started with `ARGOSY_EXPENSE_SAMPLES_ROOT="D:/Google Drive/Family/Finances/Portfolio/Resources"` env var set — that's required for `/api/expenses/rsu-reconciliation` to find Schwab CSVs. Next.js dev on `127.0.0.1:1337`. Restart with `D:/Projects/financial-advisor/.venv/Scripts/python.exe -m uvicorn argosy.api.main:create_app --factory --host 127.0.0.1 --port 8000` (and `cd ui ; npm run dev`).
+- Dev DB at `<ARGOSY_HOME>/db/argosy.db`. **Full corpus ingested** — 6 sources (Isracard 0235 + 1266, Discount 2923, Max 6225, Leumi NIS 44745280, Leumi USD 44745200), 56 statements, 2,179 transactions. Backup: `db/argosy.db.pre-ex1.1.bak`. 7 of 61 source files are unsupported SpreadsheetML XML (older Leumi exports) — re-export from web in HTML format if you need them.
+
+### Six-source recap (live state)
+
+| issuer | external_id | display_name | statements | txs | currency |
+|---|---|---|---|---|---|
+| isracard | 0235 | Isracard 0235 (Noga) | 17 | 89 | NIS + foreign |
+| isracard | 1266 | Isracard 1266 (Ariel) | 16 | 325 | NIS + foreign |
+| discount | 2923 | Discount 2923 (the fee-waiver card) | 2 (one big file per period × 16 months) | 958 | NIS |
+| max | 6225 | Max 6225 | 17 | 394 | NIS |
+| leumi | 44745280 | Leumi current account (NIS) | 2 | 214 | NIS |
+| leumi | 44745200 | Leumi USD account (brokerage) | 2 | 199 | USD |
+
+A 7th data source — **Schwab Equity Awards Center CSV** — is read-only (no DB ingest); used for cross-validation against Leumi USD wires.
 
 ### Wave EX1.1 — Stabilization — LANDED
 
@@ -80,34 +93,116 @@ All 7 listed defects from the prior handover are CLOSED:
 - Migrations 0022 + 0023 applied. Per-user expense data wiped (702 txs + 36 statements + 4 sources + 52 expense user_files removed; user_categories + merchant_cache preserved).
 - Backfill stalled after 24 statements / 341 transactions across the 2 Isracard sources only — likely an LLM call hanging on the first Max file. **User should re-run** `argosy expenses backfill --user-id ariel --dir "D:\Google Drive\Family\Finances\Portfolio\Resources"`. With the bidi fix, Leumi May 2026 should now succeed; Max files now thread `last4_hint=6225`. Watch for hangs > 5 min on a single file; if stuck, kill and skip.
 
-### Wave EX4 — Expenses Dashboard — LANDED
+### Wave EX4 — Expenses Dashboard — LANDED (then iterated heavily)
 
 Spec: `docs/superpowers/specs/2026-05-09-ex4-expenses-dashboard-design.md`. Plan: `docs/superpowers/plans/2026-05-09-ex4-expenses-dashboard-implementation.md`.
 
-**User went to bed mid-session and authorized "do everything, I'll review tomorrow."** This wave was brainstormed + specified + planned + executed entirely autonomously. Decisions log at the bottom of the spec records every judgment call.
+The first cut of EX4 (Next.js routes `/expenses`, `/expenses/transactions`, `/expenses/sources`) shipped autonomously while user slept. After the user reviewed in the morning and gave concrete UX feedback, several rounds of refinement landed during the afternoon — those are EX4.x and EX5 below. This wave's first cut delivered:
 
-Backend (3 commits):
-- Hotfix: `TransactionOut.amount_nis: float | None`; new `amount_orig` + `currency_orig` fields (commit `4cb...`).
-- New `GET /api/expenses/dashboard-overview?user_id=&months=&fx=` returning `{months, current_month_top_categories, top_merchants_current_month, anomalies, sources_health, fx_mode}` (one round-trip for the overview page; computes anomalies including Discount Card 2923 fee-waiver-missed flag).
-- New `GET /api/expenses/source-detail/{source_id}?user_id=` returning `{source, statements: [{period, parsed_total, declared_total, gap, status, transaction_count, correlated_count}]}`.
-- 7 new tests pass (1 hotfix + 4 dashboard-overview + 2 source-detail).
+- Backend: `GET /api/expenses/dashboard-overview` (months, top_categories, top_merchants, anomalies, sources_health) + `/source-detail/{id}` + hotfix `TransactionOut.amount_nis: float | None`.
+- Frontend: NavBar `Expenses` tab, 9 chart/card components in `ui/src/components/expenses/`, libs `ui/src/lib/expenses/{api,format,fx-mode}.ts`.
 
-Frontend (12+ commits):
-- New nav tab "Expenses" (between Portfolio and Plan).
-- Routes: `/expenses` (overview), `/expenses/transactions` (browse + filters + inline category edit), `/expenses/sources` (per-source statement timeline + reconciliation table).
-- 9 new components in `ui/src/components/expenses/`: hero-stats, monthly-spend-chart (Recharts BarChart, per-currency stacks), category-donut (PieChart + drill-through links), top-merchants-card, anomaly-highlights, sources-health-table, transactions-table, category-edit-popover (Dialog), source-statement-timeline, fx-toggle.
-- New libs: `ui/src/lib/expenses/{api, format, fx-mode}.ts`.
-- FX toggle (per-currency vs NIS-converted) in localStorage; backend conversion is not yet wired (endpoint still returns per-currency map regardless of `fx` param), but the toggle is ready for it.
-- `npm run build` GREEN; all 18 routes prerender. Lint has ~21 errors total (≈+3 from this wave; balance is pre-existing project-wide).
+### Waves EX4.x — User-driven dashboard iteration
+
+After Ariel reviewed, multiple feedback rounds drove these refinements (all on main):
+
+**Inflow vs spending separation.** Original "current month spending" was leaking salary/RSU/transfers. Filtered `is_inflow=False AND is_excluded_from_spend=False` everywhere. Hero became: "Spent / Income / Refunds / Statements reconciled / Anomalies". Salary etc. now correctly excluded from "spending" totals.
+
+**Refund vs income split.** User: "refund is not income". Backend now returns `current_month_income_nis` AND `current_month_refunds_nis` separately. New endpoint `GET /api/expenses/income-breakdown?user_id=&month=` powers a dedicated `/expenses/income` drilldown page (click the Income hero card to drill into salary/RSU/dividends streams).
+
+**Plain-language relabeling.** "Debits / Credits" → "Spending / Money in (refunds + income)". "include card-payments" toggle hidden inside Advanced disclosure. Inline credit amounts render as "+₪X" in green. Hover-explain everywhere.
+
+**Month picker.** New `<MonthPicker>` component on overview re-scopes the entire page (hero + charts + categories + anomalies) to a chosen month via `?month=YYYY-MM` URL param. Default = latest month with data.
+
+**Click-to-rescope on Monthly spend chart.** Bars set the month picker (NOT navigate to transactions). A small "Open transactions" link in chart header still drills out when needed.
+
+**Calendar-year vs trailing-12 toggle on Yearly Summary card.** Default `trailing_12`; toggle to `calendar_year` for tax-season views. Yearly summary now shows ALL categories (sorted desc by NIS), not just top 5.
+
+**Discount per-month timeline fix.** Discount Bank exports as ONE file per period — `expense_statements` only had 2 rows, so the Sources page showed only 2 bars. Fixed by deriving `MonthBucket` rows server-side from `tx.occurred_on` regardless of statement boundaries. Now Discount shows 16 monthly bars consistent with other cards.
+
+**"Monthly spend" chart bug.** Was summing ALL currency activity (including investments + RSU disbursements). Apr 2026 USD showed $191K (= $40K investment buys + $151K RSU credit). Fixed by filtering chart series to `direction='debit' AND is_inflow=False AND is_excluded_from_spend=False`. Apr 2026 USD now $40K (a remaining `המרה-אינטרנט` currency-conversion row that's miscategorized as `financial.fx_fees` — open question for user).
+
+### Wave EX4.2 — Leumi USD account + Schwab cross-validation
+
+User dropped two new data sources mid-day:
+
+**Leumi USD account (44745200).** Different schema than the NIS Osh files — named Hebrew columns (`תאריך / תיאור / חובה / זכות / יתרה`), USD-denominated, `DD/MM/YY` (2-digit year). Mostly securities activity (`נ"ע-פעולה` = securities buy/sell, `נ"ע רבית/דו` = interest/dividend, `העברת כספים` = wire transfer).
+
+Built:
+- `argosy/services/expense_ingest/parsers/leumi_usd.py` (new parser).
+- `argosy/services/expense_ingest/types.py::ParserName.LEUMI_USD`.
+- `sniff.py` distinguishes by detecting `דולר ארה"ב` near header.
+- Orchestrator's `_LEUMI_EXPECTED_ACCT` (scalar) → `_LEUMI_EXPECTED_ACCTS` (frozenset) accepting both `44745280` (NIS) and `44745200` (USD).
+- `tests/expense_ground_truth.py::leumi_usd_oracle` deterministic counter.
+- 199 USD transactions ingested.
+
+**Schwab Equity Awards Center CSV cross-validation.** User suggested: "I can add the transactions of RSU (Schwab) sales, and you can confirm X sold, (X-tax) received in USD account."
+
+Built `argosy/services/rsu_reconciliation/{schwab_csv, match}.py`:
+- `parse_csv` → `SchwabReport` with `sales`, `disbursements`, lots, taxes.
+- `reconcile()` matches Schwab `Forced Disbursement` rows against Leumi USD `העברת כספים` credits within `tolerance_usd` + `tolerance_days`.
+- CLI: `argosy expenses verify-rsu --schwab <csv> --user-id <id>`.
+- REST: `GET /api/expenses/rsu-reconciliation?user_id=&tolerance_usd=&tolerance_days=`.
+- UI: new tab `/expenses/rsu` with **paired-rows view** — Schwab sales table on the left, paired wire-transfer rows on the right (matched / Schwab-only `??` / Leumi-only `??`). Filtered to `העברת כספים` only on Leumi side (no dividend noise).
+
+**Empirical finding from the verifier:** 0 of 3 Schwab disbursements matched within $1 / 7 days. Apr 21 Schwab $207,538 → Apr 29 Leumi $150,864 (8 days late, $56,674 = **27.3% short**). Same haircut on Jan/Feb cluster. Strong signal of Israeli capital-gains tax (25% + 3% surtax = ~28%) withheld at the bank. **Soft-match haircut tolerance (option A) was attempted via subagent but the agent didn't commit; needs redo.**
+
+### Wave EX5 — User-driven feature additions (5 features)
+
+After dashboard rework + Schwab work, user requested 5 more features. All landed:
+
+1. **Income vs refund split + drilldown.** `current_month_income` (true income) vs `current_month_refunds` (credit + tx_type='refund'). New `/expenses/income` drilldown page.
+2. **Per-month source timeline.** Discount detail fix (described above).
+3. **Trip tags (Q1B).** Migration `0024_expense_transaction_tags` adds `tags TEXT NOT NULL DEFAULT '[]'` (JSON array). New endpoints: `PATCH /transactions/{id}/tags`, `POST /transactions/{id}/tags/add`, `POST /transactions/{id}/tags/remove`, `GET /tags?prefix=`, `GET /trip-summary?tag=`. Frontend: `TagChip`, `TagEditor`, `/expenses/trips` page. User can tag arbitrary transactions with `trip:greece-2026-aug` etc.; the Trips tab aggregates.
+4. **Dividends + Taxes cards.** `dashboard-overview` returns `DividendsSummary` (USD; detected via `נ"ע רבית/דו` Hebrew + `dividend|DIV ` English match) and `TaxesSummary` (NIS Arnona + `ניכוי מס` + accountant fees + USD Schwab withholdings if `ARGOSY_SCHWAB_CSV_PATH` is set).
+5. **Anomaly oddities.** Two new kinds: `merchant_spike` (single tx > 5× merchant's 12-mo avg) + `new_high_value_merchant` (> ₪500 from never-before-seen merchant). Cap top 5 each.
+
+### Wave EX1.1 — already documented above (still applies)
+
+All 7 listed defects closed. fx/ module + migrations 0022+0023. Findings doc at `docs/superpowers/specs/2026-05-09-ex1.1-verify-findings.md`. Audit-corpus CLI added (`argosy expenses audit-corpus`) per user's "deterministic count + LLM compares with its analysis" feedback. LLM batch invariant warning when `agent.categorize_batch` returns fewer results than rows.
+
+### User-supplied category mappings (applied directly to DB)
+
+Per user's specific guidance, 7 merchant→category mappings + 1 refund flag applied to existing rows AND cached in `merchant_category_cache` so future ingests inherit:
+
+| Merchant | Category |
+|---|---|
+| `נ"ע-פעולה` | `investments` |
+| `PAYPAL *ORENCAHANOV OR` | `discretionary.charity` |
+| `עמרי ביטס רו"ח` | `taxes` (accountant) |
+| `דודו אוטמזגין - טבעון` | `food.groceries` |
+| `מועצה המקומית קרית טבעון` | `housing.property_tax` |
+| `ניכוי מס` | `taxes.income_tax_paid` |
+| `קרן ידע לאקד-י` | flagged `tx_type=refund` (was `regular`) |
 
 ### Open issues / next-session priority
 
-1. **User reviews EX4 dashboard tomorrow morning.** Open `http://127.0.0.1:1337/expenses` (after restarting `npm run dev` and uvicorn). Spot-check that hero stats render, charts populate, transactions table works, sources page lists 2 Isracard sources (only Isracard data ingested in T16). Inline category edit should persist.
-2. **Re-run backfill manually** — partial corpus today (24 of ~53 statements). Bidi-marks fix means real Leumi files should now ingest. Cost: ~$1-2 LLM categorization.
-3. **SpreadsheetML Leumi parser** — if the older Leumi files matter, build that out.
-4. **Wire server-side FX conversion** — when user wants the NIS-converted toggle to actually convert (today it just sums NIS-only).
-5. **EX2 anomaly detection backend** — recurring-missed flag (Card 2923 promo monitoring), novel-merchant alerts. Some are computed in `dashboard-overview` already (uncategorized count, conservation_gap, fee_waiver_missed). EX2 would add a dedicated agent + persistent anomaly records.
-6. **Wave 2 data verification with user** — was deferred; the dashboard provides a manual review surface but not a structured "is this row correct?" workflow.
+1. **RSU haircut soft-match (option A) still TODO.** Subagent attempted but didn't commit. The pattern is clear in real data (~27% Israeli CGT withholding). Re-dispatch needed.
+2. **`המרה-אינטרנט` (currency conversion) misclassified as spending.** Tx 2169, Apr 2026, $40K USD debit categorized as `financial.fx_fees`. Either re-categorize that row or mark `financial.fx_fees` as `is_excluded_from_spend=True`. Currently inflates Apr 2026 chart.
+3. **Source naming question — open.** User asked "why do you call it Discount?" + similar for Leumi. Two paths offered: A. auto-rename ("Discount Mastercard ****2923"), B. user-supplied custom names. Awaiting user pick.
+4. **SpreadsheetML Leumi parser** — 7 older `.xls` files (`Aug 25.xls`, `Jul 25.xls`, `Leumi_25_*.xls`, `Leumi_26_Mar_24.xls`, `Leumi_26_May_01.xls`) are XML SpreadsheetML format, not HTML-as-xls. `pd.read_html` fails. Skipped during backfill with `UnknownFormatError`. Deferred unless user needs them.
+5. **Wire server-side FX conversion** — `argosy.services.fx` ready but `dashboard-overview?fx=nis` doesn't actually convert yet (returns per-currency map regardless). Wire via `fx.convert(session, amount_orig, currency_orig, "ILS", occurred_on)` when user wants single-NIS-line view.
+6. **EX2 anomaly detection backend** — recurring-missed flag (Card 2923 promo monitoring; the dashboard already computes a real-time `fee_waiver_missed` anomaly), novel-merchant alerts, persistent anomaly records.
+7. **Wave 2 data verification with user** — was deferred; the dashboard provides a manual review surface (transactions page + inline category edit) but not a structured "is this row correct?" workflow.
+
+### Tooling additions Ariel may want to know about
+
+- **`argosy expenses audit-corpus --user-id ariel --dir <root>`** — pure-deterministic per-file oracle vs parser vs DB count comparison. Use this BEFORE re-running backfill or after data changes to verify no parser silently dropped rows. Output: per-file `OK / FAIL / ??` table + per-source totals footer + summary line. Built per user's "deterministic counts vs LLM analysis" mandate.
+- **`argosy expenses verify-rsu --schwab <csv> --user-id ariel`** — Schwab disbursements vs Leumi USD wire credits. Same idea, brokerage cross-validation. Currently shows 0/3 matched because the matcher is exact-amount; haircut soft-match is the queued improvement.
+
+### Where the 7 SpreadsheetML files are (so they don't surprise next session)
+
+```
+D:/Google Drive/Family/Finances/Portfolio/Resources/2026/Leumi/Aug 25.xls
+                                                     /Jul 25.xls
+                                                     /Leumi_25_Dec_12.xls
+                                                     /Leumi_25_Feb-06.xls
+                                                     /Leumi_25_Oct_18.xls
+                                                     /Leumi_26_Mar_24.xls
+                                                     /Leumi_26_May_01.xls
+```
+
+These have `<?xml version="1.0"?> <?mso-application progid='...'?>` headers. `argosy expenses audit-corpus` flags them as `?? UnknownFormatError` rather than failing the whole run. To support them: add a SpreadsheetML branch in `sniff.py` and a `leumi_smc.py` parser that reads `Workbook/Worksheet/Table/Row/Cell` XML.
 
 ### Pre-existing watch items (carried)
 
@@ -122,13 +217,15 @@ Waves A-F built a first-class provenance layer (`user_files` catalog at migratio
 
 ### Action choices for next session (Ariel picks)
 
-A. **Smoke the EX4 dashboard** — open `/expenses`, click around, confirm everything works against the partial corpus.
-B. **Re-run backfill** — get the full corpus loaded so the dashboard shows 5 sources instead of 2.
-C. **Both A then B** — but A first (validates UI works at all).
-D. **Fix something specific** — Ariel reviews + identifies a target.
-E. **Move to next wave** — EX2 anomaly detection, or wave 2 data verification, or something else.
+A. **Re-dispatch the RSU haircut soft-match** — the data clearly shows a 27% Israeli-CGT withholding pattern, but the matcher still uses `tolerance_usd=$1` so all 3 disbursements show as unmatched. Subagent attempted earlier but didn't commit. Fastest unblock for the RSU page.
+B. **Pick source naming** — A (auto-rename: "Discount Mastercard ****2923", "Leumi NIS Checking 44745280", etc.) or B (user-supplied per-source names).
+C. **Resolve the `המרה-אינטרנט` Apr 2026 misclassification** — re-categorize tx 2169 OR add a transfer/exclusion category for currency-conversion rows.
+D. **Build the SpreadsheetML Leumi parser** — if the older `.xls` files matter (7 files, mostly 2025).
+E. **Server-side FX conversion** — wire `fx.convert` into `dashboard-overview?fx=nis` so the existing toggle actually converts.
+F. **EX2 anomaly detection** — graduate the inline anomaly cards into a dedicated agent + persistent records.
+G. **Wave 2 data verification** — structured "is this row correct?" workflow with the user.
 
-If resuming cold with no new instruction, **C is the cheapest forward step** — open the dashboard to validate, then re-run backfill to populate it.
+If resuming cold with no new instruction, **A is the obvious next step** — small change, makes the RSU page actually useful, unblocks the user's stated cross-validation goal.
 
 ---
 
