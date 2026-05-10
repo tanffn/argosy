@@ -589,6 +589,101 @@ class DashboardOverview(BaseModel):
     fx_mode: str
 
 
+# ---------------------------------------------------------------------------
+# EX6 — new types for the Overview/Monthly split.
+# ---------------------------------------------------------------------------
+
+class SavingsRatePoint(BaseModel):
+    """One month's savings-rate datum for the Overview tab trend chart."""
+
+    month: str                      # 'YYYY-MM'
+    income_nis: float
+    spending_nis: float
+    savings_rate: float             # (income - spending) / income; 0 if income == 0
+
+
+class CategoryDelta(BaseModel):
+    """One category's spending delta between current vs prior period."""
+
+    slug: str
+    label: str
+    current_nis: float              # current-window total
+    prior_nis: float                # prior-window total
+    delta_nis: float                # current - prior
+    delta_pct: float | None         # (current - prior)/prior; None when prior==0
+
+
+class TopMovers(BaseModel):
+    """Top-5 categories that grew vs top-5 that shrank, current vs prior period."""
+
+    grew: list[CategoryDelta]
+    shrank: list[CategoryDelta]
+    reason: str | None = None       # 'insufficient_history' when prior is missing
+
+
+class CurrencyMixPoint(BaseModel):
+    """One month's NIS-vs-USD spending split for the Overview currency mix bar."""
+
+    month: str
+    nis: float
+    usd: float
+
+
+class ChartWindowBar(BaseModel):
+    """One bar of the Monthly tab's 12-bar focal chart."""
+
+    month: str
+    total_nis: float
+    total_usd: float
+    is_padding: bool                # true when the bar is outside the user's data range
+    is_selected: bool               # true when month == focal month
+
+
+class HeroMetric(BaseModel):
+    """Numeric hero card with MoM and vs-trailing-12 deltas."""
+
+    value_nis: float
+    mom_delta_pct: float | None     # vs prior month; None when prior is 0 or missing
+    vs_trailing12_pct: float | None # vs trailing-12 avg; None when fewer than 3 priors
+
+
+class HeroStatsMonthly(BaseModel):
+    """Monthly tab's hero-stat bundle."""
+
+    spent: HeroMetric
+    income: HeroMetric
+    refunds: HeroMetric
+    statements_reconciled: int      # no delta semantics (count)
+    anomalies_count: int            # no delta semantics (count)
+
+
+class CategoryDeviation(BaseModel):
+    """A category whose this-month total deviates from its typical (rolling-12) baseline."""
+
+    slug: str
+    label: str
+    this_month_nis: float
+    typical_mean_nis: float
+    typical_std_nis: float          # floored at ₪50 to avoid blowups for sparse cats
+    z_score: float                  # (this - mean)/std; signed
+    delta_pct: float | None         # (this - mean)/mean; None when mean==0
+
+
+class DashboardMonthly(BaseModel):
+    """Response payload for GET /api/expenses/dashboard-monthly."""
+
+    month: str                                        # focal month
+    available_months: list[str]                       # for the MonthPicker
+    chart_window: list[ChartWindowBar]                # always length 12
+    hero_stats: HeroStatsMonthly
+    top_categories: list[CategorySpend]               # selected-month top categories
+    categories_vs_typical: list[CategoryDeviation]    # most-divergent categories
+    top_merchants: list[MerchantSpend]
+    largest_transactions: list[TransactionOut]        # top 5 by |amount_nis|
+    anomalies: list[AnomalyCard]
+    fx_mode: str = "per_currency"
+
+
 def _gap_status(gap: float | None) -> str:
     if gap is None:
         return "unknown"
