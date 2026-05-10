@@ -466,13 +466,22 @@ class YearlySummary(BaseModel):
     foreign rows excluded since their NIS conversion may be unavailable).
 
     months_covered is the actual count of distinct months in the rollup
-    (≤ 12). avg_per_month_nis divides total_nis by months_covered (or 0 if
-    no months). current_vs_avg_pct = (current_month_nis / avg) - 1, expressed
-    as a percentage; null when there's no average to compare against.
+    (≤ 12). avg_per_month_nis divides yearly_spending_total_nis by
+    months_covered (or 0 if no months). current_vs_avg_pct =
+    (current_month_spending_nis / avg_spending) - 1, expressed as a
+    percentage; null when there's no average to compare against.
+
+    yearly_spending_total_nis  — debits with is_inflow=False AND
+                                  is_excluded_from_spend=False (real outflow).
+    yearly_inflow_total_nis    — credits with is_inflow=True (real income).
+    total_nis                  — DEPRECATED alias for yearly_spending_total_nis;
+                                  kept for backward compat with existing UI/tests.
     """
 
     months_covered: int
     total_nis: float
+    yearly_spending_total_nis: float
+    yearly_inflow_total_nis: float
     avg_per_month_nis: float
     top_categories_12m: list[CategorySpend]
     current_vs_avg_pct: float | None
@@ -480,7 +489,11 @@ class YearlySummary(BaseModel):
 
 class DashboardOverview(BaseModel):
     months: list[MonthlyTotalEntry]
+    current_month: str | None                       # 'YYYY-MM' the headline scopes to
+    current_month_spending_nis: float               # NIS-only, spending-only
+    current_month_inflow_nis: float                 # NIS-only, inflow-only
     current_month_top_categories: list[CategorySpend]
+    current_month_inflow: list[CategorySpend]
     top_merchants_current_month: list[MerchantSpend]
     anomalies: list[AnomalyCard]
     sources_health: list[SourceHealthEntry]
@@ -504,8 +517,39 @@ def dashboard_overview(
     user_id: str,
     db: Annotated[Session, Depends(get_db)],
     months: int = Query(default=12, ge=1, le=60),
-    fx: str = Query(default="per_currency", regex="^(per_currency|nis)$"),
+    fx: str = Query(default="per_currency", pattern="^(per_currency|nis)$"),
+    month: str | None = Query(
+        default=None,
+        pattern=r"^\d{4}-\d{2}$",
+        description=(
+            "Optional 'YYYY-MM' to scope current_month_* fields and the "
+            "current-vs-avg comparison to a specific month instead of the "
+            "latest month with data. Format: YYYY-MM (e.g. '2026-04')."
+        ),
+    ),
 ) -> DashboardOverview:
+    """Dashboard overview bundle.
+
+    Spending vs inflow are kept strictly separate across this endpoint:
+
+    - ``current_month_top_categories``, ``top_merchants_current_month``,
+      ``yearly_summary.top_categories_12m``,
+      ``yearly_summary.yearly_spending_total_nis``,
+      ``yearly_summary.avg_per_month_nis`` and
+      ``yearly_summary.current_vs_avg_pct`` exclude inflow categories
+      (``is_inflow=True``) AND categories explicitly excluded from spend
+      (``is_excluded_from_spend=True``). Together that's "real outflow".
+    - ``current_month_inflow`` and ``yearly_summary.yearly_inflow_total_nis``
+      cover only ``is_inflow=True`` categories — salary, RSU vest proceeds,
+      bonus, dividends, refunds, etc.
+    - ``months`` (the chart series) keeps both legs combined so the user can
+      still see overall activity per month — that's a known compromise; it's
+      a chart, not a "you spent X" headline.
+
+    The ``month`` query parameter scopes ``current_month_*`` and
+    ``current_vs_avg_pct`` to a chosen month (default: latest month with
+    data).
+    """
     # 1. Months — re-use the same SQL as /monthly-summary
     rows = db.execute(
         sa_select(
@@ -536,10 +580,21 @@ def dashboard_overview(
         e.transaction_count += int(n)
     months_list = sorted(month_acc.values(), key=lambda e: e.month)[-months:]
 
-    # 2. Current-month top categories (NIS, descending)
-    if months_list:
-        cur = months_list[-1].month  # 'YYYY-MM'
-        cur_y, cur_m = (int(p) for p in cur.split("-"))
+    # Pick the focal month: explicit ``month=`` param if given, else the
+    # latest month with data. If the param doesn't match any month with
+    # data we still honour it (the queries below will return empty rows,
+    # which is honest behaviour).
+    if month is not None:
+        focal_month = month
+    elif months_list:
+        focal_month = months_list[-1].month
+    else:
+        focal_month = None
+
+    # 2. Current-month top categories — SPENDING only (excludes inflows AND
+    #    excluded-from-spend like transfers/investments).
+    if focal_month is not None:
+        cur_y, cur_m = (int(p) for p in focal_month.split("-"))
         cat_rows = db.execute(
             sa_select(
                 ExpenseCategory.slug, ExpenseCategory.label_en,
@@ -554,6 +609,7 @@ def dashboard_overview(
             .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
             .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
             .where(ExpenseCategory.is_excluded_from_spend.is_(False))
+            .where(ExpenseCategory.is_inflow.is_(False))
             .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
             .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
             .limit(10)
@@ -568,13 +624,47 @@ def dashboard_overview(
             )
             for r in cat_rows
         ]
+        cur_month_spending_nis = sum(float(r.total or 0) for r in cat_rows)
+
+        # 2b. Current-month inflow categories (salary, RSU, refunds, ...)
+        inflow_rows = db.execute(
+            sa_select(
+                ExpenseCategory.slug, ExpenseCategory.label_en,
+                func.sum(ExpenseTransaction.amount_nis).label("total"),
+                func.count().label("n"),
+            )
+            .join(ExpenseTransaction,
+                  ExpenseTransaction.category_id == ExpenseCategory.id)
+            .where(ExpenseTransaction.user_id == user_id)
+            .where(ExpenseTransaction.is_card_payment.is_(False))
+            .where(ExpenseTransaction.amount_nis.is_not(None))
+            .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
+            .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
+            .where(ExpenseCategory.is_inflow.is_(True))
+            .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
+            .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
+            .limit(10)
+        ).all()
+        cur_month_inflow_nis = sum(float(r.total or 0) for r in inflow_rows)
+        inflow_total = cur_month_inflow_nis or 1.0
+        inflow_cats = [
+            CategorySpend(
+                slug=r.slug, label_en=r.label_en,
+                total_nis=float(r.total or 0),
+                transaction_count=int(r.n or 0),
+                percent=float(r.total or 0) / inflow_total * 100.0,
+            )
+            for r in inflow_rows
+        ]
     else:
         top_cats = []
+        inflow_cats = []
+        cur_month_spending_nis = 0.0
+        cur_month_inflow_nis = 0.0
 
-    # 3. Top merchants (current month)
-    if months_list:
-        cur = months_list[-1].month
-        cur_y, cur_m = (int(p) for p in cur.split("-"))
+    # 3. Top merchants (focal month) — SPENDING only.
+    if focal_month is not None:
+        cur_y, cur_m = (int(p) for p in focal_month.split("-"))
         mer_rows = db.execute(
             sa_select(
                 ExpenseTransaction.merchant_normalized,
@@ -591,6 +681,9 @@ def dashboard_overview(
             .where(ExpenseTransaction.direction == "debit")
             .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
             .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
+            .where((ExpenseCategory.id.is_(None)) |
+                   ((ExpenseCategory.is_excluded_from_spend.is_(False)) &
+                    (ExpenseCategory.is_inflow.is_(False))))
             .group_by(ExpenseTransaction.merchant_normalized)
             .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
             .limit(10)
@@ -696,40 +789,27 @@ def dashboard_overview(
         ))
 
     # 6. Yearly summary — last-12-months rollup, NIS-only.
-    #    Use the months_list NIS totals so the headline stays consistent with
-    #    what the user already sees in the chart. Anchor "12 months" to the
-    #    last month present in the data (not today) so partial corpora still
-    #    render a sensible number.
+    #    Anchor "12 months" to the last month present in the data (not today)
+    #    so partial corpora still render a sensible number.
     last_12 = months_list[-12:]
-    total_nis_12m = sum(
-        float(m.totals_by_currency.get("NIS", 0.0)) for m in last_12
-    )
     months_covered = len(last_12)
-    avg_per_month_nis = (total_nis_12m / months_covered) if months_covered else 0.0
-    cur_month_nis = (
-        float(last_12[-1].totals_by_currency.get("NIS", 0.0))
-        if last_12 else 0.0
-    )
-    current_vs_avg_pct: float | None
-    if avg_per_month_nis > 0:
-        current_vs_avg_pct = (cur_month_nis / avg_per_month_nis - 1.0) * 100.0
-    else:
-        current_vs_avg_pct = None
-
-    # 12-month top categories (NIS-only, excluded categories filtered out).
-    # Anchor the window to the last day of the latest month in the data; if
-    # there's no data, use today.
     if last_12:
         last_y, last_m = (int(p) for p in last_12[-1].month.split("-"))
-        # last day of last_m
         if last_m == 12:
             anchor = date(last_y, 12, 31)
         else:
             anchor = date(last_y, last_m + 1, 1) - timedelta(days=1)
+        # window_start: first day of the earliest of the last_12 months
+        # (not anchor-365d, to keep the window aligned to month boundaries
+        # so 12 distinct months actually fit).
+        first_y, first_m = (int(p) for p in last_12[0].month.split("-"))
+        window_start = date(first_y, first_m, 1)
     else:
         anchor = date.today()
-    window_start = anchor - timedelta(days=365)
-    cat12_rows = db.execute(
+        window_start = anchor - timedelta(days=365)
+
+    # Yearly SPENDING total + top categories — exclude inflow & excluded.
+    spending_12m_rows = db.execute(
         sa_select(
             ExpenseCategory.slug, ExpenseCategory.label_en,
             func.sum(ExpenseTransaction.amount_nis).label("total"),
@@ -743,23 +823,55 @@ def dashboard_overview(
         .where(ExpenseTransaction.occurred_on >= window_start)
         .where(ExpenseTransaction.occurred_on <= anchor)
         .where(ExpenseCategory.is_excluded_from_spend.is_(False))
+        .where(ExpenseCategory.is_inflow.is_(False))
         .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
         .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
-        .limit(5)
     ).all()
-    cat12_total = sum(float(r.total or 0) for r in cat12_rows) or 1.0
+    yearly_spending_total_nis = sum(
+        float(r.total or 0) for r in spending_12m_rows
+    )
+    spending_pct_base = yearly_spending_total_nis or 1.0
     top_cats_12m = [
         CategorySpend(
             slug=r.slug, label_en=r.label_en,
             total_nis=float(r.total or 0),
             transaction_count=int(r.n or 0),
-            percent=float(r.total or 0) / cat12_total * 100.0,
+            percent=float(r.total or 0) / spending_pct_base * 100.0,
         )
-        for r in cat12_rows
+        for r in spending_12m_rows[:5]
     ]
+    avg_per_month_nis = (
+        (yearly_spending_total_nis / months_covered) if months_covered else 0.0
+    )
+
+    # Yearly INFLOW total — separate.
+    yearly_inflow_total_nis = float(db.execute(
+        sa_select(
+            func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0),
+        )
+        .join(ExpenseCategory,
+              ExpenseCategory.id == ExpenseTransaction.category_id)
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .where(ExpenseTransaction.occurred_on >= window_start)
+        .where(ExpenseTransaction.occurred_on <= anchor)
+        .where(ExpenseCategory.is_inflow.is_(True))
+    ).scalar() or 0)
+
+    # current_vs_avg_pct: spending-vs-spending. Use the focal month's
+    # spending (computed above) so the trend reflects the headline.
+    current_vs_avg_pct: float | None
+    if avg_per_month_nis > 0 and focal_month is not None:
+        current_vs_avg_pct = (cur_month_spending_nis / avg_per_month_nis - 1.0) * 100.0
+    else:
+        current_vs_avg_pct = None
+
     yearly = YearlySummary(
         months_covered=months_covered,
-        total_nis=total_nis_12m,
+        total_nis=yearly_spending_total_nis,
+        yearly_spending_total_nis=yearly_spending_total_nis,
+        yearly_inflow_total_nis=yearly_inflow_total_nis,
         avg_per_month_nis=avg_per_month_nis,
         top_categories_12m=top_cats_12m,
         current_vs_avg_pct=current_vs_avg_pct,
@@ -767,7 +879,11 @@ def dashboard_overview(
 
     return DashboardOverview(
         months=months_list,
+        current_month=focal_month,
+        current_month_spending_nis=cur_month_spending_nis,
+        current_month_inflow_nis=cur_month_inflow_nis,
         current_month_top_categories=top_cats,
+        current_month_inflow=inflow_cats,
         top_merchants_current_month=top_merchants,
         anomalies=anomalies,
         sources_health=sources_health,
