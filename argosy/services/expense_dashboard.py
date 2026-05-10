@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import extract, func, select as sa_select
+from sqlalchemy import case, extract, func, select as sa_select
 from sqlalchemy.orm import Session
 
 from argosy.state.models import ExpenseCategory, ExpenseTransaction
@@ -187,3 +187,53 @@ def compute_top_movers(session: Session, user_id: str, window: str = "trailing_1
     shrank = sorted([d for d in deltas if d.delta_nis < 0],
                     key=lambda d: d.delta_nis)[:5]
     return TopMovers(grew=grew, shrank=shrank, reason=None)
+
+
+def compute_currency_mix(session: Session, user_id: str, months: int = 12):
+    from argosy.api.routes.expenses import CurrencyMixPoint
+
+    latest = _latest_tx_month(session, user_id)
+    if latest is None:
+        return []
+    month_keys = _trailing_months(latest, months)
+
+    rows = session.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(ExpenseTransaction.currency_orig, "NIS").label("ccy"),
+            func.coalesce(func.sum(case(
+                (ExpenseTransaction.currency_orig == "USD",
+                 ExpenseTransaction.amount_orig),
+                else_=ExpenseTransaction.amount_nis,
+            )), 0.0).label("amt"),
+        )
+        .join(ExpenseCategory,
+              ExpenseTransaction.category_id == ExpenseCategory.id, isouter=True)
+        # spending filter — categorised rows must be non-inflow, non-excluded
+        # (uncategorised rows pass the outer-join sieve already; treat as NIS spend)
+        .where(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.direction == "debit",
+            (ExpenseCategory.is_inflow.is_(False) |
+             ExpenseCategory.is_inflow.is_(None)),
+            (ExpenseCategory.is_excluded_from_spend.is_(False) |
+             ExpenseCategory.is_excluded_from_spend.is_(None)),
+        )
+        .group_by("y", "m", "ccy")
+    ).all()
+
+    nis: dict[str, float] = {k: 0.0 for k in month_keys}
+    usd: dict[str, float] = {k: 0.0 for k in month_keys}
+    for r in rows:
+        key = f"{int(r.y):04d}-{int(r.m):02d}"
+        if key not in nis:
+            continue
+        if r.ccy == "USD":
+            usd[key] += float(r.amt or 0.0)
+        else:
+            nis[key] += float(r.amt or 0.0)
+
+    return [
+        CurrencyMixPoint(month=k, nis=nis[k], usd=usd[k]) for k in month_keys
+    ]

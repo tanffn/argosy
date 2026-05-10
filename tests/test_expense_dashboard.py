@@ -92,3 +92,12 @@ def test_compute_top_movers_insufficient_history(db_session_short_history):
     assert movers.reason == "insufficient_history"
     assert movers.grew == []
     assert movers.shrank == []
+
+
+def test_compute_currency_mix_basic(db_session_with_seeded_user):
+    from argosy.services.expense_dashboard import compute_currency_mix
+    points = compute_currency_mix(db_session_with_seeded_user, "test", months=12)
+    assert len(points) == 12
+    assert points[0].month < points[-1].month
+    assert all(p.nis >= 0 for p in points)
+    assert all(p.usd >= 0 for p in points)
