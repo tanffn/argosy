@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import case, extract, func, or_, select as sa_select
 from sqlalchemy.orm import Session
 
@@ -541,6 +541,14 @@ class YearlySummary(BaseModel):
     window_end_month: str = ""
 
 
+class TrendPoint(BaseModel):
+    """One month's value for the inline 12-bar mini-charts on the Overview tab."""
+
+    month: str        # 'YYYY-MM'
+    total_nis: float = 0.0
+    total_usd: float = 0.0
+
+
 class DividendsSummary(BaseModel):
     """Monthly dividends rollup. Detects rows by Hebrew Leumi wording
     (`נ"ע רבית/דו` / `דיב`) or English (`dividend` / `DIV`).
@@ -554,6 +562,7 @@ class DividendsSummary(BaseModel):
     yearly_total_usd: float                   # 12-month rolling
     monthly_series: list[dict]                # [{month: 'YYYY-MM', total_usd: ...}, ...]
     transactions: list[TransactionOut]
+    trend_12mo: list[TrendPoint] = Field(default_factory=list)
 
 
 class TaxesSummary(BaseModel):
@@ -568,24 +577,26 @@ class TaxesSummary(BaseModel):
     yearly_total_nis: float                   # NIS taxes (income+property+SS)
     yearly_total_usd: float                   # USD taxes (Schwab withholding)
     by_kind: dict[str, float]
+    trend_12mo: list[TrendPoint] = Field(default_factory=list)
 
 
 class DashboardOverview(BaseModel):
-    months: list[MonthlyTotalEntry]
-    current_month: str | None                       # 'YYYY-MM' the headline scopes to
-    current_month_spending_nis: float               # NIS-only, spending-only
-    current_month_income_nis: float                 # credits, tx_type != 'refund'
-    current_month_refunds_nis: float                # credits, tx_type == 'refund'
-    current_month_inflow_nis: float                 # DEPRECATED alias = income + refunds
-    current_month_top_categories: list[CategorySpend]
-    current_month_income: list[CategorySpend]       # income (non-refund) by category
-    current_month_inflow: list[CategorySpend]       # DEPRECATED alias for current_month_income+refunds
-    top_merchants_current_month: list[MerchantSpend]
-    anomalies: list[AnomalyCard]
-    sources_health: list[SourceHealthEntry]
+    """Yearly tab payload — 'how is the year going?'.
+
+    Removed in EX6 (now lives on /dashboard-monthly):
+      current_month, current_month_*, current_month_top_categories,
+      current_month_income, current_month_inflow,
+      top_merchants_current_month, anomalies.
+    """
+
+    months: list[MonthlyTotalEntry]                    # trailing-N totals (chart)
     yearly_summary: YearlySummary
-    dividends: DividendsSummary
-    taxes: TaxesSummary
+    savings_rate_trend: list[SavingsRatePoint] = Field(default_factory=list)
+    top_movers: TopMovers = Field(default_factory=lambda: TopMovers(grew=[], shrank=[]))
+    currency_mix: list[CurrencyMixPoint] = Field(default_factory=list)
+    dividends: DividendsSummary | None = None
+    taxes: TaxesSummary | None = None
+    sources_health: list[SourceHealthEntry]
     fx_mode: str
 
 
@@ -740,15 +751,6 @@ def dashboard_overview(
     db: Annotated[Session, Depends(get_db)],
     months: int = Query(default=12, ge=1, le=60),
     fx: str = Query(default="per_currency", pattern="^(per_currency|nis)$"),
-    month: str | None = Query(
-        default=None,
-        pattern=r"^\d{4}-\d{2}$",
-        description=(
-            "Optional 'YYYY-MM' to scope current_month_* fields and the "
-            "current-vs-avg comparison to a specific month instead of the "
-            "latest month with data. Format: YYYY-MM (e.g. '2026-04')."
-        ),
-    ),
     window: str = Query(
         default="trailing_12",
         pattern="^(trailing_12|calendar_year)$",
@@ -760,28 +762,32 @@ def dashboard_overview(
         ),
     ),
 ) -> DashboardOverview:
-    """Dashboard overview bundle.
+    """Yearly tab payload — "how is the year going?".
 
-    Spending vs inflow are kept strictly separate across this endpoint:
+    Spending and inflow are kept strictly separate:
 
-    - ``current_month_top_categories``, ``top_merchants_current_month``,
-      ``yearly_summary.top_categories_12m``,
-      ``yearly_summary.yearly_spending_total_nis``,
-      ``yearly_summary.avg_per_month_nis`` and
-      ``yearly_summary.current_vs_avg_pct`` exclude inflow categories
+    - ``yearly_summary.top_categories_12m``,
+      ``yearly_summary.yearly_spending_total_nis`` and
+      ``yearly_summary.avg_per_month_nis`` exclude inflow categories
       (``is_inflow=True``) AND categories explicitly excluded from spend
       (``is_excluded_from_spend=True``). Together that's "real outflow".
-    - ``current_month_inflow`` and ``yearly_summary.yearly_inflow_total_nis``
-      cover only ``is_inflow=True`` categories — salary, RSU vest proceeds,
-      bonus, dividends, refunds, etc.
-    - ``months`` (the chart series) keeps both legs combined so the user can
-      still see overall activity per month — that's a known compromise; it's
-      a chart, not a "you spent X" headline.
+    - ``yearly_summary.yearly_inflow_total_nis`` covers only
+      ``is_inflow=True`` categories — salary, RSU vest proceeds, bonus,
+      dividends, refunds, etc.
+    - ``months`` (the chart series) is SPENDING-ONLY, mirroring the same
+      filter as the spending rollup.
 
-    The ``month`` query parameter scopes ``current_month_*`` and
-    ``current_vs_avg_pct`` to a chosen month (default: latest month with
-    data).
+    Per-focal-month detail (current_month_*, top merchants, anomalies, ...)
+    moved to GET /api/expenses/dashboard-monthly.
     """
+    from argosy.services.expense_dashboard import (
+        compute_currency_mix,
+        compute_dividends_trend_12mo,
+        compute_savings_rate_trend,
+        compute_taxes_trend_12mo,
+        compute_top_movers,
+    )
+
     # 1. Months — SPENDING-ONLY chart series.
     #    The user surfaced this bug: the previous query summed "all activity",
     #    so an Apr 2026 month with $40K of investment buys + $151K of RSU
@@ -825,209 +831,7 @@ def dashboard_overview(
         e.transaction_count += int(n)
     months_list = sorted(month_acc.values(), key=lambda e: e.month)[-months:]
 
-    # Pick the focal month: explicit ``month=`` param if given, else the
-    # latest month with data. If the param doesn't match any month with
-    # data we still honour it (the queries below will return empty rows,
-    # which is honest behaviour).
-    if month is not None:
-        focal_month = month
-    elif months_list:
-        focal_month = months_list[-1].month
-    else:
-        focal_month = None
-
-    # 2. Current-month top categories — SPENDING only (excludes inflows AND
-    #    excluded-from-spend like transfers/investments).
-    if focal_month is not None:
-        cur_y, cur_m = (int(p) for p in focal_month.split("-"))
-        cat_rows = db.execute(
-            sa_select(
-                ExpenseCategory.slug, ExpenseCategory.label_en,
-                func.sum(ExpenseTransaction.amount_nis).label("total"),
-                func.count().label("n"),
-            )
-            .join(ExpenseTransaction,
-                  ExpenseTransaction.category_id == ExpenseCategory.id)
-            .where(ExpenseTransaction.user_id == user_id)
-            .where(ExpenseTransaction.is_card_payment.is_(False))
-            .where(ExpenseTransaction.amount_nis.is_not(None))
-            .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
-            .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
-            .where(ExpenseCategory.is_excluded_from_spend.is_(False))
-            .where(ExpenseCategory.is_inflow.is_(False))
-            .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
-            .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
-            .limit(10)
-        ).all()
-        total_month = sum(float(r.total or 0) for r in cat_rows) or 1.0
-        top_cats = [
-            CategorySpend(
-                slug=r.slug, label_en=r.label_en,
-                total_nis=float(r.total or 0),
-                transaction_count=int(r.n or 0),
-                percent=float(r.total or 0) / total_month * 100.0,
-            )
-            for r in cat_rows
-        ]
-        cur_month_spending_nis = sum(float(r.total or 0) for r in cat_rows)
-
-        # 2b. Current-month INCOME (real income — credits, NOT refunds).
-        income_rows = db.execute(
-            sa_select(
-                ExpenseCategory.slug, ExpenseCategory.label_en,
-                func.sum(ExpenseTransaction.amount_nis).label("total"),
-                func.count().label("n"),
-            )
-            .join(ExpenseTransaction,
-                  ExpenseTransaction.category_id == ExpenseCategory.id)
-            .where(ExpenseTransaction.user_id == user_id)
-            .where(ExpenseTransaction.is_card_payment.is_(False))
-            .where(ExpenseTransaction.amount_nis.is_not(None))
-            .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
-            .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
-            .where(ExpenseTransaction.direction == "credit")
-            .where(ExpenseTransaction.tx_type != "refund")
-            .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
-            .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
-            .limit(10)
-        ).all()
-        cur_month_income_nis = sum(float(r.total or 0) for r in income_rows)
-        income_pct_base = cur_month_income_nis or 1.0
-        income_cats = [
-            CategorySpend(
-                slug=r.slug, label_en=r.label_en,
-                total_nis=float(r.total or 0),
-                transaction_count=int(r.n or 0),
-                percent=float(r.total or 0) / income_pct_base * 100.0,
-            )
-            for r in income_rows
-        ]
-
-        # 2c. Current-month REFUNDS (credits with tx_type='refund').
-        cur_month_refunds_nis = float(db.execute(
-            sa_select(
-                func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0),
-            )
-            .where(ExpenseTransaction.user_id == user_id)
-            .where(ExpenseTransaction.is_card_payment.is_(False))
-            .where(ExpenseTransaction.amount_nis.is_not(None))
-            .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
-            .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
-            .where(ExpenseTransaction.direction == "credit")
-            .where(ExpenseTransaction.tx_type == "refund")
-        ).scalar() or 0)
-        # Deprecated alias = income + refunds (= what the old field meant).
-        cur_month_inflow_nis = cur_month_income_nis + cur_month_refunds_nis
-        # current_month_inflow stays as the alias view: income breakdown
-        # mirrors income_cats since we want one canonical "real income"
-        # category list. This preserves callers that read `current_month_inflow`.
-        inflow_cats = income_cats
-    else:
-        top_cats = []
-        income_cats = []
-        inflow_cats = []
-        cur_month_spending_nis = 0.0
-        cur_month_income_nis = 0.0
-        cur_month_refunds_nis = 0.0
-        cur_month_inflow_nis = 0.0
-
-    # 3. Top merchants (focal month) — SPENDING only.
-    if focal_month is not None:
-        cur_y, cur_m = (int(p) for p in focal_month.split("-"))
-        mer_rows = db.execute(
-            sa_select(
-                ExpenseTransaction.merchant_normalized,
-                func.max(ExpenseTransaction.merchant_raw).label("display"),
-                func.sum(ExpenseTransaction.amount_nis).label("total"),
-                func.count().label("n"),
-                func.max(ExpenseCategory.slug).label("cat"),
-            )
-            .outerjoin(ExpenseCategory,
-                       ExpenseCategory.id == ExpenseTransaction.category_id)
-            .where(ExpenseTransaction.user_id == user_id)
-            .where(ExpenseTransaction.is_card_payment.is_(False))
-            .where(ExpenseTransaction.amount_nis.is_not(None))
-            .where(ExpenseTransaction.direction == "debit")
-            .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
-            .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
-            .where((ExpenseCategory.id.is_(None)) |
-                   ((ExpenseCategory.is_excluded_from_spend.is_(False)) &
-                    (ExpenseCategory.is_inflow.is_(False))))
-            .group_by(ExpenseTransaction.merchant_normalized)
-            .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
-            .limit(10)
-        ).all()
-        top_merchants = [
-            MerchantSpend(
-                merchant_normalized=r.merchant_normalized,
-                merchant_display=r.display or r.merchant_normalized,
-                total_nis=float(r.total or 0),
-                transaction_count=int(r.n or 0),
-                category_slug=r.cat,
-            )
-            for r in mer_rows
-        ]
-    else:
-        top_merchants = []
-
-    # 4. Anomalies — base set + oddity detectors below.
-    anomalies: list[AnomalyCard] = []
-    # 4a. Uncategorized count
-    uncat_n = db.query(ExpenseTransaction).filter(
-        ExpenseTransaction.user_id == user_id,
-        ExpenseTransaction.is_card_payment.is_(False),
-    ).join(ExpenseCategory,
-           ExpenseCategory.id == ExpenseTransaction.category_id).filter(
-        ExpenseCategory.slug == "uncategorized",
-    ).count()
-    if uncat_n > 0:
-        anomalies.append(AnomalyCard(
-            kind="uncategorized", severity="yellow" if uncat_n < 50 else "red",
-            message=f"{uncat_n} transactions are uncategorized",
-            link="/expenses/transactions?category=uncategorized",
-        ))
-    # 4b. Conservation gaps (latest statement per source)
-    for src_row in db.query(ExpenseSource).filter_by(user_id=user_id).all():
-        latest = db.query(ExpenseStatement).filter_by(
-            source_id=src_row.id, user_id=user_id,
-        ).order_by(ExpenseStatement.period_end.desc()).first()
-        if latest is None or latest.declared_total_nis is None:
-            continue
-        gap = float(latest.parsed_total_nis or 0) - float(latest.declared_total_nis)
-        if abs(gap) >= 5.0:
-            anomalies.append(AnomalyCard(
-                kind="conservation_gap", severity="red",
-                message=f"{src_row.display_name}: latest gap ₪{gap:+.2f}",
-                detail=f"parsed={latest.parsed_total_nis} declared={latest.declared_total_nis}",
-                link="/expenses/sources",
-            ))
-    # 4c. Card 2923 fee-waiver: if discount card has any standing-order fee row
-    #     in latest statement but NO matching credit/refund row → flag.
-    discount = db.query(ExpenseSource).filter_by(
-        user_id=user_id, issuer="discount", external_id="2923",
-    ).one_or_none()
-    if discount is not None:
-        latest = db.query(ExpenseStatement).filter_by(
-            source_id=discount.id, user_id=user_id,
-        ).order_by(ExpenseStatement.period_end.desc()).first()
-        if latest is not None:
-            stmt_txs = db.query(ExpenseTransaction).filter_by(
-                statement_id=latest.id, user_id=user_id,
-            ).all()
-            fees = [t for t in stmt_txs
-                    if t.direction == "debit"
-                    and "כרטיס" in (t.merchant_raw or "")
-                    and t.amount_nis and float(t.amount_nis) > 5]
-            credits = [t for t in stmt_txs if t.direction == "credit"]
-            if fees and not credits:
-                anomalies.append(AnomalyCard(
-                    kind="fee_waiver_missed", severity="red",
-                    message="Discount Card 2923: card-fee charged with NO matching discount credit",
-                    detail="Verify the fee-waiver promotion is still active",
-                    link=f"/expenses/transactions?source_id={discount.id}&include_card_payments=1",
-                ))
-
-    # 5. Sources health
+    # 2. Sources health
     sources_health: list[SourceHealthEntry] = []
     for src_row in db.query(ExpenseSource).filter_by(
         user_id=user_id, active=True,
@@ -1057,10 +861,9 @@ def dashboard_overview(
             correlated_card_payments=corr_n,
         ))
 
-    # 6. Yearly summary — windowed rollup, NIS-only.
+    # 3. Yearly summary — windowed rollup, NIS-only.
     #    Anchor the window to the LATEST MONTH WITH DATA (not today) so
-    #    partial corpora render sensible numbers, and so the "current month"
-    #    headline is actually inside the rollup.
+    #    partial corpora render sensible numbers.
     #
     #    Two windows supported:
     #
@@ -1179,13 +982,11 @@ def dashboard_overview(
     # Deprecated alias kept for back-compat.
     yearly_inflow_total_nis = yearly_income_total_nis + yearly_refunds_total_nis
 
-    # current_vs_avg_pct: spending-vs-spending. Use the focal month's
-    # spending (computed above) so the trend reflects the headline.
-    current_vs_avg_pct: float | None
-    if avg_per_month_nis > 0 and focal_month is not None:
-        current_vs_avg_pct = (cur_month_spending_nis / avg_per_month_nis - 1.0) * 100.0
-    else:
-        current_vs_avg_pct = None
+    # current_vs_avg_pct: lived in the old payload alongside the now-removed
+    # current_month_* fields. With the focal month gone, this comparison no
+    # longer has a meaningful subject; the Monthly tab's hero stats expose a
+    # vs-trailing-12 percentage in its place. Kept as None for back-compat.
+    current_vs_avg_pct: float | None = None
 
     yearly = YearlySummary(
         months_covered=months_covered,
@@ -1203,92 +1004,11 @@ def dashboard_overview(
         window_end_month=window_end_month,
     )
 
-    # 6b. Anomaly oddities — sensible defaults the user authorised:
-    #     - merchant_spike: a single tx > 5x the merchant's 12-month average.
-    #     - new_high_value_merchant: a tx >= ₪500 from a merchant unseen in the
-    #       prior 12 months.
-    #     Cap each at top 5 (most recent first). Only consider focal-month tx
-    #     so this fires on what the user is currently looking at.
-    if focal_month is not None:
-        cur_y, cur_m = (int(p) for p in focal_month.split("-"))
-        focal_first = date(cur_y, cur_m, 1)
-        from calendar import monthrange as _mr
-        focal_last_day = _mr(cur_y, cur_m)[1]
-        focal_last = date(cur_y, cur_m, focal_last_day)
-        focal_txs = db.query(ExpenseTransaction).filter(
-            ExpenseTransaction.user_id == user_id,
-            ExpenseTransaction.is_card_payment.is_(False),
-            ExpenseTransaction.amount_nis.is_not(None),
-            ExpenseTransaction.direction == "debit",
-            ExpenseTransaction.occurred_on >= focal_first,
-            ExpenseTransaction.occurred_on <= focal_last,
-        ).all()
-
-        spikes: list[tuple[float, AnomalyCard]] = []
-        new_high: list[tuple[float, AnomalyCard]] = []
-        # Pre-compute prior-12mo per-merchant stats once per merchant we hit
-        # in the focal month — cheap because we only iterate distinct merchants
-        # the user actually has activity for this month.
-        merchant_cache: dict[str, dict[str, float | int]] = {}
-        prior_window_end = focal_first - timedelta(days=1)
-        prior_window_start = max(window_start, prior_window_end - timedelta(days=365))
-        for tx in focal_txs:
-            mn = tx.merchant_normalized or ""
-            if not mn:
-                continue
-            stats = merchant_cache.get(mn)
-            if stats is None:
-                rows = db.execute(
-                    sa_select(
-                        func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0),
-                        func.count(),
-                    )
-                    .where(ExpenseTransaction.user_id == user_id)
-                    .where(ExpenseTransaction.is_card_payment.is_(False))
-                    .where(ExpenseTransaction.amount_nis.is_not(None))
-                    .where(ExpenseTransaction.direction == "debit")
-                    .where(ExpenseTransaction.merchant_normalized == mn)
-                    .where(ExpenseTransaction.occurred_on >= prior_window_start)
-                    .where(ExpenseTransaction.occurred_on <= prior_window_end)
-                ).one()
-                total_prior, n_prior = float(rows[0] or 0), int(rows[1] or 0)
-                stats = {
-                    "avg": (total_prior / n_prior) if n_prior else 0.0,
-                    "n": n_prior,
-                }
-                merchant_cache[mn] = stats
-            tx_amount = float(tx.amount_nis or 0)
-            display = (tx.merchant_raw or mn).strip()[:40]
-            link = (
-                f"/expenses/transactions?search="
-                + (display.replace(" ", "%20") if display else "")
-            )
-            avg_prior = float(stats["avg"])
-            n_prior = int(stats["n"])
-            if avg_prior > 0 and tx_amount > 5 * avg_prior:
-                ratio = tx_amount / avg_prior
-                spikes.append((tx_amount, AnomalyCard(
-                    kind="merchant_spike", severity="yellow",
-                    message=f"{display}: ₪{tx_amount:,.0f} ({ratio:.1f}× usual)",
-                    detail=f"avg over prior 12mo: ₪{avg_prior:,.2f} (n={n_prior})",
-                    link=link,
-                )))
-            elif n_prior == 0 and tx_amount >= 500:
-                new_high.append((tx_amount, AnomalyCard(
-                    kind="new_high_value_merchant", severity="yellow",
-                    message=f"{display}: ₪{tx_amount:,.0f} from a new merchant",
-                    detail="No prior activity from this merchant in the last 12 months",
-                    link=link,
-                )))
-        # Top 5 of each kind, biggest first.
-        spikes.sort(key=lambda t: t[0], reverse=True)
-        new_high.sort(key=lambda t: t[0], reverse=True)
-        for _, card in spikes[:5]:
-            anomalies.append(card)
-        for _, card in new_high[:5]:
-            anomalies.append(card)
-
-    # 7. Dividends — USD credits whose merchant matches dividend wording.
+    # 4. Dividends — USD credits whose merchant matches dividend wording.
+    #    Yearly rollup runs over the same windowed range as the rest of the
+    #    summary; trend_12mo is always exactly 12 trailing months (oldest-first)
+    #    via the helper. Returns None when there is no dividend activity in the
+    #    window — the Yearly tab hides the card in that case.
     div_candidates = db.query(ExpenseTransaction).filter(
         ExpenseTransaction.user_id == user_id,
         ExpenseTransaction.is_card_payment.is_(False),
@@ -1310,32 +1030,36 @@ def dashboard_overview(
         {"month": k, "total_usd": v}
         for k, v in sorted(div_monthly.items())
     ]
-    cur_month_div_usd = (
-        div_monthly.get(focal_month, 0.0) if focal_month is not None else 0.0
-    )
-    cat_by_id_slug = {
-        c.id: c.slug for c in db.query(ExpenseCategory).filter_by(
-            user_id=user_id,
-        ).all()
-    }
-    if focal_month is not None:
-        cur_y, cur_m = (int(p) for p in focal_month.split("-"))
-        focal_div_rows = [
-            r for r in div_rows
-            if r.occurred_on.year == cur_y and r.occurred_on.month == cur_m
-        ]
+    if div_rows:
+        latest_div_month = max(div_monthly.keys()) if div_monthly else ""
+        cat_by_id_slug = {
+            c.id: c.slug for c in db.query(ExpenseCategory).filter_by(
+                user_id=user_id,
+            ).all()
+        }
+        if latest_div_month:
+            ly, lm = (int(p) for p in latest_div_month.split("-"))
+            latest_div_rows = [
+                r for r in div_rows
+                if r.occurred_on.year == ly and r.occurred_on.month == lm
+            ]
+            cur_month_div_usd = div_monthly.get(latest_div_month, 0.0)
+        else:
+            latest_div_rows = []
+            cur_month_div_usd = 0.0
+        div_txs = [_tx_to_out(r, cat_by_id_slug) for r in latest_div_rows]
+        dividends = DividendsSummary(
+            month=latest_div_month,
+            current_month_total_usd=cur_month_div_usd,
+            yearly_total_usd=yearly_div_usd,
+            monthly_series=div_series,
+            transactions=div_txs,
+            trend_12mo=compute_dividends_trend_12mo(db, user_id),
+        )
     else:
-        focal_div_rows = []
-    div_txs = [_tx_to_out(r, cat_by_id_slug) for r in focal_div_rows]
-    dividends = DividendsSummary(
-        month=focal_month or "",
-        current_month_total_usd=cur_month_div_usd,
-        yearly_total_usd=yearly_div_usd,
-        monthly_series=div_series,
-        transactions=div_txs,
-    )
+        dividends = None
 
-    # 8. Taxes — by-kind NIS rollup + Schwab USD withholding when present.
+    # 5. Taxes — by-kind NIS rollup + Schwab USD withholding when present.
     tax_rows = db.execute(
         sa_select(
             ExpenseCategory.slug,
@@ -1382,28 +1106,30 @@ def dashboard_overview(
     if yearly_tax_usd > 0:
         by_kind["rsu_withholding_usd"] = yearly_tax_usd
 
-    taxes = TaxesSummary(
-        yearly_total_nis=yearly_tax_nis,
-        yearly_total_usd=yearly_tax_usd,
-        by_kind=by_kind,
-    )
+    if yearly_tax_nis > 0 or yearly_tax_usd > 0:
+        taxes = TaxesSummary(
+            yearly_total_nis=yearly_tax_nis,
+            yearly_total_usd=yearly_tax_usd,
+            by_kind=by_kind,
+            trend_12mo=compute_taxes_trend_12mo(db, user_id),
+        )
+    else:
+        taxes = None
+
+    # 6. New aggregation surfaces (EX6).
+    savings_rate_trend = compute_savings_rate_trend(db, user_id, months=12)
+    top_movers = compute_top_movers(db, user_id, window=window)
+    currency_mix = compute_currency_mix(db, user_id, months=12)
 
     return DashboardOverview(
         months=months_list,
-        current_month=focal_month,
-        current_month_spending_nis=cur_month_spending_nis,
-        current_month_income_nis=cur_month_income_nis,
-        current_month_refunds_nis=cur_month_refunds_nis,
-        current_month_inflow_nis=cur_month_inflow_nis,
-        current_month_top_categories=top_cats,
-        current_month_income=income_cats,
-        current_month_inflow=inflow_cats,
-        top_merchants_current_month=top_merchants,
-        anomalies=anomalies,
-        sources_health=sources_health,
         yearly_summary=yearly,
+        savings_rate_trend=savings_rate_trend,
+        top_movers=top_movers,
+        currency_mix=currency_mix,
         dividends=dividends,
         taxes=taxes,
+        sources_health=sources_health,
         fx_mode=fx,
     )
 

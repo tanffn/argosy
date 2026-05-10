@@ -621,3 +621,84 @@ def _count_reconciled_statements_for_month(
         if abs(float(parsed) - float(declared)) < 0.5:
             count += 1
     return count
+
+
+# ---------------- 12-month trend helpers (dividends, taxes) ----------------
+
+def compute_dividends_trend_12mo(session: Session, user_id: str):
+    """Return 12 trailing TrendPoint entries with `total_usd` populated from
+    USD-credit dividend rows. Oldest-first; months without data yield 0.0.
+
+    Detects dividends via the same wording logic the route uses
+    (`_is_dividend_row` in argosy/api/routes/expenses.py): English
+    'dividend'/'div ' tokens or Hebrew Leumi descriptors.
+    """
+    from argosy.api.routes.expenses import TrendPoint, _is_dividend_row
+
+    latest = _latest_tx_month(session, user_id)
+    if latest is None:
+        return []
+    month_keys = _trailing_months(latest, 12)
+
+    # Pull all USD credits in the trailing 12-month window once.
+    rows = session.query(ExpenseTransaction).filter(
+        ExpenseTransaction.user_id == user_id,
+        ExpenseTransaction.is_card_payment.is_(False),
+        ExpenseTransaction.direction == "credit",
+        ExpenseTransaction.currency_orig == "USD",
+    ).all()
+
+    by_month: dict[str, float] = {k: 0.0 for k in month_keys}
+    for r in rows:
+        if r.occurred_on is None:
+            continue
+        key = f"{r.occurred_on.year:04d}-{r.occurred_on.month:02d}"
+        if key not in by_month:
+            continue
+        if not _is_dividend_row(r.merchant_normalized, r.merchant_raw, r.currency_orig):
+            continue
+        by_month[key] += float(r.amount_orig or 0.0)
+
+    return [TrendPoint(month=k, total_usd=by_month[k]) for k in month_keys]
+
+
+def compute_taxes_trend_12mo(session: Session, user_id: str):
+    """Return 12 trailing TrendPoint entries with `total_nis` populated from
+    tax-category debit rows. Oldest-first; months without data yield 0.0.
+
+    Tax categories: ``taxes``, ``taxes.income_tax_paid``,
+    ``taxes.social_security_paid``, ``housing.property_tax`` (mirrors
+    `_TAX_CATEGORY_SLUGS` in argosy/api/routes/expenses.py).
+    """
+    from argosy.api.routes.expenses import TrendPoint, _TAX_CATEGORY_SLUGS
+
+    latest = _latest_tx_month(session, user_id)
+    if latest is None:
+        return []
+    month_keys = _trailing_months(latest, 12)
+
+    rows = session.execute(
+        sa_select(
+            extract("year", ExpenseTransaction.occurred_on).label("y"),
+            extract("month", ExpenseTransaction.occurred_on).label("m"),
+            func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0.0).label("nis"),
+        )
+        .join(ExpenseCategory,
+              ExpenseTransaction.category_id == ExpenseCategory.id)
+        .where(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.is_card_payment.is_(False),
+            ExpenseTransaction.amount_nis.is_not(None),
+            ExpenseTransaction.direction == "debit",
+            ExpenseCategory.slug.in_(_TAX_CATEGORY_SLUGS),
+        )
+        .group_by("y", "m")
+    ).all()
+
+    by_month: dict[str, float] = {k: 0.0 for k in month_keys}
+    for r in rows:
+        key = f"{int(r.y):04d}-{int(r.m):02d}"
+        if key in by_month:
+            by_month[key] = float(r.nis or 0.0)
+
+    return [TrendPoint(month=k, total_nis=by_month[k]) for k in month_keys]

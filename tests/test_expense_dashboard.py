@@ -189,3 +189,58 @@ def test_compute_largest_transactions_top5_sorted(db_session_with_seeded_user):
     assert len(txs) <= 5
     for a, b in zip(txs, txs[1:]):
         assert abs(a.amount_nis or 0) >= abs(b.amount_nis or 0)
+
+
+# ---------------- 12-month trend helpers (dividends, taxes) ----------------
+
+def test_compute_dividends_trend_12mo_empty():
+    """No data → empty list (caller decides whether to render anything)."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from argosy.services.expense_dashboard import compute_dividends_trend_12mo
+    from argosy.state.models import Base
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        out = compute_dividends_trend_12mo(s, "nobody")
+        assert out == []
+
+
+def test_compute_taxes_trend_12mo_empty():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from argosy.services.expense_dashboard import compute_taxes_trend_12mo
+    from argosy.state.models import Base
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        out = compute_taxes_trend_12mo(s, "nobody")
+        assert out == []
+
+
+def test_compute_dividends_trend_12mo_basic(db_session_with_seeded_user):
+    """Helper returns 12 oldest-first entries with `total_usd` populated for
+    months that have USD-credit dividend rows. The seeded fixture doesn't
+    include dividends, so all values should be 0.0."""
+    from argosy.services.expense_dashboard import compute_dividends_trend_12mo
+    out = compute_dividends_trend_12mo(db_session_with_seeded_user, "test")
+    assert len(out) == 12
+    assert out[0].month < out[-1].month
+    # Each entry has the new TrendPoint shape — total_usd, total_nis (default 0).
+    for pt in out:
+        assert pt.total_usd >= 0.0
+        assert pt.total_nis == 0.0
+
+
+def test_compute_taxes_trend_12mo_basic(db_session_with_seeded_user):
+    """Helper returns 12 oldest-first entries with `total_nis` populated for
+    months that have tax-category debit rows."""
+    from argosy.services.expense_dashboard import compute_taxes_trend_12mo
+    out = compute_taxes_trend_12mo(db_session_with_seeded_user, "test")
+    assert len(out) == 12
+    assert out[0].month < out[-1].month
+    for pt in out:
+        assert pt.total_nis >= 0.0
+        assert pt.total_usd == 0.0

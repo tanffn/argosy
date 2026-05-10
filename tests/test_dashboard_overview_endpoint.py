@@ -1,4 +1,14 @@
-"""Dashboard-overview endpoint — returns one bundle for the overview page."""
+"""Dashboard-overview endpoint — yearly tab payload.
+
+After EX6 the endpoint scopes strictly to "how is the year going?" — no
+``current_month_*`` headlines, no top merchants, no anomalies (those moved
+to ``GET /api/expenses/dashboard-monthly``). The asserted shape is:
+
+    months[]            yearly_summary
+    savings_rate_trend  top_movers       currency_mix
+    dividends|null      taxes|null       sources_health
+    fx_mode
+"""
 
 from __future__ import annotations
 
@@ -58,17 +68,35 @@ def _seed_minimal(client_with_db, *, user_id: str = "u1"):
         s.commit()
 
 
-def test_dashboard_overview_returns_full_payload(client_with_db):
+def test_dashboard_overview_returns_yearly_payload(client_with_db):
+    """The new shape has yearly aggregates only — no current_month_* fields."""
     _seed_minimal(client_with_db)
     r = client_with_db.get("/api/expenses/dashboard-overview?user_id=u1&months=6")
     assert r.status_code == 200
     body = r.json()
     assert "months" in body
-    assert "current_month_top_categories" in body
-    assert "top_merchants_current_month" in body
-    assert "anomalies" in body
+    assert "yearly_summary" in body
+    assert "savings_rate_trend" in body
+    assert "top_movers" in body
+    assert "currency_mix" in body
+    assert "dividends" in body
+    assert "taxes" in body
     assert "sources_health" in body
     assert "fx_mode" in body
+    # Removed fields must NOT be present.
+    for removed in (
+        "current_month",
+        "current_month_spending_nis",
+        "current_month_income_nis",
+        "current_month_refunds_nis",
+        "current_month_inflow_nis",
+        "current_month_top_categories",
+        "current_month_income",
+        "current_month_inflow",
+        "top_merchants_current_month",
+        "anomalies",
+    ):
+        assert removed not in body, f"{removed!r} should be gone after EX6"
 
 
 def test_dashboard_overview_empty_corpus_returns_empty_lists(client_with_db):
@@ -77,18 +105,14 @@ def test_dashboard_overview_empty_corpus_returns_empty_lists(client_with_db):
     body = r.json()
     assert body["months"] == []
     assert body["sources_health"] == []
-    assert body["anomalies"] == []
-
-
-def test_dashboard_overview_top_categories_ordered_by_spend(client_with_db):
-    _seed_minimal(client_with_db, user_id="u2")
-    r = client_with_db.get("/api/expenses/dashboard-overview?user_id=u2&months=6")
-    body = r.json()
-    cats = body["current_month_top_categories"]
-    # Each entry: {slug, label_en, total_nis, percent}
-    assert all("slug" in c and "total_nis" in c for c in cats)
-    if len(cats) >= 2:
-        assert cats[0]["total_nis"] >= cats[1]["total_nis"]
+    assert body["savings_rate_trend"] == []
+    assert body["currency_mix"] == []
+    # top_movers always renders, just with empty grew/shrank when no data.
+    assert body["top_movers"]["grew"] == []
+    assert body["top_movers"]["shrank"] == []
+    # No dividend/tax data → those fields are nullable.
+    assert body["dividends"] is None
+    assert body["taxes"] is None
 
 
 def test_dashboard_overview_sources_health_includes_status(client_with_db):
@@ -104,13 +128,7 @@ def test_dashboard_overview_sources_health_includes_status(client_with_db):
 
 
 def test_dashboard_overview_yearly_summary_shape(client_with_db):
-    """yearly_summary is the 12-month rollup that powers the 'Bottom line' card.
-
-    Asserts shape + sane values for a single-month seed: 5 NIS-50 dining-out
-    transactions in May 2026 → total_nis=250, avg_per_month_nis=250 (only
-    1 month in the window), current_vs_avg_pct=0.0 (current == avg), and
-    top_categories_12m holds a single dining_out.restaurants entry.
-    """
+    """yearly_summary is the 12-month rollup that powers the 'Bottom line' card."""
     _seed_minimal(client_with_db, user_id="u_year")
     r = client_with_db.get("/api/expenses/dashboard-overview?user_id=u_year&months=12")
     assert r.status_code == 200
@@ -134,8 +152,8 @@ def test_dashboard_overview_yearly_summary_shape(client_with_db):
     assert ys["yearly_income_total_nis"] == pytest.approx(0.0)
     assert ys["yearly_refunds_total_nis"] == pytest.approx(0.0)
     assert ys["avg_per_month_nis"] == pytest.approx(250.0)
-    # cur month equals the only month present → ratio is 1.0 → pct == 0
-    assert ys["current_vs_avg_pct"] == pytest.approx(0.0)
+    # current_vs_avg_pct is None now that focal-month is gone.
+    assert ys["current_vs_avg_pct"] is None
     # top categories: list of CategorySpend, sorted desc, top one is dining
     assert isinstance(ys["top_categories_12m"], list)
     assert len(ys["top_categories_12m"]) >= 1
@@ -160,18 +178,10 @@ def test_dashboard_overview_yearly_summary_empty_corpus(client_with_db):
     assert ys["avg_per_month_nis"] == 0.0
     assert ys["top_categories_12m"] == []
     assert ys["current_vs_avg_pct"] is None
-    # Hero scalars are zero too.
-    assert body["current_month"] is None
-    assert body["current_month_spending_nis"] == 0.0
-    assert body["current_month_inflow_nis"] == 0.0
-    assert body["current_month_income_nis"] == 0.0
-    assert body["current_month_refunds_nis"] == 0.0
-    assert body["current_month_inflow"] == []
-    assert body["current_month_income"] == []
 
 
 # ---------------------------------------------------------------------------
-# Fix A — inflow vs spending separation
+# Inflow vs spending separation (yearly only — current_month_* moved out)
 # ---------------------------------------------------------------------------
 
 def _seed_inflow_and_spend(client_with_db, *, user_id: str = "u_mix",
@@ -233,76 +243,22 @@ def _seed_inflow_and_spend(client_with_db, *, user_id: str = "u_mix",
         s.commit()
 
 
-def test_dashboard_overview_separates_inflow_from_spending(client_with_db):
-    """SALARY (inflow) must NOT appear in current_month_top_categories;
-    Dining (debit) must NOT appear in current_month_inflow.
-    This is the bug the user surfaced: salary leaking into 'top spending'.
-    """
+def test_dashboard_overview_yearly_separates_inflow_from_spending(client_with_db):
+    """SALARY (inflow) belongs in yearly_inflow_total_nis, NOT in
+    yearly_spending_total_nis or top_categories_12m. Dining (debit) is
+    spending."""
     _seed_inflow_and_spend(client_with_db, user_id="u_sep")
     r = client_with_db.get(
         "/api/expenses/dashboard-overview?user_id=u_sep&months=6"
     )
     assert r.status_code == 200
     body = r.json()
-    spend_slugs = [c["slug"] for c in body["current_month_top_categories"]]
-    inflow_slugs = [c["slug"] for c in body["current_month_inflow"]]
-    assert "dining_out.restaurants" in spend_slugs
-    assert "income.salary" not in spend_slugs
-    assert "income.salary" in inflow_slugs
-    assert "dining_out.restaurants" not in inflow_slugs
-    # Hero scalars match the split:
-    assert body["current_month_spending_nis"] == pytest.approx(200.0)
-    assert body["current_month_inflow_nis"] == pytest.approx(10000.0)
-    # Yearly summary mirrors the split too.
     ys = body["yearly_summary"]
     assert ys["yearly_spending_total_nis"] == pytest.approx(200.0)
     assert ys["yearly_inflow_total_nis"] == pytest.approx(10000.0)
-    # Top 12-month categories are spending-only.
     yr_slugs = [c["slug"] for c in ys["top_categories_12m"]]
+    assert "dining_out.restaurants" in yr_slugs
     assert "income.salary" not in yr_slugs
-
-
-def test_dashboard_overview_month_param_rescopes_current(client_with_db):
-    """?month=YYYY-MM rescopes current_month_* to the requested month even
-    when newer months exist (or when it's not the latest)."""
-    SF = client_with_db.app.state.session_factory
-    user_id = "u_month"
-    _seed_inflow_and_spend(
-        client_with_db, user_id=user_id, month=(2026, 4),
-    )
-    # Add ALSO a May 2026 row so April is no longer the latest.
-    with SF() as s:
-        src = s.query(ExpenseSource).filter_by(user_id=user_id).one()
-        stmt = s.query(ExpenseStatement).filter_by(user_id=user_id).one()
-        cat = s.query(ExpenseCategory).filter_by(
-            user_id=user_id, slug="dining_out.restaurants",
-        ).one()
-        s.add(ExpenseTransaction(
-            user_id=user_id, source_id=src.id, statement_id=stmt.id,
-            occurred_on=date(2026, 5, 10),
-            merchant_raw="MAY RESTO", merchant_normalized="may resto",
-            amount_nis=Decimal("999"),
-            direction="debit", tx_type="regular",
-            category_id=cat.id, category_source="rule",
-            category_confidence=Decimal("1.0"), raw_row_json="{}",
-        ))
-        s.commit()
-    # Default (no month=): focal=2026-05, spending=999.
-    r = client_with_db.get(
-        f"/api/expenses/dashboard-overview?user_id={user_id}&months=12"
-    )
-    assert r.status_code == 200
-    assert r.json()["current_month"] == "2026-05"
-    assert r.json()["current_month_spending_nis"] == pytest.approx(999.0)
-    # With month=2026-04: focal=2026-04, spending=200 + inflow=10000.
-    r = client_with_db.get(
-        f"/api/expenses/dashboard-overview?user_id={user_id}&months=12&month=2026-04"
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["current_month"] == "2026-04"
-    assert body["current_month_spending_nis"] == pytest.approx(200.0)
-    assert body["current_month_inflow_nis"] == pytest.approx(10000.0)
 
 
 def test_dashboard_overview_yearly_summary_window_calendar_year(client_with_db):
@@ -394,8 +350,8 @@ def test_dashboard_overview_yearly_summary_window_calendar_year(client_with_db):
 
 
 def test_dashboard_overview_yearly_summary_top_cats_returns_all(client_with_db):
-    """top_categories_12m now returns ALL categories with non-zero spend
-    sorted desc, not just top 5."""
+    """top_categories_12m returns ALL categories with non-zero spend, sorted
+    desc — not just top 5."""
     SF = client_with_db.app.state.session_factory
     user_id = "u_allcats"
     with SF() as s:
@@ -477,7 +433,7 @@ def test_dashboard_overview_yearly_split_inflow_and_spending(client_with_db):
 
 
 # ---------------------------------------------------------------------------
-# Refund vs income split (Feature 1)
+# Refund vs income split (yearly only)
 # ---------------------------------------------------------------------------
 
 
@@ -551,18 +507,13 @@ def _seed_income_and_refund(client_with_db, *, user_id: str = "u_refund",
         s.commit()
 
 
-def test_dashboard_overview_splits_income_from_refunds(client_with_db):
+def test_dashboard_overview_yearly_splits_income_from_refunds(client_with_db):
     _seed_income_and_refund(client_with_db, user_id="u_inc_ref")
     r = client_with_db.get(
         "/api/expenses/dashboard-overview?user_id=u_inc_ref&months=6"
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["current_month_income_nis"] == pytest.approx(10000.0)
-    assert body["current_month_refunds_nis"] == pytest.approx(50.0)
-    assert body["current_month_inflow_nis"] == pytest.approx(10050.0)
-    income_slugs = [c["slug"] for c in body["current_month_income"]]
-    assert "income.salary" in income_slugs
     ys = body["yearly_summary"]
     assert ys["yearly_income_total_nis"] == pytest.approx(10000.0)
     assert ys["yearly_refunds_total_nis"] == pytest.approx(50.0)
@@ -573,12 +524,6 @@ def test_dashboard_overview_months_chart_excludes_inflows_and_investments(
     client_with_db,
 ):
     """The "Monthly spend" chart series (`body["months"]`) is SPENDING-ONLY.
-
-    Previously the series summed all non-card-payment activity, so a month
-    with a $40K investment buy + $151K RSU disbursement showed a giant USD
-    bar that meant "money MOVED" — not "money spent". Fix: filter to
-    direction='debit' AND category.is_inflow=False AND
-    category.is_excluded_from_spend=False (mirrors current_month_top_categories).
 
     Seed: SALARY credit (10000, inflow) + investment debit (5000, excluded)
     + dining debit (200) all in May 2026. Expected: chart NIS bucket = 200.
@@ -664,35 +609,68 @@ def test_dashboard_overview_months_chart_excludes_inflows_and_investments(
     assert body["months"][-1]["transaction_count"] == 1
 
 
-def test_income_breakdown_endpoint(client_with_db):
-    _seed_income_and_refund(client_with_db, user_id="u_inc_drill")
-    r = client_with_db.get(
-        "/api/expenses/income-breakdown?user_id=u_inc_drill&month=2026-05"
-    )
-    assert r.status_code == 200
-    body = r.json()
-    assert body["month"] == "2026-05"
-    assert body["total_nis"] == pytest.approx(10000.0)
-    assert len(body["by_category"]) == 1
-    assert body["by_category"][0]["slug"] == "income.salary"
-    assert len(body["transactions"]) == 1
-    assert body["transactions"][0]["merchant_raw"] == "SALARY DEPOSIT"
+# ---------------------------------------------------------------------------
+# New EX6 fields: savings_rate_trend, top_movers, currency_mix
+# ---------------------------------------------------------------------------
 
 
-def test_income_breakdown_empty_month(client_with_db):
-    _seed_income_and_refund(client_with_db, user_id="u_empty_inc")
+def test_dashboard_overview_savings_rate_trend_shape(client_with_db):
+    """savings_rate_trend has 12 oldest-first points when there is data."""
+    _seed_inflow_and_spend(client_with_db, user_id="u_savings")
     r = client_with_db.get(
-        "/api/expenses/income-breakdown?user_id=u_empty_inc&month=2024-01"
+        "/api/expenses/dashboard-overview?user_id=u_savings&months=12"
     )
-    assert r.status_code == 200
     body = r.json()
-    assert body["total_nis"] == 0.0
-    assert body["by_category"] == []
-    assert body["transactions"] == []
+    pts = body["savings_rate_trend"]
+    assert len(pts) == 12
+    # oldest-first
+    assert pts[0]["month"] < pts[-1]["month"]
+    # Each point has the schema fields.
+    p0 = pts[0]
+    assert {"month", "income_nis", "spending_nis", "savings_rate"} <= set(p0.keys())
+    # Data month (May 2026) should land at the right end of the trend.
+    last = pts[-1]
+    assert last["month"] == "2026-05"
+    assert last["income_nis"] == pytest.approx(10000.0)
+    assert last["spending_nis"] == pytest.approx(200.0)
+    # rate = (income - spending)/income = (10000-200)/10000 = 0.98
+    assert last["savings_rate"] == pytest.approx(0.98)
+
+
+def test_dashboard_overview_top_movers_shape(client_with_db):
+    """top_movers always renders even with empty/short history."""
+    r = client_with_db.get(
+        "/api/expenses/dashboard-overview?user_id=u_void3&months=12"
+    )
+    body = r.json()
+    tm = body["top_movers"]
+    assert tm["grew"] == []
+    assert tm["shrank"] == []
+    # No data → reason='insufficient_history'.
+    assert tm["reason"] == "insufficient_history"
+
+
+def test_dashboard_overview_currency_mix_shape(client_with_db):
+    """currency_mix returns 12 points when there is data."""
+    _seed_inflow_and_spend(client_with_db, user_id="u_ccy")
+    r = client_with_db.get(
+        "/api/expenses/dashboard-overview?user_id=u_ccy&months=12"
+    )
+    body = r.json()
+    pts = body["currency_mix"]
+    assert len(pts) == 12
+    # Each entry has month/nis/usd
+    p0 = pts[0]
+    assert {"month", "nis", "usd"} <= set(p0.keys())
+    # The data month bucket should hold 200 NIS (dining); USD = 0.
+    last = pts[-1]
+    assert last["month"] == "2026-05"
+    assert last["nis"] == pytest.approx(200.0)
+    assert last["usd"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
-# Dividends + Taxes (Feature 4)
+# Dividends + Taxes (yearly only — focal-month detail moved to dashboard-monthly)
 # ---------------------------------------------------------------------------
 
 
@@ -794,35 +772,40 @@ def _seed_dividends_and_taxes(client_with_db, *, user_id: str = "u_div_tax"):
         s.commit()
 
 
-def test_dashboard_dividends_summary(client_with_db):
+def test_dashboard_dividends_summary_yearly(client_with_db):
     _seed_dividends_and_taxes(client_with_db, user_id="u_div")
     r = client_with_db.get(
         "/api/expenses/dashboard-overview?user_id=u_div&months=12"
     )
     assert r.status_code == 200
     body = r.json()
-    assert "dividends" in body
     div = body["dividends"]
-    assert div["month"] == "2026-05"
+    assert div is not None
     # 125.50 + 75 = 200.50; non-dividend wire NOT counted.
-    assert div["current_month_total_usd"] == pytest.approx(200.50)
     assert div["yearly_total_usd"] == pytest.approx(200.50)
-    # monthly_series: one entry for 2026-05 only.
+    # monthly_series: one entry for 2026-05 only (the only dividend month).
     assert len(div["monthly_series"]) == 1
     assert div["monthly_series"][0]["month"] == "2026-05"
     assert div["monthly_series"][0]["total_usd"] == pytest.approx(200.50)
-    # Two transaction rows surfaced for the focal month.
-    assert len(div["transactions"]) == 2
+    # trend_12mo populated, 12 oldest-first entries.
+    assert len(div["trend_12mo"]) == 12
+    assert div["trend_12mo"][0]["month"] < div["trend_12mo"][-1]["month"]
+    # The 2026-05 entry in the trend has total_usd = 200.50.
+    by_month = {pt["month"]: pt for pt in div["trend_12mo"]}
+    assert by_month["2026-05"]["total_usd"] == pytest.approx(200.50)
+    # Months without dividends report 0.0
+    earlier = div["trend_12mo"][0]
+    assert earlier["total_usd"] == 0.0
 
 
-def test_dashboard_taxes_summary(client_with_db):
+def test_dashboard_taxes_summary_yearly(client_with_db):
     _seed_dividends_and_taxes(client_with_db, user_id="u_tax")
     r = client_with_db.get(
         "/api/expenses/dashboard-overview?user_id=u_tax&months=12"
     )
     body = r.json()
-    assert "taxes" in body
     tax = body["taxes"]
+    assert tax is not None
     # 1200 (property) + 1000 (income tax) = 2200.
     assert tax["yearly_total_nis"] == pytest.approx(2200.0)
     # No Schwab CSV path env var set, so USD = 0.
@@ -831,136 +814,52 @@ def test_dashboard_taxes_summary(client_with_db):
     assert tax["by_kind"]["income_tax_paid"] == pytest.approx(1000.0)
     # rsu_withholding_usd should NOT be present since CSV is absent.
     assert "rsu_withholding_usd" not in tax["by_kind"]
+    # trend_12mo populated, 12 oldest-first entries.
+    assert len(tax["trend_12mo"]) == 12
+    assert tax["trend_12mo"][0]["month"] < tax["trend_12mo"][-1]["month"]
+    # The 2026-05 entry in the trend has total_nis = 2200.
+    by_month = {pt["month"]: pt for pt in tax["trend_12mo"]}
+    assert by_month["2026-05"]["total_nis"] == pytest.approx(2200.0)
 
 
-def test_dashboard_dividends_empty_corpus(client_with_db):
-    """No data at all — dividends/taxes still render zero/empty (no crash)."""
+def test_dashboard_dividends_taxes_null_when_no_data(client_with_db):
+    """No dividend / tax data → both fields are None (UI hides those cards)."""
     r = client_with_db.get(
         "/api/expenses/dashboard-overview?user_id=u_void2&months=12"
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["dividends"]["yearly_total_usd"] == 0.0
-    assert body["dividends"]["transactions"] == []
-    assert body["taxes"]["yearly_total_nis"] == 0.0
-    assert body["taxes"]["yearly_total_usd"] == 0.0
+    assert body["dividends"] is None
+    assert body["taxes"] is None
 
 
 # ---------------------------------------------------------------------------
-# Anomaly oddities (Feature 5)
+# Income-breakdown endpoint (sibling, unchanged)
 # ---------------------------------------------------------------------------
 
 
-def _seed_oddities(client_with_db, *, user_id: str = "u_odd"):
-    """Seed:
-      * Merchant 'COFFEE': prior-12mo avg = 30; focal-month tx of 250 → spike.
-      * Merchant 'NEW BIG': no prior activity; focal tx of 1000 → new high.
-      * Merchant 'NEW SMALL': no prior activity, focal tx of 200 → NO flag.
-    """
-    SF = client_with_db.app.state.session_factory
-    with SF() as s:
-        s.add(User(id=user_id, plan="free")); s.flush()
-        from argosy.services.expense_ingest.taxonomy_seed import (
-            seed_system_defaults, seed_user_categories,
-        )
-        seed_system_defaults(s); s.flush()
-        seed_user_categories(s, user_id); s.flush()
-        f = UserFile(
-            user_id=user_id, sha256="o"*64, original_name="x", sanitized_name="x",
-            mime_type="x", kind="other", size_bytes=1, storage_path="/tmp/x",
-            source="chat_attachment",
-        )
-        s.add(f); s.flush()
-        src = ExpenseSource(
-            user_id=user_id, kind="card", issuer="isracard",
-            external_id="0007", display_name="Test",
-        )
-        s.add(src); s.flush()
-        # 12 prior months of COFFEE @ 30 NIS — Jun 2025 → Apr 2026.
-        prior_stmt = ExpenseStatement(
-            user_id=user_id, source_id=src.id, file_id=f.id,
-            period_start=date(2025, 6, 1), period_end=date(2026, 4, 30),
-            parsed_total_nis=Decimal("330"),
-            parser_name="isracard", parser_version="0.1.0", status="parsed",
-        )
-        s.add(prior_stmt); s.flush()
-        cat = s.query(ExpenseCategory).filter_by(
-            user_id=user_id, slug="dining_out.restaurants",
-        ).one()
-        for i, month in enumerate([
-            (2025, 6), (2025, 7), (2025, 8), (2025, 9), (2025, 10), (2025, 11),
-            (2025, 12), (2026, 1), (2026, 2), (2026, 3), (2026, 4),
-        ]):
-            yy, mm = month
-            s.add(ExpenseTransaction(
-                user_id=user_id, source_id=src.id, statement_id=prior_stmt.id,
-                occurred_on=date(yy, mm, 10),
-                merchant_raw=f"COFFEE-{i}", merchant_normalized="coffee",
-                amount_nis=Decimal("30"), direction="debit", tx_type="regular",
-                category_id=cat.id, raw_row_json="{}",
-            ))
-        # Focal month: May 2026.
-        focal_stmt = ExpenseStatement(
-            user_id=user_id, source_id=src.id, file_id=f.id,
-            period_start=date(2026, 5, 1), period_end=date(2026, 5, 31),
-            parsed_total_nis=Decimal("1450"),
-            parser_name="isracard", parser_version="0.1.0", status="parsed",
-        )
-        s.add(focal_stmt); s.flush()
-        # Coffee spike (250 vs avg 30 → ~8.3x).
-        s.add(ExpenseTransaction(
-            user_id=user_id, source_id=src.id, statement_id=focal_stmt.id,
-            occurred_on=date(2026, 5, 15),
-            merchant_raw="COFFEE BIG", merchant_normalized="coffee",
-            amount_nis=Decimal("250"), direction="debit", tx_type="regular",
-            category_id=cat.id, raw_row_json="{}",
-        ))
-        # New big merchant (>=500, never seen before).
-        s.add(ExpenseTransaction(
-            user_id=user_id, source_id=src.id, statement_id=focal_stmt.id,
-            occurred_on=date(2026, 5, 20),
-            merchant_raw="NEW BIG STORE",
-            merchant_normalized="new big store",
-            amount_nis=Decimal("1000"), direction="debit", tx_type="regular",
-            category_id=cat.id, raw_row_json="{}",
-        ))
-        # New small merchant (<500, no flag).
-        s.add(ExpenseTransaction(
-            user_id=user_id, source_id=src.id, statement_id=focal_stmt.id,
-            occurred_on=date(2026, 5, 22),
-            merchant_raw="NEW SMALL", merchant_normalized="new small",
-            amount_nis=Decimal("200"), direction="debit", tx_type="regular",
-            category_id=cat.id, raw_row_json="{}",
-        ))
-        s.commit()
-
-
-def test_anomalies_detect_merchant_spike(client_with_db):
-    _seed_oddities(client_with_db, user_id="u_spike")
+def test_income_breakdown_endpoint(client_with_db):
+    _seed_income_and_refund(client_with_db, user_id="u_inc_drill")
     r = client_with_db.get(
-        "/api/expenses/dashboard-overview?user_id=u_spike&months=12"
+        "/api/expenses/income-breakdown?user_id=u_inc_drill&month=2026-05"
     )
+    assert r.status_code == 200
     body = r.json()
-    kinds = [a["kind"] for a in body["anomalies"]]
-    assert "merchant_spike" in kinds
-    spike = next(a for a in body["anomalies"] if a["kind"] == "merchant_spike")
-    assert "COFFEE" in spike["message"].upper() or "coffee" in spike["message"].lower()
-    # Severity yellow per spec.
-    assert spike["severity"] == "yellow"
+    assert body["month"] == "2026-05"
+    assert body["total_nis"] == pytest.approx(10000.0)
+    assert len(body["by_category"]) == 1
+    assert body["by_category"][0]["slug"] == "income.salary"
+    assert len(body["transactions"]) == 1
+    assert body["transactions"][0]["merchant_raw"] == "SALARY DEPOSIT"
 
 
-def test_anomalies_detect_new_high_value_merchant(client_with_db):
-    _seed_oddities(client_with_db, user_id="u_newhi")
+def test_income_breakdown_empty_month(client_with_db):
+    _seed_income_and_refund(client_with_db, user_id="u_empty_inc")
     r = client_with_db.get(
-        "/api/expenses/dashboard-overview?user_id=u_newhi&months=12"
+        "/api/expenses/income-breakdown?user_id=u_empty_inc&month=2024-01"
     )
+    assert r.status_code == 200
     body = r.json()
-    kinds = [a["kind"] for a in body["anomalies"]]
-    assert "new_high_value_merchant" in kinds
-    new_hi = next(
-        a for a in body["anomalies"] if a["kind"] == "new_high_value_merchant"
-    )
-    assert "BIG" in new_hi["message"]
-    # Small new merchant should NOT show up.
-    msgs = " ".join(a["message"] for a in body["anomalies"])
-    assert "NEW SMALL" not in msgs
+    assert body["total_nis"] == 0.0
+    assert body["by_category"] == []
+    assert body["transactions"] == []
