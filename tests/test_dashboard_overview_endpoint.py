@@ -119,7 +119,9 @@ def test_dashboard_overview_yearly_summary_shape(client_with_db):
     ys = body["yearly_summary"]
     assert set(ys.keys()) == {
         "months_covered", "total_nis",
-        "yearly_spending_total_nis", "yearly_inflow_total_nis",
+        "yearly_spending_total_nis",
+        "yearly_income_total_nis", "yearly_refunds_total_nis",
+        "yearly_inflow_total_nis",
         "avg_per_month_nis",
         "top_categories_12m", "current_vs_avg_pct",
     }
@@ -128,6 +130,8 @@ def test_dashboard_overview_yearly_summary_shape(client_with_db):
     assert ys["total_nis"] == pytest.approx(250.0)
     assert ys["yearly_spending_total_nis"] == pytest.approx(250.0)
     assert ys["yearly_inflow_total_nis"] == pytest.approx(0.0)
+    assert ys["yearly_income_total_nis"] == pytest.approx(0.0)
+    assert ys["yearly_refunds_total_nis"] == pytest.approx(0.0)
     assert ys["avg_per_month_nis"] == pytest.approx(250.0)
     # cur month equals the only month present → ratio is 1.0 → pct == 0
     assert ys["current_vs_avg_pct"] == pytest.approx(0.0)
@@ -150,6 +154,8 @@ def test_dashboard_overview_yearly_summary_empty_corpus(client_with_db):
     assert ys["total_nis"] == 0.0
     assert ys["yearly_spending_total_nis"] == 0.0
     assert ys["yearly_inflow_total_nis"] == 0.0
+    assert ys["yearly_income_total_nis"] == 0.0
+    assert ys["yearly_refunds_total_nis"] == 0.0
     assert ys["avg_per_month_nis"] == 0.0
     assert ys["top_categories_12m"] == []
     assert ys["current_vs_avg_pct"] is None
@@ -157,7 +163,10 @@ def test_dashboard_overview_yearly_summary_empty_corpus(client_with_db):
     assert body["current_month"] is None
     assert body["current_month_spending_nis"] == 0.0
     assert body["current_month_inflow_nis"] == 0.0
+    assert body["current_month_income_nis"] == 0.0
+    assert body["current_month_refunds_nis"] == 0.0
     assert body["current_month_inflow"] == []
+    assert body["current_month_income"] == []
 
 
 # ---------------------------------------------------------------------------

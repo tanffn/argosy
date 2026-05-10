@@ -88,7 +88,9 @@ export interface YearlySummary {
   months_covered: number;
   total_nis: number;                   // deprecated alias for yearly_spending_total_nis
   yearly_spending_total_nis: number;
-  yearly_inflow_total_nis: number;
+  yearly_income_total_nis: number;
+  yearly_refunds_total_nis: number;
+  yearly_inflow_total_nis: number;     // deprecated alias = income + refunds
   avg_per_month_nis: number;
   top_categories_12m: CategorySpend[];
   current_vs_avg_pct: number | null;
@@ -112,9 +114,12 @@ export interface DashboardOverview {
   months: MonthlyTotalEntry[];
   current_month: string | null;        // 'YYYY-MM' the headline scopes to
   current_month_spending_nis: number;
-  current_month_inflow_nis: number;
+  current_month_income_nis: number;
+  current_month_refunds_nis: number;
+  current_month_inflow_nis: number;    // deprecated alias = income + refunds
   current_month_top_categories: CategorySpend[];
-  current_month_inflow: CategorySpend[];
+  current_month_income: CategorySpend[];
+  current_month_inflow: CategorySpend[];   // deprecated alias for income
   top_merchants_current_month: MerchantSpend[];
   anomalies: AnomalyCard[];
   sources_health: SourceHealthEntry[];
@@ -122,6 +127,13 @@ export interface DashboardOverview {
   dividends: DividendsSummary;
   taxes: TaxesSummary;
   fx_mode: string;
+}
+
+export interface IncomeBreakdown {
+  month: string;
+  total_nis: number;
+  by_category: CategorySpend[];
+  transactions: TransactionOut[];
 }
 
 export interface SourceOut {
@@ -175,6 +187,7 @@ export interface TransactionOut {
   category_source: string | null;
   is_card_payment: boolean;
   source_id: number;
+  tags: string[];
 }
 
 export interface TransactionsResponse {
@@ -224,6 +237,10 @@ export const expensesApi = {
   sourceDetail: (sourceId: number, userId: string) =>
     getJSON<SourceDetailResponse>(
       `/api/expenses/source-detail/${sourceId}?user_id=${encodeURIComponent(userId)}`,
+    ),
+  incomeBreakdown: (userId: string, month: string) =>
+    getJSON<IncomeBreakdown>(
+      `/api/expenses/income-breakdown?user_id=${encodeURIComponent(userId)}&month=${month}`,
     ),
   transactions: (userId: string, params: Partial<{
     from_date: string;

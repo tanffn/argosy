@@ -176,6 +176,7 @@ class TransactionOut(BaseModel):
     category_source: str | None
     is_card_payment: bool
     source_id: int
+    tags: list[str] = []                   # JSON-stored on row; '[]' when unset
 
 
 class TransactionsResponse(BaseModel):
@@ -257,21 +258,7 @@ def list_transactions(
         ).all()
     }
     return TransactionsResponse(
-        transactions=[
-            TransactionOut(
-                id=r.id, occurred_on=r.occurred_on, merchant_raw=r.merchant_raw,
-                amount_nis=float(r.amount_nis) if r.amount_nis is not None else None,
-                amount_orig=float(r.amount_orig) if r.amount_orig is not None else None,
-                currency_orig=r.currency_orig,
-                direction=r.direction,
-                tx_type=r.tx_type,
-                category_slug=cat_by_id.get(r.category_id),
-                category_source=r.category_source,
-                is_card_payment=r.is_card_payment,
-                source_id=r.source_id,
-            )
-            for r in rows
-        ],
+        transactions=[_tx_to_out(r, cat_by_id) for r in rows],
         total=total,
     )
 
@@ -504,7 +491,11 @@ class YearlySummary(BaseModel):
 
     yearly_spending_total_nis  — debits with is_inflow=False AND
                                   is_excluded_from_spend=False (real outflow).
-    yearly_inflow_total_nis    — credits with is_inflow=True (real income).
+    yearly_income_total_nis    — credits with is_inflow=True AND
+                                  tx_type != 'refund' (real income: salary, RSU, dividends, ...).
+    yearly_refunds_total_nis   — credits with is_inflow=True AND tx_type='refund'.
+    yearly_inflow_total_nis    — DEPRECATED alias = income + refunds. Kept for
+                                  back-compat with older UI/tests.
     total_nis                  — DEPRECATED alias for yearly_spending_total_nis;
                                   kept for backward compat with existing UI/tests.
     """
@@ -512,6 +503,8 @@ class YearlySummary(BaseModel):
     months_covered: int
     total_nis: float
     yearly_spending_total_nis: float
+    yearly_income_total_nis: float
+    yearly_refunds_total_nis: float
     yearly_inflow_total_nis: float
     avg_per_month_nis: float
     top_categories_12m: list[CategorySpend]
@@ -551,9 +544,12 @@ class DashboardOverview(BaseModel):
     months: list[MonthlyTotalEntry]
     current_month: str | None                       # 'YYYY-MM' the headline scopes to
     current_month_spending_nis: float               # NIS-only, spending-only
-    current_month_inflow_nis: float                 # NIS-only, inflow-only
+    current_month_income_nis: float                 # credits, tx_type != 'refund'
+    current_month_refunds_nis: float                # credits, tx_type == 'refund'
+    current_month_inflow_nis: float                 # DEPRECATED alias = income + refunds
     current_month_top_categories: list[CategorySpend]
-    current_month_inflow: list[CategorySpend]
+    current_month_income: list[CategorySpend]       # income (non-refund) by category
+    current_month_inflow: list[CategorySpend]       # DEPRECATED alias for current_month_income+refunds
     top_merchants_current_month: list[MerchantSpend]
     anomalies: list[AnomalyCard]
     sources_health: list[SourceHealthEntry]
@@ -727,8 +723,8 @@ def dashboard_overview(
         ]
         cur_month_spending_nis = sum(float(r.total or 0) for r in cat_rows)
 
-        # 2b. Current-month inflow categories (salary, RSU, refunds, ...)
-        inflow_rows = db.execute(
+        # 2b. Current-month INCOME (real income — credits, NOT refunds).
+        income_rows = db.execute(
             sa_select(
                 ExpenseCategory.slug, ExpenseCategory.label_en,
                 func.sum(ExpenseTransaction.amount_nis).label("total"),
@@ -741,26 +737,50 @@ def dashboard_overview(
             .where(ExpenseTransaction.amount_nis.is_not(None))
             .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
             .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
-            .where(ExpenseCategory.is_inflow.is_(True))
+            .where(ExpenseTransaction.direction == "credit")
+            .where(ExpenseTransaction.tx_type != "refund")
             .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
             .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
             .limit(10)
         ).all()
-        cur_month_inflow_nis = sum(float(r.total or 0) for r in inflow_rows)
-        inflow_total = cur_month_inflow_nis or 1.0
-        inflow_cats = [
+        cur_month_income_nis = sum(float(r.total or 0) for r in income_rows)
+        income_pct_base = cur_month_income_nis or 1.0
+        income_cats = [
             CategorySpend(
                 slug=r.slug, label_en=r.label_en,
                 total_nis=float(r.total or 0),
                 transaction_count=int(r.n or 0),
-                percent=float(r.total or 0) / inflow_total * 100.0,
+                percent=float(r.total or 0) / income_pct_base * 100.0,
             )
-            for r in inflow_rows
+            for r in income_rows
         ]
+
+        # 2c. Current-month REFUNDS (credits with tx_type='refund').
+        cur_month_refunds_nis = float(db.execute(
+            sa_select(
+                func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0),
+            )
+            .where(ExpenseTransaction.user_id == user_id)
+            .where(ExpenseTransaction.is_card_payment.is_(False))
+            .where(ExpenseTransaction.amount_nis.is_not(None))
+            .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
+            .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
+            .where(ExpenseTransaction.direction == "credit")
+            .where(ExpenseTransaction.tx_type == "refund")
+        ).scalar() or 0)
+        # Deprecated alias = income + refunds (= what the old field meant).
+        cur_month_inflow_nis = cur_month_income_nis + cur_month_refunds_nis
+        # current_month_inflow stays as the alias view: income breakdown
+        # mirrors income_cats since we want one canonical "real income"
+        # category list. This preserves callers that read `current_month_inflow`.
+        inflow_cats = income_cats
     else:
         top_cats = []
+        income_cats = []
         inflow_cats = []
         cur_month_spending_nis = 0.0
+        cur_month_income_nis = 0.0
+        cur_month_refunds_nis = 0.0
         cur_month_inflow_nis = 0.0
 
     # 3. Top merchants (focal month) — SPENDING only.
@@ -945,20 +965,34 @@ def dashboard_overview(
         (yearly_spending_total_nis / months_covered) if months_covered else 0.0
     )
 
-    # Yearly INFLOW total — separate.
-    yearly_inflow_total_nis = float(db.execute(
+    # Yearly INCOME total (credits, non-refund). Split from refunds.
+    yearly_income_total_nis = float(db.execute(
         sa_select(
             func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0),
         )
-        .join(ExpenseCategory,
-              ExpenseCategory.id == ExpenseTransaction.category_id)
         .where(ExpenseTransaction.user_id == user_id)
         .where(ExpenseTransaction.is_card_payment.is_(False))
         .where(ExpenseTransaction.amount_nis.is_not(None))
         .where(ExpenseTransaction.occurred_on >= window_start)
         .where(ExpenseTransaction.occurred_on <= anchor)
-        .where(ExpenseCategory.is_inflow.is_(True))
+        .where(ExpenseTransaction.direction == "credit")
+        .where(ExpenseTransaction.tx_type != "refund")
     ).scalar() or 0)
+    # Yearly REFUNDS total (credits, refund tx_type).
+    yearly_refunds_total_nis = float(db.execute(
+        sa_select(
+            func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0),
+        )
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .where(ExpenseTransaction.occurred_on >= window_start)
+        .where(ExpenseTransaction.occurred_on <= anchor)
+        .where(ExpenseTransaction.direction == "credit")
+        .where(ExpenseTransaction.tx_type == "refund")
+    ).scalar() or 0)
+    # Deprecated alias kept for back-compat.
+    yearly_inflow_total_nis = yearly_income_total_nis + yearly_refunds_total_nis
 
     # current_vs_avg_pct: spending-vs-spending. Use the focal month's
     # spending (computed above) so the trend reflects the headline.
@@ -972,6 +1006,8 @@ def dashboard_overview(
         months_covered=months_covered,
         total_nis=yearly_spending_total_nis,
         yearly_spending_total_nis=yearly_spending_total_nis,
+        yearly_income_total_nis=yearly_income_total_nis,
+        yearly_refunds_total_nis=yearly_refunds_total_nis,
         yearly_inflow_total_nis=yearly_inflow_total_nis,
         avg_per_month_nis=avg_per_month_nis,
         top_categories_12m=top_cats_12m,
@@ -1167,8 +1203,11 @@ def dashboard_overview(
         months=months_list,
         current_month=focal_month,
         current_month_spending_nis=cur_month_spending_nis,
+        current_month_income_nis=cur_month_income_nis,
+        current_month_refunds_nis=cur_month_refunds_nis,
         current_month_inflow_nis=cur_month_inflow_nis,
         current_month_top_categories=top_cats,
+        current_month_income=income_cats,
         current_month_inflow=inflow_cats,
         top_merchants_current_month=top_merchants,
         anomalies=anomalies,
@@ -1177,6 +1216,90 @@ def dashboard_overview(
         dividends=dividends,
         taxes=taxes,
         fx_mode=fx,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /income-breakdown
+# ---------------------------------------------------------------------------
+
+
+class IncomeBreakdown(BaseModel):
+    """Per-month income drilldown.
+
+    `total_nis` is the sum of NIS-credited income (credits with
+    tx_type != 'refund'). `by_category` is a per-category aggregation;
+    `transactions` is the flat list of the actual income rows so the user
+    can scan what came in.
+    """
+
+    month: str
+    total_nis: float
+    by_category: list[CategorySpend]
+    transactions: list[TransactionOut]
+
+
+@router.get("/income-breakdown", response_model=IncomeBreakdown)
+def income_breakdown(
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    month: str = Query(
+        ..., pattern=r"^\d{4}-\d{2}$",
+        description="'YYYY-MM' month to drill into.",
+    ),
+) -> IncomeBreakdown:
+    y, m = (int(p) for p in month.split("-"))
+
+    cat_rows = db.execute(
+        sa_select(
+            ExpenseCategory.slug, ExpenseCategory.label_en,
+            func.sum(ExpenseTransaction.amount_nis).label("total"),
+            func.count().label("n"),
+        )
+        .join(ExpenseTransaction,
+              ExpenseTransaction.category_id == ExpenseCategory.id)
+        .where(ExpenseTransaction.user_id == user_id)
+        .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .where(extract("year", ExpenseTransaction.occurred_on) == y)
+        .where(extract("month", ExpenseTransaction.occurred_on) == m)
+        .where(ExpenseTransaction.direction == "credit")
+        .where(ExpenseTransaction.tx_type != "refund")
+        .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
+        .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
+    ).all()
+    total = sum(float(r.total or 0) for r in cat_rows)
+    base = total or 1.0
+    by_category = [
+        CategorySpend(
+            slug=r.slug, label_en=r.label_en,
+            total_nis=float(r.total or 0),
+            transaction_count=int(r.n or 0),
+            percent=float(r.total or 0) / base * 100.0,
+        )
+        for r in cat_rows
+    ]
+
+    # Flat list of the income rows themselves.
+    tx_rows = db.query(ExpenseTransaction).filter(
+        ExpenseTransaction.user_id == user_id,
+        ExpenseTransaction.is_card_payment.is_(False),
+        ExpenseTransaction.direction == "credit",
+        ExpenseTransaction.tx_type != "refund",
+        extract("year", ExpenseTransaction.occurred_on) == y,
+        extract("month", ExpenseTransaction.occurred_on) == m,
+    ).order_by(ExpenseTransaction.occurred_on.desc()).all()
+    cat_by_id = {
+        c.id: c.slug for c in db.query(ExpenseCategory).filter_by(
+            user_id=user_id,
+        ).all()
+    }
+    transactions = [
+        _tx_to_out(r, cat_by_id) for r in tx_rows
+    ]
+    return IncomeBreakdown(
+        month=month, total_nis=total,
+        by_category=by_category, transactions=transactions,
     )
 
 
