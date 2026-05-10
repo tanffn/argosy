@@ -68,3 +68,27 @@ def test_compute_savings_rate_trend_basic(db_session_with_seeded_user):
     # the 12-point window — fixture seeds alternating months across 14 total.
     assert any(p.income_nis > 0 for p in points)
     assert any(p.income_nis == 0 for p in points)
+
+
+def test_compute_top_movers_trailing(db_session_with_seeded_user):
+    from argosy.services.expense_dashboard import compute_top_movers
+    movers = compute_top_movers(db_session_with_seeded_user, "test", window="trailing_12")
+    assert movers.reason in (None, "insufficient_history")
+    if movers.reason is None:
+        assert len(movers.grew) <= 5
+        assert len(movers.shrank) <= 5
+        # grew is sorted desc by delta_nis
+        for a, b in zip(movers.grew, movers.grew[1:]):
+            assert a.delta_nis >= b.delta_nis
+        # shrank is sorted asc by delta_nis (most-negative first)
+        for a, b in zip(movers.shrank, movers.shrank[1:]):
+            assert a.delta_nis <= b.delta_nis
+
+
+def test_compute_top_movers_insufficient_history(db_session_short_history):
+    """User with only 4 months of data → reason='insufficient_history'."""
+    from argosy.services.expense_dashboard import compute_top_movers
+    movers = compute_top_movers(db_session_short_history, "test", window="trailing_12")
+    assert movers.reason == "insufficient_history"
+    assert movers.grew == []
+    assert movers.shrank == []
