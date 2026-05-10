@@ -24,10 +24,13 @@ from argosy.agents.household_categorizer import HouseholdCategorizerAgent
 from argosy.agents.household_categorizer_types import (
     CategorizeResult, CategorizeRow,
 )
+from argosy.logging import get_logger
 from argosy.services.expense_ingest.issuer_seed import map_issuer_category
 from argosy.state.models import (
     ExpenseCategory, ExpenseSource, ExpenseTransaction, MerchantCategoryCache,
 )
+
+log = get_logger(__name__)
 
 
 def resolve_categories_for_user(session: Session, user_id: str) -> int:
@@ -112,6 +115,15 @@ def resolve_categories_for_user(session: Session, user_id: str) -> int:
         for tx, _ in llm_batch:
             r = results_by_id.get(tx.id)
             if r is None:
+                # Visibility: which exact rows the LLM dropped, so operators
+                # can audit them later (paired with the WARNING in
+                # _categorize_via_llm that surfaces the batch-level miss).
+                log.info(
+                    "llm_skipped_tx",
+                    user_id=user_id,
+                    tx_id=tx.id,
+                    merchant_normalized=tx.merchant_normalized,
+                )
                 continue
             slug = r.category_slug if r.category_slug != "uncategorized" else "uncategorized"
             cat = cats_by_slug.get(slug, cats_by_slug["uncategorized"])
@@ -167,7 +179,14 @@ def _extract_anaf_from_raw_row(raw_row_json: str) -> str | None:
 def _categorize_via_llm(
     user_id: str, rows: list[CategorizeRow],
 ) -> list[CategorizeResult]:
-    """Indirection seam — patched in unit tests."""
+    """Indirection seam — patched in unit tests.
+
+    Per-batch invariant: the LLM is asked to return exactly one
+    ``CategorizeResult`` per input row. We ASSERT that empirically here
+    (warning, not raising — the resolver loop tolerates missing entries by
+    treating them as 'uncategorized'). Operators see the divergence in logs
+    so we don't silently lose categorizations to a flaky model response.
+    """
     agent = HouseholdCategorizerAgent(user_id=user_id)
     from argosy.services.expense_ingest.taxonomy_seed import DEFAULT_TAXONOMY
     taxonomy = [e.slug for e in DEFAULT_TAXONOMY]
@@ -175,5 +194,27 @@ def _categorize_via_llm(
     out: list[CategorizeResult] = []
     for i in range(0, len(rows), BATCH_SIZE):
         chunk = rows[i : i + BATCH_SIZE]
-        out.extend(agent.categorize_batch(chunk, taxonomy))
+        results = agent.categorize_batch(chunk, taxonomy)
+
+        # ----- batch invariant -----
+        input_ids = {r.tx_id for r in chunk}
+        result_ids = {r.tx_id for r in results}
+        if input_ids != result_ids:
+            missing = input_ids - result_ids
+            extra = result_ids - input_ids
+            log.warning(
+                "llm_batch_mismatch",
+                user_id=user_id,
+                batch_index=i // BATCH_SIZE,
+                input_size=len(chunk),
+                result_size=len(results),
+                missing_tx_ids=sorted(missing),
+                extra_tx_ids=sorted(extra),
+                message=(
+                    f"LLM returned {len(results)} results for batch of "
+                    f"{len(chunk)}; missing tx_ids: {sorted(missing)}; "
+                    f"extra tx_ids: {sorted(extra)}"
+                ),
+            )
+        out.extend(results)
     return out
