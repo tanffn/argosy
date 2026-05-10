@@ -802,7 +802,7 @@ def dashboard_overview(
     else:
         top_merchants = []
 
-    # 4. Anomalies
+    # 4. Anomalies — base set + oddity detectors below.
     anomalies: list[AnomalyCard] = []
     # 4a. Uncategorized count
     uncat_n = db.query(ExpenseTransaction).filter(
@@ -977,6 +977,91 @@ def dashboard_overview(
         top_categories_12m=top_cats_12m,
         current_vs_avg_pct=current_vs_avg_pct,
     )
+
+    # 6b. Anomaly oddities — sensible defaults the user authorised:
+    #     - merchant_spike: a single tx > 5x the merchant's 12-month average.
+    #     - new_high_value_merchant: a tx >= ₪500 from a merchant unseen in the
+    #       prior 12 months.
+    #     Cap each at top 5 (most recent first). Only consider focal-month tx
+    #     so this fires on what the user is currently looking at.
+    if focal_month is not None:
+        cur_y, cur_m = (int(p) for p in focal_month.split("-"))
+        focal_first = date(cur_y, cur_m, 1)
+        from calendar import monthrange as _mr
+        focal_last_day = _mr(cur_y, cur_m)[1]
+        focal_last = date(cur_y, cur_m, focal_last_day)
+        focal_txs = db.query(ExpenseTransaction).filter(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.is_card_payment.is_(False),
+            ExpenseTransaction.amount_nis.is_not(None),
+            ExpenseTransaction.direction == "debit",
+            ExpenseTransaction.occurred_on >= focal_first,
+            ExpenseTransaction.occurred_on <= focal_last,
+        ).all()
+
+        spikes: list[tuple[float, AnomalyCard]] = []
+        new_high: list[tuple[float, AnomalyCard]] = []
+        # Pre-compute prior-12mo per-merchant stats once per merchant we hit
+        # in the focal month — cheap because we only iterate distinct merchants
+        # the user actually has activity for this month.
+        merchant_cache: dict[str, dict[str, float | int]] = {}
+        prior_window_end = focal_first - timedelta(days=1)
+        prior_window_start = max(window_start, prior_window_end - timedelta(days=365))
+        for tx in focal_txs:
+            mn = tx.merchant_normalized or ""
+            if not mn:
+                continue
+            stats = merchant_cache.get(mn)
+            if stats is None:
+                rows = db.execute(
+                    sa_select(
+                        func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0),
+                        func.count(),
+                    )
+                    .where(ExpenseTransaction.user_id == user_id)
+                    .where(ExpenseTransaction.is_card_payment.is_(False))
+                    .where(ExpenseTransaction.amount_nis.is_not(None))
+                    .where(ExpenseTransaction.direction == "debit")
+                    .where(ExpenseTransaction.merchant_normalized == mn)
+                    .where(ExpenseTransaction.occurred_on >= prior_window_start)
+                    .where(ExpenseTransaction.occurred_on <= prior_window_end)
+                ).one()
+                total_prior, n_prior = float(rows[0] or 0), int(rows[1] or 0)
+                stats = {
+                    "avg": (total_prior / n_prior) if n_prior else 0.0,
+                    "n": n_prior,
+                }
+                merchant_cache[mn] = stats
+            tx_amount = float(tx.amount_nis or 0)
+            display = (tx.merchant_raw or mn).strip()[:40]
+            link = (
+                f"/expenses/transactions?search="
+                + (display.replace(" ", "%20") if display else "")
+            )
+            avg_prior = float(stats["avg"])
+            n_prior = int(stats["n"])
+            if avg_prior > 0 and tx_amount > 5 * avg_prior:
+                ratio = tx_amount / avg_prior
+                spikes.append((tx_amount, AnomalyCard(
+                    kind="merchant_spike", severity="yellow",
+                    message=f"{display}: ₪{tx_amount:,.0f} ({ratio:.1f}× usual)",
+                    detail=f"avg over prior 12mo: ₪{avg_prior:,.2f} (n={n_prior})",
+                    link=link,
+                )))
+            elif n_prior == 0 and tx_amount >= 500:
+                new_high.append((tx_amount, AnomalyCard(
+                    kind="new_high_value_merchant", severity="yellow",
+                    message=f"{display}: ₪{tx_amount:,.0f} from a new merchant",
+                    detail="No prior activity from this merchant in the last 12 months",
+                    link=link,
+                )))
+        # Top 5 of each kind, biggest first.
+        spikes.sort(key=lambda t: t[0], reverse=True)
+        new_high.sort(key=lambda t: t[0], reverse=True)
+        for _, card in spikes[:5]:
+            anomalies.append(card)
+        for _, card in new_high[:5]:
+            anomalies.append(card)
 
     # 7. Dividends — USD credits whose merchant matches dividend wording.
     div_candidates = db.query(ExpenseTransaction).filter(

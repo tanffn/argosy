@@ -584,3 +584,123 @@ def test_dashboard_dividends_empty_corpus(client_with_db):
     assert body["dividends"]["transactions"] == []
     assert body["taxes"]["yearly_total_nis"] == 0.0
     assert body["taxes"]["yearly_total_usd"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Anomaly oddities (Feature 5)
+# ---------------------------------------------------------------------------
+
+
+def _seed_oddities(client_with_db, *, user_id: str = "u_odd"):
+    """Seed:
+      * Merchant 'COFFEE': prior-12mo avg = 30; focal-month tx of 250 → spike.
+      * Merchant 'NEW BIG': no prior activity; focal tx of 1000 → new high.
+      * Merchant 'NEW SMALL': no prior activity, focal tx of 200 → NO flag.
+    """
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        s.add(User(id=user_id, plan="free")); s.flush()
+        from argosy.services.expense_ingest.taxonomy_seed import (
+            seed_system_defaults, seed_user_categories,
+        )
+        seed_system_defaults(s); s.flush()
+        seed_user_categories(s, user_id); s.flush()
+        f = UserFile(
+            user_id=user_id, sha256="o"*64, original_name="x", sanitized_name="x",
+            mime_type="x", kind="other", size_bytes=1, storage_path="/tmp/x",
+            source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src = ExpenseSource(
+            user_id=user_id, kind="card", issuer="isracard",
+            external_id="0007", display_name="Test",
+        )
+        s.add(src); s.flush()
+        # 12 prior months of COFFEE @ 30 NIS — Jun 2025 → Apr 2026.
+        prior_stmt = ExpenseStatement(
+            user_id=user_id, source_id=src.id, file_id=f.id,
+            period_start=date(2025, 6, 1), period_end=date(2026, 4, 30),
+            parsed_total_nis=Decimal("330"),
+            parser_name="isracard", parser_version="0.1.0", status="parsed",
+        )
+        s.add(prior_stmt); s.flush()
+        cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="dining_out.restaurants",
+        ).one()
+        for i, month in enumerate([
+            (2025, 6), (2025, 7), (2025, 8), (2025, 9), (2025, 10), (2025, 11),
+            (2025, 12), (2026, 1), (2026, 2), (2026, 3), (2026, 4),
+        ]):
+            yy, mm = month
+            s.add(ExpenseTransaction(
+                user_id=user_id, source_id=src.id, statement_id=prior_stmt.id,
+                occurred_on=date(yy, mm, 10),
+                merchant_raw=f"COFFEE-{i}", merchant_normalized="coffee",
+                amount_nis=Decimal("30"), direction="debit", tx_type="regular",
+                category_id=cat.id, raw_row_json="{}",
+            ))
+        # Focal month: May 2026.
+        focal_stmt = ExpenseStatement(
+            user_id=user_id, source_id=src.id, file_id=f.id,
+            period_start=date(2026, 5, 1), period_end=date(2026, 5, 31),
+            parsed_total_nis=Decimal("1450"),
+            parser_name="isracard", parser_version="0.1.0", status="parsed",
+        )
+        s.add(focal_stmt); s.flush()
+        # Coffee spike (250 vs avg 30 → ~8.3x).
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=focal_stmt.id,
+            occurred_on=date(2026, 5, 15),
+            merchant_raw="COFFEE BIG", merchant_normalized="coffee",
+            amount_nis=Decimal("250"), direction="debit", tx_type="regular",
+            category_id=cat.id, raw_row_json="{}",
+        ))
+        # New big merchant (>=500, never seen before).
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=focal_stmt.id,
+            occurred_on=date(2026, 5, 20),
+            merchant_raw="NEW BIG STORE",
+            merchant_normalized="new big store",
+            amount_nis=Decimal("1000"), direction="debit", tx_type="regular",
+            category_id=cat.id, raw_row_json="{}",
+        ))
+        # New small merchant (<500, no flag).
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=focal_stmt.id,
+            occurred_on=date(2026, 5, 22),
+            merchant_raw="NEW SMALL", merchant_normalized="new small",
+            amount_nis=Decimal("200"), direction="debit", tx_type="regular",
+            category_id=cat.id, raw_row_json="{}",
+        ))
+        s.commit()
+
+
+def test_anomalies_detect_merchant_spike(client_with_db):
+    _seed_oddities(client_with_db, user_id="u_spike")
+    r = client_with_db.get(
+        "/api/expenses/dashboard-overview?user_id=u_spike&months=12"
+    )
+    body = r.json()
+    kinds = [a["kind"] for a in body["anomalies"]]
+    assert "merchant_spike" in kinds
+    spike = next(a for a in body["anomalies"] if a["kind"] == "merchant_spike")
+    assert "COFFEE" in spike["message"].upper() or "coffee" in spike["message"].lower()
+    # Severity yellow per spec.
+    assert spike["severity"] == "yellow"
+
+
+def test_anomalies_detect_new_high_value_merchant(client_with_db):
+    _seed_oddities(client_with_db, user_id="u_newhi")
+    r = client_with_db.get(
+        "/api/expenses/dashboard-overview?user_id=u_newhi&months=12"
+    )
+    body = r.json()
+    kinds = [a["kind"] for a in body["anomalies"]]
+    assert "new_high_value_merchant" in kinds
+    new_hi = next(
+        a for a in body["anomalies"] if a["kind"] == "new_high_value_merchant"
+    )
+    assert "BIG" in new_hi["message"]
+    # Small new merchant should NOT show up.
+    msgs = " ".join(a["message"] for a in body["anomalies"])
+    assert "NEW SMALL" not in msgs

@@ -61,7 +61,9 @@ export interface AnomalyCard {
     | "novel_merchant"
     | "large_outlier"
     | "fee_waiver_missed"
-    | "conservation_gap";
+    | "conservation_gap"
+    | "merchant_spike"
+    | "new_high_value_merchant";
   severity: "red" | "yellow" | "info";
   message: string;
   detail?: string | null;
