@@ -413,6 +413,101 @@ def test_dashboard_overview_splits_income_from_refunds(client_with_db):
     assert ys["yearly_inflow_total_nis"] == pytest.approx(10050.0)
 
 
+def test_dashboard_overview_months_chart_excludes_inflows_and_investments(
+    client_with_db,
+):
+    """The "Monthly spend" chart series (`body["months"]`) is SPENDING-ONLY.
+
+    Previously the series summed all non-card-payment activity, so a month
+    with a $40K investment buy + $151K RSU disbursement showed a giant USD
+    bar that meant "money MOVED" — not "money spent". Fix: filter to
+    direction='debit' AND category.is_inflow=False AND
+    category.is_excluded_from_spend=False (mirrors current_month_top_categories).
+
+    Seed: SALARY credit (10000, inflow) + investment debit (5000, excluded)
+    + dining debit (200) all in May 2026. Expected: chart NIS bucket = 200.
+    """
+    SF = client_with_db.app.state.session_factory
+    user_id = "u_chart"
+    with SF() as s:
+        s.add(User(id=user_id, plan="free")); s.flush()
+        from argosy.services.expense_ingest.taxonomy_seed import (
+            seed_system_defaults, seed_user_categories,
+        )
+        seed_system_defaults(s); s.flush()
+        seed_user_categories(s, user_id); s.flush()
+        f = UserFile(
+            user_id=user_id, sha256="c"*64, original_name="x", sanitized_name="x",
+            mime_type="x", kind="other", size_bytes=1, storage_path="/tmp/x",
+            source="chat_attachment",
+        )
+        s.add(f); s.flush()
+        src = ExpenseSource(
+            user_id=user_id, kind="bank_account", issuer="leumi",
+            external_id="0042", display_name="Leumi checking",
+        )
+        s.add(src); s.flush()
+        stmt = ExpenseStatement(
+            user_id=user_id, source_id=src.id, file_id=f.id,
+            period_start=date(2026, 5, 1), period_end=date(2026, 5, 31),
+            parsed_total_nis=Decimal("15200"),
+            parser_name="leumi", parser_version="0.1.0", status="parsed",
+        )
+        s.add(stmt); s.flush()
+        salary_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="income.salary",
+        ).one()
+        inv_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="investments.broker_buy_us",
+        ).one()
+        dining_cat = s.query(ExpenseCategory).filter_by(
+            user_id=user_id, slug="dining_out.restaurants",
+        ).one()
+        # Salary credit (inflow → must NOT appear in chart).
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 5, 1),
+            merchant_raw="SALARY", merchant_normalized="salary",
+            amount_nis=Decimal("10000"),
+            direction="credit", tx_type="regular",
+            category_id=salary_cat.id, category_source="rule",
+            category_confidence=Decimal("1.0"), raw_row_json="{}",
+        ))
+        # Investment debit (is_excluded_from_spend → must NOT appear in chart).
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 5, 10),
+            merchant_raw="BROKER BUY", merchant_normalized="broker buy",
+            amount_nis=Decimal("5000"),
+            direction="debit", tx_type="regular",
+            category_id=inv_cat.id, category_source="rule",
+            category_confidence=Decimal("1.0"), raw_row_json="{}",
+        ))
+        # Dining debit — real spending → DOES appear in chart.
+        s.add(ExpenseTransaction(
+            user_id=user_id, source_id=src.id, statement_id=stmt.id,
+            occurred_on=date(2026, 5, 15),
+            merchant_raw="RESTO", merchant_normalized="resto",
+            amount_nis=Decimal("200"),
+            direction="debit", tx_type="regular",
+            category_id=dining_cat.id, category_source="rule",
+            category_confidence=Decimal("1.0"), raw_row_json="{}",
+        ))
+        s.commit()
+    r = client_with_db.get(
+        f"/api/expenses/dashboard-overview?user_id={user_id}&months=12"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # Exactly one month in series; chart NIS bucket = 200 (dining only).
+    assert len(body["months"]) == 1
+    assert body["months"][-1]["month"] == "2026-05"
+    assert body["months"][-1]["totals_by_currency"]["NIS"] == pytest.approx(200.0)
+    # Salary (credit) and broker buy (excluded_from_spend) both excluded.
+    # Just one tx in the chart:
+    assert body["months"][-1]["transaction_count"] == 1
+
+
 def test_income_breakdown_endpoint(client_with_db):
     _seed_income_and_refund(client_with_db, user_id="u_inc_drill")
     r = client_with_db.get(

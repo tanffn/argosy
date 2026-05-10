@@ -375,11 +375,19 @@ def list_categories(user_id: str,
 # ---------------------------------------------------------------------------
 
 class MonthlyTotalEntry(BaseModel):
-    """Per-month aggregate, with totals split by currency.
+    """Per-month aggregate, split by currency.
 
     Foreign rows (amount_nis IS NULL after T12) contribute to their own
     currency bucket via amount_orig + currency_orig; native NIS rows
     populate the 'NIS' bucket via amount_nis.
+
+    Used by /dashboard-overview as the "Monthly spend" chart series. As of
+    EX4-fix-2026-05, the dashboard's `months` series is restricted to
+    SPENDING ONLY — direction='debit' AND category.is_inflow=False AND
+    category.is_excluded_from_spend=False. Inflows (salary, RSU vests,
+    refunds, dividends), transfers, and investments are deliberately not
+    in the chart: they are not "what you spent". /monthly-summary keeps
+    the older, broader semantics for back-compat.
     """
 
     month: str                            # 'YYYY-MM'
@@ -647,7 +655,14 @@ def dashboard_overview(
     ``current_vs_avg_pct`` to a chosen month (default: latest month with
     data).
     """
-    # 1. Months — re-use the same SQL as /monthly-summary
+    # 1. Months — SPENDING-ONLY chart series.
+    #    The user surfaced this bug: the previous query summed "all activity",
+    #    so an Apr 2026 month with $40K of investment buys + $151K of RSU
+    #    disbursement showed a huge USD bar that meant "money MOVED" — not
+    #    money spent. Now: direction='debit', category.is_inflow=False,
+    #    category.is_excluded_from_spend=False (mirrors the same filter as
+    #    current_month_top_categories). Uncategorised debits are still
+    #    included via outer-join (they're real outflow, just unlabelled).
     rows = db.execute(
         sa_select(
             extract("year", ExpenseTransaction.occurred_on).label("y"),
@@ -660,8 +675,14 @@ def dashboard_overview(
             )).label("total"),
             func.count().label("n"),
         )
+        .outerjoin(ExpenseCategory,
+                   ExpenseCategory.id == ExpenseTransaction.category_id)
         .where(ExpenseTransaction.user_id == user_id)
         .where(ExpenseTransaction.is_card_payment.is_(False))
+        .where(ExpenseTransaction.direction == "debit")
+        .where((ExpenseCategory.id.is_(None)) |
+               ((ExpenseCategory.is_excluded_from_spend.is_(False)) &
+                (ExpenseCategory.is_inflow.is_(False))))
         .group_by("y", "m", "ccy")
         .order_by("y", "m")
     ).all()
