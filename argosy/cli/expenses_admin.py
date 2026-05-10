@@ -284,8 +284,16 @@ def audit_corpus(
         leumi_osh as p_leumi, isracard as p_isra, max as p_max,
         discount as p_discount,
     )
+    # tests/expense_ground_truth.py is the deterministic oracle; add the repo
+    # root to sys.path so imports work whether the user invokes via the
+    # installed `argosy` script or `python -m argosy.cli.expenses_admin`.
+    import sys as _sys
+    from pathlib import Path as _P
+    _repo_root = _P(__file__).resolve().parents[2]
+    if str(_repo_root) not in _sys.path:
+        _sys.path.insert(0, str(_repo_root))
     try:
-        from tests.expense_ground_truth import (
+        from tests.expense_ground_truth import (  # type: ignore
             leumi_oracle, isracard_oracle, max_oracle, discount_oracle,
         )
     except ImportError as e:
@@ -390,7 +398,7 @@ def audit_corpus(
         try:
             fmt = detect_format(p)
         except UnknownFormatError as e:
-            typer.echo(f"?  {p.name} — UnknownFormatError: {e}")
+            typer.echo(f"??  {p.name} — UnknownFormatError: {e}")
             n_unknown += 1
             # Bucket label is just 'unrecognized' — files don't have a parser.
             b = _bucket("unrecognized")
@@ -398,7 +406,7 @@ def audit_corpus(
             b.notes.append(p.name)
             continue
         except Exception as e:
-            typer.echo(f"?  {p.name} — sniff failed: {e}")
+            typer.echo(f"??  {p.name} — sniff failed: {e}")
             n_unknown += 1
             b = _bucket("unrecognized")
             b.files += 1
@@ -408,7 +416,7 @@ def audit_corpus(
         parser = parser_for.get(fmt)
         oracle = oracle_for.get(fmt)
         if parser is None or oracle is None:
-            typer.echo(f"?  {p.name} — no implementation for {fmt.value}")
+            typer.echo(f"??  {p.name} — no implementation for {fmt.value}")
             n_unknown += 1
             b = _bucket(f"{fmt.value}")
             b.files += 1
@@ -482,7 +490,7 @@ def audit_corpus(
             or abs(parsed_total - truth.declared_total_nis) <= 50.0
         )
         ok = rows_ok and debit_ok and credit_ok and declared_ok
-        mark = "✓" if ok else "✗"
+        mark = "OK " if ok else "FAIL"
         if ok:
             n_ok += 1
 
