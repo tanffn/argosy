@@ -15,7 +15,7 @@ interface TagEditorProps {
   userId: string;
   currentTags: string[];
   onChanged?: (tags: string[]) => void;
-  label?: string;          // overrides the trigger label; default '+'
+  label?: string;          // overrides the trigger label; default '+ tag'
 }
 
 /**
@@ -23,6 +23,10 @@ interface TagEditorProps {
  *   - shows current tags with × to remove
  *   - text input + autocomplete suggestions sourced from /api/expenses/tags
  *   - quick-select for existing tags or 'Create "trip:foo"' on Enter.
+ *
+ * The component is uncontrolled w.r.t. the rendered tag list — it talks
+ * directly to the API and reports back through `onChanged`. The popover
+ * stays in sync on the next refresh by the parent.
  */
 export function TagEditor({
   txId, userId, currentTags, onChanged, label,
@@ -30,19 +34,29 @@ export function TagEditor({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
-  const [tags, setTags] = useState<string[]>(currentTags);
+  // Local optimistic state — seeded from props on each open.
+  const [localTags, setLocalTags] = useState<string[] | null>(null);
+  const tags = localTags ?? currentTags;
   const [suggestions, setSuggestions] = useState<string[]>([]);
 
-  useEffect(() => {
-    setTags(currentTags);
-  }, [currentTags]);
+  // Reset local state whenever the popover opens (cheap; no cascade).
+  function openPopover() {
+    setLocalTags(null);
+    setDraft("");
+    setOpen(true);
+  }
 
   useEffect(() => {
     if (!open) return;
     const prefix = draft.trim();
+    let cancelled = false;
     expensesApi.listTags(userId, prefix || undefined)
-      .then((r) => setSuggestions(r.tags.filter((t) => !tags.includes(t))))
-      .catch(() => setSuggestions([]));
+      .then((r) => {
+        if (cancelled) return;
+        setSuggestions(r.tags.filter((t) => !tags.includes(t)));
+      })
+      .catch(() => { if (!cancelled) setSuggestions([]); });
+    return () => { cancelled = true; };
   }, [open, draft, userId, tags]);
 
   async function add(tag: string) {
@@ -51,7 +65,7 @@ export function TagEditor({
     setSaving(true);
     try {
       const r = await expensesApi.addTag(txId, userId, t);
-      setTags(r.tags);
+      setLocalTags(r.tags);
       onChanged?.(r.tags);
       setDraft("");
     } catch (e) {
@@ -65,7 +79,7 @@ export function TagEditor({
     setSaving(true);
     try {
       const r = await expensesApi.removeTag(txId, userId, tag);
-      setTags(r.tags);
+      setLocalTags(r.tags);
       onChanged?.(r.tags);
     } catch (e) {
       alert(`Failed: ${e}`);
@@ -78,7 +92,7 @@ export function TagEditor({
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={openPopover}
         className="text-xs text-muted-foreground hover:text-foreground rounded border border-border/60 px-1.5 py-0.5 hover:bg-secondary/40"
         aria-label="Edit tags"
       >
