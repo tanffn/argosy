@@ -11,6 +11,7 @@ const TABS = [
   { href: "/expenses/transactions", label: "Transactions" },
   { href: "/expenses/sources", label: "Sources" },
   { href: "/expenses/trips", label: "Trips" },
+  { href: "/expenses/rsu", label: "RSU" },
 ];
 
 export default function ExpensesLayout({ children }: { children: React.ReactNode }) {

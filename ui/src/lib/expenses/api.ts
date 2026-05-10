@@ -300,6 +300,19 @@ export const expensesApi = {
     getJSON<TripSummary>(
       `/api/expenses/trip-summary?user_id=${encodeURIComponent(userId)}&tag=${encodeURIComponent(tag)}`,
     ),
+  rsuReconciliation: (
+    userId: string,
+    opts: { tolerance_usd?: number; tolerance_days?: number } = {},
+  ) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (opts.tolerance_usd !== undefined)
+      qs.set("tolerance_usd", String(opts.tolerance_usd));
+    if (opts.tolerance_days !== undefined)
+      qs.set("tolerance_days", String(opts.tolerance_days));
+    return getJSON<RsuReconciliationResponse>(
+      `/api/expenses/rsu-reconciliation?${qs.toString()}`,
+    );
+  },
 };
 
 export interface CurrencyAmount {
@@ -316,4 +329,70 @@ export interface TripSummary {
   transactions: TransactionOut[];
   period_start: string | null;
   period_end: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// RSU reconciliation (Schwab → Leumi USD)
+// ---------------------------------------------------------------------------
+
+export interface RsuSaleLot {
+  shares: number;
+  sale_price_usd: number;
+  vest_date: string | null;
+  gross_proceeds_usd: number | null;
+  cost_basis_usd: number | null;
+  realized_gain_usd: number | null;
+  taxes_usd: number | null;
+  holding_period: string | null;
+}
+
+export interface RsuSale {
+  date: string;
+  symbol: string;
+  quantity_shares: number;
+  gross_usd: number;
+  fees_usd: number;
+  net_usd: number;
+  total_taxes_usd: number;
+  lots: RsuSaleLot[];
+}
+
+export interface RsuDisbursement {
+  date: string;
+  amount_usd: number;
+  matched_leumi_credit_id: number | null;
+  days_diff: number | null;
+  amount_diff_usd: number | null;
+}
+
+export interface RsuLeumiCredit {
+  tx_id: number;
+  date: string;
+  amount_usd: number;
+  merchant_raw: string;
+  reference: string | null;
+  matched_disbursement_index: number | null;
+}
+
+export interface RsuSummary {
+  sales_count: number;
+  sales_total_gross_usd: number;
+  sales_total_fees_usd: number;
+  sales_total_net_usd: number;
+  sales_total_taxes_usd: number;
+  disbursements_count: number;
+  disbursements_matched_count: number;
+  disbursements_total_usd: number;
+  leumi_credits_count: number;
+  leumi_credits_unmatched_count: number;
+  leumi_credits_unmatched_total_usd: number;
+}
+
+export interface RsuReconciliationResponse {
+  sales: RsuSale[];
+  disbursements: RsuDisbursement[];
+  leumi_credits: RsuLeumiCredit[];
+  summary: RsuSummary;
+  schwab_csv_paths: string[];
+  warning: string | null;
 }
