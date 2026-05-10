@@ -23,6 +23,16 @@ async function patchJSON<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function postJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`);
+  return (await res.json()) as T;
+}
+
 export interface MonthlyTotalEntry {
   month: string;
   totals_by_currency: Record<string, number>;
@@ -205,6 +215,7 @@ export const expensesApi = {
     direction: "debit" | "credit";
     include_card_payments: boolean;
     search: string;
+    tag: string;
     limit: number;
     offset: number;
   }> = {}) => {
@@ -229,4 +240,45 @@ export const expensesApi = {
       user_id: userId,
       category_slug: slug,
     }),
+  // Tags (Feature 3)
+  setTags: (txId: number, userId: string, tags: string[]) =>
+    patchJSON<{ transaction_id: number; tags: string[] }>(
+      `/api/expenses/transactions/${txId}/tags`,
+      { user_id: userId, tags },
+    ),
+  addTag: (txId: number, userId: string, tag: string) =>
+    postJSON<{ transaction_id: number; tags: string[] }>(
+      `/api/expenses/transactions/${txId}/tags/add`,
+      { user_id: userId, tag },
+    ),
+  removeTag: (txId: number, userId: string, tag: string) =>
+    postJSON<{ transaction_id: number; tags: string[] }>(
+      `/api/expenses/transactions/${txId}/tags/remove`,
+      { user_id: userId, tag },
+    ),
+  listTags: (userId: string, prefix?: string) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (prefix) qs.set("prefix", prefix);
+    return getJSON<{ tags: string[] }>(`/api/expenses/tags?${qs.toString()}`);
+  },
+  tripSummary: (userId: string, tag: string) =>
+    getJSON<TripSummary>(
+      `/api/expenses/trip-summary?user_id=${encodeURIComponent(userId)}&tag=${encodeURIComponent(tag)}`,
+    ),
 };
+
+export interface CurrencyAmount {
+  currency: string;
+  total: number;
+}
+
+export interface TripSummary {
+  tag: string;
+  transaction_count: number;
+  total_nis: number;
+  currency_breakdown: CurrencyAmount[];
+  by_category: CategorySpend[];
+  transactions: TransactionOut[];
+  period_start: string | null;
+  period_end: string | null;
+}

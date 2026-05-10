@@ -34,6 +34,7 @@ function TransactionsPageInner() {
     from_date: params.get("from_date") ?? undefined,
     to_date: params.get("to_date") ?? undefined,
     include_card_payments: params.get("include_card_payments") === "1",
+    tag: params.get("tag") ?? undefined,
   };
 
   const refresh = useCallback(async () => {
@@ -115,6 +116,15 @@ function TransactionsPageInner() {
             <option value="debit">Spending (out)</option>
             <option value="credit">Money in (income / refunds)</option>
           </select>
+          <Input
+            placeholder="Tag (e.g. trip:greece-2026-aug)"
+            defaultValue={filterParams.tag ?? ""}
+            onBlur={(e) => setParam("tag", e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") setParam("tag", e.currentTarget.value);
+            }}
+            className="max-w-xs"
+          />
           <details className="basis-full mt-1">
             <summary className="text-xs text-muted-foreground cursor-pointer select-none">
               Advanced
@@ -159,6 +169,7 @@ function TransactionsPageInner() {
                 categories={categories}
                 sources={sources}
                 onCategoryChanged={refresh}
+                onTagsChanged={refresh}
               />
               <div className="flex items-center justify-between mt-3 text-sm">
                 <Button

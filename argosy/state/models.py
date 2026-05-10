@@ -1162,6 +1162,12 @@ class ExpenseTransaction(Base):
         nullable=True
     )
     raw_row_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON-encoded list of tags (e.g. '["trip:greece-2026-aug"]'). Tags
+    # overlay on top of category — a row can be food.restaurants AND
+    # trip:greece-2026-aug simultaneously. Migration 0024.
+    tags: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]",
+    )
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )

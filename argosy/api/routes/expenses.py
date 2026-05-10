@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Annotated
@@ -182,6 +183,30 @@ class TransactionsResponse(BaseModel):
     total: int
 
 
+def _tx_to_out(
+    r: "ExpenseTransaction",
+    cat_by_id: dict[int, str],
+) -> TransactionOut:
+    """Marshal an ExpenseTransaction row into the TransactionOut DTO.
+
+    Centralised so that adding new fields (e.g. tags from migration 0024)
+    only needs to be done in one place.
+    """
+    return TransactionOut(
+        id=r.id, occurred_on=r.occurred_on, merchant_raw=r.merchant_raw,
+        amount_nis=float(r.amount_nis) if r.amount_nis is not None else None,
+        amount_orig=float(r.amount_orig) if r.amount_orig is not None else None,
+        currency_orig=r.currency_orig,
+        direction=r.direction, tx_type=r.tx_type,
+        category_slug=cat_by_id.get(r.category_id),
+        category_source=r.category_source,
+        is_card_payment=r.is_card_payment,
+        source_id=r.source_id,
+        tags=_parse_tags(getattr(r, "tags", None)),
+    )
+
+
+
 @router.get("/transactions", response_model=TransactionsResponse)
 def list_transactions(
     user_id: str,
@@ -193,6 +218,7 @@ def list_transactions(
     direction: str | None = None,
     include_card_payments: bool = False,
     search: str | None = None,
+    tag: str | None = None,
     limit: int = Query(default=200, ge=1, le=10000),
     offset: int = Query(default=0, ge=0),
 ) -> TransactionsResponse:
@@ -216,6 +242,11 @@ def list_transactions(
     if search:
         like = f"%{search}%"
         q = q.filter(ExpenseTransaction.merchant_raw.ilike(like))
+    if tag:
+        # Tags are JSON-stored as `'["a","b"]'`; LIKE pattern matches the
+        # quoted member. Cheap at single-user scale (~1k rows).
+        like = f'%"{tag}"%'
+        q = q.filter(ExpenseTransaction.tags.like(like))
 
     total = q.count()
     rows = q.order_by(ExpenseTransaction.occurred_on.desc()) \
@@ -1023,4 +1054,228 @@ def source_detail(
         ),
         statements=out_stmts,
         months=months_buckets,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tags (Feature 3 — overlay on top of category)
+# ---------------------------------------------------------------------------
+
+
+def _parse_tags(raw: str | None) -> list[str]:
+    """Decode the JSON tag list. Tolerant: bad JSON / None / empty all
+    return [] so callers don't need to guard.
+    """
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+        if isinstance(v, list):
+            return [str(t) for t in v if isinstance(t, (str,))]
+    except (ValueError, TypeError):
+        pass
+    return []
+
+
+def _serialize_tags(tags: list[str]) -> str:
+    """JSON-encode a list of tags, deduped + sorted for stable storage.
+    Empty list -> '[]' so the column never holds NULL.
+    """
+    seen: list[str] = []
+    for t in tags:
+        s = str(t).strip()
+        if s and s not in seen:
+            seen.append(s)
+    return json.dumps(sorted(seen), ensure_ascii=False)
+
+
+class TagsRequest(BaseModel):
+    user_id: str
+    tags: list[str]
+
+
+class TagRequest(BaseModel):
+    user_id: str
+    tag: str
+
+
+class TagsResponse(BaseModel):
+    transaction_id: int
+    tags: list[str]
+
+
+@router.patch("/transactions/{transaction_id}/tags", response_model=TagsResponse)
+def patch_transaction_tags(
+    transaction_id: int,
+    body: TagsRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> TagsResponse:
+    """Replace the entire tag list on a transaction."""
+    tx = db.query(ExpenseTransaction).filter_by(
+        id=transaction_id, user_id=body.user_id,
+    ).one_or_none()
+    if tx is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    tx.tags = _serialize_tags(body.tags)
+    db.commit()
+    return TagsResponse(transaction_id=tx.id, tags=_parse_tags(tx.tags))
+
+
+@router.post("/transactions/{transaction_id}/tags/add", response_model=TagsResponse)
+def add_transaction_tag(
+    transaction_id: int,
+    body: TagRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> TagsResponse:
+    """Idempotent — adds the tag if not already present."""
+    tx = db.query(ExpenseTransaction).filter_by(
+        id=transaction_id, user_id=body.user_id,
+    ).one_or_none()
+    if tx is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    cur = _parse_tags(tx.tags)
+    if body.tag not in cur:
+        cur.append(body.tag)
+    tx.tags = _serialize_tags(cur)
+    db.commit()
+    return TagsResponse(transaction_id=tx.id, tags=_parse_tags(tx.tags))
+
+
+@router.post("/transactions/{transaction_id}/tags/remove", response_model=TagsResponse)
+def remove_transaction_tag(
+    transaction_id: int,
+    body: TagRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> TagsResponse:
+    """Idempotent — removes the tag if present."""
+    tx = db.query(ExpenseTransaction).filter_by(
+        id=transaction_id, user_id=body.user_id,
+    ).one_or_none()
+    if tx is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    cur = [t for t in _parse_tags(tx.tags) if t != body.tag]
+    tx.tags = _serialize_tags(cur)
+    db.commit()
+    return TagsResponse(transaction_id=tx.id, tags=_parse_tags(tx.tags))
+
+
+class TagsListResponse(BaseModel):
+    tags: list[str]
+
+
+@router.get("/tags", response_model=TagsListResponse)
+def list_tags(
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    prefix: str | None = None,
+) -> TagsListResponse:
+    """Distinct tags across the user's transactions, optionally filtered
+    by prefix (e.g. 'trip:'). Built by scanning the JSON tag column —
+    fine at single-user scale; if this ever needs to scale we'll
+    materialize a tag-table.
+    """
+    rows = db.query(ExpenseTransaction.tags).filter_by(user_id=user_id).all()
+    seen: set[str] = set()
+    for (raw,) in rows:
+        for t in _parse_tags(raw):
+            if prefix is None or t.startswith(prefix):
+                seen.add(t)
+    return TagsListResponse(tags=sorted(seen))
+
+
+class CurrencyAmount(BaseModel):
+    currency: str
+    total: float
+
+
+class TripSummary(BaseModel):
+    """Aggregate spend tagged with one tag.
+
+    Use case: ``tag=trip:greece-2026-aug`` returns the union of flights,
+    hotels, restaurants, etc. that the user grouped under that one tag.
+    """
+
+    tag: str
+    transaction_count: int
+    total_nis: float
+    currency_breakdown: list[CurrencyAmount]
+    by_category: list[CategorySpend]
+    transactions: list[TransactionOut]
+    period_start: date | None
+    period_end: date | None
+
+
+@router.get("/trip-summary", response_model=TripSummary)
+def trip_summary(
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    tag: str = Query(..., min_length=1),
+) -> TripSummary:
+    """Aggregate every transaction tagged with ``tag`` into one summary."""
+    like = f'%"{tag}"%'
+    rows = db.query(ExpenseTransaction).filter(
+        ExpenseTransaction.user_id == user_id,
+        ExpenseTransaction.tags.like(like),
+    ).order_by(ExpenseTransaction.occurred_on).all()
+
+    cat_by_id = {
+        c.id: (c.slug, c.label_en) for c in db.query(ExpenseCategory).filter_by(
+            user_id=user_id,
+        ).all()
+    }
+    # Per-category aggregate (NIS).
+    cat_acc: dict[str, dict[str, float | int | str]] = {}
+    total_nis = 0.0
+    ccy_acc: dict[str, float] = {}
+    period_start: date | None = None
+    period_end: date | None = None
+    for r in rows:
+        if r.amount_nis is not None:
+            total_nis += float(r.amount_nis)
+        # Currency breakdown — NIS for native, original currency for foreign.
+        if r.currency_orig:
+            ccy_acc[r.currency_orig] = ccy_acc.get(r.currency_orig, 0.0) + float(
+                r.amount_orig or 0,
+            )
+        elif r.amount_nis is not None:
+            ccy_acc["NIS"] = ccy_acc.get("NIS", 0.0) + float(r.amount_nis)
+        if r.category_id and r.category_id in cat_by_id:
+            slug, label_en = cat_by_id[r.category_id]
+            entry = cat_acc.setdefault(slug, {
+                "slug": slug, "label_en": label_en,
+                "total_nis": 0.0, "transaction_count": 0,
+            })
+            entry["total_nis"] = float(entry["total_nis"]) + float(r.amount_nis or 0)
+            entry["transaction_count"] = int(entry["transaction_count"]) + 1
+        if period_start is None or r.occurred_on < period_start:
+            period_start = r.occurred_on
+        if period_end is None or r.occurred_on > period_end:
+            period_end = r.occurred_on
+
+    cat_base = total_nis or 1.0
+    by_category = [
+        CategorySpend(
+            slug=str(e["slug"]), label_en=str(e["label_en"]),
+            total_nis=float(e["total_nis"]),
+            transaction_count=int(e["transaction_count"]),
+            percent=float(e["total_nis"]) / cat_base * 100.0,
+        )
+        for e in sorted(
+            cat_acc.values(), key=lambda v: float(v["total_nis"]), reverse=True,
+        )
+    ]
+    cat_by_id_slug = {cid: slug for cid, (slug, _) in cat_by_id.items()}
+    transactions = [_tx_to_out(r, cat_by_id_slug) for r in rows]
+
+    return TripSummary(
+        tag=tag,
+        transaction_count=len(rows),
+        total_nis=total_nis,
+        currency_breakdown=[
+            CurrencyAmount(currency=k, total=v) for k, v in sorted(ccy_acc.items())
+        ],
+        by_category=by_category,
+        transactions=transactions,
+        period_start=period_start,
+        period_end=period_end,
     )

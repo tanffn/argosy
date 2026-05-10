@@ -1,6 +1,8 @@
 "use client";
 
 import { CategoryEditPopover } from "@/components/expenses/category-edit-popover";
+import { TagChip } from "@/components/expenses/tag-chip";
+import { TagEditor } from "@/components/expenses/tag-editor";
 import { Badge } from "@/components/ui/badge";
 import {
   type CategoryOut,
@@ -16,10 +18,11 @@ interface TransactionsTableProps {
   categories: CategoryOut[];
   sources: SourceOut[];
   onCategoryChanged?: () => void;
+  onTagsChanged?: () => void;
 }
 
 export function TransactionsTable({
-  transactions, categories, sources, onCategoryChanged,
+  transactions, categories, sources, onCategoryChanged, onTagsChanged,
 }: TransactionsTableProps) {
   const sourceById = new Map(sources.map((s) => [s.id, s]));
 
@@ -30,6 +33,7 @@ export function TransactionsTable({
           <th className="text-left py-2 pr-2">Date</th>
           <th className="text-left py-2 px-2">Merchant</th>
           <th className="text-left py-2 px-2">Category</th>
+          <th className="text-left py-2 px-2">Tags</th>
           <th className="text-left py-2 px-2">Source</th>
           <th className="text-right py-2 pl-2">Amount</th>
         </tr>
@@ -37,14 +41,13 @@ export function TransactionsTable({
       <tbody>
         {transactions.map((t) => {
           const src = sourceById.get(t.source_id);
-          // Money-in row: credit (e.g. salary) OR an explicit refund tx_type.
-          // We display credits as "+X in green" and debits as a plain number.
           const isMoneyIn = t.direction === "credit" || t.tx_type === "refund";
           const amountText = t.amount_nis !== null
             ? formatNIS(t.amount_nis)
             : (t.amount_orig !== null && t.currency_orig !== null
               ? formatCurrency(t.amount_orig, t.currency_orig)
               : "—");
+          const tags = t.tags ?? [];
           return (
             <tr key={t.id} className="border-b border-border/60 hover:bg-secondary/40">
               <td className="py-2 pr-2 tabular-nums whitespace-nowrap text-muted-foreground">
@@ -59,6 +62,19 @@ export function TransactionsTable({
                   categories={categories}
                   onChanged={() => onCategoryChanged?.()}
                 />
+              </td>
+              <td className="py-2 px-2">
+                <div className="flex flex-wrap items-center gap-1">
+                  {tags.map((tag) => (
+                    <TagChip key={tag} tag={tag} />
+                  ))}
+                  <TagEditor
+                    txId={t.id}
+                    userId={USER_ID}
+                    currentTags={tags}
+                    onChanged={() => onTagsChanged?.()}
+                  />
+                </div>
               </td>
               <td className="py-2 px-2 text-xs text-muted-foreground">
                 {src?.display_name ?? `#${t.source_id}`}
