@@ -108,7 +108,12 @@ function ExpensesOverviewInner() {
         </div>
       )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <MonthlySpendChart data={data.months} fxMode={fxMode} />
+        <MonthlySpendChart
+          data={data.months}
+          fxMode={fxMode}
+          selectedMonth={focal}
+          onMonthSelected={setMonth}
+        />
         <CategoryDonut data={data.current_month_top_categories} month={focal} />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
