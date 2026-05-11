@@ -208,6 +208,7 @@ export interface DashboardMonthly {
   chart_window: ChartWindowBar[];
   hero_stats: HeroStatsMonthly;
   top_categories: CategorySpend[];
+  oneoff_categories: CategorySpend[];
   categories_vs_typical: CategoryDeviation[];
   top_merchants: MerchantSpend[];
   largest_transactions: TransactionOut[];

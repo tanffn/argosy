@@ -100,6 +100,13 @@ function ExpensesMonthlyInner() {
         <CategoryDonut data={data.top_categories} month={data.month} />
         <CategoriesVsTypicalCard data={data.categories_vs_typical} month={data.month} />
       </div>
+      {data.oneoff_categories.length > 0 && (
+        <CategoryDonut
+          data={data.oneoff_categories}
+          month={data.month}
+          title={`One-off / vacation expenses — ${data.month}`}
+        />
+      )}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <TopMerchantsCard data={data.top_merchants} month={data.month} />
         <LargestTransactionsCard transactions={data.largest_transactions} month={data.month} />

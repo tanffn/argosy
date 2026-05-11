@@ -392,45 +392,86 @@ def compute_hero_stats_monthly(session: Session, user_id: str, month: str):
     )
 
 
+_ONEOFF_TAG_PREFIXES = ("trip:", "vacation:")
+_ONEOFF_TAG_LITERALS = {"one-off", "lump-sum"}
+
+
+def _row_is_oneoff(raw_tags: str | None) -> bool:
+    """A tx is 'one-off / vacation' if its tags include any of:
+    `one-off`, `lump-sum`, or a tag starting with `trip:`/`vacation:`.
+    Used to scrub the typical-monthly baseline of distorting outliers.
+    """
+    import json as _json
+    if not raw_tags:
+        return False
+    try:
+        tags = _json.loads(raw_tags)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(tags, list):
+        return False
+    for t in tags:
+        if not isinstance(t, str):
+            continue
+        if t in _ONEOFF_TAG_LITERALS:
+            return True
+        for pref in _ONEOFF_TAG_PREFIXES:
+            if t.startswith(pref):
+                return True
+    return False
+
+
 def compute_categories_vs_typical(session: Session, user_id: str, month: str):
     """Top-3 spending categories with the largest |z-score| vs trailing-12 typical.
 
-    For each spending-only category:
-      - mean+std of NIS spending across the 12 months strictly before `month`
-      - std floored at ₪50
-      - excluded if fewer than 3 prior-month observations
-      - z = (this_month_nis - mean) / std
+    Uses MEDIAN + MAD for robustness — a single lump-sum (mortgage payoff,
+    car purchase, vacation) used to drag the mean way up and made every
+    "regular" month read as anomalous by negative z. Median is unaffected.
 
-    Returns top-3 by `|z_score|`, sorted by z_score desc (most-positive first).
+    Also excludes one-off / vacation-tagged transactions from BOTH the
+    trailing baseline AND the focal-month value, so flagged outliers don't
+    poison their own baseline.
+
+    For each spending-only category:
+      - 12 prior monthly totals (months strictly before `month`)
+      - filter out one-off/trip-tagged rows from the per-month sums
+      - median + MAD (median absolute deviation), scaled to std ≈ 1.4826·MAD
+      - scale floored at ₪50 so trivially-stable categories don't blow up
+      - excluded if fewer than 3 prior-month observations
+      - z = (this_month_nis - median) / scale
+
+    Returns top-3 by `|z_score|`.
     """
     from argosy.api.routes.expenses import CategoryDeviation
     import statistics
 
-    # All spending-only rows grouped by (slug, month).
     rows = session.execute(
         sa_select(
             ExpenseCategory.slug,
             ExpenseCategory.label_en,
-            extract("year", ExpenseTransaction.occurred_on).label("y"),
-            extract("month", ExpenseTransaction.occurred_on).label("m"),
-            func.coalesce(func.sum(ExpenseTransaction.amount_nis), 0.0).label("nis"),
+            ExpenseTransaction.occurred_on,
+            ExpenseTransaction.amount_nis,
+            ExpenseTransaction.tags,
         )
         .join(ExpenseCategory, ExpenseTransaction.category_id == ExpenseCategory.id)
         .where(
             ExpenseTransaction.user_id == user_id,
             ExpenseTransaction.direction == "debit",
+            ExpenseTransaction.amount_nis.is_not(None),
             ExpenseCategory.is_inflow.is_(False),
             ExpenseCategory.is_excluded_from_spend.is_(False),
         )
-        .group_by(ExpenseCategory.slug, ExpenseCategory.label_en, "y", "m")
     ).all()
 
-    # Build {slug: {month_key: total}}.
     by_slug: dict[str, dict[str, float]] = {}
     labels: dict[str, str] = {}
     for r in rows:
-        key = f"{int(r.y):04d}-{int(r.m):02d}"
-        by_slug.setdefault(r.slug, {})[key] = float(r.nis or 0.0)
+        if _row_is_oneoff(r.tags):
+            continue
+        d = r.occurred_on
+        key = f"{d.year:04d}-{d.month:02d}"
+        by_slug.setdefault(r.slug, {}).setdefault(key, 0.0)
+        by_slug[r.slug][key] += float(r.amount_nis or 0.0)
         labels[r.slug] = r.label_en
 
     trailing_keys = [_shift_month_key(month, -i) for i in range(1, 13)]
@@ -440,14 +481,14 @@ def compute_categories_vs_typical(session: Session, user_id: str, month: str):
         if len(prior) < 3:
             continue
         cur = monthly.get(month, 0.0)
-        mean = sum(prior) / len(prior)
-        std = statistics.pstdev(prior) if len(prior) >= 2 else 0.0
-        std = max(std, 50.0)
-        z = (cur - mean) / std if std > 0 else 0.0
-        delta_pct = (cur - mean) / mean if mean > 0 else None
+        med = statistics.median(prior)
+        mad = statistics.median(abs(v - med) for v in prior)
+        scale = max(1.4826 * mad, 50.0)
+        z = (cur - med) / scale if scale > 0 else 0.0
+        delta_pct = (cur - med) / med if med > 0 else None
         out.append(CategoryDeviation(
             slug=slug, label=labels[slug], this_month_nis=cur,
-            typical_mean_nis=mean, typical_std_nis=std,
+            typical_mean_nis=med, typical_std_nis=scale,
             z_score=z, delta_pct=delta_pct,
         ))
 

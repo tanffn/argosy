@@ -1,8 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import {
-  Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip,
+  Cell, Pie, PieChart, ResponsiveContainer, Tooltip,
 } from "recharts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,17 +20,34 @@ interface CategoryDonutProps {
   height?: number;
   /** 'YYYY-MM' the data is scoped to; null when corpus is empty. */
   month?: string | null;
+  /** Override the card title; defaults to "Spending categories — {month}". */
+  title?: string;
 }
 
-export function CategoryDonut({ data, height = 280, month }: CategoryDonutProps) {
+function monthEndIso(month: string): string {
+  // last day of month in YYYY-MM
+  const [y, m] = month.split("-").map(Number);
+  // Day 0 of next month = last day of current month
+  const d = new Date(Date.UTC(y, m, 0));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+export function CategoryDonut({
+  data, height = 280, month, title,
+}: CategoryDonutProps) {
   const total = data.reduce((s, c) => s + c.total_nis, 0);
   const monthLabel = month ? formatMonth(month) : "current month";
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? data : data.slice(0, 8);
+  const txFilter = month
+    ? `&from_date=${month}-01&to_date=${monthEndIso(month)}`
+    : "";
 
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">
-          Spending categories — {monthLabel}
+          {title ?? `Spending categories — ${monthLabel}`}
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -66,10 +84,10 @@ export function CategoryDonut({ data, height = 280, month }: CategoryDonutProps)
               <div className="text-xs text-muted-foreground mb-1">
                 Total: {formatNIS(total)}
               </div>
-              {data.slice(0, 8).map((c) => (
+              {visible.map((c) => (
                 <Link
                   key={c.slug}
-                  href={`/expenses/transactions?category=${encodeURIComponent(c.slug)}`}
+                  href={`/expenses/transactions?category=${encodeURIComponent(c.slug)}${txFilter}`}
                   className="flex items-center gap-2 hover:bg-secondary/40 px-2 py-1 rounded"
                 >
                   <span
@@ -85,6 +103,15 @@ export function CategoryDonut({ data, height = 280, month }: CategoryDonutProps)
                   </span>
                 </Link>
               ))}
+              {data.length > 8 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAll((s) => !s)}
+                  className="text-xs text-muted-foreground hover:text-foreground underline text-left px-2 py-1"
+                >
+                  {showAll ? "Show top 8" : `Show all ${data.length}`}
+                </button>
+              )}
             </div>
           </div>
         )}

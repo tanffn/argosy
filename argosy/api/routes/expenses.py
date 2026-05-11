@@ -884,7 +884,8 @@ class DashboardMonthly(BaseModel):
     available_months: list[str]                       # for the MonthPicker
     chart_window: list[ChartWindowBar]                # always length 12
     hero_stats: HeroStatsMonthly
-    top_categories: list[CategorySpend]               # selected-month top categories
+    top_categories: list[CategorySpend]               # selected-month spending categories (recurring; one-off/trip-tagged excluded)
+    oneoff_categories: list[CategorySpend] = []       # one-off / vacation-tagged spend by category, focal month
     categories_vs_typical: list[CategoryDeviation]    # most-divergent categories
     top_merchants: list[MerchantSpend]
     largest_transactions: list[TransactionOut]        # top 5 by |amount_nis|
@@ -951,16 +952,25 @@ _TAX_KIND_LABEL = {
 
 def _dashboard_top_categories_for_month(
     db: Session, user_id: str, month: str,
+    *, oneoff: bool = False,
 ) -> list[CategorySpend]:
     """Focal-month spending categories — ALL categories with any spending in
     the month (no top-N cap). Combines NIS and USD activity into a single
     NIS-equivalent total per category. SPENDING only — excludes inflows,
     excluded-from-spend (transfers/investments), and card-payment settlements.
 
-    Per Ariel: the total here must reflect "accumulation of all 4 cards +
-    bank expenses", so the response is all-categories not top-10. The UI
-    decides how many slices/rows to render.
+    ``oneoff`` partitions the result:
+      - oneoff=False (default): RECURRING expenses. Txs tagged 'one-off',
+        'lump-sum', or with 'trip:'/'vacation:' prefixes are excluded so
+        big distorting events don't dominate the regular monthly pie.
+      - oneoff=True: the inverse — ONLY one-off / vacation-tagged rows.
+
+    Per Ariel: regular pie should reflect the recurring household spend;
+    one-off events (car purchase, mortgage lump-sum, trips) are shown in
+    a separate breakdown so they don't visually swamp the regular slices.
     """
+    from argosy.services.expense_dashboard import _row_is_oneoff
+
     cur_y, cur_m = (int(p) for p in month.split("-"))
     tx_rows = db.execute(
         sa_select(
@@ -970,6 +980,7 @@ def _dashboard_top_categories_for_month(
             ExpenseTransaction.amount_orig,
             ExpenseTransaction.currency_orig,
             ExpenseTransaction.occurred_on,
+            ExpenseTransaction.tags,
         )
         .join(ExpenseTransaction,
               ExpenseTransaction.category_id == ExpenseCategory.id)
@@ -986,6 +997,8 @@ def _dashboard_top_categories_for_month(
 
     buckets: dict[str, dict[str, float | int | str]] = {}
     for r in tx_rows:
+        if _row_is_oneoff(r.tags) != oneoff:
+            continue
         if r.amount_nis is not None and not r.currency_orig:
             nis = float(r.amount_nis)
         elif r.amount_orig is not None and r.currency_orig and r.currency_orig != "ILS":
@@ -1086,23 +1099,34 @@ def _dashboard_anomalies_for_month(
 
     anomalies: list[AnomalyCard] = []
 
-    # 1. Uncategorized count (user-wide, not focal-month-scoped — matches
-    #    the legacy semantics).
-    uncat_n = db.query(ExpenseTransaction).filter(
-        ExpenseTransaction.user_id == user_id,
-        ExpenseTransaction.is_card_payment.is_(False),
-    ).join(
-        ExpenseCategory,
-        ExpenseCategory.id == ExpenseTransaction.category_id,
-    ).filter(
-        ExpenseCategory.slug == "uncategorized",
-    ).count()
+    # 1. Uncategorized count, SCOPED TO THE FOCAL MONTH. The legacy version
+    #    showed a user-wide count ("102 transactions are uncategorized")
+    #    which is irrelevant on a per-month view — the same number stays
+    #    pinned regardless of which month you look at. Per Ariel: anomalies
+    #    should be about THIS month.
+    cur_y, cur_m = (int(p) for p in month.split("-"))
+    uncat_n = (
+        db.query(ExpenseTransaction)
+        .filter(
+            ExpenseTransaction.user_id == user_id,
+            ExpenseTransaction.is_card_payment.is_(False),
+            extract("year", ExpenseTransaction.occurred_on) == cur_y,
+            extract("month", ExpenseTransaction.occurred_on) == cur_m,
+        )
+        .join(ExpenseCategory,
+              ExpenseCategory.id == ExpenseTransaction.category_id)
+        .filter(ExpenseCategory.slug == "uncategorized")
+        .count()
+    )
     if uncat_n > 0:
         anomalies.append(AnomalyCard(
             kind="uncategorized",
-            severity="yellow" if uncat_n < 50 else "red",
-            message=f"{uncat_n} transactions are uncategorized",
-            link="/expenses/transactions?category=uncategorized",
+            severity="yellow" if uncat_n < 20 else "red",
+            message=f"{uncat_n} transactions are uncategorized this month",
+            link=(
+                f"/expenses/transactions?category=uncategorized"
+                f"&from_date={cur_y:04d}-{cur_m:02d}-01"
+            ),
         ))
 
     # 2. Conservation gaps (latest statement per source).
@@ -1674,6 +1698,9 @@ def dashboard_monthly(
     )
 
     top_categories = _dashboard_top_categories_for_month(db, user_id, month)
+    oneoff_categories = _dashboard_top_categories_for_month(
+        db, user_id, month, oneoff=True,
+    )
     top_merchants = _dashboard_top_merchants_for_month(db, user_id, month)
     anomalies = _dashboard_anomalies_for_month(db, user_id, month)
 
@@ -1683,6 +1710,7 @@ def dashboard_monthly(
         chart_window=chart_window,
         hero_stats=hero_stats,
         top_categories=top_categories,
+        oneoff_categories=oneoff_categories,
         categories_vs_typical=categories_vs_typical,
         top_merchants=top_merchants,
         largest_transactions=largest_transactions,
@@ -2660,7 +2688,14 @@ def list_merchants(
             ExpenseCategory.slug.is_(None),
         ))
     elif category:
-        base = base.where(ExpenseCategory.slug == category)
+        # Match the category itself OR any sub-category. Without this,
+        # picking a top-level (e.g. "insurance_other") returned 0 merchants
+        # because every actual mapping is under a sub-cat slug like
+        # "insurance_other.health".
+        base = base.where(or_(
+            ExpenseCategory.slug == category,
+            ExpenseCategory.slug.like(f"{category}.%"),
+        ))
 
     if source == "uncached":
         base = base.where(cache_subq.c.id.is_(None))
