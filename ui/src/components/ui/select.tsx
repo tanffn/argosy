@@ -60,10 +60,35 @@ interface SelectProps {
 }
 
 function Select({ value, onValueChange, children }: SelectProps) {
-  const [items, setItems] = React.useState<SelectItem[]>([]);
+  // Walk children synchronously to collect items from <SelectContent>'s
+  // <SelectItem> children. Computing items during render (not in an effect)
+  // means they're populated on the FIRST paint — required for bfcache
+  // restore, where React effects don't re-fire. The earlier
+  // useLayoutEffect-based implementation left the trigger showing the raw
+  // value string until items rehydrated after a real interaction.
+  const items: SelectItem[] = [];
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return;
+    if (child.type !== SelectContent) return;
+    const contentChildren = (child.props as { children?: React.ReactNode }).children;
+    React.Children.forEach(contentChildren, (sub) => {
+      if (!React.isValidElement(sub)) return;
+      const props = sub.props as SelectItemProps;
+      if (props.value === undefined) return;
+      items.push({
+        value: props.value,
+        label:
+          typeof props.children === "string"
+            ? props.children
+            : String(props.children ?? props.value),
+      });
+    });
+  });
 
   return (
-    <SelectContext.Provider value={{ value, onValueChange, items, setItems }}>
+    <SelectContext.Provider
+      value={{ value, onValueChange, items, setItems: () => undefined }}
+    >
       {children}
     </SelectContext.Provider>
   );
@@ -137,28 +162,10 @@ interface SelectItemProps {
   children?: React.ReactNode;
 }
 
-function SelectContent({ children }: { children: React.ReactNode }) {
-  const { setItems } = React.useContext(SelectContext);
-
-  React.useLayoutEffect(() => {
-    const collected: SelectItem[] = [];
-    React.Children.forEach(children, (child) => {
-      if (!React.isValidElement(child)) return;
-      const props = (child as React.ReactElement<SelectItemProps>).props;
-      if (props.value === undefined) return;
-      collected.push({
-        value: props.value,
-        label:
-          typeof props.children === "string"
-            ? props.children
-            : String(props.children ?? props.value),
-      });
-    });
-    setItems(collected);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [children]);
-
-  // Nothing visible — items surface as <option>s inside SelectTrigger
+// Pure marker — Select's root walks children synchronously to extract
+// SelectItems from <SelectContent>. SelectContent itself renders nothing.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function SelectContent(_props: { children: React.ReactNode }) {
   return null;
 }
 
