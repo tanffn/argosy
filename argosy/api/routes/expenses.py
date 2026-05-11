@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import case, extract, func, or_, select as sa_select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from argosy.api.routes.plan import get_db    # reuse the existing get_db dep
 from argosy.services.expense_ingest.orchestrator import ingest_user_file
@@ -2392,6 +2392,143 @@ class MerchantOut(BaseModel):
 class MerchantsListResponse(BaseModel):
     merchants: list[MerchantOut]
     total: int
+
+
+@router.get("/merchants", response_model=MerchantsListResponse)
+def list_merchants(
+    user_id: str,
+    db: Annotated[Session, Depends(get_db)],
+    category: str | None = None,
+    source: str | None = None,
+    min_confidence: float | None = None,
+    max_confidence: float | None = None,
+    search: str | None = None,
+    sort: str = "needs_attention",
+    order: str = "desc",
+    limit: int = Query(default=500, ge=1, le=1000),
+) -> MerchantsListResponse:
+    """Aggregate transactions by merchant_normalized + join to cache + category."""
+    Parent = aliased(ExpenseCategory)
+
+    cache_subq = (
+        sa_select(MerchantCategoryCache)
+        .where(MerchantCategoryCache.user_id == user_id,
+               MerchantCategoryCache.is_regex.is_(False))
+        .subquery()
+    )
+
+    base = (
+        sa_select(
+            ExpenseTransaction.merchant_normalized.label("merchant"),
+            ExpenseCategory.slug.label("cat_slug"),
+            ExpenseCategory.label_en.label("cat_label"),
+            Parent.slug.label("parent_slug"),
+            Parent.label_en.label("parent_label"),
+            cache_subq.c.confidence.label("cache_confidence"),
+            cache_subq.c.source.label("cache_source"),
+            cache_subq.c.id.label("cache_id"),
+            func.count(ExpenseTransaction.id).label("tx_count"),
+            func.sum(
+                case((ExpenseTransaction.currency_orig.is_(None),
+                      ExpenseTransaction.amount_nis), else_=0)
+            ).label("total_nis"),
+            func.sum(
+                case((ExpenseTransaction.currency_orig == "USD",
+                      ExpenseTransaction.amount_orig), else_=0)
+            ).label("total_usd"),
+            func.max(ExpenseTransaction.occurred_on).label("last_seen"),
+            func.avg(ExpenseTransaction.category_confidence).label("avg_tx_conf"),
+        )
+        .select_from(ExpenseTransaction)
+        .outerjoin(cache_subq,
+                   cache_subq.c.merchant_pattern ==
+                   ExpenseTransaction.merchant_normalized)
+        .outerjoin(ExpenseCategory,
+                   ExpenseCategory.id ==
+                   func.coalesce(cache_subq.c.category_id,
+                                 ExpenseTransaction.category_id))
+        .outerjoin(Parent, Parent.id == ExpenseCategory.parent_id)
+        .where(ExpenseTransaction.user_id == user_id)
+        .group_by(
+            ExpenseTransaction.merchant_normalized,
+            ExpenseCategory.slug, ExpenseCategory.label_en,
+            Parent.slug, Parent.label_en,
+            cache_subq.c.confidence, cache_subq.c.source, cache_subq.c.id,
+        )
+    )
+
+    if category == "uncategorized":
+        base = base.where(or_(
+            ExpenseCategory.slug == "uncategorized",
+            ExpenseCategory.slug.is_(None),
+        ))
+    elif category:
+        base = base.where(ExpenseCategory.slug == category)
+
+    if source == "uncached":
+        base = base.where(cache_subq.c.id.is_(None))
+    elif source:
+        base = base.where(cache_subq.c.source == source)
+
+    if min_confidence is not None:
+        # Filter on cache confidence only; uncached merchants (NULL) don't qualify.
+        base = base.where(cache_subq.c.confidence >= min_confidence)
+    if max_confidence is not None:
+        base = base.where(cache_subq.c.confidence <= max_confidence)
+
+    if search:
+        base = base.where(
+            ExpenseTransaction.merchant_normalized.ilike(f"%{search}%")
+        )
+
+    # Sort
+    sort_col_map = {
+        "merchant": ExpenseTransaction.merchant_normalized,
+        "category": ExpenseCategory.slug,
+        "confidence": func.coalesce(
+            cache_subq.c.confidence,
+            func.avg(ExpenseTransaction.category_confidence),
+        ),
+        "tx_count": func.count(ExpenseTransaction.id),
+        "total_nis": func.sum(
+            case((ExpenseTransaction.currency_orig.is_(None),
+                  ExpenseTransaction.amount_nis), else_=0),
+        ),
+        "last_seen": func.max(ExpenseTransaction.occurred_on),
+    }
+    if sort == "needs_attention":
+        # uncategorized first, then low-confidence non-user, then tx_count desc
+        base = base.order_by(
+            (ExpenseCategory.slug == "uncategorized").desc(),
+            ExpenseCategory.slug.is_(None).desc(),
+            (cache_subq.c.source != "user").desc(),
+            func.coalesce(cache_subq.c.confidence, 0).asc(),
+            func.count(ExpenseTransaction.id).desc(),
+        )
+    elif sort in sort_col_map:
+        col = sort_col_map[sort]
+        base = base.order_by(col.desc() if order == "desc" else col.asc())
+
+    rows = db.execute(base.limit(limit)).all()
+    merchants = [
+        MerchantOut(
+            merchant_normalized=r.merchant,
+            category_slug=r.cat_slug or "uncategorized",
+            category_label=r.cat_label or "Uncategorized",
+            parent_slug=r.parent_slug,
+            parent_label=r.parent_label,
+            confidence=(float(r.cache_confidence) if r.cache_confidence is not None
+                        else (float(r.avg_tx_conf) if r.avg_tx_conf is not None else None)),
+            source=(r.cache_source if r.cache_id is not None else "uncached"),
+            is_cached=r.cache_id is not None,
+            tx_count=int(r.tx_count or 0),
+            total_nis=float(r.total_nis or 0),
+            total_usd=float(r.total_usd or 0),
+            last_seen=r.last_seen.isoformat() if r.last_seen else "",
+        )
+        for r in rows
+    ]
+    return MerchantsListResponse(merchants=merchants, total=len(merchants))
 
 
 class MerchantPatchRequest(BaseModel):
