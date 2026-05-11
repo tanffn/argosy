@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -20,15 +21,45 @@ import {
 const USER_ID = "ariel";
 
 export default function MerchantsPage() {
+  // Filter state lives in the URL search params. This makes the page
+  // self-consistent across browser back/forward (Next.js soft-nav restores
+  // the URL, the page reads filters from it) and across hard reload.
+  // The previous useState-based filter state was getting orphaned on
+  // back-nav: filters preserved but the table empty until a reload, because
+  // there was no signal that the state stale.
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+
+  const search = params.get("search") ?? "";
+  const sourceFilter = params.get("source") ?? "all";
+  const categoryFilter = params.get("category") ?? "all";
+  const maxConfidence = params.get("max_confidence") ?? "";
+  const hideConfirmed = params.get("hide_confirmed") === "1";
+  const sort = params.get("sort") ?? "needs_attention";
+  const order = (params.get("order") ?? "desc") as "asc" | "desc";
+
+  function updateParam(key: string, value: string | null) {
+    const next = new URLSearchParams(params.toString());
+    if (value === null || value === "" || value === undefined) {
+      next.delete(key);
+    } else {
+      next.set(key, value);
+    }
+    const qs = next.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }
+
+  const setSearch = (v: string) => updateParam("search", v || null);
+  const setSourceFilter = (v: string) => updateParam("source", v === "all" ? null : v);
+  const setCategoryFilter = (v: string) => updateParam("category", v === "all" ? null : v);
+  const setMaxConfidence = (v: string) => updateParam("max_confidence", v || null);
+  const setHideConfirmed = (v: boolean) => updateParam("hide_confirmed", v ? "1" : null);
+  const setSort = (v: string) => updateParam("sort", v === "needs_attention" ? null : v);
+  const setOrder = (v: "asc" | "desc") => updateParam("order", v === "desc" ? null : v);
+
   const [merchants, setMerchants] = useState<MerchantRow[]>([]);
   const [categories, setCategories] = useState<CategoryOut[]>([]);
-  const [search, setSearch] = useState("");
-  const [sourceFilter, setSourceFilter] = useState<string>("all");
-  const [categoryFilter, setCategoryFilter] = useState<string>("all");
-  const [maxConfidence, setMaxConfidence] = useState<string>("");
-  const [hideConfirmed, setHideConfirmed] = useState(false);
-  const [sort, setSort] = useState<string>("needs_attention");
-  const [order, setOrder] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [addSubCatOpen, setAddSubCatOpen] = useState(false);
   const [bulkPickerOpen, setBulkPickerOpen] = useState(false);
@@ -53,28 +84,6 @@ export default function MerchantsPage() {
 
   useEffect(() => {
     fetchAll();
-  }, [fetchAll]);
-
-  // Re-fetch when the user returns to the page via the browser back/forward
-  // cache (bfcache) OR by re-focusing the tab. React effects don't re-run on
-  // bfcache restore — the DOM + JS state are frozen and replayed — so without
-  // this, returning to /expenses/merchants via browser BACK shows whatever
-  // was rendered before the user navigated away (potentially the empty
-  // initial state if they navigated away fast).
-  useEffect(() => {
-    const refetch = () => { fetchAll(); };
-    const onPageShow = (e: PageTransitionEvent) => {
-      if (e.persisted) refetch();
-    };
-    const onVisibility = () => {
-      if (!document.hidden) refetch();
-    };
-    window.addEventListener("pageshow", onPageShow);
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      window.removeEventListener("pageshow", onPageShow);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
   }, [fetchAll]);
 
   async function applyBulkCategory(slug: string) {
@@ -177,9 +186,17 @@ export default function MerchantsPage() {
         </Select>
         <Button
           variant="outline"
-          onClick={() => setOrder((o) => (o === "asc" ? "desc" : "asc"))}
+          onClick={() => setOrder(order === "asc" ? "desc" : "asc")}
         >
           {order === "asc" ? "▲" : "▼"}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => fetchAll()}
+          title="Refetch from server"
+        >
+          ↻
         </Button>
       </div>
 
