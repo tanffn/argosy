@@ -31,11 +31,14 @@ interface Props {
     removeTags: string[];
     applyToSiblings: boolean;
   }) => Promise<void>;
+  /** Optional: when set, the embedded picker shows a "+ Add sub-category"
+   * button that fires this callback. The parent owns the AddSubCategoryDialog. */
+  onAddSubCategoryClick?: () => void;
 }
 
 export function LabelEditor({
   open, onOpenChange, mode, categories, currentSlug, currentTags = [],
-  showSiblingsCheckbox, onSubmit,
+  showSiblingsCheckbox, onSubmit, onAddSubCategoryClick,
 }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [chosenSlug, setChosenSlug] = useState<string | undefined>(undefined);
@@ -184,6 +187,7 @@ export function LabelEditor({
           categories={categories}
           currentSlug={chosenSlug ?? currentSlug ?? null}
           onPick={(slug) => { setChosenSlug(slug); setPickerOpen(false); }}
+          onAddSubCategoryClick={onAddSubCategoryClick}
         />
       </DialogContent>
     </Dialog>

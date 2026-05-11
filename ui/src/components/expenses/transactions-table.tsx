@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { AddSubCategoryDialog } from "@/components/expenses/add-subcategory-dialog";
 import { LabelEditor } from "@/components/expenses/label-editor";
 import { TagChip } from "@/components/expenses/tag-chip";
 import { TagEditor } from "@/components/expenses/tag-editor";
@@ -34,6 +35,7 @@ export function TransactionsTable({
 }: TransactionsTableProps) {
   const sourceById = new Map(sources.map((s) => [s.id, s]));
   const [editingTx, setEditingTx] = useState<{ id: number; slug: string | null; tags: string[] } | null>(null);
+  const [addSubCatOpen, setAddSubCatOpen] = useState(false);
 
   return (
     <>
@@ -116,7 +118,17 @@ export function TransactionsTable({
                 </div>
               </td>
               <td className="py-2 px-2 text-xs text-muted-foreground">
-                {src?.display_name ?? `#${t.source_id}`}
+                <a
+                  href={`/expenses/sources#source-${t.source_id}`}
+                  className="hover:underline hover:text-foreground"
+                  title={
+                    src
+                      ? `${src.display_name} — ${src.issuer} ${src.external_id} (${src.kind}). Click to inspect the source's statements.`
+                      : `Source #${t.source_id}`
+                  }
+                >
+                  {src?.display_name ?? `#${t.source_id}`}
+                </a>
               </td>
               <td
                 className="py-2 pl-2 text-right tabular-nums whitespace-nowrap"
@@ -145,6 +157,7 @@ export function TransactionsTable({
         currentSlug={editingTx.slug}
         currentTags={editingTx.tags}
         showSiblingsCheckbox={true}
+        onAddSubCategoryClick={() => setAddSubCatOpen(true)}
         onSubmit={async ({ categorySlug, addTags, removeTags, applyToSiblings }) => {
           if (categorySlug) {
             await expensesApi.patchTransactionCategory(
@@ -164,6 +177,13 @@ export function TransactionsTable({
         }}
       />
     )}
+    <AddSubCategoryDialog
+      open={addSubCatOpen}
+      onOpenChange={setAddSubCatOpen}
+      userId={USER_ID}
+      categories={categories}
+      onCreated={() => onCategoryChanged?.()}
+    />
     </>
   );
 }

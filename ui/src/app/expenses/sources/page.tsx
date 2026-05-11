@@ -69,7 +69,7 @@ export default function SourcesPage() {
       {sources.map((s) => {
         const d = details[s.id];
         return (
-          <Card key={s.id}>
+          <Card key={s.id} id={`source-${s.id}`} className="scroll-mt-24">
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
                 <span>{s.display_name}</span>
