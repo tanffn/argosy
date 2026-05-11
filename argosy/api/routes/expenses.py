@@ -270,6 +270,7 @@ def list_transactions(
 class PatchCategoryRequest(BaseModel):
     user_id: str
     category_slug: str
+    apply_to_siblings: bool = True   # back-compat default; new UI sends False
 
 
 class PatchCategoryResponse(BaseModel):
@@ -286,52 +287,56 @@ def patch_transaction_category(
     body: PatchCategoryRequest,
     db: Annotated[Session, Depends(get_db)],
 ) -> PatchCategoryResponse:
+    """Set a single transaction's category.
+
+    When ``apply_to_siblings=True`` (default), the same category is applied to
+    every other transaction with the same ``merchant_normalized`` for this
+    user, and a ``merchant_category_cache`` row is written/updated with
+    ``source='user'``, ``confidence=1.00``. The default is True for backward
+    compatibility with the original EX1 inline-edit UI; the new UI on
+    ``/expenses/transactions`` sends ``apply_to_siblings=False`` explicitly.
+
+    When ``apply_to_siblings=False``, only this one row is updated. The cache
+    is NOT touched — future ingests of the same merchant continue to use
+    whatever mapping (or lack thereof) existed before.
+    """
     tx = db.query(ExpenseTransaction).filter_by(
-        id=transaction_id, user_id=body.user_id
+        id=transaction_id, user_id=body.user_id,
     ).one_or_none()
     if tx is None:
         raise HTTPException(status_code=404, detail="transaction not found")
     cat = db.query(ExpenseCategory).filter_by(
-        user_id=body.user_id, slug=body.category_slug
+        user_id=body.user_id, slug=body.category_slug,
     ).one_or_none()
     if cat is None:
-        raise HTTPException(status_code=400,
-                             detail=f"unknown category {body.category_slug}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown category {body.category_slug}",
+        )
+
+    if body.apply_to_siblings:
+        from argosy.services.merchant_service import apply_merchant_category
+        result = apply_merchant_category(
+            db, user_id=body.user_id,
+            merchant_normalized=tx.merchant_normalized,
+            category_slug=body.category_slug,
+        )
+        db.commit()
+        return PatchCategoryResponse(
+            transaction_id=tx.id,
+            category_slug=body.category_slug,
+            category_source="user",
+            affected_count=result.affected_transactions,
+        )
+
+    # Per-tx only: touch this row, leave the cache and siblings alone.
     tx.category_id = cat.id
     tx.category_source = "user"
     tx.category_confidence = Decimal("1.00")
-
-    pattern = tx.merchant_normalized
-    cache = db.query(MerchantCategoryCache).filter_by(
-        user_id=body.user_id, merchant_pattern=pattern, is_regex=False,
-    ).one_or_none()
-    if cache is None:
-        db.add(MerchantCategoryCache(
-            user_id=body.user_id, merchant_pattern=pattern,
-            category_id=cat.id, source="user", confidence=Decimal("1.00"),
-            hit_count=1, last_hit_at=datetime.now(timezone.utc),
-        ))
-    else:
-        cache.category_id = cat.id
-        cache.source = "user"
-        cache.confidence = Decimal("1.00")
-        cache.hit_count += 1
-        cache.last_hit_at = datetime.now(timezone.utc)
-
-    siblings = db.query(ExpenseTransaction).filter(
-        ExpenseTransaction.user_id == body.user_id,
-        ExpenseTransaction.merchant_normalized == pattern,
-        ExpenseTransaction.id != tx.id,
-    ).all()
-    for sib in siblings:
-        sib.category_id = cat.id
-        sib.category_source = "user"
-        sib.category_confidence = Decimal("1.00")
-
     db.commit()
     return PatchCategoryResponse(
         transaction_id=tx.id, category_slug=body.category_slug,
-        category_source="user", affected_count=1 + len(siblings),
+        category_source="user", affected_count=1,
     )
 
 

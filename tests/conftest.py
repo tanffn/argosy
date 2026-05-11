@@ -121,6 +121,30 @@ def argosy_home_db(tmp_path, monkeypatch):
     sync_engine.dispose()
 
 
+@pytest.fixture()
+def expense_client(client_with_db, tmp_path, monkeypatch):
+    """client_with_db augmented with:
+      - ARGOSY_HOME → tmp_path (so catalog_upload writes to a throw-away dir)
+      - a seeded User row so FK-aware sessions don't fail
+    """
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+    reload_settings()
+
+    # Seed the 'ariel' user into the test DB so UserFile FK is satisfied even
+    # when SQLite FK enforcement is on.
+    from argosy.state.models import User
+    SessionLocal = client_with_db.app.state.session_factory
+    with SessionLocal() as s:
+        if s.get(User, "ariel") is None:
+            s.add(User(id="ariel", plan="free"))
+            s.commit()
+
+    yield client_with_db
+
+    reload_settings()
+
+
 @pytest_asyncio.fixture
 async def engine() -> AsyncIterator[None]:
     """Set up an in-memory SQLite engine for the duration of a test."""

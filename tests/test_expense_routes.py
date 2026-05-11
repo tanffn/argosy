@@ -9,29 +9,6 @@ import pytest
 FIXTURES = Path(__file__).parent / "fixtures" / "expenses"
 
 
-@pytest.fixture()
-def expense_client(client_with_db, tmp_path, monkeypatch):
-    """client_with_db augmented with:
-      - ARGOSY_HOME → tmp_path (so catalog_upload writes to a throw-away dir)
-      - a seeded User row so FK-aware sessions don't fail
-    """
-    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
-    from argosy.config import reload_settings
-    reload_settings()
-
-    # Seed the 'ariel' user into the test DB so UserFile FK is satisfied even
-    # when SQLite FK enforcement is on.
-    from argosy.state.models import User
-    SessionLocal = client_with_db.app.state.session_factory
-    with SessionLocal() as s:
-        if s.get(User, "ariel") is None:
-            s.add(User(id="ariel", plan="free"))
-            s.commit()
-
-    yield client_with_db
-
-    reload_settings()
-
 
 def test_upload_max_xlsx_returns_parse_summary(expense_client):
     with patch("argosy.services.expense_ingest.category_resolver._categorize_via_llm",
