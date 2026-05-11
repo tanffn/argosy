@@ -2612,6 +2612,86 @@ class BulkCategoryResponse(BaseModel):
     total_affected_transactions: int
 
 
+# ---------------------------------------------------------------------------
+# POST /transactions/bulk-label — range-bulk per-tx labeling
+# ---------------------------------------------------------------------------
+
+class BulkLabelRequest(BaseModel):
+    user_id: str
+    transaction_ids: list[int] = Field(..., min_length=1)
+    category_slug: str | None = None
+    add_tags: list[str] = Field(default_factory=list)
+    remove_tags: list[str] = Field(default_factory=list)
+
+    def model_post_init(self, __context) -> None:
+        if (self.category_slug is None
+                and not self.add_tags and not self.remove_tags):
+            raise ValueError(
+                "Provide at least one of category_slug, add_tags, remove_tags"
+            )
+
+
+class BulkLabelSkip(BaseModel):
+    tx_id: int
+    reason: str
+
+
+class BulkLabelResponse(BaseModel):
+    affected: int
+    skipped: list[BulkLabelSkip]
+
+
+@router.post("/transactions/bulk-label", response_model=BulkLabelResponse)
+def bulk_label_transactions(
+    body: BulkLabelRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> BulkLabelResponse:
+    """Apply a category and/or tag mutations to a list of transactions.
+
+    Per-tx only — does NOT write to merchant_category_cache. Use the merchant
+    tab for cache writes.
+    """
+    cat = None
+    if body.category_slug is not None:
+        cat = db.query(ExpenseCategory).filter_by(
+            user_id=body.user_id, slug=body.category_slug,
+        ).one_or_none()
+        if cat is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown category {body.category_slug}",
+            )
+
+    skipped: list[BulkLabelSkip] = []
+    affected = 0
+    for tx_id in body.transaction_ids:
+        tx = db.query(ExpenseTransaction).filter_by(
+            id=tx_id, user_id=body.user_id,
+        ).one_or_none()
+        if tx is None:
+            skipped.append(BulkLabelSkip(tx_id=tx_id, reason="not found"))
+            continue
+        if cat is not None:
+            tx.category_id = cat.id
+            tx.category_source = "user"
+            tx.category_confidence = Decimal("1.00")
+        if body.add_tags or body.remove_tags:
+            try:
+                tags = json.loads(tx.tags) if tx.tags else []
+            except (ValueError, TypeError):
+                tags = []
+            tag_set = set(tags)
+            for t in body.add_tags:
+                tag_set.add(t)
+            for t in body.remove_tags:
+                tag_set.discard(t)
+            tx.tags = json.dumps(sorted(tag_set), ensure_ascii=False)
+        affected += 1
+
+    db.commit()
+    return BulkLabelResponse(affected=affected, skipped=skipped)
+
+
 @router.post("/merchants/bulk-category", response_model=BulkCategoryResponse)
 def bulk_apply_category(
     body: BulkCategoryRequest,
