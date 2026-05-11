@@ -20,6 +20,39 @@ interface Props {
   onRowChanged: () => void;       // refetch
   onAddSubCategoryClick: () => void;
   busy: boolean;
+  sort: string;
+  order: "asc" | "desc";
+  onSortChange: (sort: string, order: "asc" | "desc") => void;
+}
+
+function SortableTh({
+  column, label, align, sort, order, onSortChange,
+}: {
+  column: string;
+  label: string;
+  align: "left" | "right";
+  sort: string;
+  order: "asc" | "desc";
+  onSortChange: (sort: string, order: "asc" | "desc") => void;
+}) {
+  const active = sort === column;
+  const indicator = active ? (order === "asc" ? " ▲" : " ▼") : "";
+  return (
+    <th
+      className={`px-2 py-2 cursor-pointer select-none hover:bg-muted text-${align}`}
+      onClick={() => {
+        if (active) {
+          onSortChange(column, order === "asc" ? "desc" : "asc");
+        } else {
+          // First click: descending for numeric-ish cols, ascending for text
+          const numericCols = new Set(["confidence", "tx_count", "total_nis", "last_seen"]);
+          onSortChange(column, numericCols.has(column) ? "desc" : "asc");
+        }
+      }}
+    >
+      {label}{indicator}
+    </th>
+  );
 }
 
 function fmtNis(n: number): string {
@@ -45,6 +78,7 @@ function SourceBadge({ source, isCached }: { source: string; isCached: boolean }
 export function MerchantsTable({
   merchants, categories, userId, selected, onSelectionChange,
   onRowChanged, onAddSubCategoryClick, busy,
+  sort, order, onSortChange,
 }: Props) {
   const [editingMerchant, setEditingMerchant] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -103,13 +137,13 @@ export function MerchantsTable({
                   onCheckedChange={toggleAll}
                 />
               </th>
-              <th className="px-2 py-2 text-left">Merchant</th>
-              <th className="px-2 py-2 text-left">Category</th>
-              <th className="px-2 py-2 text-right">Confidence</th>
+              <SortableTh column="merchant" label="Merchant" align="left" sort={sort} order={order} onSortChange={onSortChange} />
+              <SortableTh column="category" label="Category" align="left" sort={sort} order={order} onSortChange={onSortChange} />
+              <SortableTh column="confidence" label="Confidence" align="right" sort={sort} order={order} onSortChange={onSortChange} />
               <th className="px-2 py-2 text-left">Source</th>
-              <th className="px-2 py-2 text-right"># Txs</th>
-              <th className="px-2 py-2 text-right">Total</th>
-              <th className="px-2 py-2 text-right">Last seen</th>
+              <SortableTh column="tx_count" label="# Txs" align="right" sort={sort} order={order} onSortChange={onSortChange} />
+              <SortableTh column="total_nis" label="Total" align="right" sort={sort} order={order} onSortChange={onSortChange} />
+              <SortableTh column="last_seen" label="Last seen" align="right" sort={sort} order={order} onSortChange={onSortChange} />
               <th className="px-2 py-2 text-right">Actions</th>
             </tr>
           </thead>

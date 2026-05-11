@@ -105,9 +105,11 @@ export default function MerchantsPage() {
           <SelectContent>
             <SelectItem value="all">All categories</SelectItem>
             <SelectItem value="uncategorized">Uncategorized</SelectItem>
-            {categories.filter((c) => !c.parent_slug).map((c) => (
-              <SelectItem key={c.slug} value={c.slug}>{c.label_en}</SelectItem>
-            ))}
+            {categories
+              .filter((c) => !c.parent_slug && c.slug !== "uncategorized")
+              .map((c) => (
+                <SelectItem key={c.slug} value={c.slug}>{c.label_en}</SelectItem>
+              ))}
           </SelectContent>
         </Select>
         <Select value={sourceFilter} onValueChange={setSourceFilter}>
@@ -158,6 +160,9 @@ export default function MerchantsPage() {
         onRowChanged={fetchAll}
         onAddSubCategoryClick={() => setAddSubCatOpen(true)}
         busy={busy}
+        sort={sort}
+        order={order}
+        onSortChange={(s, o) => { setSort(s); setOrder(o); }}
       />
 
       {selected.size > 0 && (

@@ -2443,10 +2443,13 @@ def list_merchants(
         .outerjoin(cache_subq,
                    cache_subq.c.merchant_pattern ==
                    ExpenseTransaction.merchant_normalized)
+        # Category is derived from the cache row only, not from per-tx
+        # category_id. This keeps one row per merchant_normalized even when
+        # the merchant's transactions are spread across multiple categories
+        # (which happens after per-tx inline edits). Uncached merchants get
+        # cat_slug=NULL and surface as "Uncategorized" in the UI.
         .outerjoin(ExpenseCategory,
-                   ExpenseCategory.id ==
-                   func.coalesce(cache_subq.c.category_id,
-                                 ExpenseTransaction.category_id))
+                   ExpenseCategory.id == cache_subq.c.category_id)
         .outerjoin(Parent, Parent.id == ExpenseCategory.parent_id)
         .where(ExpenseTransaction.user_id == user_id)
         .group_by(
@@ -2497,10 +2500,15 @@ def list_merchants(
         "last_seen": func.max(ExpenseTransaction.occurred_on),
     }
     if sort == "needs_attention":
-        # uncategorized first, then low-confidence non-user, then tx_count desc
+        # Uncategorized merchants first (either literal slug or no cache row at
+        # all, both modeled here in a single tier so SQLite's NULL-last DESC
+        # ordering doesn't bury uncached rows). Then low-confidence non-user,
+        # then tx_count desc.
         base = base.order_by(
-            (ExpenseCategory.slug == "uncategorized").desc(),
-            ExpenseCategory.slug.is_(None).desc(),
+            or_(
+                ExpenseCategory.slug == "uncategorized",
+                ExpenseCategory.slug.is_(None),
+            ).desc(),
             (cache_subq.c.source != "user").desc(),
             func.coalesce(cache_subq.c.confidence, 0).asc(),
             func.count(ExpenseTransaction.id).desc(),
