@@ -2501,6 +2501,25 @@ def list_merchants(
         .subquery()
     )
 
+    # Fallback when a merchant has no cache row yet: derive the displayed
+    # category from the merchant's own transactions. We pick MAX(category_id),
+    # which is deterministic but arbitrary across categories — that's fine
+    # because when transactions span multiple categories the UI surfaces a
+    # "Mixed (N)" badge anyway (via distinct_category_count below). For the
+    # common case where every tx of an uncached merchant shares one category,
+    # MAX === the single category, so the row shows the real category instead
+    # of a misleading "Uncategorized".
+    dominant_tx_cat_subq = (
+        sa_select(
+            ExpenseTransaction.merchant_normalized.label("merch"),
+            func.max(ExpenseTransaction.category_id).label("cat_id"),
+        )
+        .where(ExpenseTransaction.user_id == user_id,
+               ExpenseTransaction.category_id.is_not(None))
+        .group_by(ExpenseTransaction.merchant_normalized)
+        .subquery()
+    )
+
     base = (
         sa_select(
             ExpenseTransaction.merchant_normalized.label("merchant"),
@@ -2544,13 +2563,17 @@ def list_merchants(
         .outerjoin(cache_subq,
                    cache_subq.c.merchant_pattern ==
                    ExpenseTransaction.merchant_normalized)
-        # Category is derived from the cache row only, not from per-tx
-        # category_id. This keeps one row per merchant_normalized even when
-        # the merchant's transactions are spread across multiple categories
-        # (which happens after per-tx inline edits). Uncached merchants get
-        # cat_slug=NULL and surface as "Uncategorized" in the UI.
+        .outerjoin(dominant_tx_cat_subq,
+                   dominant_tx_cat_subq.c.merch ==
+                   ExpenseTransaction.merchant_normalized)
+        # Effective category: cache row when present, else the merchant's
+        # dominant tx category (see subquery above). Both inputs are constant
+        # per merchant_normalized so the join is safe inside the GROUP BY.
         .outerjoin(ExpenseCategory,
-                   ExpenseCategory.id == cache_subq.c.category_id)
+                   ExpenseCategory.id == func.coalesce(
+                       cache_subq.c.category_id,
+                       dominant_tx_cat_subq.c.cat_id,
+                   ))
         .outerjoin(Parent, Parent.id == ExpenseCategory.parent_id)
         .where(ExpenseTransaction.user_id == user_id)
         .group_by(
@@ -2558,6 +2581,7 @@ def list_merchants(
             ExpenseCategory.slug, ExpenseCategory.label_en,
             Parent.slug, Parent.label_en,
             cache_subq.c.confidence, cache_subq.c.source, cache_subq.c.id,
+            dominant_tx_cat_subq.c.cat_id,
         )
     )
 

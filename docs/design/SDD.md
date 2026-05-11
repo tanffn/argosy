@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-11 by Claude. EX6 (overview/monthly split) landed; EX8 (merchant↔category tab + range-bulk labeling) landed — five new endpoints, hierarchical category picker, bulk-label workflows, 38 new tests, zero schema changes.
+**Last edit:** 2026-05-11 (evening) by Claude. EX6 (overview/monthly split) landed; EX8 (merchant↔category tab + range-bulk labeling) landed; post-merge iterations on `main` covered live smoke fixes (net-total signing, Mixed badge, Confirm-preserves-overrides, effective-category fallback, raw_row Details popover, Open-source-file endpoint, source-cell deep-link, no-store fetch) and a handful of user-created sub-categories (transfers.credit_cards, investments.provident_fund, personal.pet, healthcare.therapy).
 
 ### Orientation — start here if you have zero context
 
@@ -188,6 +188,26 @@ Spec: `docs/superpowers/specs/2026-05-11-merchant-category-tab-design.md`. Plan:
 - Zero schema changes. Five new endpoints (`GET /merchants`, `PATCH /merchants/{name}`, `POST /merchants/bulk-category`, `POST /categories`, `POST /transactions/bulk-label`); one behavior change on the existing PATCH.
 - BIT and similar pass-through merchants are mapped to `cash` rather than getting a "split merchant" mechanic — Ariel's call (low total impact; defer the mechanic unless it bites).
 - Test count: baseline + 38 new tests across 7 new files; full backend suite at 1,073 passed under `pytest -m "not llm_eval"`.
+
+### EX8 post-merge iterations (live smoke-driven fixes, on `main`)
+
+Iterations after the wave landed, while Ariel triaged real data:
+
+- **Net Total on merchant rows**: was summing absolute amounts (charge + matching refund counted as 2×); now signs by `direction` so a credit nets against its debit. Surface bug `אופטיקפלן` showed ₪2,000 instead of ₪0.
+- **Hide-confirmed checkbox** on the merchant filter bar (`exclude_user_confirmed=true` server-side; NULL-safe via `OR cache_id IS NULL`).
+- **Merchant cell links to /expenses/transactions?search=<merchant>** — drill into a merchant's own txs in one click.
+- **Mixed indicator**: `MerchantOut.distinct_category_count` (`COUNT(DISTINCT category_id)`); UI renders a red `Mixed (N)` badge when >1, click still opens the picker. Surfaced ~26 mixed merchants previously hidden by the cache-only display.
+- **Confirm now preserves user overrides**: `apply_merchant_category(confirm=True)` only touches sibling txs that already match the resolved cache category. Manual per-tx PF assignments survive. Avoided real footgun where confirming `העברה דיגיטל` would have erased Provident-Fund overrides.
+- **Effective category for uncached merchants**: when a merchant has no cache row but its transactions all share one category (`distinct_category_count == 1`), the merchant row now reflects that category instead of "Uncategorized". Achieved via a `dominant_tx_cat` subquery joined on `COALESCE(cache.category_id, dominant.cat_id)` — keeps one row per merchant.
+- **Per-tx Details popover (ⓘ button)**: shows tx metadata + the parser-preserved `raw_row` dict, plus an **Open file** button that POSTs `/transactions/{id}/open-source-file`. Backend resolves `tx → statement → user_file.storage_path` and shells the file open via `os.startfile` (Windows) / `open` (macOS) / `xdg-open` (Linux). Single-tenant local-only; needs gating if API moves off localhost.
+- **`+ Add sub-category` button** now reachable from the Transactions inline-edit too (was only on Merchants tab). LabelEditor threads the callback through; TransactionsTable hosts its own AddSubCategoryDialog instance.
+- **Source cell on Transactions linked to `/expenses/sources#source-{id}`**: hover shows issuer/external_id/kind; click scrolls to the source card with its per-statement reconciliation table.
+- **Sortable column headers on Merchants tab** + duplicate-key fix in the category dropdown (`uncategorized` slug was duplicated by the literal sentinel + the mapped list).
+- **`cache: "no-store"` on all API client helpers** (`getJSON`/`patchJSON`/`postJSON`) — prevents Next.js 16 router cache + browser HTTP cache from showing stale data after edits. Was causing "I have to refresh" UX confusion.
+- **New user-created sub-categories during live triage**: `transfers.credit_cards`, `investments.provident_fund`, `personal.pet`, `healthcare.therapy`. All `is_excluded_from_spend` inherited from their parent. Pattern works as designed; tag system handles per-holder / per-child distinctions (`holder:ariel`, `holder:noga`, `child:geva`).
+- **Documented BIT semantics**: maps to `cash` per Ariel; tags are per-tx labels that don't aggregate into category-based dashboards. If tags ever need to act as virtual sub-categories on dashboards, that's a separate feature.
+
+All landed directly on `main` (no second worktree) as iterative commits between `1b2732f` (EX8 merge) and current HEAD.
 
 ### Wave EX1.1 — already documented above (still applies)
 

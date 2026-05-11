@@ -7,8 +7,12 @@ const BASE =
     ? process.env.NEXT_PUBLIC_API_URL
     : "http://localhost:8000";
 
+// `cache: "no-store"` prevents Next.js (16, App Router) and the browser HTTP
+// cache from serving stale GETs after we mutate via PATCH/POST. Without this
+// the merchants/transactions tabs can show data from before the last edit
+// until a hard refresh — surprising and easy to misread as a backend bug.
 async function getJSON<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+  const res = await fetch(`${BASE}${path}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`);
   return (await res.json()) as T;
 }
@@ -18,6 +22,7 @@ async function patchJSON<T>(path: string, body: unknown): Promise<T> {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    cache: "no-store",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`);
   return (await res.json()) as T;
@@ -28,6 +33,7 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    cache: "no-store",
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${path}`);
   return (await res.json()) as T;
