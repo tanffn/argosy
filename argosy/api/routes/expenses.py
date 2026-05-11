@@ -2599,11 +2599,20 @@ def list_merchants(
         base = base.where(cache_subq.c.source == source)
 
     if exclude_user_confirmed:
-        # Keep uncached rows (cache.id IS NULL) and any cached row whose
-        # source isn't 'user'. Direct `source != 'user'` would lose uncached
-        # rows because SQL NULL != 'user' evaluates to NULL (treated as false).
-        base = base.where(
-            or_(cache_subq.c.id.is_(None), cache_subq.c.source != "user"),
+        # A merchant is "confirmed" if the user has finalized it one of two
+        # ways: cache row marked source='user' (merchant-level rule), OR
+        # every tx has been individually re-categorized (per-tx confirmation,
+        # which doesn't write a cache row when apply_to_siblings=false).
+        # The old version only checked the cache row, which let per-tx
+        # confirmed merchants like a one-off mortgage payment slip through.
+        # Two HAVING clauses (AND'd) — both work on grouped aggregates plus
+        # cache_subq columns (constant per group).
+        base = base.having(
+            or_(cache_subq.c.source.is_(None), cache_subq.c.source != "user"),
+        ).having(
+            func.sum(
+                case((ExpenseTransaction.category_source == "user", 1), else_=0)
+            ) < func.count(ExpenseTransaction.id)
         )
 
     if min_confidence is not None:

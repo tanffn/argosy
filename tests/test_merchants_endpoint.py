@@ -147,6 +147,97 @@ def test_category_label_and_parent_label_populated(seeded):
     assert a["parent_label"] == "Food (groceries)"
 
 
+def test_exclude_user_confirmed_hides_per_tx_confirmed(expense_client):
+    """Regression: 'Hide confirmed' must hide merchants where every tx is
+    user-source even when no cache row exists (per-tx inline edit with
+    apply_to_siblings=false). The old version only checked the cache row.
+    """
+    from argosy.services.expense_ingest.taxonomy_seed import (
+        seed_system_defaults, seed_user_categories,
+    )
+    from argosy.state.models import (
+        ExpenseCategory, ExpenseSource, ExpenseStatement, ExpenseTransaction,
+        User, UserFile, MerchantCategoryCache,
+    )
+    from datetime import datetime, timezone
+    SessionLocal = expense_client.app.state.session_factory
+    with SessionLocal() as s:
+        if s.get(User, "ariel") is None:
+            s.add(User(id="ariel", plan="free"))
+        seed_system_defaults(s); s.flush()
+        seed_user_categories(s, "ariel"); s.flush()
+        mortgage = s.query(ExpenseCategory).filter_by(
+            user_id="ariel", slug="housing.mortgage"
+        ).one()
+        uncat = s.query(ExpenseCategory).filter_by(
+            user_id="ariel", slug="uncategorized"
+        ).one()
+        uf = UserFile(
+            user_id="ariel", sha256="x" * 64,
+            original_name="t.xlsx", sanitized_name="t.xlsx",
+            mime_type="application/vnd.ms-excel",
+            kind="other", size_bytes=1, storage_path="t",
+            source="intake_upload",
+        )
+        s.add(uf); s.flush()
+        src = ExpenseSource(user_id="ariel", issuer="leumi",
+                            external_id="44745280", kind="bank",
+                            display_name="Leumi NIS")
+        s.add(src); s.flush()
+        stmt = ExpenseStatement(
+            user_id="ariel", source_id=src.id, file_id=uf.id,
+            period_start=date(2025, 1, 1), period_end=date(2025, 1, 31),
+            parsed_total_nis=Decimal("0.00"),
+            parser_name="t", parser_version="1", status="parsed",
+        )
+        s.add(stmt); s.flush()
+        # Per-tx confirmed merchant: user inline-edited (source=user) but no
+        # cache row written (apply_to_siblings=false path).
+        s.add(ExpenseTransaction(
+            user_id="ariel", statement_id=stmt.id, source_id=src.id,
+            occurred_on=date(2025, 1, 7),
+            merchant_raw="תשלום שובר", merchant_normalized="תשלום שובר",
+            amount_nis=Decimal("245577.06"), direction="debit",
+            tx_type="regular", raw_row_json="{}",
+            category_id=mortgage.id, category_source="user",
+            category_confidence=Decimal("1.00"),
+        ))
+        # Unconfirmed merchant: source=llm, no cache.
+        s.add(ExpenseTransaction(
+            user_id="ariel", statement_id=stmt.id, source_id=src.id,
+            occurred_on=date(2025, 1, 8),
+            merchant_raw="unknown", merchant_normalized="unknown",
+            amount_nis=Decimal("100.00"), direction="debit",
+            tx_type="regular", raw_row_json="{}",
+            category_id=uncat.id, category_source="llm",
+            category_confidence=Decimal("0.40"),
+        ))
+        # Mixed: 2 txs, one user-set one not — needs attention.
+        for source_val in ("user", "llm"):
+            s.add(ExpenseTransaction(
+                user_id="ariel", statement_id=stmt.id, source_id=src.id,
+                occurred_on=date(2025, 1, 9),
+                merchant_raw="mixed", merchant_normalized="mixed",
+                amount_nis=Decimal("50.00"), direction="debit",
+                tx_type="regular", raw_row_json="{}",
+                category_id=uncat.id, category_source=source_val,
+                category_confidence=Decimal("1.00"),
+            ))
+        s.commit()
+
+    r = expense_client.get(
+        "/api/expenses/merchants?user_id=ariel&exclude_user_confirmed=true"
+    )
+    body = r.json()
+    names = {m["merchant_normalized"] for m in body["merchants"]}
+    # The mortgage row is per-tx confirmed → hidden.
+    assert "תשלום שובר" not in names
+    # The unknown row has source=llm → kept.
+    assert "unknown" in names
+    # The mixed merchant has at least one non-user tx → kept.
+    assert "mixed" in names
+
+
 def test_distinct_category_count_flags_mixed_merchants(seeded):
     """When a merchant's txs span multiple categories, distinct_category_count
     is >1 — UI uses this to surface a 'Mixed' badge instead of trusting the
