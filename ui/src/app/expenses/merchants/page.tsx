@@ -55,6 +55,28 @@ export default function MerchantsPage() {
     fetchAll();
   }, [fetchAll]);
 
+  // Re-fetch when the user returns to the page via the browser back/forward
+  // cache (bfcache) OR by re-focusing the tab. React effects don't re-run on
+  // bfcache restore — the DOM + JS state are frozen and replayed — so without
+  // this, returning to /expenses/merchants via browser BACK shows whatever
+  // was rendered before the user navigated away (potentially the empty
+  // initial state if they navigated away fast).
+  useEffect(() => {
+    const refetch = () => { fetchAll(); };
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) refetch();
+    };
+    const onVisibility = () => {
+      if (!document.hidden) refetch();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pageshow", onPageShow);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [fetchAll]);
+
   async function applyBulkCategory(slug: string) {
     setBusy(true);
     try {

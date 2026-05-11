@@ -84,6 +84,17 @@ interface SelectTriggerProps {
 function SelectTrigger({ id, className }: SelectTriggerProps) {
   const { value, onValueChange, items } = React.useContext(SelectContext);
 
+  // If the items list hasn't been populated yet (SelectContent's
+  // useLayoutEffect runs after SelectTrigger's first render) OR if the
+  // current value doesn't match any registered item (e.g. after bfcache
+  // restore before items rehydrate), render a stand-in <option> so the
+  // browser doesn't display an empty native <select>. Keeps the controlled
+  // value valid and the trigger visually populated.
+  const hasMatch = items.some((i) => i.value === value);
+  const placeholderOption = !hasMatch ? (
+    <option key="__placeholder" value={value}>{value}</option>
+  ) : null;
+
   return (
     <select
       id={id}
@@ -97,6 +108,7 @@ function SelectTrigger({ id, className }: SelectTriggerProps) {
         className,
       )}
     >
+      {placeholderOption}
       {items.map((item) => (
         <option key={item.value} value={item.value}>
           {item.label}
