@@ -376,6 +376,80 @@ def list_categories(user_id: str,
 
 
 # ---------------------------------------------------------------------------
+# POST /categories
+# ---------------------------------------------------------------------------
+
+class CategoryCreateRequest(BaseModel):
+    user_id: str
+    parent_slug: str
+    slug: str = Field(..., min_length=1, max_length=64)
+    label_en: str = Field(..., min_length=1, max_length=64)
+    label_he: str | None = None
+
+
+@router.post("/categories", response_model=CategoryOut)
+def create_category(
+    body: CategoryCreateRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> CategoryOut:
+    """Create a sub-category under an existing top-level parent.
+
+    MVP: one nesting level only. Parent must have parent_id IS NULL.
+    Stored slug is ``{parent_slug}.{slug}``. is_excluded_from_spend and
+    is_inflow are inherited from the parent.
+    """
+    if "." in body.slug:
+        raise HTTPException(
+            status_code=422,
+            detail="slug must not contain '.'; nesting is encoded by parent_slug",
+        )
+
+    parent = db.query(ExpenseCategory).filter_by(
+        user_id=body.user_id, slug=body.parent_slug,
+    ).one_or_none()
+    if parent is None:
+        raise HTTPException(status_code=404,
+                            detail=f"parent category {body.parent_slug!r} not found")
+    if parent.parent_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"parent {body.parent_slug!r} is not top-level; "
+                   "only one level of nesting is supported",
+        )
+
+    new_slug = f"{body.parent_slug}.{body.slug}"
+    dupe = db.query(ExpenseCategory).filter_by(
+        user_id=body.user_id, slug=new_slug,
+    ).one_or_none()
+    if dupe is not None:
+        raise HTTPException(status_code=409,
+                            detail=f"category {new_slug!r} already exists")
+
+    label_he = body.label_he or body.label_en
+    max_order = db.query(func.max(ExpenseCategory.display_order)).filter_by(
+        user_id=body.user_id, parent_id=parent.id,
+    ).scalar() or parent.display_order
+    cat = ExpenseCategory(
+        user_id=body.user_id, slug=new_slug,
+        label_en=body.label_en, label_he=label_he,
+        parent_id=parent.id,
+        is_excluded_from_spend=parent.is_excluded_from_spend,
+        is_inflow=parent.is_inflow,
+        display_order=int(max_order) + 1,
+    )
+    db.add(cat)
+    db.commit()
+    db.refresh(cat)
+    return CategoryOut(
+        id=cat.id, slug=cat.slug,
+        label_en=cat.label_en, label_he=cat.label_he,
+        parent_slug=parent.slug,
+        is_excluded_from_spend=cat.is_excluded_from_spend,
+        is_inflow=cat.is_inflow,
+    )
+
+
+# ---------------------------------------------------------------------------
 # GET /monthly-summary
 # ---------------------------------------------------------------------------
 
