@@ -39,24 +39,36 @@ export default function MerchantsPage() {
   const sort = params.get("sort") ?? "needs_attention";
   const order = (params.get("order") ?? "desc") as "asc" | "desc";
 
-  function updateParam(key: string, value: string | null) {
+  function updateParams(updates: Record<string, string | null>) {
     const next = new URLSearchParams(params.toString());
-    if (value === null || value === "" || value === undefined) {
-      next.delete(key);
-    } else {
-      next.set(key, value);
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === null || value === "" || value === undefined) {
+        next.delete(key);
+      } else {
+        next.set(key, value);
+      }
     }
     const qs = next.toString();
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   }
 
-  const setSearch = (v: string) => updateParam("search", v || null);
-  const setSourceFilter = (v: string) => updateParam("source", v === "all" ? null : v);
-  const setCategoryFilter = (v: string) => updateParam("category", v === "all" ? null : v);
-  const setMaxConfidence = (v: string) => updateParam("max_confidence", v || null);
-  const setHideConfirmed = (v: boolean) => updateParam("hide_confirmed", v ? "1" : null);
-  const setSort = (v: string) => updateParam("sort", v === "needs_attention" ? null : v);
-  const setOrder = (v: "asc" | "desc") => updateParam("order", v === "desc" ? null : v);
+  const setSearch = (v: string) => updateParams({ search: v || null });
+  const setSourceFilter = (v: string) => updateParams({ source: v === "all" ? null : v });
+  const setCategoryFilter = (v: string) => updateParams({ category: v === "all" ? null : v });
+  const setMaxConfidence = (v: string) => updateParams({ max_confidence: v || null });
+  const setHideConfirmed = (v: boolean) => updateParams({ hide_confirmed: v ? "1" : null });
+  const setSort = (v: string) => updateParams({ sort: v === "needs_attention" ? null : v });
+  const setOrder = (v: "asc" | "desc") => updateParams({ order: v === "desc" ? null : v });
+
+  // Both sort and order need to be updated atomically when the user clicks
+  // a column header — sequential single-param setters race because each
+  // reads the URL snapshot from the current render, so the second call
+  // overwrites the first.
+  const setSortAndOrder = (s: string, o: "asc" | "desc") =>
+    updateParams({
+      sort: s === "needs_attention" ? null : s,
+      order: o === "desc" ? null : o,
+    });
 
   const [merchants, setMerchants] = useState<MerchantRow[]>([]);
   const [categories, setCategories] = useState<CategoryOut[]>([]);
@@ -211,7 +223,7 @@ export default function MerchantsPage() {
         busy={busy}
         sort={sort}
         order={order}
-        onSortChange={(s, o) => { setSort(s); setOrder(o); }}
+        onSortChange={setSortAndOrder}
       />
 
       {selected.size > 0 && (
