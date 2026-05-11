@@ -25,6 +25,7 @@ function TransactionsPageInner() {
   const [sources, setSources] = useState<SourceOut[]>([]);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
 
   const filterParams = {
     category: params.get("category") ?? undefined,
@@ -153,6 +154,30 @@ function TransactionsPageInner() {
           </details>
         </CardContent>
       </Card>
+      {selected.size === 0 && total > showing && (
+        <button
+          type="button"
+          onClick={async () => {
+            const ids: number[] = [];
+            let off = 0;
+            const PAGE = 1000;
+            while (true) {
+              const res = await expensesApi.transactions(USER_ID, {
+                ...filterParams,
+                limit: PAGE,
+                offset: off,
+              });
+              for (const tx of res.transactions) ids.push(tx.id);
+              if (res.transactions.length < PAGE) break;
+              off += PAGE;
+            }
+            setSelected(new Set(ids));
+          }}
+          className="text-xs underline text-muted-foreground"
+        >
+          Select all matching filter ({total} transactions)
+        </button>
+      )}
       <Card>
         <CardContent className="p-4 overflow-x-auto">
           {loading && !data ? (
@@ -170,6 +195,8 @@ function TransactionsPageInner() {
                 sources={sources}
                 onCategoryChanged={refresh}
                 onTagsChanged={refresh}
+                selected={selected}
+                onSelectionChange={setSelected}
               />
               <div className="flex items-center justify-between mt-3 text-sm">
                 <Button

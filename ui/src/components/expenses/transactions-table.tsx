@@ -4,6 +4,7 @@ import { CategoryEditPopover } from "@/components/expenses/category-edit-popover
 import { TagChip } from "@/components/expenses/tag-chip";
 import { TagEditor } from "@/components/expenses/tag-editor";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   type CategoryOut,
   type SourceOut,
@@ -19,10 +20,13 @@ interface TransactionsTableProps {
   sources: SourceOut[];
   onCategoryChanged?: () => void;
   onTagsChanged?: () => void;
+  selected?: Set<number>;
+  onSelectionChange?: (next: Set<number>) => void;
 }
 
 export function TransactionsTable({
   transactions, categories, sources, onCategoryChanged, onTagsChanged,
+  selected, onSelectionChange,
 }: TransactionsTableProps) {
   const sourceById = new Map(sources.map((s) => [s.id, s]));
 
@@ -30,6 +34,18 @@ export function TransactionsTable({
     <table className="w-full text-sm">
       <thead>
         <tr className="text-xs text-muted-foreground border-b border-border">
+          {onSelectionChange && (
+            <th className="px-2 py-2 w-8">
+              <Checkbox
+                checked={selected?.size === transactions.length && transactions.length > 0}
+                onCheckedChange={() => {
+                  if (!onSelectionChange) return;
+                  if (selected?.size === transactions.length) onSelectionChange(new Set());
+                  else onSelectionChange(new Set(transactions.map((t) => t.id)));
+                }}
+              />
+            </th>
+          )}
           <th className="text-left py-2 pr-2">Date</th>
           <th className="text-left py-2 px-2">Merchant</th>
           <th className="text-left py-2 px-2">Category</th>
@@ -50,6 +66,19 @@ export function TransactionsTable({
           const tags = t.tags ?? [];
           return (
             <tr key={t.id} className="border-b border-border/60 hover:bg-secondary/40">
+              {onSelectionChange && (
+                <td className="px-2 py-2">
+                  <Checkbox
+                    checked={selected?.has(t.id) ?? false}
+                    onCheckedChange={() => {
+                      if (!onSelectionChange || !selected) return;
+                      const next = new Set(selected);
+                      if (next.has(t.id)) next.delete(t.id); else next.add(t.id);
+                      onSelectionChange(next);
+                    }}
+                  />
+                </td>
+              )}
               <td className="py-2 pr-2 tabular-nums whitespace-nowrap text-muted-foreground">
                 {t.occurred_on}
               </td>
