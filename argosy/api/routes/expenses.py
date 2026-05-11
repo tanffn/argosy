@@ -172,6 +172,7 @@ class TransactionOut(BaseModel):
     id: int
     occurred_on: date
     merchant_raw: str
+    merchant_normalized: str
     amount_nis: float | None              # was: float — NULL for foreign rows post-EX1.1
     amount_orig: float | None = None
     currency_orig: str | None = None
@@ -186,6 +187,11 @@ class TransactionOut(BaseModel):
     # Parser-preserved key/value view of the original row from the statement
     # file. Lets the UI render the exact source line when triaging.
     raw_row: dict[str, "object"] = {}
+    # NIS-converted amount for the "NIS converted" UI toggle. For native NIS
+    # rows this is amount_nis. For foreign rows (USD etc.) it's amount_orig
+    # converted to ILS via BoI daily rates (services/fx). Null if the rate
+    # for occurred_on can't be resolved.
+    amount_nis_converted: float | None = None
 
 
 class TransactionsResponse(BaseModel):
@@ -196,11 +202,16 @@ class TransactionsResponse(BaseModel):
 def _tx_to_out(
     r: "ExpenseTransaction",
     cat_by_id: dict[int, str],
+    *,
+    session: Session | None = None,
 ) -> TransactionOut:
     """Marshal an ExpenseTransaction row into the TransactionOut DTO.
 
     Centralised so that adding new fields (e.g. tags from migration 0024)
     only needs to be done in one place.
+
+    ``session`` is required to populate ``amount_nis_converted`` for foreign
+    rows; if None or the rate is unavailable, the converted value is None.
     """
     try:
         raw_row = json.loads(r.raw_row_json) if r.raw_row_json else {}
@@ -208,8 +219,31 @@ def _tx_to_out(
             raw_row = {"_value": raw_row}
     except (ValueError, TypeError):
         raw_row = {}
+
+    # amount_nis_converted: prefer the stored NIS amount; for foreign rows
+    # convert amount_orig → ILS via the BoI rate cache. Silent fallback to
+    # None when the rate can't be resolved (no upstream BoI data for that
+    # date / currency).
+    nis_converted: float | None = None
+    if r.amount_nis is not None and not r.currency_orig:
+        nis_converted = float(r.amount_nis)
+    elif (session is not None and r.amount_orig is not None
+            and r.currency_orig and r.currency_orig != "ILS"):
+        try:
+            from argosy.services import fx as _fx
+            converted = _fx.convert(
+                session, float(r.amount_orig), r.currency_orig, "ILS",
+                r.occurred_on,
+            )
+            nis_converted = float(converted)
+        except Exception:
+            nis_converted = None
+    elif r.amount_orig is not None and r.currency_orig == "ILS":
+        nis_converted = float(r.amount_orig)
+
     return TransactionOut(
         id=r.id, occurred_on=r.occurred_on, merchant_raw=r.merchant_raw,
+        merchant_normalized=r.merchant_normalized,
         amount_nis=float(r.amount_nis) if r.amount_nis is not None else None,
         amount_orig=float(r.amount_orig) if r.amount_orig is not None else None,
         currency_orig=r.currency_orig,
@@ -221,6 +255,7 @@ def _tx_to_out(
         statement_id=r.statement_id,
         tags=_parse_tags(getattr(r, "tags", None)),
         raw_row=raw_row,
+        amount_nis_converted=nis_converted,
     )
 
 
@@ -236,6 +271,7 @@ def list_transactions(
     direction: str | None = None,
     include_card_payments: bool = False,
     search: str | None = None,
+    merchant_normalized: str | None = None,
     tag: str | None = None,
     limit: int = Query(default=200, ge=1, le=10000),
     offset: int = Query(default=0, ge=0),
@@ -243,6 +279,9 @@ def list_transactions(
     q = db.query(ExpenseTransaction).filter_by(user_id=user_id)
     if not include_card_payments:
         q = q.filter(ExpenseTransaction.is_card_payment.is_(False))
+    if merchant_normalized is not None:
+        # Exact-match. Used by inline-edit fan-out to resolve sibling tx IDs.
+        q = q.filter(ExpenseTransaction.merchant_normalized == merchant_normalized)
     if from_date:
         q = q.filter(ExpenseTransaction.occurred_on >= from_date)
     if to_date:
@@ -275,7 +314,7 @@ def list_transactions(
         ).all()
     }
     return TransactionsResponse(
-        transactions=[_tx_to_out(r, cat_by_id) for r in rows],
+        transactions=[_tx_to_out(r, cat_by_id, session=db) for r in rows],
         total=total,
     )
 

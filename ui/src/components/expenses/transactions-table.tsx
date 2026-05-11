@@ -16,6 +16,7 @@ import {
   type SourceOut,
   type TransactionOut,
 } from "@/lib/expenses/api";
+import { useFxMode } from "@/lib/expenses/fx-mode";
 import { formatCurrency, formatNIS } from "@/lib/expenses/format";
 
 const USER_ID = "ariel";
@@ -35,9 +36,10 @@ export function TransactionsTable({
   selected, onSelectionChange,
 }: TransactionsTableProps) {
   const sourceById = new Map(sources.map((s) => [s.id, s]));
-  const [editingTx, setEditingTx] = useState<{ id: number; slug: string | null; tags: string[] } | null>(null);
+  const [editingTx, setEditingTx] = useState<{ id: number; slug: string | null; tags: string[]; merchant_normalized: string } | null>(null);
   const [addSubCatOpen, setAddSubCatOpen] = useState(false);
   const [detailsTx, setDetailsTx] = useState<TransactionOut | null>(null);
+  const [fxMode] = useFxMode();
 
   return (
     <>
@@ -68,11 +70,14 @@ export function TransactionsTable({
         {transactions.map((t) => {
           const src = sourceById.get(t.source_id);
           const isMoneyIn = t.direction === "credit" || t.tx_type === "refund";
-          const amountText = t.amount_nis !== null
-            ? formatNIS(t.amount_nis)
-            : (t.amount_orig !== null && t.currency_orig !== null
-              ? formatCurrency(t.amount_orig, t.currency_orig)
-              : "—");
+          const amountText =
+            fxMode === "nis" && t.amount_nis_converted !== null
+              ? formatNIS(t.amount_nis_converted)
+              : t.amount_nis !== null
+                ? formatNIS(t.amount_nis)
+                : (t.amount_orig !== null && t.currency_orig !== null
+                  ? formatCurrency(t.amount_orig, t.currency_orig)
+                  : "—");
           const tags = t.tags ?? [];
           return (
             <tr key={t.id} className="border-b border-border/60 hover:bg-secondary/40">
@@ -114,6 +119,7 @@ export function TransactionsTable({
                     id: t.id,
                     slug: t.category_slug ?? null,
                     tags: t.tags ?? [],
+                    merchant_normalized: t.merchant_normalized,
                   })}
                 >
                   {t.category_slug ?? "uncategorized"}
@@ -180,9 +186,20 @@ export function TransactionsTable({
             );
           }
           if (addTags.length || removeTags.length) {
+            // When "Apply to all siblings" is checked, tags fan out to every
+            // transaction sharing this merchant_normalized — matching the
+            // category fan-out behaviour. Otherwise just the editing tx.
+            let txIds: number[] = [editingTx.id];
+            if (applyToSiblings) {
+              const sibs = await expensesApi.transactions(USER_ID, {
+                merchant_normalized: editingTx.merchant_normalized,
+                limit: 10000,
+              });
+              txIds = sibs.transactions.map((s) => s.id);
+            }
             await transactionsApi.bulkLabel({
               user_id: USER_ID,
-              transaction_ids: [editingTx.id],
+              transaction_ids: txIds,
               add_tags: addTags,
               remove_tags: removeTags,
             });

@@ -264,6 +264,7 @@ export interface TransactionOut {
   id: number;
   occurred_on: string;
   merchant_raw: string;
+  merchant_normalized: string;
   amount_nis: number | null;
   amount_orig: number | null;
   currency_orig: string | null;
@@ -277,6 +278,9 @@ export interface TransactionOut {
   tags: string[];
   /** Parser-preserved key/value view of the source row. */
   raw_row: Record<string, unknown>;
+  /** Backend-computed NIS equivalent (BoI rate on occurred_on for foreign
+   * rows; equals amount_nis for native NIS rows). null when rate unavailable. */
+  amount_nis_converted: number | null;
 }
 
 export interface TransactionsResponse {
@@ -349,6 +353,7 @@ export const expensesApi = {
     direction: "debit" | "credit";
     include_card_payments: boolean;
     search: string;
+    merchant_normalized: string;
     tag: string;
     limit: number;
     offset: number;
