@@ -239,6 +239,7 @@ function TransactionsPageInner() {
             currentSlug={null}
             currentTags={[]}
             showSiblingsCheckbox={false}
+            bulkCount={selected.size}
             onSubmit={async ({ categorySlug, addTags, removeTags }) => {
               const res = await transactionsApi.bulkLabel({
                 user_id: USER_ID,

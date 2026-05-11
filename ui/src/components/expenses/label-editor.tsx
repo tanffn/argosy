@@ -25,6 +25,9 @@ interface Props {
   currentSlug?: string | null;
   currentTags?: string[];
   showSiblingsCheckbox: boolean; // only for single-tx mode on transactions page
+  /** For bulk-tx mode: number of transactions the action will affect.
+   * Shown in the dialog title so the user is reminded of the scope. */
+  bulkCount?: number;
   onSubmit: (payload: {
     categorySlug?: string;
     addTags: string[];
@@ -38,7 +41,7 @@ interface Props {
 
 export function LabelEditor({
   open, onOpenChange, mode, categories, currentSlug, currentTags = [],
-  showSiblingsCheckbox, onSubmit, onAddSubCategoryClick,
+  showSiblingsCheckbox, bulkCount, onSubmit, onAddSubCategoryClick,
 }: Props) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [chosenSlug, setChosenSlug] = useState<string | undefined>(undefined);
@@ -66,7 +69,13 @@ export function LabelEditor({
 
   async function submit() {
     setError(null);
-    if (!chosenSlug && addedTags.length === 0 && removedTags.length === 0) {
+    // Auto-commit pending input — common confusion: type a tag, click Save
+    // without pressing Enter/Add first. We treat the input contents as an
+    // implicit add at submit time so the user's intent isn't lost.
+    const pending = tagInput.trim();
+    const effectiveAddTags =
+      pending && !addedTags.includes(pending) ? [...addedTags, pending] : addedTags;
+    if (!chosenSlug && effectiveAddTags.length === 0 && removedTags.length === 0) {
       setError("Pick a category or add/remove at least one tag.");
       return;
     }
@@ -74,11 +83,12 @@ export function LabelEditor({
     try {
       await onSubmit({
         categorySlug: chosenSlug,
-        addTags: addedTags,
+        addTags: effectiveAddTags,
         removeTags: removedTags,
         applyToSiblings,
       });
       setChosenSlug(undefined); setAddedTags([]); setRemovedTags([]);
+      setTagInput("");
       setApplyToSiblings(false);
       onOpenChange(false);
     } catch (e) {
@@ -93,7 +103,9 @@ export function LabelEditor({
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>
-            {mode === "bulk-tx" ? "Set labels (bulk)" : "Set labels"}
+            {mode === "bulk-tx"
+              ? `Set labels — ${bulkCount ?? "?"} transaction${bulkCount === 1 ? "" : "s"}`
+              : "Set labels"}
           </DialogTitle>
         </DialogHeader>
 
