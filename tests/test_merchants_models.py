@@ -11,10 +11,11 @@ def test_merchant_out_fields():
         merchant_normalized="X", category_slug="food.groceries",
         category_label="Groceries", parent_slug="food",
         parent_label="Food", confidence=0.92, source="llm",
-        is_cached=True, tx_count=3, total_nis=100.0, total_usd=0.0,
-        last_seen="2026-05-08",
+        is_cached=True, tx_count=3, distinct_category_count=1,
+        total_nis=100.0, total_usd=0.0, last_seen="2026-05-08",
     )
     assert m.tx_count == 3
+    assert m.distinct_category_count == 1
 
 
 def test_merchant_patch_request_accepts_either_shape():

@@ -167,16 +167,23 @@ export function MerchantsTable({
                 </td>
                 <td className="px-2 py-2">
                   <Badge
-                    variant="secondary"
-                    className="cursor-pointer hover:bg-secondary/80"
+                    variant={m.distinct_category_count > 1 ? "destructive" : "secondary"}
+                    className="cursor-pointer hover:opacity-80"
                     onClick={() => {
                       setEditingMerchant(m.merchant_normalized);
                       setPickerOpen(true);
                     }}
+                    title={
+                      m.distinct_category_count > 1
+                        ? `Transactions span ${m.distinct_category_count} categories. Cache rule: ${m.parent_label ? `${m.parent_label} › ` : ""}${m.category_label}. Click to inspect.`
+                        : undefined
+                    }
                   >
-                    {m.parent_label
-                      ? `${m.parent_label} › ${m.category_label}`
-                      : m.category_label}
+                    {m.distinct_category_count > 1
+                      ? `Mixed (${m.distinct_category_count})`
+                      : m.parent_label
+                        ? `${m.parent_label} › ${m.category_label}`
+                        : m.category_label}
                   </Badge>
                 </td>
                 <td className="px-2 py-2 text-right">

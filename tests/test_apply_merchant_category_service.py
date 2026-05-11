@@ -179,3 +179,42 @@ def test_apply_unknown_merchant_raises(session_with_user_and_categories):
             s, user_id="ariel", merchant_normalized="ghost-merchant",
             category_slug="food.groceries",
         )
+
+
+def test_apply_confirm_preserves_user_overrides(session_with_user_and_categories):
+    """Regression: 'Confirm' on a split merchant must not overwrite per-tx
+    user overrides. Only txs already matching the resolved cache category
+    should be touched.
+    """
+    s = session_with_user_and_categories
+    # First pass: set the merchant to food.groceries (creates cache).
+    apply_merchant_category(
+        s, user_id="ariel", merchant_normalized="שטראוס",
+        category_slug="food.groceries",
+    )
+    s.commit()
+    # Manually override 1 of the 3 txs to a different category (simulating
+    # a user splitting the merchant per-tx).
+    other = s.query(ExpenseCategory).filter_by(
+        user_id="ariel", slug="discretionary.shopping_other"
+    ).one()
+    one_tx = s.query(ExpenseTransaction).filter_by(
+        user_id="ariel", merchant_normalized="שטראוס"
+    ).order_by(ExpenseTransaction.occurred_on).first()
+    one_tx.category_id = other.id
+    one_tx.category_source = "user"
+    one_tx.category_confidence = Decimal("1.00")
+    s.commit()
+
+    # Now Confirm — should keep the food.groceries cache rule and touch only
+    # the 2 still-food txs, not overwrite the user's manual override.
+    result = apply_merchant_category(
+        s, user_id="ariel", merchant_normalized="שטראוס", confirm=True,
+    )
+    assert result.resolved_category_slug == "food.groceries"
+    assert result.affected_transactions == 2  # the 2 still-food txs
+
+    # The overridden tx is untouched.
+    overridden = s.get(ExpenseTransaction, one_tx.id)
+    assert overridden.category_id == other.id
+    assert overridden.category_source == "user"

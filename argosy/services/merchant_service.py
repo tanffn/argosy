@@ -123,15 +123,26 @@ def apply_merchant_category(
         cache.hit_count += 1
         cache.last_hit_at = now
 
+    # Fan-out rule:
+    #   - category set mode (confirm=False): apply target category to every
+    #     tx, overwriting whatever they had. Bulk re-categorization.
+    #   - confirm mode (confirm=True): touch ONLY txs that already match the
+    #     resolved cache category. Preserves user-set rows whose category
+    #     diverges from the cache. A 'Confirm' on a split merchant strengthens
+    #     the dominant rule without destroying your manual overrides.
+    affected = 0
     for tx in txs:
+        if confirm and tx.category_id != cat.id:
+            continue
         tx.category_id = cat.id
         tx.category_source = source
         tx.category_confidence = confidence
+        affected += 1
 
     return ApplyResult(
         merchant_normalized=merchant_normalized,
         resolved_category_slug=target_slug,
-        affected_transactions=len(txs),
+        affected_transactions=affected,
         cache_row_created=cache_created,
     )
 

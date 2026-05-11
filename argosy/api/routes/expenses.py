@@ -2384,6 +2384,10 @@ class MerchantOut(BaseModel):
     source: str           # 'user' | 'llm' | 'issuer' | 'cache' | 'uncached'
     is_cached: bool
     tx_count: int
+    # Number of distinct categories the merchant's tx rows currently span.
+    # >1 means the cache row's category is not the whole story — some txs
+    # have been overridden per-tx. UI surfaces this as "Mixed (N)".
+    distinct_category_count: int
     total_nis: float
     total_usd: float
     last_seen: str        # ISO date
@@ -2429,6 +2433,11 @@ def list_merchants(
             cache_subq.c.source.label("cache_source"),
             cache_subq.c.id.label("cache_id"),
             func.count(ExpenseTransaction.id).label("tx_count"),
+            # Distinct tx-level category_ids — when >1, the merchant's rows
+            # span multiple categories (e.g. after per-tx user overrides). The
+            # cache row's category alone would hide this; UI renders "Mixed".
+            func.count(func.distinct(ExpenseTransaction.category_id))
+                .label("distinct_category_count"),
             # Net total: debits add, credits subtract. A merchant with a charge
             # of +1000 and a matching refund of +1000 (credit) nets to 0, not
             # 2000. Refunds are stored with positive amount_nis + direction
@@ -2555,6 +2564,7 @@ def list_merchants(
             source=(r.cache_source if r.cache_id is not None else "uncached"),
             is_cached=r.cache_id is not None,
             tx_count=int(r.tx_count or 0),
+            distinct_category_count=int(r.distinct_category_count or 0),
             total_nis=float(r.total_nis or 0),
             total_usd=float(r.total_usd or 0),
             last_seen=r.last_seen.isoformat() if r.last_seen else "",

@@ -147,6 +147,35 @@ def test_category_label_and_parent_label_populated(seeded):
     assert a["parent_label"] == "Food (groceries)"
 
 
+def test_distinct_category_count_flags_mixed_merchants(seeded):
+    """When a merchant's txs span multiple categories, distinct_category_count
+    is >1 — UI uses this to surface a 'Mixed' badge instead of trusting the
+    cache row's single category.
+    """
+    # In the seeded fixture, A's 2 txs are food.groceries (distinct=1),
+    # B has 1 tx (distinct=1), C has 3 txs all in uncategorized (distinct=1).
+    r = seeded.get("/api/expenses/merchants?user_id=ariel&sort=merchant&order=asc")
+    body = r.json()
+    for m in body["merchants"]:
+        assert m["distinct_category_count"] == 1, m
+    # Now split A: change one of A's txs to a different category.
+    from argosy.state.models import ExpenseCategory, ExpenseTransaction
+    SessionLocal = seeded.app.state.session_factory
+    with SessionLocal() as s:
+        other = s.query(ExpenseCategory).filter_by(
+            user_id="ariel", slug="discretionary.shopping_other"
+        ).one()
+        a_tx = s.query(ExpenseTransaction).filter_by(
+            user_id="ariel", merchant_normalized="A"
+        ).first()
+        a_tx.category_id = other.id
+        s.commit()
+    r = seeded.get("/api/expenses/merchants?user_id=ariel&sort=merchant&order=asc")
+    body = r.json()
+    a = next(m for m in body["merchants"] if m["merchant_normalized"] == "A")
+    assert a["distinct_category_count"] == 2
+
+
 def test_total_nis_nets_debits_against_credits(expense_client):
     """A charge + matching refund should net to 0, not sum to 2x.
 

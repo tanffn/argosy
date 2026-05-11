@@ -522,6 +522,8 @@ export interface MerchantRow {
   source: string; // 'user' | 'llm' | 'issuer' | 'cache' | 'uncached'
   is_cached: boolean;
   tx_count: number;
+  /** Distinct categories the merchant's tx rows span. >1 means MIXED. */
+  distinct_category_count: number;
   total_nis: number;
   total_usd: number;
   last_seen: string;
