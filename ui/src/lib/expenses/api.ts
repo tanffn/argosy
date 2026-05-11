@@ -355,7 +355,12 @@ export const expensesApi = {
     getJSON<CategoriesResponse>(
       `/api/expenses/categories?user_id=${encodeURIComponent(userId)}`,
     ),
-  patchTransactionCategory: (txId: number, userId: string, slug: string) =>
+  patchTransactionCategory: (
+    txId: number,
+    userId: string,
+    slug: string,
+    applyToSiblings: boolean = true,  // back-compat default
+  ) =>
     patchJSON<{
       transaction_id: number;
       category_slug: string;
@@ -364,6 +369,7 @@ export const expensesApi = {
     }>(`/api/expenses/transactions/${txId}`, {
       user_id: userId,
       category_slug: slug,
+      apply_to_siblings: applyToSiblings,
     }),
   // Tags (Feature 3)
   setTags: (txId: number, userId: string, tags: string[]) =>
@@ -501,3 +507,131 @@ export interface RsuReconciliationResponse {
   schwab_csv_paths: string[];
   warning: string | null;
 }
+
+// ---------------------------------------------------------------------------
+// Merchant tab + bulk-label types
+// ---------------------------------------------------------------------------
+
+export interface MerchantRow {
+  merchant_normalized: string;
+  category_slug: string;
+  category_label: string;
+  parent_slug: string | null;
+  parent_label: string | null;
+  confidence: number | null;
+  source: string; // 'user' | 'llm' | 'issuer' | 'cache' | 'uncached'
+  is_cached: boolean;
+  tx_count: number;
+  total_nis: number;
+  total_usd: number;
+  last_seen: string;
+}
+
+export interface MerchantsListResponse {
+  merchants: MerchantRow[];
+  total: number;
+}
+
+export interface MerchantPatchResponse {
+  merchant_normalized: string;
+  category_slug: string;
+  affected_transactions: number;
+  cache_row_created: boolean;
+}
+
+export interface BulkCategoryItemResult {
+  merchant_normalized: string;
+  status: "ok" | "error";
+  affected_transactions: number;
+  message?: string | null;
+}
+
+export interface BulkCategoryResponse {
+  results: BulkCategoryItemResult[];
+  ok_count: number;
+  error_count: number;
+  total_affected_transactions: number;
+}
+
+export interface BulkLabelResponse {
+  affected: number;
+  skipped: { tx_id: number; reason: string }[];
+}
+
+export interface CategoryCreateResponse {
+  id: number;
+  slug: string;
+  label_en: string;
+  label_he: string;
+  parent_slug: string | null;
+  is_excluded_from_spend: boolean;
+  is_inflow: boolean;
+}
+
+export interface MerchantsQuery {
+  user_id: string;
+  category?: string;
+  source?: string;
+  min_confidence?: number;
+  max_confidence?: number;
+  search?: string;
+  sort?: string;
+  order?: "asc" | "desc";
+  limit?: number;
+}
+
+function qs(params: Record<string, unknown>): string {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === "") continue;
+    sp.set(k, String(v));
+  }
+  return sp.toString();
+}
+
+export const merchantsApi = {
+  list: async (q: MerchantsQuery): Promise<MerchantsListResponse> =>
+    getJSON<MerchantsListResponse>(`/api/expenses/merchants?${qs(q as unknown as Record<string, unknown>)}`),
+
+  patch: async (
+    merchant: string,
+    body: { user_id: string; category_slug?: string; confirm?: boolean },
+  ): Promise<MerchantPatchResponse> =>
+    patchJSON<MerchantPatchResponse>(
+      `/api/expenses/merchants/${encodeURIComponent(merchant)}`,
+      body,
+    ),
+
+  bulkCategory: async (body: {
+    user_id: string;
+    merchant_normalizeds: string[];
+    category_slug?: string;
+    confirm?: boolean;
+  }): Promise<BulkCategoryResponse> =>
+    postJSON<BulkCategoryResponse>(
+      "/api/expenses/merchants/bulk-category",
+      body,
+    ),
+};
+
+export const categoriesApi = {
+  create: async (body: {
+    user_id: string;
+    parent_slug: string;
+    slug: string;
+    label_en: string;
+    label_he?: string;
+  }): Promise<CategoryCreateResponse> =>
+    postJSON<CategoryCreateResponse>("/api/expenses/categories", body),
+};
+
+export const transactionsApi = {
+  bulkLabel: async (body: {
+    user_id: string;
+    transaction_ids: number[];
+    category_slug?: string;
+    add_tags?: string[];
+    remove_tags?: string[];
+  }): Promise<BulkLabelResponse> =>
+    postJSON<BulkLabelResponse>("/api/expenses/transactions/bulk-label", body),
+};
