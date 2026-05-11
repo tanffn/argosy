@@ -2610,3 +2610,42 @@ class BulkCategoryResponse(BaseModel):
     ok_count: int
     error_count: int
     total_affected_transactions: int
+
+
+@router.post("/merchants/bulk-category", response_model=BulkCategoryResponse)
+def bulk_apply_category(
+    body: BulkCategoryRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> BulkCategoryResponse:
+    """Apply a category to multiple merchants in one call. Per-item status;
+    never aborts on a single failure."""
+    from argosy.services.merchant_service import (
+        apply_merchant_category, MerchantNotFoundError, CategoryNotFoundError,
+        NothingToConfirmError,
+    )
+    results: list[BulkCategoryItemResult] = []
+    total_affected = 0
+    for merch in body.merchant_normalizeds:
+        try:
+            r = apply_merchant_category(
+                db, user_id=body.user_id, merchant_normalized=merch,
+                category_slug=body.category_slug, confirm=body.confirm,
+            )
+            total_affected += r.affected_transactions
+            results.append(BulkCategoryItemResult(
+                merchant_normalized=merch, status="ok",
+                affected_transactions=r.affected_transactions,
+            ))
+        except (MerchantNotFoundError, CategoryNotFoundError,
+                NothingToConfirmError, ValueError) as e:
+            results.append(BulkCategoryItemResult(
+                merchant_normalized=merch, status="error",
+                affected_transactions=0, message=str(e),
+            ))
+    db.commit()
+    ok = sum(1 for r in results if r.status == "ok")
+    return BulkCategoryResponse(
+        results=results, ok_count=ok,
+        error_count=len(results) - ok,
+        total_affected_transactions=total_affected,
+    )
