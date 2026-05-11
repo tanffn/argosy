@@ -2548,6 +2548,45 @@ class MerchantPatchResponse(BaseModel):
     cache_row_created: bool
 
 
+@router.patch("/merchants/{merchant_normalized:path}",
+               response_model=MerchantPatchResponse)
+def patch_merchant(
+    merchant_normalized: str,
+    body: MerchantPatchRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> MerchantPatchResponse:
+    """Set a merchant's category. Fans out to all sibling transactions and
+    writes/updates the merchant_category_cache row.
+
+    Two body shapes:
+      {"category_slug": "..."}  → new category, source=user, confidence=1.00
+      {"confirm": true}          → lock current category, source=user, conf=1.00
+    """
+    from argosy.services.merchant_service import (
+        apply_merchant_category, MerchantNotFoundError, CategoryNotFoundError,
+        NothingToConfirmError,
+    )
+    try:
+        result = apply_merchant_category(
+            db, user_id=body.user_id,
+            merchant_normalized=merchant_normalized,
+            category_slug=body.category_slug, confirm=body.confirm,
+        )
+    except MerchantNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except CategoryNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except NothingToConfirmError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    db.commit()
+    return MerchantPatchResponse(
+        merchant_normalized=result.merchant_normalized,
+        category_slug=result.resolved_category_slug,
+        affected_transactions=result.affected_transactions,
+        cache_row_created=result.cache_row_created,
+    )
+
+
 class BulkCategoryRequest(BaseModel):
     user_id: str
     merchant_normalizeds: list[str] = Field(..., min_length=1)
