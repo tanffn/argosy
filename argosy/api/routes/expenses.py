@@ -2429,13 +2429,25 @@ def list_merchants(
             cache_subq.c.source.label("cache_source"),
             cache_subq.c.id.label("cache_id"),
             func.count(ExpenseTransaction.id).label("tx_count"),
+            # Net total: debits add, credits subtract. A merchant with a charge
+            # of +1000 and a matching refund of +1000 (credit) nets to 0, not
+            # 2000. Refunds are stored with positive amount_nis + direction
+            # 'credit'; the case statement applies the sign at aggregation time.
             func.sum(
-                case((ExpenseTransaction.currency_orig.is_(None),
-                      ExpenseTransaction.amount_nis), else_=0)
+                case(
+                    (ExpenseTransaction.currency_orig.is_not(None), 0),
+                    (ExpenseTransaction.direction == "credit",
+                     -ExpenseTransaction.amount_nis),
+                    else_=ExpenseTransaction.amount_nis,
+                )
             ).label("total_nis"),
             func.sum(
-                case((ExpenseTransaction.currency_orig == "USD",
-                      ExpenseTransaction.amount_orig), else_=0)
+                case(
+                    (ExpenseTransaction.currency_orig != "USD", 0),
+                    (ExpenseTransaction.direction == "credit",
+                     -ExpenseTransaction.amount_orig),
+                    else_=ExpenseTransaction.amount_orig,
+                )
             ).label("total_usd"),
             func.max(ExpenseTransaction.occurred_on).label("last_seen"),
             func.avg(ExpenseTransaction.category_confidence).label("avg_tx_conf"),
@@ -2503,8 +2515,12 @@ def list_merchants(
         ),
         "tx_count": func.count(ExpenseTransaction.id),
         "total_nis": func.sum(
-            case((ExpenseTransaction.currency_orig.is_(None),
-                  ExpenseTransaction.amount_nis), else_=0),
+            case(
+                (ExpenseTransaction.currency_orig.is_not(None), 0),
+                (ExpenseTransaction.direction == "credit",
+                 -ExpenseTransaction.amount_nis),
+                else_=ExpenseTransaction.amount_nis,
+            ),
         ),
         "last_seen": func.max(ExpenseTransaction.occurred_on),
     }

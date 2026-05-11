@@ -187,7 +187,7 @@ export function MerchantsTable({
                 </td>
                 <td className="px-2 py-2 text-right">{m.tx_count}</td>
                 <td className="px-2 py-2 text-right">
-                  {m.total_nis ? fmtNis(m.total_nis) : ""}
+                  {fmtNis(m.total_nis)}
                   {m.total_usd ? <div>{fmtUsd(m.total_usd)}</div> : null}
                 </td>
                 <td className="px-2 py-2 text-right text-xs text-muted-foreground">
