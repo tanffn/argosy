@@ -68,6 +68,10 @@ def apply_merchant_category(
 
     Caller is responsible for committing the session.
     """
+    if confirm and category_slug is not None:
+        raise ValueError(
+            "Pass either category_slug or confirm=True, not both"
+        )
     if not confirm and category_slug is None:
         raise ValueError("Must provide either category_slug or confirm=True")
 

@@ -163,6 +163,15 @@ def test_apply_confirm_only_uses_most_common_category(
     assert cache.confidence == Decimal("1.00")
 
 
+def test_apply_rejects_both_slug_and_confirm(session_with_user_and_categories):
+    s = session_with_user_and_categories
+    with pytest.raises(ValueError, match="not both"):
+        apply_merchant_category(
+            s, user_id="ariel", merchant_normalized="שטראוס",
+            category_slug="food.groceries", confirm=True,
+        )
+
+
 def test_apply_unknown_merchant_raises(session_with_user_and_categories):
     s = session_with_user_and_categories
     with pytest.raises(MerchantNotFoundError):
