@@ -952,41 +952,71 @@ _TAX_KIND_LABEL = {
 def _dashboard_top_categories_for_month(
     db: Session, user_id: str, month: str,
 ) -> list[CategorySpend]:
-    """Focal-month top spending categories (SPENDING only — excludes inflows
-    AND excluded-from-spend like transfers/investments).
+    """Focal-month spending categories — ALL categories with any spending in
+    the month (no top-N cap). Combines NIS and USD activity into a single
+    NIS-equivalent total per category. SPENDING only — excludes inflows,
+    excluded-from-spend (transfers/investments), and card-payment settlements.
 
-    Mirrors the old inline ``current_month_top_categories`` logic.
+    Per Ariel: the total here must reflect "accumulation of all 4 cards +
+    bank expenses", so the response is all-categories not top-10. The UI
+    decides how many slices/rows to render.
     """
     cur_y, cur_m = (int(p) for p in month.split("-"))
-    cat_rows = db.execute(
+    tx_rows = db.execute(
         sa_select(
-            ExpenseCategory.slug, ExpenseCategory.label_en,
-            func.sum(ExpenseTransaction.amount_nis).label("total"),
-            func.count().label("n"),
+            ExpenseCategory.slug,
+            ExpenseCategory.label_en,
+            ExpenseTransaction.amount_nis,
+            ExpenseTransaction.amount_orig,
+            ExpenseTransaction.currency_orig,
+            ExpenseTransaction.occurred_on,
         )
         .join(ExpenseTransaction,
               ExpenseTransaction.category_id == ExpenseCategory.id)
         .where(ExpenseTransaction.user_id == user_id)
         .where(ExpenseTransaction.is_card_payment.is_(False))
-        .where(ExpenseTransaction.amount_nis.is_not(None))
+        .where(ExpenseTransaction.direction == "debit")
         .where(extract("year", ExpenseTransaction.occurred_on) == cur_y)
         .where(extract("month", ExpenseTransaction.occurred_on) == cur_m)
         .where(ExpenseCategory.is_excluded_from_spend.is_(False))
         .where(ExpenseCategory.is_inflow.is_(False))
-        .group_by(ExpenseCategory.slug, ExpenseCategory.label_en)
-        .order_by(func.sum(ExpenseTransaction.amount_nis).desc())
-        .limit(10)
     ).all()
-    total_month = sum(float(r.total or 0) for r in cat_rows) or 1.0
-    return [
-        CategorySpend(
-            slug=r.slug, label_en=r.label_en,
-            total_nis=float(r.total or 0),
-            transaction_count=int(r.n or 0),
-            percent=float(r.total or 0) / total_month * 100.0,
+
+    from argosy.services import fx as _fx
+
+    buckets: dict[str, dict[str, float | int | str]] = {}
+    for r in tx_rows:
+        if r.amount_nis is not None and not r.currency_orig:
+            nis = float(r.amount_nis)
+        elif r.amount_orig is not None and r.currency_orig and r.currency_orig != "ILS":
+            try:
+                nis = float(_fx.convert(db, float(r.amount_orig),
+                                        r.currency_orig, "ILS", r.occurred_on))
+            except Exception:
+                nis = 0.0
+        elif r.amount_orig is not None and r.currency_orig == "ILS":
+            nis = float(r.amount_orig)
+        else:
+            nis = 0.0
+        b = buckets.setdefault(
+            r.slug,
+            {"label": r.label_en, "total": 0.0, "count": 0},
         )
-        for r in cat_rows
+        b["total"] = float(b["total"]) + nis      # type: ignore[arg-type]
+        b["count"] = int(b["count"]) + 1          # type: ignore[arg-type]
+
+    total_month = sum(float(b["total"]) for b in buckets.values()) or 1.0
+    out = [
+        CategorySpend(
+            slug=slug, label_en=str(b["label"]),
+            total_nis=float(b["total"]),
+            transaction_count=int(b["count"]),
+            percent=float(b["total"]) / total_month * 100.0,
+        )
+        for slug, b in buckets.items()
     ]
+    out.sort(key=lambda c: c.total_nis, reverse=True)
+    return out
 
 
 def _dashboard_top_merchants_for_month(
