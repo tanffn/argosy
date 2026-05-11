@@ -575,6 +575,7 @@ export interface MerchantsQuery {
   min_confidence?: number;
   max_confidence?: number;
   search?: string;
+  exclude_user_confirmed?: boolean;
   sort?: string;
   order?: "asc" | "desc";
   limit?: number;

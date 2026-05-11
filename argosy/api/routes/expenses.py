@@ -2403,6 +2403,7 @@ def list_merchants(
     min_confidence: float | None = None,
     max_confidence: float | None = None,
     search: str | None = None,
+    exclude_user_confirmed: bool = False,
     sort: str = "needs_attention",
     order: str = "desc",
     limit: int = Query(default=500, ge=1, le=1000),
@@ -2472,6 +2473,14 @@ def list_merchants(
         base = base.where(cache_subq.c.id.is_(None))
     elif source:
         base = base.where(cache_subq.c.source == source)
+
+    if exclude_user_confirmed:
+        # Keep uncached rows (cache.id IS NULL) and any cached row whose
+        # source isn't 'user'. Direct `source != 'user'` would lose uncached
+        # rows because SQL NULL != 'user' evaluates to NULL (treated as false).
+        base = base.where(
+            or_(cache_subq.c.id.is_(None), cache_subq.c.source != "user"),
+        )
 
     if min_confidence is not None:
         # Filter on cache confidence only; uncached merchants (NULL) don't qualify.

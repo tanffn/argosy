@@ -156,7 +156,15 @@ export function MerchantsTable({
                     onCheckedChange={() => toggleRow(m.merchant_normalized)}
                   />
                 </td>
-                <td className="px-2 py-2 font-mono">{m.merchant_normalized}</td>
+                <td className="px-2 py-2 font-mono">
+                  <a
+                    href={`/expenses/transactions?search=${encodeURIComponent(m.merchant_normalized)}`}
+                    className="hover:underline text-primary"
+                    title="See transactions for this merchant"
+                  >
+                    {m.merchant_normalized}
+                  </a>
+                </td>
                 <td className="px-2 py-2">
                   <Badge
                     variant="secondary"

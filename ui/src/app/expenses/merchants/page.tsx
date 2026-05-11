@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -25,6 +26,7 @@ export default function MerchantsPage() {
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [maxConfidence, setMaxConfidence] = useState<string>("");
+  const [hideConfirmed, setHideConfirmed] = useState(false);
   const [sort, setSort] = useState<string>("needs_attention");
   const [order, setOrder] = useState<"asc" | "desc">("desc");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -41,12 +43,13 @@ export default function MerchantsPage() {
       source: sourceFilter === "all" ? undefined : sourceFilter,
       category: categoryFilter === "all" ? undefined : categoryFilter,
       max_confidence: maxConfidence ? Number(maxConfidence) : undefined,
+      exclude_user_confirmed: hideConfirmed || undefined,
       sort,
       order,
       limit: 500,
     });
     setMerchants(ms.merchants);
-  }, [search, sourceFilter, categoryFilter, maxConfidence, sort, order]);
+  }, [search, sourceFilter, categoryFilter, maxConfidence, hideConfirmed, sort, order]);
 
   useEffect(() => {
     fetchAll();
@@ -131,6 +134,13 @@ export default function MerchantsPage() {
           onChange={(e) => setMaxConfidence(e.target.value)}
           className="w-32"
         />
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <Checkbox
+            checked={hideConfirmed}
+            onCheckedChange={(c) => setHideConfirmed(c === true)}
+          />
+          Hide confirmed
+        </label>
         <Select value={sort} onValueChange={setSort}>
           <SelectTrigger className="w-44"><SelectValue placeholder="Sort by" /></SelectTrigger>
           <SelectContent>
