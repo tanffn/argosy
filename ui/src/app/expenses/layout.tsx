@@ -11,6 +11,7 @@ const TABS = [
   { href: "/expenses/monthly", label: "Monthly" },
   { href: "/expenses/transactions", label: "Transactions" },
   { href: "/expenses/sources", label: "Sources" },
+  { href: "/expenses/merchants", label: "Merchants" },
   { href: "/expenses/trips", label: "Trips" },
   { href: "/expenses/rsu", label: "RSU" },
 ];
