@@ -7,8 +7,10 @@ import { TransactionsTable } from "@/components/expenses/transactions-table";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { LabelEditor } from "@/components/expenses/label-editor";
 import {
   expensesApi,
+  transactionsApi,
   type CategoryOut,
   type SourceOut,
   type TransactionsResponse,
@@ -26,6 +28,7 @@ function TransactionsPageInner() {
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [labelEditorOpen, setLabelEditorOpen] = useState(false);
 
   const filterParams = {
     category: params.get("category") ?? undefined,
@@ -221,6 +224,36 @@ function TransactionsPageInner() {
           )}
         </CardContent>
       </Card>
+      {selected.size > 0 && (
+        <>
+          <div className="sticky bottom-2 bg-background border border-border rounded-md p-3 shadow flex items-center gap-3">
+            <span className="text-sm">{selected.size} transactions selected</span>
+            <Button onClick={() => setLabelEditorOpen(true)}>Apply labels…</Button>
+            <Button variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
+          </div>
+          <LabelEditor
+            open={labelEditorOpen}
+            onOpenChange={setLabelEditorOpen}
+            mode="bulk-tx"
+            categories={categories}
+            currentSlug={null}
+            currentTags={[]}
+            showSiblingsCheckbox={false}
+            onSubmit={async ({ categorySlug, addTags, removeTags }) => {
+              const res = await transactionsApi.bulkLabel({
+                user_id: USER_ID,
+                transaction_ids: Array.from(selected),
+                category_slug: categorySlug,
+                add_tags: addTags,
+                remove_tags: removeTags,
+              });
+              alert(`Updated ${res.affected} transactions. ${res.skipped.length} skipped.`);
+              setSelected(new Set());
+              await refresh();
+            }}
+          />
+        </>
+      )}
     </div>
   );
 }
