@@ -1,11 +1,15 @@
 "use client";
 
-import { CategoryEditPopover } from "@/components/expenses/category-edit-popover";
+import { useState } from "react";
+
+import { LabelEditor } from "@/components/expenses/label-editor";
 import { TagChip } from "@/components/expenses/tag-chip";
 import { TagEditor } from "@/components/expenses/tag-editor";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
+  expensesApi,
+  transactionsApi,
   type CategoryOut,
   type SourceOut,
   type TransactionOut,
@@ -29,8 +33,10 @@ export function TransactionsTable({
   selected, onSelectionChange,
 }: TransactionsTableProps) {
   const sourceById = new Map(sources.map((s) => [s.id, s]));
+  const [editingTx, setEditingTx] = useState<{ id: number; slug: string | null; tags: string[] } | null>(null);
 
   return (
+    <>
     <table className="w-full text-sm">
       <thead>
         <tr className="text-xs text-muted-foreground border-b border-border">
@@ -84,13 +90,17 @@ export function TransactionsTable({
               </td>
               <td className="py-2 px-2 truncate max-w-xs">{t.merchant_raw}</td>
               <td className="py-2 px-2">
-                <CategoryEditPopover
-                  txId={t.id}
-                  userId={USER_ID}
-                  currentSlug={t.category_slug}
-                  categories={categories}
-                  onChanged={() => onCategoryChanged?.()}
-                />
+                <Badge
+                  variant="secondary"
+                  className="cursor-pointer hover:bg-secondary/80 capitalize"
+                  onClick={() => setEditingTx({
+                    id: t.id,
+                    slug: t.category_slug ?? null,
+                    tags: t.tags ?? [],
+                  })}
+                >
+                  {t.category_slug ?? "uncategorized"}
+                </Badge>
               </td>
               <td className="py-2 px-2">
                 <div className="flex flex-wrap items-center gap-1">
@@ -126,5 +136,34 @@ export function TransactionsTable({
         })}
       </tbody>
     </table>
+    {editingTx && (
+      <LabelEditor
+        open
+        onOpenChange={(o) => { if (!o) setEditingTx(null); }}
+        mode="single-tx"
+        categories={categories}
+        currentSlug={editingTx.slug}
+        currentTags={editingTx.tags}
+        showSiblingsCheckbox={true}
+        onSubmit={async ({ categorySlug, addTags, removeTags, applyToSiblings }) => {
+          if (categorySlug) {
+            await expensesApi.patchTransactionCategory(
+              editingTx.id, USER_ID, categorySlug, applyToSiblings,
+            );
+          }
+          if (addTags.length || removeTags.length) {
+            await transactionsApi.bulkLabel({
+              user_id: USER_ID,
+              transaction_ids: [editingTx.id],
+              add_tags: addTags,
+              remove_tags: removeTags,
+            });
+          }
+          setEditingTx(null);
+          onCategoryChanged?.();
+        }}
+      />
+    )}
+    </>
   );
 }
