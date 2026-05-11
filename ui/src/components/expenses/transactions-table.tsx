@@ -6,6 +6,7 @@ import { AddSubCategoryDialog } from "@/components/expenses/add-subcategory-dial
 import { LabelEditor } from "@/components/expenses/label-editor";
 import { TagChip } from "@/components/expenses/tag-chip";
 import { TagEditor } from "@/components/expenses/tag-editor";
+import { TransactionDetailsDialog } from "@/components/expenses/transaction-details-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -36,6 +37,7 @@ export function TransactionsTable({
   const sourceById = new Map(sources.map((s) => [s.id, s]));
   const [editingTx, setEditingTx] = useState<{ id: number; slug: string | null; tags: string[] } | null>(null);
   const [addSubCatOpen, setAddSubCatOpen] = useState(false);
+  const [detailsTx, setDetailsTx] = useState<TransactionOut | null>(null);
 
   return (
     <>
@@ -90,7 +92,20 @@ export function TransactionsTable({
               <td className="py-2 pr-2 tabular-nums whitespace-nowrap text-muted-foreground">
                 {t.occurred_on}
               </td>
-              <td className="py-2 px-2 truncate max-w-xs">{t.merchant_raw}</td>
+              <td className="py-2 px-2 max-w-xs">
+                <div className="flex items-center gap-1">
+                  <span className="truncate">{t.merchant_raw}</span>
+                  <button
+                    type="button"
+                    onClick={() => setDetailsTx(t)}
+                    className="text-muted-foreground hover:text-foreground text-xs shrink-0"
+                    aria-label="Show transaction details"
+                    title="Show original row + open source file"
+                  >
+                    ⓘ
+                  </button>
+                </div>
+              </td>
               <td className="py-2 px-2">
                 <Badge
                   variant="secondary"
@@ -184,6 +199,13 @@ export function TransactionsTable({
       categories={categories}
       onCreated={() => onCategoryChanged?.()}
     />
+    {detailsTx && (
+      <TransactionDetailsDialog
+        tx={detailsTx}
+        open
+        onOpenChange={(o) => { if (!o) setDetailsTx(null); }}
+      />
+    )}
     </>
   );
 }

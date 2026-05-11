@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -22,6 +26,7 @@ from argosy.state.models import (
     ExpenseStatement,
     ExpenseTransaction,
     MerchantCategoryCache,
+    UserFile,
 )
 
 router = APIRouter(prefix="/api/expenses", tags=["expenses"])
@@ -176,7 +181,11 @@ class TransactionOut(BaseModel):
     category_source: str | None
     is_card_payment: bool
     source_id: int
+    statement_id: int                      # so the UI can drill to the source file
     tags: list[str] = []                   # JSON-stored on row; '[]' when unset
+    # Parser-preserved key/value view of the original row from the statement
+    # file. Lets the UI render the exact source line when triaging.
+    raw_row: dict[str, "object"] = {}
 
 
 class TransactionsResponse(BaseModel):
@@ -193,6 +202,12 @@ def _tx_to_out(
     Centralised so that adding new fields (e.g. tags from migration 0024)
     only needs to be done in one place.
     """
+    try:
+        raw_row = json.loads(r.raw_row_json) if r.raw_row_json else {}
+        if not isinstance(raw_row, dict):
+            raw_row = {"_value": raw_row}
+    except (ValueError, TypeError):
+        raw_row = {}
     return TransactionOut(
         id=r.id, occurred_on=r.occurred_on, merchant_raw=r.merchant_raw,
         amount_nis=float(r.amount_nis) if r.amount_nis is not None else None,
@@ -203,7 +218,9 @@ def _tx_to_out(
         category_source=r.category_source,
         is_card_payment=r.is_card_payment,
         source_id=r.source_id,
+        statement_id=r.statement_id,
         tags=_parse_tags(getattr(r, "tags", None)),
+        raw_row=raw_row,
     )
 
 
@@ -338,6 +355,68 @@ def patch_transaction_category(
         transaction_id=tx.id, category_slug=body.category_slug,
         category_source="user", affected_count=1,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /transactions/{id}/open-source-file
+# ---------------------------------------------------------------------------
+# Local-only convenience: launch the original statement file in whatever the
+# OS has registered as the default handler (Excel for .xls/.xlsx, browser for
+# .html, etc.). This is safe in our single-tenant local-dev setup; it would
+# need explicit gating (or removal) if the API were ever exposed beyond
+# localhost.
+
+
+class OpenFileRequest(BaseModel):
+    user_id: str
+
+
+class OpenFileResponse(BaseModel):
+    status: str           # 'ok' | 'unsupported_platform' | 'missing'
+    storage_path: str | None = None
+    message: str | None = None
+
+
+@router.post("/transactions/{transaction_id}/open-source-file",
+              response_model=OpenFileResponse)
+def open_transaction_source_file(
+    transaction_id: int,
+    body: OpenFileRequest,
+    db: Annotated[Session, Depends(get_db)],
+) -> OpenFileResponse:
+    tx = db.query(ExpenseTransaction).filter_by(
+        id=transaction_id, user_id=body.user_id,
+    ).one_or_none()
+    if tx is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    stmt = db.get(ExpenseStatement, tx.statement_id)
+    if stmt is None or stmt.file_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail="statement or originating file not found",
+        )
+    uf = db.get(UserFile, stmt.file_id)
+    if uf is None:
+        raise HTTPException(status_code=404, detail="user file not found")
+    path = Path(uf.storage_path)
+    if not path.exists():
+        return OpenFileResponse(
+            status="missing", storage_path=str(path),
+            message="File not present on disk at the recorded storage_path.",
+        )
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except OSError as e:
+        return OpenFileResponse(
+            status="unsupported_platform", storage_path=str(path),
+            message=str(e),
+        )
+    return OpenFileResponse(status="ok", storage_path=str(path))
 
 
 # ---------------------------------------------------------------------------

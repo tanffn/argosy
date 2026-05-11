@@ -267,7 +267,10 @@ export interface TransactionOut {
   category_source: string | null;
   is_card_payment: boolean;
   source_id: number;
+  statement_id: number;
   tags: string[];
+  /** Parser-preserved key/value view of the source row. */
+  raw_row: Record<string, unknown>;
 }
 
 export interface TransactionsResponse {
@@ -628,6 +631,12 @@ export const categoriesApi = {
     postJSON<CategoryCreateResponse>("/api/expenses/categories", body),
 };
 
+export interface OpenFileResponse {
+  status: "ok" | "missing" | "unsupported_platform";
+  storage_path: string | null;
+  message?: string | null;
+}
+
 export const transactionsApi = {
   bulkLabel: async (body: {
     user_id: string;
@@ -637,4 +646,10 @@ export const transactionsApi = {
     remove_tags?: string[];
   }): Promise<BulkLabelResponse> =>
     postJSON<BulkLabelResponse>("/api/expenses/transactions/bulk-label", body),
+
+  openSourceFile: async (txId: number, userId: string): Promise<OpenFileResponse> =>
+    postJSON<OpenFileResponse>(
+      `/api/expenses/transactions/${txId}/open-source-file`,
+      { user_id: userId },
+    ),
 };
