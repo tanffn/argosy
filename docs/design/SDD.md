@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-10 (afternoon) by Claude. Big day: EX1.1 → EX4 → multiple EX4.x polish rounds → EX5 (refund/income split, trip tags, dividends/taxes, anomaly oddities) → Leumi USD parser → Schwab RSU cross-validator → audit-corpus CLI → dashboard rework (spending-only chart, calendar/trailing toggle, click-to-rescope, paired-rows RSU view, etc.). 28 commits since the prior handover. Argosy now ingests, categorizes, reconciles, and visualizes the household's full multi-currency expense + brokerage corpus.
+**Last edit:** 2026-05-11 by Claude. EX6 (overview/monthly split) landed; EX8 (merchant↔category tab + range-bulk labeling) landed — five new endpoints, hierarchical category picker, bulk-label workflows, 38 new tests, zero schema changes.
 
 ### Orientation — start here if you have zero context
 
@@ -176,6 +176,18 @@ User feedback after EX5: the single `/expenses` overview page was trying to be b
 - **No schema changes.** Zero migrations in EX6; nothing to roll back.
 
 **Judgment call worth flagging:** the **Dividends card now has both `LineChart` (existing from EX5) and inline `MiniBars` sparkline (new in EX6)** — possible visual redundancy. The MiniBars trend pre-computes server-side from `trend_12mo`; the LineChart re-derives from the existing `monthly_series`. Worth pruning to one on the next polish pass — pick whichever reads better at the card's actual rendered size. Same pattern present on the Taxes card (smaller risk since taxes has no LineChart, just the new MiniBars).
+
+### Wave EX8 — Merchant↔Category tab + range-bulk labeling — LANDED
+
+Spec: `docs/superpowers/specs/2026-05-11-merchant-category-tab-design.md`. Plan: `docs/superpowers/plans/2026-05-11-merchant-category-tab-implementation.md`.
+
+- New `/expenses/merchants` tab — merchant-grouped table with filter bar (search, category, source, max-confidence, sort), checkbox multi-select, bulk-apply, inline confirm. Hierarchical category picker replaces the old flat popover throughout the app.
+- New `/expenses/categories` POST endpoint for sub-category creation under existing top-level parents (one nesting level enforced). Insurance.health, insurance.life, etc. land via UI; no migration needed (hierarchy already in `expense_categories.parent_id`).
+- Range-bulk on `/expenses/transactions` — checkbox column + "Select all matching filter" chip + bulk bar (Apply category / Add tag / Remove tag). Powers trip-tag workflows ("Aug 5-15 → trip:greece-2026-aug") without touching merchant_category_cache.
+- Backend: extracted `argosy/services/merchant_service.apply_merchant_category()` — single source of truth for "merchant mapping changed". `PATCH /transactions/{id}` now honors an `apply_to_siblings` body field (defaults true for back-compat; inline UI sends false going forward).
+- Zero schema changes. Five new endpoints (`GET /merchants`, `PATCH /merchants/{name}`, `POST /merchants/bulk-category`, `POST /categories`, `POST /transactions/bulk-label`); one behavior change on the existing PATCH.
+- BIT and similar pass-through merchants are mapped to `cash` rather than getting a "split merchant" mechanic — Ariel's call (low total impact; defer the mechanic unless it bites).
+- Test count: baseline + 38 new tests across 7 new files; full backend suite at 1,073 passed under `pytest -m "not llm_eval"`.
 
 ### Wave EX1.1 — already documented above (still applies)
 
