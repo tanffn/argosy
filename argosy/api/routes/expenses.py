@@ -2368,3 +2368,69 @@ def rsu_reconciliation(
         schwab_csv_paths=[str(p) for p in csv_paths],
         warning=warning,
     )
+
+
+# ---------------------------------------------------------------------------
+# Merchants — GET / PATCH / bulk-category
+# ---------------------------------------------------------------------------
+
+class MerchantOut(BaseModel):
+    merchant_normalized: str
+    category_slug: str
+    category_label: str
+    parent_slug: str | None
+    parent_label: str | None
+    confidence: float | None
+    source: str           # 'user' | 'llm' | 'issuer' | 'cache' | 'uncached'
+    is_cached: bool
+    tx_count: int
+    total_nis: float
+    total_usd: float
+    last_seen: str        # ISO date
+
+
+class MerchantsListResponse(BaseModel):
+    merchants: list[MerchantOut]
+    total: int
+
+
+class MerchantPatchRequest(BaseModel):
+    user_id: str
+    category_slug: str | None = None
+    confirm: bool = False
+
+    def model_post_init(self, __context) -> None:
+        if self.category_slug is None and not self.confirm:
+            raise ValueError("Must provide category_slug or confirm=True")
+
+
+class MerchantPatchResponse(BaseModel):
+    merchant_normalized: str
+    category_slug: str
+    affected_transactions: int
+    cache_row_created: bool
+
+
+class BulkCategoryRequest(BaseModel):
+    user_id: str
+    merchant_normalizeds: list[str] = Field(..., min_length=1)
+    category_slug: str | None = None
+    confirm: bool = False
+
+    def model_post_init(self, __context) -> None:
+        if self.category_slug is None and not self.confirm:
+            raise ValueError("Must provide category_slug or confirm=True")
+
+
+class BulkCategoryItemResult(BaseModel):
+    merchant_normalized: str
+    status: str           # 'ok' | 'error'
+    affected_transactions: int = 0
+    message: str | None = None
+
+
+class BulkCategoryResponse(BaseModel):
+    results: list[BulkCategoryItemResult]
+    ok_count: int
+    error_count: int
+    total_affected_transactions: int
