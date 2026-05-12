@@ -36,11 +36,15 @@ function DeltaPill({ delta }: { delta: number | null }) {
   );
 }
 
-function StatTile({ label, value, mom, vs12 }: {
+function StatTile({ label, value, mom, vs12, title }: {
   label: string; value: string; mom?: number | null; vs12?: number | null;
+  title?: string;
 }) {
   return (
-    <div className="rounded-md border border-border p-3 flex flex-col gap-1">
+    <div
+      className="rounded-md border border-border p-3 flex flex-col gap-1"
+      title={title}
+    >
       <div className="text-xs uppercase text-muted-foreground">{label}</div>
       <div className="text-xl font-semibold tabular-nums">{value}</div>
       {(mom !== undefined || vs12 !== undefined) && (
@@ -98,7 +102,11 @@ export function HeroStats(props: Props) {
         mom={h.refunds.mom_delta_pct}
         vs12={h.refunds.vs_trailing12_pct}
       />
-      <StatTile label="Reconciled" value={String(h.statements_reconciled)} />
+      <StatTile
+        label="Reconciled"
+        value={String(h.statements_reconciled)}
+        title="Number of bank/credit-card statements covering this month whose parsed total matches what the bank declared (within ₪0.5). A data-quality indicator: how many source files came in clean."
+      />
       <StatTile label="Anomalies" value={String(h.anomalies_count)} />
     </div>
   );

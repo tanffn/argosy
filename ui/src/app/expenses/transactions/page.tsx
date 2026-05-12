@@ -129,6 +129,30 @@ function TransactionsPageInner() {
             }}
             className="max-w-xs"
           />
+          <label
+            className="flex items-center gap-1 text-xs text-muted-foreground"
+            title="Filter to transactions on/after this date"
+          >
+            From
+            <Input
+              type="date"
+              defaultValue={filterParams.from_date ?? ""}
+              onChange={(e) => setParam("from_date", e.target.value || null)}
+              className="w-36"
+            />
+          </label>
+          <label
+            className="flex items-center gap-1 text-xs text-muted-foreground"
+            title="Filter to transactions on/before this date"
+          >
+            To
+            <Input
+              type="date"
+              defaultValue={filterParams.to_date ?? ""}
+              onChange={(e) => setParam("to_date", e.target.value || null)}
+              className="w-36"
+            />
+          </label>
           <details className="basis-full mt-1">
             <summary className="text-xs text-muted-foreground cursor-pointer select-none">
               Advanced
