@@ -85,10 +85,18 @@ export function HeroStats(props: Props) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
       <StatTile
-        label="Spent"
+        label="Spent (recurring)"
         value={fmt(h.spent.value_nis)}
         mom={h.spent.mom_delta_pct}
         vs12={h.spent.vs_trailing12_pct}
+        title="Recurring monthly spending — excludes rows tagged one-off, lump-sum, trip:*, vacation:*. The 'One-off' tile next door shows those separately."
+      />
+      <StatTile
+        label="One-off"
+        value={fmt(h.oneoff.value_nis)}
+        mom={h.oneoff.mom_delta_pct}
+        vs12={h.oneoff.vs_trailing12_pct}
+        title="Sum of one-off / vacation / lump-sum expenses for the month — rows tagged one-off, lump-sum, lump-sum:*, one-off:*, trip:*, or vacation:*. Tag with these to keep big distorting events out of the recurring-spend total and pie."
       />
       <StatTile
         label="Income"

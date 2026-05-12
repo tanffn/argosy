@@ -300,7 +300,11 @@ def compute_chart_window(session: Session, user_id: str, focal_month: str):
             shift_back = _months_between(ideal[0], oldest_key)
             ideal = [_shift_month_key(k, shift_back) for k in ideal]
 
-    # Aggregate per month from DB (spending only — same filters as currency_mix).
+    # Aggregate per month from DB (RECURRING spending only — same filters
+    # as currency_mix, PLUS exclude rows tagged one-off/lump-sum/trip:*/
+    # vacation:* so a single ₪245k mortgage payoff doesn't dwarf every
+    # other bar on the chart).
+    from sqlalchemy import not_
     rows = session.execute(
         sa_select(
             extract("year", ExpenseTransaction.occurred_on).label("y"),
@@ -321,6 +325,7 @@ def compute_chart_window(session: Session, user_id: str, focal_month: str):
              ExpenseCategory.is_inflow.is_(None)),
             (ExpenseCategory.is_excluded_from_spend.is_(False) |
              ExpenseCategory.is_excluded_from_spend.is_(None)),
+            not_(_oneoff_sql_expr()),
         )
         .group_by("y", "m", "ccy")
     ).all()
@@ -356,7 +361,8 @@ def compute_hero_stats_monthly(session: Session, user_id: str, month: str):
     """
     from argosy.api.routes.expenses import HeroMetric, HeroStatsMonthly
 
-    spending_by_month = _spending_by_month_dict(session, user_id)
+    spending_by_month = _spending_by_month_dict(session, user_id)  # recurring
+    oneoff_by_month = _spending_by_month_dict(session, user_id, oneoff=True)
     income_by_month = _income_by_month_dict(session, user_id)
     refunds_by_month = _refunds_by_month_dict(session, user_id)
 
@@ -389,14 +395,34 @@ def compute_hero_stats_monthly(session: Session, user_id: str, month: str):
         spent=metric(spending_by_month, month),
         income=metric(income_by_month, month),
         refunds=metric(refunds_by_month, month),
+        oneoff=metric(oneoff_by_month, month),
         statements_reconciled=reconciled,
         sources_total=eligible,
         anomalies_count=anomalies_count,
     )
 
 
-_ONEOFF_TAG_PREFIXES = ("trip:", "vacation:")
+_ONEOFF_TAG_PREFIXES = ("trip:", "vacation:", "lump-sum:", "one-off:")
 _ONEOFF_TAG_LITERALS = {"one-off", "lump-sum"}
+
+
+def _oneoff_sql_expr():
+    """SQLAlchemy boolean that's TRUE when `tags` text contains any one-off
+    marker (literal `one-off`/`lump-sum` or a tag starting with one of the
+    recognized prefixes). Used by the per-month aggregation queries below.
+
+    Implementation: `tags` is JSON-encoded text like '["a","b"]'. LIKE
+    against the quoted forms catches every variant. The textual encoding
+    of `_serialize_tags` is stable (json.dumps with ensure_ascii=False) so
+    the literal patterns match exactly.
+    """
+    from sqlalchemy import or_
+    patterns: list[str] = []
+    for lit in _ONEOFF_TAG_LITERALS:
+        patterns.append(f'%"{lit}"%')
+    for pref in _ONEOFF_TAG_PREFIXES:
+        patterns.append(f'%"{pref}%')
+    return or_(*[ExpenseTransaction.tags.like(p) for p in patterns])
 
 
 def _row_is_oneoff(raw_tags: str | None) -> bool:
@@ -552,13 +578,23 @@ def compute_largest_transactions(
 
 # ----------------- shared per-month accumulators -----------------
 
-def _spending_by_month_dict(session: Session, user_id: str) -> dict[str, float]:
-    """Sum debits per month, excluding inflow/excluded categories and card payments.
+def _spending_by_month_dict(
+    session: Session, user_id: str, *, oneoff: bool | None = False,
+) -> dict[str, float]:
+    """Sum debits per month, excluding inflow/excluded categories and card
+    payments.
 
-    Mirrors the existing `current_month_spending_nis` filters from the
-    overview endpoint.
+    ``oneoff`` controls how one-off-tagged transactions are treated:
+      - ``False`` (default): RECURRING spend — excludes rows tagged
+        one-off/lump-sum/trip:*/vacation:*. This is what the "Spent" hero
+        reflects after Ariel's request to keep regular monthly stats
+        independent of lump-sum / vacation distortions.
+      - ``True``: ONLY one-off rows — what the new "One-off" hero shows.
+      - ``None``: everything (legacy "spent total incl. one-offs") if any
+        caller still needs the gross figure.
     """
-    rows = session.execute(
+    from sqlalchemy import not_
+    q = (
         sa_select(
             extract("year", ExpenseTransaction.occurred_on).label("y"),
             extract("month", ExpenseTransaction.occurred_on).label("m"),
@@ -575,8 +611,12 @@ def _spending_by_month_dict(session: Session, user_id: str) -> dict[str, float]:
             (ExpenseCategory.is_excluded_from_spend.is_(False) |
              ExpenseCategory.is_excluded_from_spend.is_(None)),
         )
-        .group_by("y", "m")
-    ).all()
+    )
+    if oneoff is True:
+        q = q.where(_oneoff_sql_expr())
+    elif oneoff is False:
+        q = q.where(not_(_oneoff_sql_expr()))
+    rows = session.execute(q.group_by("y", "m")).all()
     return {f"{int(r.y):04d}-{int(r.m):02d}": float(r.nis or 0.0) for r in rows}
 
 

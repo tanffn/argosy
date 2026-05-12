@@ -861,6 +861,7 @@ class HeroStatsMonthly(BaseModel):
     spent: HeroMetric
     income: HeroMetric
     refunds: HeroMetric
+    oneoff: HeroMetric              # one-off / vacation / lump-sum expenses
     statements_reconciled: int      # distinct sources reconciled this month
     sources_total: int = 0          # total sources for the user — UI shows "N/M"
     anomalies_count: int            # no delta semantics (count)
