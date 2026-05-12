@@ -58,45 +58,115 @@ _MAX_RETRIES = 3
 def fetch_range(
     start: date, end: date, currencies: list[str],
 ) -> list[tuple[date, str, Decimal]]:
-    """Fetch BoI representative rates for [start, end] across ``currencies``.
+    """Fetch representative rates for [start, end] across ``currencies``.
+
+    Strategy:
+      1. BoI PublicApi for the current snapshot — `GetExchangeRates`. Its
+         response carries `lastUpdate` (one daily timestamp), so we get at
+         most ONE rate per currency, near `today`. Useful for the latest
+         month but useless for backfill.
+      2. Frankfurter (api.frankfurter.dev) for the entire historical
+         range. Frankfurter publishes daily ECB reference rates with USD
+         and ILS pairs since the early 2000s. Free, no auth, honors date
+         ranges and weekend gaps (returns the last business-day rate).
+         This is the actual historical source.
 
     Returns rows as ``(date, currency, rate)`` where ``rate`` is units of
-    ILS per 1 unit of currency (i.e. ``unit`` already divided out for
-    quotes like JPY which BoI publishes per 100).
-
-    Empty list if ``currencies`` is empty.
-
-    Raises ``FXRateUnavailable`` on connection failure or malformed
-    response. The PublicApi endpoint currently ignores ``start``/``end``
-    and returns the latest snapshot only; we still send the params for
-    forwards-compatibility with whatever range-aware endpoint replaces it.
+    ILS per 1 unit of currency (``unit`` divided out for JPY-style quotes
+    that BoI publishes per 100). Empty list if ``currencies`` is empty.
     """
     if not currencies:
         return []
-
-    params = {
-        "startDate": start.isoformat(),
-        "endDate": end.isoformat(),
-        "currencies": ",".join(currencies),
-    }
     wanted = {c.upper() for c in currencies}
+
+    rows: list[tuple[date, str, Decimal]] = []
+
+    # 1. BoI latest snapshot (one row per currency, dated today-ish).
+    try:
+        rows.extend(_fetch_boi_latest(wanted))
+    except FXRateUnavailable:
+        pass  # fall through to Frankfurter
+
+    # 2. Frankfurter historical for the full range, per currency.
+    for ccy in wanted:
+        if ccy == "ILS":
+            continue
+        try:
+            rows.extend(_fetch_frankfurter_range(start, end, ccy))
+        except FXRateUnavailable:
+            continue
+
+    if not rows:
+        raise FXRateUnavailable(
+            f"No rates available from BoI or Frankfurter for {sorted(wanted)} "
+            f"in [{start}, {end}]"
+        )
+    return rows
+
+
+def _fetch_boi_latest(wanted: set[str]) -> list[tuple[date, str, Decimal]]:
+    """Hit BoI's latest-snapshot endpoint. Returns ≤ one row per currency,
+    all dated `lastUpdate`. Useful only for filling in 'today's' rate.
+    """
     last_err: Exception | None = None
     for _ in range(_MAX_RETRIES):
         try:
             with httpx.Client(timeout=_TIMEOUT_S) as client:
-                resp = client.get(_BOI_URL, params=params)
+                resp = client.get(_BOI_URL)
             resp.raise_for_status()
             rows = _parse_response(resp.text)
-            return [row for row in rows if row[1] in wanted]
+            return [r for r in rows if r[1] in wanted]
         except httpx.ConnectError as e:
             last_err = e
             continue
         except (httpx.HTTPStatusError, ValueError, KeyError) as e:
-            # Don't retry on 4xx/5xx or parse failures — they're not transient.
             raise FXRateUnavailable(f"BoI fetch failed: {e}") from e
     raise FXRateUnavailable(
         f"BoI fetch failed after {_MAX_RETRIES} retries: {last_err}"
     ) from last_err
+
+
+_FRANKFURTER_URL = "https://api.frankfurter.dev/v1"
+_FRANKFURTER_MAX_DAYS = 365  # per-call chunk size to avoid huge responses
+
+
+def _fetch_frankfurter_range(
+    start: date, end: date, ccy: str,
+) -> list[tuple[date, str, Decimal]]:
+    """Fetch daily ``ccy → ILS`` rates from Frankfurter for [start, end].
+
+    Frankfurter returns ECB business-day rates; weekends/holidays are
+    simply absent from the response (the rate carried forward from the
+    last business day is what the user should fall back to — the cache
+    walkback handles that).
+    """
+    from datetime import timedelta as _td
+    rows: list[tuple[date, str, Decimal]] = []
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + _td(days=_FRANKFURTER_MAX_DAYS), end)
+        url = f"{_FRANKFURTER_URL}/{cursor.isoformat()}..{chunk_end.isoformat()}"
+        params = {"from": ccy, "to": "ILS"}
+        try:
+            with httpx.Client(timeout=_TIMEOUT_S, follow_redirects=True) as client:
+                resp = client.get(url, params=params)
+            resp.raise_for_status()
+            payload = json.loads(resp.text)
+        except (httpx.HTTPError, ValueError) as e:
+            raise FXRateUnavailable(
+                f"Frankfurter fetch failed for {ccy} {cursor}..{chunk_end}: {e}"
+            ) from e
+        for d_iso, rates in (payload.get("rates") or {}).items():
+            try:
+                d = date.fromisoformat(d_iso)
+                rate = rates.get("ILS")
+                if rate is None:
+                    continue
+                rows.append((d, ccy, Decimal(str(rate))))
+            except (ValueError, ArithmeticError, TypeError):
+                continue
+        cursor = chunk_end + _td(days=1)
+    return rows
 
 
 def _parse_response(body: str) -> list[tuple[date, str, Decimal]]:
