@@ -378,6 +378,8 @@ def compute_hero_stats_monthly(session: Session, user_id: str, month: str):
         return HeroMetric(value_nis=cur, mom_delta_pct=mom, vs_trailing12_pct=vs12)
 
     statements_reconciled = _count_reconciled_statements_for_month(session, user_id, month)
+    from argosy.state.models import ExpenseSource
+    sources_total = session.query(ExpenseSource).filter_by(user_id=user_id).count()
     # Anomalies: 0 placeholder. Surfacing the dashboard-overview's inline
     # anomaly logic here requires an extraction that is deferred to a later
     # task; the hero card renders fine with a 0.
@@ -388,6 +390,7 @@ def compute_hero_stats_monthly(session: Session, user_id: str, month: str):
         income=metric(income_by_month, month),
         refunds=metric(refunds_by_month, month),
         statements_reconciled=statements_reconciled,
+        sources_total=sources_total,
         anomalies_count=anomalies_count,
     )
 
@@ -623,13 +626,18 @@ def _refunds_by_month_dict(session: Session, user_id: str) -> dict[str, float]:
 def _count_reconciled_statements_for_month(
     session: Session, user_id: str, month: str
 ) -> int:
-    """Count statements whose period overlaps `month` and whose declared/parsed
-    totals reconcile (gap < 0.5, matching `_gap_status`'s 'green' band).
+    """Count distinct SOURCES whose statement overlapping `month` reconciles
+    (parsed total matches declared total within ₪0.5).
 
-    NOTE: the `ExpenseStatement.status` column stores parser-state values
-    like ``'parsed'``, NOT the gap-derived ``'green'/'yellow'/'red'``
-    vocabulary. The "reconciled" hero counter is derived from the
-    parsed-vs-declared gap to match the overview endpoint's `_gap_status`.
+    The earlier implementation counted statement rows directly, which broke
+    for issuers that export wide-period statements (Discount Bank — one file
+    per period spanning multiple months; Leumi — statements often straddle
+    month boundaries). Such statements appear in the overlap query of every
+    month they touch, so the same source could contribute multiple times,
+    inflating the count above the total number of sources. Now we count
+    distinct source_ids, which caps the metric at "number of sources you
+    have" — the answer to "did each of my accounts produce a clean
+    statement for this month?".
     """
     from argosy.state.models import ExpenseStatement
 
@@ -640,10 +648,9 @@ def _count_reconciled_statements_for_month(
     else:
         last_excl = date(y, m + 1, 1)
 
-    # Statement overlaps month if period_start < last_excl AND period_end >= first.
-    # "Reconciled" = both totals present and |parsed - declared| < 0.5.
     rows = session.execute(
         sa_select(
+            ExpenseStatement.source_id,
             ExpenseStatement.parsed_total_nis,
             ExpenseStatement.declared_total_nis,
         )
@@ -655,13 +662,13 @@ def _count_reconciled_statements_for_month(
         )
     ).all()
 
-    count = 0
-    for parsed, declared in rows:
+    reconciled_sources: set[int] = set()
+    for source_id, parsed, declared in rows:
         if parsed is None or declared is None:
             continue
         if abs(float(parsed) - float(declared)) < 0.5:
-            count += 1
-    return count
+            reconciled_sources.add(int(source_id))
+    return len(reconciled_sources)
 
 
 # ---------------- 12-month trend helpers (dividends, taxes) ----------------

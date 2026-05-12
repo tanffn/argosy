@@ -104,8 +104,16 @@ export function HeroStats(props: Props) {
       />
       <StatTile
         label="Reconciled"
-        value={String(h.statements_reconciled)}
-        title="Number of bank/credit-card statements covering this month whose parsed total matches what the bank declared (within ₪0.5). A data-quality indicator: how many source files came in clean."
+        value={
+          h.sources_total > 0
+            ? `${h.statements_reconciled} / ${h.sources_total}`
+            : String(h.statements_reconciled)
+        }
+        title={
+          h.sources_total > 0
+            ? `${h.statements_reconciled} of ${h.sources_total} sources have a clean statement covering this month (parsed total matches the bank's declared total within ₪0.5). A data-quality indicator — not a money figure.`
+            : "Number of sources with a clean statement covering this month (parsed total matches the bank's declared total within ₪0.5). A data-quality indicator."
+        }
       />
       <StatTile label="Anomalies" value={String(h.anomalies_count)} />
     </div>

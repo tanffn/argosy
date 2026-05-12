@@ -177,6 +177,7 @@ export interface HeroStatsMonthly {
   income: HeroMetric;
   refunds: HeroMetric;
   statements_reconciled: number;
+  sources_total: number;
   anomalies_count: number;
 }
 
