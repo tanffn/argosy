@@ -32,20 +32,53 @@ def _normalize(ccy: str) -> str:
 
 
 def _resolve_to_ils(session: Session, ccy: str, on: date) -> Decimal:
-    """Get rate (ILS per 1 unit of ccy) on `on`. Cache -> walkback -> BoI fetch."""
+    """Get rate (ILS per 1 unit of ccy) on `on`. Cache -> walkback -> BoI fetch.
+
+    Last-ditch fallback: if no exact/walkback rate is available even after
+    an online fetch attempt, return the NEAREST cached rate (any direction).
+    This handles two real cases:
+      (a) Sparse cache — historical txs older than anything cached.
+      (b) BoI public endpoint that ignores `start`/`end` and returns only
+          the latest snapshot, leaving us with only forward-of-tx rates.
+    The fallback is an approximation; UI labels NIS-converted values as
+    such. The alternative — leaving every historical USD row uncoverted
+    forever — is worse.
+    """
     cached = cache.get_rate(session, on, ccy)
     if cached is not None:
         return cached
-    # Try walkback within the cache.
     try:
         return cache.find_walkback(session, on, ccy)
     except FXRateUnavailable:
         pass
-    # Fall through to online fetch — try a 14-day window centered on `on`.
     from datetime import timedelta
     rows = boi_client.fetch_range(on - timedelta(days=7), on + timedelta(days=7), [ccy])
     cache.put_rates(session, rows)
-    return cache.find_walkback(session, on, ccy)
+    try:
+        return cache.find_walkback(session, on, ccy)
+    except FXRateUnavailable:
+        pass
+    # Approximation: nearest cached rate, regardless of direction.
+    from argosy.state.models import FxRate
+    rate_after = (
+        session.query(FxRate)
+        .filter(FxRate.currency == ccy, FxRate.date >= on)
+        .order_by(FxRate.date.asc())
+        .first()
+    )
+    if rate_after is not None:
+        return rate_after.rate
+    rate_before = (
+        session.query(FxRate)
+        .filter(FxRate.currency == ccy, FxRate.date < on)
+        .order_by(FxRate.date.desc())
+        .first()
+    )
+    if rate_before is not None:
+        return rate_before.rate
+    raise FXRateUnavailable(
+        f"No rate for {ccy} on {on}; cache empty for this currency"
+    )
 
 
 def rate(session: Session, from_ccy: str, to_ccy: str, on: date) -> Decimal:

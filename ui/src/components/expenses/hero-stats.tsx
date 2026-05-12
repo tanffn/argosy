@@ -103,19 +103,10 @@ export function HeroStats(props: Props) {
         vs12={h.refunds.vs_trailing12_pct}
       />
       <StatTile
-        label="Reconciled"
-        value={
-          h.sources_total > 0
-            ? `${h.statements_reconciled} / ${h.sources_total}`
-            : String(h.statements_reconciled)
-        }
-        title={
-          h.sources_total > 0
-            ? `${h.statements_reconciled} of ${h.sources_total} sources have a clean statement covering this month (parsed total matches the bank's declared total within ₪0.5). A data-quality indicator — not a money figure.`
-            : "Number of sources with a clean statement covering this month (parsed total matches the bank's declared total within ₪0.5). A data-quality indicator."
-        }
+        label="Anomalies"
+        value={String(h.anomalies_count)}
+        title="Number of anomaly cards surfaced for this month (data-quality flags + spending oddities). See the Anomalies & alerts section below for details."
       />
-      <StatTile label="Anomalies" value={String(h.anomalies_count)} />
     </div>
   );
 }

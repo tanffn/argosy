@@ -377,20 +377,20 @@ def compute_hero_stats_monthly(session: Session, user_id: str, month: str):
 
         return HeroMetric(value_nis=cur, mom_delta_pct=mom, vs_trailing12_pct=vs12)
 
-    statements_reconciled = _count_reconciled_statements_for_month(session, user_id, month)
-    from argosy.state.models import ExpenseSource
-    sources_total = session.query(ExpenseSource).filter_by(user_id=user_id).count()
-    # Anomalies: 0 placeholder. Surfacing the dashboard-overview's inline
-    # anomaly logic here requires an extraction that is deferred to a later
-    # task; the hero card renders fine with a 0.
+    reconciled, eligible, _ = _count_reconciled_statements_for_month(
+        session, user_id, month,
+    )
+    # Anomalies count is filled in by the dashboard route AFTER it computes
+    # the anomaly list; the hero placeholder stays at 0 and the route
+    # overrides if it needs to.
     anomalies_count = 0
 
     return HeroStatsMonthly(
         spent=metric(spending_by_month, month),
         income=metric(income_by_month, month),
         refunds=metric(refunds_by_month, month),
-        statements_reconciled=statements_reconciled,
-        sources_total=sources_total,
+        statements_reconciled=reconciled,
+        sources_total=eligible,
         anomalies_count=anomalies_count,
     )
 
@@ -625,19 +625,24 @@ def _refunds_by_month_dict(session: Session, user_id: str) -> dict[str, float]:
 
 def _count_reconciled_statements_for_month(
     session: Session, user_id: str, month: str
-) -> int:
-    """Count distinct SOURCES whose statement overlapping `month` reconciles
-    (parsed total matches declared total within ₪0.5).
+) -> tuple[int, int, list[int]]:
+    """Reconciliation health for a focal month.
 
-    The earlier implementation counted statement rows directly, which broke
-    for issuers that export wide-period statements (Discount Bank — one file
-    per period spanning multiple months; Leumi — statements often straddle
-    month boundaries). Such statements appear in the overlap query of every
-    month they touch, so the same source could contribute multiple times,
-    inflating the count above the total number of sources. Now we count
-    distinct source_ids, which caps the metric at "number of sources you
-    have" — the answer to "did each of my accounts produce a clean
-    statement for this month?".
+    Returns ``(reconciled, eligible, mismatched_source_ids)`` where:
+      - ``reconciled``: distinct sources with at least one overlapping
+        statement whose declared total matches parsed within ₪0.5.
+      - ``eligible``: distinct sources with at least one overlapping
+        statement that EVEN HAS a declared_total_nis — bank accounts
+        whose parser never captures one are excluded from the denominator
+        (they can't reconcile by definition, so should not register as
+        "failing"). The user's mental model is "of the sources that can
+        reconcile, did they all?".
+      - ``mismatched_source_ids``: eligible sources where reconciliation
+        FAILED. Surfaced as an anomaly with a click-through to /sources.
+
+    Caller treats ``reconciled == eligible`` as the "all green" case and
+    suppresses the indicator on the hero; otherwise an anomaly card is
+    appended with the failing source count.
     """
     from argosy.state.models import ExpenseStatement
 
@@ -662,13 +667,29 @@ def _count_reconciled_statements_for_month(
         )
     ).all()
 
+    eligible_sources: set[int] = set()
     reconciled_sources: set[int] = set()
+    failed_sources: set[int] = set()
     for source_id, parsed, declared in rows:
-        if parsed is None or declared is None:
+        if declared is None:
+            continue
+        eligible_sources.add(int(source_id))
+        if parsed is None:
+            failed_sources.add(int(source_id))
             continue
         if abs(float(parsed) - float(declared)) < 0.5:
             reconciled_sources.add(int(source_id))
-    return len(reconciled_sources)
+        else:
+            failed_sources.add(int(source_id))
+    # A source can appear in both reconciled_sources AND failed_sources if it
+    # has multiple overlapping statements with different outcomes. Treat any
+    # failure on an eligible source as failure — be conservative.
+    failed_only = failed_sources - reconciled_sources
+    return (
+        len(reconciled_sources - failed_sources),
+        len(eligible_sources),
+        sorted(failed_only),
+    )
 
 
 # ---------------- 12-month trend helpers (dividends, taxes) ----------------

@@ -1130,24 +1130,37 @@ def _dashboard_anomalies_for_month(
             ),
         ))
 
-    # 2. Conservation gaps (latest statement per source).
-    for src_row in db.query(ExpenseSource).filter_by(user_id=user_id).all():
-        latest = db.query(ExpenseStatement).filter_by(
-            source_id=src_row.id, user_id=user_id,
-        ).order_by(ExpenseStatement.period_end.desc()).first()
-        if latest is None or latest.declared_total_nis is None:
-            continue
-        gap = float(latest.parsed_total_nis or 0) - float(latest.declared_total_nis)
-        if abs(gap) >= 5.0:
-            anomalies.append(AnomalyCard(
-                kind="conservation_gap", severity="red",
-                message=f"{src_row.display_name}: latest gap ₪{gap:+.2f}",
-                detail=(
-                    f"parsed={latest.parsed_total_nis} "
-                    f"declared={latest.declared_total_nis}"
-                ),
-                link="/expenses/sources",
-            ))
+    # 2. Reconciliation gap, scoped to THIS month. Replaces the previous
+    #    "latest statement gap" anomaly which fired regardless of focal
+    #    month. Per Ariel: this should sit in Anomalies & alerts (not a
+    #    hero tile) and the click should land on the specific failing
+    #    statement so they can investigate.
+    from argosy.services.expense_dashboard import (
+        _count_reconciled_statements_for_month,
+    )
+    reconciled_n, eligible_n, failed_source_ids = (
+        _count_reconciled_statements_for_month(db, user_id, month)
+    )
+    if eligible_n > 0 and reconciled_n < eligible_n:
+        miss_n = eligible_n - reconciled_n
+        names = [
+            s.display_name for s in db.query(ExpenseSource)
+            .filter(ExpenseSource.id.in_(failed_source_ids))
+            .all()
+        ]
+        anomalies.append(AnomalyCard(
+            kind="reconciliation_gap",
+            severity="red",
+            message=(
+                f"{miss_n} of {eligible_n} sources didn't reconcile this "
+                f"month ({', '.join(names) if names else 'unknown'})"
+            ),
+            detail=(
+                "Parsed total doesn't match declared total within ₪0.5. "
+                "Open the source to find the offending statement."
+            ),
+            link="/expenses/sources",
+        ))
 
     # 3. Card 2923 fee-waiver detection.
     discount = db.query(ExpenseSource).filter_by(
@@ -1704,6 +1717,8 @@ def dashboard_monthly(
     )
     top_merchants = _dashboard_top_merchants_for_month(db, user_id, month)
     anomalies = _dashboard_anomalies_for_month(db, user_id, month)
+    # Anomalies count goes on the hero AFTER the list is computed.
+    hero_stats = hero_stats.model_copy(update={"anomalies_count": len(anomalies)})
 
     return DashboardMonthly(
         month=month,
