@@ -32,11 +32,18 @@ export default function TripsPage() {
       setLoading(true);
       setError(null);
       try {
-        const r = await expensesApi.listTags(USER_ID, "trip:");
+        // Trips tab groups by BOTH `trip:` and `vacation:` prefixes —
+        // they're semantically the same to the user (vacation:thailand vs
+        // trip:thailand-2025-aug both belong here).
+        const [tr, vr] = await Promise.all([
+          expensesApi.listTags(USER_ID, "trip:"),
+          expensesApi.listTags(USER_ID, "vacation:"),
+        ]);
         if (cancelled) return;
-        setTags(r.tags);
+        const merged = Array.from(new Set([...tr.tags, ...vr.tags])).sort();
+        setTags(merged);
         const entries = await Promise.all(
-          r.tags.map((t) =>
+          merged.map((t) =>
             expensesApi.tripSummary(USER_ID, t)
               .then((s) => [t, s] as const)
               .catch(() => [t, null] as const),
@@ -77,9 +84,12 @@ export default function TripsPage() {
     return (
       <Card>
         <CardContent className="py-8 text-center text-muted-foreground text-sm">
-          No trip tags yet. Tag a transaction with{" "}
+          No trip or vacation tags yet. Tag a transaction with{" "}
           <code className="px-1 py-0.5 bg-secondary rounded text-xs">
             trip:greece-2026-aug
+          </code>{" "}or{" "}
+          <code className="px-1 py-0.5 bg-secondary rounded text-xs">
+            vacation:thailand
           </code>{" "}
           from the Transactions page to start grouping flights, hotels and
           restaurants under one trip.
