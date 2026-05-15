@@ -1656,18 +1656,28 @@ Single SQLite database (`argosy.db`), DuckDB used for analytical queries against
 
 ### 8.1 Schema (logical groups)
 
-| Group | Tables | Purpose |
+Tables marked **planned** below have no SQLAlchemy model in
+`argosy/state/models.py` today; they describe shape we intend to add
+but haven't built yet. Everything else is materialized in the live
+`argosy.db`.
+
+| Group | Tables (✅ shipped / 🛠 planned) | Purpose |
 |---|---|---|
-| **Identity** | `users`, `user_context` | Profile, jurisdiction, goals, tax residency. Multi-tenant from day one (single user for Phase 1, schema supports N) |
-| **Holdings** | `accounts`, `positions_snapshots`, `lots` | Current and historical positions per broker; lot-level for tax accuracy |
-| **Plan** | `plan_versions`, `plan_critiques` | Plan as ingested + every critique pass with timestamp |
-| **Decisions** | `proposals`, `proposals_history`, `approvals` | Full proposal lifecycle (draft → queued → approved → executed/cancelled) |
-| **Audit** | `audit_log`, `agent_reports`, `agent_reports_blobs` | Append-only; every agent output, every decision, every override |
-| **External** | `kv_cache`[^kv-cache-rename], `news_cache`, `corp_actions` | Cached external data with provider + retrieved_at |
-| **Israeli pension** | `pension_fund_snapshots` | Per-user, per-fund time-series of gemelnet (MoF) performance data; 12m / 36m / 60m returns, benchmark, relative gap, optional NIS balance, `source_url`. Compound index `(user_id, fund_id, snapshot_at)`. Written by `argosy gemelnet refresh-user`; queried via `get_user_pension_snapshots(user_id)` |
-| **Investor events** | `investor_events` | Phase 4 signal persistence — see table spec below |
-| **Domain** | `domain_kb_status` | Per-file last_verified, next_refresh_due, last_diff |
-| **Operations** | `tasks_queue`, `alerts`, `cadence_state` | Scheduling state, in-flight work, alerts |
+| **Identity** | `users`, `user_context` ✅ | Profile, jurisdiction, goals, tax residency. Multi-tenant from day one (single user for Phase 1, schema supports N) |
+| **Holdings** | `lots` ✅; `accounts` 🛠; `positions_snapshots` 🛠 | Current and historical positions per broker; lot-level for tax accuracy. `lots` lands via migration 0005; `accounts` + `positions_snapshots` remain planned (the orchestrator + brokers currently treat the file-imported portfolio snapshot as canonical) |
+| **Plan** | `plan_versions`, `plan_critiques` ✅ | Plan as ingested + every critique pass with timestamp |
+| **Decisions** | `decision_runs`, `proposals`, `proposals_history`, `approvals`, `pending_orders`, `fills` ✅ | Full proposal + decision lifecycle (draft → queued → approved → executed/cancelled), with `decision_runs` as the lineage anchor (§8.6) |
+| **Audit** | `audit_log`, `agent_reports`, `agent_reports_blobs` ✅ | Append-only; every agent output, every decision, every override |
+| **Provenance** (§17) | `user_files`, `decision_phases` ✅ | Wave A + Wave C catalog/phase tables; FK back to `decision_runs`, `plan_versions`, `agent_reports` |
+| **External cache** | `kv_cache`[^kv-cache-rename], `news_cache`, `macro_cache`, `fx_rates` ✅; `corp_actions` 🛠 | Cached external data with provider + retrieved_at. `fx_rates` (BoI daily ILS-per-currency cache) lands via migration 0023 |
+| **Israeli pension** | `pension_fund_snapshots` ✅ | Per-user, per-fund time-series of gemelnet (MoF) performance data; 12m / 36m / 60m returns, benchmark, relative gap, optional NIS balance, `source_url`. Compound index `(user_id, fund_id, snapshot_at)`. Written by `argosy gemelnet refresh-user`; queried via `get_user_pension_snapshots(user_id)` |
+| **Investor events** | `investor_events` ✅ | Phase 4 signal persistence — see table spec below |
+| **Argonaut** | `argonaut_snapshots`, `daily_account_pnl`, `totp_secrets` ✅ | Phase 5 autonomy tables: per-day Argonaut PnL snapshot, T3 second-factor secret store |
+| **Productization** | `tenants`, `setup_tokens` ✅ | Phase 6 control-DB rows (multi-tenant onboarding) |
+| **Daily brief** | `daily_briefs` ✅ | One row per daily-brief tick; payload + timestamps |
+| **Household expenses** (§18) | `expense_sources`, `expense_statements`, `expense_categories`, `expense_transactions`, `merchant_category_cache`, `expense_review_queue` ✅ | Wave EX1 + ongoing EX4–EX8 surface. See §18.1 for schema details |
+| **Domain** | `domain_kb_status` 🛠 | Per-file last_verified, next_refresh_due, last_diff. Currently only a `domain_kb_status_files.json` blob; relational table is planned |
+| **Operations** | `cadence_state` ✅; `tasks_queue` 🛠; `alerts` 🛠 | Scheduling state ships in `cadence_state`; an in-flight-work queue + alert log are planned but not yet modeled |
 
 [^kv-cache-rename]: Originally named `prices_cache`; renamed to `kv_cache` in migration `0011_rename_prices_cache_to_kv_cache` (the table has always been a generic key/value/TTL store keyed by `(provider, key)` — the old name was misleading). See `argosy/state/models.py::KvCacheEntry`. The `CacheKind` enum is a *selector* for the underlying physical table; for `KvCacheEntry`-backed callers (`PRICES` and `UI` both map to the same `kv_cache` table) it is informational only — namespacing comes from the `provider` field, not `kind`. The home-brief endpoint uses `CacheKind.UI` with `provider="advisor_home_brief"` for actual isolation.
 
@@ -1775,6 +1785,10 @@ Alembic, linear chain. Each revision is small and rollback-tested.
 | `0019_user_files_catalog` | `user_files` table (id, user_id FK, sha256, original_name, sanitized_name, mime_type, kind, size_bytes, storage_path, source, turn_uuid, intake_session_id, plan_version_id FK, decision_run_id FK, created_at, deleted_at). Indexes `(user_id, created_at DESC)` + `(sha256)` + `(intake_session_id)`. Partial unique on `(user_id, sha256) WHERE deleted_at IS NULL` — content-addressed dedup that releases on soft-delete. Adds `plan_versions.source_file_id` FK so a baseline plan points at its catalog row. Wave A of provenance (§17). |
 | `0020_decision_phases` | `decision_phases` table (id, decision_run_id FK CASCADE, user_id FK, seq, kind, started_at, finished_at, participants_json, verdict_json, verdict_kind, tldr_md, bundle_dir, created_at). Indexes `(decision_run_id, seq)` + `(user_id, kind, started_at DESC)`. Adds nullable `agent_reports.phase_id` FK so a participating agent run points back at the phase it ran in. Wave C of provenance (§17). |
 | `0021_household_expenses` | Six tables for the household-expenses subsystem (§18 — Wave EX1): `expense_sources` (bank+card registry, unique on `(user_id, kind, external_id)`), `expense_statements` (per-upload metadata, idempotent on `(user_id, source_id, period_start, period_end)`), `expense_categories` (hierarchical taxonomy, NULL `user_id` = system-default rows copied per-user on first ingest), `expense_transactions` (parsed rows; `is_card_payment` + `matched_statement_id` for bank↔card correlation; `refund_of_id` for refund inheritance; `category_source` ∈ `{user, cache, issuer, llm, inherited_from_refund}`), `merchant_category_cache` (per-user `merchant_pattern → category` cache; `source` ∈ `{user, llm, issuer_seed}`), `expense_review_queue` (anomalies + uncategorized rows pending user review — populated in EX2). |
+| `0022_expense_amount_nis_nullable` | Wave EX1.1 stabilization (§18.2): widens `expense_transactions.amount_nis` to allow NULL so foreign-currency rows (Isracard non-NIS, Leumi USD) can leave the column unset rather than storing the raw foreign amount and pretending it's NIS. Correlator + refund_matcher already tolerate NULL. |
+| `0023_fx_rates` | EX1.1 FX cache: `fx_rates(currency, date, rate, source, fetched_at)` storing ILS-per-foreign-currency daily rates. Backs `argosy.services.fx.convert(...)` for foreign→NIS conversion at occurred_on. Populated by BoI client + Frankfurter merge (BoI public endpoint only returns latest snapshot, Frankfurter covers history). |
+| `0024_expense_transaction_tags` | Wave EX5 trip/vacation tagging: adds `expense_transactions.tags TEXT NOT NULL DEFAULT '[]'` — JSON list of strings. `trip:greece-2026-aug`, `vacation:thailand`, `lump-sum:mortgage`, etc. Tags overlay on top of `category_id`; query via `LIKE '%"<tag>"%'`. See §18.5. |
+| `0025_decision_phases_seq_unique` | Promotes the existing `ix_decision_phases_run_seq` index on `decision_phases (decision_run_id, seq)` from non-unique to unique. Enforces the serial-caller contract at the DB level so a concurrent second recorder for the same `(run, kind)` raises `IntegrityError` instead of silently double-writing the row. §17 zigzag fix #3. |
 
 ### 8.6 Decision audit lineage
 
