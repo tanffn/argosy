@@ -1992,20 +1992,37 @@ Stack: FastAPI on `localhost:8000` + Next.js + TypeScript + Tailwind + shadcn/ui
 
 ### 11.1 Screen inventory
 
-Nav order (per `ui/src/components/nav.tsx`): Home → Advisor → Portfolio → Plan → Proposals → Argonaut → Agents → Audit → Domain KB → Settings. The **Advisor** tab was promoted from a buried last-tab to **slot 2** (right after Home) so the gap-tracker / Q&A panel is one click from any page. The legacy `/intake` page redirects to `/advisor`; legacy `/api/intake/*` routes still work unchanged.
+Nav order (per `ui/src/components/nav.tsx`): Home → Advisor → Portfolio → Expenses → Plan → Proposals → Argonaut → Agents → Files → Audit → Domain KB → Settings. The **Advisor** tab was promoted from a buried last-tab to **slot 2** (right after Home) so the gap-tracker / Q&A panel is one click from any page. The legacy `/intake` page redirects to `/advisor`; legacy `/api/intake/*` routes still work unchanged. The **Expenses** + **Files** tabs land mid-nav: Expenses (slot 4) for the household-budget surface (§18.3–§18.6); Files (slot 9) for the catalog browser (§17.3).
 
 | # | Screen | What it shows | Interactions |
 |---|---|---|---|
-| 1 | **Home** | `<AdvisorBriefCard>` (above OVERVIEW); net worth + Δ (week/month/year); concentration scorecard; pending proposals count; plan RED/YELLOW/GREEN; recent agent activity (last 10) | Glance only; click-throughs to detail screens; "Talk to advisor" CTA on the brief card → `/advisor` |
-| 2 | **Advisor** (was Intake) | Two-column persistent panel: chat history + free-form input on the left; color-coded gap tracker (green/amber/red) on the right. Same UI handles first-run intake AND every later check-in | Type a question (user_driven mode) or click a sidebar gap row (gap_driven, focused on `target_field`); stale fields show a "stale: …" marker |
-| 3 | **Portfolio** | Positions per account; per-acct P&L (unrealized + realized YTD); allocation pie vs target pie; drift indicator per category | Click ticker → lots/holding-period detail |
-| 4 | **Plan** | Rendered plan + critique-agent output (findings with evidence); plan version history; diff view between versions | "Re-critique now"; export current plan as md |
-| 5 | **Proposals queue** | Cards per pending proposal: tier badge, account, ticker, action, size, expected impact; full reasoning trail on expand | Approve / Reject / Escalate-tier / Defer; bulk-approve grouped |
-| 6 | **Argonaut** (limited acct) | P&L curve since inception; open positions; recent trades incl. paper fills; per-strategy stats (win rate, avg hold period); mode toggle | Toggle paper/live/queue_only with confirmation modal; deposit/withdraw config |
-| 7 | **Agent activity** | Live timeline of agent invocations; per-agent monthly Claude cost; drill-down into any run (prompt, response, tools) | Click run → full transcript; export run JSON |
-| 8 | **Audit log** | Every decision, override, fill — searchable | Filter by date / ticker / agent / tier / outcome; export CSV |
-| 9 | **Domain KB** | Tree of `domain_knowledge/`; per-file content, last_verified, next_refresh_due, sources; refresh-agent's review queue | "Trigger refresh"; approve/reject proposed updates from refresh agent |
-| 10 | **Settings** | Cadence scheduling; tier thresholds; execution mode per account; model overrides per agent role; alert channels; install path / backup config | Edit + save; some changes require restart, surfaced clearly |
+| 1 | **Home** (`/`) | `<AdvisorBriefCard>` (above OVERVIEW); net worth + Δ (week/month/year); concentration scorecard; pending proposals count; plan RED/YELLOW/GREEN; recent agent activity (last 10) | Glance only; click-throughs to detail screens; "Talk to advisor" CTA on the brief card → `/advisor` |
+| 2 | **Advisor** (`/advisor`, was Intake) | Two-column persistent panel: chat history + free-form input on the left; color-coded gap tracker (green/amber/red) on the right. Same UI handles first-run intake AND every later check-in | Type a question (user_driven mode) or click a sidebar gap row (gap_driven, focused on `target_field`); stale fields show a "stale: …" marker |
+| 3 | **Portfolio** (`/portfolio`) | Positions per account; per-acct P&L (unrealized + realized YTD); allocation pie vs target pie; drift indicator per category | Click ticker → lots/holding-period detail |
+| 4 | **Expenses** (`/expenses`) — see §18.3 | Yearly-focus dashboard: savings-rate trend, top movers YTD-vs-prior, currency mix, yearly summary, dividends/taxes, sources health. Sub-tabs: `/monthly`, `/transactions`, `/sources`, `/merchants`, `/trips`, `/rsu`, `/income` | Month picker (Monthly tab) re-scopes the page; per-row category PATCH; bulk-label / bulk-categorize; tag/untag; FX-mode toggle (per-currency ↔ NIS-converted) |
+| 5 | **Plan** (`/plan`) | Rendered plan + critique-agent output (findings with evidence); plan version history; diff view between versions | "Re-critique now"; export current plan as md |
+| 6 | **Proposals queue** (`/proposals`) | Cards per pending proposal: tier badge, account, ticker, action, size, expected impact; full reasoning trail on expand | Approve / Reject / Escalate-tier / Defer; bulk-approve grouped |
+| 7 | **Argonaut** (`/argonaut`, limited acct) | P&L curve since inception; open positions; recent trades incl. paper fills; per-strategy stats (win rate, avg hold period); mode toggle | Toggle paper/live/queue_only with confirmation modal; deposit/withdraw config |
+| 8 | **Agent activity** (`/agents`) | Live timeline of agent invocations; per-agent monthly Claude cost; drill-down into any run (prompt, response, tools) | Click run → full transcript; export run JSON |
+| 9 | **Files** (`/files`) — see §17.3 | Table of every cataloged user_file: kind icon, size, source, ISO timestamp, decision-run / plan-version backlinks, soft-delete state | Click row → stream the bytes (`/api/files/{id}/content`); deep-link to `/decisions/{id}` for files associated with a run |
+| 10 | **Audit log** (`/audit`) | Every decision, override, fill — searchable | Filter by date / ticker / agent / tier / outcome; export CSV |
+| 11 | **Decision replay** (`/decisions/[id]`) — see §17.3 | Per-decision-run replay surface: metadata, inputs (`user_files` for this run), full-run Mermaid sequence diagram, per-phase collapsible cards (verdict, TLDR, participants, transcript) | Expand/collapse phase cards; "view full replay →" deep-link from Proposals detail |
+| 12 | **Domain KB** (`/domain-kb`) | Tree of `domain_knowledge/`; per-file content, last_verified, next_refresh_due, sources; refresh-agent's review queue | "Trigger refresh"; approve/reject proposed updates from refresh agent |
+| 13 | **Settings** (`/settings`) | Cadence scheduling; tier thresholds; execution mode per account; model overrides per agent role; alert channels; install path / backup config | Edit + save; some changes require restart, surfaced clearly |
+
+**Off-nav pages** (exist in `ui/src/app/` but not in the primary
+nav-bar):
+
+- `/onboarding` — Phase 6 productization landing for a new tenant
+  arriving with a setup token (paste-or-URL); signs in via NextAuth
+  credentials and re-skins the Phase 1 intake for first-time use.
+  Hidden from `nav.tsx` by design; the dashboard becomes accessible
+  once onboarding completes.
+- `/intake` — legacy redirect to `/advisor` (kept for back-compat
+  with old bookmarks).
+- `/decisions/[id]` — surfaced as row 11 above; navigated to via
+  "view full replay →" from Proposals detail or `/files`, not from
+  the nav-bar.
 
 #### `<AdvisorBriefCard>` (Home page)
 
