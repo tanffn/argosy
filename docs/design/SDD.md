@@ -2361,6 +2361,28 @@ Explicitly out of scope through Phase 5:
 
 About **6 months of focused part-time work** (~10 hrs/week) for Phases 0-5. Full-time, ~3 months. The expensive phases are 3 (decision team, lots of prompt engineering) and 4 (broker integration is always slower than expected). Phases 6+ scale with productization ambitions.
 
+### 13.4 Wave streams (parallel work tracks alongside the phase plan)
+
+The Phase 0–6 ladder above is the CFP-aligned roadmap for the trading
+core. In parallel, several **wave streams** have landed code that doesn't
+fit cleanly into one phase. Each wave is its own self-contained shippable
+unit; the streams are independent and run on whichever phase has bandwidth.
+
+| Stream | Waves landed | Section |
+|---|---|---|
+| **Plan synthesis** | W1 distillate → W2 5-phase synthesis → W3 speculation → W4 amendment chat → W5 chat-upload attachments | §6.10–§6.14 |
+| **Provenance & accountability** | A `user_files` catalog → B model integration → C `decision_phases` recorder → D replay endpoint → E UI replay page → F transcript transcript-writer hardening; later §17 zigzag findings #1–#6, #8 closed | §17 |
+| **Household expenses** | EX1 ingest core → EX1.1 stabilization (FX cache, 7 defects) → EX4 dashboard → EX4.x iteration → EX4.2 Leumi USD + Schwab cross-validation → EX5 tags + trips → EX6 yearly/monthly split → EX8 merchant↔category curation | §18 |
+
+**Still scheduled across all streams** (as of 2026-05-15):
+- EX2 (anomaly-detection agent + advisor surfacing + recurring-missed
+  promo flag for Card 2923 — see `memory/project_card_2923_fee_waiver.md`).
+- EX3 (`HouseholdBudgetAnalystAgent` — 10th analyst feeding plan
+  synthesis Phase 1; see §6.11 for the integration point).
+
+The expense streams have been the most actively iterated since EX1
+landed; the SDD §18 prose is the current-state record for those waves.
+
 ---
 
 ## 14. Operational Concerns
@@ -2524,9 +2546,14 @@ Items deliberately deferred — listed here so a fresh agent doesn't waste cycle
 - **Manual UI smokes deliberately skipped.** Per user instruction, the harness does not run manual UI smoke tests during automated waves. The Wave 4 e2e Playwright scaffold exists but has not been executed live; the Wave 2 e2e LLM eval is the latest empirically-passing run.
 - **Live LLM evals beyond Wave 2's e2e.** Wave 3 / Wave 4 e2e LLM evals are not yet wired into CI. The unit + structural tests assert the plumbing; the live LLM smoke is human-driven for now.
 - **Two proposal-creation paths.** Speculation-origin proposals use the synchronous `argosy/orchestrator/proposal_lifecycle.py::create_speculative_proposal` helper because the synthesizer has already chosen ticker/size/exit. Trade-flow proposals (analyst → trader → fund-manager pipeline) use the full async `DecisionFlow._persist_proposal`. Consolidation is deferred until the sync helper grows enough features to justify the merge — see §6.12.
-- **Expense-subsystem foreign-currency `amount_nis` for non-NIS rows** (Wave EX1, §18). The Isracard parser stores the *raw foreign* amount in `expense_transactions.amount_nis` for rows where `currency_orig != "NIS"` (e.g. a $12.18 Netflix charge ends up `amount_nis=12.18`, not `~₪45.07`). `amount_orig` + `currency_orig` preserve the original info; downstream consumers (EX2 anomaly detection, EX3 plan integration) must FX-convert at read time. The parser matches the oracle's behavior exactly so conservation tests are tight (±₪1) — fixing this requires updating both oracle and parser to apply a shared `_USD_NIS_FALLBACK` constant. Deferred to EX2 boundary.
-- **Leumi account-number is hardcoded** (Wave EX1). `argosy/services/expense_ingest/orchestrator.py::_leumi_source_hint` returns `external_id="44745280"` — a placeholder that's correct for the single Phase-1 user. The HTML header carries the real account number; extraction is deferred to multi-tenant productization (Phase 6+ or whenever a second Leumi account joins).
 - **Discount Bank fee-waiver pattern not yet flagged.** Card 2923 (Discount Bank Mastercard) has a free-card promotion: a card-fee charge ₪X paired with a matching discount line ₪X = ₪0 net. The parser preserves both rows (does not pre-net), per the project memory `project_card_2923_fee_waiver.md`. EX2's anomaly detector should fire `recurring_missed` when the discount line disappears without the matching fee also disappearing — that's the user-protection mechanism. Not implemented in EX1; deferred to EX2.
+- **Server-side FX conversion is partially wired.** `argosy.services.fx.convert(...)` is plumbed into `trip-summary` (§18.5) so trip cards show the real NIS-equivalent cost for foreign-currency rows. But `dashboard-overview?fx=nis` + the per-component `fx-mode` toggle (§18.3) still return per-currency totals; the UI converts on the client today. Wiring server-side conversion in those endpoints is a queued follow-up.
+- **RSU haircut soft-match deferred.** §18.4's `rsu-reconciliation` matcher today only matches Schwab disbursements to Leumi USD wires within an exact-USD tolerance. Real data shows a ~27% Israeli-CGT haircut between gross-out-of-Schwab and net-into-Leumi; a soft-match haircut option is queued but unimplemented (a subagent attempt didn't commit; needs redo).
+- **SpreadsheetML XML Leumi exports unsupported.** 7 older Leumi `.xls` files use the XML SpreadsheetML format, not HTML-as-`.xls`. `pd.read_html` fails; `sniff.py` flags them as `UnknownFormatError`. Workaround: re-export from Leumi web in HTML format. Building a SpreadsheetML parser is deferred unless the user needs those specific months.
+
+**Closed since the SDD was last updated** (kept for historical context):
+- **Expense-subsystem foreign-currency `amount_nis`** — CLOSED in EX1.1 (§18.2). Isracard parser sets `amount_nis=None` for non-NIS rows; correlator + refund_matcher handle NULL; migration 0022 made the column nullable.
+- **Leumi account-number hardcoded** — CLOSED in EX1.1 (§18.2). Orchestrator's `_LEUMI_EXPECTED_ACCTS` is now a frozenset accepting both `44745280` (NIS) and `44745200` (USD).
 
 ---
 
