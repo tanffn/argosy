@@ -38,6 +38,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,11 +58,16 @@ log = get_logger(__name__)
 
 # Allowed values for the `source` column. Adding a new ingest path means
 # adding a new entry here AND wiring it through `catalog_upload(...)`.
+# `expense_statement` was added 2026-05-15 — EX1 wave's bank/card statement
+# uploads (REST `/api/expenses/upload` + `argosy expenses backfill` CLI)
+# previously misclassified themselves as `chat_attachment`, which collapsed
+# distinct ingest channels into one provenance label.
 _ALLOWED_SOURCES = frozenset({
     "chat_attachment",
     "intake_upload",
     "intake_file_to_text",
     "cost_basis_import",
+    "expense_statement",
 })
 
 # Allowed values for the `kind` column. Cataloging-side classification
@@ -193,10 +200,53 @@ async def catalog_upload(
             )
             return UserFileDTO.from_orm_row(existing)
 
-    # First-time upload: write the file, then INSERT the row.
+    # First-time upload. Three atomicity guarantees we enforce here,
+    # surfaced over multiple iterations of the §17 zigzag review
+    # (2026-05-15):
+    #
+    #   1. UserFile + AuditLog commit together. Previous (pre-fix)
+    #      version did two separate commits; a crash between them
+    #      left a cataloged file with no audit row, violating the
+    #      SDD §17.4 claim that every catalog write emits
+    #      `provenance.upload.cataloged`. We now `flush()` the row to
+    #      assign its id, `add()` the audit row, `commit()` both as
+    #      one transaction.
+    #
+    #   2. Bytes are present at the final `storage_path` BEFORE we
+    #      commit. So a successful commit implies the file is readable
+    #      (the API won't 410 on a "successful" upload). An earlier
+    #      draft renamed AFTER commit — Codex flagged that as a worse
+    #      failure mode (committed row pointing at missing bytes).
+    #
+    #   3. The bytes get to `storage_path` via write-to-unique-tmp →
+    #      atomic-rename. Two concurrent callers for the same
+    #      `(user_id, sha256)` therefore can't truncate each other's
+    #      in-flight write: each owns its own tmp, and `os.replace`
+    #      is atomic on POSIX and (since Py3.3) Windows. Either rename
+    #      wins — the file content is identical regardless.
+    #
+    #   Failure handling:
+    #     * IntegrityError on flush(): another first-time uploader
+    #       beat us to the partial unique index. The bytes at
+    #       `storage_path` are the winner's bytes (same sha256 ⇒
+    #       identical content). Do NOT delete the file; the winner's
+    #       row points at it.
+    #     * Non-IntegrityError commit failure: bytes at `storage_path`
+    #       are unreferenced. Leave them; a future
+    #       `argosy admin uploads-gc` sweep can scan for files not
+    #       referenced by any `user_files.storage_path` and reclaim
+    #       them. Re-raise the underlying error to the caller.
     storage_path = _storage_path_for(user_id, sha256, sanitized)
     storage_path.parent.mkdir(parents=True, exist_ok=True)
-    storage_path.write_bytes(raw_bytes)
+    tmp_path = storage_path.with_name(
+        f"{storage_path.name}.{uuid.uuid4().hex}.tmp"
+    )
+    tmp_path.write_bytes(raw_bytes)
+    try:
+        os.replace(str(tmp_path), str(storage_path))
+    except OSError:
+        _unlink_quietly(tmp_path)
+        raise
 
     async with db_mod.get_session() as session:
         row = UserFile(
@@ -216,18 +266,15 @@ async def catalog_upload(
         )
         session.add(row)
         try:
-            await session.commit()
+            # flush() assigns row.id without committing, so the audit
+            # row can reference it in the same transaction.
+            await session.flush()
         except IntegrityError:
-            # Race: a concurrent first-time upload of identical bytes by
-            # the same user beat us to the partial unique index. Our file
-            # write was a no-op (same content), but we still need to clean
-            # up our throwaway path and return the survivor row.
+            # Race: a concurrent first-time upload of identical bytes
+            # by the same user beat us to the partial unique index. The
+            # file at storage_path is the winner's file (same content),
+            # so we leave it alone and return the survivor row.
             await session.rollback()
-            try:
-                if storage_path.exists():
-                    storage_path.unlink()
-            except OSError:  # noqa: BLE001
-                pass
             survivor = (
                 await session.execute(
                     select(UserFile).where(
@@ -243,9 +290,6 @@ async def catalog_upload(
             )
             return UserFileDTO.from_orm_row(survivor)
 
-        await session.refresh(row)
-
-        # Emit a single audit_log row. Same session, same commit window.
         audit = AuditLog(
             user_id=user_id,
             event_type="provenance.upload.cataloged",
@@ -269,7 +313,6 @@ async def catalog_upload(
         session.add(audit)
         await session.commit()
         await session.refresh(row)
-
         dto = UserFileDTO.from_orm_row(row)
 
     log.info(
@@ -277,6 +320,15 @@ async def catalog_upload(
         user_id=user_id, sha256=sha256, file_id=dto.id, source=source, kind=kind,
     )
     return dto
+
+
+def _unlink_quietly(path: Path) -> None:
+    """Best-effort file cleanup; never raises."""
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
 
 
 __all__ = [

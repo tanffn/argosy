@@ -93,23 +93,26 @@ def backfill(
 
 
 def _maybe_async_catalog_upload(s, *, user_id, original_name, contents):
-    """Adapter for ``catalog_upload`` whether sync or async."""
-    import inspect
+    """Adapter that bridges the sync CLI loop to the async ``catalog_upload``.
+
+    `catalog_upload` is async (T19; it manages its own DB session via
+    ``db_mod.get_session()`` and does NOT take a SQLAlchemy session
+    argument). The CLI worker thread drives it via ``asyncio.run`` so
+    the surrounding sync code in the corpus walker stays simple. The
+    leading ``s`` arg is unused here but kept for call-site stability.
+
+    Source is ``expense_statement`` (EX1 wave; added to
+    ``_ALLOWED_SOURCES`` 2026-05-15) — distinct from chat attachments.
+    """
+    del s  # explicit: not used; signature stable for callers
+    import asyncio
     from argosy.services.file_catalog import catalog_upload
-    if inspect.iscoroutinefunction(catalog_upload):
-        import asyncio
-        # catalog_upload is async (T19) — manages its own DB session via
-        # db_mod.get_session(). Does NOT take a SQLAlchemy session argument.
-        return asyncio.run(catalog_upload(
-            user_id=user_id, original_name=original_name,
-            raw_bytes=contents, mime_type="application/octet-stream",
-            kind="other", source="chat_attachment",
-        ))
-    return catalog_upload(
-        s, user_id=user_id, original_name=original_name,
-        contents=contents, mime_type="application/octet-stream",
-        kind="other", source="chat_attachment",
-    )
+
+    return asyncio.run(catalog_upload(
+        user_id=user_id, original_name=original_name,
+        raw_bytes=contents, mime_type="application/octet-stream",
+        kind="other", source="expense_statement",
+    ))
 
 
 # ---------------------------------------------------------------------------

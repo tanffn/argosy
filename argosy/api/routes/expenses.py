@@ -81,7 +81,7 @@ def upload_statements(
                 original_name=upload.filename,
                 mime_type=upload.content_type or "application/octet-stream",
                 kind="other",
-                source="chat_attachment",
+                source="expense_statement",
             ))
         except Exception as e:
             results.append(UploadFileResult(
