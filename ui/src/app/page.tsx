@@ -1,5 +1,6 @@
 "use client";
 
+import { Anchor } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AdvisorBriefCard } from "@/components/advisor-brief-card";
@@ -475,35 +476,28 @@ export default function Home() {
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
-      {/* Brand hero card — pass-2: glass card style with subtle blur and a
-          gradient border via a ::before pseudo-element implemented through
-          a dedicated absolutely-positioned div. */}
+      {/* Brand hero card. Pared-down treatment after the Plan/Codex
+          ideation pass: the prior version stacked three gradient
+          flourishes (.argosy-hero-ring + top-edge stripe + the body
+          radial glow) in 500px of viewport, which both engines
+          flagged as competing for attention. Kept ONE atmospheric
+          (the body radial), replaced the rest with a single
+          left-edge accent rule in the brand-green semantic token.
+          The 🚢 emoji also got swapped for a Lucide Anchor icon in a
+          tinted CardIcon-style square — same nautical metaphor,
+          finance-serious typography. */}
       <section
-        className="relative rounded-xl overflow-hidden bg-card/80 backdrop-blur-sm shadow-sm"
+        className="relative rounded-xl overflow-hidden bg-card/80 backdrop-blur-sm border border-border border-l-2 border-l-success/60"
         data-slot="brand-hero"
       >
-        {/* Gradient border ring (1px) — drawn as an absolutely-positioned
-            div using padding + masking, so we can keep the inner content
-            on a normal flow. The gradient/mask is in a CSS class
-            (.argosy-hero-ring in globals.css), NOT an inline style, so
-            the Dark Reader extension's inline-style rewriting can't
-            produce hydration mismatches. */}
-        <div
-          aria-hidden
-          suppressHydrationWarning
-          className="argosy-hero-ring pointer-events-none absolute inset-0 rounded-xl p-px"
-        />
-        <div
-          aria-hidden
-          className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-emerald-500/40 via-cyan-500/40 to-transparent"
-        />
         <div className="relative px-6 py-5 flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-start gap-4 min-w-0">
             <span
-              className="font-mono text-3xl leading-none select-none"
+              className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-success/30 bg-success/10 text-success"
               aria-hidden
+              suppressHydrationWarning
             >
-              🚢
+              <Anchor className="h-5 w-5" />
             </span>
             <div className="min-w-0">
               <h1 className="font-mono font-bold text-2xl leading-tight">
@@ -518,15 +512,12 @@ export default function Home() {
                 <StatusPill tone="neutral" mono>
                   v0.1.0
                 </StatusPill>
-                <span className="text-muted-foreground/60 text-xs">·</span>
                 <StatusPill tone="neutral" mono>
                   {AGENT_FLEET_SIZE} agents
                 </StatusPill>
-                <span className="text-muted-foreground/60 text-xs">·</span>
                 <StatusPill tone="neutral" mono>
                   {CADENCE_LOOPS} cadence loops
                 </StatusPill>
-                <span className="text-muted-foreground/60 text-xs">·</span>
                 <StatusPill tone="accent" mono>
                   paper mode
                 </StatusPill>

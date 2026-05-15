@@ -124,17 +124,19 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
   return (
     <section
       className={cn(
-        "relative rounded-lg overflow-hidden bg-card/80 backdrop-blur-sm border border-border",
+        // Single-accent treatment matching the brand-hero pattern:
+        // the prior top-edge gradient stripe was one of three
+        // competing atmospherics in the first 500px of viewport
+        // (Plan/Codex ideation pass flagged it). Replaced with a
+        // left-edge rule in the info semantic token — echoes the
+        // advisor identity without competing with the brand-hero
+        // green left rule above.
+        "relative rounded-lg overflow-hidden bg-card/80 backdrop-blur-sm border border-border border-l-2 border-l-info/60",
         className,
       )}
       data-slot="advisor-brief-card"
       aria-label="Advisor brief"
     >
-      {/* Gradient accent stripe — matches the brand hero ring style. */}
-      <div
-        aria-hidden
-        className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-info/40 via-success/40 to-transparent"
-      />
       <div className="relative px-5 py-4 flex flex-col gap-3">
         {/* Header row: avatar/icon + headline + CTA */}
         <div className="flex items-start justify-between gap-3 flex-wrap">
