@@ -476,13 +476,13 @@ Argosy is two things glued together: an always-on background process and a dashb
 
 **The engine and its cadences** ([06-cadence-loops.png](diagrams/06-cadence-loops.png)) is the always-on Python orchestrator. Each cadence loop polls cheaply (read prices, scan news headlines, recompute concentration) and only invokes an LLM when a trigger fires. Background processes (`process_cooling`, daily backup, watchlist refresh, fill reconciliation) keep the rest of the system honest.
 
-**The agent fleet** ([04-agent-fleet.png](diagrams/04-agent-fleet.png)) is 5 decision teams (analysts → researchers → trader → risk → fund manager) plus 4 cross-cutting agents (intake, domain refresh, audit, watchlist). Each agent has a default model assignment (Haiku / Sonnet / Opus) tuned to its role.
+**The agent fleet** ([04-agent-fleet.png](diagrams/04-agent-fleet.png)) is 5 decision teams (analysts → researchers → trader → risk → fund manager) plus several cross-cutting agents (intake, advisor, intake_extractor, domain_refresh, audit, watchlist, plan_distiller, plan_synthesizer, household_categorizer). Each agent has a default model assignment (Sonnet for most analysts / cross-cutting roles, Opus for adversarial researchers / trader / fund_manager / audit / plan_synthesizer) tuned to its role; see §3.8 for the canonical policy. Haiku is intentionally not a default for any role today (instruction-following ceiling on Argosy's structured prompts) but stays available as a per-role override for cost-sensitive tenants.
 
 **Decision tiers** ([05-decision-tiers.png](diagrams/05-decision-tiers.png)) are the four review-depth grades. T0 is trader-only with rule-based preflight. T1 is 3 analysts plus a one-round debate plus one risk perspective. T2 runs the whole stack. T3 adds plan-critique sign-off, a 24h cooling-off, and a next-day re-check.
 
 **Execution & approval** ([10-execution-routing.png](diagrams/10-execution-routing.png)) is a routing matrix indexed by tier × account × mode. Most cells route to the human queue; a few (small trades inside the limited account, on live mode) auto-execute. `queue_only` mode disables every auto cell as a single-flag pause.
 
-**The dashboard** is a Next.js app at `localhost:1337` with 10 screens (Home, **Advisor**, Portfolio, Plan, Proposals queue, Argonaut, Agent Activity, Audit Log, Domain KB, Settings). The Advisor sits in nav slot 2 (right after Home) and exposes a persistent gap tracker + free-form chat surface; the home page also carries an `<AdvisorBriefCard>` glance widget composed from the most recent gap, daily-brief output, and investor-event signal. It reads state and offers approval actions; it never runs the engine. WebSocket events keep it live without page reloads.
+**The dashboard** is a Next.js app at `localhost:1337` with 13 primary nav screens (Home, **Advisor**, Portfolio, **Expenses**, Plan, Proposals queue, Argonaut, Agent Activity, **Files**, Audit Log, Domain KB, Settings — Decision replay at `/decisions/[id]` is reached via deep-link, not nav). The Advisor sits in nav slot 2 (right after Home) and exposes a persistent gap tracker + free-form chat surface; the home page also carries an `<AdvisorBriefCard>` glance widget composed from the most recent gap, daily-brief output, and investor-event signal. Expenses (slot 4) is the household-budget surface (§18.3–§18.6) with sub-tabs for Monthly / Transactions / Sources / Merchants / Trips / RSU / Income; Files (slot 9) is the provenance catalog browser (§17.3). The UI reads state and offers approval actions; it never runs the engine. WebSocket events keep it live without page reloads.
 
 ### 0.5 A worked example
 
@@ -3880,7 +3880,7 @@ interview. One question at a time. Conversational, calm, professional.
 Prioritize critical info first (tax residency, family, income, assets, savings
 rate).
 
-Current stage: {stage_n_of_6}
+Current stage: {stage_n_of_11}   # 11-stage CFP-aligned catalog (see §6.6)
 Stage purpose: {stage_purpose}
 
 Information you have so far: {accumulated_context}
