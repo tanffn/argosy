@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -165,6 +165,85 @@ def test_trip_summary_aggregates(client_with_db):
     # Currency breakdown exists for NIS.
     nis = [c for c in body["currency_breakdown"] if c["currency"] == "NIS"]
     assert nis and nis[0]["total"] == pytest.approx(200.0)
+
+
+def test_trip_summary_nets_refunds_against_charges(client_with_db):
+    """A book+refund pair under the same trip tag must net to zero — same
+    contract as the EX8 merchant Net Total fix.
+
+    Regression: previously trip_summary summed absolute amount_nis values,
+    so a ₪2,463 booking + matching ₪2,463 refund counted as ₪4,926 instead
+    of ₪0, doubling the headline trip cost. Real example surfaced from
+    `vacation:romania` (Cars on Booking booked + refunded × 3).
+    """
+    user_id = "u_trip_refund"
+    ids = _seed(client_with_db, user_id=user_id, n=2)
+    # Both txs default to direction='debit' (₪100 each). Flip the second
+    # to a refund of the first — same amount, same tag.
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        refund_tx = s.query(ExpenseTransaction).filter_by(id=ids[1]).one()
+        refund_tx.direction = "credit"
+        refund_tx.tx_type = "refund"
+        s.commit()
+    for tid in ids:
+        client_with_db.post(
+            f"/api/expenses/transactions/{tid}/tags/add",
+            json={"user_id": user_id, "tag": "trip:cancun"},
+        )
+    r = client_with_db.get(
+        f"/api/expenses/trip-summary?user_id={user_id}&tag=trip:cancun"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transaction_count"] == 2  # both rows still listed
+    assert body["total_nis"] == pytest.approx(0.0)  # but net cost is zero
+    # Per-category total also nets to zero.
+    cats = body["by_category"]
+    assert len(cats) == 1
+    assert cats[0]["total_nis"] == pytest.approx(0.0)
+    # Currency breakdown for NIS nets to zero too.
+    nis = [c for c in body["currency_breakdown"] if c["currency"] == "NIS"]
+    assert nis and nis[0]["total"] == pytest.approx(0.0)
+
+
+def test_trip_summary_converts_foreign_currency_into_total_nis(client_with_db):
+    """A USD-native row with no amount_nis must still contribute to total_nis
+    via fx.convert. Regression: before the conversion was wired, foreign-only
+    rows had amount_nis=None and dropped out of the headline, so a USD-only
+    flight on a trip showed `total_nis = 0` even though the trip clearly cost
+    money. Real example: vacation:romania (Anima Wings $1,233.80 flight).
+    """
+    user_id = "u_trip_fx"
+    ids = _seed(client_with_db, user_id=user_id, n=1)
+    # Seed an FX rate (ILS per USD) for the seed-default date 2026-05-01.
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        from argosy.state.models import FxRate
+        s.add(FxRate(
+            currency="USD", date=date(2026, 5, 1), rate=Decimal("3.70"),
+            source="test", fetched_at=datetime(2026, 5, 1),
+        ))
+        # Flip the only seeded row from NIS-native to USD-native.
+        tx = s.query(ExpenseTransaction).filter_by(id=ids[0]).one()
+        tx.amount_nis = None
+        tx.currency_orig = "USD"
+        tx.amount_orig = Decimal("100")  # $100 -> ₪370 at 3.70
+        s.commit()
+    client_with_db.post(
+        f"/api/expenses/transactions/{ids[0]}/tags/add",
+        json={"user_id": user_id, "tag": "trip:tokyo"},
+    )
+    r = client_with_db.get(
+        f"/api/expenses/trip-summary?user_id={user_id}&tag=trip:tokyo"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["transaction_count"] == 1
+    assert body["total_nis"] == pytest.approx(370.0, rel=1e-3)
+    # Currency breakdown reports the foreign currency natively.
+    usd = [c for c in body["currency_breakdown"] if c["currency"] == "USD"]
+    assert usd and usd[0]["total"] == pytest.approx(100.0)
 
 
 def test_transactions_filter_by_tag(client_with_db):

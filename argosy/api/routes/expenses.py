@@ -18,6 +18,7 @@ from sqlalchemy import case, extract, func, or_, select as sa_select
 from sqlalchemy.orm import Session, aliased
 
 from argosy.api.routes.plan import get_db    # reuse the existing get_db dep
+from argosy.services import fx
 from argosy.services.expense_ingest.orchestrator import ingest_user_file
 from argosy.services.file_catalog import catalog_upload
 from argosy.state.models import (
@@ -2127,29 +2128,55 @@ def trip_summary(
     period_start: date | None = None
     period_end: date | None = None
     for r in rows:
+        # amount_nis is stored as absolute magnitude; `direction` tells us
+        # whether the row moved money out (debit) or in (credit). For a
+        # "trip cost" view, credits (refunds, partial cancellations, friend
+        # reimbursements) must NET against the charges — otherwise a
+        # book+refund pair counts twice and inflates the total. Matches the
+        # EX8 merchant Net Total fix.
+        sign = -1 if r.direction == "credit" else 1
+        # Resolve a per-row NIS value:
+        #   1. amount_nis if the parser already filled it (NIS-native rows).
+        #   2. Otherwise fx.convert from (currency_orig, amount_orig) at
+        #      occurred_on. Falls back to 0 if FX unavailable so a missing
+        #      rate doesn't crash the whole trip view.
+        row_nis: float = 0.0
         if r.amount_nis is not None:
-            total_nis += float(r.amount_nis)
+            row_nis = float(r.amount_nis)
+        elif r.currency_orig and r.amount_orig is not None:
+            try:
+                row_nis = float(fx.convert(
+                    db, float(r.amount_orig), r.currency_orig, "ILS", r.occurred_on,
+                ))
+            except fx.FXRateUnavailable:
+                row_nis = 0.0
+        total_nis += sign * row_nis
         # Currency breakdown — NIS for native, original currency for foreign.
+        # Reports raw amounts (not signed-by-direction-applied to the absolute,
+        # but actually signed too so refunds net here as well — keeps the
+        # breakdown consistent with the headline).
         if r.currency_orig:
-            ccy_acc[r.currency_orig] = ccy_acc.get(r.currency_orig, 0.0) + float(
+            ccy_acc[r.currency_orig] = ccy_acc.get(r.currency_orig, 0.0) + sign * float(
                 r.amount_orig or 0,
             )
         elif r.amount_nis is not None:
-            ccy_acc["NIS"] = ccy_acc.get("NIS", 0.0) + float(r.amount_nis)
+            ccy_acc["NIS"] = ccy_acc.get("NIS", 0.0) + sign * float(r.amount_nis)
         if r.category_id and r.category_id in cat_by_id:
             slug, label_en = cat_by_id[r.category_id]
             entry = cat_acc.setdefault(slug, {
                 "slug": slug, "label_en": label_en,
                 "total_nis": 0.0, "transaction_count": 0,
             })
-            entry["total_nis"] = float(entry["total_nis"]) + float(r.amount_nis or 0)
+            entry["total_nis"] = float(entry["total_nis"]) + sign * row_nis
             entry["transaction_count"] = int(entry["transaction_count"]) + 1
         if period_start is None or r.occurred_on < period_start:
             period_start = r.occurred_on
         if period_end is None or r.occurred_on > period_end:
             period_end = r.occurred_on
 
-    cat_base = total_nis or 1.0
+    # Use absolute net for the percent denominator so refund-dominated trips
+    # don't produce wildly negative percents or div-by-zero.
+    cat_base = abs(total_nis) or 1.0
     by_category = [
         CategorySpend(
             slug=str(e["slug"]), label_en=str(e["label_en"]),
