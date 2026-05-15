@@ -893,6 +893,10 @@ cadences:
     enabled: true
     cron: "0 9 * * *"
     timezone: "Asia/Jerusalem"
+  plan_watcher:
+    enabled: true
+    cron: "0 7 * * *"
+    timezone: "Asia/Jerusalem"
   weekly_review:
     enabled: true
     cron: "0 18 * * SUN"
