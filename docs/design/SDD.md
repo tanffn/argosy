@@ -2824,15 +2824,21 @@ GitHub / IDE markdown previews and serve as the canonical visual.
 
 ## 18. Household Budget & Cash-Flow Analysis
 
-Lands across Waves EX1–EX4. EX1 (this wave) ingests bank + card statements
-through `catalog_upload`, correlates bank credit-card-payment lines to
-itemized card statements via the `אסמכתא` reference column, categorizes
-transactions via a hybrid (issuer-seeded + cache + LLM at confidence ≥
-0.85) pipeline, and exposes the data via `/api/expenses/*`.
+The largest section of the SDD by shipped surface area. Spans ingest
+(EX1), stabilization (EX1.1), dashboard (EX4, EX4.x, EX6), Leumi-USD
++ Schwab cross-validation (EX4.2), trip/vacation tags (EX5), and the
+merchant-category curation tab (EX8). Two waves remain scheduled:
+EX2 (anomaly-detection agent + advisor surfacing) and EX3
+(`HouseholdBudgetAnalystAgent` feeding plan synthesis as the 10th
+analyst).
 
-Full design: `docs/superpowers/specs/2026-05-09-household-expenses-design.md`.
-EX2 (anomaly detection + advisor surfacing), EX3 (HouseholdBudgetAnalystAgent
-feeding plan synthesis), and EX4 (UI) are scheduled but not yet implemented.
+Full original design spec (preserved for historical context, but the
+implementation has moved past it in places):
+`docs/superpowers/specs/2026-05-09-household-expenses-design.md`.
+
+This SDD section is the **current-state** record. The §18.0 mermaid
+diagrams cover the original ingest architecture; the section bodies
+below cover what's landed and what each wave contributed.
 
 ### 18.0 Visual overview (Mermaid)
 
@@ -3093,21 +3099,30 @@ flowchart TD
 
 #### 18.0.8 Wave roadmap
 
-Where EX1 sits in the household-expenses arc. Each wave gates on the prior; EX1's gate (deterministic conservation tests on real samples) is met.
+Current state (2026-05-15): EX1 + EX1.1 + EX4 + EX4.x + EX4.2 + EX5 +
+EX6 + EX8 have landed. EX2 + EX3 remain on the roadmap. Diagram below
+reflects what's in `main` today.
 
 ```mermaid
 flowchart LR
   EX1[EX1 — Ingest Core<br/>✅ landed]
+  EX11[EX1.1 — Stabilization<br/>✅ landed]
+  EX4[EX4 — Dashboard<br/>✅ landed]
+  EX42[EX4.2 — Leumi USD + Schwab<br/>✅ landed]
+  EX5[EX5 — Tags + Trips<br/>✅ landed]
+  EX6[EX6 — Yearly/Monthly split<br/>✅ landed]
+  EX8[EX8 — Merchant↔Category<br/>✅ landed]
   EX2[EX2 — Anomaly + Advisor<br/>scheduled]
   EX3[EX3 — Plan Integration<br/>scheduled]
-  EX4[EX4 — UI<br/>scheduled]
 
-  EX1 --> EX2 --> EX3 --> EX4
+  EX1 --> EX11 --> EX4 --> EX42
+  EX4 --> EX5 --> EX6 --> EX8
+  EX8 --> EX2 --> EX3
 
   subgraph EX1Items["EX1 deliverables"]
     direction TB
     E1a[Migration 0021 — 6 tables]
-    E1b[4 working parsers<br/>Leumi/Isracard/Max/Discount]
+    E1b[5 working parsers<br/>Leumi NIS + Leumi USD<br/>Isracard / Max / Discount]
     E1c[Ingest pipeline<br/>parse → correlate → categorize → match refunds]
     E1d[REST /api/expenses/*<br/>+ CLI argosy expenses]
     E1e[HouseholdCategorizerAgent<br/>Sonnet, batched]
@@ -3115,10 +3130,52 @@ flowchart LR
   end
   EX1 -.- EX1Items
 
+  subgraph EX11Items["EX1.1 deliverables (§18.2)"]
+    direction TB
+    E11a[7 defects closed<br/>see §18.2 list]
+    E11b[fx/ module + migration 0023]
+    E11c[Migration 0022<br/>amount_nis nullable]
+  end
+  EX11 -.- EX11Items
+
+  subgraph EX4Items["EX4 + EX4.x + EX6 deliverables (§18.3)"]
+    direction TB
+    E4a["/expenses (yearly) +<br/>/expenses/monthly routes"]
+    E4b[dashboard-overview +<br/>dashboard-monthly endpoints]
+    E4c[expense_dashboard.py<br/>7 aggregation helpers]
+    E4d[Recurring vs one-off<br/>partition; refunds vs income]
+  end
+  EX4 -.- EX4Items
+
+  subgraph EX42Items["EX4.2 deliverables (§18.4)"]
+    direction TB
+    E42a[leumi_usd.py parser]
+    E42b[rsu_reconciliation module<br/>+ /expenses/rsu UI]
+    E42c[Schwab CSV cross-validation<br/>read-only]
+  end
+  EX42 -.- EX42Items
+
+  subgraph EX5Items["EX5 deliverables (§18.5)"]
+    direction TB
+    E5a[Migration 0024<br/>tags JSON column]
+    E5b[Tag CRUD + bulk-label endpoints]
+    E5c[/expenses/trips tab<br/>+ trip-summary endpoint]
+  end
+  EX5 -.- EX5Items
+
+  subgraph EX8Items["EX8 deliverables (§18.6)"]
+    direction TB
+    E8a[/expenses/merchants tab]
+    E8b[POST /categories<br/>sub-category creation]
+    E8c[Hierarchical category picker]
+    E8d[apply_merchant_category<br/>preserves user overrides]
+  end
+  EX8 -.- EX8Items
+
   subgraph EX2Items["EX2 plan"]
     direction TB
-    E2a[anomaly_detector<br/>6 anomaly kinds]
-    E2b[expense_review_queue<br/>UI surface]
+    E2a[anomaly_detector agent]
+    E2b[expense_review_queue UI]
     E2c[advisor gap-driven<br/>'Spend review' group]
     E2d[Discount fee-waiver flag<br/>per project memory]
   end
@@ -3132,34 +3189,36 @@ flowchart LR
   end
   EX3 -.- EX3Items
 
-  subgraph EX4Items["EX4 plan"]
-    direction TB
-    E4a["/expenses page<br/>Recharts stacked-bar"]
-    E4b["<CashFlowTile> on Home"]
-    E4c["Plan page 'Cash-flow basis'<br/>panel"]
-  end
-  EX4 -.- EX4Items
-
   style EX1 fill:#9f9
+  style EX11 fill:#9f9
+  style EX4 fill:#9f9
+  style EX42 fill:#9f9
+  style EX5 fill:#9f9
+  style EX6 fill:#9f9
+  style EX8 fill:#9f9
   style EX2 fill:#fce
   style EX3 fill:#fce
-  style EX4 fill:#fce
 ```
 
 ### 18.1 EX1 surface (ingest core) — landed
 
-**Schema (migration 0021):** Six new tables — `expense_sources` (registered banks + cards), `expense_statements` (per-upload metadata, idempotent on `(user_id, source_id, period_start, period_end)`), `expense_transactions` (parsed rows with `is_card_payment` + `matched_statement_id` + `refund_of_id` + `category_source` ∈ {`user`, `cache`, `issuer`, `llm`, `inherited_from_refund`}), `expense_categories` (hierarchical, NULL `user_id` = system-default rows lazily copied per-user on first ingest — see `argosy.services.expense_ingest.taxonomy_seed`), `merchant_category_cache` (per-user `merchant_pattern → category` dedup), `expense_review_queue` (anomalies + uncategorized rows pending user review — populated in EX2). See §8.5.
+**Schema:** Initially six new tables via **migration 0021** (`expense_sources`, `expense_statements`, `expense_transactions`, `expense_categories`, `merchant_category_cache`, `expense_review_queue`). Subsequent migrations extended the model: **0022** made `expense_transactions.amount_nis` nullable (foreign-currency Isracard rows now leave it NULL); **0024** added `expense_transactions.tags TEXT NOT NULL DEFAULT '[]'` for trip/vacation/lump-sum tagging (EX5). See §8.5 for the full column list. (FX cache `fx_rates` from migration 0023 lives in §18.2; that table is a sibling, not part of the `expense_*` family.)
 
 **Parsers** (`argosy/services/expense_ingest/parsers/`):
-- **Working: 4** — `leumi_osh.py` (HTML-as-`.xls` current-account export), `isracard.py` (`פירוט עסקאות` xlsx; multi-currency, refund/standing-order detection), `max.py` (Max card xlsx; preserves `ענף` issuer-category), `discount.py` (Discount Bank Mastercard 2-sheet xlsx; preserves `קטגוריה` issuer-category, handles refund-by-cancellation note `ביטול עסקה`).
+- **Working: 5** —
+  - `leumi_osh.py` (HTML-as-`.xls` current-account export, NIS),
+  - `leumi_usd.py` (Leumi USD account; named Hebrew columns, `DD/MM/YY` 2-digit-year dates; added EX4.2 — see §18.4),
+  - `isracard.py` (`פירוט עסקאות` xlsx; multi-currency, refund/standing-order detection),
+  - `max.py` (Max card xlsx; preserves `ענף` issuer-category; takes `last4_hint` per EX1.1),
+  - `discount.py` (Discount Bank Mastercard 2-sheet xlsx; preserves `קטגוריה` issuer-category, handles refund-by-cancellation note `ביטול עסקה`, fee-waiver pattern monitored per memory `project_card_2923_fee_waiver`).
 - **Stubs: 3** — `cal.py`, `amex.py`, `diners.py` raise `NotImplementedError`. Sniffer routes their files to these names but ingest fails clearly.
-- **Format detection** (`sniff.py::detect_format`): content-based, filename is hint only. HTML prefix → Leumi; xlsx + sheet `פירוט עסקאות` → Isracard; xlsx + sheet starts `לאומי לישראל` → Max; xlsx + sheet `עסקאות במועד החיוב` → Discount.
+- **Format detection** (`sniff.py::detect_format`): content-based, filename is hint only. HTML prefix → Leumi NIS; xlsx + sheet `פירוט עסקאות` → Isracard; xlsx + sheet starts `לאומי לישראל` → Max; xlsx + sheet `עסקאות במועד החיוב` → Discount; xlsx + `דולר ארה"ב` near header → Leumi USD. SpreadsheetML XML (older Leumi `.xls` exports) is recognized as unsupported (`UnknownFormatError`); 7 such files in the user's corpus deferred unless re-exported in HTML.
 
-**Ingest pipeline** (`orchestrator.py::ingest_user_file(session, user_id, file_id)`, idempotent on `user_files.id`): sniff → parse → register/get source → persist statement → persist transactions (content-hash dedup) → bank↔card correlate (via `אסמכתא` reference + amount/date fallback; spec §17.1) → resolve categories (cascade: user override → issuer-seed → cache → LLM @ ≥ 0.85 confidence; refunds filtered out) → match refunds to prior debits (inherit category). Emits `expense.statement.parsed` on success, `expense.statement.failed` on parse error.
+**Ingest pipeline** (`orchestrator.py::ingest_user_file(session, user_id, file_id, last4_hint=None)`, idempotent on `user_files.id`): sniff → parse → register/get source → persist statement → persist transactions (content-hash dedup) → bank↔card correlate (via `אסמכתא` reference + amount/date fallback; spec §17.1) → resolve categories (cascade: user override → issuer-seed → cache → LLM @ ≥ 0.85 confidence; refunds filtered out) → match refunds to prior debits (inherit category). Emits `expense.statement.parsed` on success, `expense.statement.failed` on parse error.
 
 **Categorizer agent** (`argosy.agents.household_categorizer.HouseholdCategorizerAgent`, Sonnet, batched ~50 tx/call): see §3.6. Confidence threshold 0.85; below → `uncategorized`. Issuer-seed Hebrew→slug map in `services/expense_ingest/issuer_seed.py` covers Max `ענף` + Discount `קטגוריה`.
 
-**REST surface** at `/api/expenses/*` (see §11.7): upload (multi-file, sync route — runs in worker thread so the inner `asyncio.run()` in `_invoke_llm` doesn't collide with the request loop), sources/transactions/categories/monthly-summary listings, transaction category PATCH (user override + bulk re-bucket).
+**REST surface** at `/api/expenses/*` (see §11.7): the EX1 baseline is upload (multi-file, sync route — runs in worker thread so the inner `asyncio.run()` in `_invoke_llm` doesn't collide with the request loop), sources/transactions/categories/monthly-summary listings, and transaction category PATCH (user override + bulk re-bucket). EX4–EX8 expanded this substantially — see §18.3 (dashboard endpoints), §18.4 (RSU reconciliation), §18.5 (tags + trip-summary), §18.6 (merchant↔category curation).
 
 **CLI** (`argosy/cli/expenses_admin.py`): `argosy expenses verify-file <path>` (oracle vs parser side-by-side, exit 0/1/2), `argosy expenses backfill --user-id … --dir … [--dry-run]` (bulk-ingest a tree), `argosy expenses issuer-coverage` (lists Max/Discount category values seen in the DB but unmapped — extends `_UNAMBIGUOUS`/`_AMBIGUOUS` driven by real data).
 
@@ -3168,21 +3227,214 @@ flowchart LR
 - `tests/test_expense_pipeline_invariants.py` — LLM-mocked conservation: total spend equals raw sum; card-payment dedup holds; refund inheritance consistent.
 - `tests/test_household_categorizer_e2e.py` (`@pytest.mark.llm_eval`, opt-in) — live LLM smoke covering 6 hand-picked Israeli household merchants.
 
-**Coverage of real samples** (Ariel + Noga, as of HEAD):
-- 2 Leumi current-account exports
-- 33 Isracard files (Ariel's 1266: 16 + Noga's 0235: 17)
-- 17 Max files (Ariel's 6225)
-- 2 Discount files (Noga's 2923, per-year)
-All conservation-passing. ~$2-5 of LLM categorization spend on a one-time `argosy expenses backfill` of the full corpus.
+**Coverage of real samples** (Ariel + Noga; 6 distinct sources, 56 statements, 2,179 transactions as of 2026-05-15):
+- 2 Leumi sources — NIS current account (`44745280`) and USD brokerage (`44745200`); 4 statements / 413 transactions combined (214 NIS + 199 USD).
+- 33 Isracard files across 2 sources — Ariel's `1266` (325 tx) + Noga's `0235` (89 tx); 414 transactions total.
+- 17 Max files (Ariel's `6225`); 394 transactions.
+- 2 Discount files (Noga's `2923`, per-year period structure with 958 transactions across the two files).
 
-**Open at the EX1/EX2 boundary** (full list in §15.4):
-- Foreign-currency `amount_nis` stores raw foreign amount (not NIS-converted) for non-NIS Isracard rows.
-- Leumi account-number is hardcoded `"44745280"` — multi-tenant fix deferred.
-- Discount Bank fee-waiver anomaly (matching card-fee + discount-rebate row pair) is preserved by the parser but the `recurring_missed` anomaly detection that flags promo expiry is EX2 work.
+All conservation-passing. ~$2-5 of LLM categorization spend on the one-time `argosy expenses backfill` over the full corpus.
 
-### 18.2 EX2/EX3/EX4 outline
+**Open at the EX1/EX2 boundary** (closed items removed; still-open list):
+- Discount Bank fee-waiver anomaly (matching card-fee + discount-rebate row pair) is preserved by the parser, but the `recurring_missed` anomaly detection that flags promo expiry is EX2 work.
+- SpreadsheetML XML Leumi exports (7 older `.xls` files) raise `UnknownFormatError`; supporting them needs a SpreadsheetML branch in `sniff.py` + a parser. Deferred.
 
-EX2 (anomaly detection + advisor surfacing), EX3 (`HouseholdBudgetAnalystAgent` feeding plan synthesis as the 10th analyst — see §6.11 for the Phase 1 fleet integration point), and EX4 (`/expenses` UI page + `<CashFlowTile>` on home + Plan-page "Cash-flow basis" panel) are scheduled. Full design at `docs/superpowers/specs/2026-05-09-household-expenses-design.md`. EX2 unblocks the user-flagged Discount Bank fee-waiver flag — the spec memo for that is at `memory/project_card_2923_fee_waiver.md`.
+**Closed at the EX1/EX2 boundary** (resolved in EX1.1 — see §18.2):
+- Foreign-currency `amount_nis` stored raw foreign amount — fixed: Isracard parser now sets `amount_nis=NULL` for non-NIS rows; correlator + refund-matcher handle NULL; migration 0022 made the column nullable.
+- Leumi account-number was hardcoded `"44745280"` — fixed: orchestrator's `_LEUMI_EXPECTED_ACCTS` is now a frozenset accepting both `44745280` (NIS) and `44745200` (USD).
+
+### 18.2 EX1.1 stabilization — landed
+
+Defect-closure wave on top of EX1 (see the SDD handover note for the
+full enumeration). Closed seven issues identified during the first
+real-corpus backfill:
+
+1. Max `external_id` inference — parser now takes a `last4_hint`, the
+   CLI walker infers from parent folder name, REST upload requires a
+   `card_last4` form field for Max issuer.
+2. Foreign `amount_nis` semantics — Isracard parser sets `None` for
+   non-NIS rows; correlator + refund-matcher tolerate NULL; migration
+   0022 made the column nullable.
+3. Leumi account-number multi-source — `_LEUMI_EXPECTED_ACCTS`
+   frozenset accepts both `44745280` (NIS) and `44745200` (USD).
+4. N+1 in the category resolver — sources pre-loaded by id-set in
+   one query.
+5. Model alias canonicalization — `"sonnet"` → `"claude-sonnet-4-6"`.
+6. `categories_resolved` counter scope — only increments inside the
+   resolved-non-uncategorized branch.
+7. Leumi `raw_row` semantic keys — parser now emits `date`,
+   `value_date`, `description`, `reference`, `debit`, `credit`,
+   `balance`, `note`, `extra_8` (was numeric-key dict).
+
+Plus one new subsystem landed in EX1.1:
+
+**FX module** (`argosy/services/fx/`) — DB-cached BoI daily exchange
+rates. `fx.convert(session, amount, from_ccy, to_ccy, on_date)` is the
+public surface. Migration **0023_fx_rates** adds the cache table.
+Parsers stay FX-naive; conversion is downstream. Used by trip-summary
+(§18.5) and the EX4-era NIS-converted toggle on the dashboard; not yet
+wired into `/api/expenses/dashboard-overview?fx=nis` (still returns
+per-currency totals — see §15.4 open items). Sparse-cache fallback:
+nearest-date rate when an exact match isn't available, so historical
+rows older than the cache still produce an approximate value rather
+than raising. Backfill on real machine: 401 daily USD rates spanning
+2024-10 → 2026-05 via Frankfurter (api.frankfurter.dev — BoI's public
+endpoint ignores `start`/`end`, so the BoI client now fetches latest
+from BoI + history from Frankfurter and merges both).
+
+### 18.3 Dashboard surface (EX4 + EX4.x + EX6) — landed
+
+The `/expenses` route family is the primary user-facing surface for
+this section. It split into two views in EX6:
+
+- **`/expenses` (yearly focus)** — savings-rate trend, top movers
+  YTD-vs-prior, currency mix bars, yearly summary, dividends/taxes
+  cards.
+- **`/expenses/monthly` (per-month detail)** — month-picker, hero
+  with MoM/trailing-12 deltas (recurring spend / one-off / income /
+  refunds / anomalies count), focal 12-bar chart with sliding window,
+  spending-categories donut (with recurring/one-off split for tagged
+  rows), categories-vs-typical card (median + MAD baseline,
+  outlier-robust), largest transactions, anomalies & alerts.
+
+**Backend endpoints** (in `argosy/api/routes/expenses.py`):
+
+- `GET /api/expenses/dashboard-overview?user_id=&fx=&window=` — yearly-focus
+  payload (months, top_categories, top_merchants, anomalies,
+  sources_health, savings_rate_trend, top_movers, currency_mix,
+  trend_12mo on dividends + taxes).
+- `GET /api/expenses/dashboard-monthly?user_id=&month=YYYY-MM&fx=` —
+  monthly-focus payload (hero stats with MoM deltas, chart-window
+  bars, categories vs typical, largest transactions, oneoff_categories
+  partition).
+- `GET /api/expenses/income-breakdown?user_id=&month=YYYY-MM` —
+  drilldown for the income-hero-card click-through.
+
+**Aggregation helpers** live in `argosy/services/expense_dashboard.py`
+(added in EX6): `compute_savings_rate_trend`, `compute_top_movers`,
+`compute_currency_mix`, `compute_chart_window`,
+`compute_categories_vs_typical`, `compute_hero_stats`,
+`compute_largest_transactions`. All sync, all DB-only, no LLM. The
+helpers respect the same `direction='debit' AND is_inflow=False AND
+is_excluded_from_spend=False` spending-filter as the rest of the
+dashboard (a leak fix landed in EX4.x — see the handover note).
+
+**Refunds vs income.** EX4.x split the original income lump-sum.
+"Refund is not income" — refunds (`tx_type='refund'` credits) live in
+a separate hero tile and feed a separate `current_month_refunds_nis`
+field; real income (salary, RSU, dividends) feeds
+`current_month_income_nis` and the `/expenses/income` drilldown.
+
+**Recurring vs one-off.** EX8 follow-ups added a partition keyed on
+tag prefixes (`trip:*`, `vacation:*`, literal `one-off`, `lump-sum`,
+and the structured forms `lump-sum:*` / `one-off:*`). The Monthly
+hero, the Monthly Spend chart, and the Spending categories pie all
+honor this split. Surfaced via `DashboardMonthly.oneoff_categories:
+list[CategorySpend]`.
+
+### 18.4 Leumi USD + Schwab cross-validation (EX4.2) — landed
+
+A second Leumi source (USD brokerage account `44745200`) plus a
+read-only Schwab Equity Awards Center CSV cross-validator. The Schwab
+input is **not** ingested as DB rows; it's parsed on demand and
+matched against existing Leumi USD wire credits.
+
+**Files:**
+- `argosy/services/expense_ingest/parsers/leumi_usd.py` — the second
+  Leumi parser (named Hebrew columns, `DD/MM/YY` 2-digit-year dates,
+  mostly securities activity: `נ"ע-פעולה` = securities buy/sell,
+  `נ"ע רבית/דו` = interest/dividend, `העברת כספים` = wire transfer).
+- `argosy/services/rsu_reconciliation/{schwab_csv,match}.py` —
+  Schwab CSV parser (returns a `SchwabReport` with sales,
+  disbursements, lots, taxes) + a matcher that pairs Schwab `Forced
+  Disbursement` rows against Leumi USD `העברת כספים` credits within
+  `tolerance_usd` + `tolerance_days`.
+- `GET /api/expenses/rsu-reconciliation?user_id=&tolerance_usd=&tolerance_days=`
+  — REST endpoint.
+- `argosy expenses verify-rsu --schwab <csv> --user-id <id>` — CLI.
+- `/expenses/rsu` — paired-rows UI (Schwab sales on the left, paired
+  Leumi credits on the right; matched / Schwab-only / Leumi-only;
+  filtered to `העברת כספים` only on the Leumi side so dividends
+  don't pollute).
+
+**Empirical finding from the verifier:** 0/3 Schwab disbursements
+match within `tolerance_usd=$1` — a ~27% haircut (Israeli capital-gains
+tax: 25% + 3% surtax, withheld at the bank) bridges Schwab gross →
+Leumi net. Adding a soft-match tolerance for the haircut is queued
+(see §15.4 open items).
+
+### 18.5 Tags + Trips (EX5) — landed
+
+**Schema** (migration **0024**): `expense_transactions.tags TEXT NOT NULL
+DEFAULT '[]'` — JSON-encoded list of free-form string tags. SQLite has
+no functional index on JSON arrays; at single-user scale `LIKE
+'%"<tag>"%'` behind the `user_id` WHERE clause is fine.
+
+**Endpoints:**
+- `PATCH /api/expenses/transactions/{id}/tags` (replace full list)
+- `POST /api/expenses/transactions/{id}/tags/add` / `.../remove`
+- `POST /api/expenses/transactions/bulk-label` (range-bulk: apply a
+  category or add/remove a tag across an explicit transaction id list
+  or via filter criteria)
+- `GET /api/expenses/tags?user_id=&prefix=` — distinct tags, optional
+  prefix filter (used by Trips tab for `trip:` + `vacation:`).
+- `GET /api/expenses/trip-summary?user_id=&tag=` — aggregate spend
+  under one tag. Refunds net against charges via `direction` signing.
+  Foreign-currency rows without `amount_nis` are converted via
+  `fx.convert(... 'ILS', occurred_on)` so the headline total reflects
+  full trip cost; the FX cache walkback keeps this working on
+  historical dates.
+
+**UI:** `/expenses/trips` tab merges `trip:*` + `vacation:*`
+namespaces (case-sensitive prefix; legacy `Vacation:*` capital-V tags
+normalized via direct DB rewrite on 2026-05-15).
+
+### 18.6 Merchant↔Category curation (EX8) — landed
+
+**Tab:** `/expenses/merchants` — merchant-grouped table with filter
+bar (search, category, source, max-confidence, hide-confirmed
+toggle, sort), checkbox multi-select, bulk-apply category,
+hierarchical category picker (replaces the old flat popover
+throughout the app), inline confirm.
+
+**Sub-category creation:** `POST /api/expenses/categories` — creates
+a sub-category under an existing top-level parent (one nesting level
+enforced). Examples landed during live triage: `insurance.health`,
+`insurance.life`, `personal.pet`, `healthcare.therapy`,
+`investments.provident_fund`, `transfers.credit_cards`,
+`income.dividends`.
+
+**Cache-vs-override semantics:** `apply_merchant_category(confirm=True)`
+only touches sibling transactions that already match the resolved
+cache category. Manual per-tx category assignments (the `user`
+`category_source`) survive a merchant-level confirm. This was a real
+near-miss before EX8: confirming `העברה דיגיטל` would have erased
+provident-fund overrides.
+
+**Mixed-merchant indicator:** `MerchantOut.distinct_category_count`
+(COUNT DISTINCT category_id over the merchant's transactions). UI
+renders a red `Mixed (N)` badge when `> 1`. Surfaces merchants that
+were previously hidden by the cache-only display because the cache
+only stored one category per merchant.
+
+**Effective category for uncached merchants:** when a merchant has
+no cache row but its transactions all share one category, the
+merchant row uses `COALESCE(cache.category_id, dominant_tx_cat)` so
+it reflects the consistent category instead of "Uncategorized".
+
+### 18.7 Still scheduled
+
+EX2 (`anomaly_detector` agent + `expense_review_queue` UI + advisor
+gap-driven "Spend review" group + Discount fee-waiver flag) and EX3
+(`HouseholdBudgetAnalystAgent` Opus, 10th analyst; plan synthesizer
+prompt extension §6.11; derived predictables auto-confirm flow)
+remain on the roadmap. Several inline anomaly cards already render
+on the Monthly dashboard (uncategorized count, reconciliation gap,
+merchant spike, new-high-value merchant, `Reconciled < eligible`
+data-quality flags); EX2 graduates these into a dedicated agent with
+persistent records + the recurring-missed detector that monitors the
+Card 2923 fee-waiver promo. EX2 spec memo at
+`memory/project_card_2923_fee_waiver.md`.
 
 ---
 
