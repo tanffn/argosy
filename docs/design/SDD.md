@@ -681,14 +681,14 @@ Run in parallel; produce structured reports written to state. Reports are persis
 | Agent | Knows | Outputs | Tools | Default model |
 |---|---|---|---|---|
 | **Fundamentals** | Earnings, financials, valuation multiples, sector context | Structured fundamentals report (PE/PEG/EV-EBITDA, growth, balance sheet quality, fair-value estimate) | yfinance, SEC EDGAR | Sonnet |
-| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Haiku |
+| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Sonnet (was Haiku — see §3.8) |
 | **News** | Headlines, filings, earnings calls, regulatory news on holdings + watchlist | Per-ticker news digest with materiality score | Finnhub, RSS, SEC EDGAR | Sonnet |
-| **Sentiment** | Social/Reddit chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Reddit (PRAW), Finnhub | Haiku |
+| **Sentiment** | Social/Reddit chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Reddit (PRAW), Finnhub | Sonnet (was Haiku — see §3.8) |
 | **Macro** | Rates, VIX, USD/NIS/EUR, oil, BoI/Fed actions, ISM/PMI | Regime classification (risk-on/risk-off; hard/soft landing) + drivers | FRED, Bank of Israel, OECD | Sonnet |
 | **Plan-critique** | The imported plan + current portfolio state + domain knowledge | RED/YELLOW/GREEN list of plan items with evidence | Plan doc, state, domain KB | Sonnet (Opus on RED) |
-| **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Haiku |
+| **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Sonnet (was Haiku — see §3.8) |
 | **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Sonnet |
-| **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Haiku |
+| **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Sonnet (was Haiku — see §3.8) |
 
 ### 3.2 Researcher Team
 
@@ -3500,31 +3500,38 @@ tiers:
   account_scoped_escalation_pct: 20
   override_mode: auto        # auto | pinned:T2 | all-tier | per-decision
 
-# Models per agent role; defaults sensible, override anything
+# Models per agent role; defaults sensible, override anything.
+# Canonical defaults live in argosy.agents.base.DEFAULT_MODEL_BY_ROLE
+# — this block must stay in sync. Haiku is intentionally no longer
+# a default for any role (see SDD §3.8); the override surface still
+# accepts it for cost-sensitive tenants.
 models:
   defaults:
     fundamentals: sonnet
-    technical: haiku
+    technical: sonnet         # was haiku — bumped, see §3.8
     news: sonnet
-    sentiment: haiku
+    sentiment: sonnet         # was haiku — bumped, see §3.8
     macro: sonnet
-    plan_critique: sonnet    # opus on RED flags
-    concentration: haiku
+    plan_critique: sonnet     # opus on RED flags
+    concentration: sonnet     # was haiku — bumped, see §3.8
     tax: sonnet
-    fx: haiku
+    fx: sonnet                # was haiku — bumped, see §3.8
     bull_researcher: opus
     bear_researcher: opus
-    facilitator: sonnet
+    researcher_facilitator: sonnet
+    risk_officer: sonnet
     risk_facilitator: sonnet
     trader: opus              # T2/T3; sonnet for T0/T1
-    aggressive_risk: sonnet
-    neutral_risk: sonnet
-    conservative_risk: sonnet
     fund_manager: opus
     intake: sonnet
+    intake_extractor: sonnet
+    advisor: sonnet           # subclass of intake; same default
     domain_refresh: sonnet
     audit: opus
-    watchlist: haiku
+    watchlist: sonnet         # was haiku — bumped, see §3.8
+    plan_distiller: sonnet
+    plan_synthesizer: opus
+    household_categorizer: sonnet
   override: {}                # e.g. {all: opus} or {trader: sonnet}
 
 # Cadences (cron strings or interval syntax)

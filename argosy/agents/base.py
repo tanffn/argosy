@@ -53,6 +53,13 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # turns despite each turn being ~2-3x slower. Net: shorter interviews.
     # Override via agent_settings.yaml if Haiku is preferred for cost.
     "intake": "claude-sonnet-4-6",
+    # AdvisorAgent subclasses IntakeAgent but registers its own
+    # `agent_role = "advisor"` (see argosy/agents/advisor.py). Without an
+    # explicit entry here, advisor instantiations fall through to
+    # FALLBACK_MODEL rather than the documented intake-family default.
+    # The SDD §3.6 row + Appendix A.2 model-defaults block document
+    # advisor=Sonnet; this entry makes that explicit at the code level.
+    "advisor": "claude-sonnet-4-6",
     # Plan-markdown extractor: light reasoning over a single user-provided
     # document. Citations not required (the source IS the user's plan);
     # fabrication is prevented by an explicit prompt rule.
