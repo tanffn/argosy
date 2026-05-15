@@ -30,6 +30,7 @@ violations); the caller logs and moves on.
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -126,15 +127,35 @@ async def record_negotiation_phase(
         ]
 
     # Write FS bundle (no DB session held — disk IO can be slow).
-    bundle_dir, tldr_md, _sequence_mmd = write_phase_bundle(
-        user_id=user_id,
-        decision_run_id=decision_run_id,
-        phase_kind=kind,
-        started_at=started_at,
-        finished_at=finished_at,
-        verdict=verdict,
-        participants=participants,
-    )
+    # Codex/§17 zigzag finding #4 v2: if `write_phase_bundle` itself
+    # fails mid-write (e.g. wrote TLDR.md, then disk full before
+    # transcript.md), we'd leave a partial bundle under the
+    # deterministic `<run_id>__<kind>` directory. Wrap with cleanup so
+    # a partial bundle gets removed before the exception escapes —
+    # otherwise a retry would silently inherit the corruption.
+    try:
+        bundle_dir, tldr_md, _sequence_mmd = write_phase_bundle(
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            phase_kind=kind,
+            started_at=started_at,
+            finished_at=finished_at,
+            verdict=verdict,
+            participants=participants,
+        )
+    except Exception:
+        # Best-effort cleanup of any partial bundle. The bundle path
+        # is deterministic from inputs, so we can recompute it here
+        # even though `write_phase_bundle` didn't return it.
+        from argosy.services.transcript_writer import bundle_path
+        partial_dir = bundle_path(
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            phase_kind=kind,
+            started_at=started_at,
+        )
+        shutil.rmtree(partial_dir, ignore_errors=True)
+        raise
 
     # Build participants_json for the row (compact reference list).
     participants_json = [
@@ -150,49 +171,66 @@ async def record_negotiation_phase(
         for p in participants
     ]
 
-    async with db_mod.get_session() as session:
-        phase_row = DecisionPhase(
-            decision_run_id=decision_run_id,
-            user_id=user_id,
-            seq=next_seq,
-            kind=kind,
-            started_at=started_at,
-            finished_at=finished_at,
-            participants_json=json.dumps(participants_json),
-            verdict_json=(
-                verdict.model_dump_json() if verdict is not None else None
-            ),
-            verdict_kind=(type(verdict).__name__ if verdict is not None else None),
-            tldr_md=tldr_md,
-            bundle_dir=str(bundle_dir),
-        )
-        session.add(phase_row)
-        await session.flush()
-        phase_id = phase_row.id
-
-        # Back-fill agent_reports.phase_id for participants.
-        if ids:
-            await session.execute(
-                update(AgentReport)
-                .where(AgentReport.id.in_(ids))
-                .values(phase_id=phase_id)
+    # Codex/§17 zigzag finding #4: bundle is written before the DB
+    # commit. If the commit fails (FK violation, transient DB error,
+    # ...) we'd leave an orphan transcript bundle on disk with no row
+    # pointing at it. Worse, since `bundle_dir` is keyed by
+    # `<decision_run_id>__<kind>` (no timestamp), a retry for the same
+    # phase would silently inherit the prior partial bundle.
+    #
+    # Fix: wrap the commit in try/except; on any failure, delete the
+    # bundle dir we just wrote (idempotent / best-effort) before
+    # re-raising. The caller already wraps recorder calls in try/except
+    # so this just keeps the FS clean.
+    try:
+        async with db_mod.get_session() as session:
+            phase_row = DecisionPhase(
+                decision_run_id=decision_run_id,
+                user_id=user_id,
+                seq=next_seq,
+                kind=kind,
+                started_at=started_at,
+                finished_at=finished_at,
+                participants_json=json.dumps(participants_json),
+                verdict_json=(
+                    verdict.model_dump_json() if verdict is not None else None
+                ),
+                verdict_kind=(type(verdict).__name__ if verdict is not None else None),
+                tldr_md=tldr_md,
+                bundle_dir=str(bundle_dir),
             )
+            session.add(phase_row)
+            await session.flush()
+            phase_id = phase_row.id
 
-        # Audit-log emission.
-        session.add(AuditLog(
-            user_id=user_id,
-            event_type="provenance.phase.finished",
-            entity_type="decision_phase",
-            entity_id=str(phase_id),
-            payload_json=json.dumps({
-                "decision_run_id": decision_run_id,
-                "phase_kind": kind,
-                "verdict_kind": type(verdict).__name__ if verdict else None,
-                "participants_count": len(ids),
-                "bundle_dir": str(bundle_dir),
-            }),
-        ))
-        await session.commit()
+            # Back-fill agent_reports.phase_id for participants.
+            if ids:
+                await session.execute(
+                    update(AgentReport)
+                    .where(AgentReport.id.in_(ids))
+                    .values(phase_id=phase_id)
+                )
+
+            # Audit-log emission.
+            session.add(AuditLog(
+                user_id=user_id,
+                event_type="provenance.phase.finished",
+                entity_type="decision_phase",
+                entity_id=str(phase_id),
+                payload_json=json.dumps({
+                    "decision_run_id": decision_run_id,
+                    "phase_kind": kind,
+                    "verdict_kind": type(verdict).__name__ if verdict else None,
+                    "participants_count": len(ids),
+                    "bundle_dir": str(bundle_dir),
+                }),
+            ))
+            await session.commit()
+    except Exception:
+        # Compensating cleanup: drop the on-disk bundle so we don't leak
+        # an orphan directory unreferenced by any decision_phases row.
+        shutil.rmtree(bundle_dir, ignore_errors=True)
+        raise
 
     log.info(
         "negotiation.phase.recorded",

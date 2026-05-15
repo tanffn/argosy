@@ -51,7 +51,7 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]+", "_", s).strip("_") or "unknown"
 
 
-def _bundle_path(
+def bundle_path(
     *, user_id: str, decision_run_id: int, phase_kind: str, started_at: datetime,
 ) -> Path:
     home = Path(get_settings().home)
@@ -261,7 +261,7 @@ def write_phase_bundle(
     the ``decision_phases`` row so the API can render them without
     reading disk for the common case.
     """
-    bundle = _bundle_path(
+    bundle = bundle_path(
         user_id=user_id,
         decision_run_id=decision_run_id,
         phase_kind=phase_kind,
@@ -311,6 +311,7 @@ def write_phase_bundle(
 
 __all__ = [
     "ParticipantRef",
+    "bundle_path",
     "render_tldr",
     "render_transcript",
     "render_sequence_mmd",
