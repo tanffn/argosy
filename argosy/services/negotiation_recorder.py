@@ -241,29 +241,40 @@ async def record_negotiation_phase(
                 }),
             ))
             await session.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         # Race-loser path: another recorder for the same
         # `(decision_run_id, kind)` already inserted at our `seq`.
         # Per migration 0025, the unique constraint on
         # `(decision_run_id, seq)` makes this fast-fail rather than
         # silently double-write. Drop our own bundle (uniqueness
-        # suffix ensures we don't nuke the winner's dir) and re-raise
-        # so the caller's try/except can log the conflict.
+        # suffix ensures we don't nuke the winner's dir), emit a
+        # `phase.failed` audit event so the SDD §17.4 taxonomy is
+        # honored, and re-raise so the caller's try/except can log
+        # the conflict.
         shutil.rmtree(bundle_dir, ignore_errors=True)
+        await _emit_phase_failed(
+            user_id=user_id, decision_run_id=decision_run_id,
+            kind=kind, started_at=started_at, reason="race_lost",
+            error=str(exc),
+        )
         log.warning(
             "negotiation.phase.race_lost",
-            user_id=user_id,
-            decision_run_id=decision_run_id,
-            phase_kind=kind,
-            seq=next_seq,
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase_kind=kind, seq=next_seq,
         )
         raise
-    except Exception:
+    except Exception as exc:
         # Compensating cleanup: drop the on-disk bundle so we don't leak
         # an orphan directory unreferenced by any decision_phases row.
         # Safe to delete because `uniq_suffix` is per-invocation — we
-        # never share `bundle_dir` with another recorder.
+        # never share `bundle_dir` with another recorder. Also emit a
+        # `phase.failed` audit event (SDD §17.4) before re-raising.
         shutil.rmtree(bundle_dir, ignore_errors=True)
+        await _emit_phase_failed(
+            user_id=user_id, decision_run_id=decision_run_id,
+            kind=kind, started_at=started_at, reason="recorder_error",
+            error=str(exc),
+        )
         raise
 
     log.info(
@@ -276,6 +287,51 @@ async def record_negotiation_phase(
         participants=len(ids),
     )
     return phase_id
+
+
+async def _emit_phase_failed(
+    *,
+    user_id: str,
+    decision_run_id: int,
+    kind: str,
+    started_at: datetime,
+    reason: str,
+    error: str,
+) -> None:
+    """Best-effort `provenance.phase.failed` audit emit.
+
+    Closes part of §17 zigzag finding #5 — the SDD §17.4 taxonomy
+    promised four event types but only two were emitted. This helper
+    fires from the recorder's except paths so recorder-side failures
+    (IntegrityError race-loser, FK violation, etc.) leave an audit
+    trail. Call-site failures (agents threw before the recorder was
+    called) still need separate instrumentation; flagged as deferred
+    in §17.4.
+
+    Best-effort: any failure here is swallowed so the surrounding
+    try/except can re-raise the original exception cleanly.
+    """
+    try:
+        async with db_mod.get_session() as session:
+            session.add(AuditLog(
+                user_id=user_id,
+                event_type="provenance.phase.failed",
+                entity_type="decision_phase",
+                entity_id=None,
+                payload_json=json.dumps({
+                    "decision_run_id": decision_run_id,
+                    "phase_kind": kind,
+                    "started_at": started_at.isoformat(),
+                    "reason": reason,
+                    "error": error[:500],  # truncate to avoid bloating audit_log
+                }),
+            ))
+            await session.commit()
+    except Exception:
+        log.exception(
+            "negotiation.phase.failed_audit_emit_failed",
+            user_id=user_id, decision_run_id=decision_run_id, phase_kind=kind,
+        )
 
 
 __all__ = ["record_negotiation_phase"]

@@ -2612,6 +2612,8 @@ flowchart LR
   B[Intake plan upload<br>argosy/api/routes/intake.py::post_upload] --> H
   C[Intake file-to-text<br>argosy/api/routes/intake.py::post_file_to_text] --> H
   D[Cost-basis CSV<br>argosy/adapters/brokers/schwab_csv.py] --> H
+  E[EX1 statement upload REST<br>argosy/api/routes/expenses.py::upload_statements] --> H
+  G[EX1 statement backfill CLI<br>argosy/cli/expenses_admin.py::backfill] --> H
   H[catalog_upload<br>sha256 dedup + write] --> R[(user_files)]
   H --> F[<ARGOSY_HOME>/uploads/<br>YYYY/YYYY-MM-DD/<br>HHMMSS__sha8__sanitized]
   H --> AL[(audit_log<br>provenance.upload.cataloged)]
@@ -2628,7 +2630,7 @@ flowchart LR
 
 **Allowed values:**
 - `kind ∈ {text, image, plan_markdown, broker_csv, other}`.
-- `source ∈ {chat_attachment, intake_upload, intake_file_to_text, cost_basis_import}`.
+- `source ∈ {chat_attachment, intake_upload, intake_file_to_text, cost_basis_import, expense_statement}`. (`expense_statement` was added 2026-05-15 — EX1 ingest paths previously misclassified themselves as `chat_attachment`.)
 
 **Filesystem layout:**
 `<ARGOSY_HOME>/uploads/<user_id>/<YYYY>/<YYYY-MM-DD>/<HHMMSS>__<sha8>__<sanitized>`.
@@ -2706,13 +2708,20 @@ DTO. **`verdict_kind`** is the DTO class name (e.g. `"DebateOutcome"`),
 so the UI can pick a renderer without sniffing field shapes.
 
 **Filesystem mirror**:
-`<ARGOSY_HOME>/transcripts/<user_id>/<YYYY-MM-DD>/<decision_run_id>__<kind>/`
-contains four files per phase:
+`<ARGOSY_HOME>/transcripts/<user_id>/<YYYY-MM-DD>/<decision_run_id>__<kind>__<HHMMSS>__<8hex>/`
+contains four files per phase. The trailing `<HHMMSS>__<8hex>` suffix
+disambiguates concurrent recorders for the same `(run_id, kind)` so
+their bundles never collide; the recorder generates one suffix per
+invocation and uses it for both the initial write and the cleanup
+path on failure (added 2026-05-15 alongside migration 0025's
+`(decision_run_id, seq)` unique constraint).
 - `TLDR.md` — deterministic, template-rendered (no LLM) markdown
   scoped to the verdict's DTO type. The `decision_phases.tldr_md`
   column carries the same content for queryability.
 - `transcript.md` — chronological dump of every participant's
-  `response_text`, headed by `## Round N — {agent_role} (side?/perspective?)`.
+  `response_text`. Each section is headed by `## {index}. {agent_role}`
+  followed by optional ` · side=…`, ` · perspective=…`, ` · round=…`
+  bits when present (e.g. `## 3. bull_researcher · side=bull · round=2`).
 - `verdict.json` — `verdict.model_dump()` (or `{}` if no verdict).
 - `sequence.mmd` — Mermaid `sequenceDiagram` of the agent timeline,
   rendered inline by the UI.
@@ -2792,9 +2801,24 @@ GitHub / IDE markdown previews and serve as the canonical visual.
   decisions/day that's ~50 MB/year; ship without rotation, defer a
   tar/offload CLI to Phase 8+.
 - **Audit-log overlap**: the universal `audit_log` (§14.1) absorbs the
-  new event types `provenance.upload.cataloged`,
-  `provenance.phase.started`, `provenance.phase.finished`,
-  `provenance.phase.failed`. No second events table.
+  provenance event types below. Emitted today:
+  - `provenance.upload.cataloged` — every successful first-time
+    catalog write (dedup hits do not emit).
+  - `provenance.phase.finished` — every successful recorder commit.
+  - `provenance.phase.failed` — emitted from the recorder's except
+    paths when the recorder itself fails (IntegrityError on the
+    `(decision_run_id, seq)` race, FK violations, etc.) so the
+    audit-log preserves the attempt.
+
+  Declared but not yet emitted (deferred to call-site instrumentation;
+  tracked as future work):
+  - `provenance.phase.started` — would fire from each phase-boundary
+    call site BEFORE agents run. Today the `started_at` timestamp is
+    captured in the `decision_phases` row but not announced
+    separately to the audit-log.
+  - `provenance.phase.failed` for phase-side failures (agent threw
+    before the recorder was called). The recorder-side failed event
+    above only covers the case where the recorder itself fails.
 
 ---
 
