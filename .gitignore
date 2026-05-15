@@ -67,3 +67,12 @@ desktop.ini
 
 # Git worktrees (isolated feature workspaces)
 .worktrees/
+
+# Scratch / handover kits / NVIDIA-internal tooling — never commit.
+# Contains codex-tandem-handover/ + zigzag smoke outputs.
+tmp/
+
+# Codex tandem kit promoted from tmp/ — still NVIDIA-internal, still
+# never committed. The path is fixed (memory references it) but the
+# contents stay local.
+tools/codex-tandem/

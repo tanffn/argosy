@@ -41,6 +41,7 @@
   - `feedback_accuracy_over_cost.md` — Argosy prefers accuracy over LLM cost.
   - `feedback_sdd_md_canonical.md` — only edit `docs/design/SDD.md`, never `.docx`.
   - `project_card_2923_fee_waiver.md` — Noga's Discount card has a free-card promo (`charge ₪X + matching discount ₪X = ₪0`); EX2 must flag if the discount line stops.
+  - `reference_codex_tandem.md` + `feedback_use_tandem_for_risky_work.md` — Codex CLI tandem mode is wired up (Layout A: I lead, Codex reviews). Fire it for money math / parsers / migrations / decision flows; skip for UI / docs / lint. Kit at `tools/codex-tandem/` (gitignored; NVIDIA-internal).
 
 **Reference repos** (cloned to `D:\Projects\financial-advisor-references\`): TradingAgents, FinRobot, TradingGoose. Inspiration for the multi-agent debate pattern; not in scope unless extending decision-flow architecture.
 
