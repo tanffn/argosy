@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -53,11 +54,30 @@ def _slug(s: str) -> str:
 
 def bundle_path(
     *, user_id: str, decision_run_id: int, phase_kind: str, started_at: datetime,
+    uniq_suffix: str | None = None,
 ) -> Path:
+    """Compute the bundle directory path for one phase.
+
+    Originally `<run_id>__<kind>/`, which collided when two recorders
+    raced for the same `(run_id, kind)` — Codex flagged in the §17
+    zigzag bundle-3 review that cleanup of one could nuke the
+    committed-row of the other. We now disambiguate per recorder
+    invocation with a `<started_at_HHMMSS>__<short_uuid8>` suffix so
+    every call has its own directory. `uniq_suffix` lets the recorder
+    pass in a stable suffix when it needs to recompute the path for
+    cleanup (otherwise each call to `bundle_path` would produce a
+    different uuid and recomputation would fail to find the dir).
+    """
     home = Path(get_settings().home)
     date = started_at.strftime("%Y-%m-%d")
-    name = f"{decision_run_id}__{_slug(phase_kind)}"
+    tail = uniq_suffix or fresh_uniq_suffix(started_at)
+    name = f"{decision_run_id}__{_slug(phase_kind)}__{tail}"
     return home / "transcripts" / user_id / date / name
+
+
+def fresh_uniq_suffix(started_at: datetime) -> str:
+    """Generate a fresh per-invocation suffix: `HHMMSS__<8 hex>`."""
+    return f"{started_at.strftime('%H%M%S')}__{uuid.uuid4().hex[:8]}"
 
 
 # ----------------------------------------------------------------------
@@ -254,18 +274,25 @@ def write_phase_bundle(
     finished_at: datetime,
     verdict: BaseModel | None,
     participants: list[ParticipantRef],
+    uniq_suffix: str | None = None,
 ) -> tuple[Path, str, str]:
     """Write the four-file mirror bundle and return (bundle_dir, tldr_md, sequence_mmd).
 
     The returned ``tldr_md`` and ``sequence_mmd`` are also persisted in
     the ``decision_phases`` row so the API can render them without
     reading disk for the common case.
+
+    ``uniq_suffix`` (since SDD §17 zigzag fix #3/#4-blocker-2): the
+    recorder generates one suffix per phase invocation and passes it
+    in so concurrent recorders for the same ``(run_id, phase_kind)``
+    don't share a directory. When omitted, a fresh suffix is generated.
     """
     bundle = bundle_path(
         user_id=user_id,
         decision_run_id=decision_run_id,
         phase_kind=phase_kind,
         started_at=started_at,
+        uniq_suffix=uniq_suffix,
     )
     bundle.mkdir(parents=True, exist_ok=True)
 
@@ -312,6 +339,7 @@ def write_phase_bundle(
 __all__ = [
     "ParticipantRef",
     "bundle_path",
+    "fresh_uniq_suffix",
     "render_tldr",
     "render_transcript",
     "render_sequence_mmd",

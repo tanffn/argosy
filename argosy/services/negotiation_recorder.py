@@ -37,9 +37,13 @@ from typing import Iterable
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
 
+from sqlalchemy.exc import IntegrityError
+
 from argosy.logging import get_logger
 from argosy.services.transcript_writer import (
     ParticipantRef,
+    bundle_path,
+    fresh_uniq_suffix,
     write_phase_bundle,
 )
 from argosy.state import db as db_mod
@@ -86,10 +90,20 @@ async def record_negotiation_phase(
     side_by_id = side_by_id or {}
     perspective_by_id = perspective_by_id or {}
     round_by_id = round_by_id or {}
+    # One unique suffix per invocation so concurrent recorders for the
+    # same `(decision_run_id, kind)` write to distinct bundle dirs and
+    # don't accidentally delete each other's bytes on cleanup. The
+    # suffix is shared between the initial write and any recompute
+    # for cleanup so we always point at our own dir.
+    uniq_suffix = fresh_uniq_suffix(started_at)
 
     async with db_mod.get_session() as session:
-        # Compute next seq for this run (monotonic; phases are written
-        # serially per the call-site contract).
+        # Compute next seq for this run. `max(seq)+1` is racy at the
+        # ORM layer — two recorders firing concurrently for the same
+        # `decision_run_id` may compute the same `next_seq`. Migration
+        # 0025 added a DB-level unique constraint on
+        # `(decision_run_id, seq)` so the race-loser gets
+        # `IntegrityError` on commit; we catch it below and clean up.
         max_seq = (
             await session.execute(
                 select(func.coalesce(func.max(DecisionPhase.seq), 0)).where(
@@ -142,17 +156,18 @@ async def record_negotiation_phase(
             finished_at=finished_at,
             verdict=verdict,
             participants=participants,
+            uniq_suffix=uniq_suffix,
         )
     except Exception:
-        # Best-effort cleanup of any partial bundle. The bundle path
-        # is deterministic from inputs, so we can recompute it here
-        # even though `write_phase_bundle` didn't return it.
-        from argosy.services.transcript_writer import bundle_path
+        # Best-effort cleanup of any partial bundle. We pass the same
+        # `uniq_suffix` so the recomputed path points at OUR dir, not
+        # a sibling recorder's.
         partial_dir = bundle_path(
             user_id=user_id,
             decision_run_id=decision_run_id,
             phase_kind=kind,
             started_at=started_at,
+            uniq_suffix=uniq_suffix,
         )
         shutil.rmtree(partial_dir, ignore_errors=True)
         raise
@@ -226,9 +241,28 @@ async def record_negotiation_phase(
                 }),
             ))
             await session.commit()
+    except IntegrityError:
+        # Race-loser path: another recorder for the same
+        # `(decision_run_id, kind)` already inserted at our `seq`.
+        # Per migration 0025, the unique constraint on
+        # `(decision_run_id, seq)` makes this fast-fail rather than
+        # silently double-write. Drop our own bundle (uniqueness
+        # suffix ensures we don't nuke the winner's dir) and re-raise
+        # so the caller's try/except can log the conflict.
+        shutil.rmtree(bundle_dir, ignore_errors=True)
+        log.warning(
+            "negotiation.phase.race_lost",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            phase_kind=kind,
+            seq=next_seq,
+        )
+        raise
     except Exception:
         # Compensating cleanup: drop the on-disk bundle so we don't leak
         # an orphan directory unreferenced by any decision_phases row.
+        # Safe to delete because `uniq_suffix` is per-invocation — we
+        # never share `bundle_dir` with another recorder.
         shutil.rmtree(bundle_dir, ignore_errors=True)
         raise
 

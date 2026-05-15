@@ -329,6 +329,22 @@ class DecisionPhase(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
 
+    # `(decision_run_id, seq)` must be unique. The recorder computes
+    # `next_seq = max(seq) + 1` without locking, so the serial-caller
+    # contract documented in SDD §17.2 is enforced at the DB level
+    # via migration 0025's unique INDEX (not constraint — they're
+    # equivalent on SQLite but distinct objects on PostgreSQL; this
+    # model declaration matches the migration's `create_index(unique=True)`
+    # so the two never drift). Also serves as the lookup index that
+    # drives the Replay endpoint.
+    __table_args__ = (
+        Index(
+            "ix_decision_phases_run_seq",
+            "decision_run_id", "seq",
+            unique=True,
+        ),
+    )
+
 
 class AgentReportBlob(Base):
     """Key/value side data for an agent report (e.g., 'inputs_json', 'tools_used').
