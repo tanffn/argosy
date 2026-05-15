@@ -7,7 +7,11 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card"
       className={cn(
-        "bg-card text-card-foreground flex flex-col gap-6 rounded-lg border py-6",
+        // Subtle hover: border lightens from 10% to 20% white over 300ms.
+        // Quiet enough to coexist on non-interactive panels (matches the
+        // agatha-service feature-card hover micro-interaction) but
+        // present enough that the user feels the cursor is "in" the card.
+        "bg-card text-card-foreground flex flex-col gap-6 rounded-lg border py-6 transition-colors duration-300 hover:border-foreground/20",
         className,
       )}
       {...props}
