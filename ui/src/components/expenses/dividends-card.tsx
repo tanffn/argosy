@@ -30,7 +30,7 @@ function MiniBars({ values, height = 28 }: { values: number[]; height?: number }
             width={4}
             height={h}
             fill="currentColor"
-            className="text-emerald-600"
+            className="text-success"
           />
         );
       })}
@@ -52,7 +52,7 @@ export function DividendsCard({ data }: DividendsCardProps) {
       <CardContent>
         <div className="flex items-baseline justify-between gap-3">
           <div>
-            <div className="text-2xl font-semibold text-emerald-600">
+            <div className="text-2xl font-semibold font-mono tabular-nums text-success">
               {USD_FMT_2DP.format(data.current_month_total_usd ?? 0)}
             </div>
             <div className="text-xs text-muted-foreground">
@@ -61,7 +61,7 @@ export function DividendsCard({ data }: DividendsCardProps) {
             </div>
           </div>
           <div className="text-right">
-            <div className="text-base font-medium">
+            <div className="text-base font-medium font-mono tabular-nums">
               {USD_FMT.format(data.yearly_total_usd ?? 0)}
             </div>
             <div className="text-xs text-muted-foreground">last 12mo</div>

@@ -27,8 +27,10 @@ function DeltaPill({ delta }: { delta: number | null }) {
   const positive = delta >= 0;
   return (
     <span
-      className={`text-xs tabular-nums px-1.5 py-0.5 rounded-sm ${
-        positive ? "text-emerald-700 bg-emerald-100" : "text-rose-700 bg-rose-100"
+      className={`text-xs font-mono tabular-nums px-1.5 py-0.5 rounded-sm border ${
+        positive
+          ? "border-success/30 bg-success/10 text-success"
+          : "border-error/30 bg-error/10 text-error"
       }`}
     >
       {pct(delta)}
@@ -45,8 +47,8 @@ function StatTile({ label, value, mom, vs12, title }: {
       className="rounded-md border border-border p-3 flex flex-col gap-1"
       title={title}
     >
-      <div className="text-xs uppercase text-muted-foreground">{label}</div>
-      <div className="text-xl font-semibold tabular-nums">{value}</div>
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-xl font-semibold font-mono tabular-nums">{value}</div>
       {(mom !== undefined || vs12 !== undefined) && (
         <div className="flex items-center gap-2 mt-1">
           {mom !== undefined && (

@@ -18,9 +18,9 @@ const ICON_BY_SEVERITY = {
 } as const;
 
 const COLOR_BY_SEVERITY = {
-  red: "text-rose-500",
-  yellow: "text-amber-500",
-  info: "text-sky-500",
+  red: "text-error",
+  yellow: "text-warning",
+  info: "text-info",
 } as const;
 
 export function AnomalyHighlights({ anomalies }: AnomalyHighlightsProps) {
@@ -31,7 +31,7 @@ export function AnomalyHighlights({ anomalies }: AnomalyHighlightsProps) {
       </CardHeader>
       <CardContent>
         {anomalies.length === 0 ? (
-          <div className="text-sm text-emerald-600 py-4 text-center">
+          <div className="text-sm text-success py-4 text-center">
             ✓ All looks normal.
           </div>
         ) : (

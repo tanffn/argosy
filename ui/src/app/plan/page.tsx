@@ -89,7 +89,7 @@ export default function PlanPage() {
         </Button>
       </header>
 
-      {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+      {error && <p className="text-sm text-error font-mono">{error}</p>}
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
 
       {critique && (

@@ -107,7 +107,7 @@ export default function AuditPage() {
         </CardContent>
       </Card>
 
-      {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+      {error && <p className="text-sm text-error font-mono">{error}</p>}
       {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
 
       {!loading && rows.length === 0 && (

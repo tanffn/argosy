@@ -8,7 +8,7 @@ import {
   TrendingUp,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentType, type SVGProps } from "react";
 
 import { StatusPill } from "@/components/ui/status-pill";
 import {
@@ -26,29 +26,29 @@ interface AdvisorBriefCardProps {
 const KIND_META: Record<
   AdvisorBriefBulletKind,
   {
-    Icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
+    Icon: ComponentType<SVGProps<SVGSVGElement>>;
     iconClass: string;
     label: string;
   }
 > = {
   draft_plan: {
     Icon: FileCheck,
-    iconClass: "text-rose-400",
+    iconClass: "text-error",
     label: "draft",
   },
   gap: {
     Icon: AlertTriangle,
-    iconClass: "text-amber-400",
+    iconClass: "text-warning",
     label: "gap",
   },
   portfolio: {
     Icon: TrendingUp,
-    iconClass: "text-emerald-400",
+    iconClass: "text-success",
     label: "portfolio",
   },
   signal: {
     Icon: RadioTower,
-    iconClass: "text-cyan-400",
+    iconClass: "text-info",
     label: "signal",
   },
 };
@@ -124,7 +124,7 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
   return (
     <section
       className={cn(
-        "relative rounded-xl overflow-hidden bg-card/80 backdrop-blur-sm shadow-sm",
+        "relative rounded-lg overflow-hidden bg-card/80 backdrop-blur-sm border border-border",
         className,
       )}
       data-slot="advisor-brief-card"
@@ -133,17 +133,17 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
       {/* Gradient accent stripe — matches the brand hero ring style. */}
       <div
         aria-hidden
-        className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-cyan-500/40 via-emerald-500/40 to-transparent"
+        className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-info/40 via-success/40 to-transparent"
       />
       <div className="relative px-5 py-4 flex flex-col gap-3">
         {/* Header row: avatar/icon + headline + CTA */}
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
             <span
-              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-400"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-info/30 bg-info/10 text-info"
               aria-hidden
             >
-              <Headphones className="h-4 w-4" />
+              <Headphones className="h-4 w-4" suppressHydrationWarning />
             </span>
             <div className="min-w-0">
               <h2 className="font-mono font-semibold text-sm leading-tight">
@@ -157,7 +157,7 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
           </div>
           <Link
             href={data?.cta.href ?? "/advisor"}
-            className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-cyan-500/40 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 px-3 py-1.5 text-xs font-mono transition-colors"
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-info/40 bg-info/10 hover:bg-info/20 text-info px-3 py-1.5 text-xs font-mono transition-colors duration-200"
           >
             {data?.cta.label ?? "Talk to advisor"}
             <span aria-hidden>→</span>
@@ -166,7 +166,7 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
 
         {/* Bullet list */}
         {error ? (
-          <div className="text-xs text-red-400 font-mono">{error}</div>
+          <div className="text-xs text-error font-mono">{error}</div>
         ) : data && data.bullets.length > 0 ? (
           <ul className="flex flex-col gap-1.5">
             {data.bullets.map((b, i) => {
@@ -180,6 +180,7 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
                   <Icon
                     className={cn("h-4 w-4 shrink-0 mt-0.5", meta.iconClass)}
                     aria-hidden
+                    suppressHydrationWarning
                   />
                   <span className="min-w-0">
                     <StatusPill

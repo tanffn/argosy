@@ -61,7 +61,7 @@ function ExpensesMonthlyInner() {
   if (error) {
     return (
       <Card>
-        <CardContent className="py-8 text-center text-rose-600 text-sm">
+        <CardContent className="py-8 text-center text-error text-sm">
           Failed to load: {error}
         </CardContent>
       </Card>

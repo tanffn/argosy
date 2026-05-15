@@ -65,7 +65,7 @@ export default function PortfolioPage() {
       </header>
 
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+      {error && <p className="text-sm text-error font-mono">{error}</p>}
 
       {snap && (
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -168,7 +168,7 @@ export default function PortfolioPage() {
                         style={{ width: `${(actual / max) * 50}%` }}
                       />
                       <div
-                        className="bg-emerald-500/60 rounded-r"
+                        className="bg-success/60 rounded-r"
                         style={{ width: `${(target / max) * 50}%` }}
                       />
                     </div>

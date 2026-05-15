@@ -89,11 +89,11 @@ function TabsTrigger({ value, className, ...props }: TabsTriggerProps) {
       data-slot="tabs-trigger"
       onClick={() => ctx.setValue(value)}
       className={cn(
-        "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium transition-all",
+        "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium transition-colors duration-200",
         "disabled:pointer-events-none disabled:opacity-50",
         selected
-          ? "bg-background text-foreground shadow"
-          : "hover:bg-background/60",
+          ? "bg-background text-foreground border border-border"
+          : "hover:bg-background/60 text-muted-foreground",
         className,
       )}
       {...props}

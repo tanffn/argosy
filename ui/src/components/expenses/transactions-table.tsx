@@ -155,7 +155,7 @@ export function TransactionsTable({
                 className="py-2 pl-2 text-right tabular-nums whitespace-nowrap"
                 title={isMoneyIn ? "Money in (credit)" : "Money out (debit)"}
               >
-                <span className={isMoneyIn ? "text-emerald-600" : ""}>
+                <span className={isMoneyIn ? "text-success" : ""}>
                   {isMoneyIn ? `+${amountText}` : amountText}
                 </span>
                 {t.tx_type !== "regular" && (

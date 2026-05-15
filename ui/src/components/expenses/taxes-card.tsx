@@ -34,7 +34,7 @@ function MiniBars({ values, height = 28 }: { values: number[]; height?: number }
             width={4}
             height={h}
             fill="currentColor"
-            className="text-amber-700"
+            className="text-warning"
           />
         );
       })}
@@ -56,7 +56,7 @@ export function TaxesCard({ data }: TaxesCardProps) {
       <CardContent>
         <div className="flex items-baseline justify-between gap-3">
           <div>
-            <div className="text-2xl font-semibold">
+            <div className="text-2xl font-semibold font-mono tabular-nums">
               {formatNIS(data.yearly_total_nis ?? 0)}
             </div>
             <div className="text-xs text-muted-foreground">

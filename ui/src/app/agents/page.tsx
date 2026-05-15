@@ -78,7 +78,7 @@ export default function AgentsPage() {
       </header>
 
       {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
-      {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+      {error && <p className="text-sm text-error font-mono">{error}</p>}
 
       <Card>
         <CardHeader>

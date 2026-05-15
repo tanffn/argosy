@@ -65,7 +65,7 @@ export default function TripsPage() {
   if (error) {
     return (
       <Card>
-        <CardContent className="py-8 text-center text-rose-600 text-sm">
+        <CardContent className="py-8 text-center text-error text-sm">
           Failed to load: {error}
         </CardContent>
       </Card>
@@ -114,14 +114,14 @@ export default function TripsPage() {
           const drillHref = `/expenses/transactions?tag=${encodeURIComponent(tag)}`;
           return (
             <Link key={tag} href={drillHref} className="block group">
-              <Card className="h-full transition-colors group-hover:border-sky-500/40">
+              <Card className="h-full">
                 <CardHeader className="pb-2">
                   <CardTitle className="flex items-center gap-2 text-sm">
                     <TagChip tag={tag} />
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-semibold">
+                  <div className="text-2xl font-semibold font-mono tabular-nums">
                     {formatNIS(s.total_nis)}
                   </div>
                   <div className="text-xs text-muted-foreground">

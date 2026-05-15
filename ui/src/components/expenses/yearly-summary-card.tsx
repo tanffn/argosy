@@ -76,9 +76,9 @@ export function YearlySummaryCard({
     data.current_vs_avg_pct === null
       ? ""
       : data.current_vs_avg_pct > 5
-        ? "text-rose-600"
+        ? "text-error"
         : data.current_vs_avg_pct < -5
-          ? "text-emerald-600"
+          ? "text-success"
           : "text-muted-foreground";
 
   const startLabel = data.window_start_month;
@@ -116,7 +116,7 @@ export function YearlySummaryCard({
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
             <div className="text-xs text-muted-foreground">Spent</div>
-            <div className="text-2xl font-semibold tabular-nums">
+            <div className="text-2xl font-semibold font-mono tabular-nums">
               {formatNIS(data.yearly_spending_total_nis)}
             </div>
             <div className="text-xs text-muted-foreground">
@@ -125,7 +125,7 @@ export function YearlySummaryCard({
           </div>
           <div>
             <div className="text-xs text-muted-foreground">Income</div>
-            <div className="text-2xl font-semibold tabular-nums text-emerald-600">
+            <div className="text-2xl font-semibold font-mono tabular-nums text-success">
               {formatNIS(data.yearly_income_total_nis)}
             </div>
             <div className="text-xs text-muted-foreground">
@@ -134,7 +134,7 @@ export function YearlySummaryCard({
           </div>
           <div>
             <div className="text-xs text-muted-foreground">Refunds</div>
-            <div className="text-2xl font-semibold tabular-nums text-emerald-600">
+            <div className="text-2xl font-semibold font-mono tabular-nums text-success">
               {formatNIS(data.yearly_refunds_total_nis)}
             </div>
             <div className="text-xs text-muted-foreground">
@@ -145,11 +145,11 @@ export function YearlySummaryCard({
             <div className="text-xs text-muted-foreground">
               Avg / month
             </div>
-            <div className="text-2xl font-semibold tabular-nums">
+            <div className="text-2xl font-semibold font-mono tabular-nums">
               {formatNIS(data.avg_per_month_nis)}
             </div>
             {trendLabel && (
-              <div className={`text-xs ${trendColor}`}>{trendLabel}</div>
+              <div className={`text-xs font-mono tabular-nums ${trendColor}`}>{trendLabel}</div>
             )}
           </div>
         </div>

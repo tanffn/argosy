@@ -100,7 +100,7 @@ export function PlanRevisionSheet(props: PlanRevisionSheetProps) {
         </SheetHeader>
 
         {error && (
-          <p className="text-sm text-red-500 font-mono mt-3">{error}</p>
+          <p className="text-sm text-error font-mono mt-3">{error}</p>
         )}
 
         <Tabs
@@ -115,7 +115,7 @@ export function PlanRevisionSheet(props: PlanRevisionSheetProps) {
             <TabsTrigger value="long">Long</TabsTrigger>
             <TabsTrigger value="medium">
               <span className="flex items-center gap-1">
-                Medium <Star className="h-3 w-3 text-amber-500" />
+                Medium <Star className="h-3 w-3 text-warning" />
               </span>
             </TabsTrigger>
             <TabsTrigger value="short">Short</TabsTrigger>
@@ -155,7 +155,7 @@ export function PlanRevisionSheet(props: PlanRevisionSheetProps) {
                   {draft.horizon_short.speculative_candidates.map((c, i) => (
                     <li
                       key={i}
-                      className="border border-cyan-500/30 rounded-md p-2 text-sm"
+                      className="border border-info/30 rounded-md p-2 text-sm"
                     >
                       <div className="flex items-center justify-between">
                         <strong>{c.ticker}</strong>
@@ -227,7 +227,7 @@ function DeltasView(props: {
             </div>
             <div className="flex gap-1">
               {d.accepted ? (
-                <span className="text-xs text-emerald-500 font-mono">
+                <span className="text-xs text-success font-mono">
                   accepted
                 </span>
               ) : (

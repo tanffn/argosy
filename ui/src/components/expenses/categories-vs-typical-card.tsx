@@ -46,7 +46,7 @@ export function CategoriesVsTypicalCard({ data, month }: Props) {
             >
               <div className="flex items-center justify-between text-sm">
                 <span>{d.label}</span>
-                <span className={`tabular-nums ${over ? "text-rose-600" : "text-emerald-600"}`}>
+                <span className={`font-mono tabular-nums ${over ? "text-error" : "text-success"}`}>
                   {fmt(d.this_month_nis)}
                   {d.delta_pct !== null && (
                     <span className="text-xs ml-1.5">

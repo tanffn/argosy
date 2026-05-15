@@ -4,20 +4,20 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const statusPillVariants = cva(
-  "inline-flex items-center justify-center rounded-full border px-2 py-0.5 text-[10px] font-medium leading-tight whitespace-nowrap shrink-0 transition-colors",
+  "inline-flex items-center justify-center rounded-full border px-2 py-0.5 text-[10px] font-medium leading-tight whitespace-nowrap shrink-0 transition-colors duration-200",
   {
     variants: {
       tone: {
         success:
-          "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+          "border-success/30 bg-success/10 text-success",
         warning:
-          "border-amber-500/30 bg-amber-500/10 text-amber-400",
+          "border-warning/30 bg-warning/10 text-warning",
         error:
-          "border-red-500/30 bg-red-500/10 text-red-400",
+          "border-error/30 bg-error/10 text-error",
         neutral:
           "border-border bg-secondary/60 text-muted-foreground",
         accent:
-          "border-cyan-500/30 bg-cyan-500/10 text-cyan-400",
+          "border-info/30 bg-info/10 text-info",
       },
       mono: {
         true: "font-mono",

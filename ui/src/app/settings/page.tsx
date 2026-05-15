@@ -80,8 +80,8 @@ export default function SettingsPage() {
       </header>
 
       {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
-      {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
-      {saved && <p className="text-sm text-emerald-500">Saved.</p>}
+      {error && <p className="text-sm text-error font-mono">{error}</p>}
+      {saved && <p className="text-sm text-success">Saved.</p>}
 
       {settings && (
         <>

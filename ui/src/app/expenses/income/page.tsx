@@ -55,7 +55,7 @@ function IncomeDrilldownInner() {
   if (error) {
     return (
       <Card>
-        <CardContent className="py-8 text-center text-rose-600 text-sm">
+        <CardContent className="py-8 text-center text-error text-sm">
           Failed to load: {error}
         </CardContent>
       </Card>
@@ -107,7 +107,7 @@ function IncomeDrilldownInner() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-3xl font-semibold text-emerald-600">
+          <div className="text-3xl font-semibold font-mono tabular-nums text-success">
             {formatNIS(total)}
           </div>
           {data.by_category.length > 0 && (
@@ -159,7 +159,7 @@ function IncomeDrilldownInner() {
                         <span>{c.label_en}</span>
                       </span>
                     </td>
-                    <td className="py-2 px-2 text-right tabular-nums text-emerald-600">
+                    <td className="py-2 px-2 text-right tabular-nums text-success">
                       {formatNIS(c.total_nis)}
                     </td>
                     <td className="py-2 px-2 text-right tabular-nums text-muted-foreground">
@@ -204,7 +204,7 @@ function IncomeDrilldownInner() {
                     <td className="py-2 px-2 text-xs text-muted-foreground">
                       {t.category_slug ?? "—"}
                     </td>
-                    <td className="py-2 pl-2 text-right tabular-nums text-emerald-600">
+                    <td className="py-2 pl-2 text-right tabular-nums text-success">
                       +{t.amount_nis !== null ? formatNIS(t.amount_nis) : "—"}
                     </td>
                   </tr>

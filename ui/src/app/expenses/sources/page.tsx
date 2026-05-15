@@ -15,9 +15,9 @@ import { cn } from "@/lib/utils";
 const USER_ID = "ariel";
 
 const STATUS_DOT = {
-  green: "bg-emerald-500",
-  yellow: "bg-amber-500",
-  red: "bg-rose-500",
+  green: "bg-success",
+  yellow: "bg-warning",
+  red: "bg-error",
   unknown: "bg-muted-foreground/40",
 } as const;
 

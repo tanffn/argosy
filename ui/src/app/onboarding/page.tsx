@@ -80,7 +80,7 @@ export default function OnboardingPage() {
         >
           {status === "submitting" ? "Verifying..." : "Continue"}
         </button>
-        {errorMsg && <p className="text-sm text-red-500">{errorMsg}</p>}
+        {errorMsg && <p className="text-sm text-error">{errorMsg}</p>}
       </form>
     </div>
   );

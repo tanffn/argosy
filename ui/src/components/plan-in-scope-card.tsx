@@ -104,7 +104,7 @@ export function PlanInScopeCard({ userId }: PlanInScopeCardProps) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Plan in scope</CardTitle>
-          <CardDescription className="text-red-500">{error}</CardDescription>
+          <CardDescription className="text-error">{error}</CardDescription>
         </CardHeader>
       </Card>
     );
@@ -350,7 +350,7 @@ function Section(props: {
             <span>
               {it.left}: {it.right}
               {it.edited && (
-                <span className="ml-2 text-[10px] uppercase font-mono text-amber-500">
+                <span className="ml-2 text-[10px] uppercase font-mono text-warning">
                   user-edited
                 </span>
               )}

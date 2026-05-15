@@ -22,6 +22,15 @@
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
   --radius: 0.625rem;
+
+  /* Semantic state colors — light mode (deeper, more saturated so the
+     translucent /10 backgrounds remain legible on white). All components
+     should reach for these via `bg-success/10`, `text-error`, etc — never
+     hardcode `text-emerald-500` or `bg-rose-100` in component classNames. */
+  --success: oklch(0.605 0.155 162);
+  --warning: oklch(0.660 0.150 70);
+  --error: oklch(0.605 0.215 18);
+  --info: oklch(0.605 0.140 235);
 }
 
 .dark {
@@ -43,6 +52,14 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+
+  /* Semantic state colors — dark mode (lighter, ~Tailwind-400 brightness so
+     they read against `--card` #1f1f1f-ish without glowing). Pair with
+     /10 backgrounds + /30 borders for the StatusPill translucent recipe. */
+  --success: oklch(0.760 0.170 158);
+  --warning: oklch(0.825 0.180 85);
+  --error: oklch(0.710 0.190 16);
+  --info: oklch(0.760 0.130 235);
 }
 
 @theme inline {
@@ -64,6 +81,10 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-info: var(--info);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -79,6 +100,28 @@
   body {
     background: var(--background);
     color: var(--foreground);
+  }
+
+  /* Slim, palette-matched scrollbar. 6px instead of the OS default ~12px;
+     thumb sits in the `--border` register so it disappears against panels
+     and only shows under hover. Firefox uses the modern shorthand. */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
   }
 }
 

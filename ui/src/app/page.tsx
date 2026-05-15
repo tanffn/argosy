@@ -111,8 +111,8 @@ function confidenceTone(c: Confidence): "success" | "warning" | "neutral" {
 }
 
 function confidenceDot(c: Confidence): string {
-  if (c === "HIGH") return "bg-emerald-500";
-  if (c === "MEDIUM") return "bg-amber-500";
+  if (c === "HIGH") return "bg-success";
+  if (c === "MEDIUM") return "bg-warning";
   return "bg-muted-foreground/50";
 }
 
@@ -683,9 +683,9 @@ export default function Home() {
               ageMin === null
                 ? "bg-muted-foreground/40"
                 : ageMin < 30
-                  ? "bg-emerald-500"
+                  ? "bg-success"
                   : ageMin < 240
-                    ? "bg-amber-500"
+                    ? "bg-warning"
                     : "bg-muted-foreground/50";
             const lastLabel =
               last === null
@@ -850,7 +850,7 @@ export default function Home() {
       </section>
 
       {data.error && (
-        <p className="text-sm text-red-500 font-mono">{data.error}</p>
+        <p className="text-sm text-error font-mono">{data.error}</p>
       )}
     </main>
   );
@@ -908,11 +908,11 @@ interface SystemTileProps {
 function SystemTile({ label, value, tone, pulse }: SystemTileProps) {
   const dotClass =
     tone === "success"
-      ? "bg-emerald-500"
+      ? "bg-success"
       : tone === "warning"
-        ? "bg-amber-500"
+        ? "bg-warning"
         : tone === "error"
-          ? "bg-red-500"
+          ? "bg-error"
           : "bg-muted-foreground/50";
   return (
     <div className="rounded-lg border border-border bg-card px-3 py-2.5 flex flex-col gap-1.5">
@@ -942,12 +942,12 @@ interface ProgressBarProps {
 function ProgressBar({ pct, tone }: ProgressBarProps) {
   const fillClass =
     tone === "success"
-      ? "bg-emerald-500"
+      ? "bg-success"
       : tone === "warning"
-        ? "bg-amber-500"
+        ? "bg-warning"
         : tone === "error"
-          ? "bg-red-500"
-          : "bg-cyan-500";
+          ? "bg-error"
+          : "bg-info";
   return (
     <div className="h-1 w-full rounded-full bg-secondary/60 overflow-hidden">
       <div

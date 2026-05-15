@@ -52,9 +52,9 @@ export function VerdictCard({
     const winner = v.winning_side ?? "?";
     const tone =
       winner === "bull"
-        ? "text-emerald-500"
+        ? "text-success"
         : winner === "bear"
-          ? "text-amber-500"
+          ? "text-warning"
           : "text-muted-foreground";
     return (
       <div className="flex flex-col gap-2 text-xs font-mono">
@@ -91,10 +91,10 @@ export function VerdictCard({
           : AlertTriangle;
     const tone =
       verdictWord === "APPROVE"
-        ? "text-emerald-500"
+        ? "text-success"
         : verdictWord === "REJECT"
-          ? "text-red-500"
-          : "text-amber-500";
+          ? "text-error"
+          : "text-warning";
     return (
       <div className="flex flex-col gap-2 text-xs font-mono">
         <div className="flex items-center gap-2">
@@ -130,7 +130,7 @@ export function VerdictCard({
     const decision = v.decision ?? "?";
     const Icon = decision === "green_light" ? CheckCircle2 : Ban;
     const tone =
-      decision === "green_light" ? "text-emerald-500" : "text-red-500";
+      decision === "green_light" ? "text-success" : "text-error";
     return (
       <div className="flex flex-col gap-2 text-xs font-mono">
         <div className="flex items-center gap-2">
@@ -171,7 +171,7 @@ export function VerdictCard({
   if (verdictKind === "FundManagerPlanRevisionDecision") {
     const v = verdict as FundManagerPlanRevisionJson;
     const Icon = v.approved ? CheckCircle2 : Ban;
-    const tone = v.approved ? "text-emerald-500" : "text-red-500";
+    const tone = v.approved ? "text-success" : "text-error";
     return (
       <div className="flex flex-col gap-2 text-xs font-mono">
         <div className="flex items-center gap-2">

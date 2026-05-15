@@ -174,7 +174,7 @@ export default function FilesPage() {
         </CardContent>
       </Card>
 
-      {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+      {error && <p className="text-sm text-error font-mono">{error}</p>}
       {loading && <p className="text-sm text-muted-foreground">Loading...</p>}
 
       {!loading && items.length === 0 && (
@@ -217,7 +217,7 @@ export default function FilesPage() {
                     <td className="py-2 px-3 break-all max-w-[20rem]">
                       <span title={f.sanitized_name}>{f.original_name}</span>
                       {f.deleted_at && (
-                        <span className="ml-2 text-[10px] text-red-500">
+                        <span className="ml-2 text-[10px] text-error">
                           (deleted)
                         </span>
                       )}

@@ -40,7 +40,7 @@ export function VersionBadge() {
 
   if (error) {
     return (
-      <span className="font-mono text-rose-500">
+      <span className="font-mono text-error">
         Argosy · backend unreachable
       </span>
     );
@@ -57,7 +57,7 @@ export function VersionBadge() {
 
   return (
     <span
-      className={`font-mono ${dbOk ? "" : "text-rose-500"}`}
+      className={`font-mono ${dbOk ? "" : "text-error"}`}
       title={`Started ${startedAt.toLocaleString()}\nDB ${info.db}\nGit ${info.git_sha}`}
     >
       Argosy v{info.version} ·{" "}

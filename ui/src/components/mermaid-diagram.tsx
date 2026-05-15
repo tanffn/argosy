@@ -44,7 +44,7 @@ export function MermaidDiagram({
   if (error) {
     return (
       <div className={className}>
-        <p className="text-xs text-red-500 font-mono mb-2">
+        <p className="text-xs text-error font-mono mb-2">
           Mermaid render failed: {error}
         </p>
         <pre className="text-xs font-mono bg-secondary/40 border border-border rounded-md p-3 overflow-auto">

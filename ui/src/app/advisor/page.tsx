@@ -78,11 +78,11 @@ function dotColor(state: GapState): string {
   // Tailwind classes for the colored status dot.
   switch (state) {
     case "fresh":
-      return "bg-emerald-500";
+      return "bg-success";
     case "stale":
-      return "bg-amber-500";
+      return "bg-warning";
     case "missing":
-      return "bg-red-500";
+      return "bg-error";
   }
 }
 
@@ -476,11 +476,11 @@ export default function AdvisorPage() {
         <div
           role="alert"
           onClick={() => setSubmitError(null)}
-          className="sticky top-2 z-30 rounded-md border border-red-500/40 bg-red-500/15 backdrop-blur p-3 cursor-pointer hover:bg-red-500/25 transition"
+          className="sticky top-2 z-30 rounded-md border border-error/40 bg-error/15 backdrop-blur p-3 cursor-pointer hover:bg-error/25 transition"
         >
-          <p className="text-sm text-red-500 font-mono flex items-center justify-between gap-3">
+          <p className="text-sm text-error font-mono flex items-center justify-between gap-3">
             <span>{submitError}</span>
-            <span className="text-xs text-red-500/70 shrink-0">
+            <span className="text-xs text-error/70 shrink-0">
               click to dismiss
             </span>
           </p>
@@ -504,10 +504,10 @@ export default function AdvisorPage() {
         </p>
       </header>
 
-      {error && <p className="text-sm text-red-500 font-mono">{error}</p>}
+      {error && <p className="text-sm text-error font-mono">{error}</p>}
 
       {activeAmendment && (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 flex items-center justify-between text-sm">
+        <div className="rounded-md border border-warning/40 bg-warning/10 p-3 flex items-center justify-between text-sm">
           <span>
             Plan amendment in progress (
             <strong>{activeAmendment.tier}</strong> · ETA{" "}
@@ -535,7 +535,7 @@ export default function AdvisorPage() {
       )}
 
       {amendmentSystemMessage && (
-        <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm">
+        <div className="rounded-md border border-success/30 bg-success/10 p-3 text-sm">
           {amendmentSystemMessage}
           <button
             type="button"
@@ -548,7 +548,7 @@ export default function AdvisorPage() {
       )}
 
       {draft && (
-        <div className="rounded-md border border-rose-500/40 bg-rose-500/10 p-3 flex items-center justify-between">
+        <div className="rounded-md border border-error/40 bg-error/10 p-3 flex items-center justify-between">
           <p className="text-sm">
             Draft plan ready (synthesized{" "}
             {new Date(draft.drafted_at).toLocaleDateString()}) —{" "}
@@ -621,7 +621,7 @@ export default function AdvisorPage() {
                   className={
                     "rounded-md border p-3 text-xs font-mono " +
                     (backendStatus === "unreachable"
-                      ? "border-red-500/40 bg-red-500/10 text-red-500"
+                      ? "border-error/40 bg-error/10 text-error"
                       : "border-border bg-secondary/30 text-muted-foreground")
                   }
                   aria-live="polite"
@@ -631,17 +631,17 @@ export default function AdvisorPage() {
                       <p className="text-sm">
                         ⚠ Backend unreachable
                         {sinceHealthS !== null && (
-                          <span className="ml-2 text-red-400/80">
+                          <span className="ml-2 text-error/80">
                             (last contact {sinceHealthS}s ago)
                           </span>
                         )}
                       </p>
                       {healthError && (
-                        <p className="text-[10px] text-red-400/70">
+                        <p className="text-[10px] text-error/70">
                           {healthError}
                         </p>
                       )}
-                      <p className="text-[10px] text-red-400/70">
+                      <p className="text-[10px] text-error/70">
                         The advisor turn may still complete if the backend
                         comes back; otherwise refresh the page.
                       </p>
@@ -670,7 +670,7 @@ export default function AdvisorPage() {
                             animation. */}
                         backend{" "}
                         {backendStatus === "ok" ? (
-                          <span className="text-emerald-500">
+                          <span className="text-success">
                             OK
                             {sinceHealthS !== null && (
                               <> ({sinceHealthS}s ago)</>
@@ -681,7 +681,7 @@ export default function AdvisorPage() {
                         )}{" "}
                         ·{" "}
                         {lastAgentStepAt !== null ? (
-                          <span className="text-emerald-500">
+                          <span className="text-success">
                             last agent step{" "}
                             {lastAgentStepRole && (
                               <span className="text-muted-foreground">
@@ -705,7 +705,7 @@ export default function AdvisorPage() {
                 </div>
               )}
               {pending && pending.notes_for_orchestrator && (
-                <p className="text-xs text-amber-500">
+                <p className="text-xs text-warning">
                   Note: {pending.notes_for_orchestrator}
                 </p>
               )}
@@ -778,8 +778,8 @@ export default function AdvisorPage() {
                 </div>
 
                 {submitError && (
-                  <div className="rounded-md border border-red-500/40 bg-red-500/10 p-3">
-                    <p className="text-sm text-red-500 font-mono">
+                  <div className="rounded-md border border-error/40 bg-error/10 p-3">
+                    <p className="text-sm text-error font-mono">
                       {submitError}
                     </p>
                   </div>
@@ -816,11 +816,11 @@ export default function AdvisorPage() {
               <CardDescription>
                 {gaps ? (
                   <>
-                    <span className="text-emerald-500">{gaps.counts.fresh}</span>{" "}
+                    <span className="text-success">{gaps.counts.fresh}</span>{" "}
                     fresh ·{" "}
-                    <span className="text-amber-500">{gaps.counts.stale}</span>{" "}
+                    <span className="text-warning">{gaps.counts.stale}</span>{" "}
                     stale ·{" "}
-                    <span className="text-red-500">{gaps.counts.missing}</span>{" "}
+                    <span className="text-error">{gaps.counts.missing}</span>{" "}
                     missing
                   </>
                 ) : (

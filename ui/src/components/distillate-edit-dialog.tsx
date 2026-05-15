@@ -115,7 +115,7 @@ export function DistillateEditDialog(props: DistillateEditDialogProps) {
             />
           </div>
           {error && (
-            <p className="text-sm text-red-500 font-mono">{error}</p>
+            <p className="text-sm text-error font-mono">{error}</p>
           )}
         </div>
 

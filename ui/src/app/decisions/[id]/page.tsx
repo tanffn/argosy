@@ -105,7 +105,7 @@ export default function DecisionReplayPage(props: {
   if (error || !data) {
     return (
       <main className="max-w-6xl mx-auto p-6">
-        <p className="text-sm text-red-500 font-mono">
+        <p className="text-sm text-error font-mono">
           {error ?? "decision not found"}
         </p>
       </main>

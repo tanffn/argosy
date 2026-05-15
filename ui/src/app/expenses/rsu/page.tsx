@@ -88,8 +88,8 @@ function SaleCard({ sale }: SaleRowProps) {
                       className={cn(
                         "rounded px-1.5 py-0 text-[10px] uppercase tracking-wider border",
                         lot.holding_period === "LONG TERM"
-                          ? "border-emerald-300 text-emerald-700 bg-emerald-50 dark:bg-emerald-900/20 dark:text-emerald-300 dark:border-emerald-700"
-                          : "border-amber-300 text-amber-700 bg-amber-50 dark:bg-amber-900/20 dark:text-amber-300 dark:border-amber-700",
+                          ? "border-success/30 bg-success/10 text-success"
+                          : "border-warning/30 bg-warning/10 text-warning",
                       )}
                     >
                       {lot.holding_period}
@@ -254,14 +254,15 @@ function PairRowView({ row }: { row: PairRow }) {
         className={cn(
           "grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-md border px-3 py-2 text-sm",
           isHaircut
-            ? "border-l-4 border-l-sky-500 border-sky-400/60 bg-sky-50/40 dark:bg-sky-900/10"
-            : "border-l-4 border-l-emerald-500 border-emerald-400/60 bg-emerald-50/40 dark:bg-emerald-900/10",
+            ? "border-l-4 border-l-info border-info/30 bg-info/5"
+            : "border-l-4 border-l-success border-success/30 bg-success/5",
         )}
       >
         <DisbCell disb={row.disb} />
         {isHaircut ? (
           <Badge
-            className="text-[10px] justify-self-center border-transparent bg-sky-500 text-white"
+            variant="info"
+            className="text-[10px] justify-self-center"
             title="Likely IL capital-gains tax withholding (~28%)"
           >
             ≈ haircut
@@ -296,7 +297,7 @@ function PairRowView({ row }: { row: PairRow }) {
       <div
         className={cn(
           "grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-md border px-3 py-2 text-sm",
-          "border-l-4 border-l-rose-500 border-rose-400/60 bg-rose-50/40 dark:bg-rose-900/10",
+          "border-l-4 border-l-error border-error/30 bg-error/5",
         )}
       >
         <DisbCell disb={row.disb} />
@@ -317,7 +318,7 @@ function PairRowView({ row }: { row: PairRow }) {
       <div
         className={cn(
           "grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-md border px-3 py-2 text-sm",
-          "border-l-4 border-l-yellow-500 border-yellow-400/60 bg-yellow-50/40 dark:bg-yellow-900/10",
+          "border-l-4 border-l-warning border-warning/30 bg-warning/5",
         )}
       >
         <div className="flex flex-col gap-0.5 min-w-0 max-w-full">
@@ -337,7 +338,8 @@ function PairRowView({ row }: { row: PairRow }) {
           </div>
         </div>
         <Badge
-          className="text-[10px] justify-self-center border-transparent bg-yellow-500 text-black"
+          variant="warning"
+          className="text-[10px] justify-self-center"
           title="Schwab settlement in flight; expect a Forced Disbursement within a few business days"
         >
           ⏳ pending
@@ -354,12 +356,13 @@ function PairRowView({ row }: { row: PairRow }) {
     <div
       className={cn(
         "grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-md border px-3 py-2 text-sm",
-        "border-r-4 border-r-rose-500 border-amber-400/60 bg-amber-50/40 dark:bg-amber-900/10",
+        "border-r-4 border-r-error border-warning/30 bg-warning/5",
       )}
     >
       <PlaceholderCell label="no Schwab disbursement" />
       <Badge
-        className="text-[10px] justify-self-center border-transparent bg-amber-500 text-white"
+        variant="warning"
+        className="text-[10px] justify-self-center"
       >
         ?? orphan
       </Badge>
@@ -401,7 +404,7 @@ export default function RsuPage() {
   if (error) {
     return (
       <Card>
-        <CardContent className="py-8 text-center text-rose-600 text-sm">
+        <CardContent className="py-8 text-center text-error text-sm">
           Failed to load: {error}
         </CardContent>
       </Card>
@@ -440,7 +443,7 @@ export default function RsuPage() {
 
       {/* Warning */}
       {data.warning && (
-        <Card className="border-amber-400/60 bg-amber-50/40 dark:bg-amber-900/10">
+        <Card className="border-warning/30 bg-warning/5">
           <CardContent className="py-3 text-sm">
             <div className="font-medium mb-1">Schwab CSVs not loaded</div>
             <div className="text-muted-foreground">
@@ -517,7 +520,8 @@ export default function RsuPage() {
               )}
               {s.pending_sales_count > 0 && (
                 <Badge
-                  className="text-[10px] border-transparent bg-yellow-500 text-black"
+                  variant="warning"
+                  className="text-[10px]"
                   title={`Schwab sold but no Forced Disbursement yet (gross ${fmtUSD(s.pending_sales_total_gross_usd)})`}
                 >
                   ⏳ {s.pending_sales_count} sale

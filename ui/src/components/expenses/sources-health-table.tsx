@@ -8,9 +8,9 @@ import { formatNIS } from "@/lib/expenses/format";
 import { cn } from "@/lib/utils";
 
 const STATUS_DOT = {
-  green: "bg-emerald-500",
-  yellow: "bg-amber-500",
-  red: "bg-rose-500",
+  green: "bg-success",
+  yellow: "bg-warning",
+  red: "bg-error",
   unknown: "bg-muted-foreground/40",
 } as const;
 
@@ -63,7 +63,7 @@ export function SourcesHealthTable({ data }: { data: SourceHealthEntry[] }) {
                   </td>
                   <td className="py-2 px-2 text-right tabular-nums">
                     {s.gap !== null
-                      ? <span className={s.status === "red" ? "text-rose-600" : ""}>
+                      ? <span className={s.status === "red" ? "text-error" : ""}>
                           {s.gap >= 0 ? "+" : ""}{s.gap.toFixed(2)}
                         </span>
                       : "—"}

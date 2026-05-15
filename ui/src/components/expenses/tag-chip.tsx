@@ -19,7 +19,7 @@ export function TagChip({ tag, onRemove, href, className }: TagChipProps) {
   const isTrip = tag.startsWith("trip:");
   const display = isTrip ? tag.slice("trip:".length) : tag;
   const baseStyle = isTrip
-    ? "bg-sky-500/15 text-sky-700 border border-sky-500/30 dark:text-sky-300"
+    ? "bg-info/10 text-info border border-info/30"
     : "bg-secondary text-secondary-foreground border border-border";
   const inner = (
     <span
@@ -39,7 +39,7 @@ export function TagChip({ tag, onRemove, href, className }: TagChipProps) {
             e.stopPropagation();
             onRemove();
           }}
-          className="ml-0.5 hover:text-rose-500"
+          className="ml-0.5 hover:text-error transition-colors duration-200"
           aria-label={`Remove ${tag}`}
         >
           ×

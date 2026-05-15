@@ -23,7 +23,7 @@ function MoverRow({ slug, label, delta_nis, delta_pct }: {
       className="flex items-center justify-between gap-2 py-1.5 hover:bg-secondary/40 rounded-sm px-2 -mx-2"
     >
       <span className="text-sm">{label}</span>
-      <span className={`text-sm tabular-nums ${positive ? "text-emerald-600" : "text-rose-600"}`}>
+      <span className={`text-sm font-mono tabular-nums ${positive ? "text-success" : "text-error"}`}>
         {positive ? "+" : ""}{fmt(delta_nis)}
         {delta_pct !== null && (
           <span className="text-xs text-muted-foreground ml-1.5">
