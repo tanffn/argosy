@@ -34,26 +34,28 @@
 }
 
 .dark {
-  /* Dark palette gets a subtle deep-indigo cast (chroma 0.015 @ hue 250
-     ≈ Tokyo-Night blue-black) so the surface has color rather than
-     reading as pure-gray. Each elevation step is a slight lift in
-     lightness; the indigo hue stays constant so they harmonize. */
-  --background: oklch(0.155 0.015 250);
+  /* Dark palette gets a deep-indigo cast (chroma 0.035 @ hue 250 —
+     Tokyo-Night-territory blue-black) so the canvas reads as colored,
+     not flat gray. Elevation steps lift lightness while keeping the
+     indigo hue constant so surfaces harmonize. Earlier draft used
+     chroma 0.015 which was below the perceptual threshold on most
+     screens — bumped up after the screenshot showed pure black. */
+  --background: oklch(0.165 0.035 260);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0.015 250);
+  --card: oklch(0.215 0.035 258);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0.015 250);
+  --popover: oklch(0.215 0.035 258);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0.012 250);
+  --secondary: oklch(0.279 0.028 258);
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0.012 250);
+  --muted: oklch(0.279 0.028 258);
   --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0.012 250);
+  --accent: oklch(0.279 0.028 258);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
+  --border: oklch(1 0 0 / 11%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
 
@@ -64,16 +66,6 @@
   --warning: oklch(0.825 0.180 85);
   --error: oklch(0.710 0.190 16);
   --info: oklch(0.760 0.130 235);
-
-  /* Body-level atmospheric gradient. Soft radial glow at the top of the
-     viewport so the dark canvas has depth rather than a flat field.
-     Tuned to be visible-but-quiet; doesn't compete with foreground. */
-  --bg-gradient:
-    radial-gradient(
-      ellipse 100% 50% at 50% 0%,
-      oklch(0.260 0.030 250 / 0.65) 0%,
-      transparent 65%
-    );
 }
 
 @theme inline {
@@ -111,21 +103,32 @@
   * {
     border-color: var(--color-border);
   }
-  /* Atmospheric radial glow is layered ABOVE the solid base via CSS
-     multi-background syntax. Earlier draft used `body::before` with
-     `z-index: -1`, but Codex flagged that pseudo-element + negative
-     z-index can be clipped by descendant stacking contexts (any
-     `transform`, `isolation: isolate`, or `position: fixed` ancestor
-     creates a stacking root that the -1 layer is unable to pierce).
-     Layered backgrounds dodge the whole problem. `background-attachment:
-     fixed` on each layer keeps the gradient anchored at the top of the
-     viewport on long pages. */
+  /* Atmospheric radial glow layered ABOVE the solid base via CSS
+     multi-background syntax — not via `::before + z-index: -1` (Codex
+     flagged that as fragile across stacking contexts).
+     `background-attachment: fixed` keeps the gradient anchored at the
+     top of the viewport on long pages.
+
+     The gradient is defined INLINE here rather than via a
+     `--bg-gradient` custom property because Tailwind v4's `@theme
+     inline` compile path can mask non-color custom properties from
+     the cascade — first attempt rendered as pure black because the
+     `var()` fell through to its fallback. Hard-coding the radial
+     gradient sidesteps that entirely, and the alpha/spread is tuned
+     to be visible-but-quiet (about 1/3 of the viewport height,
+     fading out at 60%). */
   body {
     background:
-      var(--bg-gradient, transparent),
+      radial-gradient(
+        ellipse 80% 45% at 50% 0%,
+        oklch(0.340 0.060 258 / 0.85) 0%,
+        oklch(0.260 0.045 258 / 0.50) 30%,
+        transparent 60%
+      ),
       var(--background);
     background-attachment: fixed, fixed;
     color: var(--foreground);
+    min-height: 100%;
   }
 
   /* Slim, palette-matched scrollbar. 6px instead of the OS default ~12px;
