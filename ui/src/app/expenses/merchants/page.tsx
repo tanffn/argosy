@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,21 @@ import {
 
 const USER_ID = "ariel";
 
+// Next 16 prerender contract: any component using `useSearchParams()`
+// must be wrapped in <Suspense>, otherwise the static-export pass
+// fails with "should be wrapped in a suspense boundary". Mirrors the
+// sibling pattern in `/expenses/page.tsx`.
 export default function MerchantsPage() {
+  return (
+    <Suspense fallback={
+      <div className="text-sm text-muted-foreground p-6">Loading…</div>
+    }>
+      <MerchantsPageInner />
+    </Suspense>
+  );
+}
+
+function MerchantsPageInner() {
   // Filter state lives in the URL search params. This makes the page
   // self-consistent across browser back/forward (Next.js soft-nav restores
   // the URL, the page reads filters from it) and across hard reload.

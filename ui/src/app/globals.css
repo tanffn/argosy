@@ -34,19 +34,23 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
+  /* Dark palette gets a subtle deep-indigo cast (chroma 0.015 @ hue 250
+     ≈ Tokyo-Night blue-black) so the surface has color rather than
+     reading as pure-gray. Each elevation step is a slight lift in
+     lightness; the indigo hue stays constant so they harmonize. */
+  --background: oklch(0.155 0.015 250);
   --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
+  --card: oklch(0.205 0.015 250);
   --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
+  --popover: oklch(0.205 0.015 250);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
+  --secondary: oklch(0.269 0.012 250);
   --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
+  --muted: oklch(0.269 0.012 250);
   --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
+  --accent: oklch(0.269 0.012 250);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
@@ -60,6 +64,16 @@
   --warning: oklch(0.825 0.180 85);
   --error: oklch(0.710 0.190 16);
   --info: oklch(0.760 0.130 235);
+
+  /* Body-level atmospheric gradient. Soft radial glow at the top of the
+     viewport so the dark canvas has depth rather than a flat field.
+     Tuned to be visible-but-quiet; doesn't compete with foreground. */
+  --bg-gradient:
+    radial-gradient(
+      ellipse 100% 50% at 50% 0%,
+      oklch(0.260 0.030 250 / 0.65) 0%,
+      transparent 65%
+    );
 }
 
 @theme inline {
@@ -97,8 +111,20 @@
   * {
     border-color: var(--color-border);
   }
+  /* Atmospheric radial glow is layered ABOVE the solid base via CSS
+     multi-background syntax. Earlier draft used `body::before` with
+     `z-index: -1`, but Codex flagged that pseudo-element + negative
+     z-index can be clipped by descendant stacking contexts (any
+     `transform`, `isolation: isolate`, or `position: fixed` ancestor
+     creates a stacking root that the -1 layer is unable to pierce).
+     Layered backgrounds dodge the whole problem. `background-attachment:
+     fixed` on each layer keeps the gradient anchored at the top of the
+     viewport on long pages. */
   body {
-    background: var(--background);
+    background:
+      var(--bg-gradient, transparent),
+      var(--background);
+    background-attachment: fixed, fixed;
     color: var(--foreground);
   }
 

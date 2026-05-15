@@ -506,11 +506,13 @@ export default function Home() {
               🚢
             </span>
             <div className="min-w-0">
-              <h1 className="font-mono font-bold text-xl leading-tight">
-                Argosy
+              <h1 className="font-mono font-bold text-2xl leading-tight">
+                <span className="text-foreground">Welcome to </span>
+                <span className="text-success">Argosy</span>
               </h1>
-              <p className="text-sm text-muted-foreground mt-0.5">
-                multi-agent financial advisor
+              <p className="text-sm text-muted-foreground mt-1">
+                multi-agent financial advisor — paper-mode by default,
+                audit-trail by design
               </p>
               <div className="flex items-center gap-2 mt-3 flex-wrap">
                 <StatusPill tone="neutral" mono>
