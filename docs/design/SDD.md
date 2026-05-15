@@ -1438,9 +1438,14 @@ for the full design.
 ### 6.14 Chat upload (Wave 5 of plan-distillate work)
 
 The advisor chat input accepts attachments alongside the text message —
-text/markdown documents and images (screenshots). This replaces the
-former separate "Have an existing plan?" upload widget with a single
-unified surface.
+text/markdown documents and images (screenshots). This **UI widget**
+replaces the former separate "Have an existing plan?" upload widget
+with a single unified chat surface; the underlying baseline-plan
+import path (`/api/intake/upload` from Wave 1; see §6.10) is
+unchanged and still active. Wave 5 adds attachment ingest under
+`POST /api/advisor/turn` for chat-context documents (screenshots,
+ad-hoc text), not as a replacement for the canonical plan-import
+route.
 
 **Surface.** The advisor page's chat input supports four ingest paths:
 typed text, paperclip-button file picker (multiple selection), drag-and-
