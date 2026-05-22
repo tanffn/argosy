@@ -21,8 +21,6 @@ is configured (charged to the user's Claude Code subscription).
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,7 +29,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
-from argosy.agents.base import AgentReport, ConfidenceBand
+from argosy.agents.base import AgentReport, ConfidenceBand, _llm_backend_available
 from argosy.decisions.flow import (
     ApprovedProposal,
     BlockedProposal,
@@ -44,38 +42,12 @@ from argosy.state.models import User
 
 
 # ---------------------------------------------------------------------------
-# Backend availability
-# ---------------------------------------------------------------------------
-
-
-def _llm_backend_available() -> bool:
-    """Return True when at least one LLM backend is reachable.
-
-    Mirrors ``argosy.agents.base._llm_backend_available`` (kept local so
-    the import does not pull settings during pytest collection).
-    """
-    try:
-        from argosy.config import get_settings
-
-        backend = get_settings().anthropic.backend
-    except Exception:
-        backend = "claude_code"
-
-    if backend == "api_key":
-        return bool(os.environ.get("ANTHROPIC_API_KEY"))
-    if backend == "claude_code":
-        return shutil.which("claude") is not None
-    return False
-
-
-# ---------------------------------------------------------------------------
 # Synthetic analyst reports (same shape as cli/decide.py builds from rows)
 # ---------------------------------------------------------------------------
 
 
 def _analyst_reports_for_baseline() -> list[AgentReport]:
-    """Build a representative analyst-panel input for a T2 NVDA-adjacent
-    scenario.
+    """Build a representative analyst-panel input for a T2 AAPL scenario.
 
     The decision flow consumes analyst reports as inputs — the analyst
     layer itself is not part of the decision pipeline. We hand-craft three
@@ -166,21 +138,42 @@ def _analyst_reports_for_baseline() -> list[AgentReport]:
     ),
 )
 def test_t2_decision_flow_live_baseline(alembic_engine_at_head, tmp_path) -> None:
-    """Run a T2 decision end-to-end with live LLMs and capture the cost
-    baseline used by Wave A's cost-regression smoke test.
+    """Run the T2 decision flow live and capture a cost baseline.
 
     Scenario: a modest AAPL buy after a one-day -4% drift, with mixed
     fundamentals / technical / sentiment inputs. Tier is pinned to T2 so
     the FULL Opus-leaning stack runs (researcher debate → trader → 3-
     perspective risk team → fund manager).
 
-    Assertions are intentionally loose — the LLM is non-deterministic.
-    We only assert:
-      - flow completed (Approved or Blocked, not an exception)
-      - agent_reports rows were written
-      - total tokens_in > 0 and total cost_usd > 0
-      - at least 6 distinct agent invocations participated (debate +
-        trader + risk team must have fired)
+    Assertions (hard — the test fails if any of these break):
+      - flow returned an ApprovedProposal or BlockedProposal (not an
+        exception, not some other type)
+      - decision_run_id was populated
+      - at least 6 agent_reports rows were written (debate + trader +
+        risk team must have fired; the floor is loose to tolerate early
+        exits like trader_hold or risk REJECT)
+      - total tokens_in across those rows > 0 (agents recorded usage)
+
+    Observed but NOT asserted (recorded into the baseline JSON for
+    Task 24's downstream comparison):
+      - total_cost_usd: may be 0 on the claude_code backend (the SDK
+        reports cost via ResultMessage.total_cost_usd, which the current
+        BaseAgent does not persist into agent_reports.cost_usd). The
+        test prints a WARNING and continues; it does NOT fail.
+      - total_input_tokens: under-reported on the claude_code backend
+        (cache reads excluded). Useful as a cache-hit-rate witness post-
+        Wave-A, but NOT as the regression denominator — see the
+        ``regression`` block in the baseline JSON, which steers Task 24
+        to use total_output_tokens instead.
+      - outcome_kind: persisted in the baseline. If a future re-run
+        produces a different outcome_kind, the cascade depth differs and
+        Task 24's apples-to-apples comparison may break — see the
+        baseline JSON's ``outcome_stability_note`` for the fallback
+        (per-agent-role comparison via the ``per_agent`` array).
+      - total_output_tokens: persisted as the primary regression signal;
+        not asserted here because the LLM is non-deterministic and a
+        hard floor would either be too loose to catch regressions or too
+        tight to be stable.
 
     The baseline JSON is written under tests/fixtures/ before the test
     returns so the file persists past the tmp_path fixture teardown.

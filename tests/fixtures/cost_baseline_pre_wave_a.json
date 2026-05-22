@@ -17,6 +17,14 @@
   "flow_config": {
     "debate_rounds_t2": 1
   },
+  "regression": {
+    "primary_signal": "total_output_tokens",
+    "primary_signal_value": 30132,
+    "comment": "Use output tokens for the Task 24 regression assertion: the claude_code backend under-reports input tokens (cache reads excluded from tokens_in), so the rolled-up total_input_tokens here (39) is not a usable denominator for a 1.0 - (post_input / baseline_input) >= 0.30 check. Output tokens are reported accurately and are sensitive enough to detect missed thinking/caching wiring on Wave A.",
+    "secondary_signal": "total_input_tokens",
+    "secondary_signal_note": "Use as a cache-hit-rate witness only (post-Wave-A tokens_in should rise as cache reads start being reported once the api_key backend is in play, or as caching telemetry lands), NOT for the >=30% reduction assertion."
+  },
+  "outcome_stability_note": "Baseline outcome was ApprovedProposal. If Task 24's post-Wave-A re-run produces a different outcome_kind (e.g. BlockedProposal or TraderHold), the cascade depth differs and the rolled-up regression comparison is not apples-to-apples. In that case, either re-run until ApprovedProposal hits, or compare on a per-agent-role basis using the per_agent breakdown below instead of the rolled-up totals.",
   "per_agent": [
     {
       "role": "fundamentals",
