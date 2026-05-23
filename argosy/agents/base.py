@@ -109,6 +109,17 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
 }
 FALLBACK_MODEL = "claude-sonnet-4-6"
 
+# Per-role extended-thinking budget. Roles not listed default to 0 (no thinking).
+# Tuned for high-stakes agents where reasoning quality dominates flow value.
+DEFAULT_THINKING_BUDGET_BY_ROLE: dict[str, int] = {
+    "bull_researcher":  4000,
+    "bear_researcher":  4000,
+    "trader":           8000,
+    "fund_manager":     8000,
+    "plan_synthesizer": 8000,
+    "audit":            4000,
+}
+
 # Anthropic pricing (USD per 1M tokens) for cost tracking.
 # Verified against Anthropic's published rates on 2026-05-23
 # (https://platform.claude.com/docs/en/about-claude/pricing). The cache
@@ -244,6 +255,9 @@ class BaseAgent(Generic[T]):
         self.model = model or DEFAULT_MODEL_BY_ROLE.get(self.agent_role, FALLBACK_MODEL)
         self._client: Any = None  # lazy
         self._log = get_logger(f"argosy.agents.{self.agent_role}")
+        self.thinking_budget: int = DEFAULT_THINKING_BUDGET_BY_ROLE.get(
+            self.agent_role, 0,
+        )
 
     # ------------------------------------------------------------------
     # Public API
