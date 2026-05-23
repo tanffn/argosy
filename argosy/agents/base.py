@@ -682,13 +682,19 @@ class BaseAgent(Generic[T]):
 
         def _do_call() -> ModelCall:
             system_blocks = self._build_system_blocks(system)
+            call_kwargs: dict[str, Any] = {
+                "model": self.model,
+                "system": system_blocks,
+                "max_tokens": self.max_tokens,
+                "messages": messages_payload,
+            }
+            if self.thinking_budget > 0:
+                call_kwargs["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": self.thinking_budget,
+                }
             try:
-                msg = client.messages.create(
-                    model=self.model,
-                    system=system_blocks,
-                    max_tokens=self.max_tokens,
-                    messages=messages_payload,
-                )
+                msg = client.messages.create(**call_kwargs)
             except Exception as exc:  # pragma: no cover - exercised by integration only
                 raise AgentRunError(f"{self.agent_role}: Anthropic API error: {exc}") from exc
 
