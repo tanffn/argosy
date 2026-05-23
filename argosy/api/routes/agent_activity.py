@@ -34,6 +34,11 @@ class AgentActivityRow(BaseModel):
     cache_creation_tokens: int = 0
     thinking_tokens: int = 0
     citations_count: int = 0
+    # Wave B-UI — drawer fields exposed so the detail drawer can render
+    # full response text, citation list and prompt identity.
+    response_text: str = ""
+    citations_json: str | None = None
+    prompt_hash: str = ""
 
 
 class AgentActivityResponse(BaseModel):
@@ -97,6 +102,9 @@ async def get_agent_activity(
                 cache_creation_tokens=r.cache_creation_tokens or 0,
                 thinking_tokens=r.thinking_tokens or 0,
                 citations_count=citations_count,
+                response_text=r.response_text or "",
+                citations_json=r.citations_json,
+                prompt_hash=r.prompt_hash or "",
             )
         )
     if out:

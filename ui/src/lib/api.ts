@@ -85,6 +85,10 @@ export interface AgentActivityRow {
   cache_creation_tokens: number;
   thinking_tokens: number;
   citations_count: number;
+  // Wave B-UI drawer fields
+  response_text: string;
+  citations_json: string | null;
+  prompt_hash: string;
 }
 
 export interface AgentActivityResponse {

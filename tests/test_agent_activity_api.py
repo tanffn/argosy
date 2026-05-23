@@ -6,6 +6,9 @@ Wave A added four columns to ``agent_reports`` via migration 0026:
 show cache savings, thinking cost and citation counts.
 
 ``citations_count`` is derived in the route from ``len(citations_json)``.
+
+Wave B-UI Task 4 adds ``response_text``, ``citations_json``, and
+``prompt_hash`` to the payload so the AgentDetailDrawer can render them.
 """
 from __future__ import annotations
 
@@ -81,3 +84,34 @@ async def test_response_handles_null_citations_and_default_telemetry(
     assert row["cache_creation_tokens"] == 0
     assert row["thinking_tokens"] == 0
     assert row["citations_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_response_includes_wave_b_drawer_fields(client: AsyncClient) -> None:
+    """Wave B-UI Task 4: response_text, citations_json, and prompt_hash round-trip."""
+    citations = '[{"source_id":"s1","claim_text":"NVDA is bullish","cited_quote":"price up"}]'
+    hash_val = "a" * 64
+    async with db_mod.get_session() as session:
+        session.add(
+            AgentReport(
+                user_id="ariel",
+                agent_role="trader",
+                model="claude-sonnet-4-6",
+                prompt_hash=hash_val,
+                response_text="NVDA looks strong; buy 10 shares.",
+                tokens_in=500,
+                tokens_out=80,
+                cost_usd=0.003,
+                citations_json=citations,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get("/api/agent-activity?user_id=ariel&limit=10")
+    assert resp.status_code == 200
+    rows = resp.json()["rows"]
+    assert len(rows) >= 1
+    row = rows[0]
+    assert row["response_text"] == "NVDA looks strong; buy 10 shares."
+    assert row["citations_json"] == citations
+    assert row["prompt_hash"] == hash_val
