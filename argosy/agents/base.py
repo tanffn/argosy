@@ -779,7 +779,22 @@ class BaseAgent(Generic[T]):
             import base64
             from pathlib import Path as _Path
 
+            # Block order matches the api_key path: PDFs (large stable docs)
+            # before images, so the prompt cache prefix is consistent across
+            # backends. Sources stay inlined in user_with_sources for this
+            # backend — the claude-agent-sdk doesn't accept document blocks.
             content_blocks: list[dict[str, Any]] = []
+            for att in pdf_attachments or []:
+                path = getattr(att, "path", None) or att["path"]
+                data = base64.b64encode(_Path(path).read_bytes()).decode("ascii")
+                content_blocks.append({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": data,
+                    },
+                })
             for att in image_attachments or []:
                 path = getattr(att, "path", None) or att["path"]
                 mime = getattr(att, "mime_type", None) or att["mime_type"]
@@ -789,17 +804,6 @@ class BaseAgent(Generic[T]):
                     "source": {
                         "type": "base64",
                         "media_type": mime,
-                        "data": data,
-                    },
-                })
-            for att in pdf_attachments or []:
-                path = getattr(att, "path", None) or att["path"]
-                data = base64.b64encode(_Path(path).read_bytes()).decode("ascii")
-                content_blocks.append({
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
                         "data": data,
                     },
                 })
