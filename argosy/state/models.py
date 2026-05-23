@@ -262,6 +262,19 @@ class AgentReport(Base):
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_usd: Mapped[float] = mapped_column(Numeric(12, 6), nullable=False, default=0)
+    # Wave A — Anthropic Messages API telemetry (migration 0026).
+    cache_input_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+    )
+    cache_creation_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+    )
+    thinking_tokens: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+    )
+    citations_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None,
+    )
     model: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
