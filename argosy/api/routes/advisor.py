@@ -90,6 +90,9 @@ class AdvisorTurnRequest(BaseModel):
     # New: optional dotted path the user clicked in the sidebar so the
     # agent focuses on that gap (and its cluster). Ignored in user_driven mode.
     target_field: str | None = None
+    # Wave B-UI: caller-supplied correlation id threaded into agent.run.*
+    # WS events so the frontend can match events to the originating turn.
+    turn_id: str | None = None
 
 
 class AdvisorTurnResponse(BaseModel):
@@ -400,6 +403,7 @@ async def post_turn(
             history_excerpt=_scalar("history_excerpt") or "",
             current_stage=_scalar("current_stage"),
             target_field=_scalar("target_field"),
+            turn_id=_scalar("turn_id"),
         )
         # Collect any UploadFile values under any of the conventional keys.
         uploads = []
@@ -700,6 +704,7 @@ async def _run_turn(
             mode=mode,
             target_field=req.target_field,
             has_current_plan=has_current_plan,
+            turn_id=req.turn_id,
         )
         if image_attachments:
             run_kwargs["image_attachments"] = image_attachments

@@ -361,6 +361,10 @@ class BaseAgent(Generic[T]):
 
         image_attachments = inputs.get("image_attachments")
         pdf_attachments = inputs.get("pdf_attachments")
+        # turn_id is a control-plane field (WS event correlation); it is NOT
+        # a build_prompt input.  Capture it here, then pop so build_prompt
+        # never receives an unexpected keyword argument.
+        turn_id = inputs.pop("turn_id", None)
         bp_params = inspect.signature(self.build_prompt).parameters
         bp_accepts_var_kw = any(
             p.kind == inspect.Parameter.VAR_KEYWORD for p in bp_params.values()
@@ -398,7 +402,7 @@ class BaseAgent(Generic[T]):
                 "model": self.model,
                 "decision_id": inputs.get("decision_id"),
                 "intake_session_id": inputs.get("intake_session_id"),
-                "turn_id": inputs.get("turn_id"),
+                "turn_id": turn_id,
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "run_correlation_id": run_correlation_id,
             }
@@ -480,7 +484,7 @@ class BaseAgent(Generic[T]):
                 "cost_usd": cost,
                 "confidence": confidence.value if confidence else None,
                 "agent_report_id": None,
-                "turn_id": inputs.get("turn_id"),
+                "turn_id": turn_id,
             }
             publish_event_threadsafe("agent.run.finished", _finished_payload)
         except Exception:  # noqa: BLE001

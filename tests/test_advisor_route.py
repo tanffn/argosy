@@ -215,6 +215,43 @@ async def test_advisor_turn_applies_context_updates(
         reset_advisor_agent_factory()
 
 
+@pytest.mark.asyncio
+async def test_advisor_turn_echoes_turn_id_into_ws_events(
+    engine: None, client: AsyncClient
+) -> None:
+    """When turn_id is included in the request body, both agent.run.started
+    and agent.run.finished WS events must carry the same turn_id value."""
+    from unittest.mock import patch
+
+    set_advisor_agent_factory(_factory(_canned("Tax residency?")))
+    try:
+        async with db_mod.get_session() as session:
+            session.add(User(id="ariel"))
+            session.add(UserContext(user_id="ariel", current_stage="stage_1"))
+            await session.commit()
+
+        with patch("argosy.api.events.publish_event_threadsafe") as mock_pub:
+            res = await client.post(
+                "/api/advisor/turn",
+                json={
+                    "user_id": "ariel",
+                    "last_user_message": "hi",
+                    "turn_id": "turn-abc-123",
+                },
+            )
+        assert res.status_code == 200, res.text
+
+        # Both events should have been published with turn_id echoed.
+        names = [c.args[0] for c in mock_pub.call_args_list]
+        payloads = [c.args[1] for c in mock_pub.call_args_list]
+        assert "agent.run.started" in names
+        assert "agent.run.finished" in names
+        for p in payloads:
+            assert p.get("turn_id") == "turn-abc-123", p
+    finally:
+        reset_advisor_agent_factory()
+
+
 # ----------------------------------------------------------------------
 # /api/advisor/gaps
 # ----------------------------------------------------------------------
