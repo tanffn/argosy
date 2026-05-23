@@ -281,6 +281,30 @@ class BaseAgent(Generic[T]):
             self.agent_role, False,
         )
 
+        # Wave A — apply per-user YAML overrides on top of per-role defaults.
+        # Best-effort: any failure (missing file, malformed YAML, schema
+        # mismatch) must not block agent construction. The agent simply
+        # runs with its baked-in per-role defaults in that case.
+        try:
+            from argosy.config import (
+                load_agent_settings,
+                resolve_agent_settings_path,
+            )
+
+            yaml_path = resolve_agent_settings_path(self.user_id)
+            if yaml_path and yaml_path.exists():
+                settings = load_agent_settings(yaml_path)
+                ov = settings.for_role(self.agent_role)
+                if ov.thinking_budget is not None:
+                    self.thinking_budget = ov.thinking_budget
+                if ov.citations_enabled is not None:
+                    self.citations_enabled = ov.citations_enabled
+        except Exception as exc:  # noqa: BLE001
+            # Override loading is best-effort; failure must not block agent creation.
+            self._log.warning(
+                "agent_settings.yaml override load failed: %s", exc,
+            )
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------

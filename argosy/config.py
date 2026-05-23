@@ -261,12 +261,33 @@ def load_agent_settings(path: Path) -> AgentSettings:
 
     Missing file raises ``FileNotFoundError`` (callers that want soft
     behaviour should check ``path.exists()`` first — see
-    ``resolve_agent_settings_path`` in Task 19).
+    ``resolve_agent_settings_path`` below).
     """
     import yaml
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return AgentSettings(**raw)
+
+
+def resolve_agent_settings_path(user_id: str) -> Path | None:
+    """Return the path to the per-user ``agent_settings.yaml``, or ``None``.
+
+    Lookup order:
+      1. ``$ARGOSY_AGENT_SETTINGS_PATH`` env var (used by tests).
+      2. ``$ARGOSY_HOME/configs/<user_id>/agent_settings.yaml``.
+      3. ``None`` (no overrides applied).
+
+    This is a thin lookup — callers must still check ``path.exists()``
+    before reading; missing files are a normal, expected case (most
+    users won't write any overrides at all). The ``None`` branch is
+    reserved for environments where ``ARGOSY_HOME`` is unset and we have
+    no sensible per-user dir to probe.
+    """
+    env = os.environ.get("ARGOSY_AGENT_SETTINGS_PATH")
+    if env:
+        return Path(env)
+    home = os.environ.get("ARGOSY_HOME") or "."
+    return Path(home) / "configs" / user_id / "agent_settings.yaml"
 
 
 def get_user_agent_settings(user_id: str) -> dict:
