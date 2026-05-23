@@ -29,6 +29,7 @@ import asyncio
 import hashlib
 import json
 import os
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -385,6 +386,26 @@ class BaseAgent(Generic[T]):
         full_system = self.BOILERPLATE_SYSTEM + "\n\n" + system_prompt
 
         prompt_hash = self._hash_prompt(full_system, user_prompt)
+
+        # Emit agent.run.started — best-effort, must never block the agent run.
+        run_correlation_id = str(uuid.uuid4())
+        self._current_run_id = run_correlation_id
+        try:
+            from argosy.api.events import publish_event_threadsafe
+            _started_payload: dict[str, Any] = {
+                "user_id": self.user_id,
+                "agent_role": self.agent_role,
+                "model": self.model,
+                "decision_id": inputs.get("decision_id"),
+                "intake_session_id": inputs.get("intake_session_id"),
+                "turn_id": inputs.get("turn_id"),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "run_correlation_id": run_correlation_id,
+            }
+            publish_event_threadsafe("agent.run.started", _started_payload)
+        except Exception:  # noqa: BLE001
+            pass
+
         # Only forward optional kwargs when present so subclass test mocks
         # that override `_call_model(system, user)` without the new kwargs
         # keep working (Wave 5 backward-compat: image_attachments /
@@ -437,6 +458,34 @@ class BaseAgent(Generic[T]):
             thinking_tokens=call.thinking_tokens,
             citations_json=call.citations_json,
         )
+
+        # Emit agent.run.finished — best-effort, must never block the agent run.
+        try:
+            from argosy.api.events import publish_event_threadsafe
+            _citations_count = (
+                0 if call.citations_json is None
+                else len(json.loads(call.citations_json))
+            )
+            _finished_payload: dict[str, Any] = {
+                "user_id": self.user_id,
+                "agent_role": self.agent_role,
+                "run_correlation_id": run_correlation_id,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "tokens_in": call.tokens_in,
+                "tokens_out": call.tokens_out,
+                "cache_input_tokens": call.cache_input_tokens,
+                "cache_creation_tokens": call.cache_creation_tokens,
+                "thinking_tokens": call.thinking_tokens,
+                "citations_count": _citations_count,
+                "cost_usd": cost,
+                "confidence": confidence.value if confidence else None,
+                "agent_report_id": None,
+                "turn_id": inputs.get("turn_id"),
+            }
+            publish_event_threadsafe("agent.run.finished", _finished_payload)
+        except Exception:  # noqa: BLE001
+            pass
+
         self._log.info(
             "agent.run.finished",
             agent_role=self.agent_role,
