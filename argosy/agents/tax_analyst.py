@@ -88,7 +88,7 @@ class TaxAnalystAgent(BaseAgent[TaxReport]):
         domain_kb_files: dict[str, str],
         user_context_yaml: str = "",
         recent_fills_summary: str = "",
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[tuple[str, str]]]:
         """Build the prompt.
 
         Args:
@@ -102,11 +102,25 @@ class TaxAnalystAgent(BaseAgent[TaxReport]):
             user_context_yaml: optional serialized user_context.
             recent_fills_summary: optional recent realized-gain context
                 that informs wash-sale checks.
+
+        Returns:
+            ``(system, user, sources)``. Each ``domain_kb_files`` entry
+            becomes a document source whose ``source_id`` is the file's
+            relative path (e.g. ``domain_knowledge/tax/israel/capital_gains.md``)
+            so the Citations API can attribute every rate/rule claim back
+            to its authorising file. The bodies are no longer inlined in
+            the user prompt; the user prompt references them by id.
         """
-        kb_block = "\n\n".join(
-            f"=== {path} ===\n{contents}"
+        # Each domain_knowledge/tax/... file becomes one document source,
+        # keyed by its relative path so cited_sources strings line up
+        # with the Citations API's document_title spans.
+        sources: list[tuple[str, str]] = [
+            (path, contents)
             for path, contents in sorted(domain_kb_files.items())
-        ) or "(no tax domain_knowledge files supplied — set confidence=LOW)"
+        ]
+        ref_list = (
+            ", ".join(sid for sid, _ in sources) if sources else "(none)"
+        )
 
         system = (
             "You are the tax analyst on the Argosy fleet. You produce a "
@@ -115,7 +129,9 @@ class TaxAnalystAgent(BaseAgent[TaxReport]):
             "hints.\n\n"
             "RULES (mandatory):\n"
             "  - Every rate/rule claim MUST cite a `domain_knowledge/tax/...` "
-            "file path. Claims without a citation will be rejected.\n"
+            "file path. The relevant files are attached as document sources "
+            "titled with their relative path; reference them by that path. "
+            "Claims without a citation will be rejected.\n"
             "  - Wash-sale check: a TLH candidate flagged `wash_sale_risk=True` "
             "if a buy of the same ticker landed within 30 days, OR a buy is "
             "planned within 30 days. When in doubt, flag True.\n"
@@ -123,7 +139,9 @@ class TaxAnalystAgent(BaseAgent[TaxReport]):
             "`domain_knowledge/tax/israel/...` AND `domain_knowledge/treaties/...` "
             "when the underlying security is US-listed.\n"
             "  - For RSU estimates, separate the at-vest income tax from the "
-            "subsequent capital-gains tax on disposal.\n\n"
+            "subsequent capital-gains tax on disposal.\n"
+            "  - If no `domain_knowledge/tax/...` sources are attached, set "
+            "confidence=LOW and do not fabricate rates.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{TaxReport.model_json_schema()}\n"
         )
@@ -142,13 +160,19 @@ class TaxAnalystAgent(BaseAgent[TaxReport]):
         )
         if recent_fills_summary.strip():
             user_parts.append("=== RECENT FILLS ===\n" + recent_fills_summary)
-        user_parts.append("=== DOMAIN KNOWLEDGE — TAX ===\n" + kb_block)
+        user_parts.append(
+            "=== DOMAIN KNOWLEDGE — TAX ===\n"
+            "The relevant tax / treaty files are attached as document "
+            "sources (one per file). Cite them by their relative path "
+            f"(e.g. `domain_knowledge/tax/israel/capital_gains.md`).\n"
+            f"Attached tax sources: {ref_list}"
+        )
         user_parts.append(
             "Produce a TaxReport JSON now. Cite a `domain_knowledge/tax/...` "
             "file path for every claim. If insufficient data is available "
             "for a section, return an empty list there and explain in `summary`."
         )
-        return system, "\n\n".join(user_parts)
+        return system, "\n\n".join(user_parts), sources
 
 
 __all__ = [

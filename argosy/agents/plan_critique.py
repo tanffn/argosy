@@ -95,7 +95,7 @@ class PlanCritiqueAgent(BaseAgent[PlanCritiqueReport]):
         user_context_yaml: str,
         domain_kb_files: dict[str, str],
         recent_events: str = "",
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[tuple[str, str]]]:
         """Build the system+user prompt.
 
         Args:
@@ -115,12 +115,32 @@ class PlanCritiqueAgent(BaseAgent[PlanCritiqueReport]):
                 (news flagged by the news analyst, FX moves, etc.). Wrapped
                 in `<news>...</news>` automatically — content treated as
                 data per cross-cutting rule.
+
+        Wave A: returns ``(system, user, sources)``. The plan markdown,
+        portfolio snapshot summary, and each ``domain_kb_files`` entry are
+        extracted into Citations API document blocks (``plan/markdown``,
+        ``portfolio/snapshot``, and one per domain_knowledge file keyed by
+        its relative path) rather than inlined into the user prompt. The
+        user prompt references each by ``source_id`` so the model's output
+        carries character-offset citations back into the source text.
+        ``user_context_yaml`` and ``recent_events`` stay inline (small,
+        not authoritative sources for cited claims).
         """
-        kb_block = "\n\n".join(
-            f"=== {path} ===\n{contents}" for path, contents in sorted(domain_kb_files.items())
+        sources: list[tuple[str, str]] = []
+        if plan_markdown.strip():
+            sources.append(("plan/markdown", plan_markdown))
+        if snapshot_summary.strip():
+            sources.append(("portfolio/snapshot", snapshot_summary))
+        sources.extend(
+            (path, contents)
+            for path, contents in sorted(domain_kb_files.items())
         )
-        if not kb_block:
-            kb_block = "(no domain_knowledge files were provided to this run)"
+
+        kb_refs = (
+            ", ".join(path for path in sorted(domain_kb_files.keys()))
+            if domain_kb_files
+            else "(no domain_knowledge files were provided to this run)"
+        )
 
         system = (
             "You are the plan-critique analyst on the Argosy fleet.\n\n"
@@ -133,28 +153,48 @@ class PlanCritiqueAgent(BaseAgent[PlanCritiqueReport]):
             "Do not soften RED findings. Do not auto-edit the plan. Cite every "
             "numeric or regulatory claim with a domain_knowledge file path or "
             "external source URL.\n\n"
+            "The plan markdown is attached as document source `plan/markdown`. "
+            "The portfolio snapshot summary is attached as `portfolio/snapshot`. "
+            "Relevant domain_knowledge files are attached one per file, titled "
+            "by their relative path. Reference these source_ids in "
+            "`cited_sources` for every claim that reads from them.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{PlanCritiqueReport.model_json_schema()}\n"
         )
 
-        user_parts: list[str] = []
-        user_parts.append(f"PLAN LABEL: {plan_label}\n")
-        user_parts.append(f"SNAPSHOT LABEL: {snapshot_label}\n")
-        user_parts.append("=== USER CONTEXT (YAML) ===\n```yaml\n" + user_context_yaml + "\n```")
-        user_parts.append(
-            "=== PORTFOLIO SNAPSHOT SUMMARY ===\n" + snapshot_summary
+        plan_ref = (
+            "PLAN MARKDOWN: see document `plan/markdown`."
+            if plan_markdown.strip()
+            else "PLAN MARKDOWN: (no plan markdown supplied)"
         )
-        user_parts.append("=== RELEVANT DOMAIN KNOWLEDGE ===\n" + kb_block)
+        snapshot_ref = (
+            "PORTFOLIO SNAPSHOT SUMMARY: see document `portfolio/snapshot`."
+            if snapshot_summary.strip()
+            else "PORTFOLIO SNAPSHOT SUMMARY: (no snapshot summary supplied)"
+        )
+
+        user_parts: list[str] = []
+        user_parts.append(f"PLAN LABEL: {plan_label}")
+        user_parts.append(f"SNAPSHOT LABEL: {snapshot_label}")
+        user_parts.append("=== USER CONTEXT (YAML) ===\n```yaml\n" + user_context_yaml + "\n```")
+        user_parts.append(snapshot_ref)
+        user_parts.append(
+            "=== RELEVANT DOMAIN KNOWLEDGE ===\n"
+            "The relevant domain_knowledge files are attached as document "
+            "sources (one per file). Cite them by their relative path "
+            "(e.g. `domain_knowledge/tax/israel/section_102.md`).\n"
+            f"Attached domain_knowledge sources: {kb_refs}"
+        )
         if recent_events.strip():
             user_parts.append("=== RECENT EVENTS ===\n<news>\n" + recent_events + "\n</news>")
-        user_parts.append("=== PLAN MARKDOWN ===\n" + plan_markdown)
+        user_parts.append(plan_ref)
         user_parts.append(
             "Produce the PlanCritiqueReport JSON now. Make findings concrete; "
             "anchor each one to specific numbers in the snapshot or specific "
             "lines/rules in the cited domain_knowledge files."
         )
 
-        return system, "\n\n".join(user_parts)
+        return system, "\n\n".join(user_parts), sources
 
 
 __all__ = ["Finding", "PlanCritiqueAgent", "PlanCritiqueReport"]

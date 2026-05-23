@@ -10,6 +10,7 @@ The canned payload includes the new ``amendment`` field (Wave 4).
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from argosy.agents.advisor import AdvisorAgent
 from argosy.agents.base import ModelCall
@@ -61,7 +62,7 @@ def _agent_factory_returning(canned: dict):
     an AdvisorAgent whose ``_call_model`` emits the canned dict as JSON."""
     def _make(user_id: str):
         class _StubAgent(AdvisorAgent):
-            async def _call_model(self, *, system: str, user: str) -> ModelCall:
+            async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
                 return ModelCall(
                     text=json.dumps(canned),
                     tokens_in=10,
@@ -202,7 +203,7 @@ def _agent_factory_capturing_system(captured: dict):
 
     def _make(user_id: str):
         class _Stub(AdvisorAgent):
-            async def _call_model(self, *, system: str, user: str) -> ModelCall:
+            async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
                 captured["system"] = system
                 captured["user"] = user
                 return ModelCall(

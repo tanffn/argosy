@@ -55,7 +55,7 @@ class TechnicalAnalystAgent(BaseAgent[TechnicalReport]):
         *,
         tickers: list[str],
         indicators_payload: dict[str, dict[str, Any]],
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[tuple[str, str]]]:
         """Build the prompt.
 
         Args:
@@ -64,6 +64,13 @@ class TechnicalAnalystAgent(BaseAgent[TechnicalReport]):
                 Expected keys (any subset OK): rsi_14, macd, macd_signal,
                 ma_50, ma_200, ma_cross_50_200 ('golden'|'death'|'none'),
                 atr_14, support, resistance, source.
+
+        Wave A: returns ``(system, user, sources)``. Each ticker's
+        pre-computed indicator block becomes a Citations API document
+        with source_id ``indicators/{ticker}`` so the model's output
+        can carry character-offset citations back into the inputs.
+        Tickers with no indicators are mentioned inline in the user
+        prompt (no source body to attach).
         """
         system = (
             "You are the technical analyst on the Argosy fleet. The caller "
@@ -77,31 +84,47 @@ class TechnicalAnalystAgent(BaseAgent[TechnicalReport]):
             "  - Death cross (50d below 200d) tilts toward 'exit' even on "
             "neutral RSI.\n\n"
             "Rules:\n"
-            "  - Cite the OHLC data source on every per-ticker entry.\n"
+            "  - Cite the OHLC data source on every per-ticker entry. "
+            "The pre-computed indicators for each ticker are attached as "
+            "document blocks titled `indicators/<ticker>`; cite those "
+            "source_ids in `cited_sources` alongside the OHLC vendor "
+            "reference (e.g. `yfinance:NVDA:1d`) from the `source` key.\n"
             "  - Echo the indicator values you used — do not invent new ones.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{TechnicalReport.model_json_schema()}\n"
         )
 
-        blocks: list[str] = []
+        sources: list[tuple[str, str]] = []
+        missing: list[str] = []
         for t in tickers:
             data = indicators_payload.get(t, {})
             if not data:
-                blocks.append(f"## {t}\n(no indicators for this ticker)")
+                missing.append(t)
                 continue
             lines = [f"## {t}"]
             for k, v in data.items():
                 lines.append(f"  - {k}: {v}")
-            blocks.append("\n".join(lines))
+            sources.append((f"indicators/{t}", "\n".join(lines)))
 
+        ticker_refs = ", ".join(f"`{sid}`" for sid, _ in sources)
+        missing_line = (
+            ("Tickers with no indicators payload (skip or hold): "
+             + ", ".join(missing) + "\n\n")
+            if missing else ""
+        )
         user = (
             f"Tickers in scope: {', '.join(tickers) if tickers else '(none)'}\n\n"
-            "PRE-COMPUTED INDICATORS:\n\n"
-            + "\n\n".join(blocks)
-            + "\n\nProduce a TechnicalReport JSON now. signal must be one "
+            + missing_line
+            + (
+                "PRE-COMPUTED INDICATORS are attached as document blocks: "
+                f"{ticker_refs}.\n\n"
+                if ticker_refs
+                else "(no pre-computed indicator documents attached)\n\n"
+            )
+            + "Produce a TechnicalReport JSON now. signal must be one "
             "of entry|hold|exit per ticker."
         )
-        return system, user
+        return system, user, sources
 
 
 __all__ = [

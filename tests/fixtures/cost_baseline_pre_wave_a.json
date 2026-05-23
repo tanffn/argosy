@@ -1,0 +1,114 @@
+{
+  "scenario": "t2_decision_live_e2e",
+  "test_file": "tests/test_decision_flow_live.py",
+  "ticker": "AAPL",
+  "tier": "T2",
+  "outcome_kind": "ApprovedProposal",
+  "decision_run_id": 1,
+  "agent_report_count": 12,
+  "total_input_tokens": 39,
+  "total_output_tokens": 30132,
+  "total_cost_usd": 0.994605,
+  "captured_at": "2026-05-22",
+  "git_sha": "d130d10791",
+  "branch": "wave-a-baseagent-api",
+  "anthropic_sdk_version": "0.97.0",
+  "anthropic_backend": "claude_code",
+  "flow_config": {
+    "debate_rounds_t2": 1
+  },
+  "regression": {
+    "primary_signal": "total_output_tokens",
+    "primary_signal_value": 30132,
+    "comment": "Use output tokens for the Task 24 regression assertion: the claude_code backend under-reports input tokens (cache reads excluded from tokens_in), so the rolled-up total_input_tokens here (39) is not a usable denominator for a 1.0 - (post_input / baseline_input) >= 0.30 check. Output tokens are reported accurately and are sensitive enough to detect missed thinking/caching wiring on Wave A.",
+    "secondary_signal": "total_input_tokens",
+    "secondary_signal_note": "Use as a cache-hit-rate witness only (post-Wave-A tokens_in should rise as cache reads start being reported once the api_key backend is in play, or as caching telemetry lands), NOT for the >=30% reduction assertion."
+  },
+  "outcome_stability_note": "Baseline outcome was ApprovedProposal. If Task 24's post-Wave-A re-run produces a different outcome_kind (e.g. BlockedProposal or TraderHold), the cascade depth differs and the rolled-up regression comparison is not apples-to-apples. In that case, either re-run until ApprovedProposal hits, or compare on a per-agent-role basis using the per_agent breakdown below instead of the rolled-up totals.",
+  "per_agent": [
+    {
+      "role": "fundamentals",
+      "model": "claude-sonnet-4-6",
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "cost_usd": 0.0
+    },
+    {
+      "role": "technical",
+      "model": "claude-sonnet-4-6",
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "cost_usd": 0.0
+    },
+    {
+      "role": "sentiment",
+      "model": "claude-sonnet-4-6",
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "cost_usd": 0.0
+    },
+    {
+      "role": "bull_researcher",
+      "model": "claude-opus-4-7",
+      "tokens_in": 6,
+      "tokens_out": 1641,
+      "cost_usd": 0.12316500000000001
+    },
+    {
+      "role": "bear_researcher",
+      "model": "claude-opus-4-7",
+      "tokens_in": 6,
+      "tokens_out": 3873,
+      "cost_usd": 0.29056499999999996
+    },
+    {
+      "role": "researcher_facilitator",
+      "model": "claude-sonnet-4-6",
+      "tokens_in": 3,
+      "tokens_out": 3684,
+      "cost_usd": 0.055269000000000006
+    },
+    {
+      "role": "trader",
+      "model": "claude-opus-4-7",
+      "tokens_in": 6,
+      "tokens_out": 1874,
+      "cost_usd": 0.14064000000000002
+    },
+    {
+      "role": "risk_officer",
+      "model": "claude-sonnet-4-6",
+      "tokens_in": 3,
+      "tokens_out": 3879,
+      "cost_usd": 0.058194
+    },
+    {
+      "role": "risk_officer",
+      "model": "claude-sonnet-4-6",
+      "tokens_in": 3,
+      "tokens_out": 4418,
+      "cost_usd": 0.06627899999999999
+    },
+    {
+      "role": "risk_officer",
+      "model": "claude-sonnet-4-6",
+      "tokens_in": 3,
+      "tokens_out": 4681,
+      "cost_usd": 0.070224
+    },
+    {
+      "role": "risk_facilitator",
+      "model": "claude-sonnet-4-6",
+      "tokens_in": 3,
+      "tokens_out": 4433,
+      "cost_usd": 0.066504
+    },
+    {
+      "role": "fund_manager",
+      "model": "claude-opus-4-7",
+      "tokens_in": 6,
+      "tokens_out": 1649,
+      "cost_usd": 0.12376500000000001
+    }
+  ]
+}

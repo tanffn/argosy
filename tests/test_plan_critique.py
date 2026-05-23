@@ -15,8 +15,20 @@ class _MockPlanCritiqueAgent(PlanCritiqueAgent):
     def __init__(self, *, user_id: str, canned_output: dict) -> None:
         super().__init__(user_id=user_id)
         self._canned = canned_output
+        self.last_sources: list[tuple[str, str]] | None = None
+        self.last_system: str | None = None
+        self.last_user: str | None = None
 
-    async def _call_model(self, *, system: str, user: str) -> ModelCall:
+    async def _call_model(
+        self, *, system: str, user: str, **_extra: object,
+    ) -> ModelCall:
+        # Wave A: BaseAgent.run forwards `sources` (and `image_attachments`)
+        # when build_prompt returns the 3-tuple form. Accept-and-stash so
+        # tests below can assert source extraction without coupling the
+        # mock to the exact kwargs the base class forwards.
+        self.last_system = system
+        self.last_user = user
+        self.last_sources = _extra.get("sources")  # type: ignore[assignment]
         return ModelCall(
             text=json.dumps(self._canned),
             tokens_in=300,
@@ -74,7 +86,10 @@ async def test_plan_critique_produces_findings() -> None:
         snapshot_label="TSV 26-May",
         snapshot_summary="11471 NVDA at $200; total liquid ~$3.36M",
         user_context_yaml="tax_residency: israel\n",
-        domain_kb_files={"tax/israel/x.md": "x"},
+        domain_kb_files={
+            "domain_knowledge/tax/israel/retirement/section_102.md": "S.102 rules...",
+            "domain_knowledge/tax/us/estate_tax_nonresidents.md": "US estate rules...",
+        },
     )
     out = report.output
     assert isinstance(out, PlanCritiqueReport)
@@ -84,6 +99,22 @@ async def test_plan_critique_produces_findings() -> None:
     assert all(isinstance(f, Finding) for f in out.findings)
     assert out.cited_sources, "Top-level cited_sources must be non-empty"
     assert report.tokens_in == 300
+
+    # Wave A: build_prompt should extract sources (plan + snapshot +
+    # domain_kb_files) into Citations API document blocks rather than
+    # inlining them in the user prompt.
+    assert agent.last_sources is not None
+    source_ids = [sid for sid, _ in agent.last_sources]
+    assert "plan/markdown" in source_ids
+    assert "portfolio/snapshot" in source_ids
+    assert "domain_knowledge/tax/israel/retirement/section_102.md" in source_ids
+    assert "domain_knowledge/tax/us/estate_tax_nonresidents.md" in source_ids
+    # The actual plan body must NOT be inlined in the user prompt anymore
+    # — it must come through the document source so the Citations API can
+    # attribute spans back to it.
+    assert "NVDA target 15%" not in (agent.last_user or "")
+    # ... but the user prompt must still REFERENCE the source by id.
+    assert "plan/markdown" in (agent.last_user or "")
 
 
 @pytest.mark.asyncio

@@ -10,6 +10,11 @@
 
 **Spec:** `docs/superpowers/specs/2026-05-22-baseagent-api-features-design.md`
 
+**Status (2026-05-22):** Phase 0 complete. Resume at **Task 3 (migration 0026 — TANDEM)**.
+- ✅ Task 1 — SDK verified (anthropic 0.97.0; `TextCitation` + `ThinkingBlock` importable)
+- ✅ Task 2 — Live decision-flow e2e test + baseline. Commits `c6c3da1` (test + initial baseline) and `bb667df` (post-review fixes annotating `regression.primary_signal=total_output_tokens` because the claude_code backend under-reports input tokens). One live T2 AAPL decision = ~$1 LLM, 9 agents fired, ApprovedProposal outcome.
+- ⏳ Task 3 onward — pending. Branch `wave-a-baseagent-api` is checked out. Servers (uvicorn :8000, Next.js :1337) were running at last session start; check with `Get-NetTCPConnection -LocalPort 8000,1337 -State Listen` before resuming if you depend on them.
+
 **Common conventions for this plan:**
 - Python interpreter: `D:/Projects/financial-advisor/.venv/Scripts/python.exe`
 - Run backend tests: `D:/Projects/financial-advisor/.venv/Scripts/python.exe -m pytest -m "not llm_eval" <path>`

@@ -81,6 +81,10 @@ export interface AgentActivityRow {
   tokens_out: number;
   cost_usd: number;
   created_at: string;
+  cache_input_tokens: number;
+  cache_creation_tokens: number;
+  thinking_tokens: number;
+  citations_count: number;
 }
 
 export interface AgentActivityResponse {

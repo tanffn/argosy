@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-12 by Claude. Continued post-EX8 iteration covering the Monthly tab + FX wiring. Adds vacation/one-off pie split (`oneoff_categories` keyed by tag prefixes `trip:`/`vacation:` + literals `one-off`/`lump-sum`), median+MAD baseline for "Categories vs typical" (robust to lump-sum outliers), month-scoped uncategorized & reconciliation anomaly cards (Reconciled tile removed from hero, surfaces only on mismatch), merchant tab subtree category filter, date-range inputs on Transactions, sibling-tag fan-out on inline edit, NIS-converted toggle wired end-to-end (cross-component fx-mode sync via CustomEvent; historical rates now come from Frankfurter at api.frankfurter.dev — BoI public endpoint only returns latest snapshot, so the BoI client now fetches latest from BoI + the full history from Frankfurter and merges both into the fx_rates cache, 401 daily USD rates currently cached 2024-10 → 2026-05). Also: stale-worktree cleanup recovered ~8 GB / 471k files from `.claude/worktrees/` (29 dormant agent worktrees from prior subagent-driven sessions pruned).
+**Last edit:** 2026-05-23 by Claude. **Wave A — BaseAgent API features upgrade landed** on branch `wave-a-baseagent-api`. Key deliverables: (a) prompt caching, the Anthropic Citations API, and extended thinking wired into `BaseAgent._call_via_api_key` via new `_build_system_blocks` / `_build_document_blocks` helpers + per-role config tables (`DEFAULT_THINKING_BUDGET_BY_ROLE`, `DEFAULT_CITATIONS_BY_ROLE`); (b) migration `0026_agent_reports_api_telemetry` adds four columns to `agent_reports` — `cache_input_tokens`, `cache_creation_tokens`, `thinking_tokens`, `citations_json` — surfaced through the `AgentReport` dataclass, the ORM model, `/api/agent-activity`, and the UI `AgentActivityRow` type; (c) eleven source-consuming agents refactored to return `(prompt, sources)` from `build_prompt` so document blocks flow through (fundamentals, technical, news, sentiment, macro, tax, fx, concentration, plan_critique, intake_extractor, plan_distiller; plus the citation-enabled synthesizers bull/bear/trader/fund_manager/audit/plan_synthesizer); (d) per-user overrides via `agent_settings.yaml` (`models.override`, `thinking.budget_overrides`, `citations.enable_overrides`); (e) live cost-regression smoke confirms ≥30% input-token reduction vs. baseline once caches warm. **Backend caveat (real, important):** the cache / thinking / citations telemetry columns are populated **only on the `api_key` backend**. The `claude_code` backend (Argosy's default per `argosy.toml`) drives the Claude Code SDK's `query()` call, which does not expose `cache_control` / `thinking` / Citations through its public API — runs on that backend leave `cache_input_tokens`/`cache_creation_tokens`/`thinking_tokens` at 0 and `citations_json` NULL regardless of the role's declared config. Switch to `api_key` when verifying these features end-to-end. Foundation for Wave B (daily news cascade + codex live cross-review). Spec: `docs/superpowers/specs/2026-05-22-baseagent-api-features-design.md`. Plan: `docs/superpowers/plans/2026-05-22-baseagent-api-features-implementation.md`.
 
 ### Orientation — start here if you have zero context
 
@@ -678,69 +678,78 @@ The fleet borrows TradingAgents' team structure and extends it with specialists 
 
 Run in parallel; produce structured reports written to state. Reports are persistent state objects, not chat messages.
 
-| Agent | Knows | Outputs | Tools | Default model |
-|---|---|---|---|---|
-| **Fundamentals** | Earnings, financials, valuation multiples, sector context | Structured fundamentals report (PE/PEG/EV-EBITDA, growth, balance sheet quality, fair-value estimate) | yfinance, SEC EDGAR | Sonnet |
-| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Sonnet (was Haiku — see §3.8) |
-| **News** | Headlines, filings, earnings calls, regulatory news on holdings + watchlist | Per-ticker news digest with materiality score | Finnhub, RSS, SEC EDGAR | Sonnet |
-| **Sentiment** | Social/Reddit chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Reddit (PRAW), Finnhub | Sonnet (was Haiku — see §3.8) |
-| **Macro** | Rates, VIX, USD/NIS/EUR, oil, BoI/Fed actions, ISM/PMI | Regime classification (risk-on/risk-off; hard/soft landing) + drivers | FRED, Bank of Israel, OECD | Sonnet |
-| **Plan-critique** | The imported plan + current portfolio state + domain knowledge | RED/YELLOW/GREEN list of plan items with evidence | Plan doc, state, domain KB | Sonnet (Opus on RED) |
-| **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Sonnet (was Haiku — see §3.8) |
-| **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Sonnet |
-| **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Sonnet (was Haiku — see §3.8) |
+| Agent | Knows | Outputs | Tools | Default model | Thinking budget | Citations |
+|---|---|---|---|---|---|---|
+| **Fundamentals** | Earnings, financials, valuation multiples, sector context | Structured fundamentals report (PE/PEG/EV-EBITDA, growth, balance sheet quality, fair-value estimate) | yfinance, SEC EDGAR | Sonnet | 0 | yes |
+| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Sonnet (was Haiku — see §3.8) | 0 | yes |
+| **News** | Headlines, filings, earnings calls, regulatory news on holdings + watchlist | Per-ticker news digest with materiality score | Finnhub, RSS, SEC EDGAR | Sonnet | 0 | yes |
+| **Sentiment** | Social/Reddit chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Reddit (PRAW), Finnhub | Sonnet (was Haiku — see §3.8) | 0 | yes |
+| **Macro** | Rates, VIX, USD/NIS/EUR, oil, BoI/Fed actions, ISM/PMI | Regime classification (risk-on/risk-off; hard/soft landing) + drivers | FRED, Bank of Israel, OECD | Sonnet | 0 | yes |
+| **Plan-critique** | The imported plan + current portfolio state + domain knowledge | RED/YELLOW/GREEN list of plan items with evidence | Plan doc, state, domain KB | Sonnet (Opus on RED) | 0 | yes |
+| **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Sonnet (was Haiku — see §3.8) | 0 | yes |
+| **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Sonnet | 0 | yes |
+| **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Sonnet (was Haiku — see §3.8) | 0 | yes |
 
 ### 3.2 Researcher Team
 
 Adversarial debate, n rounds, facilitated. Produces a structured debate outcome record.
 
-| Agent | Role | Default model |
-|---|---|---|
-| **Bull** | Marshals bullish thesis from analyst reports; argues for adding/holding | Opus |
-| **Bear** | Marshals bearish thesis; argues for trimming/selling | Opus |
-| **Facilitator** | Bounds the debate; extracts winning thesis to structured record | Sonnet |
+| Agent | Role | Default model | Thinking budget | Citations |
+|---|---|---|---|---|
+| **Bull** | Marshals bullish thesis from analyst reports; argues for adding/holding | Opus | 4000 | yes |
+| **Bear** | Marshals bearish thesis; argues for trimming/selling | Opus | 4000 | yes |
+| **Facilitator** | Bounds the debate; extracts winning thesis to structured record | Sonnet | 0 | no |
 
 ### 3.3 Trader
 
 Synthesizes analyst reports + researcher debate outcome into a concrete proposal.
 
-| Agent | Role | Default model |
-|---|---|---|
-| **Trader** | Produces concrete proposal (action, size, instrument, limits, time-in-force) | Opus for T2/T3; Sonnet for T0/T1 |
+| Agent | Role | Default model | Thinking budget | Citations |
+|---|---|---|---|---|
+| **Trader** | Produces concrete proposal (action, size, instrument, limits, time-in-force) | Opus for T2/T3; Sonnet for T0/T1 | 8000 | yes |
 
 ### 3.4 Risk Team
 
 Adversarial debate over the proposed action; n rounds, facilitated.
 
-| Agent | Role | Default model |
-|---|---|---|
-| **Aggressive risk** | Tolerant of vol/drawdown if Sharpe-improving | Sonnet |
-| **Neutral risk** | Balanced perspective | Sonnet |
-| **Conservative risk** | Capital-preservation-first; flags worst-case path | Sonnet |
-| **Risk facilitator** | Extracts consensus or escalates conflict | Sonnet |
+| Agent | Role | Default model | Thinking budget | Citations |
+|---|---|---|---|---|
+| **Aggressive risk** | Tolerant of vol/drawdown if Sharpe-improving | Sonnet | 0 | no |
+| **Neutral risk** | Balanced perspective | Sonnet | 0 | no |
+| **Conservative risk** | Capital-preservation-first; flags worst-case path | Sonnet | 0 | no |
+| **Risk facilitator** | Extracts consensus or escalates conflict | Sonnet | 0 | no |
 
 ### 3.5 Approval Layer
 
-| Agent | Role | Default model |
-|---|---|---|
-| **Fund manager** | Final integrity check (consistency, plan conformity, guardrail compliance), green-lights or blocks | Opus |
+| Agent | Role | Default model | Thinking budget | Citations |
+|---|---|---|---|---|
+| **Fund manager** | Final integrity check (consistency, plan conformity, guardrail compliance), green-lights or blocks | Opus | 8000 | yes |
 
 ### 3.6 Cross-cutting agents
 
 Run on their own cadences; not part of any decision team.
 
-| Agent | Role | Cadence | Default model |
-|---|---|---|---|
-| **Intake** (`IntakeAgent`) | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Sonnet |
-| **Intake extractor** (`IntakeExtractorAgent`) | Single-pass markdown extractor for user-supplied plan/intake docs; populates `user_context` from a self-described file. Citations not required (the source IS the user's doc). | On upload | Sonnet |
-| **Advisor** (`AdvisorAgent`) | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. Wave 4: emits an optional `amendment` field in its turn output (`AmendmentIntent`) when the latest user message asks for a structural plan change; the route layer routes through `argosy.orchestrator.flows.plan_amendment` (§6.13). The route only enables the LLM amendment-classification block when `has_current_plan=True` (Wave 4 fix C1). See §6.5. | Per-turn (user-initiated) | Sonnet |
-| **Domain refresh** (`DomainRefreshAgent`) | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet |
-| **Audit** (`AuditAgent`) | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus |
-| **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Sonnet (Opus on RED) |
-| **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet |
-| **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts. See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus |
-| **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Sonnet (was Haiku; bumped — see §3.8) |
-| **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions (Wave EX1 — §18). Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Sonnet |
+| Agent | Role | Cadence | Default model | Thinking budget | Citations |
+|---|---|---|---|---|---|
+| **Intake** (`IntakeAgent`) | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Sonnet | 0 | no |
+| **Intake extractor** (`IntakeExtractorAgent`) | Single-pass markdown extractor for user-supplied plan/intake docs; populates `user_context` from a self-described file. Citations not required (the source IS the user's doc). | On upload | Sonnet | 0 | yes |
+| **Advisor** (`AdvisorAgent`) | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. Wave 4: emits an optional `amendment` field in its turn output (`AmendmentIntent`) when the latest user message asks for a structural plan change; the route layer routes through `argosy.orchestrator.flows.plan_amendment` (§6.13). The route only enables the LLM amendment-classification block when `has_current_plan=True` (Wave 4 fix C1). See §6.5. | Per-turn (user-initiated) | Sonnet | 0 | no |
+| **Domain refresh** (`DomainRefreshAgent`) | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet | 0 | no |
+| **Audit** (`AuditAgent`) | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus | 4000 | yes |
+| **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Sonnet (Opus on RED) | 0 | yes |
+| **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet | 0 | yes |
+| **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts. See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus | 8000 | yes |
+| **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Sonnet (was Haiku; bumped — see §3.8) | 0 | no |
+| **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions (Wave EX1 — §18). Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Sonnet | 0 | no |
+
+> **Wave A telemetry caveat (updated by Wave A.5).** The `Thinking budget` and `Citations` columns above describe per-role *configuration* (sourced from `DEFAULT_THINKING_BUDGET_BY_ROLE` and `DEFAULT_CITATIONS_BY_ROLE` in `argosy/agents/base.py`). On the `claude_code` backend (Argosy's default per `argosy.toml`) Wave A.5 backported most of the Wave A behaviour from the `api_key` path:
+>
+> - **Caching telemetry now works on both backends.** `cache_input_tokens` and `cache_creation_tokens` are read from `ResultMessage.usage` (the agent-sdk forwards Anthropic's `cache_read_input_tokens` / `cache_creation_input_tokens` unchanged).
+> - **Thinking budgets are now passed through on both backends.** `_call_via_claude_code_inner` forwards `thinking={"type":"enabled","budget_tokens":...}` plus `max_thinking_tokens=...` on `ClaudeAgentOptions` whenever the role's `thinking_budget>0`.
+> - **`thinking_tokens` column remains `api_key`-only.** The Claude Code CLI's usage payload does *not* expose `thinking_tokens` as a separate field (thinking tokens are folded into the CLI's reported `output_tokens`). `claude_code` runs therefore record `thinking_tokens=0` even when thinking has actually fired; switch to `api_key` to recover this telemetry.
+> - **Citations API remains `api_key`-only.** The agent-sdk has no equivalent of Anthropic document blocks, so `citations_json=NULL` on `claude_code`. Wave A.5 worked around the 11-agent refactor's loss-of-source-content by inlining `sources` into the user prompt as an `<sources>` XML block (see `BaseAgent._CLAUDE_CODE_SOURCES_WRAPPER`); the model can self-cite via the source IDs but without character-offset verification.
+>
+> Switch the backend (e.g., `argosy.toml [agents] backend = "api_key"`) when verifying `thinking_tokens` accounting or end-to-end Citations.
 
 **Decision-team agents (referenced from §3.1–§3.5) — code names for fresh-agent grep**:
 
@@ -1013,6 +1022,8 @@ Every analyst report carries a confidence band:
 - **Low** — data 3-12 months stale, single source, or self-reported without verification
 
 The trader and risk team weight inputs by confidence; the fund manager's integrity check refuses to act on Low-confidence T3 decisions without human sign-off.
+
+**Wave A update (2026-05-23) — Citations API supersedes hand-rolled `cited_sources`.** Agents with `citations_enabled=True` (see the Citations column on the §3 agent-fleet tables — sourced from `DEFAULT_CITATIONS_BY_ROLE` in `argosy/agents/base.py`) now emit verifiable character-offset citations via the Anthropic Citations API. Each cited claim resolves to a span inside a document block that was sent to the model, so attribution is checkable rather than self-reported. Spans persist to `agent_reports.citations_json` (migration 0026) as raw JSON. The hand-rolled `cited_sources` field on agent output models remains for backward compatibility — older runs and any agent backed by the `claude_code` backend still rely on it — but it is redundant for citation-enabled roles when the `api_key` backend is active. Downstream consumers (FundManagerAgent's integrity check, AuditAgent, the future codex fact-checker) should prefer `citations_json` when present and fall back to `cited_sources` only when it is NULL. Because the `claude_code` backend's `query()` call does not surface citation spans, runs on that backend leave `citations_json` NULL regardless of the role's `citations_enabled` config — switch to `api_key` (`argosy.toml [agents] backend = "api_key"`) when verifiable attribution is required. Spec: `docs/superpowers/specs/2026-05-22-baseagent-api-features-design.md`.
 
 ### 6.5 Advisor reframe — gap tracker + persistent panel
 
@@ -1798,6 +1809,7 @@ Alembic, linear chain. Each revision is small and rollback-tested.
 | `0023_fx_rates` | EX1.1 FX cache: `fx_rates(currency, date, rate, source, fetched_at)` storing ILS-per-foreign-currency daily rates. Backs `argosy.services.fx.convert(...)` for foreign→NIS conversion at occurred_on. Populated by BoI client + Frankfurter merge (BoI public endpoint only returns latest snapshot, Frankfurter covers history). |
 | `0024_expense_transaction_tags` | Wave EX5 trip/vacation tagging: adds `expense_transactions.tags TEXT NOT NULL DEFAULT '[]'` — JSON list of strings. `trip:greece-2026-aug`, `vacation:thailand`, `lump-sum:mortgage`, etc. Tags overlay on top of `category_id`; query via `LIKE '%"<tag>"%'`. See §18.5. |
 | `0025_decision_phases_seq_unique` | Promotes the existing `ix_decision_phases_run_seq` index on `decision_phases (decision_run_id, seq)` from non-unique to unique. Enforces the serial-caller contract at the DB level so a concurrent second recorder for the same `(run, kind)` raises `IntegrityError` instead of silently double-writing the row. §17 zigzag fix #3. |
+| `0026_agent_reports_api_telemetry` | Wave A (BaseAgent API features): adds four columns to `agent_reports` — `cache_input_tokens INTEGER NOT NULL DEFAULT 0`, `cache_creation_tokens INTEGER NOT NULL DEFAULT 0`, `thinking_tokens INTEGER NOT NULL DEFAULT 0`, `citations_json TEXT NULL`. Captures telemetry from prompt-caching, extended-thinking, and Citations API features wired into `BaseAgent._call_via_api_key`. Populated only on the `api_key` backend — runs through the `claude_code` backend leave the cache/thinking columns at 0 and `citations_json` NULL because the Claude Code SDK's `query()` does not surface those fields (see §3 agent-fleet caveat). Spec: `docs/superpowers/specs/2026-05-22-baseagent-api-features-design.md`. Plan: `docs/superpowers/plans/2026-05-22-baseagent-api-features-implementation.md`. |
 
 ### 8.6 Decision audit lineage
 

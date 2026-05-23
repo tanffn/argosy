@@ -51,7 +51,15 @@ class PlanDistillerAgent(BaseAgent[PlanDistillate]):
         *,
         plan_label: str,
         plan_markdown: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[tuple[str, str]]]:
+        """Build the prompt.
+
+        Wave A: returns ``(system, user, sources)``. The plan markdown body
+        is attached as a Citations API document block titled
+        ``plan/baseline_markdown`` so the model's output can carry
+        character-offset citations back into the plan text. The user prompt
+        references the document source_id instead of inlining the plan body.
+        """
         exclusions = "\n".join(f"  - {item}" for item in EXCLUSION_LIST)
         system = (
             "You are the plan-distiller agent on the Argosy fleet.\n\n"
@@ -60,6 +68,9 @@ class PlanDistillerAgent(BaseAgent[PlanDistillate]):
             "of the baseline that downstream synthesis ever consumes; the "
             "raw plan stays available for forensic lookups, but is NOT "
             "injected into agent prompts.\n\n"
+            "The plan markdown is attached as a document block titled "
+            "`plan/baseline_markdown`; cite that source_id for every "
+            "extracted item via ``source_section`` plus any cited_sources.\n\n"
             "WHAT TO EXTRACT (durable):\n"
             "  - goals: retirement target year, target annual income, FI status, "
             "    employment horizon, lifestyle aspirations\n"
@@ -94,15 +105,17 @@ class PlanDistillerAgent(BaseAgent[PlanDistillate]):
 
         user = (
             f"PLAN LABEL: {plan_label}\n\n"
-            "=== PLAN MARKDOWN ===\n"
-            f"{plan_markdown}\n"
-            "=== END PLAN MARKDOWN ===\n\n"
+            "The plan body is attached as document block "
+            "`plan/baseline_markdown`. Distill it now.\n\n"
             "Produce the PlanDistillate JSON now. Respect the exclusion "
             "list strictly: if the plan says 'NVDA is currently 66%', "
             "you do NOT record 66% as a target. You may record the "
             "stated target value (e.g. 15%) since that is durable."
         )
-        return system, user
+        sources: list[tuple[str, str]] = [
+            ("plan/baseline_markdown", plan_markdown),
+        ]
+        return system, user, sources
 
 
 __all__ = ["PlanDistillerAgent", "EXCLUSION_LIST"]

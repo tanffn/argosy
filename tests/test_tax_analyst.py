@@ -19,8 +19,12 @@ class _MockTaxAgent(TaxAnalystAgent):
     def __init__(self, *, user_id: str, canned_output: dict) -> None:
         super().__init__(user_id=user_id)
         self._canned = canned_output
+        self.last_sources: list[tuple[str, str]] | None = None
 
-    async def _call_model(self, *, system: str, user: str) -> ModelCall:
+    async def _call_model(
+        self, *, system: str, user: str, **_extra
+    ) -> ModelCall:
+        self.last_sources = _extra.get("sources")
         return ModelCall(
             text=json.dumps(self._canned),
             tokens_in=300,
@@ -81,6 +85,74 @@ async def test_tax_report_shape_with_citations() -> None:
     assert len(out.tlh_candidates) == 1
     assert isinstance(out.tlh_candidates[0], TLHCandidate)
     assert out.cited_sources
+    # Wave A: build_prompt should expose each domain_kb file as a
+    # document source so the Citations API can attribute claims back
+    # to its authorising file path.
+    assert agent.last_sources is not None
+    source_ids = [sid for sid, _ in agent.last_sources]
+    assert "domain_knowledge/tax/israel/capital_gains.md" in source_ids
+    assert "domain_knowledge/treaties/us_israel.md" in source_ids
+    cg_body = next(
+        c for sid, c in agent.last_sources
+        if sid == "domain_knowledge/tax/israel/capital_gains.md"
+    )
+    assert "25%" in cg_body
+
+
+@pytest.mark.asyncio
+async def test_tax_build_prompt_returns_sources_tuple() -> None:
+    """build_prompt returns (system, user, sources) and references sources
+    by id rather than inlining their bodies in the user prompt."""
+    canned = {
+        "tlh_candidates": [],
+        "dividend_projections": [],
+        "rsu_vest_estimates": [],
+        "year_end_hints": [],
+        "summary": "",
+        "confidence": "LOW",
+        "cited_sources": ["domain_knowledge/tax/israel/capital_gains.md"],
+    }
+    agent = _MockTaxAgent(user_id="ariel", canned_output=canned)
+    system, user, sources = agent.build_prompt(
+        lots_summary="(no lots)",
+        dividends_summary="(no dividends)",
+        rsu_schedule_summary="(none)",
+        domain_kb_files=_DOMAIN_KB,
+    )
+    assert "TaxReport" in system
+    # Sources sorted by path (stable iteration order).
+    assert [sid for sid, _ in sources] == [
+        "domain_knowledge/tax/israel/capital_gains.md",
+        "domain_knowledge/treaties/us_israel.md",
+    ]
+    # User prompt references sources by id, not by body.
+    assert "domain_knowledge/tax/israel/capital_gains.md" in user
+    assert "25% on real gains" not in user  # body NOT inlined
+    assert "25% withholding on dividends" not in user  # body NOT inlined
+
+
+@pytest.mark.asyncio
+async def test_tax_build_prompt_empty_domain_kb() -> None:
+    """When no domain_kb_files supplied, sources is empty and the user
+    prompt explicitly says so."""
+    canned = {
+        "tlh_candidates": [],
+        "dividend_projections": [],
+        "rsu_vest_estimates": [],
+        "year_end_hints": [],
+        "summary": "",
+        "confidence": "LOW",
+        "cited_sources": ["domain_knowledge/tax/israel/capital_gains.md"],
+    }
+    agent = _MockTaxAgent(user_id="ariel", canned_output=canned)
+    _sys, user, sources = agent.build_prompt(
+        lots_summary="(no lots)",
+        dividends_summary="(no dividends)",
+        rsu_schedule_summary="(none)",
+        domain_kb_files={},
+    )
+    assert sources == []
+    assert "Attached tax sources: (none)" in user
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -26,6 +27,13 @@ class AgentActivityRow(BaseModel):
     tokens_out: int
     cost_usd: float
     created_at: str
+    # Wave A — Anthropic Messages API telemetry (migration 0026).
+    # ``citations_count`` is derived from ``len(citations_json)`` in the
+    # route handler; defaults match the migration's server_default="0".
+    cache_input_tokens: int = 0
+    cache_creation_tokens: int = 0
+    thinking_tokens: int = 0
+    citations_count: int = 0
 
 
 class AgentActivityResponse(BaseModel):
@@ -68,6 +76,11 @@ async def get_agent_activity(
     out: list[AgentActivityRow] = []
     next_since: str | None = None
     for r in rows:
+        # citations_json is a stored JSON array (or NULL). Length of the
+        # decoded list is more useful to the UI than the raw blob.
+        citations_count = (
+            len(json.loads(r.citations_json)) if r.citations_json else 0
+        )
         out.append(
             AgentActivityRow(
                 id=r.id,
@@ -80,6 +93,10 @@ async def get_agent_activity(
                 tokens_out=r.tokens_out,
                 cost_usd=float(r.cost_usd or 0),
                 created_at=r.created_at.isoformat(),
+                cache_input_tokens=r.cache_input_tokens or 0,
+                cache_creation_tokens=r.cache_creation_tokens or 0,
+                thinking_tokens=r.thinking_tokens or 0,
+                citations_count=citations_count,
             )
         )
     if out:

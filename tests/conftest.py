@@ -908,3 +908,57 @@ def alembic_engine_with_existing_plan_row(tmp_path, monkeypatch):
     command.upgrade(cfg, "head")
     yield eng
     eng.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Wave A live-test backend-availability helper (shared across integration tests).
+#
+# The Wave A telemetry surface (citations_json + cache_input_tokens +
+# cache_creation_tokens + thinking_tokens) is only populated on the api_key
+# backend. The claude_code backend (Claude Agent SDK) intentionally does NOT
+# surface those fields on its ResultMessage.usage dict, so any live test that
+# asserts on them must SKIP cleanly when the configured backend is claude_code
+# — not fail with confusing "thinking_tokens is 0" / "citations_json is None"
+# style assertions.
+#
+# Centralized here so all three Wave A integration tests
+# (analyst / researcher / decision) plus the cost-regression smoke share one
+# definition. Previously each test rolled its own copy and decision drifted
+# missing it entirely, which produced live-fails on claude_code instead of
+# clean skips (Wave A finalization Issue 2).
+# ---------------------------------------------------------------------------
+
+
+def _api_key_backend_available() -> bool:
+    """True iff Argosy is configured for the ``api_key`` Anthropic backend
+    AND a key is reachable (env var or OS keychain).
+
+    Used as a pytest ``skipif`` predicate by Wave A live integration tests
+    that assert on api_key-only telemetry (citations + cache + thinking
+    tokens). Returns False when:
+
+      * settings load fails (no ARGOSY_HOME, no settings.toml, etc.)
+      * backend is ``claude_code`` (or any non ``api_key`` value)
+      * no ``ANTHROPIC_API_KEY`` env var AND no keychain entry under the
+        configured key name
+
+    Side-effect free; safe to call at module-import time / collection.
+    """
+    import os
+
+    try:
+        from argosy.config import get_settings
+
+        if get_settings().anthropic.backend != "api_key":
+            return False
+    except Exception:
+        return False
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+    try:
+        from argosy.config import get_settings
+        from argosy.secrets import get_secret
+
+        return bool(get_secret(get_settings().anthropic.keychain_key_name))
+    except Exception:
+        return False

@@ -681,6 +681,11 @@ class DecisionFlow:
                     cost_usd=float(r.cost_usd),
                     model=r.model,
                     confidence=r.confidence.value if r.confidence else None,
+                    # Wave A — Anthropic Messages API telemetry (migration 0026).
+                    cache_input_tokens=r.cache_input_tokens,
+                    cache_creation_tokens=r.cache_creation_tokens,
+                    thinking_tokens=r.thinking_tokens,
+                    citations_json=r.citations_json,
                 )
                 session.add(row)
                 await session.flush()

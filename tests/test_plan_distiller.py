@@ -94,7 +94,7 @@ def test_plan_distiller_build_prompt_contains_exclusion_list():
     from argosy.agents.plan_distiller import PlanDistillerAgent
 
     agent = PlanDistillerAgent(user_id="test")
-    sys, usr = agent.build_prompt(
+    sys, usr, sources = agent.build_prompt(
         plan_label="Jacobs Wealth Plan v2.0",
         plan_markdown="# Plan\n\nNVDA at 66% today.\n",
     )
@@ -108,11 +108,69 @@ def test_plan_distiller_build_prompt_contains_exclusion_list():
         "share counts",
     ):
         assert phrase.lower() in sys.lower(), f"missing exclusion: {phrase}"
-    # Plan markdown must be in the user prompt (not the system prompt —
-    # makes prompt-cache friendliness easier later).
-    assert "NVDA at 66% today" in usr
-    # Plan label must be passed through.
+    # Plan label must be passed through on the user prompt.
     assert "Jacobs Wealth Plan v2.0" in usr
+    # Wave A: plan markdown body lives in the Citations API sources list,
+    # NOT inlined into the user prompt. The user prompt references the
+    # source_id by name.
+    assert "NVDA at 66% today" not in usr
+    assert "NVDA at 66% today" not in sys
+    assert "plan/baseline_markdown" in usr
+    assert sources == [("plan/baseline_markdown", "# Plan\n\nNVDA at 66% today.\n")]
+
+
+@pytest.mark.asyncio
+async def test_plan_distiller_run_threads_sources_into_call_model():
+    """BaseAgent.run must forward the 3-tuple's sources kwarg to _call_model."""
+    import json as _json
+
+    from argosy.agents.base import ModelCall
+    from argosy.agents.plan_distiller import PlanDistillerAgent
+
+    captured: dict[str, object] = {}
+
+    class _MockDistiller(PlanDistillerAgent):
+        async def _call_model(
+            self,
+            *,
+            system: str,
+            user: str,
+            sources: list[tuple[str, str]] | None = None,
+            **_extra: object,
+        ) -> ModelCall:
+            captured["system"] = system
+            captured["user"] = user
+            captured["sources"] = sources
+            # Minimal valid PlanDistillate payload — exercises the run path.
+            return ModelCall(
+                text=_json.dumps({
+                    "plan_label": "Test Plan",
+                    "distilled_at_iso": "2026-05-23T00:00:00+00:00",
+                    "goals": [],
+                    "principles": [],
+                    "risk_priorities": [],
+                    "decision_rules": [],
+                    "targets": [],
+                    "constraints": [],
+                    "stress_tolerance": "",
+                }),
+                tokens_in=10,
+                tokens_out=20,
+                model=self.model,
+            )
+
+    agent = _MockDistiller(user_id="test")
+    report = await agent.run(
+        plan_label="Test Plan",
+        plan_markdown="# Test Plan\n\nbody here\n",
+    )
+
+    assert report.output.plan_label == "Test Plan"
+    assert captured["sources"] == [
+        ("plan/baseline_markdown", "# Test Plan\n\nbody here\n"),
+    ]
+    # The plan body must NOT be inlined into the user prompt anymore.
+    assert "body here" not in captured["user"]
 
 
 def test_render_distillate_to_markdown_smoke():

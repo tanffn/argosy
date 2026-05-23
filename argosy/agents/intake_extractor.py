@@ -133,14 +133,29 @@ class IntakeExtractorAgent(BaseAgent[IntakeExtraction]):
         *,
         plan_markdown: str,
         accumulated_context: str = "",
-    ) -> tuple[str, str]:
-        """Construct (system_addendum, user_prompt) for the extraction.
+        plan_filename: str = "plan.md",
+    ) -> tuple[str, str, list[tuple[str, str]]]:
+        """Construct ``(system_addendum, user_prompt, sources)`` for the extraction.
 
         Args:
             plan_markdown: full markdown text of the plan.
             accumulated_context: serialized user_context-so-far (YAML);
                 lets the extractor avoid re-stating already-known facts.
+            plan_filename: filename of the uploaded plan (used as the
+                terminal segment of the source_id; defaults to ``plan.md``
+                when the caller has no filename to thread through).
+
+        Wave A: returns ``(system, user, sources)``. The plan markdown is
+        extracted into a single Citations API document block titled
+        ``intake/plan_markdown/<filename>`` rather than inlined into the
+        user prompt, so the model's output can carry character-offset
+        citations back into the underlying plan text. The
+        ``source_excerpt`` strings on each ``ExtractedField`` remain a
+        human-readable audit trail; Citations are the machine-checkable
+        spans.
         """
+        source_id = f"intake/plan_markdown/{plan_filename}"
+
         system = (
             "You are the intake-extractor agent on the Argosy fleet. Your job: "
             "read a financial plan document the user has uploaded and produce a "
@@ -153,7 +168,8 @@ class IntakeExtractorAgent(BaseAgent[IntakeExtraction]):
             "fields conversationally — that is the SAFE outcome when in doubt.\n"
             "2. For every field you DO populate, set `source_excerpt` to 1-2 "
             "sentences quoted directly from the plan that support the value. If "
-            "you cannot quote a supporting excerpt, do not populate the field.\n"
+            "you cannot quote a supporting excerpt, do not populate the field. "
+            f"The plan text is attached as a document block titled `{source_id}`.\n"
             "3. Per-field confidence: HIGH = stated explicitly and unambiguously; "
             "MEDIUM = stated but qualified or implicit; LOW = inferred from "
             "context (use sparingly, prefer leaving the field None).\n"
@@ -175,15 +191,14 @@ class IntakeExtractorAgent(BaseAgent[IntakeExtraction]):
             "```yaml\n"
             f"{accumulated_context or '(empty)'}\n"
             "```\n\n"
-            "Plan markdown to extract from:\n"
-            "```markdown\n"
-            f"{plan_markdown}\n"
-            "```\n\n"
+            f"Plan markdown to extract from: see document `{source_id}`.\n\n"
             "Produce the IntakeExtraction JSON. Remember: when in doubt, leave the "
             "field None and list it in fields_missing. The intake loop will follow "
             "up — fabrication is the worst outcome."
         )
-        return system, user
+
+        sources: list[tuple[str, str]] = [(source_id, plan_markdown)]
+        return system, user, sources
 
 
 __all__ = ["ExtractedField", "IntakeExtraction", "IntakeExtractorAgent"]

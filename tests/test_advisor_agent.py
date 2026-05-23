@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -17,7 +18,7 @@ class _MockAdvisor(AdvisorAgent):
         super().__init__(user_id=user_id)
         self._canned = canned_output
 
-    async def _call_model(self, *, system: str, user: str) -> ModelCall:
+    async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
         # Stash the prompts on the instance so the tests can inspect.
         self._last_system = system
         self._last_user = user

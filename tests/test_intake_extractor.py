@@ -113,7 +113,12 @@ class _MockExtractor(IntakeExtractorAgent):
         super().__init__(user_id=user_id)
         self._canned = canned
 
-    async def _call_model(self, *, system: str, user: str) -> ModelCall:
+    async def _call_model(
+        self, *, system: str, user: str, **_extra: object,
+    ) -> ModelCall:
+        # `**_extra` absorbs the Wave A `sources` kwarg (and any future
+        # additions like `image_attachments`) that BaseAgent.run forwards
+        # when build_prompt returns the 3-tuple form.
         return ModelCall(
             text=json.dumps(self._canned),
             tokens_in=1500,

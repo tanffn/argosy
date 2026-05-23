@@ -214,6 +214,82 @@ def load_speculation_cap(*, user_id: str, agent_settings: dict) -> SpeculationCa
     return cap
 
 
+# ----------------------------------------------------------------------
+# Per-role agent overrides (Wave A — BaseAgent API features)
+# ----------------------------------------------------------------------
+
+
+class AgentRoleOverride(BaseModel):
+    """Per-role override fields loaded from ``agent_settings.yaml``.
+
+    Each field is ``None`` when unspecified, meaning "fall back to the
+    per-role default baked into ``BaseAgent``". This lets the YAML be
+    sparse — users only list the roles + fields they actually want to
+    override.
+
+    Fields:
+      * ``thinking_budget`` — extended-thinking token budget (0 disables;
+        upper bound mirrors the Anthropic API ceiling of 64k).
+      * ``citations_enabled`` — toggle Anthropic Citations API blocks for
+        this role.
+    """
+
+    model_config = {"extra": "allow"}  # tolerate future per-role fields (model, etc.)
+
+    thinking_budget: int | None = Field(default=None, ge=0, le=64000)
+    citations_enabled: bool | None = None
+
+
+class AgentSettings(BaseModel):
+    """Parsed shape of ``agent_settings.yaml`` (only the ``agents:`` block).
+
+    Other top-level blocks (``speculation``, ``expenses``, ...) are
+    handled by their own loaders; this model deliberately ignores them.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    agents: dict[str, AgentRoleOverride] = Field(default_factory=dict)
+
+    def for_role(self, role: str) -> AgentRoleOverride:
+        """Return the override for ``role``, or an empty (all-``None``) one."""
+        return self.agents.get(role, AgentRoleOverride())
+
+
+def load_agent_settings(path: Path) -> AgentSettings:
+    """Load + validate ``agent_settings.yaml`` into an :class:`AgentSettings`.
+
+    Missing file raises ``FileNotFoundError`` (callers that want soft
+    behaviour should check ``path.exists()`` first — see
+    ``resolve_agent_settings_path`` below).
+    """
+    import yaml
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return AgentSettings(**raw)
+
+
+def resolve_agent_settings_path(user_id: str) -> Path | None:
+    """Return the path to the per-user ``agent_settings.yaml``, or ``None``.
+
+    Lookup order:
+      1. ``$ARGOSY_AGENT_SETTINGS_PATH`` env var (used by tests).
+      2. ``$ARGOSY_HOME/configs/<user_id>/agent_settings.yaml``.
+      3. ``None`` (no overrides applied).
+
+    This is a thin lookup — callers must still check ``path.exists()``
+    before reading; missing files are a normal, expected case (most
+    users won't write any overrides at all). The ``None`` branch is
+    reserved for environments where ``ARGOSY_HOME`` is unset and we have
+    no sensible per-user dir to probe.
+    """
+    env = os.environ.get("ARGOSY_AGENT_SETTINGS_PATH")
+    if env:
+        return Path(env)
+    home = os.environ.get("ARGOSY_HOME") or "."
+    return Path(home) / "configs" / user_id / "agent_settings.yaml"
+
+
 def get_user_agent_settings(user_id: str) -> dict:
     """Read configs/<user_id>/agent_settings.yaml. Returns empty dict if missing.
 

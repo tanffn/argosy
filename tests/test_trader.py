@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -12,7 +13,7 @@ from argosy.agents.trader import TraderAgent, TraderProposal
 
 def _mock(canned: dict, *, tier: str = "T2"):
     class _M(TraderAgent):
-        async def _call_model(self, *, system: str, user: str) -> ModelCall:
+        async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
             return ModelCall(
                 text=json.dumps(canned),
                 tokens_in=200,

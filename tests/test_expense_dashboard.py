@@ -31,10 +31,11 @@ def test_new_pydantic_types_exist():
     hm = HeroMetric(value_nis=1000.0, mom_delta_pct=0.1, vs_trailing12_pct=0.05)
     assert hm.value_nis == 1000.0
     hsm = HeroStatsMonthly(
-        spent=hm, income=hm, refunds=hm,
+        spent=hm, income=hm, refunds=hm, oneoff=hm,
         statements_reconciled=3, anomalies_count=1,
     )
     assert hsm.statements_reconciled == 3
+    assert hsm.oneoff.value_nis == 1000.0
     cdv = CategoryDeviation(
         slug="food", label="Food", this_month_nis=3800.0,
         typical_mean_nis=2800.0, typical_std_nis=400.0, z_score=2.5, delta_pct=0.357,

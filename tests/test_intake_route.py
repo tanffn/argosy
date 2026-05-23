@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+from typing import Any
 
 import pytest
 import yaml
@@ -42,7 +43,7 @@ _CANNED = {
 
 def _factory(user_id: str):
     class _M(IntakeAgent):
-        async def _call_model(self, *, system: str, user: str) -> ModelCall:
+        async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
             return ModelCall(
                 text=json.dumps(_CANNED),
                 tokens_in=80,
@@ -151,7 +152,7 @@ _CANNED_EXTRACTION = {
 def _extractor_factory(canned: dict):
     def _make(user_id: str):
         class _E(IntakeExtractorAgent):
-            async def _call_model(self, *, system: str, user: str) -> ModelCall:
+            async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
                 return ModelCall(
                     text=json.dumps(canned),
                     tokens_in=1500,

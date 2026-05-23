@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -29,7 +30,7 @@ _CANNED = {
 
 def _mock_factory():
     class _M(PlanCritiqueAgent):
-        async def _call_model(self, *, system: str, user: str) -> ModelCall:
+        async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
             return ModelCall(
                 text=json.dumps(_CANNED),
                 tokens_in=100,
