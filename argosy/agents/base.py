@@ -524,6 +524,31 @@ class BaseAgent(Generic[T]):
             ]
         return [{"type": "text", "text": system}]
 
+    def _build_document_blocks(
+        self,
+        sources: list[tuple[str, str]],
+    ) -> list[dict[str, Any]]:
+        """Convert (source_id, content) tuples into Anthropic document blocks.
+
+        Used when ``self.citations_enabled`` is True and the agent has loaded
+        external sources (domain_knowledge files, news payloads, plan docs).
+        Each block is paired with a citations-enabled marker so the model's
+        output includes character-offset citations back into the source text.
+        """
+        return [
+            {
+                "type": "document",
+                "source": {
+                    "type": "text",
+                    "media_type": "text/plain",
+                    "data": content,
+                },
+                "title": source_id,
+                "citations": {"enabled": True},
+            }
+            for source_id, content in sources
+        ]
+
     def _call_via_claude_code_thread(
         self,
         *,
