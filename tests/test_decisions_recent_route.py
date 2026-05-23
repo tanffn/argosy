@@ -145,3 +145,71 @@ async def test_decisions_recent_limit_respected(
     assert res.status_code == 200, res.text
     groups = res.json()
     assert len(groups) == 1
+
+
+@pytest.mark.asyncio
+async def test_decisions_recent_unjoinable_decision_id(
+    engine: None, client: AsyncClient,
+) -> None:
+    """AgentReportRows with a non-integer decision_id (e.g. intake session UUID)
+    must appear in the response with tier/ticker/decision_kind all None and
+    status defaulting to 'done' (unjoinable — no DecisionRun row exists).
+
+    A joinable group (integer decision_id) seeded in the same request must
+    still resolve tier/ticker/decision_kind from its DecisionRun row.
+    """
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+
+        # Joinable group: integer decision_id backed by a real DecisionRun row.
+        dr = DecisionRun(
+            user_id="ariel", ticker="AAPL", tier="T2",
+            decision_kind="trade_proposal", status="done",
+        )
+        session.add(dr)
+        await session.flush()
+
+        # Rows for the joinable group.
+        for role in ("news", "macro"):
+            session.add(AgentReportRow(
+                user_id="ariel", agent_role=role,
+                decision_id=str(dr.id),
+                response_text="{}", prompt_hash="h", tokens_in=5, tokens_out=5,
+                cost_usd=0.01, model="claude-sonnet-4-6",
+                cache_input_tokens=0, cache_creation_tokens=0, thinking_tokens=0,
+            ))
+
+        # Unjoinable group: non-integer decision_id (intake session string).
+        for role in ("news", "intake_agent"):
+            session.add(AgentReportRow(
+                user_id="ariel", agent_role=role,
+                decision_id="intake-abc-123",
+                response_text="{}", prompt_hash="h", tokens_in=3, tokens_out=3,
+                cost_usd=0.005, model="claude-sonnet-4-6",
+                cache_input_tokens=0, cache_creation_tokens=0, thinking_tokens=0,
+            ))
+
+        await session.commit()
+
+    res = await client.get("/api/decisions/recent?user_id=ariel&limit=20")
+    assert res.status_code == 200, res.text
+    groups = res.json()
+
+    # Both groups must be present.
+    decision_ids = {g["decision_id"] for g in groups}
+    assert "intake-abc-123" in decision_ids
+    assert str(dr.id) in decision_ids
+
+    # --- Unjoinable group assertions ---
+    intake_group = next(g for g in groups if g["decision_id"] == "intake-abc-123")
+    assert intake_group["tier"] is None
+    assert intake_group["ticker"] is None
+    assert intake_group["decision_kind"] is None
+    assert intake_group["status"] == "done"
+    assert intake_group["agent_count"] >= 1
+
+    # --- Joinable group assertions ---
+    joinable_group = next(g for g in groups if g["decision_id"] == str(dr.id))
+    assert joinable_group["tier"] == "T2"
+    assert joinable_group["ticker"] == "AAPL"
+    assert joinable_group["decision_kind"] == "trade_proposal"
