@@ -39,6 +39,9 @@ def _make_mock_msg(input_toks=100, output_toks=50, thinking_toks=0):
     msg.usage.output_tokens = output_toks
     msg.usage.cache_read_input_tokens = 0
     msg.usage.cache_creation_input_tokens = 0
+    # Default thinking_tokens to thinking_toks (caller can override). Without
+    # explicit set, MagicMock auto-attrs cast to int as 1.
+    msg.usage.thinking_tokens = thinking_toks
     # Anthropic puts thinking tokens in a separate counter:
     msg.usage.cache_creation = MagicMock()
     msg.model = "claude-opus-4-7"
@@ -87,3 +90,34 @@ async def test_thinking_tokens_extracted_from_response(monkeypatch):
     full_system = BaseAgent.BOILERPLATE_SYSTEM + "\n\nRole: trader"
     result = await agent._call_via_api_key(system=full_system, user="hello")
     assert result.thinking_tokens == 500
+
+
+@pytest.mark.asyncio
+async def test_thinking_unsupported_falls_back(monkeypatch, caplog):
+    """When the model rejects the thinking param, retry once without it."""
+    import logging
+    caplog.set_level(logging.WARNING)
+
+    agent = _Trader(user_id="ariel")
+    fake_client = MagicMock()
+
+    call_count = {"n": 0}
+    def side_effect(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First call (with thinking) raises a "not supported" error
+            raise Exception("400 Bad Request: thinking is not supported on this model")
+        # Second call (without thinking) succeeds
+        return _make_mock_msg()
+    fake_client.messages.create.side_effect = side_effect
+    agent._client = fake_client
+
+    full_system = BaseAgent.BOILERPLATE_SYSTEM + "\n\nRole: trader"
+    result = await agent._call_via_api_key(system=full_system, user="hello")
+
+    assert call_count["n"] == 2  # initial + fallback
+    # Second call's kwargs should NOT contain 'thinking'
+    second_call_kwargs = fake_client.messages.create.call_args_list[1].kwargs
+    assert "thinking" not in second_call_kwargs
+    assert result.thinking_tokens == 0
+    assert any("thinking not supported" in rec.message.lower() for rec in caplog.records)

@@ -695,8 +695,31 @@ class BaseAgent(Generic[T]):
                 }
             try:
                 msg = client.messages.create(**call_kwargs)
-            except Exception as exc:  # pragma: no cover - exercised by integration only
-                raise AgentRunError(f"{self.agent_role}: Anthropic API error: {exc}") from exc
+            except Exception as exc:
+                err_str = str(exc).lower()
+                if "thinking" in call_kwargs and (
+                    "thinking" in err_str and ("not supported" in err_str or "400" in err_str)
+                ):
+                    # Graceful fallback: retry without thinking. Some models
+                    # (e.g. Haiku tiers, older Sonnet revisions) reject the
+                    # `thinking` param outright; rather than fail the call,
+                    # fall back to a non-thinking request so the agent still
+                    # produces an answer.
+                    self._log.warning(
+                        "thinking not supported by %s; retrying without",
+                        self.model,
+                    )
+                    call_kwargs.pop("thinking", None)
+                    try:
+                        msg = client.messages.create(**call_kwargs)
+                    except Exception as exc2:
+                        raise AgentRunError(
+                            f"{self.agent_role}: Anthropic API error (fallback also failed): {exc2}"
+                        ) from exc2
+                else:
+                    raise AgentRunError(
+                        f"{self.agent_role}: Anthropic API error: {exc}"
+                    ) from exc
 
             # Best-effort extraction of text and token counts; SDK shape is stable.
             text_parts: list[str] = []
