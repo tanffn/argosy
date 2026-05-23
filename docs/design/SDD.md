@@ -678,69 +678,71 @@ The fleet borrows TradingAgents' team structure and extends it with specialists 
 
 Run in parallel; produce structured reports written to state. Reports are persistent state objects, not chat messages.
 
-| Agent | Knows | Outputs | Tools | Default model |
-|---|---|---|---|---|
-| **Fundamentals** | Earnings, financials, valuation multiples, sector context | Structured fundamentals report (PE/PEG/EV-EBITDA, growth, balance sheet quality, fair-value estimate) | yfinance, SEC EDGAR | Sonnet |
-| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Sonnet (was Haiku — see §3.8) |
-| **News** | Headlines, filings, earnings calls, regulatory news on holdings + watchlist | Per-ticker news digest with materiality score | Finnhub, RSS, SEC EDGAR | Sonnet |
-| **Sentiment** | Social/Reddit chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Reddit (PRAW), Finnhub | Sonnet (was Haiku — see §3.8) |
-| **Macro** | Rates, VIX, USD/NIS/EUR, oil, BoI/Fed actions, ISM/PMI | Regime classification (risk-on/risk-off; hard/soft landing) + drivers | FRED, Bank of Israel, OECD | Sonnet |
-| **Plan-critique** | The imported plan + current portfolio state + domain knowledge | RED/YELLOW/GREEN list of plan items with evidence | Plan doc, state, domain KB | Sonnet (Opus on RED) |
-| **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Sonnet (was Haiku — see §3.8) |
-| **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Sonnet |
-| **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Sonnet (was Haiku — see §3.8) |
+| Agent | Knows | Outputs | Tools | Default model | Thinking budget | Citations |
+|---|---|---|---|---|---|---|
+| **Fundamentals** | Earnings, financials, valuation multiples, sector context | Structured fundamentals report (PE/PEG/EV-EBITDA, growth, balance sheet quality, fair-value estimate) | yfinance, SEC EDGAR | Sonnet | 0 | yes |
+| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Sonnet (was Haiku — see §3.8) | 0 | yes |
+| **News** | Headlines, filings, earnings calls, regulatory news on holdings + watchlist | Per-ticker news digest with materiality score | Finnhub, RSS, SEC EDGAR | Sonnet | 0 | yes |
+| **Sentiment** | Social/Reddit chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Reddit (PRAW), Finnhub | Sonnet (was Haiku — see §3.8) | 0 | yes |
+| **Macro** | Rates, VIX, USD/NIS/EUR, oil, BoI/Fed actions, ISM/PMI | Regime classification (risk-on/risk-off; hard/soft landing) + drivers | FRED, Bank of Israel, OECD | Sonnet | 0 | yes |
+| **Plan-critique** | The imported plan + current portfolio state + domain knowledge | RED/YELLOW/GREEN list of plan items with evidence | Plan doc, state, domain KB | Sonnet (Opus on RED) | 0 | yes |
+| **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Sonnet (was Haiku — see §3.8) | 0 | yes |
+| **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Sonnet | 0 | yes |
+| **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Sonnet (was Haiku — see §3.8) | 0 | yes |
 
 ### 3.2 Researcher Team
 
 Adversarial debate, n rounds, facilitated. Produces a structured debate outcome record.
 
-| Agent | Role | Default model |
-|---|---|---|
-| **Bull** | Marshals bullish thesis from analyst reports; argues for adding/holding | Opus |
-| **Bear** | Marshals bearish thesis; argues for trimming/selling | Opus |
-| **Facilitator** | Bounds the debate; extracts winning thesis to structured record | Sonnet |
+| Agent | Role | Default model | Thinking budget | Citations |
+|---|---|---|---|---|
+| **Bull** | Marshals bullish thesis from analyst reports; argues for adding/holding | Opus | 4000 | yes |
+| **Bear** | Marshals bearish thesis; argues for trimming/selling | Opus | 4000 | yes |
+| **Facilitator** | Bounds the debate; extracts winning thesis to structured record | Sonnet | 0 | no |
 
 ### 3.3 Trader
 
 Synthesizes analyst reports + researcher debate outcome into a concrete proposal.
 
-| Agent | Role | Default model |
-|---|---|---|
-| **Trader** | Produces concrete proposal (action, size, instrument, limits, time-in-force) | Opus for T2/T3; Sonnet for T0/T1 |
+| Agent | Role | Default model | Thinking budget | Citations |
+|---|---|---|---|---|
+| **Trader** | Produces concrete proposal (action, size, instrument, limits, time-in-force) | Opus for T2/T3; Sonnet for T0/T1 | 8000 | yes |
 
 ### 3.4 Risk Team
 
 Adversarial debate over the proposed action; n rounds, facilitated.
 
-| Agent | Role | Default model |
-|---|---|---|
-| **Aggressive risk** | Tolerant of vol/drawdown if Sharpe-improving | Sonnet |
-| **Neutral risk** | Balanced perspective | Sonnet |
-| **Conservative risk** | Capital-preservation-first; flags worst-case path | Sonnet |
-| **Risk facilitator** | Extracts consensus or escalates conflict | Sonnet |
+| Agent | Role | Default model | Thinking budget | Citations |
+|---|---|---|---|---|
+| **Aggressive risk** | Tolerant of vol/drawdown if Sharpe-improving | Sonnet | 0 | no |
+| **Neutral risk** | Balanced perspective | Sonnet | 0 | no |
+| **Conservative risk** | Capital-preservation-first; flags worst-case path | Sonnet | 0 | no |
+| **Risk facilitator** | Extracts consensus or escalates conflict | Sonnet | 0 | no |
 
 ### 3.5 Approval Layer
 
-| Agent | Role | Default model |
-|---|---|---|
-| **Fund manager** | Final integrity check (consistency, plan conformity, guardrail compliance), green-lights or blocks | Opus |
+| Agent | Role | Default model | Thinking budget | Citations |
+|---|---|---|---|---|
+| **Fund manager** | Final integrity check (consistency, plan conformity, guardrail compliance), green-lights or blocks | Opus | 8000 | yes |
 
 ### 3.6 Cross-cutting agents
 
 Run on their own cadences; not part of any decision team.
 
-| Agent | Role | Cadence | Default model |
-|---|---|---|---|
-| **Intake** (`IntakeAgent`) | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Sonnet |
-| **Intake extractor** (`IntakeExtractorAgent`) | Single-pass markdown extractor for user-supplied plan/intake docs; populates `user_context` from a self-described file. Citations not required (the source IS the user's doc). | On upload | Sonnet |
-| **Advisor** (`AdvisorAgent`) | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. Wave 4: emits an optional `amendment` field in its turn output (`AmendmentIntent`) when the latest user message asks for a structural plan change; the route layer routes through `argosy.orchestrator.flows.plan_amendment` (§6.13). The route only enables the LLM amendment-classification block when `has_current_plan=True` (Wave 4 fix C1). See §6.5. | Per-turn (user-initiated) | Sonnet |
-| **Domain refresh** (`DomainRefreshAgent`) | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet |
-| **Audit** (`AuditAgent`) | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus |
-| **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Sonnet (Opus on RED) |
-| **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet |
-| **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts. See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus |
-| **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Sonnet (was Haiku; bumped — see §3.8) |
-| **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions (Wave EX1 — §18). Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Sonnet |
+| Agent | Role | Cadence | Default model | Thinking budget | Citations |
+|---|---|---|---|---|---|
+| **Intake** (`IntakeAgent`) | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Sonnet | 0 | no |
+| **Intake extractor** (`IntakeExtractorAgent`) | Single-pass markdown extractor for user-supplied plan/intake docs; populates `user_context` from a self-described file. Citations not required (the source IS the user's doc). | On upload | Sonnet | 0 | yes |
+| **Advisor** (`AdvisorAgent`) | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. Wave 4: emits an optional `amendment` field in its turn output (`AmendmentIntent`) when the latest user message asks for a structural plan change; the route layer routes through `argosy.orchestrator.flows.plan_amendment` (§6.13). The route only enables the LLM amendment-classification block when `has_current_plan=True` (Wave 4 fix C1). See §6.5. | Per-turn (user-initiated) | Sonnet | 0 | no |
+| **Domain refresh** (`DomainRefreshAgent`) | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet | 0 | no |
+| **Audit** (`AuditAgent`) | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus | 4000 | yes |
+| **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Sonnet (Opus on RED) | 0 | yes |
+| **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet | 0 | yes |
+| **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts. See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus | 8000 | yes |
+| **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Sonnet (was Haiku; bumped — see §3.8) | 0 | no |
+| **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions (Wave EX1 — §18). Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Sonnet | 0 | no |
+
+> **Wave A telemetry caveat.** The `Thinking budget` and `Citations` columns above describe per-role *configuration* (sourced from `DEFAULT_THINKING_BUDGET_BY_ROLE` and `DEFAULT_CITATIONS_BY_ROLE` in `argosy/agents/base.py`). Telemetry for both — i.e., the `thinking_tokens` and `citations_json` columns on `agent_reports` (migration 0026) — is **only populated by the `api_key` backend**. The `claude_code` backend (Argosy's default per `argosy.toml`) drives the Claude Code SDK's `query()` call, which does not expose `thinking` / `cache_control` / Citations through its public API; runs on that backend therefore leave `thinking_tokens=0` and `citations_json=NULL` regardless of the role's declared budget/flag. Same caveat applies to `cache_input_tokens` and `cache_creation_tokens`. Switch the backend (e.g., `argosy.toml [agents] backend = "api_key"`) when verifying these features end-to-end.
 
 **Decision-team agents (referenced from §3.1–§3.5) — code names for fresh-agent grep**:
 
