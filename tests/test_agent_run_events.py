@@ -113,6 +113,30 @@ def test_agent_report_carries_run_correlation_id():
     assert report.run_correlation_id == ws_correlation_id
 
 
+def test_agent_report_carries_system_and_user_prompt():
+    """The returned AgentReport dataclass carries non-empty system_prompt and
+    user_prompt — these are the full strings built in run() and passed into
+    the AgentReport constructor (Wave B-UI follow-up Item B — migration 0029).
+    """
+    with patch("argosy.api.events.publish_event_threadsafe"):
+        agent = _DummyAgent(user_id="ariel", model="claude-sonnet-4-6")
+        report = asyncio.run(agent.run(decision_id="dec-prompt", turn_id="turn-prompt"))
+
+    # system_prompt = BOILERPLATE_SYSTEM + "\n\n" + "system" (from build_prompt)
+    # user_prompt = "user" (from build_prompt)
+    assert report.system_prompt is not None, "system_prompt must not be None"
+    assert len(report.system_prompt) > 0, "system_prompt must be non-empty"
+    # The dummy build_prompt returns ("system", "user") — system_prompt is
+    # BOILERPLATE_SYSTEM + "\n\n" + "system" so it must contain the role label.
+    assert "system" in report.system_prompt
+
+    assert report.user_prompt is not None, "user_prompt must not be None"
+    assert report.user_prompt == "user", (
+        f"user_prompt must be 'user' (the value returned by build_prompt), "
+        f"got {report.user_prompt!r}"
+    )
+
+
 class _BrokenAgent(BaseAgent):
     """Agent whose _call_model always raises to test the failure terminal event."""
 

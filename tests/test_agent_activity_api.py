@@ -351,3 +351,111 @@ async def test_sources_preview_null_sources_returns_empty_list(
     assert len(rows) >= 1
     row = rows[0]
     assert row["sources_preview"] == []
+
+
+# ---------------------------------------------------------------------------
+# Wave B-UI follow-up Item B — /prompt endpoint (migration 0029)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prompt_endpoint_round_trips(client: AsyncClient) -> None:
+    """system_prompt and user_prompt stored on AgentReport round-trip through
+    GET /api/agent-activity/{id}/prompt.
+    """
+    sys_p = "You are Argosy agent. RULES: ..."
+    usr_p = "Analyse NVDA position. Confidence: HIGH."
+    async with db_mod.get_session() as session:
+        row = AgentReport(
+            user_id="ariel",
+            agent_role="news_analyst",
+            model="claude-sonnet-4-6",
+            prompt_hash="p" * 64,
+            response_text="News analysis done.",
+            tokens_in=100,
+            tokens_out=30,
+            cost_usd=0.001,
+            system_prompt=sys_p,
+            user_prompt=usr_p,
+        )
+        session.add(row)
+        await session.flush()
+        report_id = row.id
+        await session.commit()
+
+    resp = await client.get(f"/api/agent-activity/{report_id}/prompt?user_id=ariel")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["id"] == report_id
+    assert data["system_prompt"] == sys_p
+    assert data["user_prompt"] == usr_p
+
+
+@pytest.mark.asyncio
+async def test_prompt_endpoint_returns_empty_strings_for_null_prompts(
+    client: AsyncClient,
+) -> None:
+    """Rows persisted before migration 0029 (NULL prompts) return empty strings,
+    not 404 — the UI displays a 'Prompt not captured' empty state.
+    """
+    async with db_mod.get_session() as session:
+        row = AgentReport(
+            user_id="ariel",
+            agent_role="macro",
+            model="claude-sonnet-4-6",
+            prompt_hash="q" * 64,
+            response_text="Macro analysis.",
+            tokens_in=80,
+            tokens_out=20,
+            cost_usd=0.0005,
+            # system_prompt and user_prompt intentionally omitted (NULL).
+        )
+        session.add(row)
+        await session.flush()
+        report_id = row.id
+        await session.commit()
+
+    resp = await client.get(f"/api/agent-activity/{report_id}/prompt?user_id=ariel")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["system_prompt"] == ""
+    assert data["user_prompt"] == ""
+
+
+@pytest.mark.asyncio
+async def test_prompt_endpoint_404_for_other_user(client: AsyncClient) -> None:
+    """GET /prompt with user_id=ariel for a row owned by 'bob' returns 404."""
+    from argosy.state.models import User
+
+    async with db_mod.get_session() as session:
+        # Ensure bob exists (FK on agent_reports.user_id).
+        bob = User(id="bob")
+        session.add(bob)
+        await session.flush()
+        row = AgentReport(
+            user_id="bob",
+            agent_role="trader",
+            model="claude-sonnet-4-6",
+            prompt_hash="r" * 64,
+            response_text="Bob's trade.",
+            tokens_in=50,
+            tokens_out=10,
+            cost_usd=0.0003,
+            system_prompt="Bob's system prompt.",
+            user_prompt="Bob's user prompt.",
+        )
+        session.add(row)
+        await session.flush()
+        report_id = row.id
+        await session.commit()
+
+    # Ariel tries to read Bob's prompt — must get 404.
+    resp = await client.get(f"/api/agent-activity/{report_id}/prompt?user_id=ariel")
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_prompt_endpoint_404_for_missing_row(client: AsyncClient) -> None:
+    """GET /prompt for a non-existent report_id returns 404."""
+    resp = await client.get("/api/agent-activity/999999/prompt?user_id=ariel")
+    assert resp.status_code == 404, resp.text

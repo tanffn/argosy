@@ -691,6 +691,10 @@ class DecisionFlow:
                     # Wave B-UI follow-up Item 2 — correlation id for O(1) WS↔DB
                     # linking in useDecisionStream (migration 0028).
                     run_correlation_id=r.run_correlation_id,
+                    # Wave B-UI follow-up Item B — full prompts for the Prompt
+                    # tab (migration 0029).
+                    system_prompt=r.system_prompt,
+                    user_prompt=r.user_prompt,
                 )
                 session.add(row)
                 await session.flush()
