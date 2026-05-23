@@ -120,6 +120,10 @@ export default function AdvisorPage() {
   // Sidebar gap-tracker state.
   const [gaps, setGaps] = useState<AdvisorGapsResponse | null>(null);
 
+  // In-flight guard: prevents concurrent askNext calls from a double-click
+  // or rapid re-submit before the previous turn's loading flag has rerendered.
+  const inFlightRef = useRef(false);
+
   // Answer/question attachment.
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
@@ -329,6 +333,14 @@ export default function AdvisorPage() {
         attachments?: File[];
       },
     ) => {
+      // Guard against concurrent calls (double-click / rapid re-submit).
+      // The ref is synchronous and survives between renders, unlike the
+      // `loading` state which only prevents a second call after a re-render.
+      if (inFlightRef.current) {
+        return;
+      }
+      inFlightRef.current = true;
+
       // Reset the previous turn's cascade panel and generate a fresh turnId
       // for this call. We reset here (not in finally) so the PREVIOUS turn's
       // cascade panel stays visible until the next turn starts.
@@ -360,6 +372,7 @@ export default function AdvisorPage() {
         const msg = e instanceof Error ? e.message : String(e);
         setSubmitError(msg);
       } finally {
+        inFlightRef.current = false;
         setLoading(false);
         setThinkingStartedAt(null);
         // After every turn, re-pull the sidebar so newly-fresh fields

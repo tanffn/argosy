@@ -150,7 +150,9 @@ export default function Home() {
   // counter when its event arrives, so a fresh `.argosy-flash-border`
   // class reliably re-triggers the CSS animation.
   const [proposalFlash, setProposalFlash] = useState(0);
-  const [activityFlash, setActivityFlash] = useState(0);
+  // activityFlash removed — agent.run.finished no longer drives home-page
+  // refresh (see useWSEvents comment below). The accordion's own live
+  // updates are the signal; FlashBorderBox receives a static key of 0.
 
   const refresh = useCallback(async () => {
     try {
@@ -292,9 +294,14 @@ export default function Home() {
 
   // Refresh on relevant WS events; also fire per-section "flash"
   // animations so users get a real-time signal a section just changed.
+  //
+  // NOTE: agent.run.finished is intentionally excluded here. A cascade run
+  // can emit ~20 of these events per advisor turn; including it caused 20
+  // full home-page refreshes per turn. The DecisionAccordion already handles
+  // agent.run.finished updates via useDecisionStream. activityFlash is dropped
+  // as redundant with the accordion's live updates.
   const lastEvent = useWSEvents([
     "daily_brief.ready",
-    "agent.run.finished",
     "proposal.created",
     "proposal.updated",
   ]);
@@ -305,9 +312,6 @@ export default function Home() {
       lastEvent.event === "proposal.updated"
     ) {
       setProposalFlash((n) => n + 1);
-    }
-    if (lastEvent.event === "agent.run.finished") {
-      setActivityFlash((n) => n + 1);
     }
     refresh();
   }, [lastEvent, refresh]);
@@ -780,7 +784,7 @@ export default function Home() {
       {/* ACTIVITY — decision-grouped accordion with live WS cascade. */}
       <section>
         <SectionHeader label="ACTIVITY" />
-        <FlashBorderBox flashKey={activityFlash}>
+        <FlashBorderBox flashKey={0}>
           <DecisionAccordion userId={USER_ID} />
         </FlashBorderBox>
       </section>
