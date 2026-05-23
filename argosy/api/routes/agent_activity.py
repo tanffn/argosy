@@ -39,6 +39,10 @@ class AgentActivityRow(BaseModel):
     response_text: str = ""
     citations_json: str | None = None
     prompt_hash: str = ""
+    # Wave B-UI Task 5 — grouping key for intake-session agents (mutually
+    # exclusive with decision_id in practice; both may be null for
+    # standalone / cadence agents).
+    intake_session_id: str | None = None
 
 
 class AgentActivityResponse(BaseModel):
@@ -105,6 +109,7 @@ async def get_agent_activity(
                 response_text=r.response_text or "",
                 citations_json=r.citations_json,
                 prompt_hash=r.prompt_hash or "",
+                intake_session_id=r.intake_session_id,
             )
         )
     if out:

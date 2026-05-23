@@ -89,6 +89,8 @@ export interface AgentActivityRow {
   response_text: string;
   citations_json: string | null;
   prompt_hash: string;
+  // Wave B-UI Task 5 — grouping key for intake-session agents.
+  intake_session_id: string | null;
 }
 
 export interface AgentActivityResponse {
@@ -401,10 +403,14 @@ export const api = {
     getJSON<DailyBriefDTO | null>(
       `/api/daily-brief/latest?user_id=${encodeURIComponent(userId)}`,
     ),
-  agentActivity: (userId: string, limit = 10) =>
-    getJSON<AgentActivityResponse>(
-      `/api/agent-activity?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
-    ),
+  agentActivity: (userId: string, limit = 10, since?: string) => {
+    const qs = new URLSearchParams({
+      user_id: userId,
+      limit: String(limit),
+    });
+    if (since) qs.set("since", since);
+    return getJSON<AgentActivityResponse>(`/api/agent-activity?${qs.toString()}`);
+  },
   proposalsList: (userId: string, status?: string) => {
     const qs = new URLSearchParams({ user_id: userId });
     if (status) qs.set("status", status);
