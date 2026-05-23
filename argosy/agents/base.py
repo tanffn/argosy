@@ -109,16 +109,28 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
 }
 FALLBACK_MODEL = "claude-sonnet-4-6"
 
-# Approximate Anthropic pricing (USD per 1M tokens) for cost tracking.
-# Updated only when we change models; figures are approximations and the
-# audit log records the model identifier so true pricing can be recomputed
-# offline. Numbers below are illustrative defaults.
-APPROX_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
+# Anthropic pricing (USD per 1M tokens) for cost tracking.
+# Verified against Anthropic's published rates on 2026-05-23
+# (https://platform.claude.com/docs/en/about-claude/pricing). The cache
+# and thinking multipliers applied in `_estimate_usd` are:
+#   * Cache reads        = 0.10x input rate
+#   * Cache writes (5m)  = 1.25x input rate (one-time per cache prefix)
+#   * Thinking           = priced as output
+#
+# History: Wave A audit (commit "feat(agents): _estimate_usd handles cache
+# + thinking pricing") corrected two stale entries that pre-dated the 4.x
+# model releases: Opus 4.7 was carrying Opus 4.1 pricing ($15/$75) and
+# Haiku 4.5 was carrying Haiku 3.5 pricing ($0.80/$4). Sonnet 4.6 was
+# already correct. The audit log records the model identifier so historical
+# cost_usd rows for any past model can be recomputed offline if needed.
+_PRICE_BY_MODEL: dict[str, tuple[float, float]] = {
     # model: (input_per_mtok, output_per_mtok)
     "claude-sonnet-4-6": (3.00, 15.00),
-    "claude-haiku-4-5": (0.80, 4.00),
-    "claude-opus-4-7": (15.00, 75.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-opus-4-7": (5.00, 25.00),
 }
+# Back-compat alias for any external callers / docs referencing the prior name.
+APPROX_PRICING_USD_PER_MTOK = _PRICE_BY_MODEL
 
 
 class ConfidenceBand(str, Enum):
@@ -133,6 +145,13 @@ class ModelCall:
 
     Subclasses or test doubles can produce one of these without ever
     touching the Anthropic SDK.
+
+    Wave A additions (default 0 / None to preserve pre-Wave-A behaviour
+    when telemetry is not yet populated by `_call_via_api_key`):
+      * ``cache_input_tokens``    -- cached-input tokens read on this call.
+      * ``cache_creation_tokens`` -- input tokens newly written to cache.
+      * ``thinking_tokens``       -- extended-thinking output tokens.
+      * ``citations_json``        -- raw Citations API extraction, JSON string.
     """
 
     text: str
@@ -140,6 +159,10 @@ class ModelCall:
     tokens_out: int = 0
     model: str = ""
     raw: Any = None
+    cache_input_tokens: int = 0
+    cache_creation_tokens: int = 0
+    thinking_tokens: int = 0
+    citations_json: str | None = None
 
 
 @dataclass
@@ -287,7 +310,13 @@ class BaseAgent(Generic[T]):
             self._validate_citations(output)
 
         confidence = self._extract_confidence(output)
-        cost = self._estimate_cost(call.tokens_in, call.tokens_out, call.model or self.model)
+        cost = self._estimate_usd(
+            tokens_in=call.tokens_in,
+            tokens_out=call.tokens_out,
+            cache_input_tokens=call.cache_input_tokens,
+            cache_creation_tokens=call.cache_creation_tokens,
+            thinking_tokens=call.thinking_tokens,
+        )
 
         report = AgentReport(
             agent_role=self.agent_role,
@@ -698,13 +727,56 @@ class BaseAgent(Generic[T]):
         except ValueError:
             return None
 
-    def _estimate_cost(self, tokens_in: int, tokens_out: int, model: str) -> float:
-        # Pick the closest known model family; default to Sonnet pricing.
-        for prefix, (in_rate, out_rate) in APPROX_PRICING_USD_PER_MTOK.items():
-            if model.startswith(prefix.split("-", 2)[0] + "-" + prefix.split("-", 2)[1]):
-                return (tokens_in / 1_000_000) * in_rate + (tokens_out / 1_000_000) * out_rate
-        in_rate, out_rate = APPROX_PRICING_USD_PER_MTOK[FALLBACK_MODEL]
-        return (tokens_in / 1_000_000) * in_rate + (tokens_out / 1_000_000) * out_rate
+    def _estimate_usd(
+        self,
+        *,
+        tokens_in: int,
+        tokens_out: int,
+        cache_input_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+        thinking_tokens: int = 0,
+    ) -> float:
+        """Estimate USD cost for a single Messages API call.
+
+        Pricing per Anthropic published rates (verified 2026-05-23):
+          * Input tokens (uncached) -- base rate
+          * Cache reads             -- 0.10x input rate
+          * Cache writes (5m TTL)   -- 1.25x input rate (one-time per cache prefix)
+          * Output tokens           -- output rate
+          * Thinking tokens         -- priced as output
+
+        ``tokens_in`` from the SDK already includes cached + uncached input.
+        Subtract to derive the uncached portion.
+
+        Edge case: if upstream telemetry rounding causes
+        ``cache_input_tokens + cache_creation_tokens > tokens_in`` (rare,
+        observed when the SDK reports tier-grouped buckets), we treat
+        ``tokens_in`` as ground truth and proportionally scale the cached
+        buckets down so they sum to at most ``tokens_in``. Without this
+        guard the function would over-bill in the bad-telemetry path
+        (uncached clamps to 0, but full cached counts still get charged).
+        """
+        price_in_per_m, price_out_per_m = _PRICE_BY_MODEL.get(
+            self.model, _PRICE_BY_MODEL[FALLBACK_MODEL],
+        )
+
+        # Normalize cached buckets so they fit inside reported total input.
+        cached_total = cache_input_tokens + cache_creation_tokens
+        if cached_total > tokens_in and cached_total > 0:
+            scale = tokens_in / cached_total
+            cache_input_tokens = cache_input_tokens * scale
+            cache_creation_tokens = cache_creation_tokens * scale
+            uncached_input = 0.0
+        else:
+            uncached_input = tokens_in - cached_total
+
+        cost_input = (
+            uncached_input         * price_in_per_m
+            + cache_input_tokens    * price_in_per_m * 0.10
+            + cache_creation_tokens * price_in_per_m * 1.25
+        )
+        cost_output = (tokens_out + thinking_tokens) * price_out_per_m
+        return (cost_input + cost_output) / 1_000_000.0
 
     @staticmethod
     def _hash_prompt(system: str, user: str) -> str:
