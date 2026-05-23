@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -22,7 +23,7 @@ class _MockIntakeAgent(IntakeAgent):
         super().__init__(user_id=user_id)
         self._canned = canned_output
 
-    async def _call_model(self, *, system: str, user: str) -> ModelCall:
+    async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
         return ModelCall(
             text=json.dumps(self._canned),
             tokens_in=120,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -16,7 +17,7 @@ from argosy.agents.fund_manager import (
 
 def _mock(canned: dict):
     class _M(FundManagerAgent):
-        async def _call_model(self, *, system: str, user: str) -> ModelCall:
+        async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
             return ModelCall(
                 text=json.dumps(canned),
                 tokens_in=120,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -47,7 +48,7 @@ def _canned(question: str, **overrides) -> dict:
 def _factory(canned: dict):
     def _make(user_id: str):
         class _M(AdvisorAgent):
-            async def _call_model(self, *, system: str, user: str) -> ModelCall:
+            async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
                 return ModelCall(
                     text=json.dumps(canned),
                     tokens_in=80,
@@ -304,7 +305,7 @@ async def test_intake_alias_turn_still_works(
 
     def _intake_factory(user_id: str):
         class _M(IntakeAgent):
-            async def _call_model(self, *, system: str, user: str) -> ModelCall:
+            async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
                 return ModelCall(
                     text=json.dumps(
                         {

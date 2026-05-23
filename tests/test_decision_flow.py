@@ -12,6 +12,7 @@ Verifies:
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -54,7 +55,7 @@ from argosy.state.models import (
 
 def _mock_agent(cls, canned: dict, **init_kwargs):
     class _M(cls):  # type: ignore[misc, valid-type]
-        async def _call_model(self, *, system: str, user: str) -> ModelCall:
+        async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
             return ModelCall(
                 text=json.dumps(canned),
                 tokens_in=50,

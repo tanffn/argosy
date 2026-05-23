@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -43,7 +44,7 @@ _REFRESH_CANNED = {
 
 def _mock_refresh_factory():
     class _M(DomainRefreshAgent):
-        async def _call_model(self, *, system: str, user: str) -> ModelCall:
+        async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
             return ModelCall(
                 text=json.dumps(_REFRESH_CANNED),
                 tokens_in=200,

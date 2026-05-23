@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
@@ -20,7 +21,7 @@ from argosy.agents.researcher_facilitator import (
 
 def _mock(cls, canned: dict):
     class _M(cls):  # type: ignore[misc, valid-type]
-        async def _call_model(self, *, system: str, user: str) -> ModelCall:
+        async def _call_model(self, *, system: str, user: str, **_extra: Any) -> ModelCall:
             return ModelCall(
                 text=json.dumps(canned),
                 tokens_in=120,
