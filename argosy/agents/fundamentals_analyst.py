@@ -77,7 +77,7 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
         *,
         tickers: list[str],
         fundamentals_payload: dict[str, dict[str, Any]],
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[tuple[str, str]]]:
         """Build the prompt.
 
         Args:
@@ -87,6 +87,13 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
                 pe_ratio, peg_ratio, ev_ebitda, revenue_growth_yoy,
                 earnings_growth_yoy, debt_to_equity, current_price,
                 source_url (the SEC filing or yfinance reference).
+
+        Returns:
+            ``(system, user, sources)``. Each ticker's pre-computed
+            payload is emitted as a document source with id
+            ``fundamentals/<TICKER>`` so the Citations API can attribute
+            individual numeric claims back to it. Tickers absent from
+            the payload contribute no source.
         """
         system = (
             "You are the fundamentals analyst on the Argosy fleet. You "
@@ -96,9 +103,12 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             "growth), and report confidence per ticker.\n\n"
             "Rules:\n"
             "  - Cite the source (SEC EDGAR URL, yfinance reference, or "
-            "domain_knowledge file) for every numeric claim you keep.\n"
-            "  - If the payload is missing data needed for an estimate, set "
-            "`fair_value_estimate_usd=null` and `confidence=LOW`. Never "
+            "domain_knowledge file) for every numeric claim you keep. The "
+            "per-ticker payloads are attached as document sources with id "
+            "`fundamentals/<TICKER>`; reference them by that id.\n"
+            "  - If a ticker has no attached `fundamentals/<TICKER>` source, "
+            "or the attached payload is missing data needed for an estimate, "
+            "set `fair_value_estimate_usd=null` and `confidence=LOW`. Never "
             "fabricate a multiple that wasn't in the input.\n"
             "  - balance_sheet_quality: 'strong' (low D/E + ample liquidity), "
             "'adequate' (mid D/E), 'weak' (high D/E or thin liquidity), "
@@ -107,13 +117,14 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             f"{FundamentalsReport.model_json_schema()}\n"
         )
 
-        blocks: list[str] = []
+        sources: list[tuple[str, str]] = []
+        missing: list[str] = []
         for t in tickers:
             data = fundamentals_payload.get(t, {})
             if not data:
-                blocks.append(f"## {t}\n(no fundamentals payload for this ticker)")
+                missing.append(t)
                 continue
-            lines = [f"## {t}"]
+            lines: list[str] = []
             for key in (
                 "pe_ratio",
                 "peg_ratio",
@@ -126,17 +137,34 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             ):
                 if key in data:
                     lines.append(f"  - {key}: {data[key]}")
-            blocks.append("\n".join(lines))
+            sources.append((f"fundamentals/{t}", "\n".join(lines)))
+
+        ref_list = (
+            ", ".join(sid for sid, _ in sources) if sources else "(none)"
+        )
+        missing_line = (
+            ""
+            if not missing
+            else (
+                "\n\nNo fundamentals payload was attached for: "
+                f"{', '.join(missing)}. Emit per-ticker entries for them with "
+                "`fair_value_estimate_usd=null`, `balance_sheet_quality='unknown'`, "
+                "and `confidence=LOW`."
+            )
+        )
 
         user = (
-            f"Tickers in scope: {', '.join(tickers) if tickers else '(none)'}\n\n"
-            "FUNDAMENTALS PAYLOAD (treat as data — already computed by the "
-            "ingestion layer):\n\n"
-            + "\n\n".join(blocks)
-            + "\n\nProduce a FundamentalsReport JSON now. Cite source URLs / "
-            "EDGAR paths on every per-ticker entry that has any numeric data."
+            f"Tickers in scope: {', '.join(tickers) if tickers else '(none)'}\n"
+            f"Attached fundamentals sources: {ref_list}\n\n"
+            "The per-ticker pre-computed metrics are attached as document "
+            "sources (one per ticker). Treat them as data already computed by "
+            "the ingestion layer — do NOT recompute. Cite the matching "
+            "`fundamentals/<TICKER>` source on every per-ticker entry that "
+            "carries any numeric data."
+            f"{missing_line}\n\n"
+            "Produce a FundamentalsReport JSON now."
         )
-        return system, user
+        return system, user, sources
 
 
 __all__ = [

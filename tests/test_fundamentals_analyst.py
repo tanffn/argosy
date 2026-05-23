@@ -18,8 +18,17 @@ class _MockFundamentalsAgent(FundamentalsAnalystAgent):
     def __init__(self, *, user_id: str, canned_output: dict) -> None:
         super().__init__(user_id=user_id)
         self._canned = canned_output
+        self.last_sources: list[tuple[str, str]] | None = None
 
-    async def _call_model(self, *, system: str, user: str) -> ModelCall:
+    async def _call_model(
+        self,
+        *,
+        system: str,
+        user: str,
+        sources: list[tuple[str, str]] | None = None,
+        image_attachments: list = None,
+    ) -> ModelCall:
+        self.last_sources = sources
         return ModelCall(
             text=json.dumps(self._canned),
             tokens_in=200,
@@ -70,11 +79,18 @@ async def test_fundamentals_report_shape() -> None:
     assert isinstance(out.per_ticker["NVDA"], TickerFundamentals)
     assert out.per_ticker["NVDA"].balance_sheet_quality == "strong"
     assert out.cited_sources, "citation gate"
+    # Wave A: build_prompt should expose the per-ticker payload as a
+    # document source so the Citations API can attribute claims.
+    assert agent.last_sources is not None
+    assert any(sid == "fundamentals/NVDA" for sid, _ in agent.last_sources)
+    nvda_source = next(c for sid, c in agent.last_sources if sid == "fundamentals/NVDA")
+    assert "pe_ratio: 60.0" in nvda_source
+    assert "source_url:" in nvda_source
 
 
 @pytest.mark.asyncio
 async def test_fundamentals_payload_omitted_ticker() -> None:
-    """A ticker without payload still produces an entry with `(no fundamentals payload...)`."""
+    """A ticker without payload is called out in the user prompt and contributes no source."""
     canned = {
         "per_ticker": {},
         "summary": "(no data)",
@@ -82,10 +98,32 @@ async def test_fundamentals_payload_omitted_ticker() -> None:
         "cited_sources": ["domain_knowledge/_meta/sources.md"],
     }
     agent = _MockFundamentalsAgent(user_id="ariel", canned_output=canned)
-    sys, usr = agent.build_prompt(
+    sys_prompt, usr, sources = agent.build_prompt(
         tickers=["NVDA", "TSLA"],
         fundamentals_payload={"NVDA": {"pe_ratio": 60.0}},
     )
     assert "NVDA" in usr and "TSLA" in usr
-    assert "no fundamentals payload" in usr
-    assert "FundamentalsReport" in sys
+    assert "No fundamentals payload was attached for: TSLA" in usr
+    assert "FundamentalsReport" in sys_prompt
+    # Only NVDA contributes a source; TSLA's payload is absent.
+    source_ids = [sid for sid, _ in sources]
+    assert source_ids == ["fundamentals/NVDA"]
+
+
+@pytest.mark.asyncio
+async def test_fundamentals_build_prompt_empty_payload() -> None:
+    """When no tickers have payload, sources is empty and missing list covers all."""
+    canned = {
+        "per_ticker": {},
+        "summary": "(no data)",
+        "confidence": "LOW",
+        "cited_sources": ["domain_knowledge/_meta/sources.md"],
+    }
+    agent = _MockFundamentalsAgent(user_id="ariel", canned_output=canned)
+    _sys, usr, sources = agent.build_prompt(
+        tickers=["NVDA", "TSLA"],
+        fundamentals_payload={},
+    )
+    assert sources == []
+    assert "Attached fundamentals sources: (none)" in usr
+    assert "NVDA" in usr and "TSLA" in usr
