@@ -56,3 +56,26 @@ def test_agent_report_sources_json_column_defaults():
     assert col.nullable is True
     assert col.default is None or col.default.arg is None
     assert col.server_default is None
+
+
+# ---------------------------------------------------------------------------
+# Wave B-UI follow-up Item 2 — run_correlation_id column (migration 0028)
+# ---------------------------------------------------------------------------
+
+
+def test_agent_report_has_run_correlation_id_attr():
+    """Migration 0028 adds run_correlation_id column to agent_reports."""
+    fields = {c.key for c in AgentReport.__table__.columns}
+    assert "run_correlation_id" in fields
+
+
+def test_agent_report_run_correlation_id_column_defaults():
+    """run_correlation_id is nullable String(36) with Python-side default=None
+    and no server_default (mirrors the sources_json pattern from migration 0027).
+    """
+    col = AgentReport.__table__.columns["run_correlation_id"]
+    assert col.nullable is True
+    # String(36) — tight fit for a uuid4 without hyphens (32) or with (36).
+    assert col.type.length == 36
+    assert col.default is None or col.default.arg is None
+    assert col.server_default is None

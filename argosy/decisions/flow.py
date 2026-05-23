@@ -688,6 +688,9 @@ class DecisionFlow:
                     citations_json=r.citations_json,
                     # Wave B-UI Task 9 — sources serialised from build_prompt (migration 0027).
                     sources_json=r.sources_json,
+                    # Wave B-UI follow-up Item 2 — correlation id for O(1) WS↔DB
+                    # linking in useDecisionStream (migration 0028).
+                    run_correlation_id=r.run_correlation_id,
                 )
                 session.add(row)
                 await session.flush()

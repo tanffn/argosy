@@ -280,6 +280,13 @@ class AgentReport(Base):
     sources_json: Mapped[str | None] = mapped_column(
         Text, nullable=True, default=None,
     )
+    # Wave B-UI follow-up Item 2 — uuid4 correlation id threaded through
+    # BaseAgent.run() and the WS events (migration 0028). NULL for rows
+    # persisted before this migration; the UI hook falls back to the ±10s
+    # heuristic for those.
+    run_correlation_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, default=None,
+    )
     model: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

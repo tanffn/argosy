@@ -92,6 +92,27 @@ def test_run_emits_started_and_finished_events():
     assert finished_payload["status"] == "done"
 
 
+def test_agent_report_carries_run_correlation_id():
+    """The returned AgentReport dataclass has the same run_correlation_id as
+    the emitted WS events (Wave B-UI follow-up Item 2 — migration 0028).
+    """
+    with patch("argosy.api.events.publish_event_threadsafe") as mock_pub:
+        agent = _DummyAgent(user_id="ariel", model="claude-sonnet-4-6")
+        report = asyncio.run(agent.run(decision_id="dec-corr", turn_id="turn-corr"))
+
+    # Two events published.
+    assert mock_pub.call_count == 2
+    started_payload = mock_pub.call_args_list[0].args[1]
+    finished_payload = mock_pub.call_args_list[1].args[1]
+
+    ws_correlation_id = started_payload["run_correlation_id"]
+    assert ws_correlation_id == finished_payload["run_correlation_id"]
+
+    # The returned AgentReport dataclass must carry the identical id.
+    assert report.run_correlation_id is not None
+    assert report.run_correlation_id == ws_correlation_id
+
+
 class _BrokenAgent(BaseAgent):
     """Agent whose _call_model always raises to test the failure terminal event."""
 

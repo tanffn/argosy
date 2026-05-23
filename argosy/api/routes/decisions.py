@@ -586,6 +586,9 @@ async def get_decisions_recent(
                     thinking_tokens=r.thinking_tokens or 0,
                     citations_count=citations_count,
                     sources_preview=sources_preview,
+                    # Wave B-UI follow-up Item 2 — correlation id for O(1)
+                    # WS↔DB linking (migration 0028).
+                    run_correlation_id=r.run_correlation_id,
                 ).model_dump()
             )
 

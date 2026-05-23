@@ -218,6 +218,112 @@ async def test_detail_false_omits_heavy_fields(client: AsyncClient) -> None:
     assert "created_at" in row
 
 
+# ---------------------------------------------------------------------------
+# Wave B-UI follow-up Item 2 — run_correlation_id round-trip (migration 0028)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_correlation_id_round_trips(client: AsyncClient) -> None:
+    """run_correlation_id stored on AgentReport is exposed in the API response.
+
+    Both present (non-null) and absent (null) cases must be handled: null is
+    returned for rows persisted before migration 0028.
+    """
+    import uuid
+
+    corr_id = str(uuid.uuid4())
+    async with db_mod.get_session() as session:
+        # Row with a run_correlation_id (post-migration path).
+        session.add(
+            AgentReport(
+                user_id="ariel",
+                agent_role="bull_researcher",
+                model="claude-opus-4-5",
+                prompt_hash="f" * 64,
+                response_text="Bull thesis with correlation id.",
+                tokens_in=300,
+                tokens_out=60,
+                cost_usd=0.002,
+                run_correlation_id=corr_id,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get("/api/agent-activity?user_id=ariel&limit=10")
+    assert resp.status_code == 200
+    rows = resp.json()["rows"]
+    assert len(rows) >= 1
+    row = rows[0]
+    assert "run_correlation_id" in row
+    assert row["run_correlation_id"] == corr_id
+
+
+@pytest.mark.asyncio
+async def test_run_correlation_id_null_for_legacy_rows(client: AsyncClient) -> None:
+    """Rows without run_correlation_id (legacy/pre-migration) return null."""
+    async with db_mod.get_session() as session:
+        session.add(
+            AgentReport(
+                user_id="ariel",
+                agent_role="bear_researcher",
+                model="claude-opus-4-5",
+                prompt_hash="0" * 64,
+                response_text="Bear thesis (legacy row).",
+                tokens_in=200,
+                tokens_out=40,
+                cost_usd=0.001,
+                # run_correlation_id intentionally omitted — simulates legacy row.
+            )
+        )
+        await session.commit()
+
+    resp = await client.get("/api/agent-activity?user_id=ariel&limit=10")
+    assert resp.status_code == 200
+    rows = resp.json()["rows"]
+    assert len(rows) >= 1
+    row = rows[0]
+    assert "run_correlation_id" in row
+    assert row["run_correlation_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_correlation_id_present_with_detail_false(
+    client: AsyncClient,
+) -> None:
+    """run_correlation_id is returned even when detail=false (it's a light field)."""
+    import uuid
+
+    corr_id = str(uuid.uuid4())
+    async with db_mod.get_session() as session:
+        session.add(
+            AgentReport(
+                user_id="ariel",
+                agent_role="trader",
+                model="claude-opus-4-5",
+                prompt_hash="a" * 64,
+                response_text="Trader decision.",
+                tokens_in=150,
+                tokens_out=30,
+                cost_usd=0.001,
+                run_correlation_id=corr_id,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get("/api/agent-activity?user_id=ariel&limit=10&detail=false")
+    assert resp.status_code == 200
+    rows = resp.json()["rows"]
+    assert len(rows) >= 1
+    row = rows[0]
+    # Must be present regardless of detail flag.
+    assert "run_correlation_id" in row
+    assert row["run_correlation_id"] == corr_id
+    # Heavy fields are still omitted.
+    assert row["response_text"] == ""
+    assert row["sources_preview"] == []
+
+
 @pytest.mark.asyncio
 async def test_sources_preview_null_sources_returns_empty_list(
     client: AsyncClient,

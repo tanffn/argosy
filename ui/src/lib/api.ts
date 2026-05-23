@@ -97,11 +97,28 @@ export interface AgentActivityRow {
     body_chars: number;
     body_head: string;
   }>;
+  // Wave B-UI follow-up Item 2 — uuid4 from BaseAgent.run() (migration 0028).
+  // NULL for rows persisted before the migration. Always present regardless of
+  // detail= flag so useDecisionStream can do O(1) WS↔DB promotion.
+  run_correlation_id: string | null;
 }
 
 export interface AgentActivityResponse {
   rows: AgentActivityRow[];
   next_since: string | null;
+}
+
+export interface DecisionGroup {
+  decision_id: string;
+  decision_kind: string | null;
+  tier: string | null;
+  ticker: string | null;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  total_cost_usd: number;
+  agent_count: number;
+  agent_runs: AgentActivityRow[];
 }
 
 export interface ProposalListItem {
@@ -408,6 +425,10 @@ export const api = {
   dailyBriefLatest: (userId: string) =>
     getJSON<DailyBriefDTO | null>(
       `/api/daily-brief/latest?user_id=${encodeURIComponent(userId)}`,
+    ),
+  decisionsRecent: (userId: string, limit = 20): Promise<DecisionGroup[]> =>
+    getJSON<DecisionGroup[]>(
+      `/api/decisions/recent?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
     ),
   agentActivity: (
     userId: string,

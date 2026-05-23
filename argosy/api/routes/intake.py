@@ -586,6 +586,9 @@ async def post_upload(
             citations_json=report.citations_json,
             # Wave B-UI Task 9 — sources serialised from build_prompt (migration 0027).
             sources_json=report.sources_json,
+            # Wave B-UI follow-up Item 2 — correlation id for O(1) WS↔DB
+            # linking in useDecisionStream (migration 0028).
+            run_correlation_id=report.run_correlation_id,
         )
         session.add(ar_row)
         await session.commit()
