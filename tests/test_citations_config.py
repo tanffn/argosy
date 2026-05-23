@@ -5,8 +5,14 @@ from argosy.agents.base import BaseAgent, DEFAULT_CITATIONS_BY_ROLE
 
 
 def test_source_consumers_have_citations_enabled():
+    # Keys MUST match each subclass's `agent_role` class attribute
+    # (the lookup in BaseAgent.__init__ is keyed by agent_role). Earlier
+    # drafts of this test referenced "news_analyst" — the news agent's
+    # role is actually "news" (see NewsAnalystAgent.agent_role) and the
+    # mismatch silently disabled citations on the live path. Task 20
+    # (live analyst integration) caught it.
     for role in (
-        "news_analyst", "fundamentals", "technical", "sentiment",
+        "news", "fundamentals", "technical", "sentiment",
         "macro", "tax", "fx", "intake_extractor", "plan_distiller",
         "plan_critique", "concentration",
     ):
@@ -31,8 +37,9 @@ def test_non_source_agents_have_citations_disabled():
 
 
 def test_agent_resolves_citations_flag():
+    # Use the canonical role name "news" (matches NewsAnalystAgent.agent_role).
     class _News(BaseAgent):
-        agent_role = "news_analyst"
+        agent_role = "news"
         output_model = type("Out", (), {})
         def build_prompt(self, **_): return ("", "")
 

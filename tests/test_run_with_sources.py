@@ -8,7 +8,11 @@ from argosy.agents.base import BaseAgent
 
 
 class _SourceConsumer(BaseAgent):
-    agent_role = "news_analyst"
+    # Use the canonical role "news" so DEFAULT_CITATIONS_BY_ROLE resolves
+    # citations_enabled=True. Earlier draft used "news_analyst", which is
+    # not the agent's real role and silently disabled the document-block
+    # path. Surfaced by Task 20 (live analyst integration).
+    agent_role = "news"
     output_model = type("Out", (), {})
 
     def build_prompt(self, **_):

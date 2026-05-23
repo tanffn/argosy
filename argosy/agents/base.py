@@ -124,8 +124,14 @@ DEFAULT_THINKING_BUDGET_BY_ROLE: dict[str, int] = {
 # Per-role Citations API enablement. Source consumers + synthesizers get
 # citations; conversational/categorical agents do not (they don't read sources).
 DEFAULT_CITATIONS_BY_ROLE: dict[str, bool] = {
-    # External-source consumers
-    "news_analyst": True, "fundamentals": True, "technical": True,
+    # External-source consumers. NOTE: keys MUST match the `agent_role`
+    # class attribute on each subclass; the lookup in `BaseAgent.__init__`
+    # is `DEFAULT_CITATIONS_BY_ROLE.get(self.agent_role, False)`. The news
+    # analyst's role is "news" (not "news_analyst") — earlier drafts used
+    # the longer key here, which silently disabled citations for the news
+    # agent because the lookup fell through to the False default. Task 20
+    # (live analyst integration) surfaced the mismatch.
+    "news": True, "fundamentals": True, "technical": True,
     "sentiment": True, "macro": True, "tax": True, "fx": True,
     "intake_extractor": True, "plan_distiller": True, "plan_critique": True,
     "concentration": True,
