@@ -161,17 +161,23 @@ function restRowToAgentRow(r: AgentActivityRow): AgentRow {
  *   the DB row's created_at must be within ±10 s of the WS finished_at
  *   (or started_at for running rows).
  *
+ * excludeIds: DB ids already claimed by another WS row — used to prevent
+ *   parallel agent runs (e.g. 3 concurrent "news" analysts in the same
+ *   decision_id) from all promoting to the same persisted row (Blocker 2).
+ *
  * Returns null if no match found.
  */
 function findRestMatch(
   wsRow: AgentRow,
   restRows: AgentActivityRow[],
+  excludeIds: Set<number>,
 ): AgentActivityRow | null {
   const refTime = wsRow.finished_at ?? wsRow.started_at;
   const refMs = new Date(refTime).getTime();
   const TOLERANCE_MS = 10_000;
 
   for (const r of restRows) {
+    if (excludeIds.has(r.id)) continue; // already claimed by another WS row
     if (r.agent_role !== wsRow.agent_role) continue;
     if (r.user_id !== wsRow.user_id) continue;
     if (r.decision_id !== wsRow.decision_id) continue;
@@ -207,9 +213,25 @@ export function useDecisionStream(
 
   const [isLoading, setIsLoading] = useState(true);
 
-  // Track processed event identities so the useEffect is idempotent.
-  // Key: `${event.event}:${run_correlation_id}` or `${event.event}:${idx}`.
+  /**
+   * Processed-event dedup set. Bounded to MAX_PROCESSED_KEYS entries to prevent
+   * unbounded memory growth during long-lived dashboard sessions (Blocker 4).
+   * When the cap is exceeded the oldest half is evicted: eviction is O(n) but
+   * triggered at most once per ~1 000 agent-run cycles — negligible in practice.
+   * Key format: `${event.event}:${run_correlation_id}`.
+   */
+  const MAX_PROCESSED_KEYS = 2_000;
+  // Insertion-ordered array of keys mirrors the Set so we can evict oldest half.
+  const processedKeysRef = useRef<string[]>([]);
   const processedRef = useRef<Set<string>>(new Set());
+
+  /**
+   * Claimed DB ids — maps a DB AgentActivityRow.id to the run_correlation_id
+   * that first matched it. Prevents parallel runs within the same decision_id
+   * from all promoting to the same persisted row (Blocker 2).
+   * Invariant: once an id is claimed it is never re-assigned.
+   */
+  const claimedDbIdsRef = useRef<Set<number>>(new Set());
 
   // ---------------------------------------------------------------------------
   // Initial REST load
@@ -225,7 +247,15 @@ export function useDecisionStream(
       .agentActivity(userId, 100)
       .then((resp) => {
         if (cancelled) return;
-        setRestRows(resp.rows);
+        // Blocker 1 fix: functional merge so that any WS-triggered rows that
+        // arrived during the async fetch are not wiped out. WS-side prev rows
+        // (already in state) take precedence; the initial bulk-fetch only fills
+        // in history rows that are not yet present.
+        setRestRows((prev) => {
+          const seen = new Set(prev.map((r) => r.id));
+          const additions = resp.rows.filter((r) => !seen.has(r.id));
+          return additions.length > 0 ? [...prev, ...additions] : prev;
+        });
       })
       .catch((err: unknown) => {
         // Non-fatal — surface in console but don't block the UI.
@@ -248,15 +278,27 @@ export function useDecisionStream(
       const { event, payload } = wsEvent;
 
       // Cross-user filter (SDD §15.4): drop events from other users.
-      if (payload.user_id && payload.user_id !== userId) return;
+      // Blocker 3 fix: require explicit match — missing user_id also dropped.
+      if (payload.user_id !== userId) return;
 
       const correlationId = payload.run_correlation_id;
       if (!correlationId) return;
 
       // Idempotency guard — key on (event name, correlation id).
+      // Blocker 4 fix: cap the dedup set to MAX_PROCESSED_KEYS so it doesn't
+      // grow unboundedly during long-lived sessions. When the cap is hit, evict
+      // the oldest half by clearing the set and re-populating from the second
+      // half of the insertion-ordered keys array.
       const dedupKey = `${event}:${correlationId}`;
       if (processedRef.current.has(dedupKey)) return;
       processedRef.current.add(dedupKey);
+      processedKeysRef.current.push(dedupKey);
+      if (processedKeysRef.current.length > MAX_PROCESSED_KEYS) {
+        const half = Math.floor(MAX_PROCESSED_KEYS / 2);
+        const keep = processedKeysRef.current.slice(half);
+        processedKeysRef.current = keep;
+        processedRef.current = new Set(keep);
+      }
 
       if (event === "agent.run.started") {
         const p = payload as AgentRunStartedPayload;
@@ -379,12 +421,21 @@ export function useDecisionStream(
               if (fresh.length === 0) return prev;
 
               // Try to promote WS-only byCorrelationId entries to DB-backed.
+              // Blocker 2 fix: pass claimedDbIdsRef so parallel runs within
+              // the same decision_id cannot all claim the same persisted row.
+              // After a successful match the matched id is added to the claimed
+              // set and will be excluded from all future findRestMatch calls.
               setByCorrelationId((byCorrPrev) => {
                 const byCorrNext = new Map(byCorrPrev);
                 for (const wsRow of byCorrNext.values()) {
                   if (wsRow.id !== null) continue; // already matched
-                  const match = findRestMatch(wsRow, fresh);
+                  const match = findRestMatch(
+                    wsRow,
+                    fresh,
+                    claimedDbIdsRef.current,
+                  );
                   if (match) {
+                    claimedDbIdsRef.current.add(match.id);
                     byCorrNext.set(wsRow.run_correlation_id!, {
                       ...match,
                       id: match.id,
