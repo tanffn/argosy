@@ -217,10 +217,6 @@ export default function AdvisorPage() {
     setLastAgentStepRole(payload.agent_role ?? null);
   }, [lastAgentRunEvent]);
 
-  const elapsedTotalS =
-    thinkingStartedAt !== null
-      ? Math.floor((thinkingNow - thinkingStartedAt) / 1000)
-      : 0;
   const sinceHealthS =
     lastHealthAt !== null
       ? Math.floor((thinkingNow - lastHealthAt) / 1000)
