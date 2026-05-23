@@ -79,3 +79,29 @@ def test_agent_report_run_correlation_id_column_defaults():
     assert col.type.length == 36
     assert col.default is None or col.default.arg is None
     assert col.server_default is None
+
+
+# ---------------------------------------------------------------------------
+# Wave B-UI follow-up Item B — system_prompt + user_prompt columns (migration 0029)
+# ---------------------------------------------------------------------------
+
+
+def test_agent_report_has_prompt_columns():
+    """Migration 0029 adds system_prompt and user_prompt columns to agent_reports."""
+    fields = {c.key for c in AgentReport.__table__.columns}
+    assert "system_prompt" in fields
+    assert "user_prompt" in fields
+
+
+def test_agent_report_prompt_columns_are_nullable_text():
+    """system_prompt and user_prompt are nullable Text with Python-side default=None
+    and no server_default — same pattern as sources_json (migration 0027).
+    """
+    cols = AgentReport.__table__.columns
+    for name in ("system_prompt", "user_prompt"):
+        col = cols[name]
+        assert col.nullable is True, f"{name} must be nullable"
+        assert col.default is None or col.default.arg is None, (
+            f"{name} must have no Python-side default (or None)"
+        )
+        assert col.server_default is None, f"{name} must have no server_default"

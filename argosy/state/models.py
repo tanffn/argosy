@@ -287,6 +287,17 @@ class AgentReport(Base):
     run_correlation_id: Mapped[str | None] = mapped_column(
         String(36), nullable=True, default=None,
     )
+    # Wave B-UI follow-up Item B — full system + user prompts captured in
+    # BaseAgent.run() (migration 0029). NULL for rows persisted before this
+    # migration; the /prompt endpoint surfaces this as a "Prompt not captured"
+    # empty state. Stored separately from response_text because they can be
+    # 10-100KB each and are only needed when the Prompt tab opens.
+    system_prompt: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None,
+    )
+    user_prompt: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None,
+    )
     model: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

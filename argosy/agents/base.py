@@ -236,6 +236,10 @@ class AgentReport:
     # Wave B-UI follow-up Item 2 — uuid4 threaded from BaseAgent.run() through
     # WS events (migration 0028). Enables O(1) WS↔DB row promotion in the UI.
     run_correlation_id: str | None = None
+    # Wave B-UI follow-up Item B — full prompts captured in run() for the UI
+    # Prompt tab (migration 0029). None when not yet captured.
+    system_prompt: str | None = None
+    user_prompt: str | None = None
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -486,6 +490,11 @@ class BaseAgent(Generic[T]):
                 # Wave B-UI follow-up Item 2 — thread the run correlation id
                 # through to the persisted row (migration 0028).
                 run_correlation_id=run_correlation_id,
+                # Wave B-UI follow-up Item B — full prompts for the Prompt tab
+                # (migration 0029). full_system and user_prompt are the strings
+                # built above (full_system = BOILERPLATE + system_prompt).
+                system_prompt=full_system,
+                user_prompt=user_prompt,
             )
 
             # Emit agent.run.finished — best-effort, must never block the agent run.

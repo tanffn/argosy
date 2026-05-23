@@ -108,6 +108,14 @@ export interface AgentActivityResponse {
   next_since: string | null;
 }
 
+// Wave B-UI follow-up Item B — on-demand prompt payload for the Prompt tab.
+// Fetched separately from the list because prompts are 10-100KB each.
+export interface AgentPrompt {
+  id: number;
+  system_prompt: string;
+  user_prompt: string;
+}
+
 export interface DecisionGroup {
   decision_id: string;
   decision_kind: string | null;
@@ -429,6 +437,12 @@ export const api = {
   decisionsRecent: (userId: string, limit = 20): Promise<DecisionGroup[]> =>
     getJSON<DecisionGroup[]>(
       `/api/decisions/recent?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
+    ),
+  // Wave B-UI follow-up Item B — fetch full prompts on-demand for the Prompt tab.
+  // Separate endpoint: prompts are 10-100KB and should not bloat list responses.
+  agentActivityPrompt: (id: number, userId: string): Promise<AgentPrompt> =>
+    getJSON<AgentPrompt>(
+      `/api/agent-activity/${id}/prompt?user_id=${encodeURIComponent(userId)}`,
     ),
   agentActivity: (
     userId: string,

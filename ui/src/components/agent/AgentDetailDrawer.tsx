@@ -3,12 +3,16 @@
 /**
  * AgentDetailDrawer — tabbed side-drawer for a single agent run row.
  *
- * Tabs:
- *   1. Output     — response_text rendered via <Markdown>
- *   2. Sources    — <source id="...">...</source> blocks parsed from the
+ * Tabs (in order):
+ *   1. Prompt     — full system + user prompt fetched on-demand from
+ *                   /api/agent-activity/{id}/prompt (Wave B-UI follow-up #2).
+ *                   Skipped (replaced with "Awaiting persistence") when
+ *                   row.id === -1 (WS-only, not yet in DB).
+ *   2. Output     — response_text rendered via <Markdown>
+ *   3. Sources    — <source id="...">...</source> blocks parsed from the
  *                   prompt (not yet exposed by backend; Wave B-UI Task 9).
- *   3. Citations  — parsed citations_json list
- *   4. Cost & telemetry — token/cost table
+ *   4. Citations  — parsed citations_json list
+ *   5. Cost & telemetry — token/cost table
  *
  * Uses the minimal Sheet + Tabs primitives already in the codebase
  * (no Radix dependency).
@@ -30,7 +34,13 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
-import type { AgentActivityRow } from "@/lib/api";
+import { api, type AgentActivityRow, type AgentPrompt } from "@/lib/api";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const USER_ID = "ariel";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,6 +82,104 @@ function formatCost(usd: number): string {
 function cacheHitRatio(cacheIn: number, tokensIn: number): string {
   if (tokensIn === 0) return "—";
   return `${((cacheIn / tokensIn) * 100).toFixed(1)}%`;
+}
+
+// ---------------------------------------------------------------------------
+// Tab: Prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * PromptTab fetches the full system + user prompt on first render (when the
+ * tab is selected), then caches by row.id so reopening the same row doesn't
+ * refetch.
+ *
+ * Cache lives in a module-level Map so it persists across open/close cycles
+ * of the drawer (but is cleared on full page reload, which is fine).
+ */
+const _promptCache = new Map<number, AgentPrompt>();
+
+function PromptTab({ row }: { row: AgentActivityRow }) {
+  // WS-only rows (id === -1) are not in the DB yet — show a placeholder.
+  if (row.id === -1) {
+    return (
+      <p className="text-sm text-muted-foreground italic">
+        Awaiting persistence — prompt will be available once the run is saved
+        to the database.
+      </p>
+    );
+  }
+
+  const [prompt, setPrompt] = React.useState<AgentPrompt | null>(
+    _promptCache.get(row.id) ?? null,
+  );
+  const [loading, setLoading] = React.useState<boolean>(false);
+
+  React.useEffect(() => {
+    // Already fetched for this row — nothing to do.
+    if (prompt !== null) return;
+    let cancelled = false;
+    setLoading(true);
+    api
+      .agentActivityPrompt(row.id, USER_ID)
+      .then((data) => {
+        if (cancelled) return;
+        _promptCache.set(row.id, data);
+        setPrompt(data);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // On error, store an empty sentinel so we don't retry in a loop.
+        const sentinel: AgentPrompt = { id: row.id, system_prompt: "", user_prompt: "" };
+        _promptCache.set(row.id, sentinel);
+        setPrompt(sentinel);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [row.id, prompt]);
+
+  if (loading) {
+    return (
+      <p className="text-sm text-muted-foreground italic">
+        Loading prompt&hellip;
+      </p>
+    );
+  }
+
+  if (!prompt || (prompt.system_prompt === "" && prompt.user_prompt === "")) {
+    return (
+      <p className="text-sm text-muted-foreground italic">
+        Prompt not captured (row persisted before migration 0029).
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* User prompt — default OPEN since it's the more debugging-relevant part */}
+      <details open>
+        <summary className="cursor-pointer select-none text-sm font-semibold py-1">
+          User prompt
+        </summary>
+        <pre className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-words text-xs font-mono bg-muted/40 rounded p-3 border border-border">
+          {prompt.user_prompt}
+        </pre>
+      </details>
+
+      {/* System prompt — default CLOSED; often large boilerplate */}
+      <details>
+        <summary className="cursor-pointer select-none text-sm font-semibold py-1">
+          System prompt
+        </summary>
+        <pre className="mt-2 max-h-96 overflow-y-auto whitespace-pre-wrap break-words text-xs font-mono bg-muted/40 rounded p-3 border border-border">
+          {prompt.system_prompt}
+        </pre>
+      </details>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +357,9 @@ export function AgentDetailDrawer({
               </SheetDescription>
             </SheetHeader>
 
-            <Tabs defaultValue="output" className="flex-1 overflow-hidden">
+            <Tabs defaultValue="prompt" className="flex-1 overflow-hidden">
               <TabsList className="w-full justify-start">
+                <TabsTrigger value="prompt">Prompt</TabsTrigger>
                 <TabsTrigger value="output">Output</TabsTrigger>
                 <TabsTrigger value="sources">Sources</TabsTrigger>
                 <TabsTrigger value="citations">
@@ -263,6 +372,10 @@ export function AgentDetailDrawer({
                 </TabsTrigger>
                 <TabsTrigger value="cost">Cost &amp; telemetry</TabsTrigger>
               </TabsList>
+
+              <TabsContent value="prompt" className="overflow-y-auto">
+                <PromptTab row={row} />
+              </TabsContent>
 
               <TabsContent value="output" className="overflow-y-auto">
                 <OutputTab row={row} />

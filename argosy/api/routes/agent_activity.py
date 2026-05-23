@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import desc, select
 
@@ -174,4 +174,38 @@ async def get_agent_activity(
     return AgentActivityResponse(rows=out, next_since=next_since)
 
 
-__all__ = ["router", "build_sources_preview"]
+class AgentPromptResponse(BaseModel):
+    id: int
+    system_prompt: str
+    user_prompt: str
+
+
+@router.get("/{report_id}/prompt", response_model=AgentPromptResponse)
+async def get_agent_prompt(
+    report_id: int,
+    user_id: str = Query("ariel"),
+) -> AgentPromptResponse:
+    """Return the full system + user prompt for one agent run.
+
+    Separate from the list endpoint because prompts are large (10-100KB each)
+    and would bloat the cascade / accordion fetches. Drawer fetches on-demand
+    when the Prompt tab opens.
+
+    404 when not found or owned by a different user. Returns empty strings
+    (NOT 404) for rows persisted before migration 0029 — UI shows a
+    "no prompt captured" empty state.
+    """
+    async with db_mod.get_session() as session:
+        row = (await session.execute(
+            select(AgentReport).where(AgentReport.id == report_id)
+        )).scalar_one_or_none()
+    if row is None or row.user_id != user_id:
+        raise HTTPException(404, detail="agent report not found")
+    return AgentPromptResponse(
+        id=row.id,
+        system_prompt=row.system_prompt or "",
+        user_prompt=row.user_prompt or "",
+    )
+
+
+__all__ = ["router", "build_sources_preview", "AgentPromptResponse"]
