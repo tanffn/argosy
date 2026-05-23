@@ -28,7 +28,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type AgentActivityRow } from "./api";
+import { api, type AgentActivityRow, type DecisionGroup as WireDecisionGroup } from "./api";
 import { useWSEvents, type WSEvent } from "./ws";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +70,10 @@ export type DecisionGroup = {
   startedAt: string;
   /** Latest finished_at (null if any row is still running). */
   finishedAt: string | null;
+  /** From /api/decisions/recent — null for WS-only (not yet persisted) entries. */
+  tier: string | null;
+  ticker: string | null;
+  decision_kind: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -211,6 +215,10 @@ export function useDecisionStream(
   // any WS events, or whose WS events were not captured).
   const [restRows, setRestRows] = useState<AgentActivityRow[]>([]);
 
+  // Wire-side groups from /api/decisions/recent — used to populate tier/ticker/decision_kind.
+  // Keyed by decision_id for O(1) lookup in the derive memo.
+  const [wireGroupsMap, setWireGroupsMap] = useState<Map<string, WireDecisionGroup>>(new Map());
+
   const [isLoading, setIsLoading] = useState(true);
 
   /**
@@ -243,27 +251,45 @@ export function useDecisionStream(
   // ---------------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
-    api
-      .agentActivity(userId, 100)
-      .then((resp) => {
+    (async () => {
+      setIsLoading(true);
+      try {
+        // Preferred: /api/decisions/recent gives tier/ticker/decision_kind.
+        const groups = await api.decisionsRecent(userId, 50);
         if (cancelled) return;
-        // Blocker 1 fix: functional merge so that any WS-triggered rows that
-        // arrived during the async fetch are not wiped out. WS-side prev rows
-        // (already in state) take precedence; the initial bulk-fetch only fills
-        // in history rows that are not yet present.
+        // Build wire-groups map for the derive memo.
+        const wgMap = new Map<string, WireDecisionGroup>();
+        for (const g of groups) {
+          wgMap.set(g.decision_id, g);
+        }
+        setWireGroupsMap(wgMap);
+        // Flatten agent_runs into restRows (Blocker 1: functional merge).
+        const flatRows = groups.flatMap((g) => g.agent_runs);
         setRestRows((prev) => {
           const seen = new Set(prev.map((r) => r.id));
-          const additions = resp.rows.filter((r) => !seen.has(r.id));
+          const additions = flatRows.filter((r) => !seen.has(r.id));
           return additions.length > 0 ? [...prev, ...additions] : prev;
         });
-      })
-      .catch((err: unknown) => {
-        // Non-fatal — surface in console but don't block the UI.
-        console.warn("useDecisionStream: initial REST fetch failed", err);
-      })
-      .finally(() => {
+      } catch {
+        // Fall back to flat agent-activity if the new endpoint is unavailable.
+        try {
+          const resp = await api.agentActivity(userId, 100);
+          if (cancelled) return;
+          // Blocker 1 fix: functional merge so that any WS-triggered rows that
+          // arrived during the async fetch are not wiped out.
+          setRestRows((prev) => {
+            const seen = new Set(prev.map((r) => r.id));
+            const additions = resp.rows.filter((r) => !seen.has(r.id));
+            return additions.length > 0 ? [...prev, ...additions] : prev;
+          });
+        } catch (fallbackErr: unknown) {
+          // Non-fatal — surface in console but don't block the UI.
+          console.warn("useDecisionStream: initial REST fetch failed", fallbackErr);
+        }
+      } finally {
         if (!cancelled) setIsLoading(false);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -528,6 +554,11 @@ export function useDecisionStream(
         ? null
         : allDurations.reduce<number>((acc, d) => acc + d!, 0);
 
+      // Look up wire-side metadata (tier/ticker/decision_kind) by decision_id.
+      // WS-only entries (key is an intake_session_id or "Standalone") won't have
+      // a wire group — they get null for these fields, which is fine.
+      const wireGroup = wireGroupsMap.get(key) ?? null;
+
       groups.push({
         key,
         rows: sorted,
@@ -536,6 +567,9 @@ export function useDecisionStream(
         status: deriveGroupStatus(sorted),
         startedAt: sorted[0].started_at,
         finishedAt: deriveGroupFinishedAt(sorted),
+        tier: wireGroup?.tier ?? null,
+        ticker: wireGroup?.ticker ?? null,
+        decision_kind: wireGroup?.decision_kind ?? null,
       });
     }
 
@@ -545,7 +579,7 @@ export function useDecisionStream(
     );
 
     return groups;
-  }, [byCorrelationId, restRows, turnId]);
+  }, [byCorrelationId, restRows, turnId, wireGroupsMap]);
 
   return { decisions, byCorrelationId, isLoading };
 }

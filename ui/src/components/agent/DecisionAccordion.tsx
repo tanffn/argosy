@@ -14,10 +14,8 @@
  * In-progress decisions pulse their border via Tailwind animate-pulse /
  * border-info. Finished decisions use a standard border.
  *
- * NOTE (Task 8 follow-up): tier and ticker are not shown here because they
- * live on the DecisionRun table, not AgentReport. The optional
- * /api/decisions/recent endpoint (Task 8) will add those fields to
- * DecisionGroup so they can be displayed in the header row.
+ * Tier and ticker are surfaced from /api/decisions/recent (Task 8 follow-up).
+ * WS-only entries (not yet persisted) render null for both fields.
  */
 
 import { useState } from "react";
@@ -171,6 +169,27 @@ function DecisionRow({
         <span className="font-mono text-xs text-muted-foreground shrink-0">
           {group.rows.length} agent{group.rows.length !== 1 ? "s" : ""}
         </span>
+
+        {/* Ticker — shown when present (trade_proposal / speculative runs) */}
+        {group.ticker && (
+          <span className="font-mono text-xs font-semibold text-foreground shrink-0 uppercase">
+            {group.ticker}
+          </span>
+        )}
+
+        {/* Tier — shown when present */}
+        {group.tier && (
+          <span className="font-mono text-[10px] uppercase text-muted-foreground shrink-0 bg-secondary/60 px-1.5 py-0.5 rounded">
+            {group.tier}
+          </span>
+        )}
+
+        {/* decision_kind — shown as muted label when no ticker (e.g. plan_revision runs) */}
+        {!group.ticker && group.decision_kind && (
+          <span className="font-mono text-[10px] text-muted-foreground/70 shrink-0 truncate max-w-[10rem]">
+            {group.decision_kind}
+          </span>
+        )}
 
         {/* Spacer */}
         <span className="flex-1" />

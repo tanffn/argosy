@@ -104,6 +104,19 @@ export interface AgentActivityResponse {
   next_since: string | null;
 }
 
+export interface DecisionGroup {
+  decision_id: string;
+  decision_kind: string | null;
+  tier: string | null;
+  ticker: string | null;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  total_cost_usd: number;
+  agent_count: number;
+  agent_runs: AgentActivityRow[];
+}
+
 export interface ProposalListItem {
   id: number;
   user_id: string;
@@ -408,6 +421,10 @@ export const api = {
   dailyBriefLatest: (userId: string) =>
     getJSON<DailyBriefDTO | null>(
       `/api/daily-brief/latest?user_id=${encodeURIComponent(userId)}`,
+    ),
+  decisionsRecent: (userId: string, limit = 20): Promise<DecisionGroup[]> =>
+    getJSON<DecisionGroup[]>(
+      `/api/decisions/recent?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
     ),
   agentActivity: (
     userId: string,
