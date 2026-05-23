@@ -62,7 +62,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import subprocess
 from pathlib import Path
 
@@ -83,31 +82,12 @@ from argosy.state import db as db_mod
 from argosy.state.models import AgentReport as AgentReportRow
 from argosy.state.models import User
 
-
-def _api_key_backend_available() -> bool:
-    """True iff the api_key backend is configured AND a key is reachable.
-
-    Mirrors the predicate used by ``test_wave_a_integration_analyst.py``
-    and ``test_wave_a_integration_researcher.py``. Wave A telemetry
-    (cache_input_tokens / cache_creation_tokens / thinking_tokens) is
-    only populated on the api_key path; the claude_code backend does
-    not surface those fields. Running this regression on claude_code
-    would compare two claude_code totals and teach us nothing about
-    whether the Wave A features are saving tokens, hence the gate.
-    """
-    try:
-        if get_settings().anthropic.backend != "api_key":
-            return False
-    except Exception:
-        return False
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return True
-    # Fall back to the keychain lookup BaseAgent itself uses.
-    try:
-        from argosy.secrets import get_secret
-        return bool(get_secret(get_settings().anthropic.keychain_key_name))
-    except Exception:
-        return False
+# Shared helper lifted to conftest in Wave A finalization (Issue 2). Wave A
+# telemetry (cache_input_tokens / cache_creation_tokens / thinking_tokens) is
+# only populated on the api_key path; running this regression on claude_code
+# would compare two claude_code totals and teach us nothing about whether the
+# Wave A features are saving tokens.
+from tests.conftest import _api_key_backend_available  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

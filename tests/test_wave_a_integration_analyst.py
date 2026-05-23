@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 
 import pytest
 import sqlalchemy as sa
@@ -41,31 +40,14 @@ from sqlalchemy.orm import sessionmaker
 
 from argosy.agents.base import _llm_backend_available
 from argosy.agents.news_analyst import NewsAnalystAgent
-from argosy.config import get_settings
 from argosy.state import db as db_mod
 from argosy.state.models import AgentReport as AgentReportRow
 from argosy.state.models import User
 
-
-def _api_key_backend_available() -> bool:
-    """True iff the api_key backend is configured AND a key is reachable.
-
-    The api_key path is the only one that exercises the Citations API
-    and cache telemetry — both required by this test.
-    """
-    try:
-        if get_settings().anthropic.backend != "api_key":
-            return False
-    except Exception:
-        return False
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return True
-    # Fall back to the keychain lookup BaseAgent itself uses.
-    try:
-        from argosy.secrets import get_secret
-        return bool(get_secret(get_settings().anthropic.keychain_key_name))
-    except Exception:
-        return False
+# Shared helper lifted to conftest in Wave A finalization (Issue 2) so all
+# Wave A live tests skip cleanly on the claude_code backend rather than
+# live-failing on missing api_key-only telemetry.
+from tests.conftest import _api_key_backend_available  # noqa: E402
 
 
 @pytest.mark.llm_eval

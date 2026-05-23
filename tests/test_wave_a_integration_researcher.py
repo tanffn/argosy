@@ -31,25 +31,14 @@ from __future__ import annotations
 
 import pytest
 
-from argosy.agents.base import _llm_backend_available
 from argosy.agents.researcher import BullResearcherAgent, ResearcherTurn
-from argosy.config import get_settings
 
-
-def _api_key_backend_available() -> bool:
-    """Thinking-tokens telemetry is only surfaced on the ``api_key`` backend.
-
-    The ``claude_code`` backend (Claude Agent SDK) emits no
-    ``usage.thinking_tokens`` field on its ``ResultMessage``, so this
-    test cannot validate Wave A's thinking wiring there. We require the
-    ``api_key`` backend AND a reachable key for this test to run.
-    """
-    if not _llm_backend_available():
-        return False
-    try:
-        return get_settings().anthropic.backend == "api_key"
-    except Exception:
-        return False
+# Shared helper lifted to conftest in Wave A finalization (Issue 2) so all
+# Wave A live tests share one definition. The api_key backend is the only
+# one that surfaces ``usage.thinking_tokens`` on the SDK response — the
+# claude_code path's ResultMessage usage dict does not expose it — so this
+# test SKIPS cleanly when the configured backend is claude_code.
+from tests.conftest import _api_key_backend_available  # noqa: E402
 
 
 def _mock_analyst_reports() -> list[dict]:

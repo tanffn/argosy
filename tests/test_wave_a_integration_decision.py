@@ -33,6 +33,13 @@ from argosy.agents.base import _llm_backend_available
 from argosy.agents.fund_manager import FundManagerAgent, FundManagerDecision
 from argosy.agents.trader import TraderAgent, TraderProposal
 
+# Wave A finalization (Issue 2): both trader and fund_manager assert on
+# ``thinking_tokens > 0``, which the claude_code backend cannot surface
+# (its ResultMessage.usage dict carries no ``thinking_tokens`` field).
+# Skip cleanly when the api_key backend isn't reachable rather than
+# live-failing the assertion.
+from tests.conftest import _api_key_backend_available  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Inline fixtures — minimal mock inputs for the synthesizers.
@@ -190,6 +197,15 @@ def _mock_plan_critique() -> dict:
         "or ensure claude.exe is on PATH (claude_code backend)"
     ),
 )
+@pytest.mark.skipif(
+    not _api_key_backend_available(),
+    reason=(
+        "Trader live test asserts on thinking_tokens > 0, which the "
+        "claude_code SDK does not surface on ResultMessage.usage. Requires "
+        "ARGOSY_ANTHROPIC__BACKEND=api_key plus ANTHROPIC_API_KEY (or a "
+        "configured keychain entry) to be meaningful."
+    ),
+)
 def test_trader_thinking_and_citations() -> None:
     """Live: trader fires with extended thinking + citations enabled."""
     agent = TraderAgent(user_id="ariel")
@@ -261,6 +277,15 @@ def test_trader_thinking_and_citations() -> None:
     reason=(
         "No LLM backend reachable: set ANTHROPIC_API_KEY (api_key backend) "
         "or ensure claude.exe is on PATH (claude_code backend)"
+    ),
+)
+@pytest.mark.skipif(
+    not _api_key_backend_available(),
+    reason=(
+        "Fund-manager live test asserts on thinking_tokens > 0, which the "
+        "claude_code SDK does not surface on ResultMessage.usage. Requires "
+        "ARGOSY_ANTHROPIC__BACKEND=api_key plus ANTHROPIC_API_KEY (or a "
+        "configured keychain entry) to be meaningful."
     ),
 )
 def test_fund_manager_full_loop() -> None:
