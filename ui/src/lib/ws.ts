@@ -36,11 +36,29 @@ export interface UseWSEventsOpts<T> {
 // Next.js dev server (`:1337`) — Next.js does not proxy /ws upgrades, so
 // the connection silently timed out and every WS-driven UI (cascade
 // panel, daily-brief flash, proposals live updates) saw zero events.
+//
+// Required shape: `NEXT_PUBLIC_API_URL` must be absolute (starts with
+// `http://` or `https://`). A path-only value like `"/api"` would
+// produce `"/api/ws"` after the rewrite — invalid for a WS upgrade —
+// so we ignore non-absolute values, fall back to the localhost default,
+// and warn so the misconfig surfaces in dev tools.
+const DEFAULT_API_BASE = "http://localhost:8000";
+
 function resolveWsUrl(): string {
-  const apiBase =
-    typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL
-      ? process.env.NEXT_PUBLIC_API_URL
-      : "http://localhost:8000";
+  const envBase =
+    typeof process !== "undefined" ? process.env.NEXT_PUBLIC_API_URL : undefined;
+  let apiBase: string;
+  if (envBase && /^https?:\/\//.test(envBase)) {
+    apiBase = envBase;
+  } else {
+    if (envBase && typeof console !== "undefined") {
+      console.warn(
+        `useWSEvents: NEXT_PUBLIC_API_URL="${envBase}" is not an absolute http(s) URL; ` +
+          `falling back to ${DEFAULT_API_BASE}. Set an absolute URL in production.`,
+      );
+    }
+    apiBase = DEFAULT_API_BASE;
+  }
   // http://host → ws://host, https://host → wss://host
   const wsBase = apiBase.replace(/^http(s?):/, "ws$1:");
   return `${wsBase}/ws`;
