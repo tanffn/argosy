@@ -187,6 +187,12 @@ class AgentReport:
     decision_id: str | None = None
     blobs: dict[str, str] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Wave A — Anthropic Messages API telemetry (mirrors ORM columns from
+    # migration 0026). Defaults preserve pre-Wave-A construction sites.
+    cache_input_tokens: int = 0
+    cache_creation_tokens: int = 0
+    thinking_tokens: int = 0
+    citations_json: str | None = None
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -329,6 +335,10 @@ class BaseAgent(Generic[T]):
             prompt_hash=prompt_hash,
             confidence=confidence,
             output=output,
+            cache_input_tokens=call.cache_input_tokens,
+            cache_creation_tokens=call.cache_creation_tokens,
+            thinking_tokens=call.thinking_tokens,
+            citations_json=call.citations_json,
         )
         self._log.info(
             "agent.run.finished",
@@ -657,10 +667,11 @@ class BaseAgent(Generic[T]):
             messages_payload = [{"role": "user", "content": user}]
 
         def _do_call() -> ModelCall:
+            system_blocks = self._build_system_blocks(system)
             try:
                 msg = client.messages.create(
                     model=self.model,
-                    system=system,
+                    system=system_blocks,
                     max_tokens=self.max_tokens,
                     messages=messages_payload,
                 )
@@ -674,15 +685,23 @@ class BaseAgent(Generic[T]):
                 if t is not None:
                     text_parts.append(t)
             text = "".join(text_parts)
+
             usage = getattr(msg, "usage", None)
             tokens_in = int(getattr(usage, "input_tokens", 0) or 0)
             tokens_out = int(getattr(usage, "output_tokens", 0) or 0)
+            cache_input_tokens = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+            cache_creation_tokens = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+
             return ModelCall(
                 text=text,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
                 model=getattr(msg, "model", self.model),
                 raw=msg,
+                cache_input_tokens=cache_input_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                thinking_tokens=0,            # Task 12 populates
+                citations_json=None,          # Task 18 populates
             )
 
         return await asyncio.to_thread(_do_call)
