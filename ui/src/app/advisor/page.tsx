@@ -31,10 +31,11 @@ import {
 import { useWSEvents } from "@/lib/ws";
 
 // File extensions accepted by the answer-form attachment picker. Mirrors
-// argosy/ingest/file_to_text.py's _EXT_TO_KIND whitelist.
-// Wave 5: chat upload accepts text/markdown + images. PDFs, spreadsheets,
-// and other docs were dropped — the multipart endpoint rejects them with 415.
-const ATTACH_ACCEPT = ".md,.markdown,.txt,.csv,image/*";
+// the server-side allowlist in argosy/services/turn_attachments.py.
+// Text/markdown is appended inline to the user message; images and PDFs
+// are forwarded as native Anthropic content blocks (images via vision,
+// PDFs via the `document` block — full layout / table / OCR fidelity).
+const ATTACH_ACCEPT = ".md,.markdown,.txt,.csv,.pdf,image/*,application/pdf";
 
 const USER_ID = "ariel";
 
@@ -335,7 +336,13 @@ export default function AdvisorPage() {
         const t = await api.advisorTurn(USER_ID, lastUserMessage, opts);
         setPending(t);
       } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : String(e));
+        // Surface turn failures through `submitError` so the message
+        // shows in BOTH the sticky top banner AND the inline panel
+        // under the input textarea. The middle-of-page `error` state
+        // is reserved for fatal load errors that aren't tied to a
+        // submission (none today, but kept as a hook).
+        const msg = e instanceof Error ? e.message : String(e);
+        setSubmitError(msg);
       } finally {
         setLoading(false);
         setThinkingStartedAt(null);
@@ -773,7 +780,7 @@ export default function AdvisorPage() {
                     onChange={(e) => handleAttachChosen(e.target.files)}
                   />
                   <span className="text-muted-foreground">
-                    (text/markdown or images — 10 MB per file, 20 MB total)
+                    (text/markdown, images, or PDFs — 10 MB per file, 20 MB total)
                   </span>
                 </div>
 

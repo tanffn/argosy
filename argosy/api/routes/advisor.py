@@ -633,8 +633,11 @@ async def _run_turn(
     # Wave 5: text/markdown attachments append to the user message so the
     # advisor sees them inline. Image attachments thread separately through
     # the `image_attachments` kwarg into the agent's vision content blocks.
+    # Post-Wave-5: PDFs go through `pdf_attachments` as native Anthropic
+    # ``document`` content blocks (preserves layout / tables / scans).
     text_attachments = [a for a in attachments if getattr(a, "kind", None) == "text"]
     image_attachments = [a for a in attachments if getattr(a, "kind", None) == "image"]
+    pdf_attachments = [a for a in attachments if getattr(a, "kind", None) == "pdf"]
 
     effective_message = req.last_user_message
     if text_attachments:
@@ -695,6 +698,8 @@ async def _run_turn(
         )
         if image_attachments:
             run_kwargs["image_attachments"] = image_attachments
+        if pdf_attachments:
+            run_kwargs["pdf_attachments"] = pdf_attachments
         report = await agent.run(**run_kwargs)
     except Exception as exc:  # pragma: no cover - defensive
         _log.exception("advisor.turn_failed", intake_session_id=session_id)

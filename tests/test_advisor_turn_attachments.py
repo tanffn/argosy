@@ -302,10 +302,17 @@ async def test_turn_multipart_image_threads_to_agent(client_with_db):
 
 
 @pytest.mark.asyncio
-async def test_turn_multipart_rejects_pdf_with_415(client_with_db):
+async def test_turn_multipart_pdf_threads_to_agent(client_with_db):
+    """PDF attachment is forwarded to the agent as pdf_attachments.
+
+    Post-Wave-5: PDFs now go through as native Anthropic ``document``
+    content blocks (preserves layout / tables / scans), not as 415s.
+    The route splits them into a separate kwarg so the agent's prompt
+    can pick up the right system addendum.
+    """
     from argosy.api.routes import advisor as adv
 
-    Stub, _ = _stub_canned_turn_factory()
+    Stub, captured = _stub_canned_turn_factory()
     adv.set_advisor_agent_factory(Stub)
 
     try:
@@ -319,10 +326,16 @@ async def test_turn_multipart_rejects_pdf_with_415(client_with_db):
 
         r = client_with_db.post(
             "/api/advisor/turn",
-            data={"user_id": "ariel", "last_user_message": "x"},
+            data={"user_id": "ariel", "last_user_message": "what's in this?"},
             files={"attachments": ("doc.pdf", BytesIO(b"%PDF-1.4\n..."), "application/pdf")},
         )
-        assert r.status_code == 415, r.text
+        assert r.status_code == 200, r.text
+
+        pdfs = captured.get("pdf_attachments")
+        assert pdfs and len(pdfs) == 1
+        assert pdfs[0].kind == "pdf"
+        assert pdfs[0].original_name == "doc.pdf"
+        assert pdfs[0].mime_type == "application/pdf"
     finally:
         adv.reset_advisor_agent_factory()
 

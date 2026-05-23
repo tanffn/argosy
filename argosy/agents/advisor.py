@@ -96,6 +96,7 @@ class AdvisorAgent(IntakeAgent):
         target_field: str | None = None,
         has_current_plan: bool = False,
         image_attachments: list[Any] | None = None,
+        pdf_attachments: list[Any] | None = None,
     ) -> tuple[str, str]:
         """Construct (system_addendum, user_prompt) for one advisor turn.
 
@@ -207,6 +208,32 @@ class AdvisorAgent(IntakeAgent):
                 "acknowledge it neutrally and move on. Never invent details "
                 "the image doesn't show — set confidence=LOW on any "
                 "context_updates derived from images and say so plainly.\n"
+            )
+
+        if pdf_attachments:
+            system = system + (
+                "\n\nPDF ATTACHMENT HANDLING\n\n"
+                f"The user has attached {len(pdf_attachments)} PDF(s) to "
+                "this turn. They arrive as native ``document`` blocks — read "
+                "the full text, tables, and any embedded images. Common kinds:\n"
+                "  - Brokerage / pension statements: extract holdings, "
+                "balances, account class. Emit `context_updates` for the "
+                "matching `identity.brokerage_accounts` / "
+                "`identity.bank_accounts` / pension fields.\n"
+                "  - Tax filings / pay stubs: extract gross/net income, "
+                "withholding totals, and any deduction lines that imply "
+                "kupat-gemel / קרן השתלמות contributions.\n"
+                "  - Wealth plans / IPS documents: treat as a candidate "
+                "baseline. If the user is asking you to ingest it as their "
+                "plan, say so plainly and ask them to confirm before any "
+                "structural advice is given against it.\n"
+                "  - Research reports / prospectuses: summarise the key "
+                "claims relevant to the user's positions.\n"
+                "Cite the PDF filename in `cited_sources` whenever you "
+                "extract a figure from it. If a value looks ambiguous "
+                "(handwritten, scanned poorly, smudged), set confidence=LOW "
+                "on the resulting context update and flag the ambiguity in "
+                "your message to the user.\n"
             )
 
         if has_current_plan:
