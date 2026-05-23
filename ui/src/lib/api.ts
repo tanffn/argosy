@@ -97,6 +97,10 @@ export interface AgentActivityRow {
     body_chars: number;
     body_head: string;
   }>;
+  // Wave B-UI follow-up Item 2 — uuid4 from BaseAgent.run() (migration 0028).
+  // NULL for rows persisted before the migration. Always present regardless of
+  // detail= flag so useDecisionStream can do O(1) WS↔DB promotion.
+  run_correlation_id: string | null;
 }
 
 export interface AgentActivityResponse {

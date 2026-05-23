@@ -75,6 +75,11 @@ class AgentActivityRow(BaseModel):
     # render real data without fetching the full content blobs.
     # Each entry: {source_id, body_chars (full length), body_head (≤150 chars)}.
     sources_preview: list[dict[str, Any]] = []
+    # Wave B-UI follow-up Item 2 — uuid4 correlation id from BaseAgent.run()
+    # (migration 0028). NULL for rows persisted before this migration.
+    # Always included (not a heavy field) so the hook can do O(1) WS↔DB lookup
+    # regardless of the detail= flag.
+    run_correlation_id: str | None = None
 
 
 class AgentActivityResponse(BaseModel):
@@ -159,6 +164,9 @@ async def get_agent_activity(
                 prompt_hash=row_prompt_hash,
                 intake_session_id=r.intake_session_id,
                 sources_preview=sources_preview,
+                # Wave B-UI follow-up Item 2 — always include regardless of
+                # detail flag (tiny string; needed for O(1) WS↔DB lookup).
+                run_correlation_id=r.run_correlation_id,
             )
         )
     if out:

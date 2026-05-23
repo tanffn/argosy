@@ -72,6 +72,8 @@ function agentRowToActivityRow(r: AgentRow): AgentActivityRow {
     prompt_hash: r.prompt_hash,
     // Wave B-UI Task 9 — WS stubs never carry sources; default to empty.
     sources_preview: r.sources_preview ?? [],
+    // Wave B-UI follow-up Item 2 — pass through for O(1) WS↔DB linking.
+    run_correlation_id: r.run_correlation_id ?? null,
   };
 }
 

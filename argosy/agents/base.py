@@ -233,6 +233,9 @@ class AgentReport:
     # Wave B-UI Task 9 — serialised prompt sources (mirrors ORM column from
     # migration 0027). None when build_prompt returned a 2-tuple.
     sources_json: str | None = None
+    # Wave B-UI follow-up Item 2 — uuid4 threaded from BaseAgent.run() through
+    # WS events (migration 0028). Enables O(1) WS↔DB row promotion in the UI.
+    run_correlation_id: str | None = None
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -480,6 +483,9 @@ class BaseAgent(Generic[T]):
                 citations_json=call.citations_json,
                 # Wave B-UI Task 9 — sources captured above from build_prompt.
                 sources_json=sources_json,
+                # Wave B-UI follow-up Item 2 — thread the run correlation id
+                # through to the persisted row (migration 0028).
+                run_correlation_id=run_correlation_id,
             )
 
             # Emit agent.run.finished — best-effort, must never block the agent run.

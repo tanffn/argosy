@@ -17,11 +17,11 @@
  * batching) added to useWSEvents in Task 5. A comment below marks where this
  * risk still theoretically exists at the WS socket level.
  *
- * run_correlation_id gap: WS events carry run_correlation_id (BaseAgent.run)
- * but the DB AgentReport has no such column. We use Option B from the task
- * spec: WS-only entries have id === null and are replaced by REST rows when
- * a matching row arrives (matched on agent_role + user_id + decision_id +
- * created_at ≈ finished_at within ±10 s).
+ * WS↔DB promotion: WS events carry run_correlation_id (BaseAgent.run).
+ * Since migration 0028 the DB AgentReport also stores run_correlation_id,
+ * enabling O(1) lookup when a REST row arrives with a non-null value.
+ * For pre-migration legacy rows (run_correlation_id === null) the hook falls
+ * back to the original ±10s + agent_role heuristic (findRestMatch).
  *
  * Unit tests: deferred — no test runner (jest/vitest) is wired in the UI
  * package. Tracked as a follow-up item.
@@ -141,15 +141,16 @@ function deriveGroupFinishedAt(rows: AgentRow[]): string | null {
 }
 
 /**
- * Convert a persisted REST AgentActivityRow to an AgentRow (status: "done",
- * no run_correlation_id since the DB doesn't store it).
+ * Convert a persisted REST AgentActivityRow to an AgentRow (status: "done").
+ * run_correlation_id is now stored on the DB row (migration 0028) and passed
+ * through; NULL for pre-migration legacy rows.
  */
 function restRowToAgentRow(r: AgentActivityRow): AgentRow {
   return {
     ...r,
     id: r.id,
     status: "done",
-    run_correlation_id: null,
+    run_correlation_id: r.run_correlation_id ?? null,
     started_at: r.created_at,
     finished_at: r.created_at,
     durationMs: null,
@@ -158,9 +159,14 @@ function restRowToAgentRow(r: AgentActivityRow): AgentRow {
 }
 
 /**
- * Try to match a WS-only AgentRow to a freshly-fetched REST AgentActivityRow.
+ * Legacy fallback: try to match a WS-only AgentRow to a freshly-fetched REST
+ * AgentActivityRow using the ±10s + agent_role heuristic.
  *
- * Matching heuristic (no run_correlation_id on DB rows):
+ * This is only called when the REST row has run_correlation_id === null (i.e.
+ * it was persisted before migration 0028). Post-migration rows are matched via
+ * O(1) byCorrelationId lookup in the finished-event handler instead.
+ *
+ * Heuristic:
  *   agent_role + user_id + decision_id (or both null) must match, AND
  *   the DB row's created_at must be within ±10 s of the WS finished_at
  *   (or started_at for running rows).
@@ -182,6 +188,8 @@ function findRestMatch(
 
   for (const r of restRows) {
     if (excludeIds.has(r.id)) continue; // already claimed by another WS row
+    // Legacy rows only (pre-migration 0028): null run_correlation_id.
+    if (r.run_correlation_id !== null) continue;
     if (r.agent_role !== wsRow.agent_role) continue;
     if (r.user_id !== wsRow.user_id) continue;
     if (r.decision_id !== wsRow.decision_id) continue;
@@ -451,14 +459,50 @@ export function useDecisionStream(
               if (fresh.length === 0) return prev;
 
               // Try to promote WS-only byCorrelationId entries to DB-backed.
-              // Blocker 2 fix: pass claimedDbIdsRef so parallel runs within
-              // the same decision_id cannot all claim the same persisted row.
-              // After a successful match the matched id is added to the claimed
-              // set and will be excluded from all future findRestMatch calls.
+              //
+              // O(1) path (post-migration 0028): if the REST row carries a
+              // non-null run_correlation_id we can look it up directly in
+              // byCorrelationId without the ±10s heuristic. This is exact and
+              // handles multi-round same-agent runs correctly.
+              //
+              // Legacy fallback: rows with run_correlation_id === null (persisted
+              // before migration 0028) still use the ±10s + agent_role heuristic
+              // via findRestMatch. claimedDbIdsRef prevents parallel same-
+              // decision_id agents from all claiming the same row (Blocker 2).
               setByCorrelationId((byCorrPrev) => {
                 const byCorrNext = new Map(byCorrPrev);
+
+                // O(1) path: index fresh rows by their run_correlation_id.
+                const freshByCorrelation = new Map<string, AgentActivityRow>();
+                for (const r of fresh) {
+                  if (r.run_correlation_id !== null) {
+                    freshByCorrelation.set(r.run_correlation_id, r);
+                  }
+                }
+
                 for (const wsRow of byCorrNext.values()) {
                   if (wsRow.id !== null) continue; // already matched
+                  const corrId = wsRow.run_correlation_id;
+
+                  // O(1) lookup first (post-migration rows).
+                  const directMatch =
+                    corrId !== null ? freshByCorrelation.get(corrId) : undefined;
+                  if (directMatch && !claimedDbIdsRef.current.has(directMatch.id)) {
+                    claimedDbIdsRef.current.add(directMatch.id);
+                    byCorrNext.set(corrId!, {
+                      ...directMatch,
+                      id: directMatch.id,
+                      status: wsRow.status === "failed" ? "failed" : "done",
+                      run_correlation_id: corrId,
+                      started_at: wsRow.started_at,
+                      finished_at: wsRow.finished_at ?? directMatch.created_at,
+                      durationMs: wsRow.durationMs,
+                      turn_id: wsRow.turn_id,
+                    });
+                    continue;
+                  }
+
+                  // Legacy fallback: ±10s heuristic for pre-migration rows.
                   const match = findRestMatch(
                     wsRow,
                     fresh,
