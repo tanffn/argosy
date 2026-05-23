@@ -249,6 +249,20 @@ class BaseAgent(Generic[T]):
     #: Max output tokens for the call. Reasonable default; subclasses tune.
     max_tokens: ClassVar[int] = 4096
 
+    # Wave A.5 — XML markup used to inline citation sources into the user
+    # prompt on the claude_code backend, which has no equivalent of
+    # Anthropic's document blocks / Citations API. The model can self-cite
+    # by quoting the `source_id` attribute; downstream parsers should NOT
+    # rely on character-offset citations (that needs the api_key backend).
+    # Format kept deliberately minimal (no JSON, no nested attrs) so a
+    # truncated/streaming response is still parseable by a human reader.
+    _CLAUDE_CODE_SOURCES_WRAPPER: ClassVar[str] = (
+        "<sources>\n{body}\n</sources>\n\n"
+    )
+    _CLAUDE_CODE_SOURCE_ITEM: ClassVar[str] = (
+        '<source id="{source_id}">\n{content}\n</source>'
+    )
+
     # System-prompt boilerplate that EVERY agent inherits.
     BOILERPLATE_SYSTEM: ClassVar[
         str
@@ -556,14 +570,18 @@ class BaseAgent(Generic[T]):
         forwards them to the Anthropic API, which natively understands image
         blocks on vision-capable models.
 
-        Wave A: `sources` is accepted for signature symmetry with the
-        api_key backend but silently ignored — the claude_code SDK does
-        not expose document blocks for the Citations API.
+        Wave A.5: `sources` are now inlined into the user prompt as an
+        `<sources>` XML block (see `_CLAUDE_CODE_SOURCES_WRAPPER`). The
+        claude_code SDK does not expose document blocks for the Citations
+        API, but the 11-agent refactor (Wave A Task 21) replaced inlined
+        source bodies in user prompts with `source_id` references, expecting
+        the bodies to flow via document blocks. Without inlining here the
+        bodies would be lost on this backend — the model would see the
+        source IDs but none of the content. The inline wrapper restores
+        access; the model can still self-cite via the IDs, just without
+        the Citations API's character-offset verification.
         """
         import sys
-
-        if sources:
-            self._log.debug("claude_code backend ignoring sources kwarg")
 
         if sys.platform == "win32":
             return await asyncio.to_thread(
@@ -658,8 +676,17 @@ class BaseAgent(Generic[T]):
         """The actual SDK call. Extracted so it can run on a different event
         loop on Windows (see `_call_via_claude_code_thread`).
 
-        Wave A: `sources` accepted for signature symmetry; silently
-        ignored because the SDK does not expose document blocks.
+        Wave A.5:
+          * Forwards extended-thinking config to the agent-sdk via
+            ``ClaudeAgentOptions(thinking=..., max_thinking_tokens=...)``.
+          * Extracts cache + thinking telemetry from
+            ``ResultMessage.usage`` (a dict carrying the same
+            ``cache_read_input_tokens`` / ``cache_creation_input_tokens``
+            keys Anthropic returns directly on the api_key backend).
+          * Inlines ``sources`` into the user prompt as an XML block
+            (see ``_CLAUDE_CODE_SOURCES_WRAPPER``) since the agent-sdk
+            does not expose Anthropic document blocks. The model can
+            self-cite via the source IDs.
         """
         try:
             from claude_agent_sdk import (
@@ -674,17 +701,51 @@ class BaseAgent(Generic[T]):
                 "claude-agent-sdk is not installed. Run: uv add claude-agent-sdk"
             ) from exc
 
-        options = ClaudeAgentOptions(
-            system_prompt=system,
-            max_turns=1,
-            allowed_tools=[],  # one-shot reasoning; no tool use during agent runs
+        options_kwargs: dict[str, Any] = {
+            "system_prompt": system,
+            "max_turns": 1,
+            "allowed_tools": [],  # one-shot reasoning; no tool use during agent runs
             # Headless server context — there is no human at the terminal to
             # answer permission prompts. `bypassPermissions` silences the
             # interactive flow; `allowed_tools=[]` already prevents any
             # actual tool invocation, so this is a safe pairing.
-            permission_mode="bypassPermissions",
-            model=self.model,
-        )
+            "permission_mode": "bypassPermissions",
+            "model": self.model,
+        }
+        # Wave A.5: thread extended thinking through to the agent-sdk.
+        # The SDK accepts the same shape Anthropic's REST API uses
+        # (ThinkingConfigEnabled TypedDict). `max_thinking_tokens` is the
+        # SDK's own ceiling on the CLI; we mirror the budget so the CLI
+        # doesn't truncate before the model's own budget runs out.
+        if self.thinking_budget > 0:
+            options_kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": self.thinking_budget,
+            }
+            options_kwargs["max_thinking_tokens"] = self.thinking_budget
+
+        options = ClaudeAgentOptions(**options_kwargs)
+
+        # Wave A.5: inline sources as XML markup. The 11-agent refactor
+        # (Wave A Task 21) moved source bodies out of the user prompt into
+        # document blocks, but the agent-sdk has no document-block channel,
+        # so on this backend the bodies were vanishing entirely. Restore
+        # them here so the model actually sees the data it needs to reason
+        # over. Citations enablement is irrelevant on this backend (no
+        # character-offset verification regardless), so we inline whenever
+        # sources are present.
+        if sources:
+            items = "\n".join(
+                self._CLAUDE_CODE_SOURCE_ITEM.format(
+                    source_id=source_id, content=content,
+                )
+                for source_id, content in sources
+            )
+            user_with_sources = (
+                self._CLAUDE_CODE_SOURCES_WRAPPER.format(body=items) + user
+            )
+        else:
+            user_with_sources = user
 
         # Build the SDK prompt. Plain string for text-only turns (cheaper);
         # AsyncIterable[dict] streaming-mode for image turns so we can pass
@@ -707,7 +768,7 @@ class BaseAgent(Generic[T]):
                         "data": data,
                     },
                 })
-            content_blocks.append({"type": "text", "text": user})
+            content_blocks.append({"type": "text", "text": user_with_sources})
 
             async def _prompt_stream():
                 yield {
@@ -719,12 +780,34 @@ class BaseAgent(Generic[T]):
 
             sdk_prompt: Any = _prompt_stream()
         else:
-            sdk_prompt = user
+            sdk_prompt = user_with_sources
 
         text_parts: list[str] = []
         tokens_in = 0
         tokens_out = 0
+        cache_input_tokens = 0
+        cache_creation_tokens = 0
+        thinking_tokens = 0
         cost_usd_from_sdk = 0.0
+
+        def _usage_get(usage: Any, key: str) -> int:
+            """Pull an int from `usage` whether it's a dict or an object.
+
+            `ResultMessage.usage` is typed `dict[str, Any] | None`, but the
+            api_key backend's `Usage` object also flows through here in
+            tests/integration glue; supporting both keeps the call site
+            stable. Returns 0 for missing/None values.
+            """
+            if usage is None:
+                return 0
+            if isinstance(usage, dict):
+                value = usage.get(key, 0)
+            else:
+                value = getattr(usage, key, 0)
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
 
         try:
             async for message in query(prompt=sdk_prompt, options=options):
@@ -738,16 +821,25 @@ class BaseAgent(Generic[T]):
                     )
                     usage = getattr(message, "usage", None)
                     if usage is not None:
-                        tokens_in = int(
-                            getattr(usage, "input_tokens", 0)
-                            or (usage.get("input_tokens", 0) if isinstance(usage, dict) else 0)
-                            or 0
+                        tokens_in = _usage_get(usage, "input_tokens")
+                        tokens_out = _usage_get(usage, "output_tokens")
+                        # Wave A.5 — cache + thinking telemetry. Anthropic's
+                        # Messages API returns these under the same keys the
+                        # api_key backend reads; the agent-sdk forwards them
+                        # unchanged on its `usage` dict.
+                        cache_input_tokens = _usage_get(
+                            usage, "cache_read_input_tokens",
                         )
-                        tokens_out = int(
-                            getattr(usage, "output_tokens", 0)
-                            or (usage.get("output_tokens", 0) if isinstance(usage, dict) else 0)
-                            or 0
+                        cache_creation_tokens = _usage_get(
+                            usage, "cache_creation_input_tokens",
                         )
+                        # Thinking tokens: Anthropic exposes these as
+                        # `thinking_tokens` on the extra fields of Usage
+                        # (model_config={"extra": "allow"} in the SDK). On
+                        # the agent-sdk's usage dict the same key flows
+                        # through; if a future SDK rev renames it we fall
+                        # back to 0 silently.
+                        thinking_tokens = _usage_get(usage, "thinking_tokens")
         except Exception as exc:  # pragma: no cover - exercised by integration only
             raise AgentRunError(
                 f"{self.agent_role}: claude-agent-sdk error: {exc}"
@@ -759,6 +851,9 @@ class BaseAgent(Generic[T]):
             tokens_out=tokens_out,
             model=self.model,
             raw={"backend": "claude_code", "cost_usd_from_sdk": cost_usd_from_sdk},
+            cache_input_tokens=cache_input_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            thinking_tokens=thinking_tokens,
         )
 
     async def _call_via_api_key(
