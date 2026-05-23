@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -850,6 +851,37 @@ class BaseAgent(Generic[T]):
             # (pydantic model_config={"extra": "allow"} in SDK 0.97.0).
             thinking_tokens = int(getattr(usage, "thinking_tokens", 0) or 0)
 
+            # Citations extraction (Wave A Task 17). When the model emits
+            # CitationCharLocation entries against document blocks, the SDK
+            # attaches them to each text content block via `.citations`.
+            # We flatten into a list of dicts and json-serialize, keeping the
+            # claim_text (block.text) alongside each citation so downstream
+            # auditors can render claim->source spans. Per-citation try/except
+            # lets one malformed entry skip without dropping the rest.
+            citations_list: list[dict[str, Any]] = []
+            for block in getattr(msg, "content", []) or []:
+                if getattr(block, "type", None) != "text":
+                    continue
+                block_text = getattr(block, "text", "") or ""
+                for c in getattr(block, "citations", []) or []:
+                    try:
+                        citations_list.append({
+                            "source_id": getattr(c, "document_title", None),
+                            "source_span_start": getattr(c, "start_char_index", None),
+                            "source_span_end": getattr(c, "end_char_index", None),
+                            "claim_text": block_text,
+                            "cited_quote": getattr(c, "cited_text", None),
+                        })
+                    except Exception as parse_exc:  # noqa: BLE001
+                        self._log.warning(
+                            "citation parse failed: %s; raw=%r",
+                            parse_exc, c,
+                        )
+            citations_json: str | None = (
+                json.dumps(citations_list, ensure_ascii=False)
+                if citations_list else None
+            )
+
             return ModelCall(
                 text=text,
                 tokens_in=tokens_in,
@@ -859,7 +891,7 @@ class BaseAgent(Generic[T]):
                 cache_input_tokens=cache_input_tokens,
                 cache_creation_tokens=cache_creation_tokens,
                 thinking_tokens=thinking_tokens,
-                citations_json=None,          # Task 18 populates
+                citations_json=citations_json,
             )
 
         return await asyncio.to_thread(_do_call)
