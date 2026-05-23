@@ -81,10 +81,26 @@ async def test_save_attachment_classifies_png_as_image(argosy_home_db):
 
 
 @pytest.mark.asyncio
-async def test_save_attachment_rejects_pdf(argosy_home_db):
+async def test_save_attachment_classifies_pdf(argosy_home_db):
+    """PDFs are accepted as kind='pdf' so the advisor route can forward
+    them to the Anthropic API as native ``document`` content blocks.
+    Layout / tables / scans survive (the prior text-extraction path
+    lost them)."""
     upload = _upload(b"%PDF-1.4\n...", filename="doc.pdf", content_type="application/pdf")
+    att = await save_attachment(user_id="ariel", turn_uuid="t3", upload=upload)
+    assert att.kind == "pdf"
+    assert att.mime_type == "application/pdf"
+    assert Path(att.path).exists()
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_rejects_truly_unsupported_type(argosy_home_db):
+    """An exec / unknown binary still 415s — the allowlist is closed."""
+    upload = _upload(
+        b"\x7fELF\x02\x01...", filename="payload.bin", content_type="application/octet-stream",
+    )
     with pytest.raises(AttachmentUnsupportedError) as exc_info:
-        await save_attachment(user_id="ariel", turn_uuid="t3", upload=upload)
+        await save_attachment(user_id="ariel", turn_uuid="t-bad", upload=upload)
     assert exc_info.value.status_code == 415
 
 

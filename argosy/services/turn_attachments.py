@@ -1,10 +1,15 @@
 """Wave 5 — Advisor chat upload helper.
 
-The advisor chat now accepts file attachments alongside the text message
-(text/markdown documents and images). This module:
+The advisor chat accepts file attachments alongside the text message
+(text/markdown documents, images, and PDFs). This module:
   - Saves each upload to `<ARGOSY_HOME>/uploads/<user_id>/<turn_uuid>/`
-  - Classifies MIME → kind ("text" | "image")
+  - Classifies MIME → kind ("text" | "image" | "pdf")
   - Rejects unsupported MIMEs with a 415-friendly exception
+
+PDFs are forwarded to the Anthropic API as native `document` content
+blocks (vs. server-side text extraction). This preserves layout,
+tables, and embedded images, and lets Claude OCR scanned PDFs — the
+"accuracy over LLM cost" binding rule in CLAUDE.md.
 
 Size limits (hardcoded module constants below; not yet plumbed through
 `argosy.toml`):
@@ -63,14 +68,16 @@ _IMAGE_MIMES = {
     "image/webp",
     "image/gif",
 }
+_PDF_MIMES = {"application/pdf", "application/x-pdf"}
 _TEXT_EXTS = {".md", ".markdown", ".txt", ".text", ".yaml", ".yml", ".json", ".csv", ".tsv"}
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_PDF_EXTS = {".pdf"}
 
 
 class Attachment(BaseModel):
     """A single saved upload from a chat turn."""
 
-    kind: Literal["text", "image"]
+    kind: Literal["text", "image", "pdf"]
     path: str
     mime_type: str
     original_name: str
@@ -91,18 +98,20 @@ class AttachmentUnsupportedError(HTTPException):
         super().__init__(status_code=415, detail=detail)
 
 
-def _classify(mime_type: str, original_name: str) -> Literal["text", "image"]:
-    """Map MIME + extension → 'text' | 'image'. Raise 415 for anything else."""
+def _classify(mime_type: str, original_name: str) -> Literal["text", "image", "pdf"]:
+    """Map MIME + extension → 'text' | 'image' | 'pdf'. Raise 415 otherwise."""
     mt = (mime_type or "").lower().strip()
     ext = Path(original_name or "").suffix.lower()
 
     if mt in _IMAGE_MIMES or mt.startswith("image/") or ext in _IMAGE_EXTS:
         return "image"
+    if mt in _PDF_MIMES or ext in _PDF_EXTS:
+        return "pdf"
     if mt in _TEXT_MIMES or mt.startswith("text/") or ext in _TEXT_EXTS:
         return "text"
     raise AttachmentUnsupportedError(
         f"unsupported attachment type: mime={mt!r} ext={ext!r}; "
-        "Wave 5 accepts text/markdown and images only"
+        "accepted: text/markdown, images, PDFs"
     )
 
 

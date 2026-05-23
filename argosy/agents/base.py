@@ -242,35 +242,39 @@ class BaseAgent(Generic[T]):
         are present (e.g. AdvisorAgent) declare `image_attachments` in
         their `build_prompt` signature; otherwise we silently drop it
         before calling `build_prompt` so legacy agents aren't disturbed.
+
+        Post-Wave-5: `pdf_attachments` follows the same pattern. PDFs are
+        sent to the Anthropic API as native ``document`` content blocks
+        so Claude can OCR scans / read embedded tables.
         """
         import inspect
 
         image_attachments = inputs.get("image_attachments")
+        pdf_attachments = inputs.get("pdf_attachments")
         bp_params = inspect.signature(self.build_prompt).parameters
-        bp_accepts_images = (
-            "image_attachments" in bp_params
-            or any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in bp_params.values()
-            )
+        bp_accepts_var_kw = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in bp_params.values()
         )
+        bp_accepts_images = "image_attachments" in bp_params or bp_accepts_var_kw
+        bp_accepts_pdfs = "pdf_attachments" in bp_params or bp_accepts_var_kw
         if not bp_accepts_images:
             inputs.pop("image_attachments", None)
+        if not bp_accepts_pdfs:
+            inputs.pop("pdf_attachments", None)
 
         system_prompt, user_prompt = self.build_prompt(**inputs)
         full_system = self.BOILERPLATE_SYSTEM + "\n\n" + system_prompt
 
         prompt_hash = self._hash_prompt(full_system, user_prompt)
-        # Only forward image_attachments when present so subclass test mocks
-        # that override `_call_model(system, user)` without the new kwarg
+        # Only forward attachment kwargs when present so subclass test mocks
+        # that override `_call_model(system, user)` without the new kwargs
         # keep working (Wave 5 backward-compat).
+        call_kwargs: dict[str, Any] = {"system": full_system, "user": user_prompt}
         if image_attachments:
-            call = await self._call_model(
-                system=full_system,
-                user=user_prompt,
-                image_attachments=image_attachments,
-            )
-        else:
-            call = await self._call_model(system=full_system, user=user_prompt)
+            call_kwargs["image_attachments"] = image_attachments
+        if pdf_attachments:
+            call_kwargs["pdf_attachments"] = pdf_attachments
+        call = await self._call_model(**call_kwargs)
 
         try:
             output = self._parse_output(call.text)
@@ -356,6 +360,7 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        pdf_attachments: list[Any] | None = None,
     ) -> ModelCall:
         """Invoke the model. Dispatches on the configured backend.
 
@@ -371,17 +376,27 @@ class BaseAgent(Generic[T]):
         does NOT (the SDK's prompt API is text-only); it raises a clear
         error when images are present.
 
+        Post-Wave-5: `pdf_attachments` are forwarded as native Anthropic
+        ``document`` content blocks — Claude reads them at full fidelity
+        (layout + tables + scans via OCR).
+
         Tests override this method directly to return a `ModelCall` stub
         without exercising either backend.
         """
         backend = get_settings().anthropic.backend
         if backend == "claude_code":
             return await self._call_via_claude_code(
-                system=system, user=user, image_attachments=image_attachments,
+                system=system,
+                user=user,
+                image_attachments=image_attachments,
+                pdf_attachments=pdf_attachments,
             )
         if backend == "api_key":
             return await self._call_via_api_key(
-                system=system, user=user, image_attachments=image_attachments,
+                system=system,
+                user=user,
+                image_attachments=image_attachments,
+                pdf_attachments=pdf_attachments,
             )
         raise AgentRunError(
             f"{self.agent_role}: unknown anthropic backend {backend!r} "
@@ -394,6 +409,7 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        pdf_attachments: list[Any] | None = None,
     ) -> ModelCall:
         """Backend: claude-agent-sdk → local `claude.exe`. No API key needed.
 
@@ -424,9 +440,13 @@ class BaseAgent(Generic[T]):
                 system=system,
                 user=user,
                 image_attachments=image_attachments,
+                pdf_attachments=pdf_attachments,
             )
         return await self._call_via_claude_code_inner(
-            system=system, user=user, image_attachments=image_attachments,
+            system=system,
+            user=user,
+            image_attachments=image_attachments,
+            pdf_attachments=pdf_attachments,
         )
 
     def _call_via_claude_code_thread(
@@ -435,6 +455,7 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        pdf_attachments: list[Any] | None = None,
     ) -> ModelCall:
         """Sync entry that runs the async SDK call on a fresh
         ProactorEventLoop in a worker thread. Windows-only path."""
@@ -444,7 +465,10 @@ class BaseAgent(Generic[T]):
         try:
             return loop.run_until_complete(
                 self._call_via_claude_code_inner(
-                    system=system, user=user, image_attachments=image_attachments,
+                    system=system,
+                    user=user,
+                    image_attachments=image_attachments,
+                    pdf_attachments=pdf_attachments,
                 )
             )
         finally:
@@ -456,6 +480,7 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        pdf_attachments: list[Any] | None = None,
     ) -> ModelCall:
         """The actual SDK call. Extracted so it can run on a different event
         loop on Windows (see `_call_via_claude_code_thread`)."""
@@ -485,15 +510,15 @@ class BaseAgent(Generic[T]):
         )
 
         # Build the SDK prompt. Plain string for text-only turns (cheaper);
-        # AsyncIterable[dict] streaming-mode for image turns so we can pass
-        # content blocks. The SDK serializes a string prompt as the same
-        # message dict shape we yield manually here (see client.py:209).
-        if image_attachments:
+        # AsyncIterable[dict] streaming-mode for image/PDF turns so we can
+        # pass content blocks. The SDK serializes a string prompt as the
+        # same message dict shape we yield manually here (see client.py:209).
+        if image_attachments or pdf_attachments:
             import base64
             from pathlib import Path as _Path
 
             content_blocks: list[dict[str, Any]] = []
-            for att in image_attachments:
+            for att in image_attachments or []:
                 path = getattr(att, "path", None) or att["path"]
                 mime = getattr(att, "mime_type", None) or att["mime_type"]
                 data = base64.b64encode(_Path(path).read_bytes()).decode("ascii")
@@ -502,6 +527,17 @@ class BaseAgent(Generic[T]):
                     "source": {
                         "type": "base64",
                         "media_type": mime,
+                        "data": data,
+                    },
+                })
+            for att in pdf_attachments or []:
+                path = getattr(att, "path", None) or att["path"]
+                data = base64.b64encode(_Path(path).read_bytes()).decode("ascii")
+                content_blocks.append({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
                         "data": data,
                     },
                 })
@@ -565,6 +601,7 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        pdf_attachments: list[Any] | None = None,
     ) -> ModelCall:
         """Backend: direct Anthropic API. Requires API key in keychain or env.
 
@@ -572,6 +609,12 @@ class BaseAgent(Generic[T]):
         content blocks (`{"type": "image", "source": {...}}`) for each
         image and prepends them to the user message. Vision-capable
         models (Sonnet, Opus) handle these natively.
+
+        Post-Wave-5: ``pdf_attachments`` produce ``document`` content
+        blocks. Claude reads them at full fidelity (layout / tables /
+        scanned-page OCR). Per-PDF size cap is enforced upstream by
+        ``turn_attachments``; the Anthropic platform also enforces its
+        own caps (≈32 MB / 100 pages per document at time of writing).
         """
         import asyncio
         import base64
@@ -581,11 +624,12 @@ class BaseAgent(Generic[T]):
             self._client = self._build_client()
         client = self._client
 
-        # Build the user message content. If no images, use plain string
-        # (cheaper for prompt cache); else use a content-block list.
-        if image_attachments:
+        # Build the user message content. If no rich attachments, use a
+        # plain string (cheaper for prompt cache); else use a content-
+        # block list. Order: images, PDFs, then the user's text.
+        if image_attachments or pdf_attachments:
             blocks: list[dict[str, Any]] = []
-            for att in image_attachments:
+            for att in image_attachments or []:
                 # `att` is an Attachment from argosy.services.turn_attachments,
                 # but we don't import it here to avoid a circular dependency.
                 path = getattr(att, "path", None) or att["path"]
@@ -596,6 +640,17 @@ class BaseAgent(Generic[T]):
                     "source": {
                         "type": "base64",
                         "media_type": mime,
+                        "data": data,
+                    },
+                })
+            for att in pdf_attachments or []:
+                path = getattr(att, "path", None) or att["path"]
+                data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+                blocks.append({
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
                         "data": data,
                     },
                 })
