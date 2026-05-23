@@ -686,6 +686,8 @@ class DecisionFlow:
                     cache_creation_tokens=r.cache_creation_tokens,
                     thinking_tokens=r.thinking_tokens,
                     citations_json=r.citations_json,
+                    # Wave B-UI Task 9 — sources serialised from build_prompt (migration 0027).
+                    sources_json=r.sources_json,
                 )
                 session.add(row)
                 await session.flush()

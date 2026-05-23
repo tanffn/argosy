@@ -37,3 +37,22 @@ def test_agent_report_column_defaults_match_migration():
     assert citations.nullable is True
     assert citations.default is None or citations.default.arg is None
     assert citations.server_default is None
+
+
+# ---------------------------------------------------------------------------
+# Wave B-UI Task 9 — sources_json column (migration 0027)
+# ---------------------------------------------------------------------------
+
+
+def test_agent_report_has_sources_json_attr():
+    """Migration 0027 adds sources_json column to agent_reports."""
+    fields = {c.key for c in AgentReport.__table__.columns}
+    assert "sources_json" in fields
+
+
+def test_agent_report_sources_json_column_defaults():
+    """sources_json is nullable Text with Python-side default=None and no server_default."""
+    col = AgentReport.__table__.columns["sources_json"]
+    assert col.nullable is True
+    assert col.default is None or col.default.arg is None
+    assert col.server_default is None

@@ -85,6 +85,18 @@ export interface AgentActivityRow {
   cache_creation_tokens: number;
   thinking_tokens: number;
   citations_count: number;
+  // Wave B-UI drawer fields
+  response_text: string;
+  citations_json: string | null;
+  prompt_hash: string;
+  // Wave B-UI Task 5 — grouping key for intake-session agents.
+  intake_session_id: string | null;
+  // Wave B-UI Task 9 — lightweight source previews for the Sources tab.
+  sources_preview: Array<{
+    source_id: string;
+    body_chars: number;
+    body_head: string;
+  }>;
 }
 
 export interface AgentActivityResponse {
@@ -397,10 +409,19 @@ export const api = {
     getJSON<DailyBriefDTO | null>(
       `/api/daily-brief/latest?user_id=${encodeURIComponent(userId)}`,
     ),
-  agentActivity: (userId: string, limit = 10) =>
-    getJSON<AgentActivityResponse>(
-      `/api/agent-activity?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
-    ),
+  agentActivity: (
+    userId: string,
+    limit = 10,
+    opts?: { since?: string; detail?: boolean },
+  ) => {
+    const qs = new URLSearchParams({
+      user_id: userId,
+      limit: String(limit),
+    });
+    if (opts?.since) qs.set("since", opts.since);
+    if (opts?.detail === false) qs.set("detail", "false");
+    return getJSON<AgentActivityResponse>(`/api/agent-activity?${qs.toString()}`);
+  },
   proposalsList: (userId: string, status?: string) => {
     const qs = new URLSearchParams({ user_id: userId });
     if (status) qs.set("status", status);
@@ -584,6 +605,7 @@ export const api = {
       targetField?: string;
       historyExcerpt?: string;
       attachments?: File[];
+      turnId?: string;
     },
   ): Promise<AdvisorTurnResponse> => {
     const attachments = opts?.attachments ?? [];
@@ -594,6 +616,7 @@ export const api = {
         current_stage: opts?.currentStage,
         target_field: opts?.targetField,
         history_excerpt: opts?.historyExcerpt ?? "",
+        ...(opts?.turnId ? { turn_id: opts.turnId } : {}),
       });
     }
     const fd = new FormData();
@@ -602,6 +625,7 @@ export const api = {
     if (opts?.currentStage) fd.append("current_stage", opts.currentStage);
     if (opts?.targetField) fd.append("target_field", opts.targetField);
     fd.append("history_excerpt", opts?.historyExcerpt ?? "");
+    if (opts?.turnId) fd.append("turn_id", opts.turnId);
     for (const f of attachments) {
       fd.append("attachments", f, f.name);
     }

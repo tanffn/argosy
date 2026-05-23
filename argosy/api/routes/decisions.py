@@ -13,14 +13,15 @@ or the dashboard without waiting for a cadence to fire it.
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import asc, select
+from sqlalchemy import asc, desc, func, select
 
 from argosy.agent_settings import load_agent_settings
 from argosy.agents.base import AgentReport, ConfidenceBand
@@ -450,6 +451,172 @@ async def get_phase_transcript(
         path=str(p), media_type="text/markdown",
         filename=f"transcript-run{decision_run_id}-phase{phase_id}.md",
     )
+
+
+# ----------------------------------------------------------------------
+# GET /api/decisions/recent — grouped cascade payload (spec §3.6)
+# ----------------------------------------------------------------------
+
+
+class DecisionGroupDTO(BaseModel):
+    decision_id: str
+    decision_kind: str | None
+    tier: str | None
+    ticker: str | None
+    started_at: str          # ISO 8601 — min(created_at) in the group
+    finished_at: str | None  # ISO 8601 — max(created_at) in the group
+    status: str
+    total_cost_usd: float
+    agent_count: int
+    agent_runs: list[Any]    # list of AgentActivityRow-shaped dicts
+
+
+@router.get("/recent", response_model=list[DecisionGroupDTO])
+async def get_decisions_recent(
+    user_id: str = Query("ariel"),
+    limit: int = Query(20, ge=1, le=200),
+) -> list[DecisionGroupDTO]:
+    """Return recent decision groups for `user_id`, each containing all
+    agent_reports that share a decision_id.
+
+    Groups are ordered by their max(created_at) DESC (most-recent first).
+    Rows with NULL decision_id are omitted — the home page DecisionAccordion
+    already handles them client-side via its "Standalone" fallback.
+
+    `limit` caps the number of *groups* (decisions), not individual rows.
+    """
+    # Import here to avoid circular-import at module load; agent_activity
+    # router imports no decisions symbols so this is safe.
+    from argosy.api.routes.agent_activity import AgentActivityRow
+
+    async with db_mod.get_session() as session:
+        # --- Step 1: find the top-N decision_ids by their max(created_at) ---
+        subq = (
+            select(
+                AgentReportRow.decision_id,
+                func.max(AgentReportRow.created_at).label("latest"),
+            )
+            .where(
+                AgentReportRow.user_id == user_id,
+                AgentReportRow.decision_id.is_not(None),
+            )
+            .group_by(AgentReportRow.decision_id)
+            .order_by(desc("latest"))
+            .limit(limit)
+            .subquery()
+        )
+        top_ids_rows = (await session.execute(select(subq.c.decision_id))).scalars().all()
+        if not top_ids_rows:
+            return []
+
+        # --- Step 2: load all agent_reports for those decision_ids ---
+        ar_rows = (
+            await session.execute(
+                select(AgentReportRow)
+                .where(
+                    AgentReportRow.user_id == user_id,
+                    AgentReportRow.decision_id.in_(top_ids_rows),
+                )
+                .order_by(asc(AgentReportRow.created_at))
+            )
+        ).scalars().all()
+
+        # --- Step 3: batch-fetch matching DecisionRun rows (for tier/ticker/status) ---
+        dr_by_id: dict[int, DecisionRun] = {}
+        parseable_ids: list[int] = []
+        for did in top_ids_rows:
+            try:
+                parseable_ids.append(int(did))
+            except (ValueError, TypeError):
+                pass
+        if parseable_ids:
+            dr_rows = (
+                await session.execute(
+                    select(DecisionRun).where(DecisionRun.id.in_(parseable_ids))
+                )
+            ).scalars().all()
+            dr_by_id = {r.id: r for r in dr_rows}
+
+    # --- Step 4: group rows by decision_id ---
+    groups: dict[str, list[AgentReportRow]] = defaultdict(list)
+    for r in ar_rows:
+        groups[r.decision_id].append(r)  # type: ignore[index]
+
+    # Preserve the ordering from top_ids_rows (already max(created_at) DESC).
+    result: list[DecisionGroupDTO] = []
+    for did in top_ids_rows:
+        rows = groups.get(did, [])
+        if not rows:
+            continue
+
+        # Resolve join to DecisionRun (may be None for non-integer decision_ids).
+        dr: DecisionRun | None = None
+        try:
+            dr = dr_by_id.get(int(did))
+        except (ValueError, TypeError):
+            pass
+
+        created_ats = [r.created_at for r in rows]
+        started_at_dt = min(created_ats)
+        finished_at_dt = max(created_ats)
+
+        agent_runs_out: list[dict[str, Any]] = []
+        for r in rows:
+            citations_count = (
+                len(json.loads(r.citations_json)) if r.citations_json else 0
+            )
+            # Wave B-UI Task 9 — sources_preview (same logic as agent_activity route).
+            sources_preview: list[dict[str, Any]] = []
+            if r.sources_json:
+                try:
+                    raw_sources = json.loads(r.sources_json)
+                    if isinstance(raw_sources, list):
+                        for entry in raw_sources:
+                            sid = entry.get("source_id", "")
+                            content = entry.get("content", "")
+                            sources_preview.append({
+                                "source_id": sid,
+                                "body_chars": len(content),
+                                "body_head": content[:150],
+                            })
+                except Exception:  # noqa: BLE001
+                    sources_preview = []
+            agent_runs_out.append(
+                AgentActivityRow(
+                    id=r.id,
+                    user_id=r.user_id,
+                    agent_role=r.agent_role,
+                    decision_id=r.decision_id,
+                    model=r.model,
+                    confidence=r.confidence,
+                    tokens_in=r.tokens_in,
+                    tokens_out=r.tokens_out,
+                    cost_usd=float(r.cost_usd or 0),
+                    created_at=r.created_at.isoformat(),
+                    cache_input_tokens=r.cache_input_tokens or 0,
+                    cache_creation_tokens=r.cache_creation_tokens or 0,
+                    thinking_tokens=r.thinking_tokens or 0,
+                    citations_count=citations_count,
+                    sources_preview=sources_preview,
+                ).model_dump()
+            )
+
+        total_cost = sum(float(r.cost_usd or 0) for r in rows)
+
+        result.append(DecisionGroupDTO(
+            decision_id=did,
+            decision_kind=(dr.decision_kind if dr else None),
+            tier=(dr.tier if dr else None),
+            ticker=(dr.ticker if dr else None),
+            started_at=started_at_dt.isoformat(),
+            finished_at=finished_at_dt.isoformat(),
+            status=(dr.status if dr else "done"),
+            total_cost_usd=total_cost,
+            agent_count=len(rows),
+            agent_runs=agent_runs_out,
+        ))
+
+    return result
 
 
 __all__ = ["router"]

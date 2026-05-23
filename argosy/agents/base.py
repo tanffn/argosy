@@ -29,6 +29,7 @@ import asyncio
 import hashlib
 import json
 import os
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -229,6 +230,9 @@ class AgentReport:
     cache_creation_tokens: int = 0
     thinking_tokens: int = 0
     citations_json: str | None = None
+    # Wave B-UI Task 9 — serialised prompt sources (mirrors ORM column from
+    # migration 0027). None when build_prompt returned a 2-tuple.
+    sources_json: str | None = None
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -360,6 +364,10 @@ class BaseAgent(Generic[T]):
 
         image_attachments = inputs.get("image_attachments")
         pdf_attachments = inputs.get("pdf_attachments")
+        # turn_id is a control-plane field (WS event correlation); it is NOT
+        # a build_prompt input.  Capture it here, then pop so build_prompt
+        # never receives an unexpected keyword argument.
+        turn_id = inputs.pop("turn_id", None)
         bp_params = inspect.signature(self.build_prompt).parameters
         bp_accepts_var_kw = any(
             p.kind == inspect.Parameter.VAR_KEYWORD for p in bp_params.values()
@@ -385,6 +393,38 @@ class BaseAgent(Generic[T]):
         full_system = self.BOILERPLATE_SYSTEM + "\n\n" + system_prompt
 
         prompt_hash = self._hash_prompt(full_system, user_prompt)
+
+        # Wave B-UI Task 9 — serialise sources for persistence.
+        # sources is list[tuple[source_id, content]]; store as JSON array for
+        # forward compat.  None when build_prompt returned a 2-tuple.
+        sources_json: str | None = (
+            json.dumps(
+                [{"source_id": sid, "content": content} for sid, content in sources],
+                ensure_ascii=False,
+            )
+            if sources
+            else None
+        )
+
+        # Emit agent.run.started — best-effort, must never block the agent run.
+        run_correlation_id = str(uuid.uuid4())
+        self._current_run_id = run_correlation_id
+        try:
+            from argosy.api.events import publish_event_threadsafe
+            _started_payload: dict[str, Any] = {
+                "user_id": self.user_id,
+                "agent_role": self.agent_role,
+                "model": self.model,
+                "decision_id": inputs.get("decision_id"),
+                "intake_session_id": inputs.get("intake_session_id"),
+                "turn_id": turn_id,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "run_correlation_id": run_correlation_id,
+            }
+            publish_event_threadsafe("agent.run.started", _started_payload)
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning("event publish failed: %s", exc)
+
         # Only forward optional kwargs when present so subclass test mocks
         # that override `_call_model(system, user)` without the new kwargs
         # keep working (Wave 5 backward-compat: image_attachments /
@@ -396,57 +436,116 @@ class BaseAgent(Generic[T]):
             call_kwargs["pdf_attachments"] = pdf_attachments
         if sources:
             call_kwargs["sources"] = sources
-        call = await self._call_model(**call_kwargs)
 
         try:
-            output = self._parse_output(call.text)
-        except ValidationError as exc:
-            raise AgentRunError(
-                f"{self.agent_role}: model output failed schema validation: {exc}"
-            ) from exc
-        except ValueError as exc:
-            raise AgentRunError(
-                f"{self.agent_role}: model output not valid JSON: {exc}"
-            ) from exc
+            call = await self._call_model(**call_kwargs)
 
-        if self.require_citations:
-            self._validate_citations(output)
+            try:
+                output = self._parse_output(call.text)
+            except ValidationError as exc:
+                raise AgentRunError(
+                    f"{self.agent_role}: model output failed schema validation: {exc}"
+                ) from exc
+            except ValueError as exc:
+                raise AgentRunError(
+                    f"{self.agent_role}: model output not valid JSON: {exc}"
+                ) from exc
 
-        confidence = self._extract_confidence(output)
-        cost = self._estimate_usd(
-            tokens_in=call.tokens_in,
-            tokens_out=call.tokens_out,
-            cache_input_tokens=call.cache_input_tokens,
-            cache_creation_tokens=call.cache_creation_tokens,
-            thinking_tokens=call.thinking_tokens,
-        )
+            if self.require_citations:
+                self._validate_citations(output)
 
-        report = AgentReport(
-            agent_role=self.agent_role,
-            user_id=self.user_id,
-            model=call.model or self.model,
-            response_text=call.text,
-            tokens_in=call.tokens_in,
-            tokens_out=call.tokens_out,
-            cost_usd=cost,
-            prompt_hash=prompt_hash,
-            confidence=confidence,
-            output=output,
-            cache_input_tokens=call.cache_input_tokens,
-            cache_creation_tokens=call.cache_creation_tokens,
-            thinking_tokens=call.thinking_tokens,
-            citations_json=call.citations_json,
-        )
-        self._log.info(
-            "agent.run.finished",
-            agent_role=self.agent_role,
-            model=report.model,
-            tokens_in=call.tokens_in,
-            tokens_out=call.tokens_out,
-            cost_usd=cost,
-            confidence=confidence.value if confidence else None,
-        )
-        return report
+            confidence = self._extract_confidence(output)
+            cost = self._estimate_usd(
+                tokens_in=call.tokens_in,
+                tokens_out=call.tokens_out,
+                cache_input_tokens=call.cache_input_tokens,
+                cache_creation_tokens=call.cache_creation_tokens,
+                thinking_tokens=call.thinking_tokens,
+            )
+
+            report = AgentReport(
+                agent_role=self.agent_role,
+                user_id=self.user_id,
+                model=call.model or self.model,
+                response_text=call.text,
+                tokens_in=call.tokens_in,
+                tokens_out=call.tokens_out,
+                cost_usd=cost,
+                prompt_hash=prompt_hash,
+                confidence=confidence,
+                output=output,
+                cache_input_tokens=call.cache_input_tokens,
+                cache_creation_tokens=call.cache_creation_tokens,
+                thinking_tokens=call.thinking_tokens,
+                citations_json=call.citations_json,
+                # Wave B-UI Task 9 — sources captured above from build_prompt.
+                sources_json=sources_json,
+            )
+
+            # Emit agent.run.finished — best-effort, must never block the agent run.
+            try:
+                from argosy.api.events import publish_event_threadsafe
+                _citations_count = (
+                    0 if call.citations_json is None
+                    else len(json.loads(call.citations_json))
+                )
+                _finished_payload: dict[str, Any] = {
+                    "user_id": self.user_id,
+                    "agent_role": self.agent_role,
+                    "run_correlation_id": run_correlation_id,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "status": "done",
+                    "tokens_in": call.tokens_in,
+                    "tokens_out": call.tokens_out,
+                    "cache_input_tokens": call.cache_input_tokens,
+                    "cache_creation_tokens": call.cache_creation_tokens,
+                    "thinking_tokens": call.thinking_tokens,
+                    "citations_count": _citations_count,
+                    "cost_usd": cost,
+                    "confidence": confidence.value if confidence else None,
+                    "agent_report_id": None,
+                    "turn_id": turn_id,
+                }
+                publish_event_threadsafe("agent.run.finished", _finished_payload)
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("event publish failed: %s", exc)
+
+            self._log.info(
+                "agent.run.finished",
+                agent_role=self.agent_role,
+                model=report.model,
+                tokens_in=call.tokens_in,
+                tokens_out=call.tokens_out,
+                cost_usd=cost,
+                confidence=confidence.value if confidence else None,
+            )
+            return report
+
+        except Exception as run_exc:
+            # Failure terminal event so the UI doesn't hang on "running" forever.
+            try:
+                from argosy.api.events import publish_event_threadsafe
+                publish_event_threadsafe("agent.run.finished", {
+                    "user_id": self.user_id,
+                    "agent_role": self.agent_role,
+                    "run_correlation_id": run_correlation_id,
+                    "turn_id": turn_id,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "status": "failed",
+                    "error": str(run_exc)[:500],
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "cache_input_tokens": 0,
+                    "cache_creation_tokens": 0,
+                    "thinking_tokens": 0,
+                    "citations_count": 0,
+                    "cost_usd": 0.0,
+                    "confidence": None,
+                    "agent_report_id": None,
+                })
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("failed-event publish failed: %s", exc)
+            raise
 
     # ------------------------------------------------------------------
     # Subclass hooks

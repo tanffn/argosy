@@ -584,6 +584,8 @@ async def post_upload(
             cache_creation_tokens=report.cache_creation_tokens,
             thinking_tokens=report.thinking_tokens,
             citations_json=report.citations_json,
+            # Wave B-UI Task 9 — sources serialised from build_prompt (migration 0027).
+            sources_json=report.sources_json,
         )
         session.add(ar_row)
         await session.commit()

@@ -25,6 +25,7 @@ import {
   type PortfolioSnapshotDTO,
 } from "@/lib/api";
 import { useWSEvents } from "@/lib/ws";
+import { DecisionAccordion } from "@/components/agent/DecisionAccordion";
 
 const USER_ID = "ariel";
 
@@ -97,26 +98,6 @@ const initial: HomeData = {
   error: null,
 };
 
-type Confidence = "HIGH" | "MEDIUM" | "LOW" | null;
-
-function confidenceFor(row: AgentActivityRow): Confidence {
-  const c = (row.confidence ?? "").toUpperCase();
-  if (c === "HIGH" || c === "MEDIUM" || c === "LOW") return c;
-  return null;
-}
-
-function confidenceTone(c: Confidence): "success" | "warning" | "neutral" {
-  if (c === "HIGH") return "success";
-  if (c === "MEDIUM") return "warning";
-  return "neutral";
-}
-
-function confidenceDot(c: Confidence): string {
-  if (c === "HIGH") return "bg-success";
-  if (c === "MEDIUM") return "bg-warning";
-  return "bg-muted-foreground/50";
-}
-
 /** Generate a plausible declining curve from `start` to `end` over n points. */
 function decliningCurve(start: number, end: number, n: number): number[] {
   if (n <= 1) return [start];
@@ -161,25 +142,6 @@ function humanBytes(bytes: number): string {
   return `${n.toFixed(n >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-/** Group AgentActivityRow[] into (hour-bucket → rows) preserving order. */
-function groupByHour(rows: AgentActivityRow[]): Array<{
-  label: string;
-  rows: AgentActivityRow[];
-}> {
-  const groups: Array<{ label: string; rows: AgentActivityRow[] }> = [];
-  for (const r of rows) {
-    const d = new Date(r.created_at);
-    const label = `${String(d.getHours()).padStart(2, "0")}:00`;
-    const last = groups[groups.length - 1];
-    if (last && last.label === label) {
-      last.rows.push(r);
-    } else {
-      groups.push({ label, rows: [r] });
-    }
-  }
-  return groups;
-}
-
 export default function Home() {
   const [data, setData] = useState<HomeData>(initial);
   const [loading, setLoading] = useState(true);
@@ -188,7 +150,9 @@ export default function Home() {
   // counter when its event arrives, so a fresh `.argosy-flash-border`
   // class reliably re-triggers the CSS animation.
   const [proposalFlash, setProposalFlash] = useState(0);
-  const [activityFlash, setActivityFlash] = useState(0);
+  // activityFlash removed — agent.run.finished no longer drives home-page
+  // refresh (see useWSEvents comment below). The accordion's own live
+  // updates are the signal; FlashBorderBox receives a static key of 0.
 
   const refresh = useCallback(async () => {
     try {
@@ -242,9 +206,11 @@ export default function Home() {
           })
           .catch(() => null),
         // Fallback: sum cost_usd from agent_activity rows in the current
-        // month. We re-fetch a wider window for this.
+        // month. We re-fetch a wider window for this.  detail=false drops
+        // response_text / citations_json / sources_preview to keep the
+        // payload small (~KB vs multi-MB for a busy account).
         api
-          .agentActivity(USER_ID, 500)
+          .agentActivity(USER_ID, 500, { detail: false })
           .catch(() => ({
             rows: [] as AgentActivityRow[],
             next_since: null,
@@ -330,9 +296,14 @@ export default function Home() {
 
   // Refresh on relevant WS events; also fire per-section "flash"
   // animations so users get a real-time signal a section just changed.
+  //
+  // NOTE: agent.run.finished is intentionally excluded here. A cascade run
+  // can emit ~20 of these events per advisor turn; including it caused 20
+  // full home-page refreshes per turn. The DecisionAccordion already handles
+  // agent.run.finished updates via useDecisionStream. activityFlash is dropped
+  // as redundant with the accordion's live updates.
   const lastEvent = useWSEvents([
     "daily_brief.ready",
-    "agent.run.finished",
     "proposal.created",
     "proposal.updated",
   ]);
@@ -343,9 +314,6 @@ export default function Home() {
       lastEvent.event === "proposal.updated"
     ) {
       setProposalFlash((n) => n + 1);
-    }
-    if (lastEvent.event === "agent.run.finished") {
-      setActivityFlash((n) => n + 1);
     }
     refresh();
   }, [lastEvent, refresh]);
@@ -463,16 +431,6 @@ export default function Home() {
     walk(data.domainKb);
     return { total, fresh, dueSoon, stale };
   }, [data.domainKb]);
-
-  // Group activity by hour-of-day for the timeline.
-  const grouped = useMemo(() => groupByHour(data.agents.slice(0, 12)), [
-    data.agents,
-  ]);
-
-  // Determine "ON DECK" pill: top entry less than 30s old.
-  const topEntryRecent =
-    data.agents[0] &&
-    Date.now() - new Date(data.agents[0].created_at).getTime() < 30_000;
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
@@ -825,20 +783,11 @@ export default function Home() {
         </FlashBorderBox>
       </section>
 
-      {/* ACTIVITY — vertical timeline, grouped by hour, with fade-in. */}
+      {/* ACTIVITY — decision-grouped accordion with live WS cascade. */}
       <section>
-        <SectionHeader label="ACTIVITY" count={data.agents.length} />
-        <FlashBorderBox flashKey={activityFlash}>
-          {data.agents.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-6 text-center text-xs text-muted-foreground font-mono">
-              No agent runs yet.
-            </div>
-          ) : (
-            <ActivityTimeline
-              groups={grouped}
-              topEntryRecent={!!topEntryRecent}
-            />
-          )}
+        <SectionHeader label="ACTIVITY" />
+        <FlashBorderBox flashKey={0}>
+          <DecisionAccordion userId={USER_ID} />
         </FlashBorderBox>
       </section>
 
@@ -974,77 +923,4 @@ function FlashBorderBox({ flashKey, children }: FlashBorderBoxProps) {
   );
 }
 
-interface ActivityTimelineProps {
-  groups: Array<{ label: string; rows: AgentActivityRow[] }>;
-  topEntryRecent: boolean;
-}
 
-function ActivityTimeline({ groups, topEntryRecent }: ActivityTimelineProps) {
-  return (
-    <ul className="rounded-lg border border-border bg-card divide-y divide-border">
-      {groups.map((g, gi) => (
-        <li key={g.label} className="py-2">
-          <div className="px-4 pb-1 text-[10px] uppercase tracking-wider font-mono text-muted-foreground tabular-nums">
-            {g.label}
-          </div>
-          <ul className="relative pl-4">
-            {/* vertical guide line */}
-            <span
-              aria-hidden
-              className="absolute left-[1.1rem] top-1 bottom-1 w-px bg-border"
-            />
-            {g.rows.map((row, ri) => {
-              const c = confidenceFor(row);
-              const isFirst = gi === 0 && ri === 0;
-              return (
-                <li
-                  key={row.id}
-                  className="relative pl-8 pr-4 py-1.5 flex items-center justify-between gap-3 text-sm argosy-fade-in"
-                >
-                  <span
-                    aria-hidden
-                    className={`absolute left-[0.85rem] top-1/2 -translate-y-1/2 inline-block h-2 w-2 rounded-full ${confidenceDot(c)}`}
-                  />
-                  <span className="flex items-center gap-3 min-w-0">
-                    <span className="font-mono font-bold w-40 truncate">
-                      {row.agent_role}
-                    </span>
-                    <span className="text-xs text-muted-foreground truncate">
-                      {row.model}
-                    </span>
-                    {isFirst && topEntryRecent ? (
-                      <StatusPill tone="success" mono>
-                        ON DECK
-                      </StatusPill>
-                    ) : null}
-                  </span>
-                  {/* Right column: fixed-width slots so time and cost align */}
-                  {/* across rows regardless of the pill's variable width.   */}
-                  <span className="flex items-center gap-3 shrink-0">
-                    <span className="text-xs text-muted-foreground font-mono tabular-nums w-24 text-right">
-                      {new Date(row.created_at).toLocaleTimeString()}
-                    </span>
-                    <span className="text-xs text-muted-foreground font-mono tabular-nums w-16 text-right">
-                      ${row.cost_usd.toFixed(4)}
-                    </span>
-                    <span className="w-20 flex justify-end">
-                      {c ? (
-                        <StatusPill tone={confidenceTone(c)} mono>
-                          {c.toLowerCase()}
-                        </StatusPill>
-                      ) : (
-                        <StatusPill tone="neutral" mono>
-                          n/a
-                        </StatusPill>
-                      )}
-                    </span>
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        </li>
-      ))}
-    </ul>
-  );
-}
