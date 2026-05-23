@@ -58,13 +58,18 @@ class AgentActivityResponse(BaseModel):
 async def get_agent_activity(
     user_id: str = Query("ariel"),
     since: str | None = Query(None, description="ISO 8601 datetime; rows newer than this."),
-    limit: int = Query(10, ge=1, le=200),
+    limit: int = Query(10, ge=1, le=500),
+    detail: bool = Query(True, description="Include heavy fields (response_text, citations_json, prompt_hash, sources_preview). Pass detail=false for lightweight cost-only fetches."),
 ) -> AgentActivityResponse:
     """Return up to `limit` most-recent agent reports for `user_id`.
 
     `since` filters strictly newer than the given timestamp (good for
     incremental polling). `next_since` returns the latest row's
     `created_at` so the caller can keep pulling forward.
+
+    `detail=false` omits heavy per-row fields (response_text, citations_json,
+    prompt_hash, sources_preview) for lightweight callers that only need cost
+    or timing data (e.g. the home-page monthly-cost summation).
     """
     async with db_mod.get_session() as session:
         stmt = (
@@ -94,24 +99,34 @@ async def get_agent_activity(
         citations_count = (
             len(json.loads(r.citations_json)) if r.citations_json else 0
         )
-        # sources_json is a stored JSON array of {source_id, content} (or NULL).
-        # Build lightweight previews: truncate content to 150 chars for body_head,
-        # record full length as body_chars.  Defensive: on any parse error return [].
-        sources_preview: list[dict[str, Any]] = []
-        if r.sources_json:
-            try:
-                raw_sources = json.loads(r.sources_json)
-                if isinstance(raw_sources, list):
-                    for entry in raw_sources:
-                        sid = entry.get("source_id", "")
-                        content = entry.get("content", "")
-                        sources_preview.append({
-                            "source_id": sid,
-                            "body_chars": len(content),
-                            "body_head": content[:150],
-                        })
-            except Exception:  # noqa: BLE001 — malformed JSON or unexpected shape
-                sources_preview = []
+        # Heavy fields: only populated when detail=True.
+        if detail:
+            # sources_json is a stored JSON array of {source_id, content} (or NULL).
+            # Build lightweight previews: truncate content to 150 chars for body_head,
+            # record full length as body_chars.  Defensive: on any parse error return [].
+            sources_preview: list[dict[str, Any]] = []
+            if r.sources_json:
+                try:
+                    raw_sources = json.loads(r.sources_json)
+                    if isinstance(raw_sources, list):
+                        for entry in raw_sources:
+                            sid = entry.get("source_id", "")
+                            content = entry.get("content", "")
+                            sources_preview.append({
+                                "source_id": sid,
+                                "body_chars": len(content),
+                                "body_head": content[:150],
+                            })
+                except Exception:  # noqa: BLE001 — malformed JSON or unexpected shape
+                    sources_preview = []
+            row_response_text = r.response_text or ""
+            row_citations_json = r.citations_json
+            row_prompt_hash = r.prompt_hash or ""
+        else:
+            sources_preview = []
+            row_response_text = ""
+            row_citations_json = None
+            row_prompt_hash = ""
         out.append(
             AgentActivityRow(
                 id=r.id,
@@ -128,9 +143,9 @@ async def get_agent_activity(
                 cache_creation_tokens=r.cache_creation_tokens or 0,
                 thinking_tokens=r.thinking_tokens or 0,
                 citations_count=citations_count,
-                response_text=r.response_text or "",
-                citations_json=r.citations_json,
-                prompt_hash=r.prompt_hash or "",
+                response_text=row_response_text,
+                citations_json=row_citations_json,
+                prompt_hash=row_prompt_hash,
                 intake_session_id=r.intake_session_id,
                 sources_preview=sources_preview,
             )

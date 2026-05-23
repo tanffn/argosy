@@ -178,6 +178,47 @@ async def test_sources_preview_round_trips_with_truncation(
 
 
 @pytest.mark.asyncio
+async def test_detail_false_omits_heavy_fields(client: AsyncClient) -> None:
+    """detail=false returns empty/null heavy fields regardless of stored data.
+
+    The home page fetches limit=500 rows for monthly-cost summation and only
+    needs cost_usd + created_at.  Sending full response_text / citations_json
+    on every row would be multi-MB per refresh; detail=false drops them.
+    """
+    import json as _json
+
+    citations = _json.dumps([{"source_id": "s1", "cited_quote": "quote"}])
+    async with db_mod.get_session() as session:
+        session.add(
+            AgentReport(
+                user_id="ariel",
+                agent_role="fund_manager",
+                model="claude-opus-4-5",
+                prompt_hash="e" * 64,
+                response_text="Heavy response text that should be omitted.",
+                tokens_in=400,
+                tokens_out=70,
+                cost_usd=0.004,
+                citations_json=citations,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get("/api/agent-activity?user_id=ariel&limit=10&detail=false")
+    assert resp.status_code == 200
+    rows = resp.json()["rows"]
+    assert len(rows) >= 1
+    row = rows[0]
+    assert row["response_text"] == ""
+    assert row["citations_json"] is None
+    assert row["sources_preview"] == []
+    assert row["prompt_hash"] == ""
+    # cost_usd and created_at must still be present.
+    assert row["cost_usd"] == pytest.approx(0.004, rel=1e-3)
+    assert "created_at" in row
+
+
+@pytest.mark.asyncio
 async def test_sources_preview_null_sources_returns_empty_list(
     client: AsyncClient,
 ) -> None:

@@ -409,12 +409,17 @@ export const api = {
     getJSON<DailyBriefDTO | null>(
       `/api/daily-brief/latest?user_id=${encodeURIComponent(userId)}`,
     ),
-  agentActivity: (userId: string, limit = 10, since?: string) => {
+  agentActivity: (
+    userId: string,
+    limit = 10,
+    opts?: { since?: string; detail?: boolean },
+  ) => {
     const qs = new URLSearchParams({
       user_id: userId,
       limit: String(limit),
     });
-    if (since) qs.set("since", since);
+    if (opts?.since) qs.set("since", opts.since);
+    if (opts?.detail === false) qs.set("detail", "false");
     return getJSON<AgentActivityResponse>(`/api/agent-activity?${qs.toString()}`);
   },
   proposalsList: (userId: string, status?: string) => {

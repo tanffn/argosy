@@ -350,7 +350,7 @@ export function useDecisionStream(
           new Date(p.started_at ?? now).getTime() - 5_000,
         ).toISOString();
         api
-          .agentActivity(userId, 20, lookback)
+          .agentActivity(userId, 20, { since: lookback })
           .then((resp) => {
             if (resp.rows.length > 0) {
               setRestRows((prev) => {
@@ -417,7 +417,7 @@ export function useDecisionStream(
           new Date(finishedAt).getTime() - 5_000,
         ).toISOString();
         api
-          .agentActivity(userId, 20, lookback)
+          .agentActivity(userId, 20, { since: lookback })
           .then((resp) => {
             setRestRows((prev) => {
               const existingIds = new Set(prev.map((r) => r.id));

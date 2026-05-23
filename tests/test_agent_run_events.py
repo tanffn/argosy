@@ -89,3 +89,60 @@ def test_run_emits_started_and_finished_events():
     assert finished_payload["agent_role"] == "news"
     assert "finished_at" in finished_payload
     assert finished_payload["turn_id"] == "turn-xyz"
+    assert finished_payload["status"] == "done"
+
+
+class _BrokenAgent(BaseAgent):
+    """Agent whose _call_model always raises to test the failure terminal event."""
+
+    agent_role = "broken"
+    output_model = _Out
+    require_citations = False
+
+    def build_prompt(self, **_):
+        return ("system", "user")
+
+    async def _call_model(self, **_):
+        raise RuntimeError("simulated model failure")
+
+
+def test_run_emits_finished_with_failed_status_on_exception():
+    """BaseAgent.run() must emit agent.run.finished with status='failed' when _call_model raises.
+
+    The UI's useDecisionStream / AgentRunCard rely on a terminal finished event
+    to finalize a row; without it a crashed agent leaves a row stuck in 'running'
+    forever.
+    """
+    with patch("argosy.api.events.publish_event_threadsafe") as mock_pub:
+        agent = _BrokenAgent(user_id="ariel", model="claude-sonnet-4-6")
+        try:
+            asyncio.run(agent.run(decision_id="dec-fail", turn_id="turn-fail"))
+        except RuntimeError:
+            pass  # expected — the exception is re-raised after the finished event
+
+    # Should have emitted started + finished (2 calls total).
+    assert mock_pub.call_count == 2, (
+        f"Expected 2 publish_event_threadsafe calls (started + failed finished), "
+        f"got {mock_pub.call_count}"
+    )
+
+    started_call, finished_call = mock_pub.call_args_list
+    assert started_call.args[0] == "agent.run.started"
+    assert finished_call.args[0] == "agent.run.finished"
+
+    started_payload = started_call.args[1]
+    finished_payload = finished_call.args[1]
+
+    # Correlation ID must match so the UI can close the right row.
+    assert started_payload["run_correlation_id"] == finished_payload["run_correlation_id"]
+
+    assert finished_payload["status"] == "failed"
+    assert "error" in finished_payload
+    assert "simulated model failure" in finished_payload["error"]
+    assert finished_payload["tokens_in"] == 0
+    assert finished_payload["tokens_out"] == 0
+    assert finished_payload["cost_usd"] == 0.0
+    assert finished_payload["confidence"] is None
+    assert finished_payload["agent_report_id"] is None
+    assert finished_payload["turn_id"] == "turn-fail"
+    assert "finished_at" in finished_payload

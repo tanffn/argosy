@@ -206,9 +206,11 @@ export default function Home() {
           })
           .catch(() => null),
         // Fallback: sum cost_usd from agent_activity rows in the current
-        // month. We re-fetch a wider window for this.
+        // month. We re-fetch a wider window for this.  detail=false drops
+        // response_text / citations_json / sources_preview to keep the
+        // payload small (~KB vs multi-MB for a busy account).
         api
-          .agentActivity(USER_ID, 500)
+          .agentActivity(USER_ID, 500, { detail: false })
           .catch(() => ({
             rows: [] as AgentActivityRow[],
             next_since: null,
