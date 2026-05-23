@@ -487,7 +487,10 @@ async def get_decisions_recent(
     """
     # Import here to avoid circular-import at module load; agent_activity
     # router imports no decisions symbols so this is safe.
-    from argosy.api.routes.agent_activity import AgentActivityRow
+    from argosy.api.routes.agent_activity import (
+        AgentActivityRow,
+        build_sources_preview,
+    )
 
     async with db_mod.get_session() as session:
         # --- Step 1: find the top-N decision_ids by their max(created_at) ---
@@ -565,22 +568,7 @@ async def get_decisions_recent(
             citations_count = (
                 len(json.loads(r.citations_json)) if r.citations_json else 0
             )
-            # Wave B-UI Task 9 — sources_preview (same logic as agent_activity route).
-            sources_preview: list[dict[str, Any]] = []
-            if r.sources_json:
-                try:
-                    raw_sources = json.loads(r.sources_json)
-                    if isinstance(raw_sources, list):
-                        for entry in raw_sources:
-                            sid = entry.get("source_id", "")
-                            content = entry.get("content", "")
-                            sources_preview.append({
-                                "source_id": sid,
-                                "body_chars": len(content),
-                                "body_head": content[:150],
-                            })
-                except Exception:  # noqa: BLE001
-                    sources_preview = []
+            sources_preview = build_sources_preview(r.sources_json)
             agent_runs_out.append(
                 AgentActivityRow(
                     id=r.id,

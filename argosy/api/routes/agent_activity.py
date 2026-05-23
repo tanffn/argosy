@@ -16,6 +16,34 @@ from argosy.state.models import AgentReport
 router = APIRouter(prefix="/agent-activity", tags=["agent-activity"])
 
 
+def build_sources_preview(sources_json: str | None) -> list[dict[str, Any]]:
+    """Turn a stored ``sources_json`` blob into the wire ``sources_preview`` list.
+
+    Each entry: ``{source_id, body_chars (full length), body_head (≤150 chars)}``.
+    Defensive — malformed JSON or unexpected shape returns ``[]`` rather than raising.
+    Shared by ``/api/agent-activity`` and ``/api/decisions/recent``.
+    """
+    if not sources_json:
+        return []
+    try:
+        raw_sources = json.loads(sources_json)
+    except Exception:  # noqa: BLE001 — malformed JSON
+        return []
+    if not isinstance(raw_sources, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in raw_sources:
+        if not isinstance(entry, dict):
+            continue
+        content = entry.get("content", "")
+        out.append({
+            "source_id": entry.get("source_id", ""),
+            "body_chars": len(content),
+            "body_head": content[:150],
+        })
+    return out
+
+
 class AgentActivityRow(BaseModel):
     id: int
     user_id: str
@@ -101,24 +129,7 @@ async def get_agent_activity(
         )
         # Heavy fields: only populated when detail=True.
         if detail:
-            # sources_json is a stored JSON array of {source_id, content} (or NULL).
-            # Build lightweight previews: truncate content to 150 chars for body_head,
-            # record full length as body_chars.  Defensive: on any parse error return [].
-            sources_preview: list[dict[str, Any]] = []
-            if r.sources_json:
-                try:
-                    raw_sources = json.loads(r.sources_json)
-                    if isinstance(raw_sources, list):
-                        for entry in raw_sources:
-                            sid = entry.get("source_id", "")
-                            content = entry.get("content", "")
-                            sources_preview.append({
-                                "source_id": sid,
-                                "body_chars": len(content),
-                                "body_head": content[:150],
-                            })
-                except Exception:  # noqa: BLE001 — malformed JSON or unexpected shape
-                    sources_preview = []
+            sources_preview = build_sources_preview(r.sources_json)
             row_response_text = r.response_text or ""
             row_citations_json = r.citations_json
             row_prompt_hash = r.prompt_hash or ""
@@ -155,4 +166,4 @@ async def get_agent_activity(
     return AgentActivityResponse(rows=out, next_since=next_since)
 
 
-__all__ = ["router"]
+__all__ = ["router", "build_sources_preview"]
