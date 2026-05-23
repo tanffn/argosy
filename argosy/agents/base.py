@@ -856,6 +856,91 @@ class BaseAgent(Generic[T]):
             thinking_tokens=thinking_tokens,
         )
 
+    @staticmethod
+    def _is_thinking_unsupported_error(exc: BaseException) -> bool:
+        """Return True iff ``exc`` is a 400 Bad Request whose structured payload
+        identifies the ``thinking`` parameter as the rejected field.
+
+        Codex feedback (Wave A finalization): the prior loose substring match
+        (``"thinking" in err_str and ("not supported" in err_str or "400" in err_str)``)
+        would silently fire on unrelated 400s that happened to mention
+        "thinking" anywhere (e.g. a max_tokens error whose docs URL contains
+        the word). We now require:
+
+          1. The exception IS an Anthropic ``BadRequestError`` (status 400),
+             OR exposes ``status_code == 400`` (covers the case where the
+             SDK was monkey-patched in tests).
+          2. The structured ``body.error.message`` (or top-level ``param``
+             field) references ``thinking`` specifically.
+
+        If the structured body is absent (defensive — covers manually-raised
+        Exception instances in older tests), we fall back to the original
+        looser-but-still-tightened string match: BOTH ``thinking`` AND a
+        rejection-language token (``not supported`` / ``unsupported`` /
+        ``invalid``) must appear together.
+        """
+        # Step 1 — gate on 400 Bad Request specifically. Anthropic SDK
+        # subclasses Exception at multiple levels; we accept either the
+        # typed `BadRequestError` or any object exposing status_code==400.
+        is_bad_request = False
+        try:
+            from anthropic import BadRequestError  # type: ignore
+            if isinstance(exc, BadRequestError):
+                is_bad_request = True
+        except ImportError:
+            pass
+        if not is_bad_request:
+            status_code = getattr(exc, "status_code", None)
+            if status_code == 400:
+                is_bad_request = True
+        # Step 2 — for raw Exceptions raised by older tests, fall through
+        # to the conservative string match below. For everything else we
+        # gate on the 400-bad-request check.
+        has_status = (
+            getattr(exc, "status_code", None) is not None
+            or exc.__class__.__name__.endswith("BadRequestError")
+        )
+        if has_status and not is_bad_request:
+            return False
+
+        # Step 3 — prefer structured fields when available.
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            err_obj = body.get("error")
+            err_msg = ""
+            if isinstance(err_obj, dict):
+                err_msg = str(err_obj.get("message") or "").lower()
+            top_param = str(body.get("param") or "").lower()
+            err_param = ""
+            if isinstance(err_obj, dict):
+                err_param = str(err_obj.get("param") or "").lower()
+            # `thinking` named in the param field is the most specific signal.
+            if "thinking" in top_param or "thinking" in err_param:
+                return True
+            if err_msg and "thinking" in err_msg and (
+                "not supported" in err_msg
+                or "unsupported" in err_msg
+                or "invalid" in err_msg
+                or "does not support" in err_msg
+            ):
+                return True
+            # Structured body was present but did NOT reference thinking —
+            # that's a different 400 (max_tokens, malformed messages, etc.).
+            # Do NOT swallow it.
+            return False
+
+        # Step 4 — defensive fallback for callers raising bare `Exception`
+        # without an SDK-shaped body (test fixtures). Require BOTH the
+        # word "thinking" AND a rejection token in the same string.
+        err_str = str(exc).lower()
+        if "thinking" not in err_str:
+            return False
+        return (
+            "not supported" in err_str
+            or "unsupported" in err_str
+            or "does not support" in err_str
+        )
+
     async def _call_via_api_key(
         self,
         *,
@@ -934,10 +1019,7 @@ class BaseAgent(Generic[T]):
             try:
                 msg = client.messages.create(**call_kwargs)
             except Exception as exc:
-                err_str = str(exc).lower()
-                if "thinking" in call_kwargs and (
-                    "thinking" in err_str and ("not supported" in err_str or "400" in err_str)
-                ):
+                if "thinking" in call_kwargs and self._is_thinking_unsupported_error(exc):
                     # Graceful fallback: retry without thinking. Some models
                     # (e.g. Haiku tiers, older Sonnet revisions) reject the
                     # `thinking` param outright; rather than fail the call,
