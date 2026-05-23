@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Paperclip, X } from "lucide-react";
+import { Paperclip, X } from "lucide-react";
 
+import { AgentCascadePanel } from "@/components/advisor/AgentCascadePanel";
 import { Markdown } from "@/components/markdown";
 import { PlanInScopeCard } from "@/components/plan-in-scope-card";
 import { PlanRevisionSheet } from "@/components/plan-revision-sheet";
@@ -123,6 +124,12 @@ export default function AdvisorPage() {
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // turnId — generated fresh for each advisor turn, passed to api.advisorTurn
+  // so the backend echoes it in WS events. AgentCascadePanel filters on this.
+  // Kept non-null after resolution so the panel stays visible; reset at the
+  // TOP of the next askNext call (not in finally).
+  const [currentTurnId, setCurrentTurnId] = useState<string | null>(null);
 
   // Real liveness signals during a long advisor turn. A bare spinner can
   // spin forever while the backend is dead; we instead track two
@@ -322,6 +329,12 @@ export default function AdvisorPage() {
         attachments?: File[];
       },
     ) => {
+      // Reset the previous turn's cascade panel and generate a fresh turnId
+      // for this call. We reset here (not in finally) so the PREVIOUS turn's
+      // cascade panel stays visible until the next turn starts.
+      const turnId = crypto.randomUUID();
+      setCurrentTurnId(turnId);
+
       try {
         setLoading(true);
         // Reset all liveness signals — anything carried over from a
@@ -333,7 +346,10 @@ export default function AdvisorPage() {
         setLastAgentStepRole(null);
         setThinkingStartedAt(Date.now());
         setThinkingNow(Date.now());
-        const t = await api.advisorTurn(USER_ID, lastUserMessage, opts);
+        const t = await api.advisorTurn(USER_ID, lastUserMessage, {
+          ...opts,
+          turnId,
+        });
         setPending(t);
       } catch (e: unknown) {
         // Surface turn failures through `submitError` so the message
@@ -349,6 +365,9 @@ export default function AdvisorPage() {
         // After every turn, re-pull the sidebar so newly-fresh fields
         // light up green and counts stay accurate.
         await refreshGaps();
+        // Note: currentTurnId is intentionally NOT reset here — we keep it
+        // set so AgentCascadePanel continues to display the completed cascade.
+        // It will be reset at the top of the NEXT call to askNext.
       }
     },
     [refreshGaps],
@@ -623,87 +642,78 @@ export default function AdvisorPage() {
                 </div>
               ))}
 
-              {loading && (
+              {/* Backend-unreachable banner — shown only when health pings
+                  fail while a turn is in-flight. Separate from the cascade
+                  panel so it stays prominent even when cascade has no rows. */}
+              {loading && backendStatus === "unreachable" && (
                 <div
-                  className={
-                    "rounded-md border p-3 text-xs font-mono " +
-                    (backendStatus === "unreachable"
-                      ? "border-error/40 bg-error/10 text-error"
-                      : "border-border bg-secondary/30 text-muted-foreground")
-                  }
+                  className="rounded-md border border-error/40 bg-error/10 text-error p-3 text-xs font-mono"
                   aria-live="polite"
                 >
-                  {backendStatus === "unreachable" ? (
-                    <div className="flex flex-col gap-1">
-                      <p className="text-sm">
-                        ⚠ Backend unreachable
-                        {sinceHealthS !== null && (
-                          <span className="ml-2 text-error/80">
-                            (last contact {sinceHealthS}s ago)
-                          </span>
-                        )}
-                      </p>
-                      {healthError && (
-                        <p className="text-[10px] text-error/70">
-                          {healthError}
-                        </p>
+                  <div className="flex flex-col gap-1">
+                    <p className="text-sm">
+                      ⚠ Backend unreachable
+                      {sinceHealthS !== null && (
+                        <span className="ml-2 text-error/80">
+                          (last contact {sinceHealthS}s ago)
+                        </span>
                       )}
+                    </p>
+                    {healthError && (
                       <p className="text-[10px] text-error/70">
-                        The advisor turn may still complete if the backend
-                        comes back; otherwise refresh the page.
+                        {healthError}
                       </p>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col gap-1">
-                      <div className="flex items-center gap-2 text-sm text-foreground">
-                        <Loader2
-                          className="h-4 w-4 animate-spin"
-                          aria-hidden
-                          suppressHydrationWarning
-                        />
-                        <span>
-                          Thinking
-                          <span className="inline-block w-6 text-left text-muted-foreground">
-                            {".".repeat((elapsedTotalS % 3) + 1)}
-                          </span>
-                        </span>
-                        <span className="text-muted-foreground">
-                          · {elapsedTotalS}s elapsed
-                        </span>
-                      </div>
-                      <p className="text-[11px]">
-                        {/* Real liveness — these are the actual proofs the
-                            backend is alive AND working, not just a CSS
-                            animation. */}
-                        backend{" "}
-                        {backendStatus === "ok" ? (
-                          <span className="text-success">
-                            OK
-                            {sinceHealthS !== null && (
-                              <> ({sinceHealthS}s ago)</>
-                            )}
-                          </span>
-                        ) : (
-                          <span>checking…</span>
-                        )}{" "}
-                        ·{" "}
-                        {lastAgentStepAt !== null ? (
-                          <span className="text-success">
-                            last agent step{" "}
-                            {lastAgentStepRole && (
-                              <span className="text-muted-foreground">
-                                ({lastAgentStepRole})
-                              </span>
-                            )}{" "}
-                            {sinceAgentStepS}s ago
-                          </span>
-                        ) : (
-                          <span>no agent steps yet</span>
-                        )}
-                      </p>
-                    </div>
-                  )}
+                    )}
+                    <p className="text-[10px] text-error/70">
+                      The advisor turn may still complete if the backend
+                      comes back; otherwise refresh the page.
+                    </p>
+                  </div>
                 </div>
+              )}
+
+              {/* Live cascade panel — replaces the old "Thinking..." spinner.
+                  Visible while a turn is in-flight AND after it resolves
+                  (until the next turn starts). The diagnosticLine prop
+                  carries the backend-status / last-agent-step telemetry,
+                  visually subordinated below the card stack. */}
+              {currentTurnId !== null && (
+                <AgentCascadePanel
+                  userId={USER_ID}
+                  turnId={currentTurnId}
+                  isResolved={!loading}
+                  diagnosticLine={
+                    <span>
+                      backend{" "}
+                      {backendStatus === "ok" ? (
+                        <span className="text-success">
+                          OK
+                          {sinceHealthS !== null && (
+                            <> ({sinceHealthS}s ago)</>
+                          )}
+                        </span>
+                      ) : backendStatus === "unreachable" ? (
+                        <span className="text-error">unreachable</span>
+                      ) : (
+                        <span>checking…</span>
+                      )}{" "}
+                      ·{" "}
+                      {lastAgentStepAt !== null ? (
+                        <span className="text-success">
+                          last agent step{" "}
+                          {lastAgentStepRole && (
+                            <span className="text-muted-foreground">
+                              ({lastAgentStepRole})
+                            </span>
+                          )}{" "}
+                          {sinceAgentStepS}s ago
+                        </span>
+                      ) : (
+                        <span>no agent steps yet</span>
+                      )}
+                    </span>
+                  }
+                />
               )}
 
               {pending && pending.question_for_user && (

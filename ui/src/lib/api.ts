@@ -594,6 +594,7 @@ export const api = {
       targetField?: string;
       historyExcerpt?: string;
       attachments?: File[];
+      turnId?: string;
     },
   ): Promise<AdvisorTurnResponse> => {
     const attachments = opts?.attachments ?? [];
@@ -604,6 +605,7 @@ export const api = {
         current_stage: opts?.currentStage,
         target_field: opts?.targetField,
         history_excerpt: opts?.historyExcerpt ?? "",
+        ...(opts?.turnId ? { turn_id: opts.turnId } : {}),
       });
     }
     const fd = new FormData();
@@ -612,6 +614,7 @@ export const api = {
     if (opts?.currentStage) fd.append("current_stage", opts.currentStage);
     if (opts?.targetField) fd.append("target_field", opts.targetField);
     fd.append("history_excerpt", opts?.historyExcerpt ?? "");
+    if (opts?.turnId) fd.append("turn_id", opts.turnId);
     for (const f of attachments) {
       fd.append("attachments", f, f.name);
     }
