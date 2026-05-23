@@ -248,6 +248,18 @@ async def test_advisor_turn_echoes_turn_id_into_ws_events(
         assert "agent.run.finished" in names
         for p in payloads:
             assert p.get("turn_id") == "turn-abc-123", p
+
+        # Exactly one of each — no duplicates.
+        started_payloads = [p for n, p in zip(names, payloads) if n == "agent.run.started"]
+        finished_payloads = [p for n, p in zip(names, payloads) if n == "agent.run.finished"]
+        assert len(started_payloads) == 1
+        assert len(finished_payloads) == 1
+        # run_correlation_id must be shared across the pair and non-empty.
+        assert (
+            started_payloads[0]["run_correlation_id"]
+            == finished_payloads[0]["run_correlation_id"]
+        )
+        assert started_payloads[0]["run_correlation_id"]  # non-empty
     finally:
         reset_advisor_agent_factory()
 

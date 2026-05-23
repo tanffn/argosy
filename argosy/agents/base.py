@@ -407,8 +407,8 @@ class BaseAgent(Generic[T]):
                 "run_correlation_id": run_correlation_id,
             }
             publish_event_threadsafe("agent.run.started", _started_payload)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning("event publish failed: %s", exc)
 
         # Only forward optional kwargs when present so subclass test mocks
         # that override `_call_model(system, user)` without the new kwargs
@@ -487,8 +487,8 @@ class BaseAgent(Generic[T]):
                 "turn_id": turn_id,
             }
             publish_event_threadsafe("agent.run.finished", _finished_payload)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning("event publish failed: %s", exc)
 
         self._log.info(
             "agent.run.finished",
