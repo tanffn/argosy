@@ -458,6 +458,27 @@ class BaseAgent(Generic[T]):
             system=system, user=user, image_attachments=image_attachments,
         )
 
+    def _build_system_blocks(self, system: str) -> list[dict[str, Any]]:
+        """Split the system prompt into cacheable boilerplate + role-specific tail.
+
+        Returns a 2-element list of content blocks when ``system`` starts with
+        ``BOILERPLATE_SYSTEM`` (the common case): the first block is the
+        boilerplate marked ``cache_control: ephemeral``, the second is the
+        role-specific remainder. Falls back to a single uncached block if the
+        boilerplate prefix isn't present (defensive).
+        """
+        if system.startswith(self.BOILERPLATE_SYSTEM):
+            tail = system[len(self.BOILERPLATE_SYSTEM):].lstrip("\n")
+            return [
+                {
+                    "type": "text",
+                    "text": self.BOILERPLATE_SYSTEM,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": tail},
+            ]
+        return [{"type": "text", "text": system}]
+
     def _call_via_claude_code_thread(
         self,
         *,
