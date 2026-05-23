@@ -72,3 +72,18 @@ async def test_thinking_NOT_passed_when_budget_zero(monkeypatch):
 
     call_kwargs = fake_client.messages.create.call_args.kwargs
     assert "thinking" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_thinking_tokens_extracted_from_response(monkeypatch):
+    agent = _Trader(user_id="ariel")
+    fake_client = MagicMock()
+    # Anthropic returns thinking token count via the dedicated usage field:
+    mock_msg = _make_mock_msg(thinking_toks=500)
+    mock_msg.usage.thinking_tokens = 500   # the field the SDK exposes
+    fake_client.messages.create.return_value = mock_msg
+    agent._client = fake_client
+
+    full_system = BaseAgent.BOILERPLATE_SYSTEM + "\n\nRole: trader"
+    result = await agent._call_via_api_key(system=full_system, user="hello")
+    assert result.thinking_tokens == 500

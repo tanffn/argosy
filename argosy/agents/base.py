@@ -711,6 +711,9 @@ class BaseAgent(Generic[T]):
             tokens_out = int(getattr(usage, "output_tokens", 0) or 0)
             cache_input_tokens = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
             cache_creation_tokens = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+            # Anthropic exposes thinking tokens as an extra field on Usage
+            # (pydantic model_config={"extra": "allow"} in SDK 0.97.0).
+            thinking_tokens = int(getattr(usage, "thinking_tokens", 0) or 0)
 
             return ModelCall(
                 text=text,
@@ -720,7 +723,7 @@ class BaseAgent(Generic[T]):
                 raw=msg,
                 cache_input_tokens=cache_input_tokens,
                 cache_creation_tokens=cache_creation_tokens,
-                thinking_tokens=0,            # Task 12 populates
+                thinking_tokens=thinking_tokens,
                 citations_json=None,          # Task 18 populates
             )
 
