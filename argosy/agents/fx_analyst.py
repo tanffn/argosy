@@ -55,7 +55,7 @@ class FXAnalystAgent(BaseAgent[FXReport]):
         self,
         *,
         fx_payload: dict[str, dict[str, float]],
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, list[tuple[str, str]]]:
         """Build the prompt.
 
         Args:
@@ -64,6 +64,15 @@ class FXAnalystAgent(BaseAgent[FXReport]):
                 {"USD/NIS": {"spot": 3.65, "pct_change_30d": -1.2,
                              "pct_change_90d": 0.4,
                              "source": "fred:DEXISUS"}}
+
+        Returns:
+            ``(system, user, sources)`` where ``sources`` is a list of
+            ``(source_id, content)`` document blocks — one per currency
+            pair — keyed by ``fx/rates/<pair>`` (slash in pair preserved,
+            e.g. ``fx/rates/USD/NIS``). The user prompt references the
+            source_ids rather than inlining the payload bodies so the
+            Citations API can attribute each per-pair claim back to its
+            document block.
         """
         system = (
             "You are the FX analyst on the Argosy fleet. The caller has "
@@ -74,33 +83,42 @@ class FXAnalystAgent(BaseAgent[FXReport]):
             "  - trend_30d='strengthening' if 30d move >= +1% (the base "
             "currency, e.g. USD in USD/NIS, has strengthened); "
             "'weakening' if <= -1%; else 'flat'.\n"
-            "  - Cite the source for each pair (e.g., 'fred:DEXISUS', "
-            "'boi:USD_NIS_DAILY').\n"
+            "  - Per-pair FX snapshots are attached as document blocks "
+            "titled `fx/rates/<pair>`; cite those source_ids in "
+            "`cited_sources` alongside the vendor reference (e.g. "
+            "`fred:DEXISUS`, `boi:USD_NIS_DAILY`) from each block's "
+            "`source` field.\n"
             "  - Hedging recommendations are optional; do not propose them "
             "unless the 90d move exceeds 3% in either direction.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{FXReport.model_json_schema()}\n"
         )
 
-        if fx_payload:
-            lines = []
-            for pair, data in sorted(fx_payload.items()):
-                lines.append(
-                    f"  - {pair}: spot={data.get('spot')}; "
-                    f"30d={data.get('pct_change_30d')}%; "
-                    f"90d={data.get('pct_change_90d')}%; "
-                    f"source={data.get('source', '')}"
-                )
-            block = "\n".join(lines)
-        else:
-            block = "  (no FX data supplied)"
+        sources: list[tuple[str, str]] = []
+        for pair, data in sorted(fx_payload.items()):
+            body = (
+                f"pair: {pair}\n"
+                f"spot: {data.get('spot')}\n"
+                f"pct_change_30d: {data.get('pct_change_30d')}\n"
+                f"pct_change_90d: {data.get('pct_change_90d')}\n"
+                f"source: {data.get('source', '')}"
+            )
+            sources.append((f"fx/rates/{pair}", body))
 
-        user = (
-            "FX TIME-SERIES SNAPSHOT:\n"
-            f"{block}\n\n"
-            "Produce an FXReport JSON now."
-        )
-        return system, user
+        if sources:
+            pair_refs = ", ".join(f"`{sid}`" for sid, _ in sources)
+            user = (
+                "PER-PAIR FX SNAPSHOTS are attached as document blocks: "
+                f"{pair_refs}.\n\n"
+                "Produce an FXReport JSON now."
+            )
+        else:
+            user = (
+                "FX TIME-SERIES SNAPSHOT:\n"
+                "  (no FX data supplied)\n\n"
+                "Produce an FXReport JSON now."
+            )
+        return system, user, sources
 
 
 __all__ = ["FXAnalystAgent", "FXReport", "PairLevels", "TrendDirection"]
