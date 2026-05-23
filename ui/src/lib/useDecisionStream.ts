@@ -329,6 +329,8 @@ export function useDecisionStream(
               response_text: "",
               citations_json: null,
               prompt_hash: "",
+              // Wave B-UI Task 9 — WS stubs don't carry sources.
+              sources_preview: [],
               // AgentRow extras
               status: "running",
               run_correlation_id: correlationId,
@@ -393,6 +395,8 @@ export function useDecisionStream(
               response_text: "",
               citations_json: null,
               prompt_hash: "",
+              // Wave B-UI Task 9 — WS stubs don't carry sources.
+              sources_preview: [],
               run_correlation_id: correlationId,
               started_at: finishedAt,
               turn_id: p.turn_id ?? null,

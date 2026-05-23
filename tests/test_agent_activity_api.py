@@ -115,3 +115,92 @@ async def test_response_includes_wave_b_drawer_fields(client: AsyncClient) -> No
     assert row["response_text"] == "NVDA looks strong; buy 10 shares."
     assert row["citations_json"] == citations
     assert row["prompt_hash"] == hash_val
+
+
+# ---------------------------------------------------------------------------
+# Wave B-UI Task 9 — sources_preview round-trip
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sources_preview_round_trips_with_truncation(
+    client: AsyncClient,
+) -> None:
+    """sources_json stored on AgentReport is exposed as sources_preview in the API.
+
+    Long content is truncated to 150 chars for body_head; body_chars reflects
+    the full original length.
+    """
+    import json
+
+    long_content = "x" * 500
+    short_content = "short content"
+    sources_json = json.dumps([
+        {"source_id": "domain/tax/il.md", "content": long_content},
+        {"source_id": "news/AAPL", "content": short_content},
+    ])
+    async with db_mod.get_session() as session:
+        session.add(
+            AgentReport(
+                user_id="ariel",
+                agent_role="synthesizer",
+                model="claude-opus-4-5",
+                prompt_hash="c" * 64,
+                response_text="Tax report done.",
+                tokens_in=300,
+                tokens_out=60,
+                cost_usd=0.002,
+                sources_json=sources_json,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get("/api/agent-activity?user_id=ariel&limit=10")
+    assert resp.status_code == 200
+    rows = resp.json()["rows"]
+    assert len(rows) >= 1
+    row = rows[0]
+
+    assert "sources_preview" in row
+    previews = row["sources_preview"]
+    assert len(previews) == 2
+
+    # First entry: long content — body_chars=500, body_head truncated to 150.
+    long_preview = next(p for p in previews if p["source_id"] == "domain/tax/il.md")
+    assert long_preview["body_chars"] == 500
+    assert len(long_preview["body_head"]) <= 150
+    assert long_preview["body_head"] == "x" * 150
+
+    # Second entry: short content — body_chars=13, body_head == full content.
+    short_preview = next(p for p in previews if p["source_id"] == "news/AAPL")
+    assert short_preview["body_chars"] == len(short_content)
+    assert short_preview["body_head"] == short_content
+
+
+@pytest.mark.asyncio
+async def test_sources_preview_null_sources_returns_empty_list(
+    client: AsyncClient,
+) -> None:
+    """Rows with sources_json=NULL get sources_preview=[] in the response."""
+    async with db_mod.get_session() as session:
+        session.add(
+            AgentReport(
+                user_id="ariel",
+                agent_role="bull",
+                model="claude-opus-4-5",
+                prompt_hash="d" * 64,
+                response_text="Bull thesis.",
+                tokens_in=200,
+                tokens_out=50,
+                cost_usd=0.001,
+                sources_json=None,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get("/api/agent-activity?user_id=ariel&limit=10")
+    assert resp.status_code == 200
+    rows = resp.json()["rows"]
+    assert len(rows) >= 1
+    row = rows[0]
+    assert row["sources_preview"] == []

@@ -230,6 +230,9 @@ class AgentReport:
     cache_creation_tokens: int = 0
     thinking_tokens: int = 0
     citations_json: str | None = None
+    # Wave B-UI Task 9 — serialised prompt sources (mirrors ORM column from
+    # migration 0027). None when build_prompt returned a 2-tuple.
+    sources_json: str | None = None
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -391,6 +394,18 @@ class BaseAgent(Generic[T]):
 
         prompt_hash = self._hash_prompt(full_system, user_prompt)
 
+        # Wave B-UI Task 9 — serialise sources for persistence.
+        # sources is list[tuple[source_id, content]]; store as JSON array for
+        # forward compat.  None when build_prompt returned a 2-tuple.
+        sources_json: str | None = (
+            json.dumps(
+                [{"source_id": sid, "content": content} for sid, content in sources],
+                ensure_ascii=False,
+            )
+            if sources
+            else None
+        )
+
         # Emit agent.run.started — best-effort, must never block the agent run.
         run_correlation_id = str(uuid.uuid4())
         self._current_run_id = run_correlation_id
@@ -461,6 +476,8 @@ class BaseAgent(Generic[T]):
             cache_creation_tokens=call.cache_creation_tokens,
             thinking_tokens=call.thinking_tokens,
             citations_json=call.citations_json,
+            # Wave B-UI Task 9 — sources captured above from build_prompt.
+            sources_json=sources_json,
         )
 
         # Emit agent.run.finished — best-effort, must never block the agent run.

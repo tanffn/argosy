@@ -72,6 +72,8 @@ function agentRowToActivityRow(r: AgentRow): AgentActivityRow {
     response_text: r.response_text,
     citations_json: r.citations_json,
     prompt_hash: r.prompt_hash,
+    // Wave B-UI Task 9 — WS stubs never carry sources; default to empty.
+    sources_preview: r.sources_preview ?? [],
   };
 }
 

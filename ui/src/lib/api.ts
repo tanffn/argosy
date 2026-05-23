@@ -91,6 +91,12 @@ export interface AgentActivityRow {
   prompt_hash: string;
   // Wave B-UI Task 5 — grouping key for intake-session agents.
   intake_session_id: string | null;
+  // Wave B-UI Task 9 — lightweight source previews for the Sources tab.
+  sources_preview: Array<{
+    source_id: string;
+    body_chars: number;
+    body_head: string;
+  }>;
 }
 
 export interface AgentActivityResponse {

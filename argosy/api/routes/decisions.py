@@ -565,6 +565,22 @@ async def get_decisions_recent(
             citations_count = (
                 len(json.loads(r.citations_json)) if r.citations_json else 0
             )
+            # Wave B-UI Task 9 — sources_preview (same logic as agent_activity route).
+            sources_preview: list[dict[str, Any]] = []
+            if r.sources_json:
+                try:
+                    raw_sources = json.loads(r.sources_json)
+                    if isinstance(raw_sources, list):
+                        for entry in raw_sources:
+                            sid = entry.get("source_id", "")
+                            content = entry.get("content", "")
+                            sources_preview.append({
+                                "source_id": sid,
+                                "body_chars": len(content),
+                                "body_head": content[:150],
+                            })
+                except Exception:  # noqa: BLE001
+                    sources_preview = []
             agent_runs_out.append(
                 AgentActivityRow(
                     id=r.id,
@@ -581,6 +597,7 @@ async def get_decisions_recent(
                     cache_creation_tokens=r.cache_creation_tokens or 0,
                     thinking_tokens=r.thinking_tokens or 0,
                     citations_count=citations_count,
+                    sources_preview=sources_preview,
                 ).model_dump()
             )
 

@@ -93,12 +93,46 @@ function OutputTab({ row }: { row: AgentActivityRow }) {
 // Tab: Sources
 // ---------------------------------------------------------------------------
 
-function SourcesTab() {
+interface SourcePreview {
+  source_id: string;
+  body_chars: number;
+  body_head: string;
+}
+
+function SourcesTab({ row }: { row: AgentActivityRow }) {
+  const previews: SourcePreview[] = row.sources_preview ?? [];
+
+  if (previews.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground italic">
+        No sources recorded for this run.
+      </p>
+    );
+  }
+
   return (
-    <p className="text-sm text-muted-foreground italic">
-      Sources: not captured for this run yet (see Wave B-UI Task 9 for backend
-      exposure).
-    </p>
+    <ul className="flex flex-col gap-3">
+      {previews.map((src, i) => (
+        <li
+          key={i}
+          className="rounded-md border border-border bg-muted/30 p-3 flex flex-col gap-1"
+        >
+          {/* Source ID as title */}
+          <p className="text-sm font-semibold font-mono leading-snug break-all">
+            {src.source_id}
+          </p>
+          {/* Body head (truncated content preview) */}
+          <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words">
+            {src.body_head}
+            {src.body_chars > src.body_head.length && (
+              <span className="text-xs italic ml-1">
+                ... ({src.body_chars.toLocaleString()} total chars)
+              </span>
+            )}
+          </p>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -234,8 +268,8 @@ export function AgentDetailDrawer({
                 <OutputTab row={row} />
               </TabsContent>
 
-              <TabsContent value="sources">
-                <SourcesTab />
+              <TabsContent value="sources" className="overflow-y-auto">
+                <SourcesTab row={row} />
               </TabsContent>
 
               <TabsContent value="citations" className="overflow-y-auto">

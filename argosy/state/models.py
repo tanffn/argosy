@@ -275,6 +275,11 @@ class AgentReport(Base):
     citations_json: Mapped[str | None] = mapped_column(
         Text, nullable=True, default=None,
     )
+    # Wave B-UI Task 9 — serialised list of KB/document sources injected into
+    # the prompt (migration 0027). NULL when agent returned a 2-tuple prompt.
+    sources_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True, default=None,
+    )
     model: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

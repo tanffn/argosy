@@ -43,6 +43,10 @@ class AgentActivityRow(BaseModel):
     # exclusive with decision_id in practice; both may be null for
     # standalone / cadence agents).
     intake_session_id: str | None = None
+    # Wave B-UI Task 9 — lightweight source previews so the Sources tab can
+    # render real data without fetching the full content blobs.
+    # Each entry: {source_id, body_chars (full length), body_head (≤150 chars)}.
+    sources_preview: list[dict[str, Any]] = []
 
 
 class AgentActivityResponse(BaseModel):
@@ -90,6 +94,24 @@ async def get_agent_activity(
         citations_count = (
             len(json.loads(r.citations_json)) if r.citations_json else 0
         )
+        # sources_json is a stored JSON array of {source_id, content} (or NULL).
+        # Build lightweight previews: truncate content to 150 chars for body_head,
+        # record full length as body_chars.  Defensive: on any parse error return [].
+        sources_preview: list[dict[str, Any]] = []
+        if r.sources_json:
+            try:
+                raw_sources = json.loads(r.sources_json)
+                if isinstance(raw_sources, list):
+                    for entry in raw_sources:
+                        sid = entry.get("source_id", "")
+                        content = entry.get("content", "")
+                        sources_preview.append({
+                            "source_id": sid,
+                            "body_chars": len(content),
+                            "body_head": content[:150],
+                        })
+            except Exception:  # noqa: BLE001 — malformed JSON or unexpected shape
+                sources_preview = []
         out.append(
             AgentActivityRow(
                 id=r.id,
@@ -110,6 +132,7 @@ async def get_agent_activity(
                 citations_json=r.citations_json,
                 prompt_hash=r.prompt_hash or "",
                 intake_session_id=r.intake_session_id,
+                sources_preview=sources_preview,
             )
         )
     if out:
