@@ -28,7 +28,12 @@ from argosy.state.models import DailyBrief, User
 
 def _mock(agent_cls, canned: dict):
     class _M(agent_cls):  # type: ignore[misc, valid-type]
-        async def _call_model(self, *, system: str, user: str) -> ModelCall:
+        async def _call_model(
+            self, *, system: str, user: str, **_extra: object,
+        ) -> ModelCall:
+            # Wave A: BaseAgent.run forwards `sources` (and `image_attachments`)
+            # when build_prompt returns the 3-tuple form (news_analyst does as
+            # of Task 21). Accept-and-ignore keeps this mock agent-agnostic.
             return ModelCall(
                 text=json.dumps(canned),
                 tokens_in=100,
