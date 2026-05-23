@@ -217,6 +217,11 @@ async def _persist_turn(
             cost_usd=report.cost_usd,
             model=report.model,
             confidence=(report.confidence.value if report.confidence else None),
+            # Wave A — Anthropic Messages API telemetry (migration 0026).
+            cache_input_tokens=report.cache_input_tokens,
+            cache_creation_tokens=report.cache_creation_tokens,
+            thinking_tokens=report.thinking_tokens,
+            citations_json=report.citations_json,
         )
         session.add(ar_row)
 
