@@ -120,6 +120,24 @@ DEFAULT_THINKING_BUDGET_BY_ROLE: dict[str, int] = {
     "audit":            4000,
 }
 
+# Per-role Citations API enablement. Source consumers + synthesizers get
+# citations; conversational/categorical agents do not (they don't read sources).
+DEFAULT_CITATIONS_BY_ROLE: dict[str, bool] = {
+    # External-source consumers
+    "news_analyst": True, "fundamentals": True, "technical": True,
+    "sentiment": True, "macro": True, "tax": True, "fx": True,
+    "intake_extractor": True, "plan_distiller": True, "plan_critique": True,
+    "concentration": True,
+    # Synthesizers (attribute back to inputs)
+    "bull_researcher": True, "bear_researcher": True,
+    "trader": True, "fund_manager": True, "audit": True,
+    "plan_synthesizer": True,
+    # No-citation agents
+    "advisor": False, "intake": False, "household_categorizer": False,
+    "researcher_facilitator": False, "risk_facilitator": False,
+    "domain_refresh": False, "watchlist": False,
+}
+
 # Anthropic pricing (USD per 1M tokens) for cost tracking.
 # Verified against Anthropic's published rates on 2026-05-23
 # (https://platform.claude.com/docs/en/about-claude/pricing). The cache
@@ -257,6 +275,9 @@ class BaseAgent(Generic[T]):
         self._log = get_logger(f"argosy.agents.{self.agent_role}")
         self.thinking_budget: int = DEFAULT_THINKING_BUDGET_BY_ROLE.get(
             self.agent_role, 0,
+        )
+        self.citations_enabled: bool = DEFAULT_CITATIONS_BY_ROLE.get(
+            self.agent_role, False,
         )
 
     # ------------------------------------------------------------------
