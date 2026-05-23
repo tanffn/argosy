@@ -320,18 +320,32 @@ class BaseAgent(Generic[T]):
         if not bp_accepts_images:
             inputs.pop("image_attachments", None)
 
-        system_prompt, user_prompt = self.build_prompt(**inputs)
+        bp_result = self.build_prompt(**inputs)
+        if len(bp_result) == 2:
+            system_prompt, user_prompt = bp_result
+            sources: list[tuple[str, str]] | None = None
+        elif len(bp_result) == 3:
+            system_prompt, user_prompt, sources = bp_result
+        else:
+            raise AgentRunError(
+                f"{self.agent_role}: build_prompt returned "
+                f"{len(bp_result)}-tuple, expected 2 or 3"
+            )
         full_system = self.BOILERPLATE_SYSTEM + "\n\n" + system_prompt
 
         prompt_hash = self._hash_prompt(full_system, user_prompt)
-        # Only forward image_attachments when present so subclass test mocks
-        # that override `_call_model(system, user)` without the new kwarg
-        # keep working (Wave 5 backward-compat).
+        # Only forward optional kwargs when present so subclass test mocks
+        # that override `_call_model(system, user)` without the new kwargs
+        # keep working (Wave 5 backward-compat: image_attachments; Wave A:
+        # sources).
+        extra_kwargs: dict[str, Any] = {}
         if image_attachments:
+            extra_kwargs["image_attachments"] = image_attachments
+        if sources:
+            extra_kwargs["sources"] = sources
+        if extra_kwargs:
             call = await self._call_model(
-                system=full_system,
-                user=user_prompt,
-                image_attachments=image_attachments,
+                system=full_system, user=user_prompt, **extra_kwargs,
             )
         else:
             call = await self._call_model(system=full_system, user=user_prompt)
@@ -390,8 +404,18 @@ class BaseAgent(Generic[T]):
     # Subclass hooks
     # ------------------------------------------------------------------
 
-    def build_prompt(self, **inputs: Any) -> tuple[str, str]:
-        """Return (system_prompt_addendum, user_prompt). Override in subclasses."""
+    def build_prompt(
+        self, **inputs: Any,
+    ) -> tuple[str, str] | tuple[str, str, list[tuple[str, str]]]:
+        """Return ``(system_prompt_addendum, user_prompt)`` or, when the
+        agent has citation sources to attach, the 3-tuple
+        ``(system_prompt_addendum, user_prompt, sources)`` where
+        ``sources`` is ``list[(source_id, content)]``.
+
+        Override in subclasses. Existing 2-tuple subclasses keep working
+        unchanged; the 3-tuple form is opt-in for source-consuming
+        agents that want their inputs threaded into the Citations API.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -430,6 +454,7 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        sources: list[tuple[str, str]] | None = None,
     ) -> ModelCall:
         """Invoke the model. Dispatches on the configured backend.
 
@@ -445,6 +470,13 @@ class BaseAgent(Generic[T]):
         does NOT (the SDK's prompt API is text-only); it raises a clear
         error when images are present.
 
+        Wave A: `sources` is a list of `(source_id, content)` tuples
+        threaded from `build_prompt`. When `self.citations_enabled` is
+        truthy, the api_key backend turns each into an Anthropic document
+        block with citations enabled. The claude_code backend silently
+        ignores `sources` because the SDK's prompt API does not expose
+        document blocks directly.
+
         Tests override this method directly to return a `ModelCall` stub
         without exercising either backend.
         """
@@ -452,10 +484,12 @@ class BaseAgent(Generic[T]):
         if backend == "claude_code":
             return await self._call_via_claude_code(
                 system=system, user=user, image_attachments=image_attachments,
+                sources=sources,
             )
         if backend == "api_key":
             return await self._call_via_api_key(
                 system=system, user=user, image_attachments=image_attachments,
+                sources=sources,
             )
         raise AgentRunError(
             f"{self.agent_role}: unknown anthropic backend {backend!r} "
@@ -468,6 +502,7 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        sources: list[tuple[str, str]] | None = None,
     ) -> ModelCall:
         """Backend: claude-agent-sdk → local `claude.exe`. No API key needed.
 
@@ -489,8 +524,15 @@ class BaseAgent(Generic[T]):
         with `content` as a list of content blocks (image + text). claude.exe
         forwards them to the Anthropic API, which natively understands image
         blocks on vision-capable models.
+
+        Wave A: `sources` is accepted for signature symmetry with the
+        api_key backend but silently ignored — the claude_code SDK does
+        not expose document blocks for the Citations API.
         """
         import sys
+
+        if sources:
+            self._log.debug("claude_code backend ignoring sources kwarg")
 
         if sys.platform == "win32":
             return await asyncio.to_thread(
@@ -498,9 +540,11 @@ class BaseAgent(Generic[T]):
                 system=system,
                 user=user,
                 image_attachments=image_attachments,
+                sources=sources,
             )
         return await self._call_via_claude_code_inner(
             system=system, user=user, image_attachments=image_attachments,
+            sources=sources,
         )
 
     def _build_system_blocks(self, system: str) -> list[dict[str, Any]]:
@@ -555,6 +599,7 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        sources: list[tuple[str, str]] | None = None,
     ) -> ModelCall:
         """Sync entry that runs the async SDK call on a fresh
         ProactorEventLoop in a worker thread. Windows-only path."""
@@ -565,6 +610,7 @@ class BaseAgent(Generic[T]):
             return loop.run_until_complete(
                 self._call_via_claude_code_inner(
                     system=system, user=user, image_attachments=image_attachments,
+                    sources=sources,
                 )
             )
         finally:
@@ -576,9 +622,14 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        sources: list[tuple[str, str]] | None = None,
     ) -> ModelCall:
         """The actual SDK call. Extracted so it can run on a different event
-        loop on Windows (see `_call_via_claude_code_thread`)."""
+        loop on Windows (see `_call_via_claude_code_thread`).
+
+        Wave A: `sources` accepted for signature symmetry; silently
+        ignored because the SDK does not expose document blocks.
+        """
         try:
             from claude_agent_sdk import (
                 AssistantMessage,
@@ -685,6 +736,7 @@ class BaseAgent(Generic[T]):
         system: str,
         user: str,
         image_attachments: list[Any] | None = None,
+        sources: list[tuple[str, str]] | None = None,
     ) -> ModelCall:
         """Backend: direct Anthropic API. Requires API key in keychain or env.
 
@@ -692,6 +744,14 @@ class BaseAgent(Generic[T]):
         content blocks (`{"type": "image", "source": {...}}`) for each
         image and prepends them to the user message. Vision-capable
         models (Sonnet, Opus) handle these natively.
+
+        Wave A: when `sources` is non-empty AND `self.citations_enabled`
+        is True, builds Anthropic document blocks (via
+        `_build_document_blocks`) and prepends them to the user message.
+        Document blocks come BEFORE image blocks because Anthropic
+        recommends front-loading large/cacheable content for prompt
+        caching. If citations are disabled for this agent, sources are
+        ignored (no cost burn for non-citation agents).
         """
         import asyncio
         import base64
@@ -701,24 +761,30 @@ class BaseAgent(Generic[T]):
             self._client = self._build_client()
         client = self._client
 
-        # Build the user message content. If no images, use plain string
-        # (cheaper for prompt cache); else use a content-block list.
-        if image_attachments:
+        # Build the user message content. If no images and no citation
+        # sources, use a plain string (cheaper for prompt cache); else
+        # use a content-block list with documents + images prepended.
+        use_sources = bool(sources) and self.citations_enabled
+        if image_attachments or use_sources:
             blocks: list[dict[str, Any]] = []
-            for att in image_attachments:
-                # `att` is an Attachment from argosy.services.turn_attachments,
-                # but we don't import it here to avoid a circular dependency.
-                path = getattr(att, "path", None) or att["path"]
-                mime = getattr(att, "mime_type", None) or att["mime_type"]
-                data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
-                blocks.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": mime,
-                        "data": data,
-                    },
-                })
+            # Document blocks come first (Anthropic recommends this for caching).
+            if use_sources:
+                blocks.extend(self._build_document_blocks(sources))
+            if image_attachments:
+                for att in image_attachments:
+                    # `att` is an Attachment from argosy.services.turn_attachments,
+                    # but we don't import it here to avoid a circular dependency.
+                    path = getattr(att, "path", None) or att["path"]
+                    mime = getattr(att, "mime_type", None) or att["mime_type"]
+                    data = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+                    blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime,
+                            "data": data,
+                        },
+                    })
             blocks.append({"type": "text", "text": user})
             messages_payload: list[dict[str, Any]] = [
                 {"role": "user", "content": blocks},
