@@ -843,7 +843,12 @@ export const api = {
       return (await r.json()) as { status: string };
     }),
   advisorCheckIn: (userId: string, guidance = "") =>
-    postJSON<{ status: string; decision_run_id: number; draft_id: number }>(
+    postJSON<{
+      status: string;
+      decision_run_id: number;
+      decision_audit_token: string; // e.g. "plan-synth-42" — UI uses verbatim as cascade filter key
+      draft_id: number | null; // null until plan.draft.completed WS event fires
+    }>(
       `/api/advisor/check-in`,
       { user_id: userId, guidance, urgency: "now" },
     ),

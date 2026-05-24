@@ -30,6 +30,9 @@ type AgentCascadePanelProps = {
   /** null when no turn is in flight. Keep set after POST resolves so the
    *  panel stays visible; reset at the top of the NEXT call to askNext. */
   turnId: string | null;
+  /** Filter by decision_id (string audit token, e.g. "plan-synth-42").
+   *  Mutually exclusive with turnId — pass exactly one. */
+  decisionId?: string | null;
   /** true once api.advisorTurn() has returned (either success or error). */
   isResolved: boolean;
   /** Backend-status / last-agent-step diagnostic line, visually subordinated. */
@@ -93,11 +96,13 @@ function agentRowToActivityRow(row: AgentRow): AgentActivityRow {
 export function AgentCascadePanel({
   userId,
   turnId,
+  decisionId,
   isResolved,
   diagnosticLine,
 }: AgentCascadePanelProps) {
   const { decisions } = useDecisionStream(userId, {
     turnId: turnId ?? undefined,
+    decisionId: decisionId ?? undefined,
   });
 
   // Flatten all rows from all matching decisions into a single list.
@@ -132,8 +137,13 @@ export function AgentCascadePanel({
     }
   }, [rowCount]);
 
-  // Nothing to show when no turnId and no rows.
-  if (turnId === null && allRows.length === 0) return null;
+  // Nothing to show when no filter is set AND there are no rows.
+  // (Keep panel mounted when a filter is set even before the first row
+  // streams in, so the cascade UI is visible from the moment the user
+  // kicks off the in-flight work.)
+  if (turnId === null && (decisionId === null || decisionId === undefined) && allRows.length === 0) {
+    return null;
+  }
 
   const summaryText = (() => {
     const agentWord = allRows.length === 1 ? "agent" : "agents";

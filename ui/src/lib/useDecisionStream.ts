@@ -207,7 +207,7 @@ function findRestMatch(
 
 export function useDecisionStream(
   userId: string,
-  opts?: { turnId?: string },
+  opts?: { turnId?: string; decisionId?: string },
 ): {
   decisions: DecisionGroup[];
   byCorrelationId: Map<string, AgentRow>;
@@ -555,6 +555,7 @@ export function useDecisionStream(
   // Derive decisions from byCorrelationId + any REST rows not in the WS map.
   // ---------------------------------------------------------------------------
   const turnId = opts?.turnId;
+  const decisionId = opts?.decisionId;
   const decisions = useMemo<DecisionGroup[]>(() => {
     // Collect all rows: prefer WS-tracked entries (may be richer/more recent),
     // then add REST rows whose id doesn't appear in byCorrelationId yet.
@@ -568,10 +569,13 @@ export function useDecisionStream(
       }
     }
 
-    // Apply turnId filter if requested.
+    // Apply turnId filter if requested; else decisionId filter if requested.
+    // turnId and decisionId are mutually exclusive — turnId wins if both set.
     const filtered = turnId
       ? allRows.filter((r) => r.turn_id === turnId)
-      : allRows;
+      : decisionId
+        ? allRows.filter((r) => r.decision_id === decisionId)
+        : allRows;
 
     // Group by decision key.
     const groupMap = new Map<string, AgentRow[]>();
@@ -623,7 +627,7 @@ export function useDecisionStream(
     );
 
     return groups;
-  }, [byCorrelationId, restRows, turnId, wireGroupsMap]);
+  }, [byCorrelationId, restRows, turnId, decisionId, wireGroupsMap]);
 
   return { decisions, byCorrelationId, isLoading };
 }

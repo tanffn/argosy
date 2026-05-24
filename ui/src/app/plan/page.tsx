@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
+import { AgentCascadePanel } from "@/components/advisor/AgentCascadePanel";
 import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +15,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { api, type PlanCurrentDTO } from "@/lib/api";
+import { useWSEvents } from "@/lib/ws";
 
 const USER_ID = "ariel";
 
@@ -37,6 +40,14 @@ export default function PlanPage() {
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Synthesis kickoff state ("Run synthesis" button + live cascade).
+  const [synthesisDecisionToken, setSynthesisDecisionToken] = useState<
+    string | null
+  >(null); // e.g. "plan-synth-42"
+  const [synthesisRunning, setSynthesisRunning] = useState(false);
+  const [synthesisDraftId, setSynthesisDraftId] = useState<number | null>(null);
+  const [synthesisError, setSynthesisError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -66,6 +77,37 @@ export default function PlanPage() {
     }
   }, [refresh]);
 
+  const onRunSynthesis = useCallback(async () => {
+    setSynthesisError(null);
+    setSynthesisRunning(true);
+    setSynthesisDraftId(null);
+    try {
+      const r = await api.advisorCheckIn(USER_ID);
+      setSynthesisDecisionToken(r.decision_audit_token);
+    } catch (e: unknown) {
+      setSynthesisError(String(e));
+      setSynthesisRunning(false);
+    }
+  }, []);
+
+  // Completion via plan.draft.completed WS event — emitted at
+  // argosy/orchestrator/flows/plan_synthesis/orchestrator.py:301 AFTER the
+  // draft PlanVersion + DecisionRun rows commit. No commit race.
+  useWSEvents<{ user_id?: string; draft_id?: number }>(
+    ["plan.draft.completed"],
+    {
+      onEvent: (e) => {
+        if (e.payload.user_id !== USER_ID) return;
+        if (synthesisDecisionToken === null) return; // not our run
+        if (typeof e.payload.draft_id === "number") {
+          setSynthesisDraftId(e.payload.draft_id);
+        }
+        setSynthesisRunning(false);
+        refresh();
+      },
+    },
+  );
+
   const critique = (plan?.latest_critique_json as CritiqueShape | null) ?? null;
   const findings = critique?.findings ?? [];
 
@@ -80,17 +122,52 @@ export default function PlanPage() {
               : "No plan imported yet."}
           </p>
         </div>
-        <Button
-          variant="default"
-          onClick={onRecritique}
-          disabled={running || !plan?.plan_version_id}
-        >
-          {running ? "Re-critiquing…" : "Re-critique now"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="default"
+            onClick={onRunSynthesis}
+            disabled={synthesisRunning || !plan?.plan_version_id}
+            title={
+              !plan?.plan_version_id
+                ? "Import a baseline plan first"
+                : undefined
+            }
+          >
+            {synthesisRunning ? "Synthesizing…" : "Run synthesis"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={onRecritique}
+            disabled={running || !plan?.plan_version_id}
+          >
+            {running ? "Re-critiquing…" : "Re-critique now"}
+          </Button>
+        </div>
       </header>
 
       {error && <p className="text-sm text-error font-mono">{error}</p>}
+      {synthesisError && (
+        <p className="text-sm text-error font-mono">{synthesisError}</p>
+      )}
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
+
+      {synthesisDecisionToken !== null && (
+        <AgentCascadePanel
+          userId={USER_ID}
+          turnId={null}
+          decisionId={synthesisDecisionToken}
+          isResolved={!synthesisRunning}
+        />
+      )}
+
+      {!synthesisRunning && synthesisDraftId !== null && (
+        <p className="text-sm">
+          Draft #{synthesisDraftId} ready ·{" "}
+          <Link href="/proposals" className="text-primary hover:underline">
+            → Review draft on /proposals
+          </Link>
+        </p>
+      )}
 
       {critique && (
         <Card>
