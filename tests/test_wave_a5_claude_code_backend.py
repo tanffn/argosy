@@ -359,15 +359,18 @@ def _write_fake_pdf(tmp_path, name, size_bytes=1024):
 
 
 def test_build_claude_code_messages_single_batch_below_threshold(tmp_path):
-    """Up to MAX_PER_BATCH PDFs collapse into one user message — verbatim
-    pre-batching behavior. Text block carries the original prompt unchanged."""
+    """Up to MAX_BLOCKS_PER_BATCH PDFs that also fit byte-cap collapse into
+    one user message — verbatim pre-batching behavior. Text block carries
+    the original prompt unchanged."""
     from argosy.agents.base import (
         CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH,
         _build_claude_code_messages,
     )
 
+    # Small PDFs so the byte-cap doesn't trip — the block-count cap is
+    # what we're testing here.
     pdfs = [
-        _make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf"))
+        _make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf", size_bytes=1024))
         for i in range(CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH)
     ]
 
@@ -387,17 +390,20 @@ def test_build_claude_code_messages_single_batch_below_threshold(tmp_path):
     assert text_blocks[0]["text"] == "original prompt"
 
 
-def test_build_claude_code_messages_chunks_above_threshold(tmp_path):
-    """4 PDFs → 2 batches of 3+1, with first/last text markers."""
+def test_build_claude_code_messages_chunks_above_block_cap(tmp_path):
+    """4 small PDFs (under byte-cap) → 2 batches of 3+1 via block-count cap."""
     from argosy.agents.base import _build_claude_code_messages
 
-    pdfs = [_make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf")) for i in range(4)]
+    pdfs = [
+        _make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf", size_bytes=1024))
+        for i in range(4)
+    ]
 
     msgs = _build_claude_code_messages(
         user_with_sources="ingest these payslips",
         image_attachments=[],
         pdf_attachments=pdfs,
-        max_per_batch=3,
+        max_blocks_per_batch=3,
     )
 
     assert len(msgs) == 2
@@ -417,32 +423,118 @@ def test_build_claude_code_messages_chunks_above_threshold(tmp_path):
     assert "complete structured response" in b2_text
 
 
-def test_build_claude_code_messages_nine_pdfs_three_batches(tmp_path):
-    """The user's actual failing case: 9 PDFs split into 3 batches of 3."""
+def test_build_claude_code_messages_chunks_above_byte_cap(tmp_path):
+    """3 medium PDFs (under block-cap, OVER byte-cap) → split by size."""
     from argosy.agents.base import _build_claude_code_messages
 
-    pdfs = [_make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf")) for i in range(9)]
+    # 3 × 85 KB PDFs — the actual payslip sizes that crashed claude.exe.
+    # Under the default block-cap (3) but well over the 130 KB byte cap.
+    pdfs = [
+        _make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf", size_bytes=85 * 1024))
+        for i in range(3)
+    ]
 
     msgs = _build_claude_code_messages(
-        user_with_sources="review all of these",
+        user_with_sources="ingest payslips",
         image_attachments=[],
         pdf_attachments=pdfs,
-        max_per_batch=3,
     )
 
+    # Each ~85 KB PDF alone is under the 130 KB cap. Pairs (170 KB) exceed
+    # it, so packing produces one PDF per batch → 3 batches.
     assert len(msgs) == 3
-    for i, msg in enumerate(msgs):
+    for msg in msgs:
         pdf_count = sum(1 for b in msg["message"]["content"] if b["type"] == "document")
-        assert pdf_count == 3, f"batch {i+1} has {pdf_count} PDFs, expected 3"
+        assert pdf_count == 1
 
-    # Middle batch (i=1): says "Batch 2 of 3" and does NOT include the original prompt.
-    middle_text = next(
-        b["text"]
-        for b in msgs[1]["message"]["content"]
-        if b["type"] == "text"
+
+def test_build_claude_code_messages_2_form_106s_fit_one_batch(tmp_path):
+    """The empirically-confirmed working case (id=93 in dev): 2 Form 106
+    PDFs totaling ~111 KB stay in ONE batch under the 130 KB byte cap."""
+    from argosy.agents.base import _build_claude_code_messages
+
+    pdfs = [
+        _make_pdf_att(_write_fake_pdf(tmp_path, "form106_a.pdf", size_bytes=43 * 1024)),
+        _make_pdf_att(_write_fake_pdf(tmp_path, "form106_b.pdf", size_bytes=68 * 1024)),
+    ]
+
+    msgs = _build_claude_code_messages(
+        user_with_sources="review these",
+        image_attachments=[],
+        pdf_attachments=pdfs,
     )
-    assert "Batch 2 of 3" in middle_text
-    assert "review all of these" not in middle_text
+
+    # 43 + 68 = 111 KB ≤ 130 KB cap → single batch, no batch markers.
+    assert len(msgs) == 1
+    text = next(b["text"] for b in msgs[0]["message"]["content"] if b["type"] == "text")
+    assert text == "review these"
+
+
+def test_build_claude_code_messages_nine_pdf_user_case(tmp_path):
+    """The user's actual failing case: 9 PDFs at real sizes (Form 106s,
+    payslips, statements). With the size cap at 130 KB raw, greedy
+    packing produces a stable batch count we assert against (so future
+    cap tweaks surface explicitly in test diffs)."""
+    from argosy.agents.base import _build_claude_code_messages
+
+    # Mirror the user's actual file sizes from their failing 9-PDF batch.
+    pdfs = [
+        _make_pdf_att(_write_fake_pdf(tmp_path, "payslip_02.pdf", size_bytes=85 * 1024)),
+        _make_pdf_att(_write_fake_pdf(tmp_path, "payslip_03.pdf", size_bytes=85 * 1024)),
+        _make_pdf_att(_write_fake_pdf(tmp_path, "payslip_04.pdf", size_bytes=85 * 1024)),
+        _make_pdf_att(_write_fake_pdf(tmp_path, "stmt_01.pdf", size_bytes=51 * 1024)),
+        _make_pdf_att(_write_fake_pdf(tmp_path, "stmt_02.pdf", size_bytes=52 * 1024)),
+        _make_pdf_att(_write_fake_pdf(tmp_path, "stmt_03.pdf", size_bytes=53 * 1024)),
+        _make_pdf_att(_write_fake_pdf(tmp_path, "stmt_04.pdf", size_bytes=51 * 1024)),
+        _make_pdf_att(_write_fake_pdf(tmp_path, "form106.pdf", size_bytes=43 * 1024)),
+        _make_pdf_att(_write_fake_pdf(tmp_path, "noga_b.pdf", size_bytes=68 * 1024)),
+    ]
+
+    msgs = _build_claude_code_messages(
+        user_with_sources="ingest all 9, summarize",
+        image_attachments=[],
+        pdf_attachments=pdfs,
+    )
+
+    # Greedy packing under 130 KB byte cap + 3 block cap:
+    # [85] [85] [85] [51, 52] [53, 51] [43, 68] = 6 batches.
+    # Each bin is well under both caps; pairs that would exceed 130 KB
+    # (e.g. 85 + 85 = 170) split correctly.
+    assert len(msgs) == 6
+    # First batch carries the user prompt verbatim + batch markers.
+    b1_text = next(b["text"] for b in msgs[0]["message"]["content"] if b["type"] == "text")
+    assert "ingest all 9, summarize" in b1_text
+    assert "Batch 1 of 6" in b1_text
+    # Final batch tells the model to produce the structured response.
+    last_text = next(b["text"] for b in msgs[-1]["message"]["content"] if b["type"] == "text")
+    assert "Batch 6 of 6 (final)" in last_text
+    assert "complete structured response" in last_text
+    # Sanity: each batch's total raw bytes ≤ cap (with a small slack for
+    # the single-attachment-oversize case, which doesn't apply here).
+    for i, msg in enumerate(msgs):
+        pdf_blocks = [b for b in msg["message"]["content"] if b["type"] == "document"]
+        assert len(pdf_blocks) <= 3, f"batch {i+1} has {len(pdf_blocks)} PDFs (> 3 cap)"
+
+
+def test_build_claude_code_messages_oversize_single_attachment_stays_one_batch(tmp_path):
+    """A single attachment larger than the byte cap still gets its own
+    one-element batch (we don't reject; we let claude.exe try)."""
+    from argosy.agents.base import _build_claude_code_messages
+
+    big_pdf = _make_pdf_att(_write_fake_pdf(tmp_path, "big.pdf", size_bytes=300 * 1024))
+
+    msgs = _build_claude_code_messages(
+        user_with_sources="one big PDF",
+        image_attachments=[],
+        pdf_attachments=[big_pdf],
+    )
+
+    # 300 KB > 130 KB cap but `combined` has only 1 item, so the fast-path
+    # check `total_bytes > max_bytes_per_batch` triggers the multi-batch
+    # path; greedy packing still produces a single bin holding the one PDF.
+    assert len(msgs) == 1
+    pdf_count = sum(1 for b in msgs[0]["message"]["content"] if b["type"] == "document")
+    assert pdf_count == 1
 
 
 def test_build_claude_code_messages_mixed_pdf_image_ordering(tmp_path):

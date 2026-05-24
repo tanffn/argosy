@@ -169,20 +169,29 @@ _PRICE_BY_MODEL: dict[str, tuple[float, float]] = {
 # Back-compat alias for any external callers / docs referencing the prior name.
 APPROX_PRICING_USD_PER_MTOK = _PRICE_BY_MODEL
 
-# Maximum binary content blocks (PDFs + images) per single user message
-# on the `claude_code` backend before we split into multiple user messages
-# within one streaming-mode query. claude.exe's stdin JSONL parser dies
-# silently on single lines above ~760 KB (commit e863fc9 captured the
-# empty-stderr fingerprint); 3 blocks at typical Israeli payslip / Form 106
-# sizes (~85 KB each → ~340 KB base64-encoded) sits comfortably under that.
-# Higher counts get auto-chunked across multiple user messages in one
-# `query()` invocation; each batch becomes its own assistant turn but
-# turns 2+ benefit from the prompt cache on the prior batches' content.
-# The final batch's text asks the model to produce its full structured
-# response covering all attachments seen across the conversation; only
-# that turn's text is used as the model output (see
-# `_call_via_claude_code_inner`).
+# Per-batch caps for `claude_code` backend attachment chunking.
+#
+# claude.exe (the bundled Claude Code CLI) dies silently with exit 1 and
+# no stderr when a single streaming-mode user message carries too much
+# binary content. Observed empirically:
+#   - 2 PDFs at 43+68 KB raw (≈150 KB base64) → succeeds
+#   - 3 PDFs at 85 KB each (≈340 KB base64)   → fails
+# So the cliff sits somewhere between ~150 KB and ~340 KB of base64
+# content per message. We use a conservative 130 KB raw cap (≈173 KB
+# base64) so the prior 2-Form-106 success-case still fits in a single
+# batch but typical multi-payslip uploads get auto-split.
+#
+# Chunking happens inside `_build_claude_code_messages`: greedy bin
+# packing of (pdf + image) attachments by both byte-size AND block-count
+# (whichever cap is hit first). Each bin becomes its own user message
+# yielded sequentially into one streaming-mode `query()` call. Each
+# batch produces its own assistant turn; turns 2+ benefit from the
+# prompt cache on prior batches' content. Only the final batch's
+# assistant text is used as the ModelCall response (intermediate
+# acknowledgements are dropped); tokens/cost sum across all turns.
+# See `_call_via_claude_code_inner`.
 CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH = 3
+CLAUDE_CODE_MAX_BINARY_BYTES_PER_BATCH = 130_000
 
 
 def _build_claude_code_messages(
@@ -190,17 +199,20 @@ def _build_claude_code_messages(
     user_with_sources: str,
     image_attachments: list[Any],
     pdf_attachments: list[Any],
-    max_per_batch: int = CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH,
+    max_blocks_per_batch: int = CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH,
+    max_bytes_per_batch: int = CLAUDE_CODE_MAX_BINARY_BYTES_PER_BATCH,
 ) -> list[dict[str, Any]]:
     """Build the user-message dicts to send to the claude-agent-sdk.
 
-    Single-element output when total binary attachments ≤ ``max_per_batch``
-    (preserves the pre-batching behavior verbatim). Otherwise splits the
-    attachments into batches of at most ``max_per_batch`` each and yields
-    one user message per batch:
+    Single-element output when total binary attachments fit within BOTH
+    caps (preserves the pre-batching behavior verbatim). Otherwise
+    greedily packs attachments into batches such that each batch has
+    ≤ ``max_blocks_per_batch`` items AND ≤ ``max_bytes_per_batch`` raw
+    bytes (whichever cap is hit first). Each batch becomes its own user
+    message yielded sequentially:
 
-    - Batch 1: original ``user_with_sources`` text + first N attachments.
-    - Middle batches: continuation marker + next N attachments.
+    - Batch 1: original ``user_with_sources`` text + first batch's attachments.
+    - Middle batches: continuation marker + next batch's attachments.
     - Last batch: final-batch marker asking the model to produce its full
       structured response covering all attachments seen across the chat.
 
@@ -214,6 +226,13 @@ def _build_claude_code_messages(
     """
     import base64
     from pathlib import Path as _Path
+
+    def _att_size(att: Any) -> int:
+        path = getattr(att, "path", None) or att["path"]
+        try:
+            return _Path(path).stat().st_size
+        except OSError:
+            return 0
 
     def _pdf_block(att: Any) -> dict[str, Any]:
         path = getattr(att, "path", None) or att["path"]
@@ -246,6 +265,7 @@ def _build_claude_code_messages(
         + [("image", a) for a in (image_attachments or [])]
     )
     total = len(combined)
+    total_bytes = sum(_att_size(a) for _, a in combined)
 
     def _msg(blocks: list[dict[str, Any]]) -> dict[str, Any]:
         return {
@@ -255,7 +275,8 @@ def _build_claude_code_messages(
             "parent_tool_use_id": None,
         }
 
-    if total <= max_per_batch:
+    # Fast path: everything fits in one batch under both caps.
+    if total <= max_blocks_per_batch and total_bytes <= max_bytes_per_batch:
         # Single-batch path — text last, matching the previous inline layout.
         blocks = [
             _pdf_block(a) if k == "pdf" else _image_block(a) for k, a in combined
@@ -263,9 +284,37 @@ def _build_claude_code_messages(
         blocks.append({"type": "text", "text": user_with_sources})
         return [_msg(blocks)]
 
-    # Multi-batch path
-    chunks = [combined[i : i + max_per_batch] for i in range(0, total, max_per_batch)]
+    # Multi-batch path — greedy bin packing. New bin starts when adding
+    # the next attachment would exceed either cap on the current bin.
+    # Each bin is guaranteed to hold at least one attachment even if
+    # that single attachment alone exceeds `max_bytes_per_batch` (the
+    # caller's only alternative would be to reject the upload, which is
+    # worse UX — claude.exe might still handle a slightly-oversized
+    # single-attachment message).
+    chunks: list[list[tuple[str, Any]]] = [[]]
+    current_bytes = 0
+    for kind, att in combined:
+        size = _att_size(att)
+        if chunks[-1] and (
+            len(chunks[-1]) >= max_blocks_per_batch
+            or current_bytes + size > max_bytes_per_batch
+        ):
+            chunks.append([])
+            current_bytes = 0
+        chunks[-1].append((kind, att))
+        current_bytes += size
     n_chunks = len(chunks)
+
+    # If packing produced exactly one bin (e.g. a single oversize
+    # attachment, or many small attachments that fit under both caps but
+    # tripped the fast-path's strict check), use single-batch text — no
+    # "Batch 1 of 1" markers.
+    if n_chunks == 1:
+        blocks = [
+            _pdf_block(a) if k == "pdf" else _image_block(a) for k, a in chunks[0]
+        ]
+        blocks.append({"type": "text", "text": user_with_sources})
+        return [_msg(blocks)]
     messages: list[dict[str, Any]] = []
     for i, chunk in enumerate(chunks):
         if i == 0:
