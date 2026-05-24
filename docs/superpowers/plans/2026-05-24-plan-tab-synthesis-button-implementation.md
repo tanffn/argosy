@@ -49,42 +49,38 @@
 
 **Why:** Frontend cascade panel filters by `decision_id`. Today `agent.run.finished` omits `decision_id` even though `agent.run.started` includes it. A dropped or reordered started-event would leave a row unfilterable. The failure path also needs it so failures show up in the filtered cascade view.
 
-- [ ] **Step 1: Locate the existing finished-payload test**
-
-```bash
-grep -nE "agent\.run\.finished|agent_run_finished|decision_id" tests/test_agent_run_events.py tests/test_events.py 2>$null | head -40
-```
-
-Read the file that contains existing finished-payload assertions. If neither file has them, create the assertion inside `tests/test_agent_run_events.py`.
-
-- [ ] **Step 2: Write failing test — success path emits `decision_id` on finished**
-
-In whichever test module already covers `agent.run.started` for `decision_id`, add a sibling test for the finished payload. Use the same fixture pattern as the existing started test. Replace `<TEST_AGENT_FIXTURE>` with the actual fixture name from the file:
+The test file uses a `_DummyAgent` fixture class (subclass of `BaseAgent` with stubbed `_call_model`) and `_BrokenAgent` (`_call_model` raises). The pattern is:
 
 ```python
-def test_agent_run_finished_includes_decision_id_success(<existing fixture>):
-    """The agent.run.finished payload (success) must include decision_id so
-    the UI cascade panel can filter rows by it. Mirrors the started payload."""
-    captured: list[dict] = []
-    # Use whichever subscribe pattern the existing started-payload test uses.
-    # Pseudocode — adapt to the file's existing helper:
-    with subscribe_events(["agent.run.finished"], captured):
-        agent = <fixture>(decision_id="plan-synth-42")
-        agent.run_sync(...)  # any inputs the fixture supports
-    finished = [e for e in captured if e["event"] == "agent.run.finished"]
-    assert len(finished) >= 1
-    assert finished[0]["payload"]["decision_id"] == "plan-synth-42"
+with patch("argosy.api.events.publish_event_threadsafe") as mock_pub:
+    agent = _DummyAgent(user_id="ariel", model="claude-sonnet-4-6")
+    asyncio.run(agent.run(decision_id="...", turn_id="..."))
+# inspect mock_pub.call_args_list
 ```
 
-- [ ] **Step 3: Run the test to verify it fails**
+The existing `test_run_emits_started_and_finished_events` already passes `decision_id="dec-1"` and asserts it's in the **started** payload (line 59). We will add the missing assertion for the **finished** payload + add the failure-path equivalent.
+
+- [ ] **Step 1: Write the success-path assertion**
+
+Open `tests/test_agent_run_events.py` and locate `test_run_emits_started_and_finished_events` (line 38). Inside the block that asserts `finished_payload` fields (around line 80-92), add:
+
+```python
+    # NEW — Task 1 of plan-tab synthesis button: decision_id must flow through to
+    # the finished payload so the UI cascade panel can filter both started and
+    # finished events by it.
+    assert finished_payload["decision_id"] == "dec-1"
+    assert finished_payload["intake_session_id"] is None  # not passed in this test
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/test_agent_run_events.py::test_agent_run_finished_includes_decision_id_success -v
+.venv/Scripts/python.exe -m pytest tests/test_agent_run_events.py::test_run_emits_started_and_finished_events -v
 ```
 
-Expected: FAIL with `KeyError: 'decision_id'` or `AssertionError: assert None == 'plan-synth-42'`.
+Expected: FAIL — `KeyError: 'decision_id'` on the new assertion.
 
-- [ ] **Step 4: Edit `argosy/agents/base.py` success-path payload (line 696)**
+- [ ] **Step 3: Edit `argosy/agents/base.py` success-path payload (line 696)**
 
 Replace the `_finished_payload` dict construction:
 
@@ -110,46 +106,35 @@ _finished_payload: dict[str, Any] = {
 }
 ```
 
-- [ ] **Step 5: Run the success-path test again**
+- [ ] **Step 4: Re-run the test**
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/test_agent_run_events.py::test_agent_run_finished_includes_decision_id_success -v
+.venv/Scripts/python.exe -m pytest tests/test_agent_run_events.py::test_run_emits_started_and_finished_events -v
 ```
 
 Expected: PASS.
 
-- [ ] **Step 6: Write failing test — failure path emits `decision_id` on finished**
+- [ ] **Step 5: Add the failure-path assertion**
 
-In the same test file:
+Locate `test_run_emits_finished_with_failed_status_on_exception` in the same file (line 154). Inside the block that asserts `finished_payload` fields (around line 184-193), add:
 
 ```python
-def test_agent_run_finished_includes_decision_id_failure(<existing fixture>):
-    """The agent.run.finished payload (failure) must include decision_id so
-    a crashed agent still appears in the filtered cascade view.
-
-    We force _call_model to raise inside BaseAgent.run; the except branch
-    at base.py:732 emits a status='failed' finished event."""
-    captured: list[dict] = []
-    with subscribe_events(["agent.run.finished"], captured):
-        agent = <fixture>(decision_id="plan-synth-99")
-        agent._call_model = AsyncMock(side_effect=RuntimeError("boom"))  # or monkeypatch
-        with pytest.raises(Exception):
-            agent.run_sync(...)
-    finished = [e for e in captured if e["event"] == "agent.run.finished"]
-    assert len(finished) >= 1
-    assert finished[0]["payload"]["status"] == "failed"
-    assert finished[0]["payload"]["decision_id"] == "plan-synth-99"
+    # NEW — Task 1 of plan-tab synthesis button: decision_id must flow through
+    # on the failure path too, so a crashed agent still shows up in the
+    # decision_id-filtered cascade view.
+    assert finished_payload["decision_id"] == "dec-fail"
+    assert finished_payload["intake_session_id"] is None
 ```
 
-- [ ] **Step 7: Run the failure-path test to verify it fails**
+- [ ] **Step 6: Run the test to verify it fails**
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/test_agent_run_events.py::test_agent_run_finished_includes_decision_id_failure -v
+.venv/Scripts/python.exe -m pytest tests/test_agent_run_events.py::test_run_emits_finished_with_failed_status_on_exception -v
 ```
 
-Expected: FAIL with `KeyError: 'decision_id'` on the failure event.
+Expected: FAIL with `KeyError: 'decision_id'`.
 
-- [ ] **Step 8: Edit `argosy/agents/base.py` failure-path payload (line 732)**
+- [ ] **Step 7: Edit `argosy/agents/base.py` failure-path payload (line 732)**
 
 Replace the failure-path dict literal inside `except Exception as run_exc:`:
 
@@ -167,15 +152,15 @@ publish_event_threadsafe("agent.run.finished", {
 })
 ```
 
-- [ ] **Step 9: Run both new tests + the existing started-payload test**
+- [ ] **Step 8: Run the full test file**
 
 ```bash
 .venv/Scripts/python.exe -m pytest tests/test_agent_run_events.py -v
 ```
 
-Expected: all PASS (no regression to existing started-payload tests).
+Expected: all PASS (no regression to other tests in this file).
 
-- [ ] **Step 10: Codex review the diff**
+- [ ] **Step 9: Codex review the diff**
 
 Run the following from the repo root:
 
@@ -210,7 +195,7 @@ PY
 
 Address any BLOCKERS by re-editing + re-running tests + re-reviewing.
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add argosy/agents/base.py tests/test_agent_run_events.py
@@ -242,15 +227,20 @@ EOF
 
 **Encoding note:** Pass the string audit token `decision_audit_token` (which inside phase helpers is the local variable `decision_run_id`, already a string — re-confirm at edit time by reading the helper's signature). Do NOT pass the integer.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests — one focused test per phase**
 
-Create `tests/test_plan_synthesis_decision_id_propagation.py`:
+Create `tests/test_plan_synthesis_decision_id_propagation.py`. Each test directly exercises one phase helper, patches only that phase's agent(s), and asserts `decision_id` was in the captured kwargs. Low coupling, behavior-focused, easy to debug.
 
 ```python
-"""Assert decision_id reaches every agent.run_sync call in the 5-phase synthesis flow.
+"""Per-phase tests that decision_id reaches each phase's agent.run_sync calls.
 
-Mocks each phase's agent class to capture kwargs and verifies that
-`decision_id="plan-synth-<N>"` is present in every call's kwargs.
+One test per phase. Each test:
+  - Patches only the agent class(es) for that phase
+  - Calls the phase helper directly with a known decision_id
+  - Asserts the captured kwargs include decision_id
+
+This is intentionally narrow: a refactor of phase N only breaks the phase-N
+test, not the others.
 """
 
 from __future__ import annotations
@@ -261,115 +251,213 @@ from unittest.mock import MagicMock
 import pytest
 
 
-def _stub_report(text="{}"):
-    """A minimal stand-in for AgentReport.output that satisfies the orchestrator's
-    accessor chains (.output.model_dump_json(), .output.approved, etc.)."""
-    out = SimpleNamespace(
-        model_dump_json=lambda: text,
-        approved=True,
-    )
-    return SimpleNamespace(output=out)
+_DECISION_ID = "plan-synth-42"  # the string audit token format
 
 
-def test_decision_id_propagates_to_all_phase_agent_calls(monkeypatch):
-    """A single integration-style test that runs run_synthesis end-to-end
-    with every agent stubbed, and asserts every captured kwargs dict
-    contains decision_id == "plan-synth-<int_id>"."""
+def _capture(target: list) -> callable:
+    """Build a run_sync stub that captures kwargs and returns a minimal report."""
+    def _stub(self, *args, **kwargs):
+        target.append(kwargs)
+        return SimpleNamespace(
+            output=SimpleNamespace(
+                model_dump_json=lambda: "{}",
+                approved=True,
+            ),
+        )
+    return _stub
+
+
+def test_phase_1_passes_decision_id_to_analyst(monkeypatch):
+    """_run_phase_1_analysts forwards decision_id through common_kwargs."""
     from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _run_phase_1_analysts,
+    )
 
-    calls: list[tuple[str, dict]] = []  # (agent_role_or_class_name, kwargs)
-
-    def _capture_factory(name: str):
-        def _capture(self, *args, **kwargs):
-            calls.append((name, kwargs))
-            return _stub_report()
-        return _capture
-
-    # Phase 1 agents — patch their run_sync at the class level.
-    for cls_name in flow._PHASE_1_AGENT_NAMES:
-        cls = getattr(flow, cls_name)
-        monkeypatch.setattr(cls, "run_sync", _capture_factory(cls_name), raising=True)
-
-    # Phase 2 agents.
-    from argosy.agents.researcher import BullResearcherAgent, BearResearcherAgent
-    from argosy.agents.researcher_facilitator import ResearcherFacilitatorAgent
-    monkeypatch.setattr(BullResearcherAgent, "run_sync",
-                        _capture_factory("BullResearcherAgent"), raising=True)
-    monkeypatch.setattr(BearResearcherAgent, "run_sync",
-                        _capture_factory("BearResearcherAgent"), raising=True)
-    monkeypatch.setattr(ResearcherFacilitatorAgent, "run_sync",
-                        _capture_factory("ResearcherFacilitatorAgent"), raising=True)
-
-    # Phase 3 synthesizer.
-    from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
-    # PlanSynthesizerAgent.run_sync must return an output that the orchestrator
-    # can call .model_copy on after `_enforce_speculation_cap`. Use a richer stub.
-    def _synth_stub(self, *args, **kwargs):
-        calls.append(("PlanSynthesizerAgent", kwargs))
-        from argosy.agents.plan_synthesizer_types import (
-            PlanSynthesisOutput, Horizon, SynthesisInputs,
-        )
-        empty_h = Horizon(targets=[], principles=[], speculative_candidates=[])
-        out = PlanSynthesisOutput(
-            long=empty_h, medium=empty_h, short=empty_h,
-            inputs=SynthesisInputs(baseline_id=None, prior_current_id=None,
-                                   decision_run_id=None),
-        )
-        return SimpleNamespace(output=out)
-    monkeypatch.setattr(PlanSynthesizerAgent, "run_sync", _synth_stub, raising=True)
-
-    # Phase 4 risk + Phase 5 fund manager — patch the package-level factories.
-    fake_officer = MagicMock()
-    fake_officer.run_sync = _capture_factory("RiskOfficer")
-    monkeypatch.setattr(flow, "_make_risk_officer",
-                        lambda *a, **kw: fake_officer)
-    from argosy.agents.risk_facilitator import RiskFacilitatorAgent
-    monkeypatch.setattr(RiskFacilitatorAgent, "run_sync",
-                        _capture_factory("RiskFacilitatorAgent"), raising=True)
-    fake_fm = MagicMock()
-    fake_fm.run_sync = _capture_factory("FundManager")
-    monkeypatch.setattr(flow, "_make_fund_manager", lambda *a, **kw: fake_fm)
-
-    # Stub the DB-touching helpers so the test stays in-memory and fast.
+    # Patch the DB helpers so we don't need a real session for portfolio/context.
     monkeypatch.setattr(flow, "_assemble_portfolio_summary",
-                        lambda *, session, user_id: "(empty)")
-    monkeypatch.setattr(flow, "_assemble_fills_summary",
                         lambda *, session, user_id: "(empty)")
     monkeypatch.setattr(flow, "_load_user_context_yaml",
                         lambda *, session, user_id: "")
 
-    # Real run_synthesis needs a real Session for the DecisionRun + PlanVersion
-    # writes. Use the in-memory SQLite fixture.
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from argosy.state.models import Base, PlanVersion, User
-
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
-    Base.metadata.create_all(engine)
-    Session = sessionmaker(bind=engine, expire_on_commit=False)
-    session = Session()
-    session.add(User(id="ariel", plan="free"))
-    session.add(PlanVersion(user_id="ariel", role="baseline",
-                            distillate_rendered="# Plan"))
-    session.commit()
-
-    # Act.
-    result = flow.run_synthesis(session, user_id="ariel", trigger="check_in")
-
-    # Assert: every captured call carries decision_id="plan-synth-<id>"
-    expected_token = f"plan-synth-{result.decision_run_id}"
-    bad = [(name, kw) for (name, kw) in calls
-           if kw.get("decision_id") != expected_token]
-    assert not bad, (
-        f"{len(bad)} agent.run_sync call(s) missing decision_id="
-        f"{expected_token!r}: {[name for name, _ in bad]}"
+    # Patch one representative phase-1 agent — all 9 share common_kwargs.
+    captured: list[dict] = []
+    monkeypatch.setattr(
+        flow.FundamentalsAnalystAgent, "run_sync",
+        _capture(captured), raising=True,
     )
-    # Sanity: we actually invoked all expected phases.
-    invoked_names = {name for name, _ in calls}
-    assert "BullResearcherAgent" in invoked_names
-    assert "PlanSynthesizerAgent" in invoked_names
-    assert "RiskOfficer" in invoked_names
-    assert "FundManager" in invoked_names
+    # Force phase 1 to run only the one we patched, by narrowing the tuple.
+    # `_PHASE_1_AGENT_NAMES` is a module-level tuple in the orchestrator;
+    # patching it scopes the test to a single agent without coupling to its
+    # 9-tuple form.
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch
+    monkeypatch.setattr(
+        orch, "_PHASE_1_AGENT_NAMES", ("FundamentalsAnalystAgent",), raising=True,
+    )
+
+    baseline = SimpleNamespace(version_label="v1", distillate_rendered="# Plan")
+    _run_phase_1_analysts(
+        session=None,  # _assemble_* helpers patched out, so session unused
+        user_id="ariel",
+        baseline=baseline,
+        prior_current=None,
+        decision_run_id=_DECISION_ID,
+        guidance="",
+    )
+
+    assert len(captured) >= 1, "phase 1 did not invoke the patched agent"
+    assert captured[0].get("decision_id") == _DECISION_ID, (
+        f"phase 1 dropped decision_id: {captured[0]}"
+    )
+
+
+def test_phase_2_passes_decision_id_to_researchers(monkeypatch):
+    """_run_one_horizon_debate forwards decision_id to bull, bear, facilitator."""
+    from argosy.agents.researcher import BullResearcherAgent, BearResearcherAgent
+    from argosy.agents.researcher_facilitator import ResearcherFacilitatorAgent
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _run_one_horizon_debate,
+    )
+
+    bull_kw: list[dict] = []
+    bear_kw: list[dict] = []
+    fac_kw: list[dict] = []
+    monkeypatch.setattr(BullResearcherAgent, "run_sync",
+                        _capture(bull_kw), raising=True)
+    monkeypatch.setattr(BearResearcherAgent, "run_sync",
+                        _capture(bear_kw), raising=True)
+    monkeypatch.setattr(ResearcherFacilitatorAgent, "run_sync",
+                        _capture(fac_kw), raising=True)
+
+    _run_one_horizon_debate(
+        horizon="short",
+        user_id="ariel",
+        analyst_reports_text="",
+        baseline=None,
+        prior_current=None,
+        decision_run_id=_DECISION_ID,
+        trigger="check_in",
+    )
+
+    assert bull_kw and bull_kw[0].get("decision_id") == _DECISION_ID
+    assert bear_kw and bear_kw[0].get("decision_id") == _DECISION_ID
+    assert fac_kw and fac_kw[0].get("decision_id") == _DECISION_ID
+
+
+def test_phase_3_passes_decision_id_to_synthesizer(monkeypatch):
+    """_run_phase_3_synthesizer forwards decision_id to PlanSynthesizerAgent."""
+    from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _run_phase_3_synthesizer,
+    )
+
+    captured: list[dict] = []
+
+    def _synth_stub(self, *args, **kwargs):
+        captured.append(kwargs)
+        # Return a minimal real-shaped output that the orchestrator can pass
+        # through `_enforce_speculation_cap` without exploding.
+        from argosy.agents.plan_synthesizer_types import (
+            PlanSynthesisOutput,
+            HorizonPlan,
+            SynthesisInputs,
+        )
+        empty_h = HorizonPlan(
+            targets=[], principles=[], speculative_candidates=[],
+        )
+        out = PlanSynthesisOutput(
+            long=empty_h, medium=empty_h, short=empty_h,
+            inputs=SynthesisInputs(
+                baseline_id=None, prior_current_id=None, decision_run_id=None,
+            ),
+        )
+        return SimpleNamespace(output=out)
+
+    monkeypatch.setattr(PlanSynthesizerAgent, "run_sync", _synth_stub, raising=True)
+
+    baseline = SimpleNamespace(distillate_rendered="# Plan")
+    _run_phase_3_synthesizer(
+        session=None,
+        user_id="ariel",
+        baseline=baseline,
+        prior_current=None,
+        analyst_reports_text="",
+        debate_outcomes_text="",
+        portfolio_summary="",
+        fills_summary="",
+        decision_run_id=_DECISION_ID,
+    )
+
+    assert captured and captured[0].get("decision_id") == _DECISION_ID
+```
+
+**Note for test author:** the exact symbol names imported from `argosy.agents.plan_synthesizer_types` (`HorizonPlan`, `SynthesisInputs`, `PlanSynthesisOutput`) must match the file. If a `from argosy.agents.plan_synthesizer_types import HorizonPlan` fails, read the module and substitute the real type name. If constructing a valid `PlanSynthesisOutput` is too fiddly, simplify by patching `flow._enforce_speculation_cap` to be a no-op and stubbing the synthesizer output to a plain `SimpleNamespace` that exposes `.short.speculative_candidates = []`.
+
+```python
+def test_phase_4_passes_decision_id_to_risk_agents(monkeypatch):
+    """_run_phase_4_risk forwards decision_id to risk officer + facilitator."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _run_phase_4_risk,
+    )
+    from argosy.agents.risk_facilitator import RiskFacilitatorAgent
+
+    officer_kw: list[dict] = []
+    facilitator_kw: list[dict] = []
+
+    fake_officer = MagicMock()
+    fake_officer.run_sync = _capture(officer_kw).__get__(fake_officer, type(fake_officer))
+    monkeypatch.setattr(flow, "_make_risk_officer", lambda *a, **kw: fake_officer)
+
+    monkeypatch.setattr(RiskFacilitatorAgent, "run_sync",
+                        _capture(facilitator_kw), raising=True)
+
+    draft = SimpleNamespace(model_dump_json=lambda: "{}")
+    _run_phase_4_risk(
+        session=None,
+        user_id="ariel",
+        draft_output=draft,
+        analyst_reports_text="",
+        decision_run_id=_DECISION_ID,
+    )
+
+    # 3 perspectives × officer + 1 facilitator
+    assert len(officer_kw) == 3, f"expected 3 officer calls, got {len(officer_kw)}"
+    for kw in officer_kw:
+        assert kw.get("decision_id") == _DECISION_ID, (
+            f"phase 4 officer dropped decision_id: {kw}"
+        )
+    assert facilitator_kw and facilitator_kw[0].get("decision_id") == _DECISION_ID
+
+
+def test_phase_5_passes_decision_id_to_fund_manager(monkeypatch):
+    """_run_phase_5_fund_manager forwards decision_id to FundManagerAgent."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _run_phase_5_fund_manager,
+    )
+
+    captured: list[dict] = []
+    fake_fm = MagicMock()
+    fake_fm.run_sync = _capture(captured).__get__(fake_fm, type(fake_fm))
+    # Ensure .output.approved exists for the orchestrator's bool check.
+    fake_fm.run_sync = lambda *a, **kw: (
+        captured.append(kw) or SimpleNamespace(
+            output=SimpleNamespace(approved=True),
+        )
+    )
+    monkeypatch.setattr(flow, "_make_fund_manager", lambda *a, **kw: fake_fm)
+
+    draft = SimpleNamespace(model_dump_json=lambda: "{}")
+    _run_phase_5_fund_manager(
+        session=None,
+        user_id="ariel",
+        draft_output=draft,
+        risk_verdict="",
+        decision_run_id=_DECISION_ID,
+    )
+
+    assert captured and captured[0].get("decision_id") == _DECISION_ID
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -706,9 +794,9 @@ def post_check_in(
     """
     from argosy.orchestrator.flows.plan_synthesis import (
         NoBaselineError,
-        get_active_baseline,
         run_synthesis,
     )
+    from argosy.state.queries import get_active_baseline  # verified: queries.py:549
 
     # (a) Baseline guard FIRST. NoBaselineError → 404, no row writes.
     baseline = get_active_baseline(db, body.user_id)
@@ -818,10 +906,10 @@ Note: `_log` is the module-level logger (already defined in advisor.py — confi
 - [ ] **Step 7: Verify imports**
 
 ```bash
-.venv/Scripts/python.exe -c "from argosy.orchestrator.flows.plan_synthesis import get_active_baseline; print('OK')"
+.venv/Scripts/python.exe -c "from argosy.state.queries import get_active_baseline; from argosy.orchestrator.flows.plan_synthesis import NoBaselineError, run_synthesis; print('OK')"
 ```
 
-Expected: prints `OK`. If `ImportError`, find the real location of `get_active_baseline` (likely in `argosy/orchestrator/flows/plan_synthesis/__init__.py` or `orchestrator.py` or a sibling submodule) and adjust the import.
+Expected: prints `OK`. (`get_active_baseline` is at `argosy/state/queries.py:549`; `_log` is already defined at `argosy/api/routes/advisor.py:58` via `_log = get_logger("argosy.api.advisor")` — both verified during plan write.)
 
 - [ ] **Step 8: Run the /check-in tests**
 
@@ -866,7 +954,7 @@ print(r.verdict_text)
 PY
 ```
 
-Address BLOCKERS. Known likely concerns: `get_active_baseline` may not be exported from `plan_synthesis.__init__` — fix the import path. The background-task session may need additional cleanup (engine dispose) on error paths.
+Address BLOCKERS. The background-task session may need additional cleanup (engine dispose) on error paths — if Codex flags this, add `engine.dispose()` to a `finally` block.
 
 - [ ] **Step 10: Commit**
 
@@ -1150,23 +1238,32 @@ const onRunSynthesis = useCallback(async () => {
 
 - [ ] **Step 4: Add the WS subscription for completion**
 
-Below the click handler:
+Below the click handler. The verified `useWSEvents` signature (from `ui/src/lib/ws.ts:70`) is:
+```typescript
+useWSEvents<T>(events: string[], opts?: { onEvent?: (e: WSEvent<T>) => void }): WSEvent<T> | null
+```
+— positional events array, optional `onEvent` callback (which bypasses React batching).
 
 ```typescript
-useWSEvents({
-  topics: ["plan.draft.completed"],
-  onEvent: (e) => {
-    const payload = e.payload as { user_id?: string; draft_id?: number };
-    if (payload.user_id !== USER_ID) return;
-    if (synthesisDecisionToken === null) return;  // not our run
-    if (typeof payload.draft_id === "number") setSynthesisDraftId(payload.draft_id);
-    setSynthesisRunning(false);
-    refresh();  // re-fetch planCurrent
+type DraftCompletedPayload = { user_id?: string; draft_id?: number };
+
+useWSEvents<DraftCompletedPayload>(
+  ["plan.draft.completed"],
+  {
+    onEvent: (e) => {
+      if (e.payload.user_id !== USER_ID) return;
+      if (synthesisDecisionToken === null) return;  // not our run
+      if (typeof e.payload.draft_id === "number") {
+        setSynthesisDraftId(e.payload.draft_id);
+      }
+      setSynthesisRunning(false);
+      refresh();  // re-fetch planCurrent
+    },
   },
-});
+);
 ```
 
-Note: the exact `useWSEvents` signature may differ — read `ui/src/lib/ws.ts` first and adapt accordingly. The signature above is illustrative.
+**Closure-staleness note:** `onEvent` captures `synthesisDecisionToken` and `refresh` at the time the effect inside `useWSEvents` runs. Because `useWSEvents` uses an `onEventRef` internally (see `ws.ts:78-81`) that re-syncs every render, the callback always sees the latest closure values. Verified at hook implementation; no extra `useEffect` wiring needed.
 
 - [ ] **Step 5: Add the button to the header**
 
@@ -1352,7 +1449,13 @@ All covered. The spec said "useDecisionStream itself is not modified" but Task 4
 
 ### Placeholder scan
 
-No "TBD" / "TODO" / "fill in details". One acknowledged in Task 3 step 6: `_log` variable name and `get_active_baseline` import path noted for verification at edit time — these are real-code lookups, not unresolved ambiguity.
+No "TBD" / "TODO" / "fill in details". Imports + signatures verified during plan write:
+- `get_active_baseline` → `argosy/state/queries.py:549`.
+- `_log` → `argosy/api/routes/advisor.py:58`.
+- `useWSEvents` signature → `ui/src/lib/ws.ts:70`.
+- Test fixtures (`_DummyAgent`, `_BrokenAgent`) → `tests/test_agent_run_events.py`.
+
+One soft footnote in the Task 2 test for phase 3: `plan_synthesizer_types` symbol names need to be confirmed against the file at edit time (`HorizonPlan` vs `Horizon` could differ — the file is small; reading it during edit is trivial).
 
 ### Type consistency
 
