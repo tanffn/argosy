@@ -1318,41 +1318,130 @@ class CheckInRequest(BaseModel):
 class CheckInResponse(BaseModel):
     status: str
     decision_run_id: int
-    draft_id: int
+    decision_audit_token: str  # "plan-synth-<id>"; UI uses verbatim as cascade filter key
+    draft_id: int | None  # populated later via plan.draft.completed WS event
 
 
 @router.post("/check-in", response_model=CheckInResponse, status_code=202)
 def post_check_in(
     body: CheckInRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> CheckInResponse:
     """User-initiated plan synthesis (spec §7.6).
 
-    Calls ``plan_synthesis.run_synthesis`` with ``trigger="check_in"`` and
-    returns the resulting decision_run_id + draft_id. 404 when the user
-    has no active baseline plan (the synthesis flow raises
-    ``NoBaselineError`` before any DB writes).
+    Baseline guard runs FIRST in the handler — if no active baseline plan
+    exists for the user, raise 404 immediately with no DB writes. Then
+    pre-create the DecisionRun row (status='running') so the response
+    carries its id, and schedule run_synthesis via FastAPI BackgroundTasks.
+    The background wrapper opens its own sync Session because the
+    request-scoped ``db`` is closed by FastAPI's Depends teardown once
+    we return.
     """
-    from argosy.orchestrator.flows.plan_synthesis import (
-        NoBaselineError,
-        run_synthesis,
-    )
+    from argosy.state.queries import get_active_baseline  # at argosy/state/queries.py:549
+    from argosy.state.models import DecisionRun
 
-    try:
-        result = run_synthesis(
-            db,
-            user_id=body.user_id,
-            trigger="check_in",
-            guidance=body.guidance,
+    # (a) Baseline guard FIRST. No row writes if no baseline — eliminates
+    # the "leaked status='running' DecisionRun" failure mode.
+    baseline = get_active_baseline(db, body.user_id)
+    if baseline is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"user {body.user_id!r} has no active baseline plan",
         )
-    except NoBaselineError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # (b) Pre-create the DecisionRun row so the response carries its id.
+    decision_run = DecisionRun(
+        user_id=body.user_id,
+        ticker="(plan)",
+        tier="T3",
+        decision_kind="plan_revision",
+        started_at=datetime.now(UTC),
+        status="running",
+    )
+    db.add(decision_run)
+    db.commit()
+    db.refresh(decision_run)
+    decision_run_id = decision_run.id
+    decision_audit_token = f"plan-synth-{decision_run_id}"
+
+    # (c) Schedule the background wrapper. The wrapper opens its own
+    # Session because `db` is closed by FastAPI's Depends teardown once
+    # we return. We capture the engine bound to `db` here so the wrapper
+    # writes to the SAME database (tests use a per-fixture engine; building
+    # a fresh engine from settings would target the wrong DB).
+    # Pattern mirrors argosy/orchestrator/flows/plan_amendment/dispatcher.py:306.
+    from sqlalchemy.orm import sessionmaker
+
+    engine = db.get_bind()
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+    background_tasks.add_task(
+        _run_synthesis_background,
+        user_id=body.user_id,
+        guidance=body.guidance,
+        decision_run_id=decision_run_id,
+        session_factory=SessionLocal,
+    )
 
     return CheckInResponse(
         status="accepted",
-        decision_run_id=result.decision_run_id,
-        draft_id=result.draft_id,
+        decision_run_id=decision_run_id,
+        decision_audit_token=decision_audit_token,
+        draft_id=None,
     )
+
+
+def _run_synthesis_background(
+    *,
+    user_id: str,
+    guidance: str,
+    decision_run_id: int,
+    session_factory,
+) -> None:
+    """Background wrapper for /check-in.
+
+    Receives a ``session_factory`` (``sessionmaker``) bound to the SAME
+    engine as the request session — the route handler captured it via
+    ``db.get_bind()`` before scheduling. We need our own Session because
+    the request-scoped one is closed by FastAPI's Depends teardown.
+
+    On exception, re-opens a session via the same factory and marks the
+    pre-created DecisionRun row ``status='failed'`` so the row doesn't
+    leak as a permanent 'running' zombie.
+    """
+    from argosy.orchestrator.flows.plan_synthesis import run_synthesis
+    from argosy.state.models import DecisionRun
+
+    session = session_factory()
+    try:
+        run_synthesis(
+            session,
+            user_id=user_id,
+            trigger="check_in",
+            guidance=guidance,
+            existing_decision_run_id=decision_run_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — mark row + log; never re-raise
+        _log.error(
+            "plan_synthesis.background_failed",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            error=str(exc),
+        )
+        # Re-open via the same factory; the run_synthesis exception may
+        # have left the original session in an inconsistent state.
+        fail_session = session_factory()
+        try:
+            row = fail_session.get(DecisionRun, decision_run_id)
+            if row is not None:
+                row.status = "failed"
+                row.finished_at = datetime.now(UTC)
+                fail_session.commit()
+        finally:
+            fail_session.close()
+    finally:
+        session.close()
 
 
 # ----------------------------------------------------------------------

@@ -1315,9 +1315,11 @@ async def test_signal_bullet_omitted_when_pension_older_than_365_days(
 
 
 def test_post_advisor_checkin_returns_decision_run_id(client_with_db, monkeypatch):
-    """POST /api/advisor/check-in should fire run_synthesis and return 202."""
+    """POST /api/advisor/check-in returns 202 immediately with the pre-created
+    DecisionRun id; run_synthesis fires via BackgroundTasks (which TestClient
+    drains synchronously after the response within the same call)."""
     from argosy.orchestrator.flows import plan_synthesis as flow
-    from argosy.state.models import PlanVersion, User
+    from argosy.state.models import DecisionRun, PlanVersion, User
 
     sess = client_with_db.app.state.session_factory()
     try:
@@ -1330,12 +1332,13 @@ def test_post_advisor_checkin_returns_decision_run_id(client_with_db, monkeypatc
 
     captured = {}
 
-    def _fake_run(session, *, user_id, trigger, guidance=""):
+    def _fake_run(session, *, user_id, trigger, guidance="", existing_decision_run_id=None):
         captured["user_id"] = user_id
         captured["trigger"] = trigger
         captured["guidance"] = guidance
+        captured["existing_decision_run_id"] = existing_decision_run_id
         class _R:
-            decision_run_id = 1  # int: mirrors the real Integer FK to decision_runs.id
+            decision_run_id = existing_decision_run_id or 1
             draft_id = 42
         return _R()
 
@@ -1345,17 +1348,90 @@ def test_post_advisor_checkin_returns_decision_run_id(client_with_db, monkeypatc
     r = client_with_db.post("/api/advisor/check-in", json=body)
     assert r.status_code == 202, r.text
     out = r.json()
-    assert out["decision_run_id"] == 1
-    assert out["draft_id"] == 42
+    assert isinstance(out["decision_run_id"], int)
+    assert out["decision_audit_token"] == f"plan-synth-{out['decision_run_id']}"
+    assert out["draft_id"] is None  # populated later via plan.draft.completed WS event
+
+    # After TestClient drains background tasks (within the same call), the
+    # patched run_synthesis was invoked with the pre-created DecisionRun id.
     assert captured["user_id"] == "ariel"
     assert captured["trigger"] == "check_in"
     assert "tax analyst" in captured["guidance"]
+    assert captured["existing_decision_run_id"] == out["decision_run_id"]
+
+    # The pre-created DecisionRun row exists and is owned by this user.
+    sess = client_with_db.app.state.session_factory()
+    try:
+        row = sess.get(DecisionRun, out["decision_run_id"])
+        assert row is not None
+        assert row.user_id == "ariel"
+        assert row.decision_kind == "plan_revision"
+    finally:
+        sess.close()
 
 
 def test_post_advisor_checkin_404_when_no_baseline(client_with_db):
+    """Baseline guard runs BEFORE any DecisionRun row insert. Without this
+    no-leak check the regression (status='running' zombie rows on 404) is
+    invisible."""
+    from argosy.state.models import DecisionRun
+
     body = {"user_id": "ghost", "guidance": "", "urgency": "now"}
     r = client_with_db.post("/api/advisor/check-in", json=body)
     assert r.status_code == 404
+
+    # No leaked DecisionRun row for ghost.
+    sess = client_with_db.app.state.session_factory()
+    try:
+        rows = sess.query(DecisionRun).filter_by(user_id="ghost").all()
+        assert rows == [], f"unexpected DecisionRun rows leaked for ghost: {rows}"
+    finally:
+        sess.close()
+
+
+def test_post_advisor_checkin_marks_decision_run_failed_on_exception(
+    client_with_db, monkeypatch,
+):
+    """If the BackgroundTask wrapper's run_synthesis raises, the pre-created
+    DecisionRun row must be marked status='failed' with finished_at set.
+    Without this, the row leaks as a permanent 'running' zombie."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.state.models import DecisionRun, PlanVersion, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.add(PlanVersion(user_id="ariel", role="baseline", raw_markdown="# Plan"))
+            sess.commit()
+    finally:
+        sess.close()
+
+    def _bomb(session, *, user_id, trigger, guidance="", existing_decision_run_id=None):
+        raise RuntimeError("synthesis exploded")
+
+    monkeypatch.setattr(flow, "run_synthesis", _bomb)
+
+    r = client_with_db.post(
+        "/api/advisor/check-in",
+        json={"user_id": "ariel", "guidance": "", "urgency": "now"},
+    )
+    # 202 returns BEFORE the background task runs; failure surfaces in the
+    # DecisionRun row state, not the HTTP response.
+    assert r.status_code == 202, r.text
+    out = r.json()
+
+    # TestClient drains background tasks synchronously after sending the
+    # response; by the time r.json() returns, the wrapper has caught the
+    # exception and marked the row failed.
+    sess = client_with_db.app.state.session_factory()
+    try:
+        row = sess.get(DecisionRun, out["decision_run_id"])
+        assert row is not None
+        assert row.status == "failed", f"row.status={row.status!r}"
+        assert row.finished_at is not None
+    finally:
+        sess.close()
 
 
 def test_post_advisor_checkin_invalidates_home_brief_cache(client_with_db, monkeypatch):
@@ -1383,11 +1459,11 @@ def test_post_advisor_checkin_invalidates_home_brief_cache(client_with_db, monke
     # inside the function body, so patching the module symbol covers it).
     monkeypatch.setattr(cache_mod, "invalidate_home_brief", lambda uid: purged.append(uid))
 
-    def _fake_run(session, *, user_id, trigger, guidance=""):
+    def _fake_run(session, *, user_id, trigger, guidance="", existing_decision_run_id=None):
         # Also call invalidate_home_brief as the real run_synthesis would.
         cache_mod.invalidate_home_brief(user_id)
         class _R:
-            decision_run_id = 1
+            decision_run_id = existing_decision_run_id or 1
             draft_id = 99
         return _R()
 
