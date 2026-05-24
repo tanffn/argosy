@@ -560,10 +560,13 @@ class BaseAgent(Generic[T]):
 
         image_attachments = inputs.get("image_attachments")
         pdf_attachments = inputs.get("pdf_attachments")
-        # turn_id is a control-plane field (WS event correlation); it is NOT
-        # a build_prompt input.  Capture it here, then pop so build_prompt
-        # never receives an unexpected keyword argument.
+        # turn_id / decision_id / intake_session_id are control-plane fields
+        # (WS event correlation); they are NOT build_prompt inputs.  Capture
+        # them here, then pop so build_prompt never receives an unexpected
+        # keyword argument.
         turn_id = inputs.pop("turn_id", None)
+        decision_id = inputs.pop("decision_id", None)
+        intake_session_id = inputs.pop("intake_session_id", None)
         bp_params = inspect.signature(self.build_prompt).parameters
         bp_accepts_var_kw = any(
             p.kind == inspect.Parameter.VAR_KEYWORD for p in bp_params.values()
@@ -611,8 +614,8 @@ class BaseAgent(Generic[T]):
                 "user_id": self.user_id,
                 "agent_role": self.agent_role,
                 "model": self.model,
-                "decision_id": inputs.get("decision_id"),
-                "intake_session_id": inputs.get("intake_session_id"),
+                "decision_id": decision_id,
+                "intake_session_id": intake_session_id,
                 "turn_id": turn_id,
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "run_correlation_id": run_correlation_id,
@@ -696,8 +699,8 @@ class BaseAgent(Generic[T]):
                 _finished_payload: dict[str, Any] = {
                     "user_id": self.user_id,
                     "agent_role": self.agent_role,
-                    "decision_id": inputs.get("decision_id"),
-                    "intake_session_id": inputs.get("intake_session_id"),
+                    "decision_id": decision_id,
+                    "intake_session_id": intake_session_id,
                     "run_correlation_id": run_correlation_id,
                     "finished_at": datetime.now(timezone.utc).isoformat(),
                     "status": "done",
@@ -734,8 +737,8 @@ class BaseAgent(Generic[T]):
                 publish_event_threadsafe("agent.run.finished", {
                     "user_id": self.user_id,
                     "agent_role": self.agent_role,
-                    "decision_id": inputs.get("decision_id"),
-                    "intake_session_id": inputs.get("intake_session_id"),
+                    "decision_id": decision_id,
+                    "intake_session_id": intake_session_id,
                     "run_correlation_id": run_correlation_id,
                     "turn_id": turn_id,
                     "finished_at": datetime.now(timezone.utc).isoformat(),

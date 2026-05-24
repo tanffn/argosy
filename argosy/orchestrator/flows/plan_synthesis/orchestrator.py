@@ -387,6 +387,7 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
         user_context_yaml=_pkg._load_user_context_yaml(session=session, user_id=user_id),
         domain_kb_files={},  # Each analyst's prompt picks its own; pass empty.
         recent_events="",
+        decision_id=decision_run_id,  # string audit token; BaseAgent.run reads inputs.get("decision_id")
     )
 
     reports: list[str] = []
@@ -564,6 +565,7 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
         round_index=1,
         n_max=2,
         ticker=ticker,
+        decision_id=decision_run_id,
     )
     bull_turn = bull_report.output if hasattr(bull_report, "output") else None
     bull_turn_dict = bull_turn.model_dump() if bull_turn is not None else {}
@@ -574,6 +576,7 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
         round_index=1,
         n_max=2,
         ticker=ticker,
+        decision_id=decision_run_id,
     )
     bear_turn = bear_report.output if hasattr(bear_report, "output") else None
     bear_turn_dict = bear_turn.model_dump() if bear_turn is not None else {}
@@ -583,6 +586,7 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
         bear_turns=[bear_turn_dict] if bear_turn_dict else [],
         rounds_run=1,
         ticker=ticker,
+        decision_id=decision_run_id,
     )
     out = fac_report.output if hasattr(fac_report, "output") else fac_report
     return out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
@@ -625,6 +629,7 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
         recent_fills_summary=fills_summary,
         speculation_cap_pct=speculation_cap_pct,
         speculation_cap_concurrent=speculation_cap_concurrent,
+        decision_id=decision_run_id,
     )
     return result.output  # type: ignore[attr-defined]
 
@@ -761,7 +766,11 @@ def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
                              "verdict": "ESCALATE", "raw": raw})
 
     try:
-        merged = facilitator.run_sync(verdicts=verdicts, rounds_run=1)
+        merged = facilitator.run_sync(
+            verdicts=verdicts,
+            rounds_run=1,
+            decision_id=decision_run_id,
+        )
         merged_out = getattr(merged, "output", merged)
         merged_text = (
             merged_out.model_dump_json()
@@ -836,6 +845,7 @@ def _run_one_risk_perspective(*, stance: str, user_id: str,
         prior_rounds=[],
         round_index=1,
         n_max=1,
+        decision_id=decision_run_id,
     )
     out = getattr(result, "output", result)
     return out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
@@ -882,6 +892,7 @@ def _run_phase_5_fund_manager(*, session, user_id,
         decision_kind="plan_revision",
         draft_plan=draft_output.model_dump_json(),
         risk_verdict=risk_verdict,
+        decision_id=decision_run_id,
     )
     out = result.output
 
