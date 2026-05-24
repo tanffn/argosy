@@ -424,11 +424,15 @@ def test_build_claude_code_messages_chunks_above_block_cap(tmp_path):
 
 
 def test_build_claude_code_messages_chunks_above_byte_cap(tmp_path):
-    """3 medium PDFs (under block-cap, OVER byte-cap) → split by size."""
+    """3 medium PDFs (under block-cap, OVER byte-cap) → split by size.
+
+    Uses an explicit `max_bytes_per_batch` so the test stays deterministic
+    even as the live default constant is tuned (it moved from 130 KB to
+    500 KB once the encryption gate handled the original failure mode).
+    """
     from argosy.agents.base import _build_claude_code_messages
 
-    # 3 × 85 KB PDFs — the actual payslip sizes that crashed claude.exe.
-    # Under the default block-cap (3) but well over the 130 KB byte cap.
+    # 3 × 85 KB PDFs. Pairs (170 KB) exceed 130 KB → 1 PDF per batch.
     pdfs = [
         _make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf", size_bytes=85 * 1024))
         for i in range(3)
@@ -438,10 +442,9 @@ def test_build_claude_code_messages_chunks_above_byte_cap(tmp_path):
         user_with_sources="ingest payslips",
         image_attachments=[],
         pdf_attachments=pdfs,
+        max_bytes_per_batch=130_000,
     )
 
-    # Each ~85 KB PDF alone is under the 130 KB cap. Pairs (170 KB) exceed
-    # it, so packing produces one PDF per batch → 3 batches.
     assert len(msgs) == 3
     for msg in msgs:
         pdf_count = sum(1 for b in msg["message"]["content"] if b["type"] == "document")
@@ -472,9 +475,11 @@ def test_build_claude_code_messages_2_form_106s_fit_one_batch(tmp_path):
 
 def test_build_claude_code_messages_nine_pdf_user_case(tmp_path):
     """The user's actual failing case: 9 PDFs at real sizes (Form 106s,
-    payslips, statements). With the size cap at 130 KB raw, greedy
-    packing produces a stable batch count we assert against (so future
-    cap tweaks surface explicitly in test diffs)."""
+    payslips, statements). Uses explicit caps that match the historical
+    130 KB / 3-block defaults so the test pins the packing math
+    independently of the live constants (which moved to 500 KB / 9 once
+    the encryption gate handled the original failure mode and chunking
+    became defense-in-depth rather than load-bearing)."""
     from argosy.agents.base import _build_claude_code_messages
 
     # Mirror the user's actual file sizes from their failing 9-PDF batch.
@@ -494,12 +499,12 @@ def test_build_claude_code_messages_nine_pdf_user_case(tmp_path):
         user_with_sources="ingest all 9, summarize",
         image_attachments=[],
         pdf_attachments=pdfs,
+        max_blocks_per_batch=3,
+        max_bytes_per_batch=130_000,
     )
 
     # Greedy packing under 130 KB byte cap + 3 block cap:
     # [85] [85] [85] [51, 52] [53, 51] [43, 68] = 6 batches.
-    # Each bin is well under both caps; pairs that would exceed 130 KB
-    # (e.g. 85 + 85 = 170) split correctly.
     assert len(msgs) == 6
     # First batch carries the user prompt verbatim + batch markers.
     b1_text = next(b["text"] for b in msgs[0]["message"]["content"] if b["type"] == "text")
@@ -509,11 +514,90 @@ def test_build_claude_code_messages_nine_pdf_user_case(tmp_path):
     last_text = next(b["text"] for b in msgs[-1]["message"]["content"] if b["type"] == "text")
     assert "Batch 6 of 6 (final)" in last_text
     assert "complete structured response" in last_text
-    # Sanity: each batch's total raw bytes ≤ cap (with a small slack for
-    # the single-attachment-oversize case, which doesn't apply here).
     for i, msg in enumerate(msgs):
         pdf_blocks = [b for b in msg["message"]["content"] if b["type"] == "document"]
         assert len(pdf_blocks) <= 3, f"batch {i+1} has {len(pdf_blocks)} PDFs (> 3 cap)"
+
+
+def test_build_claude_code_messages_3_decrypted_payslips_fit_single_batch_at_500kb_cap(tmp_path):
+    """Regression for the post-encryption-fix failure: 3 decrypted payslips
+    at ~94 KB each (282 KB total) should pack into ONE batch under the
+    new 500 KB default cap, NOT 3 separate turns (which previously
+    caused the SDK to die mid-stream with 'expected 3 turns, got 2')."""
+    from argosy.agents.base import _build_claude_code_messages
+
+    pdfs = [
+        _make_pdf_att(_write_fake_pdf(tmp_path, f"payslip_decrypted_{i}.pdf", size_bytes=94 * 1024))
+        for i in range(3)
+    ]
+
+    msgs = _build_claude_code_messages(
+        user_with_sources="ingest payslips",
+        image_attachments=[],
+        pdf_attachments=pdfs,
+    )
+
+    # Single batch under the live 500 KB default cap. Critical: text is
+    # the verbatim user prompt — NO batch markers, no multi-turn fragility.
+    assert len(msgs) == 1
+    pdf_blocks = [b for b in msgs[0]["message"]["content"] if b["type"] == "document"]
+    text_blocks = [b for b in msgs[0]["message"]["content"] if b["type"] == "text"]
+    assert len(pdf_blocks) == 3
+    assert text_blocks[0]["text"] == "ingest payslips"
+
+
+@pytest.mark.asyncio
+async def test_call_via_claude_code_inner_max_turns_scales_with_chunking(
+    tmp_path, monkeypatch,
+):
+    """When chunking yields N user messages, max_turns is bumped to N+1
+    so the SDK's agent loop doesn't cap mid-stream. Default of 1 stays
+    for the single-message path.
+
+    Uses 6 × 200 KB PDFs to reliably produce 3 batches under the live
+    500 KB byte cap: greedy packing yields [200+200][200+200][200+200].
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    pdfs = [
+        _make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf", size_bytes=200 * 1024))
+        for i in range(6)
+    ]
+    captured = _install_fake_query(monkeypatch, yielded=[
+        AssistantMessage(content=[TextBlock(text="ack-1")], model="claude-sonnet-4-6"),
+        _make_result_message(input_tokens=10, output_tokens=2),
+        AssistantMessage(content=[TextBlock(text="ack-2")], model="claude-sonnet-4-6"),
+        _make_result_message(input_tokens=10, output_tokens=2),
+        AssistantMessage(content=[TextBlock(text="final")], model="claude-sonnet-4-6"),
+        _make_result_message(input_tokens=10, output_tokens=2),
+    ])
+
+    agent = _make_agent()
+    await agent._call_via_claude_code_inner(
+        system="sys", user="ingest", pdf_attachments=pdfs,
+    )
+    # 3 chunks → max_turns should be 4 (chunks + 1 headroom).
+    assert captured["options"].max_turns == 4
+
+
+@pytest.mark.asyncio
+async def test_call_via_claude_code_inner_max_turns_unchanged_for_single_batch(
+    tmp_path, monkeypatch,
+):
+    """Single-message path keeps the default max_turns=1 — we only bump
+    when chunking is actually firing."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    pdfs = [_make_pdf_att(_write_fake_pdf(tmp_path, "p.pdf", size_bytes=10 * 1024))]
+    captured = _install_fake_query(monkeypatch, yielded=[
+        AssistantMessage(content=[TextBlock(text="x")], model="claude-sonnet-4-6"),
+        _make_result_message(input_tokens=5, output_tokens=1),
+    ])
+    agent = _make_agent()
+    await agent._call_via_claude_code_inner(
+        system="sys", user="ingest", pdf_attachments=pdfs,
+    )
+    assert captured["options"].max_turns == 1
 
 
 def test_build_claude_code_messages_oversize_single_attachment_stays_one_batch(tmp_path):
@@ -612,14 +696,22 @@ async def test_call_via_claude_code_inner_raises_on_incomplete_chunked_turns(
     tmp_path, monkeypatch
 ):
     """If the SDK yields fewer ResultMessages than user messages (claude.exe
-    crashed mid-stream), raise AgentRunError with a turn-count mismatch."""
+    crashed mid-stream), raise AgentRunError with a turn-count mismatch.
+
+    Uses 4 × 200 KB PDFs to reliably trigger chunking under the live
+    500 KB byte cap regardless of future tuning: greedy packing yields
+    [200+200][200+200] = 2 batches, so expected_turns=2.
+    """
     from claude_agent_sdk import AssistantMessage, TextBlock
 
     from argosy.agents.errors import AgentRunError
 
-    pdfs = [_make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf")) for i in range(4)]
+    pdfs = [
+        _make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf", size_bytes=200 * 1024))
+        for i in range(4)
+    ]
 
-    # 4 PDFs at max_per_batch=3 → 2 expected turns. Yield only 1 turn worth.
+    # 4 × 200 KB at 500 KB cap → 2 batches. Yield only 1 turn worth.
     yielded = [
         AssistantMessage(
             content=[TextBlock(text="batch1")], model="claude-sonnet-4-6",

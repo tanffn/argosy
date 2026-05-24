@@ -171,27 +171,38 @@ APPROX_PRICING_USD_PER_MTOK = _PRICE_BY_MODEL
 
 # Per-batch caps for `claude_code` backend attachment chunking.
 #
-# claude.exe (the bundled Claude Code CLI) dies silently with exit 1 and
-# no stderr when a single streaming-mode user message carries too much
-# binary content. Observed empirically:
-#   - 2 PDFs at 43+68 KB raw (≈150 KB base64) → succeeds
-#   - 3 PDFs at 85 KB each (≈340 KB base64)   → fails
-# So the cliff sits somewhere between ~150 KB and ~340 KB of base64
-# content per message. We use a conservative 130 KB raw cap (≈173 KB
-# base64) so the prior 2-Form-106 success-case still fits in a single
-# batch but typical multi-payslip uploads get auto-split.
+# Historical context (worth keeping — the heuristics moved with our
+# understanding of the failure modes):
 #
-# Chunking happens inside `_build_claude_code_messages`: greedy bin
-# packing of (pdf + image) attachments by both byte-size AND block-count
-# (whichever cap is hit first). Each bin becomes its own user message
-# yielded sequentially into one streaming-mode `query()` call. Each
-# batch produces its own assistant turn; turns 2+ benefit from the
-# prompt cache on prior batches' content. Only the final batch's
-# assistant text is used as the ModelCall response (intermediate
-# acknowledgements are dropped); tokens/cost sum across all turns.
-# See `_call_via_claude_code_inner`.
-CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH = 3
-CLAUDE_CODE_MAX_BINARY_BYTES_PER_BATCH = 130_000
+#   - Initial assumption (af492fb, 62220a4): 3+ PDFs crashed claude.exe
+#     with `Command failed exit 1, stderr empty`. We blamed stdin JSONL
+#     line size and set a 130 KB raw cap, splitting big batches across
+#     multiple user messages in one streaming-mode query.
+#   - Actual root cause (ec2e850): the failing PDFs were password-
+#     encrypted (Israeli payslips with owner-restrictions). Anthropic's
+#     PDF parser refuses encrypted dicts and claude.exe exits 1; the
+#     chunking was solving the wrong problem.
+#   - Followup observation: with the 130 KB cap, 3 decrypted ~94 KB
+#     payslips got chunked into 3 batches, claude.exe processed batch 1
+#     + 2 successfully, then died mid-batch-3 after a ~5-min session.
+#     Long multi-turn streaming sessions are themselves fragile — the
+#     SDK's `max_turns=1` may have been capping the agent loop, or
+#     claude.exe has its own session-length / context-buildup limit.
+#
+# Current strategy: keep chunking as a SAFETY NET, but raise the cap so
+# typical advisor uploads (3–9 PDFs at 50–100 KB each) stay in a single
+# user message. Single-message is the prompt-cache-friendly fast path
+# and avoids the multi-turn fragility entirely. We pass
+# `max_turns = max(expected_turns + 1, 2)` to the SDK when chunking
+# does fire, so the agent loop has headroom for every yielded message.
+#
+# 500 KB raw ≈ 670 KB base64. The earliest empirical failure we ever
+# saw was at ~570 KB raw (encrypted PDFs that would have failed at any
+# size). With the encryption gate now handling those, we have no firm
+# evidence of a single-message size cliff anywhere near 500 KB; the cap
+# stays as defense-in-depth until we observe a real failure.
+CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH = 9
+CLAUDE_CODE_MAX_BINARY_BYTES_PER_BATCH = 500_000
 
 
 def _build_claude_code_messages(
@@ -1032,6 +1043,13 @@ class BaseAgent(Generic[T]):
             # (it sometimes carries deprecation notices etc.).
             self._log.warning("claude_code.stderr", line=line.rstrip())
 
+        # max_turns: cap on the SDK's agent loop. For a plain single-user-
+        # message call this is 1 (the original behavior). When attachment
+        # chunking fires (see `_build_claude_code_messages`), we yield N
+        # user messages and need N assistant turns — we set max_turns
+        # below (after computing expected_turns) so the loop has headroom.
+        # An undersized max_turns may have contributed to the "expected N
+        # turns, got N-1" failures observed when chunking 3+ batches.
         options_kwargs: dict[str, Any] = {
             "system_prompt": system,
             "max_turns": 1,
@@ -1106,6 +1124,17 @@ class BaseAgent(Generic[T]):
         else:
             expected_turns = 1
             sdk_prompt = user_with_sources
+
+        # Raise the SDK turn cap to match the actual number of yielded
+        # user messages, with one turn of headroom. The default of 1 is
+        # fine for the typical single-message call but caps the agent
+        # loop too low when chunking yields multiple user messages, and
+        # may be the underlying cause of "expected N turns, got N-1"
+        # mid-stream failures observed against multi-batch sends.
+        if expected_turns > 1:
+            options_kwargs["max_turns"] = expected_turns + 1
+            # Re-build options now that max_turns is finalized.
+            options = ClaudeAgentOptions(**options_kwargs)
 
         tokens_in = 0
         tokens_out = 0
