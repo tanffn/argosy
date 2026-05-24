@@ -317,3 +317,230 @@ async def test_sources_inlined_with_image_attachments(tmp_path, monkeypatch):
     assert '<source id="doc/1">' in text
     assert "source body" in text
     assert "describe" in text
+
+
+# ----------------------------------------------------------------------
+# Change 4 — multi-PDF auto-batching (claude.exe stdin-line cap)
+# ----------------------------------------------------------------------
+#
+# Background: claude.exe's stdin JSONL parser dies silently when a
+# single line exceeds ~760 KB (commit e863fc9). Argosy splits binary
+# attachments (PDFs + images) into batches of at most
+# `CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH` when total > threshold.
+# Each batch becomes its own user→assistant turn in one streaming-mode
+# query; only the final turn's text is used as the model output.
+
+
+def _make_pdf_att(path, original_name="x.pdf"):
+    """Fake Attachment-like object with `.path` and `.original_name`."""
+    class _Att:
+        pass
+    a = _Att()
+    a.path = str(path)
+    a.original_name = original_name
+    return a
+
+
+def _make_image_att(path, mime_type="image/png"):
+    class _Att:
+        pass
+    a = _Att()
+    a.path = str(path)
+    a.mime_type = mime_type
+    return a
+
+
+def _write_fake_pdf(tmp_path, name, size_bytes=1024):
+    """Write a fake PDF file. Base64-encodable; content doesn't need to
+    be a real PDF since we never feed it to a real parser in tests."""
+    p = tmp_path / name
+    p.write_bytes(b"%PDF-1.4\n" + b"x" * (size_bytes - 9))
+    return p
+
+
+def test_build_claude_code_messages_single_batch_below_threshold(tmp_path):
+    """Up to MAX_PER_BATCH PDFs collapse into one user message — verbatim
+    pre-batching behavior. Text block carries the original prompt unchanged."""
+    from argosy.agents.base import (
+        CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH,
+        _build_claude_code_messages,
+    )
+
+    pdfs = [
+        _make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf"))
+        for i in range(CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH)
+    ]
+
+    msgs = _build_claude_code_messages(
+        user_with_sources="original prompt",
+        image_attachments=[],
+        pdf_attachments=pdfs,
+    )
+
+    assert len(msgs) == 1
+    content = msgs[0]["message"]["content"]
+    pdf_blocks = [b for b in content if b["type"] == "document"]
+    text_blocks = [b for b in content if b["type"] == "text"]
+    assert len(pdf_blocks) == CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH
+    assert len(text_blocks) == 1
+    # Text is unchanged — no batch markers prepended.
+    assert text_blocks[0]["text"] == "original prompt"
+
+
+def test_build_claude_code_messages_chunks_above_threshold(tmp_path):
+    """4 PDFs → 2 batches of 3+1, with first/last text markers."""
+    from argosy.agents.base import _build_claude_code_messages
+
+    pdfs = [_make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf")) for i in range(4)]
+
+    msgs = _build_claude_code_messages(
+        user_with_sources="ingest these payslips",
+        image_attachments=[],
+        pdf_attachments=pdfs,
+        max_per_batch=3,
+    )
+
+    assert len(msgs) == 2
+    # Batch 1: 3 PDFs + opening text with original prompt + batch-1 marker.
+    b1_content = msgs[0]["message"]["content"]
+    assert sum(1 for b in b1_content if b["type"] == "document") == 3
+    b1_text = next(b["text"] for b in b1_content if b["type"] == "text")
+    assert "ingest these payslips" in b1_text
+    assert "Batch 1 of 2" in b1_text
+    assert "final batch" in b1_text  # tells model to wait for final
+    # Batch 2: 1 PDF + final-batch marker.
+    b2_content = msgs[1]["message"]["content"]
+    assert sum(1 for b in b2_content if b["type"] == "document") == 1
+    b2_text = next(b["text"] for b in b2_content if b["type"] == "text")
+    assert "Batch 2 of 2" in b2_text
+    assert "final" in b2_text.lower()
+    assert "complete structured response" in b2_text
+
+
+def test_build_claude_code_messages_nine_pdfs_three_batches(tmp_path):
+    """The user's actual failing case: 9 PDFs split into 3 batches of 3."""
+    from argosy.agents.base import _build_claude_code_messages
+
+    pdfs = [_make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf")) for i in range(9)]
+
+    msgs = _build_claude_code_messages(
+        user_with_sources="review all of these",
+        image_attachments=[],
+        pdf_attachments=pdfs,
+        max_per_batch=3,
+    )
+
+    assert len(msgs) == 3
+    for i, msg in enumerate(msgs):
+        pdf_count = sum(1 for b in msg["message"]["content"] if b["type"] == "document")
+        assert pdf_count == 3, f"batch {i+1} has {pdf_count} PDFs, expected 3"
+
+    # Middle batch (i=1): says "Batch 2 of 3" and does NOT include the original prompt.
+    middle_text = next(
+        b["text"]
+        for b in msgs[1]["message"]["content"]
+        if b["type"] == "text"
+    )
+    assert "Batch 2 of 3" in middle_text
+    assert "review all of these" not in middle_text
+
+
+def test_build_claude_code_messages_mixed_pdf_image_ordering(tmp_path):
+    """PDFs come before images in each batch — matches api_key cache-prefix order."""
+    from argosy.agents.base import _build_claude_code_messages
+
+    p = _write_fake_pdf(tmp_path, "doc.pdf")
+    # Tiny valid PNG so base64 encoding succeeds.
+    img_path = tmp_path / "shot.png"
+    img_path.write_bytes(bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+        "890000000d4944415478da6300010000000500010d0a2db40000000049454e44ae426082"
+    ))
+
+    msgs = _build_claude_code_messages(
+        user_with_sources="mixed test",
+        image_attachments=[_make_image_att(img_path)],
+        pdf_attachments=[_make_pdf_att(p)],
+    )
+
+    assert len(msgs) == 1
+    content = msgs[0]["message"]["content"]
+    # PDF block must come before image block.
+    block_kinds = [b["type"] for b in content if b["type"] in ("document", "image")]
+    assert block_kinds == ["document", "image"]
+
+
+@pytest.mark.asyncio
+async def test_call_via_claude_code_inner_uses_last_turn_text_with_chunking(
+    tmp_path, monkeypatch
+):
+    """Multi-batch send: ModelCall.text == last turn's text only."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    pdfs = [_make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf")) for i in range(4)]
+
+    # Yield: batch1 assistant ack + result, batch2 assistant final + result.
+    yielded = [
+        AssistantMessage(
+            content=[TextBlock(text="Got batch 1, awaiting more.")],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(
+            input_tokens=100, output_tokens=10, cache_creation_input_tokens=200,
+            total_cost_usd=0.01,
+        ),
+        AssistantMessage(
+            content=[TextBlock(text='{"final": "structured response"}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(
+            input_tokens=20, output_tokens=50, cache_read_input_tokens=300,
+            total_cost_usd=0.02,
+        ),
+    ]
+    _install_fake_query(monkeypatch, yielded=yielded)
+
+    agent = _make_agent()
+    call = await agent._call_via_claude_code_inner(
+        system="sys", user="ingest", pdf_attachments=pdfs,
+    )
+
+    # Only the LAST turn's text survives — batch-1 ack is dropped.
+    assert call.text == '{"final": "structured response"}'
+    # Tokens summed across turns: in 100+20=120, out 10+50=60.
+    assert call.tokens_in == 120
+    assert call.tokens_out == 60
+    # cache_creation from batch 1 + cache_read from batch 2, both retained.
+    assert call.cache_creation_tokens == 200
+    assert call.cache_input_tokens == 300
+
+
+@pytest.mark.asyncio
+async def test_call_via_claude_code_inner_raises_on_incomplete_chunked_turns(
+    tmp_path, monkeypatch
+):
+    """If the SDK yields fewer ResultMessages than user messages (claude.exe
+    crashed mid-stream), raise AgentRunError with a turn-count mismatch."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    from argosy.agents.errors import AgentRunError
+
+    pdfs = [_make_pdf_att(_write_fake_pdf(tmp_path, f"p{i}.pdf")) for i in range(4)]
+
+    # 4 PDFs at max_per_batch=3 → 2 expected turns. Yield only 1 turn worth.
+    yielded = [
+        AssistantMessage(
+            content=[TextBlock(text="batch1")], model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=10, output_tokens=5),
+        # ... no batch 2 — simulate crash
+    ]
+    _install_fake_query(monkeypatch, yielded=yielded)
+
+    agent = _make_agent()
+    with pytest.raises(AgentRunError) as exc_info:
+        await agent._call_via_claude_code_inner(
+            system="sys", user="ingest", pdf_attachments=pdfs,
+        )
+    msg = str(exc_info.value)
+    assert "expected 2 turn(s), got 1" in msg

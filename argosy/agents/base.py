@@ -169,6 +169,135 @@ _PRICE_BY_MODEL: dict[str, tuple[float, float]] = {
 # Back-compat alias for any external callers / docs referencing the prior name.
 APPROX_PRICING_USD_PER_MTOK = _PRICE_BY_MODEL
 
+# Maximum binary content blocks (PDFs + images) per single user message
+# on the `claude_code` backend before we split into multiple user messages
+# within one streaming-mode query. claude.exe's stdin JSONL parser dies
+# silently on single lines above ~760 KB (commit e863fc9 captured the
+# empty-stderr fingerprint); 3 blocks at typical Israeli payslip / Form 106
+# sizes (~85 KB each → ~340 KB base64-encoded) sits comfortably under that.
+# Higher counts get auto-chunked across multiple user messages in one
+# `query()` invocation; each batch becomes its own assistant turn but
+# turns 2+ benefit from the prompt cache on the prior batches' content.
+# The final batch's text asks the model to produce its full structured
+# response covering all attachments seen across the conversation; only
+# that turn's text is used as the model output (see
+# `_call_via_claude_code_inner`).
+CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH = 3
+
+
+def _build_claude_code_messages(
+    *,
+    user_with_sources: str,
+    image_attachments: list[Any],
+    pdf_attachments: list[Any],
+    max_per_batch: int = CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH,
+) -> list[dict[str, Any]]:
+    """Build the user-message dicts to send to the claude-agent-sdk.
+
+    Single-element output when total binary attachments ≤ ``max_per_batch``
+    (preserves the pre-batching behavior verbatim). Otherwise splits the
+    attachments into batches of at most ``max_per_batch`` each and yields
+    one user message per batch:
+
+    - Batch 1: original ``user_with_sources`` text + first N attachments.
+    - Middle batches: continuation marker + next N attachments.
+    - Last batch: final-batch marker asking the model to produce its full
+      structured response covering all attachments seen across the chat.
+
+    Each batch becomes its own assistant turn from the SDK's perspective
+    (separate AssistantMessage + ResultMessage). The caller in
+    ``_call_via_claude_code_inner`` keeps only the last turn's text as
+    the ModelCall response and sums tokens/cost across all turns.
+
+    PDFs are placed before images (matches the api_key path's cache-prefix
+    ordering, so the prompt cache prefix is consistent across backends).
+    """
+    import base64
+    from pathlib import Path as _Path
+
+    def _pdf_block(att: Any) -> dict[str, Any]:
+        path = getattr(att, "path", None) or att["path"]
+        data = base64.b64encode(_Path(path).read_bytes()).decode("ascii")
+        return {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": data,
+            },
+        }
+
+    def _image_block(att: Any) -> dict[str, Any]:
+        path = getattr(att, "path", None) or att["path"]
+        mime = getattr(att, "mime_type", None) or att["mime_type"]
+        data = base64.b64encode(_Path(path).read_bytes()).decode("ascii")
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": mime,
+                "data": data,
+            },
+        }
+
+    # PDFs first, then images — matches api_key path's ordering.
+    combined: list[tuple[str, Any]] = (
+        [("pdf", a) for a in (pdf_attachments or [])]
+        + [("image", a) for a in (image_attachments or [])]
+    )
+    total = len(combined)
+
+    def _msg(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "type": "user",
+            "session_id": "",
+            "message": {"role": "user", "content": blocks},
+            "parent_tool_use_id": None,
+        }
+
+    if total <= max_per_batch:
+        # Single-batch path — text last, matching the previous inline layout.
+        blocks = [
+            _pdf_block(a) if k == "pdf" else _image_block(a) for k, a in combined
+        ]
+        blocks.append({"type": "text", "text": user_with_sources})
+        return [_msg(blocks)]
+
+    # Multi-batch path
+    chunks = [combined[i : i + max_per_batch] for i in range(0, total, max_per_batch)]
+    n_chunks = len(chunks)
+    messages: list[dict[str, Any]] = []
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            text = (
+                f"{user_with_sources}\n\n"
+                f"[Attachments split into {n_chunks} batches due to local-CLI "
+                f"payload limits. Batch 1 of {n_chunks}: {len(chunk)} "
+                f"attachment(s) this batch, {total} total across all batches. "
+                f"Acknowledge briefly; the full structured response is "
+                f"requested on the final batch.]"
+            )
+        elif i == n_chunks - 1:
+            text = (
+                f"[Batch {i + 1} of {n_chunks} (final): {len(chunk)} more "
+                f"attachment(s). Now produce your complete structured "
+                f"response covering ALL attachments seen across this "
+                f"conversation, per the original instructions in batch 1.]"
+            )
+        else:
+            text = (
+                f"[Batch {i + 1} of {n_chunks}: {len(chunk)} more "
+                f"attachment(s). Acknowledge briefly; the full structured "
+                f"response is requested on the final batch.]"
+            )
+
+        blocks = [
+            _pdf_block(a) if k == "pdf" else _image_block(a) for k, a in chunk
+        ]
+        blocks.append({"type": "text", "text": text})
+        messages.append(_msg(blocks))
+    return messages
+
 
 class ConfidenceBand(str, Enum):
     HIGH = "HIGH"
@@ -905,53 +1034,30 @@ class BaseAgent(Generic[T]):
         # AsyncIterable[dict] streaming-mode for image/PDF turns so we can
         # pass content blocks. The SDK serializes a string prompt as the
         # same message dict shape we yield manually here (see client.py:209).
+        #
+        # When total binary attachments exceed
+        # `CLAUDE_CODE_MAX_BINARY_BLOCKS_PER_BATCH`, _build_claude_code_messages
+        # splits into multiple user messages within ONE streaming-mode
+        # query (each becomes its own assistant turn; turns 2+ hit the
+        # prompt cache from prior batches; only the last turn's text is
+        # used as the ModelCall response).
         if image_attachments or pdf_attachments:
-            import base64
-            from pathlib import Path as _Path
-
-            # Block order matches the api_key path: PDFs (large stable docs)
-            # before images, so the prompt cache prefix is consistent across
-            # backends. Sources stay inlined in user_with_sources for this
-            # backend — the claude-agent-sdk doesn't accept document blocks.
-            content_blocks: list[dict[str, Any]] = []
-            for att in pdf_attachments or []:
-                path = getattr(att, "path", None) or att["path"]
-                data = base64.b64encode(_Path(path).read_bytes()).decode("ascii")
-                content_blocks.append({
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": data,
-                    },
-                })
-            for att in image_attachments or []:
-                path = getattr(att, "path", None) or att["path"]
-                mime = getattr(att, "mime_type", None) or att["mime_type"]
-                data = base64.b64encode(_Path(path).read_bytes()).decode("ascii")
-                content_blocks.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": mime,
-                        "data": data,
-                    },
-                })
-            content_blocks.append({"type": "text", "text": user_with_sources})
+            user_messages = _build_claude_code_messages(
+                user_with_sources=user_with_sources,
+                image_attachments=image_attachments or [],
+                pdf_attachments=pdf_attachments or [],
+            )
+            expected_turns = len(user_messages)
 
             async def _prompt_stream():
-                yield {
-                    "type": "user",
-                    "session_id": "",
-                    "message": {"role": "user", "content": content_blocks},
-                    "parent_tool_use_id": None,
-                }
+                for msg in user_messages:
+                    yield msg
 
             sdk_prompt: Any = _prompt_stream()
         else:
+            expected_turns = 1
             sdk_prompt = user_with_sources
 
-        text_parts: list[str] = []
         tokens_in = 0
         tokens_out = 0
         cache_input_tokens = 0
@@ -978,28 +1084,37 @@ class BaseAgent(Generic[T]):
             except (TypeError, ValueError):
                 return 0
 
+        # Track text per turn (one buffer per assistant turn). With multi-
+        # batch chunking, intermediate turns are short acknowledgements;
+        # only the LAST turn carries the structured response we want.
+        # Tokens/cost accumulate across all turns (with multi-batch, turn
+        # 2+ usage rows include the prompt-cache reads from prior turns).
+        turn_buffers: list[list[str]] = [[]]
+        turns_seen = 0
+
         try:
             async for message in query(prompt=sdk_prompt, options=options):
                 if isinstance(message, AssistantMessage):
                     for block in getattr(message, "content", []) or []:
                         if isinstance(block, TextBlock):
-                            text_parts.append(block.text)
+                            turn_buffers[-1].append(block.text)
                 elif isinstance(message, ResultMessage):
-                    cost_usd_from_sdk = float(
+                    turns_seen += 1
+                    cost_usd_from_sdk += float(
                         getattr(message, "total_cost_usd", 0.0) or 0.0
                     )
                     usage = getattr(message, "usage", None)
                     if usage is not None:
-                        tokens_in = _usage_get(usage, "input_tokens")
-                        tokens_out = _usage_get(usage, "output_tokens")
+                        tokens_in += _usage_get(usage, "input_tokens")
+                        tokens_out += _usage_get(usage, "output_tokens")
                         # Wave A.5 — cache + thinking telemetry. Anthropic's
                         # Messages API returns these under the same keys the
                         # api_key backend reads; the agent-sdk forwards them
                         # unchanged on its `usage` dict.
-                        cache_input_tokens = _usage_get(
+                        cache_input_tokens += _usage_get(
                             usage, "cache_read_input_tokens",
                         )
-                        cache_creation_tokens = _usage_get(
+                        cache_creation_tokens += _usage_get(
                             usage, "cache_creation_input_tokens",
                         )
                         # Thinking tokens: Anthropic exposes these as
@@ -1008,7 +1123,11 @@ class BaseAgent(Generic[T]):
                         # the agent-sdk's usage dict the same key flows
                         # through; if a future SDK rev renames it we fall
                         # back to 0 silently.
-                        thinking_tokens = _usage_get(usage, "thinking_tokens")
+                        thinking_tokens += _usage_get(usage, "thinking_tokens")
+                    # Open a new buffer for the next turn (stays empty if
+                    # this was the last; harmless — we use the last
+                    # non-empty buffer below).
+                    turn_buffers.append([])
         except Exception as exc:  # pragma: no cover - exercised by integration only
             # Attach the tail of claude.exe stderr (captured by
             # `_capture_stderr`) so the AgentRunError surfaces the actual
@@ -1026,8 +1145,35 @@ class BaseAgent(Generic[T]):
                 f"{stderr_suffix}"
             ) from exc
 
+        # Validate that every batched user message produced a turn.
+        # Only enforce in chunked mode (expected_turns > 1) — single-turn
+        # callers (including the existing fixture-driven tests in
+        # test_wave_a5_claude_code_backend.py) sometimes yield no
+        # ResultMessage at all, since they care only about what was sent
+        # to the SDK. A mismatch in chunked mode means the SDK gave up
+        # mid-stream (claude.exe crashed between batches); surface
+        # explicitly so the caller doesn't get a partial response.
+        if expected_turns > 1 and turns_seen != expected_turns:
+            stderr_tail = "".join(stderr_lines)[-2000:].strip()
+            stderr_suffix = (
+                f"\n[claude.exe stderr]\n{stderr_tail}" if stderr_tail
+                else "\n[claude.exe stderr was empty]"
+            )
+            raise AgentRunError(
+                f"{self.agent_role}: claude-agent-sdk error: "
+                f"expected {expected_turns} turn(s), got {turns_seen}"
+                f"{stderr_suffix}"
+            )
+
+        # Use the LAST non-empty turn buffer as the final response. With
+        # single-batch (no chunking) this is just the only turn's text;
+        # with chunking, intermediate turns are short acknowledgements
+        # ("got the docs, awaiting more") and the structured response
+        # lives in the final batch's turn.
+        final_buf = next((b for b in reversed(turn_buffers) if b), [])
+
         return ModelCall(
-            text="".join(text_parts),
+            text="".join(final_buf),
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             model=self.model,
