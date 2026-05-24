@@ -98,6 +98,41 @@ class AttachmentUnsupportedError(HTTPException):
         super().__init__(status_code=415, detail=detail)
 
 
+class AttachmentEncryptedError(HTTPException):
+    """HTTP 422 — PDF is password-protected; Claude can't read it.
+
+    The bundled ``claude.exe`` returns a placeholder "PDF is password
+    protected" response when it encounters an encrypted PDF and then
+    exits 1; the SDK turns that exit code into a fatal `ProcessError`,
+    so even the placeholder text is discarded. Detecting encryption at
+    upload time gives a clear, actionable error to the user instead.
+
+    Common case: Israeli payslips (``תלוש שכר``) ship password-locked
+    with the recipient's national ID number as the password.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(status_code=422, detail=detail)
+
+
+def _is_pdf_encrypted(raw_bytes: bytes) -> bool:
+    """Return True if the PDF has an `/Encrypt` entry in its trailer dict.
+
+    PDFs declare encryption via an `/Encrypt` reference in the trailer
+    that's typically near the end of the file but can also appear in
+    cross-reference streams scattered earlier. We scan the first and
+    last 64 KB to keep the check fast on multi-MB documents while still
+    catching almost all real-world layouts. False positives are
+    possible if the literal bytes ``/Encrypt`` appear in unencrypted
+    text content; in practice this is rare enough that we accept the
+    occasional spurious rejection over the alternative of parsing the
+    full PDF structure.
+    """
+    head = raw_bytes[:65_536]
+    tail = raw_bytes[-65_536:] if len(raw_bytes) > 65_536 else b""
+    return b"/Encrypt" in head or b"/Encrypt" in tail
+
+
 def _classify(mime_type: str, original_name: str) -> Literal["text", "image", "pdf"]:
     """Map MIME + extension → 'text' | 'image' | 'pdf'. Raise 415 otherwise."""
     mt = (mime_type or "").lower().strip()
@@ -154,6 +189,16 @@ async def save_attachment(
             f"attachment {original_name!r} is {size} bytes; cap is {MAX_BYTES_PER_FILE}"
         )
 
+    # Block encrypted PDFs upfront — Claude can't extract content from
+    # them and the SDK error path swallows the placeholder response.
+    if kind == "pdf" and _is_pdf_encrypted(contents):
+        raise AttachmentEncryptedError(
+            f"{original_name!r} is a password-protected PDF and can't be "
+            "read by the advisor. Israeli payslips (תלוש שכר) and similar "
+            "documents are often locked with the recipient's national ID "
+            "number — open the PDF, remove the password, then re-upload."
+        )
+
     dto = await catalog_upload(
         user_id=user_id,
         raw_bytes=contents,
@@ -206,6 +251,7 @@ async def save_attachments_with_total_cap(
 
 __all__ = [
     "Attachment",
+    "AttachmentEncryptedError",
     "AttachmentTooLargeError",
     "AttachmentUnsupportedError",
     "MAX_BYTES_PER_FILE",

@@ -18,9 +18,11 @@ from starlette.datastructures import Headers
 
 from argosy.services.turn_attachments import (
     Attachment,
+    AttachmentEncryptedError,
     AttachmentTooLargeError,
     AttachmentUnsupportedError,
     MAX_BYTES_PER_FILE,
+    _is_pdf_encrypted,
     save_attachment,
     save_attachments_with_total_cap,
 )
@@ -224,3 +226,65 @@ async def test_save_attachments_total_cap_actually_exercises_rollback(argosy_hom
         await save_attachments_with_total_cap(
             user_id="ariel", turn_uuid="t9", uploads=uploads,
         )
+
+
+# ----------------------------------------------------------------------
+# Encrypted-PDF detection (Israeli payslip case)
+# ----------------------------------------------------------------------
+#
+# Confirmed in dev with the user's real תלוש שכר PDFs: claude.exe reports
+# "PDF is password protected" via an assistant message, then exits 1; the
+# SDK turns that exit code into a fatal ProcessError so even the
+# placeholder text is lost. Detecting at upload time gives an actionable
+# error instead of an opaque crash.
+
+
+def test_is_pdf_encrypted_detects_encrypt_in_head():
+    """An /Encrypt reference in the leading bytes triggers detection."""
+    raw = b"%PDF-1.7\n1 0 obj <</Encrypt 2 0 R /Size 5>> endobj\n%%EOF"
+    assert _is_pdf_encrypted(raw) is True
+
+
+def test_is_pdf_encrypted_detects_encrypt_in_tail():
+    """The trailer dict typically lives near the end of large PDFs."""
+    raw = b"%PDF-1.7\n" + b"x" * 100_000 + b"\ntrailer<</Encrypt 5 0 R>>\n%%EOF"
+    assert _is_pdf_encrypted(raw) is True
+
+
+def test_is_pdf_encrypted_false_for_plain_pdf():
+    """No /Encrypt anywhere → not encrypted."""
+    raw = b"%PDF-1.7\n1 0 obj <</Type /Catalog>> endobj\n%%EOF"
+    assert _is_pdf_encrypted(raw) is False
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_rejects_encrypted_pdf(argosy_home_db):
+    """Uploading a password-locked PDF raises AttachmentEncryptedError
+    (HTTP 422) with a message that points the user at the fix."""
+    encrypted_pdf = (
+        b"%PDF-1.7\n"
+        b"1 0 obj\n<</Filter/Standard /V 4 /R 4 /Length 128>>\nendobj\n"
+        b"trailer\n<</Encrypt 1 0 R /Size 2>>\n%%EOF\n"
+    )
+    upload = _upload(
+        encrypted_pdf, filename="payslip.pdf", content_type="application/pdf",
+    )
+    with pytest.raises(AttachmentEncryptedError) as exc_info:
+        await save_attachment(user_id="ariel", turn_uuid="enc1", upload=upload)
+    assert exc_info.value.status_code == 422
+    # Detail should name the file and suggest removing the password.
+    detail = exc_info.value.detail
+    assert "payslip.pdf" in detail
+    assert "password" in detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_accepts_plain_pdf(argosy_home_db):
+    """A plain (non-encrypted) PDF still saves normally."""
+    plain_pdf = b"%PDF-1.7\n1 0 obj <</Type /Catalog>> endobj\n%%EOF"
+    upload = _upload(
+        plain_pdf, filename="statement.pdf", content_type="application/pdf",
+    )
+    att = await save_attachment(user_id="ariel", turn_uuid="enc2", upload=upload)
+    assert att.kind == "pdf"
+    assert att.size_bytes == len(plain_pdf)
