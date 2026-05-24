@@ -839,6 +839,21 @@ class BaseAgent(Generic[T]):
                 "claude-agent-sdk is not installed. Run: uv add claude-agent-sdk"
             ) from exc
 
+        # Capture claude.exe stderr lines so a non-zero exit surfaces an
+        # actionable error instead of the SDK's hardcoded "Check stderr
+        # output for details" placeholder (subprocess_cli.py:677). Each
+        # line is appended to `stderr_lines` and also forwarded to the
+        # structured logger; on failure we attach the captured tail to
+        # the AgentRunError so the caller / UI sees the real cause.
+        stderr_lines: list[str] = []
+
+        def _capture_stderr(line: str) -> None:
+            stderr_lines.append(line)
+            # WARNING level — claude.exe stderr is normally empty, so any
+            # output is worth surfacing in the backend log even on success
+            # (it sometimes carries deprecation notices etc.).
+            self._log.warning("claude_code.stderr", line=line.rstrip())
+
         options_kwargs: dict[str, Any] = {
             "system_prompt": system,
             "max_turns": 1,
@@ -849,6 +864,7 @@ class BaseAgent(Generic[T]):
             # actual tool invocation, so this is a safe pairing.
             "permission_mode": "bypassPermissions",
             "model": self.model,
+            "stderr": _capture_stderr,
         }
         # Wave A.5: thread extended thinking through to the agent-sdk.
         # The SDK accepts the same shape Anthropic's REST API uses
@@ -994,8 +1010,20 @@ class BaseAgent(Generic[T]):
                         # back to 0 silently.
                         thinking_tokens = _usage_get(usage, "thinking_tokens")
         except Exception as exc:  # pragma: no cover - exercised by integration only
+            # Attach the tail of claude.exe stderr (captured by
+            # `_capture_stderr`) so the AgentRunError surfaces the actual
+            # cause instead of the SDK's hardcoded "Check stderr output
+            # for details" placeholder (subprocess_cli.py:677). Limit to
+            # the last ~2000 chars to keep the exception message readable
+            # while still preserving the failure tail.
+            stderr_tail = "".join(stderr_lines)[-2000:].strip()
+            stderr_suffix = (
+                f"\n[claude.exe stderr]\n{stderr_tail}" if stderr_tail
+                else "\n[claude.exe stderr was empty]"
+            )
             raise AgentRunError(
                 f"{self.agent_role}: claude-agent-sdk error: {exc}"
+                f"{stderr_suffix}"
             ) from exc
 
         return ModelCall(
