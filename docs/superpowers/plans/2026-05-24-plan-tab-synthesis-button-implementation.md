@@ -345,33 +345,34 @@ def test_phase_2_passes_decision_id_to_researchers(monkeypatch):
 
 
 def test_phase_3_passes_decision_id_to_synthesizer(monkeypatch):
-    """_run_phase_3_synthesizer forwards decision_id to PlanSynthesizerAgent."""
+    """_run_phase_3_synthesizer forwards decision_id to PlanSynthesizerAgent.
+
+    Stub returns a duck-typed object — the orchestrator only reads
+    `.output` from the return value, and only `result.output` (the same
+    duck) flows through `_enforce_speculation_cap`. We patch the cap helper
+    too so we don't have to construct a real `PlanSynthesisOutput`.
+    """
     from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
+    from argosy.orchestrator.flows import plan_synthesis as flow
     from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
         _run_phase_3_synthesizer,
     )
 
     captured: list[dict] = []
 
+    # No-op the cap enforcer so we can pass a SimpleNamespace output through.
+    monkeypatch.setattr(flow, "_enforce_speculation_cap",
+                        lambda output, **_: output)
+
     def _synth_stub(self, *args, **kwargs):
         captured.append(kwargs)
-        # Return a minimal real-shaped output that the orchestrator can pass
-        # through `_enforce_speculation_cap` without exploding.
-        from argosy.agents.plan_synthesizer_types import (
-            PlanSynthesisOutput,
-            HorizonPlan,
-            SynthesisInputs,
+        # Duck-typed minimal output: orchestrator only accesses .output and
+        # downstream uses model_dump_json(). We don't need to construct a
+        # real PlanSynthesisOutput because _enforce_speculation_cap is
+        # patched out above.
+        return SimpleNamespace(
+            output=SimpleNamespace(model_dump_json=lambda: "{}"),
         )
-        empty_h = HorizonPlan(
-            targets=[], principles=[], speculative_candidates=[],
-        )
-        out = PlanSynthesisOutput(
-            long=empty_h, medium=empty_h, short=empty_h,
-            inputs=SynthesisInputs(
-                baseline_id=None, prior_current_id=None, decision_run_id=None,
-            ),
-        )
-        return SimpleNamespace(output=out)
 
     monkeypatch.setattr(PlanSynthesizerAgent, "run_sync", _synth_stub, raising=True)
 
@@ -390,8 +391,6 @@ def test_phase_3_passes_decision_id_to_synthesizer(monkeypatch):
 
     assert captured and captured[0].get("decision_id") == _DECISION_ID
 ```
-
-**Note for test author:** the exact symbol names imported from `argosy.agents.plan_synthesizer_types` (`HorizonPlan`, `SynthesisInputs`, `PlanSynthesisOutput`) must match the file. If a `from argosy.agents.plan_synthesizer_types import HorizonPlan` fails, read the module and substitute the real type name. If constructing a valid `PlanSynthesisOutput` is too fiddly, simplify by patching `flow._enforce_speculation_cap` to be a no-op and stubbing the synthesizer output to a plain `SimpleNamespace` that exposes `.short.speculative_candidates = []`.
 
 ```python
 def test_phase_4_passes_decision_id_to_risk_agents(monkeypatch):
@@ -901,7 +900,7 @@ def _run_synthesis_background(
         session.close()
 ```
 
-Note: `_log` is the module-level logger (already defined in advisor.py — confirm during edit; if named differently, adapt). `get_active_baseline` is imported from `argosy.orchestrator.flows.plan_synthesis` (verify the symbol is exported; if it lives in a submodule, import accordingly).
+Note: imports verified — `_log` is defined at `argosy/api/routes/advisor.py:58` via `_log = get_logger("argosy.api.advisor")`. `get_active_baseline` is exported from `argosy.state.queries` (line 549), NOT from the `plan_synthesis` package. Use the import line shown in the code block above verbatim.
 
 - [ ] **Step 7: Verify imports**
 
@@ -1455,7 +1454,7 @@ No "TBD" / "TODO" / "fill in details". Imports + signatures verified during plan
 - `useWSEvents` signature → `ui/src/lib/ws.ts:70`.
 - Test fixtures (`_DummyAgent`, `_BrokenAgent`) → `tests/test_agent_run_events.py`.
 
-One soft footnote in the Task 2 test for phase 3: `plan_synthesizer_types` symbol names need to be confirmed against the file at edit time (`HorizonPlan` vs `Horizon` could differ — the file is small; reading it during edit is trivial).
+All test code is paste-safe — the phase-3 test no longer constructs a real `PlanSynthesisOutput`; it patches `_enforce_speculation_cap` to a no-op and uses a duck-typed `SimpleNamespace`. Avoids coupling to the exact field names in `plan_synthesizer_types`.
 
 ### Type consistency
 
