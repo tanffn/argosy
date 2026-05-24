@@ -288,3 +288,80 @@ async def test_save_attachment_accepts_plain_pdf(argosy_home_db):
     att = await save_attachment(user_id="ariel", turn_uuid="enc2", upload=upload)
     assert att.kind == "pdf"
     assert att.size_bytes == len(plain_pdf)
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_decrypts_encrypted_pdf_via_password_config(
+    argosy_home_db,
+):
+    """Encrypted PDF + matching password in
+    ${ARGOSY_HOME}/configs/<user_id>/pdf_passwords.json is decrypted
+    transparently — the saved file is unencrypted, and the upload
+    succeeds without raising AttachmentEncryptedError."""
+    import json as _json
+    from io import BytesIO as _BytesIO
+
+    from pypdf import PdfReader as _PdfReader
+    from pypdf import PdfWriter as _PdfWriter
+
+    # Seed the per-user password config with the matching candidate.
+    cfg_dir = Path(argosy_home_db) / "configs" / "ariel"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "pdf_passwords.json").write_text(
+        _json.dumps({"passwords": ["wrong1", "secret-pw", "wrong2"]}),
+        encoding="utf-8",
+    )
+
+    # Build a small encrypted PDF using pypdf's own helper.
+    writer = _PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.encrypt(user_password="", owner_password="secret-pw")
+    buf = _BytesIO()
+    writer.write(buf)
+    encrypted_bytes = buf.getvalue()
+
+    upload = _upload(
+        encrypted_bytes, filename="payslip.pdf", content_type="application/pdf",
+    )
+    att = await save_attachment(user_id="ariel", turn_uuid="dec1", upload=upload)
+
+    # Upload succeeded — kind detected, file landed on disk.
+    assert att.kind == "pdf"
+    saved_bytes = Path(att.path).read_bytes()
+    # The saved file is the DECRYPTED version, not the original encrypted one.
+    saved_reader = _PdfReader(_BytesIO(saved_bytes))
+    assert saved_reader.is_encrypted is False
+    # Size reflects the re-serialized output, not the original encrypted size.
+    assert att.size_bytes == len(saved_bytes)
+
+
+@pytest.mark.asyncio
+async def test_save_attachment_rejects_encrypted_pdf_with_no_matching_password(
+    argosy_home_db,
+):
+    """Encrypted PDF + password config that doesn't contain the right
+    password → AttachmentEncryptedError fires as the existing path."""
+    import json as _json
+    from io import BytesIO as _BytesIO
+
+    from pypdf import PdfWriter as _PdfWriter
+
+    cfg_dir = Path(argosy_home_db) / "configs" / "ariel"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "pdf_passwords.json").write_text(
+        _json.dumps({"passwords": ["wrong1", "wrong2"]}),
+        encoding="utf-8",
+    )
+
+    writer = _PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.encrypt(user_password="", owner_password="some-other-pw")
+    buf = _BytesIO()
+    writer.write(buf)
+
+    upload = _upload(
+        buf.getvalue(), filename="payslip.pdf", content_type="application/pdf",
+    )
+    from argosy.services.turn_attachments import AttachmentEncryptedError
+    with pytest.raises(AttachmentEncryptedError):
+        await save_attachment(user_id="ariel", turn_uuid="dec2", upload=upload)

@@ -217,25 +217,44 @@ async def save_attachment(
             f"attachment {original_name!r} is {size} bytes; cap is {MAX_BYTES_PER_FILE}"
         )
 
-    # Block encrypted PDFs upfront — Anthropic's PDF parser refuses to
-    # extract content from any PDF with an /Encrypt dict, even when the
-    # encryption only restricts permissions (print/copy/edit) and is
-    # bypassed by interactive viewers for VIEWING. Without this gate the
-    # user gets a 5-second wait + opaque "Command failed exit 1" because
-    # claude.exe emits a placeholder "PDF is password protected" message
-    # then exits non-zero. See class docstring.
+    # Handle encrypted PDFs. Anthropic's PDF parser refuses any PDF
+    # with an /Encrypt dict, even when the encryption only restricts
+    # permissions (print/copy/edit) and is bypassed by interactive
+    # viewers for VIEWING. Without intervention the user gets a 5-second
+    # wait + opaque "Command failed exit 1" because claude.exe emits a
+    # placeholder "PDF is password protected" message then exits 1.
+    #
+    # First try per-user password rules at
+    # ${ARGOSY_HOME}/configs/<user_id>/pdf_passwords.json — if any of
+    # them decrypts the file, transparently replace `contents` with the
+    # unencrypted re-serialization and continue. Otherwise fall back to
+    # the explicit AttachmentEncryptedError so the user sees the
+    # Print-to-PDF workaround. See `argosy/services/pdf_passwords.py`.
     if kind == "pdf" and _is_pdf_encrypted(contents):
-        raise AttachmentEncryptedError(
-            f"{original_name!r} has PDF encryption that blocks the AI from "
-            "reading it. Israeli payslips (תלוש שכר), Form 106s from some "
-            "employers, and similar 'secured' documents open in Adobe / "
-            "Chrome without prompting for a password, but the encryption "
-            "dict in the file still blocks programmatic extraction (yours, "
-            "Argosy's, and Anthropic's). Workaround: open the PDF, choose "
-            "File → Print → 'Microsoft Print to PDF' (or 'Save as PDF' "
-            "in macOS Preview), save the reprinted copy, and upload that "
-            "instead — it has no encryption."
+        from argosy.services.pdf_passwords import (
+            load_pdf_passwords,
+            try_decrypt_pdf,
         )
+
+        decrypted = try_decrypt_pdf(contents, load_pdf_passwords(user_id))
+        if decrypted is not None:
+            contents = decrypted
+            size = len(contents)
+        else:
+            raise AttachmentEncryptedError(
+                f"{original_name!r} has PDF encryption that blocks the AI "
+                "from reading it. Israeli payslips (תלוש שכר), Form 106s "
+                "from some employers, and similar 'secured' documents open "
+                "in Adobe / Chrome without prompting for a password, but "
+                "the encryption dict in the file still blocks programmatic "
+                "extraction (yours, Argosy's, and Anthropic's). Workaround "
+                "options: (1) add the password to "
+                "${ARGOSY_HOME}/configs/<user_id>/pdf_passwords.json so "
+                "Argosy can decrypt server-side automatically next time, "
+                "or (2) open the PDF, choose File → Print → 'Microsoft "
+                "Print to PDF' (or 'Save as PDF' in macOS Preview), save "
+                "the reprinted copy, and upload that instead."
+            )
 
     dto = await catalog_upload(
         user_id=user_id,
