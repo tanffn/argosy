@@ -91,6 +91,12 @@ def test_run_emits_started_and_finished_events():
     assert finished_payload["turn_id"] == "turn-xyz"
     assert finished_payload["status"] == "done"
 
+    # decision_id must flow through to the finished payload so the UI cascade
+    # panel can filter both started and finished events by it (plan-tab
+    # synthesis button feature).
+    assert finished_payload["decision_id"] == "dec-1"
+    assert finished_payload["intake_session_id"] is None  # not passed in this test
+
 
 def test_agent_report_carries_run_correlation_id():
     """The returned AgentReport dataclass has the same run_correlation_id as
@@ -191,3 +197,9 @@ def test_run_emits_finished_with_failed_status_on_exception():
     assert finished_payload["agent_report_id"] is None
     assert finished_payload["turn_id"] == "turn-fail"
     assert "finished_at" in finished_payload
+
+    # decision_id must flow through on the failure path too, so a crashed
+    # agent still shows up in the decision_id-filtered cascade view
+    # (plan-tab synthesis button feature).
+    assert finished_payload["decision_id"] == "dec-fail"
+    assert finished_payload["intake_session_id"] is None

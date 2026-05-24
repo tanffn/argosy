@@ -696,6 +696,8 @@ class BaseAgent(Generic[T]):
                 _finished_payload: dict[str, Any] = {
                     "user_id": self.user_id,
                     "agent_role": self.agent_role,
+                    "decision_id": inputs.get("decision_id"),
+                    "intake_session_id": inputs.get("intake_session_id"),
                     "run_correlation_id": run_correlation_id,
                     "finished_at": datetime.now(timezone.utc).isoformat(),
                     "status": "done",
@@ -732,6 +734,8 @@ class BaseAgent(Generic[T]):
                 publish_event_threadsafe("agent.run.finished", {
                     "user_id": self.user_id,
                     "agent_role": self.agent_role,
+                    "decision_id": inputs.get("decision_id"),
+                    "intake_session_id": inputs.get("intake_session_id"),
                     "run_correlation_id": run_correlation_id,
                     "turn_id": turn_id,
                     "finished_at": datetime.now(timezone.utc).isoformat(),
