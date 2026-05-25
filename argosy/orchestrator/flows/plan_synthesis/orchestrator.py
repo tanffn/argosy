@@ -389,61 +389,139 @@ def _persist_agent_reports(
     """Bulk-persist a phase's AgentReport dataclasses to ``agent_reports``.
 
     W1.C-v2: replaces the per-agent inline async writes that used to live
-    in ``BaseAgent.run``. The synthesis orchestrator runs on a sync
-    ``Session``; this helper opens a sibling sync sessionmaker bound to
-    the same engine (``expire_on_commit=False`` so we don't surprise the
-    caller's session state) and commits all rows in a single transaction.
-    One writer → no aiosqlite serialisation, no busy-timeout losses.
+    in ``BaseAgent.run``.
 
-    Reports without a ``decision_id`` (defensive — should be set by
-    ``BaseAgent.run`` whenever the synthesis orchestrator invokes an
-    agent) are still written: the ``agent_reports.decision_id`` column
-    is nullable, and dropping the row would lose audit evidence.
+    W1.C-v3 (lock-resistance fix): bypasses SQLAlchemy entirely and uses
+    raw ``sqlite3`` with a 5-minute busy_timeout. Live observation:
+    SQLAlchemy's sub-session approach (W1.C-v2) STILL hit "database is
+    locked" in run #11 despite WAL + 60s timeout — some interaction
+    between the synthesis orchestrator's open Session connection and
+    the sub-session's commit was contending for the writer. A bare
+    sqlite3 connection has no SQLAlchemy session/pool state and a much
+    longer busy_timeout, so it queues behind any open writer rather than
+    timing out at 60s.
 
-    Best-effort: any failure logs ``plan_synthesis.bulk_persist_failed``
-    with the row count and rolls back the sub-transaction. The
-    synthesis run continues — the per-agent dataclasses are still
+    ``session`` parameter is kept (unused) so callers don't change shape;
+    we resolve the DB URL from settings directly.
+
+    Best-effort: any failure logs ``plan_synthesis.bulk_persist_failed``.
+    The synthesis run continues — the per-agent dataclasses are still
     returned to the caller via the phase helper's return value.
     """
     if not reports:
         return
+
+    import sqlite3 as _sqlite3
     from argosy.state.models import AgentReport as AgentReportRow
 
+    # Resolve the underlying SQLite filesystem path from the session's bind.
+    # For in-memory or non-file SQLite engines (used by tests), fall back to
+    # the SQLAlchemy sub-session path because raw sqlite3 can't share an
+    # in-memory database across separate connections.
     bind = session.get_bind()
-    SubSession = sessionmaker(bind=bind, expire_on_commit=False)
-    sub = SubSession()
+    bind_url = str(bind.url) if hasattr(bind, "url") else ""
+    is_file_sqlite = (
+        bind_url.startswith("sqlite")
+        and ":memory:" not in bind_url
+        and "///" in bind_url
+    )
+
+    if not is_file_sqlite:
+        # SQLAlchemy fallback for in-memory / non-sqlite tests. Same shape
+        # as W1.C-v2 (sub-sessionmaker, commit once).
+        SubSession = sessionmaker(bind=bind, expire_on_commit=False)
+        sub = SubSession()
+        try:
+            for r in reports:
+                sub.add(AgentReportRow(
+                    user_id=r.user_id, agent_role=r.agent_role,
+                    decision_id=getattr(r, "decision_id", None),
+                    intake_session_id=None,
+                    prompt_hash=r.prompt_hash, response_text=r.response_text,
+                    tokens_in=r.tokens_in, tokens_out=r.tokens_out, cost_usd=r.cost_usd,
+                    cache_input_tokens=r.cache_input_tokens,
+                    cache_creation_tokens=r.cache_creation_tokens,
+                    thinking_tokens=r.thinking_tokens,
+                    citations_json=r.citations_json, sources_json=r.sources_json,
+                    run_correlation_id=r.run_correlation_id,
+                    system_prompt=r.system_prompt, user_prompt=r.user_prompt,
+                    model=r.model,
+                    confidence=r.confidence.value if r.confidence else None,
+                ))
+            sub.commit()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("plan_synthesis.bulk_persist_failed",
+                        count=len(reports), error=str(exc))
+            sub.rollback()
+        finally:
+            sub.close()
+        return
+
+    db_path = bind_url.split("///", 1)[-1]
+
     try:
-        for r in reports:
-            sub.add(AgentReportRow(
-                user_id=r.user_id,
-                agent_role=r.agent_role,
-                decision_id=getattr(r, "decision_id", None),
-                intake_session_id=None,
-                prompt_hash=r.prompt_hash,
-                response_text=r.response_text,
-                tokens_in=r.tokens_in,
-                tokens_out=r.tokens_out,
-                cost_usd=r.cost_usd,
-                cache_input_tokens=r.cache_input_tokens,
-                cache_creation_tokens=r.cache_creation_tokens,
-                thinking_tokens=r.thinking_tokens,
-                citations_json=r.citations_json,
-                sources_json=r.sources_json,
-                run_correlation_id=r.run_correlation_id,
-                system_prompt=r.system_prompt,
-                user_prompt=r.user_prompt,
-                model=r.model,
-                confidence=r.confidence.value if r.confidence else None,
-            ))
-        sub.commit()
+        conn = _sqlite3.connect(db_path, timeout=300.0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "plan_synthesis.bulk_persist_failed",
+            count=len(reports), error=f"connect_failed: {exc}",
+        )
+        return
+
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=300000")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        # `created_at` is a server-default column on the ORM model; sqlite3
+        # won't auto-populate it because the default is set via SQLAlchemy
+        # Column(default=...) rather than a DDL DEFAULT. We supply NOW()
+        # explicitly to keep the audit timestamp correct.
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+        rows = [
+            (
+                r.user_id, r.agent_role,
+                getattr(r, "decision_id", None), None,
+                r.prompt_hash, r.response_text,
+                r.tokens_in, r.tokens_out, r.cost_usd,
+                r.cache_input_tokens, r.cache_creation_tokens, r.thinking_tokens,
+                r.citations_json, r.sources_json, r.run_correlation_id,
+                r.system_prompt, r.user_prompt,
+                r.model, (r.confidence.value if r.confidence else None),
+                now_iso,
+            )
+            for r in reports
+        ]
+        conn.executemany(
+            """
+            INSERT INTO agent_reports (
+                user_id, agent_role,
+                decision_id, intake_session_id,
+                prompt_hash, response_text,
+                tokens_in, tokens_out, cost_usd,
+                cache_input_tokens, cache_creation_tokens, thinking_tokens,
+                citations_json, sources_json, run_correlation_id,
+                system_prompt, user_prompt,
+                model, confidence,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
     except Exception as exc:  # noqa: BLE001 — best-effort batch
         log.warning(
             "plan_synthesis.bulk_persist_failed",
             count=len(reports), error=str(exc),
         )
-        sub.rollback()
+        try:
+            conn.rollback()
+        except Exception:  # pragma: no cover - defensive
+            pass
     finally:
-        sub.close()
+        try:
+            conn.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
 
 
 def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
