@@ -155,22 +155,33 @@ def _compute_indicators(
     w52_low = min(tail_252) if tail_252 else None
     vol_tail = volumes[-20:] if len(volumes) >= 20 else volumes
     volume_avg = (sum(vol_tail) / float(len(vol_tail))) if vol_tail else None
-    return {
-        "price": float(price) if price is not None else None,
-        "rsi_14": float(rsi_14) if rsi_14 is not None else None,
-        "macd": float(macd_val) if macd_val is not None else None,
-        "macd_signal": float(macd_signal) if macd_signal is not None else None,
-        "ma_50": float(ma_50) if ma_50 is not None else None,
-        "ma_200": float(ma_200) if ma_200 is not None else None,
+    # Drop None values entirely — TechnicalReport's pydantic schema requires
+    # non-null floats per indicator, and live run #19 hit 18 validation
+    # errors because ma_200 was None for tickers with <200 trading days of
+    # history. The agent treats missing keys gracefully ("no ma_200 in
+    # input"); it does NOT tolerate explicit None values.
+    raw: dict[str, Any] = {
+        "price": price,
+        "rsi_14": rsi_14,
+        "macd": macd_val,
+        "macd_signal": macd_signal,
+        "ma_50": ma_50,
+        "ma_200": ma_200,
         "ma_cross_50_200": cross,
-        "atr_14": float(atr_14) if atr_14 is not None else None,
-        "support": float(support) if support is not None else None,
-        "resistance": float(resistance) if resistance is not None else None,
-        "52w_high": float(w52_high) if w52_high is not None else None,
-        "52w_low": float(w52_low) if w52_low is not None else None,
-        "volume_avg": float(volume_avg) if volume_avg is not None else None,
-        "source": f"yfinance:{ticker}:1d",
+        "atr_14": atr_14,
+        "support": support,
+        "resistance": resistance,
+        "52w_high": w52_high,
+        "52w_low": w52_low,
+        "volume_avg": volume_avg,
     }
+    out: dict[str, Any] = {
+        k: float(v) for k, v in raw.items() if v is not None and k != "ma_cross_50_200"
+    }
+    if cross is not None:
+        out["ma_cross_50_200"] = cross
+    out["source"] = f"yfinance:{ticker}:1d"
+    return out
 
 
 class YFinanceAdapter:
