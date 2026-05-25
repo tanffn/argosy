@@ -17,25 +17,44 @@
 
 **Last edit:** 2026-05-25 by Claude. **Argosy gap-closure session in progress — autonomous overnight run.** Read this section IF YOU ARE A FRESH SESSION RESUMING AFTER A CRASH. The session is closing 21 structural gaps documented at `docs/design/argosy-gap-analysis-2026-05-25.md` per the master roadmap `docs/superpowers/plans/2026-05-25-argosy-gaps-master-roadmap.md`. Active todos visible in TaskList.
 
-**Where to pick up:**
-1. **Read commits from `a006036` forward** — that's the start of this session's work.
-2. Wave 1 (D1+S1+S2) shipped: `3f8aaf4` (Phase1Inputs assembler), `0163463` (phase 1 wiring), `80e9a01` (W1.C agent_reports persistence — superseded by v4).
-3. Wave 2-related: `2f69e16` (SQLite WAL + busy_timeout=60s + synchronous=NORMAL), `aac5183` (W2.A claude.exe transient exit-1 retry), W3a probe CLI committed.
-4. Hygiene: `527d87e` (O2 — TSV header-marker filter for `_find_latest_tsv`), `d700fa1` (ticker extraction `.symbol` not `.ticker`), `b3261ab` (JSON parser tolerance — `JSONDecoder(strict=False).raw_decode`).
-5. W1.C-v2/v3/v4 persistence saga ended at `f723056` (raw sqlite3 — still failed) then JSONL trail commit (W1.C-v4): writes append-only JSONL to `${ARGOSY_HOME}/logs/synthesis/<token>.jsonl`, then auto-ingests via the orchestrator session at end of `run_synthesis`. For failed runs (FM rejection), use `argosy synthesis ingest-trail <decision_run_id>` to ingest manually (CLI at `argosy/cli/synthesis.py`).
-6. W2.A-v2 shipped (`3d9887a`): empty-text retry alongside the W2.A exit-1 retry, shared `_retried` guard.
+**Commits this session (most recent first):**
+- `38a85bc` W3b.G — 10-min asyncio.timeout around the SDK stream + 4th retry trigger (`claude_code.sdk_timeout_retry`). Live run #15 hung 3+ hours silently because no exception ever fired; without this, synthesis can stall indefinitely.
+- `33c4084` W3b.F — 3rd retry trigger in `_call_via_claude_code_inner`: trial-parse the model output via `_parse_output`; on `json.JSONDecodeError` retry once. Catches structurally-broken JSON (missing commas at large outputs) that the parser tolerance (`strict=False` + `raw_decode`) can't recover from. Does NOT retry on `ValidationError` (schema mismatch = deterministic).
+- `82e58fe` W3b.E — Finnhub `get_company_financials` adapter + `_gather_fundamentals` helper. FundamentalsAnalyst now has real data (pe_ratio, eps_ttm, market_cap, margins, beta, etc. for US tickers).
+- `3734e4f` W3b.D — yfinance `get_indicators` adapter + `_gather_indicators_payload` helper. TechnicalAnalyst now has real data (SMA-50/200, RSI-14, MACD, ATR, 52w range).
+- `032eda3` SDD handover refresh (this section, expanded each major milestone).
+- `8485a38` W1.C-v4 — JSONL forensic trail + auto-ingest at end of synthesis. Sidesteps the SQLite-writer-lock-held-by-uvicorn issue that defeated v1/v2/v3.
+- `f723056` W1.C-v3 (deprecated by v4; left in history) — raw sqlite3 bulk persist, still failed.
+- `3d9887a` W2.A-v2 — empty-text retry (model returns successfully but emits empty string).
+- `38b8019` W1.C-v2 (deprecated by v4) — SQLAlchemy sub-session bulk persist at phase boundaries.
+- `b3261ab` JSON parser tolerance: `JSONDecoder(strict=False).raw_decode` handles trailing prose + raw control chars.
+- `d700fa1` ticker extraction fix: `PortfolioPosition.symbol` (not `.ticker`).
+- `527d87e` O2 — `_find_latest_tsv` filters by "Bank account / funds allocation" header marker (prevents stray upload shadowing).
+- `864277b` W3a — `argosy diagnose adapters` CLI probe diagnostic.
+- `aac5183` W2.A — claude.exe transient exit-1 retry (empty stderr + exit_code=1).
+- `2f69e16` SQLite WAL + busy_timeout=60s + synchronous=NORMAL on both async + sync engines.
+- `0163463` W1.B — phase 1 wired through `assemble_phase1_inputs`; `_safe_run_agent` narrows kwargs via `inspect.signature`.
+- `80e9a01` W1.C-v1 (deprecated by v4) — inline async agent_reports persistence in BaseAgent.run.
+- `3f8aaf4` W1.A — `Phase1Inputs` dataclass + `assemble_phase1_inputs` covers all 9 analyst kwargs.
+- `409baf3` master roadmap; `32c9a67` gap analysis (read these to orient).
 
-**Last successful E2E:** Synthesis run #13 completed all 5 phases for the FIRST TIME end-to-end. 17 rows persisted to `agent_reports` for `decision_id='plan-synth-13'` (via CLI ingest after FM rejection). Fund manager still rejects because 3 phase-1 analysts (Technical, Fundamentals, Tax) citation-fail on empty payloads — currently no adapters for `indicators_payload`, `fundamentals_payload`, or `lots_summary`/`dividends_summary`/`rsu_schedule_summary`. PlanCritique also hits malformed-JSON ~50% of the time at large outputs.
+**Synthesis flow status (right now):**
+- Run #13: 17 rows persisted via CLI ingest. FM rejected (impoverished input).
+- Run #15: hung 3+ hours at phase 2/3, killed + 7 phase-1 rows ingested via CLI. Triggered W3b.G timeout fix.
+- Run #16: in flight as of last update; first run with the full D+E+F+G stack.
+- DecisionRuns #14 + #15 marked status='failed' manually after kill (their background tasks couldn't reach the orchestrator's own write path).
 
-**Goal of overnight work:** ship W3b.D (yfinance indicators), W3b.E (Finnhub fundamentals), W3b.F (PlanCritique JSON retry), then re-run synthesis. If FM approves → draft PlanVersion persisted, /proposals UI populated, verify end-to-end. If FM still rejects → diagnose specific FM rejection reason from agent_reports.
+**Goal of overnight work:** drive synthesis to FM approval — at least one successful end-to-end run that persists a `role='draft'` PlanVersion. Once a draft exists, the `/proposals` page should surface it and the `/plan` cascade UI populates from `agent_reports`. If FM keeps rejecting due to thin analyst input, deepen W3b (lots/RSU adapters) or relax FM gate.
 
-**Environment state right now (2026-05-25 ~17:50 UTC):**
-- uvicorn running on `:8000` (background process; if dead, restart with the env vars below).
-- Required env: `ARGOSY_EXPENSE_SAMPLES_ROOT="D:/Google Drive/Family/Finances/Portfolio/Resources"`, `FINNHUB_API_KEY="d8a62b9r01qplfv1s010d8a62b9r01qplfv1s01g"`, `FRED_API_KEY="e1d3265d809a97befde398afe086e4e9"`.
-- Real Family Finances Status TSV at `uploads/ariel/2026/2026-05-09/061710__9940a878__Family Finances Status - 26 May.tsv` (4673 bytes, 34 positions). The header-marker filter shipped at `527d87e` prevents stray uploads from shadowing it.
-- One major known issue: a connection inside uvicorn holds the SQLite writer lock for the entire synthesis duration (12-15 min). Read access works fine. External writers blocked. The W1.C-v4 JSONL+auto-ingest design sidesteps this by deferring DB writes until the orchestrator session itself is free. CLI ingest requires uvicorn killed first.
+**Environment state at handover time:**
+- uvicorn running on `:8000` (PID changes per restart; check `Get-NetTCPConnection -LocalPort 8000`).
+- Required env (set in the uvicorn process): `ARGOSY_EXPENSE_SAMPLES_ROOT="D:/Google Drive/Family/Finances/Portfolio/Resources"`, `FINNHUB_API_KEY="d8a62b9r01qplfv1s010d8a62b9r01qplfv1s01g"`, `FRED_API_KEY="e1d3265d809a97befde398afe086e4e9"`. **The Finnhub key is the user's personal key from finnhub.io free tier; FRED key from fred.stlouisfed.org. Both shared by Ariel during the session.**
+- Real Family Finances Status TSV at `uploads/ariel/2026/2026-05-09/061710__9940a878__Family Finances Status - 26 May.tsv` (4673 bytes, 34 positions; 26 tradeable tickers extracted).
+- Adapter status (from `argosy diagnose adapters`): finnhub ✅, fred ✅, capitoltrades ✅, sec_form4 ✅, boi ✅, yfinance ✅, tipranks ❌ (HTTP 403 anti-bot — TipRanks blocks scrapers), sec_13f ❌ (EDGAR FTS endpoint returns 404 — separate latent issue).
+- Open issue (W3b.B/C deferred): no adapters for tax lots / dividends / RSU schedule → TaxAnalyst still citation-fails. Sentiment also fails because TipRanks gives empty social.
+- **SQLite lock peculiarity**: a connection inside uvicorn holds the writer lock for entire synthesis duration. WAL helps with reads. External CLI writes (e.g. `argosy synthesis ingest-trail`) require uvicorn killed FIRST. The W1.C-v4 JSONL+auto-ingest design routes around this by deferring DB writes until the orchestrator session itself is free.
 
-**Active todo list:** see `TaskList` for the in-progress work; the autonomous-execution mandate is "ship D+E+F, re-run synthesis, verify, document". Final state when done should be SDD handover updated with results + commit log showing the W3b deliverables.
+**Active todo list:** see `TaskList`. Mandate is "ship D+E+F+G, drive synthesis to FM approval, verify draft visible in /proposals, document final state".
 
 ---
 
