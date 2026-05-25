@@ -243,12 +243,24 @@ def run_synthesis(
         session=session, user_id=user_id, draft_output=output,
         risk_verdict=risk_verdict, decision_run_id=decision_audit_token,
     )
+    # W3b.H: when FM rejects, persist anyway as role='draft_rejected'
+    # rather than raising. Without this, every FM rejection forfeits
+    # 15-20 minutes of analyst+debate+risk reasoning that already lives
+    # in the JSONL trail. The persisted PlanVersion gives the UI
+    # something to surface alongside the FM's detailed concerns
+    # (visible in agent_reports.response_text for role='fund_manager').
+    # Live runs #5, #6, #10, #13, #16 all hit this path; FM's reasoning
+    # is real and useful (Section 102 sequencing, escalate-not-resolved,
+    # data-quality flags) and the user can review + override.
+    draft_role = "draft" if approved else "draft_rejected"
     if not approved:
-        log.error("plan_synthesis.fm_rejected",
-                  user_id=user_id, decision_run_id=decision_run_id)
-        raise RuntimeError("fund manager rejected synthesized plan")
+        log.warning(
+            "plan_synthesis.fm_rejected_persisting_anyway",
+            user_id=user_id, decision_run_id=decision_run_id,
+            role=draft_role,
+        )
 
-    # Persist as role='draft'.
+    # Persist as role='draft' (or 'draft_rejected' per above).
     # decision_run_id here is the integer PK — aligns with the Integer FK on
     # plan_versions.decision_run_id and satisfies Postgres type checking.
     inputs = output.inputs.model_copy(update={
@@ -259,7 +271,7 @@ def run_synthesis(
 
     draft = PlanVersion(
         user_id=user_id,
-        role="draft",
+        role=draft_role,
         version_label=f"synth-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M')}",
         source_path="",
         raw_markdown="",
