@@ -36,32 +36,16 @@ class _DummyAgent(BaseAgent):
 
 
 def test_run_emits_started_and_finished_events():
-    # W1.C — BaseAgent.run now persists when decision_id is set. The test
-    # passes decision_id="dec-1" so it triggers the persistence path; that
-    # in turn requires an initialised DB engine + schema + a User row.
-    from argosy.state import db as db_mod
-    from argosy.state.models import Base, User
-
-    async def _setup():
-        db_mod.init_engine("sqlite+aiosqlite:///:memory:")
-        engine = db_mod.get_engine()
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        async with db_mod.get_session() as session:
-            session.add(User(id="ariel", plan="free"))
-            await session.commit()
-
+    # W1.C-v2 — BaseAgent.run no longer persists to agent_reports; the
+    # synthesis orchestrator does bulk persistence at phase boundary.
+    # No DB setup required here.
     async def _run():
-        await _setup()
         with patch("argosy.api.events.publish_event_threadsafe") as mock_pub:
             agent = _DummyAgent(user_id="ariel", model="claude-sonnet-4-6")
             await agent.run(decision_id="dec-1", turn_id="turn-xyz")
         return mock_pub
 
-    try:
-        mock_pub = asyncio.run(_run())
-    finally:
-        asyncio.run(db_mod.dispose_engine())
+    mock_pub = asyncio.run(_run())
 
     assert mock_pub.call_count == 2, (
         f"Expected 2 publish_event_threadsafe calls, got {mock_pub.call_count}"
@@ -102,11 +86,13 @@ def test_run_emits_started_and_finished_events():
 
     assert finished_payload["confidence"] == "HIGH"
     assert finished_payload["citations_count"] == 0  # no citations_json
-    # W1.C — persistence path was hit (decision_id="dec-1"), so the WS
-    # finished payload must carry the persisted row's int primary key.
-    assert isinstance(finished_payload["agent_report_id"], int), (
-        f"expected int agent_report_id, got "
-        f"{finished_payload['agent_report_id']!r}"
+    # W1.C-v2 — BaseAgent.run no longer persists; the WS finished payload's
+    # agent_report_id is always None and consumers fall back to
+    # run_correlation_id (also on the event) for joining. The synthesis
+    # orchestrator now writes rows in bulk at phase boundary.
+    assert finished_payload["agent_report_id"] is None, (
+        f"expected None agent_report_id (W1.C-v2 removed inline persist), "
+        f"got {finished_payload['agent_report_id']!r}"
     )
     assert finished_payload["tokens_in"] == 100
     assert finished_payload["tokens_out"] == 50
@@ -130,31 +116,15 @@ def test_agent_report_carries_run_correlation_id():
     """The returned AgentReport dataclass has the same run_correlation_id as
     the emitted WS events (Wave B-UI follow-up Item 2 — migration 0028).
     """
-    # W1.C — decision_id is set, so BaseAgent.run will attempt to persist.
-    # Initialise an isolated in-memory DB so the persistence call doesn't
-    # silently fall back to the dev DB.
-    from argosy.state import db as db_mod
-    from argosy.state.models import Base, User
-
-    async def _setup():
-        db_mod.init_engine("sqlite+aiosqlite:///:memory:")
-        async with db_mod.get_engine().begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        async with db_mod.get_session() as session:
-            session.add(User(id="ariel", plan="free"))
-            await session.commit()
+    # W1.C-v2 — BaseAgent.run no longer persists; no DB setup needed.
 
     async def _run():
-        await _setup()
         with patch("argosy.api.events.publish_event_threadsafe") as mock_pub:
             agent = _DummyAgent(user_id="ariel", model="claude-sonnet-4-6")
             report = await agent.run(decision_id="dec-corr", turn_id="turn-corr")
         return mock_pub, report
 
-    try:
-        mock_pub, report = asyncio.run(_run())
-    finally:
-        asyncio.run(db_mod.dispose_engine())
+    mock_pub, report = asyncio.run(_run())
 
     # Two events published.
     assert mock_pub.call_count == 2
@@ -174,29 +144,14 @@ def test_agent_report_carries_system_and_user_prompt():
     user_prompt — these are the full strings built in run() and passed into
     the AgentReport constructor (Wave B-UI follow-up Item B — migration 0029).
     """
-    # W1.C — decision_id is set, so BaseAgent.run will attempt to persist.
-    # Set up an isolated DB to avoid touching the dev DB.
-    from argosy.state import db as db_mod
-    from argosy.state.models import Base, User
-
-    async def _setup():
-        db_mod.init_engine("sqlite+aiosqlite:///:memory:")
-        async with db_mod.get_engine().begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        async with db_mod.get_session() as session:
-            session.add(User(id="ariel", plan="free"))
-            await session.commit()
+    # W1.C-v2 — BaseAgent.run no longer persists; no DB setup needed.
 
     async def _run():
-        await _setup()
         with patch("argosy.api.events.publish_event_threadsafe"):
             agent = _DummyAgent(user_id="ariel", model="claude-sonnet-4-6")
             return await agent.run(decision_id="dec-prompt", turn_id="turn-prompt")
 
-    try:
-        report = asyncio.run(_run())
-    finally:
-        asyncio.run(db_mod.dispose_engine())
+    report = asyncio.run(_run())
 
     # system_prompt = BOILERPLATE_SYSTEM + "\n\n" + "system" (from build_prompt)
     # user_prompt = "user" (from build_prompt)
@@ -276,19 +231,29 @@ def test_run_emits_finished_with_failed_status_on_exception():
 
 
 # ---------------------------------------------------------------------------
-# W1.C — synthesis-flow forensic trail.
+# W1.C-v2 — BaseAgent.run no longer writes agent_reports rows.
 #
-# Before W1.C the 9 phase-1 analysts (and downstream debate/risk/FM agents)
-# of the synthesis flow returned an AgentReport dataclass but never wrote a
-# row to agent_reports. These tests pin the new behaviour:
-#   - decision_id set      → row is written, persisted id flows through WS
-#   - decision_id is None  → no row (advisor/intake's own _persist_turn writes)
+# The original W1.C wave wrote rows inline via ``async with db_mod.get_session()``
+# inside the agent's coroutine.  Under synthesis-flow load (9 concurrent
+# analysts in a ThreadPoolExecutor, each running ``asyncio.run`` and opening
+# its own aiosqlite session) the writers serialised through aiosqlite and
+# the busy_timeout=60s wasn't enough — runs lost every successful row to
+# "database is locked".  W1.C-v2 moves persistence to the synthesis
+# orchestrator's main sync thread: a single bulk write at each phase
+# boundary (see ``argosy/orchestrator/flows/plan_synthesis/orchestrator.py``).
+#
+# These tests pin the new contract:
+#   - BaseAgent.run NEVER writes to agent_reports, regardless of decision_id.
+#   - The returned AgentReport dataclass carries decision_id so the
+#     orchestrator can populate the row's column at batch-commit time.
 # ---------------------------------------------------------------------------
 
 
-def test_run_persists_agent_report_when_decision_id_set():
-    """When BaseAgent.run is called with decision_id, the AgentReport
-    dataclass is mirrored to an agent_reports DB row."""
+def test_run_does_not_persist_when_decision_id_set():
+    """W1.C-v2: BaseAgent.run does NOT write to agent_reports even when a
+    decision_id is provided. Persistence is the synthesis orchestrator's
+    job now (single writer per phase boundary). The dataclass that's
+    returned carries decision_id so the orchestrator can stamp the row."""
     import asyncio
     from unittest.mock import patch
     from argosy.state import db as db_mod
@@ -315,20 +280,23 @@ def test_run_persists_agent_report_when_decision_id_set():
 
     try:
         report, rows = asyncio.run(_run())
-        assert len(rows) == 1, f"expected 1 row, got {len(rows)}"
-        assert rows[0].decision_id == "plan-synth-42"
-        assert rows[0].agent_role == "news"
-        assert rows[0].user_id == "ariel"
-        assert rows[0].run_correlation_id == report.run_correlation_id
-        assert rows[0].response_text == report.response_text
+        # No row should have been written by BaseAgent.run.
+        assert len(rows) == 0, (
+            f"W1.C-v2: BaseAgent.run must not persist; "
+            f"got {len(rows)} row(s)"
+        )
+        # The dataclass carries decision_id so the orchestrator's
+        # bulk-persist helper can populate the column.
+        assert report.decision_id == "plan-synth-42"
     finally:
         asyncio.run(db_mod.dispose_engine())
 
 
 def test_run_does_not_persist_when_decision_id_is_none():
-    """When decision_id is None (advisor/intake path), BaseAgent.run does
-    NOT write an agent_reports row — the caller's own _persist_turn handles
-    it. Prevents double-write regression."""
+    """W1.C-v2: BaseAgent.run never persists, regardless of decision_id.
+    Both advisor/intake (decision_id=None, persists via own _persist_turn)
+    and synthesis (decision_id set, persists via orchestrator) leave
+    BaseAgent.run as a pure-compute call."""
     import asyncio
     from unittest.mock import patch
     from argosy.state import db as db_mod

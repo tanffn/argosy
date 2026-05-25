@@ -23,10 +23,11 @@ import json
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import cast
+from typing import NamedTuple, cast
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
+from argosy.agents.base import AgentReport
 from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
 from argosy.agents.fundamentals_analyst import FundamentalsAnalystAgent
 # The FX analyst class is `FXAnalystAgent` in source; the synthesis flow
@@ -365,6 +366,86 @@ _PHASE_1_AGENT_NAMES = (
 _CONTROL_PLANE_KWARGS = frozenset({"decision_id", "turn_id", "intake_session_id"})
 
 
+class _AgentRunResult(NamedTuple):
+    """Return shape of ``_safe_run_agent``.
+
+    ``text`` is the JSON-serialised structured output (the existing return
+    shape callers concatenate into per-phase report blobs). ``report`` is
+    the ``AgentReport`` dataclass produced by ``BaseAgent.run`` — kept
+    alongside the text so the phase helper can collect it for a single
+    bulk persist at phase boundary (W1.C-v2). ``report`` is ``None`` when
+    the agent's ``run_sync`` returned an object that doesn't expose a
+    dataclass (test stubs / monkeypatched ``run_sync``) — in that case the
+    bulk persist call simply skips it.
+    """
+
+    text: str
+    report: AgentReport | None
+
+
+def _persist_agent_reports(
+    session: Session, reports: list[AgentReport],
+) -> None:
+    """Bulk-persist a phase's AgentReport dataclasses to ``agent_reports``.
+
+    W1.C-v2: replaces the per-agent inline async writes that used to live
+    in ``BaseAgent.run``. The synthesis orchestrator runs on a sync
+    ``Session``; this helper opens a sibling sync sessionmaker bound to
+    the same engine (``expire_on_commit=False`` so we don't surprise the
+    caller's session state) and commits all rows in a single transaction.
+    One writer → no aiosqlite serialisation, no busy-timeout losses.
+
+    Reports without a ``decision_id`` (defensive — should be set by
+    ``BaseAgent.run`` whenever the synthesis orchestrator invokes an
+    agent) are still written: the ``agent_reports.decision_id`` column
+    is nullable, and dropping the row would lose audit evidence.
+
+    Best-effort: any failure logs ``plan_synthesis.bulk_persist_failed``
+    with the row count and rolls back the sub-transaction. The
+    synthesis run continues — the per-agent dataclasses are still
+    returned to the caller via the phase helper's return value.
+    """
+    if not reports:
+        return
+    from argosy.state.models import AgentReport as AgentReportRow
+
+    bind = session.get_bind()
+    SubSession = sessionmaker(bind=bind, expire_on_commit=False)
+    sub = SubSession()
+    try:
+        for r in reports:
+            sub.add(AgentReportRow(
+                user_id=r.user_id,
+                agent_role=r.agent_role,
+                decision_id=getattr(r, "decision_id", None),
+                intake_session_id=None,
+                prompt_hash=r.prompt_hash,
+                response_text=r.response_text,
+                tokens_in=r.tokens_in,
+                tokens_out=r.tokens_out,
+                cost_usd=r.cost_usd,
+                cache_input_tokens=r.cache_input_tokens,
+                cache_creation_tokens=r.cache_creation_tokens,
+                thinking_tokens=r.thinking_tokens,
+                citations_json=r.citations_json,
+                sources_json=r.sources_json,
+                run_correlation_id=r.run_correlation_id,
+                system_prompt=r.system_prompt,
+                user_prompt=r.user_prompt,
+                model=r.model,
+                confidence=r.confidence.value if r.confidence else None,
+            ))
+        sub.commit()
+    except Exception as exc:  # noqa: BLE001 — best-effort batch
+        log.warning(
+            "plan_synthesis.bulk_persist_failed",
+            count=len(reports), error=str(exc),
+        )
+        sub.rollback()
+    finally:
+        sub.close()
+
+
 def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
                            decision_run_id, guidance) -> str:
     """Run all 9 analysts in parallel. Concatenate their reports as text.
@@ -419,6 +500,7 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
     common_kwargs["decision_id"] = decision_run_id
 
     reports: list[str] = []
+    collected: list[AgentReport] = []
     with ThreadPoolExecutor(max_workers=len(phase_1_agents)) as ex:
         futures = {
             ex.submit(_safe_run_agent, AgentCls, user_id, common_kwargs, decision_run_id): AgentCls
@@ -427,8 +509,10 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
         for fut in as_completed(futures):
             cls = futures[fut]
             try:
-                payload = fut.result()
-                reports.append(f"=== {cls.__name__} ===\n{payload}")
+                result = fut.result()
+                reports.append(f"=== {cls.__name__} ===\n{result.text}")
+                if result.report is not None:
+                    collected.append(result.report)
             except Exception as exc:  # noqa: BLE001
                 log.error("plan_synthesis.phase_1.agent_failed",
                           agent=cls.__name__, error=str(exc),
@@ -438,15 +522,31 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
                 # synthesizer knows.
                 reports.append(f"=== {cls.__name__} (FAILED) ===\n{exc}")
 
+    # W1.C-v2 — single-writer batch persist at phase boundary. Resolved
+    # via the package namespace so tests that monkeypatch
+    # ``flow._persist_agent_reports`` are honoured.
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
+    _pkg._persist_agent_reports(session, collected)
+
     log.info("plan_synthesis.phase_1.done",
              user_id=user_id, decision_run_id=decision_run_id,
-             reports_count=len(reports))
+             reports_count=len(reports),
+             persisted_count=len(collected))
     return "\n\n".join(reports)
 
 
 def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
-                    decision_run_id: str) -> str:
-    """Instantiate an analyst, run it, return JSON of its output.
+                    decision_run_id: str) -> _AgentRunResult:
+    """Instantiate an analyst, run it, return ``(text, report)``.
+
+    Return shape (W1.C-v2): ``_AgentRunResult(text, report)`` where
+    ``text`` is the JSON of the structured output (existing contract for
+    callers that concatenate into per-phase blobs) and ``report`` is the
+    ``AgentReport`` dataclass produced by ``BaseAgent.run``. The caller's
+    phase helper collects the ``report`` and hands the list to
+    ``_persist_agent_reports`` once at phase end. ``report`` is ``None``
+    when the agent's ``run_sync`` returned an object that isn't an
+    ``AgentReport`` (test stubs that build ``SimpleNamespace`` payloads).
 
     ADAPTATION (vs spec): BaseAgent.__init__ takes a mandatory ``user_id``
     keyword — the spec wrote ``AgentCls()`` which would raise on any real
@@ -495,10 +595,6 @@ def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
 
     try:
         result = agent.run_sync(**narrowed)
-        out = getattr(result, "output", None)
-        if out is not None and hasattr(out, "model_dump_json"):
-            return out.model_dump_json()
-        return str(out) if out is not None else ""
     except TypeError:
         # Defensive fallback: re-narrow against the live signature in case
         # the agent's build_prompt was monkeypatched between introspection
@@ -512,10 +608,16 @@ def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
             accepted = set(_CONTROL_PLANE_KWARGS)
         narrowed = {k: v for k, v in kwargs.items() if k in accepted}
         result = agent.run_sync(**narrowed)
-        out = getattr(result, "output", None)
-        if out is not None and hasattr(out, "model_dump_json"):
-            return out.model_dump_json()
-        return str(out) if out is not None else ""
+
+    out = getattr(result, "output", None)
+    if out is not None and hasattr(out, "model_dump_json"):
+        text = out.model_dump_json()
+    else:
+        text = str(out) if out is not None else ""
+    # Real BaseAgent.run returns the ``AgentReport`` dataclass directly;
+    # test stubs that build a ``SimpleNamespace`` won't pass isinstance.
+    report = result if isinstance(result, AgentReport) else None
+    return _AgentRunResult(text=text, report=report)
 
 
 def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
@@ -524,6 +626,11 @@ def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
 
     Each horizon argues theses, not trades. Per-horizon facilitator
     extracts a structured DebateOutcome record.
+
+    W1.C-v2: per-horizon helper now returns ``(text, reports)``; this
+    function collects all reports across the three horizons and
+    bulk-persists once at phase end (single sync writer, no aiosqlite
+    contention).
     """
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
@@ -531,6 +638,7 @@ def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
              user_id=user_id, decision_run_id=decision_run_id)
 
     parts: list[str] = []
+    collected: list[AgentReport] = []
     with ThreadPoolExecutor(max_workers=3) as ex:
         futures = {
             ex.submit(
@@ -547,20 +655,36 @@ def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
         for fut in as_completed(futures):
             horizon = futures[fut]
             try:
-                outcome_text = fut.result()
+                result = fut.result()
+                # _run_one_horizon_debate may return either the legacy
+                # str shape (test stubs via monkeypatch) or the new
+                # (text, reports) tuple. Detect via isinstance.
+                if isinstance(result, tuple) and len(result) == 2:
+                    outcome_text, horizon_reports = result
+                    collected.extend(
+                        r for r in horizon_reports if r is not None
+                    )
+                else:
+                    outcome_text = result
                 parts.append(f"=== Debate outcome — {horizon} ===\n{outcome_text}")
             except Exception as exc:  # noqa: BLE001
                 log.error("plan_synthesis.phase_2.debate_failed",
                           horizon=horizon, decision_run_id=decision_run_id,
                           error=str(exc))
                 parts.append(f"=== Debate outcome — {horizon} (FAILED) ===\n{exc}")
+
+    # W1.C-v2 batch persist for phase 2 (9 agents max: 3 horizons ×
+    # bull/bear/facilitator). Routed through the package namespace so a
+    # test patching ``flow._persist_agent_reports`` is honoured.
+    _pkg._persist_agent_reports(session, collected)
+
     return "\n\n".join(parts)
 
 
 def _run_one_horizon_debate(*, horizon: str, user_id: str,
                              analyst_reports_text: str,
                              baseline, prior_current, decision_run_id: str,
-                             trigger: str) -> str:
+                             trigger: str) -> tuple[str, list[AgentReport]]:
     """Run bull/bear/facilitator for one horizon.
 
     Reuses the existing argosy.agents.researcher and researcher_facilitator
@@ -653,7 +777,16 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
         decision_id=decision_run_id,
     )
     out = fac_report.output if hasattr(fac_report, "output") else fac_report
-    return out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
+    text = out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
+    # W1.C-v2: hand the AgentReport dataclasses back to the phase helper
+    # for a single bulk persist at phase boundary. Test stubs return
+    # SimpleNamespace which isn't an AgentReport — those are filtered out
+    # here (and again defensively inside _persist_agent_reports).
+    collected: list[AgentReport] = [
+        r for r in (bull_report, bear_report, fac_report)
+        if isinstance(r, AgentReport)
+    ]
+    return text, collected
 
 
 def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
@@ -695,6 +828,15 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
         speculation_cap_concurrent=speculation_cap_concurrent,
         decision_id=decision_run_id,
     )
+    # W1.C-v2: single-agent phase still uses the uniform bulk-persist
+    # pattern (one-element list) so every synthesis phase writes to
+    # ``agent_reports`` via the same code path. Routed through the
+    # package namespace so a test patching ``flow._persist_agent_reports``
+    # is honoured. Stub agents return SimpleNamespace; the isinstance
+    # guard in _persist_agent_reports filters those out.
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
+    if isinstance(result, AgentReport):
+        _pkg._persist_agent_reports(session, [result])
     return result.output  # type: ignore[attr-defined]
 
 
@@ -782,6 +924,7 @@ def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
 
     parts: list[str] = []
     raw_outputs: dict[str, str] = {}
+    collected: list[AgentReport] = []
     with ThreadPoolExecutor(max_workers=3) as ex:
         futures = {
             ex.submit(_run_one_risk_perspective,
@@ -794,7 +937,16 @@ def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
         for fut in as_completed(futures):
             stance = futures[fut]
             try:
-                payload = fut.result()
+                result = fut.result()
+                # W1.C-v2: _run_one_risk_perspective now returns
+                # (text, report). Handle the legacy str shape too in case
+                # a test stub returns a plain string.
+                if isinstance(result, tuple) and len(result) == 2:
+                    payload, report = result
+                    if report is not None:
+                        collected.append(report)
+                else:
+                    payload = result
                 raw_outputs[stance] = payload
                 parts.append(f"=== Risk {stance} ===\n{payload}")
             except Exception as exc:  # noqa: BLE001
@@ -835,6 +987,8 @@ def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
             rounds_run=1,
             decision_id=decision_run_id,
         )
+        if isinstance(merged, AgentReport):
+            collected.append(merged)
         merged_out = getattr(merged, "output", merged)
         merged_text = (
             merged_out.model_dump_json()
@@ -845,6 +999,11 @@ def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
         log.error("plan_synthesis.phase_4.facilitator_failed",
                   decision_run_id=decision_run_id, error=str(exc))
         parts.append(f"=== Risk facilitator (FAILED) ===\n{exc}")
+
+    # W1.C-v2 batch persist for phase 4 (3 officers + 1 facilitator).
+    # Routed through the package namespace so a test patching
+    # ``flow._persist_agent_reports`` is honoured.
+    _pkg._persist_agent_reports(session, collected)
 
     return "\n\n".join(parts)
 
@@ -867,8 +1026,12 @@ def _make_risk_officer(stance: str, *, user_id: str | None = None):
 def _run_one_risk_perspective(*, stance: str, user_id: str,
                               draft_output: PlanSynthesisOutput,
                               analyst_reports_text: str,
-                              decision_run_id: str) -> str:
-    """Run one risk-officer perspective and return its output as text.
+                              decision_run_id: str
+                              ) -> tuple[str, AgentReport | None]:
+    """Run one risk-officer perspective and return ``(text, report)``.
+
+    W1.C-v2: returns the AgentReport alongside the text so the phase
+    helper can collect it for bulk persist at phase boundary.
 
     ADAPTATION: ``_make_risk_officer`` is a documented monkeypatch seam
     used by tests; the spec test's stub has signature ``(stance)`` only,
@@ -912,7 +1075,9 @@ def _run_one_risk_perspective(*, stance: str, user_id: str,
         decision_id=decision_run_id,
     )
     out = getattr(result, "output", result)
-    return out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
+    text = out.model_dump_json() if hasattr(out, "model_dump_json") else str(out)
+    report = result if isinstance(result, AgentReport) else None
+    return text, report
 
 
 def _make_fund_manager(user_id: str | None = None):
@@ -958,6 +1123,12 @@ def _run_phase_5_fund_manager(*, session, user_id,
         risk_verdict=risk_verdict,
         decision_id=decision_run_id,
     )
+    # W1.C-v2: uniform bulk-persist pattern. Phase 5 calls exactly one
+    # agent; wrap its dataclass in a 1-element list and route through
+    # the package namespace. Stub agents return SimpleNamespace; only
+    # real AgentReport instances are persisted.
+    if isinstance(result, AgentReport):
+        _pkg._persist_agent_reports(session, [result])
     out = result.output
 
     # The plan-revision path validates against FundManagerPlanRevisionDecision

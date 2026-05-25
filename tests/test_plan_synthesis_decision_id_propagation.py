@@ -294,6 +294,126 @@ def test_phase_1_assembles_and_routes_all_payloads(monkeypatch):
         assert kw.get("decision_id") == "plan-synth-42"
 
 
+def test_phase_1_bulk_persists_all_successful_agents(monkeypatch):
+    """W1.C-v2: _run_phase_1_analysts collects each analyst's AgentReport
+    dataclass and bulk-persists once at the end of the phase via a single
+    sync writer (no aiosqlite contention).
+
+    Patches the analyst run_sync to return real ``AgentReport`` instances
+    (so the orchestrator's ``isinstance(result, AgentReport)`` filter lets
+    them through to the bulk persist), wires up a real in-memory SQLite
+    session, and asserts the expected number of rows are written.
+    """
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+    from types import SimpleNamespace as _NS
+
+    from argosy.agents.base import AgentReport, ConfidenceBand
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _run_phase_1_analysts,
+    )
+    from argosy.state.models import (
+        AgentReport as AgentReportRow,
+        Base,
+        User,
+    )
+
+    # In-memory SQLite engine + schema + user.
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    session = SessionLocal()
+    session.add(User(id="ariel", plan="free"))
+    session.commit()
+
+    # Build a real AgentReport dataclass for the stub to return — its
+    # ``output`` attribute carries the SimpleNamespace payload (so the
+    # caller's ``out.model_dump_json()`` path still works) AND the
+    # orchestrator's ``isinstance(result, AgentReport)`` check passes,
+    # so the report is collected for bulk persist.
+    def _make_stub(role: str):
+        def _stub(self, *args, **kwargs):
+            return AgentReport(
+                agent_role=role,
+                user_id="ariel",
+                model="stub-model",
+                response_text="stub-response",
+                tokens_in=1, tokens_out=1, cost_usd=0.0,
+                prompt_hash="hash",
+                confidence=ConfidenceBand.MEDIUM,
+                output=_NS(
+                    model_dump=lambda: {},
+                    model_dump_json=lambda: "{}",
+                    approved=True,
+                ),
+                decision_id=kwargs.get("decision_id"),
+                run_correlation_id="corr-" + role,
+                system_prompt="sys",
+                user_prompt="usr",
+            )
+        return _stub
+
+    # Patch all 9 analyst classes. The orchestrator routes through the
+    # package namespace (``_pkg.<AgentClsName>``) so we patch via ``flow``
+    # rather than the submodule.
+    for name in (
+        "ConcentrationAnalystAgent",
+        "FxAnalystAgent",
+        "FundamentalsAnalystAgent",
+        "MacroAnalystAgent",
+        "NewsAnalystAgent",
+        "PlanCritiqueAgent",
+        "SentimentAnalystAgent",
+        "TaxAnalystAgent",
+        "TechnicalAnalystAgent",
+    ):
+        cls = getattr(flow, name)
+        monkeypatch.setattr(
+            cls, "run_sync", _make_stub(name), raising=True,
+        )
+
+    # Avoid DB-touching helpers.
+    monkeypatch.setattr(
+        flow, "_assemble_portfolio_summary",
+        lambda *, session, user_id: "(empty)",
+    )
+    monkeypatch.setattr(
+        flow, "_load_user_context_yaml",
+        lambda *, session, user_id: "",
+    )
+
+    baseline = _NS(version_label="v1", distillate_rendered="# Plan")
+    _run_phase_1_analysts(
+        session=session,
+        user_id="ariel",
+        baseline=baseline,
+        prior_current=None,
+        decision_run_id=_DECISION_ID,
+        guidance="",
+    )
+
+    # All 9 agent_reports rows must be written via the single bulk
+    # writer at phase end.  decision_id and other fields are populated
+    # from the dataclass.
+    rows = session.execute(select(AgentReportRow)).scalars().all()
+    assert len(rows) == 9, (
+        f"W1.C-v2 bulk persist: expected 9 rows for phase 1, got {len(rows)}"
+    )
+    for row in rows:
+        assert row.decision_id == _DECISION_ID, (
+            f"row {row.agent_role}: decision_id not stamped — "
+            f"got {row.decision_id!r}"
+        )
+        assert row.user_id == "ariel"
+        assert row.run_correlation_id is not None
+    session.close()
+    engine.dispose()
+
+
 def test_phase_5_passes_decision_id_to_fund_manager(monkeypatch):
     """_run_phase_5_fund_manager forwards decision_id to FundManagerAgent."""
     from argosy.orchestrator.flows import plan_synthesis as flow

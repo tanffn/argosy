@@ -689,69 +689,27 @@ class BaseAgent(Generic[T]):
                 user_prompt=user_prompt,
             )
 
-            # W1.C — synthesis-flow forensic trail. Mirror the AgentReport
-            # dataclass to the agent_reports DB table when this run is part
-            # of a decision (synthesis / debate / risk / FM flows pass
-            # decision_id). Advisor / intake / decisions.flow paths already
-            # write the row themselves via their own _persist_turn helpers
-            # and pass decision_id=None into BaseAgent.run, so this branch
-            # is skipped for them to avoid double-write. Persistence is
-            # best-effort: any failure logs a warning and leaves
-            # persisted_id=None on the WS payload — it MUST NOT block the
-            # agent run or mask the returned dataclass.
+            # W1.C-v2 — synthesis-flow forensic trail moved to batch
+            # persistence at phase boundaries in the synthesis orchestrator.
+            # See ``argosy/orchestrator/flows/plan_synthesis/orchestrator.py
+            # ::_persist_agent_reports``. Rationale: 9 concurrent
+            # ``async with db_mod.get_session()`` writers from
+            # ThreadPoolExecutor workers serialised through aiosqlite even
+            # with WAL + busy_timeout=60s, losing every successful row
+            # under load (run #10: 0/9 phase-1 rows persisted). Single
+            # writer-per-phase from the orchestrator's sync thread
+            # eliminates the contention by design.
+            #
+            # Advisor / intake / decisions.flow paths continue to write
+            # via their own ``_persist_turn`` helpers (different code
+            # path, unaffected by this change). They have always passed
+            # ``decision_id=None`` here, so removing the conditional
+            # write doesn't regress them. The ``decision_id`` is now
+            # carried on the returned ``AgentReport`` dataclass (already
+            # a field on the dataclass) so the orchestrator can mirror
+            # it into the row at batch-commit time.
+            report.decision_id = decision_id
             persisted_id: int | None = None
-            if decision_id is not None:
-                try:
-                    # Local import to keep module-load cost flat and to avoid
-                    # a name clash with the local `AgentReport` dataclass.
-                    from argosy.state import db as db_mod
-                    from argosy.state.models import (
-                        AgentReport as AgentReportRow,
-                    )
-
-                    async with db_mod.get_session() as session:
-                        ar_row = AgentReportRow(
-                            user_id=self.user_id,
-                            agent_role=report.agent_role,
-                            decision_id=decision_id,
-                            intake_session_id=intake_session_id,
-                            prompt_hash=report.prompt_hash,
-                            response_text=report.response_text,
-                            tokens_in=report.tokens_in,
-                            tokens_out=report.tokens_out,
-                            cost_usd=report.cost_usd,
-                            model=report.model,
-                            confidence=(
-                                report.confidence.value
-                                if report.confidence
-                                else None
-                            ),
-                            cache_input_tokens=report.cache_input_tokens,
-                            cache_creation_tokens=report.cache_creation_tokens,
-                            thinking_tokens=report.thinking_tokens,
-                            citations_json=report.citations_json,
-                            sources_json=report.sources_json,
-                            run_correlation_id=report.run_correlation_id,
-                            system_prompt=report.system_prompt,
-                            user_prompt=report.user_prompt,
-                        )
-                        session.add(ar_row)
-                        await session.commit()
-                        await session.refresh(ar_row)
-                        persisted_id = ar_row.id
-                except Exception as persist_exc:  # noqa: BLE001
-                    # Best-effort: never block the run. The WS payload will
-                    # report agent_report_id=None and downstream consumers
-                    # fall back to the run_correlation_id (already on the
-                    # event) for joining.
-                    self._log.warning(
-                        "agent_report_persist_failed",
-                        agent_role=self.agent_role,
-                        decision_id=decision_id,
-                        run_correlation_id=run_correlation_id,
-                        error=str(persist_exc),
-                    )
-                    persisted_id = None
 
             # Emit agent.run.finished — best-effort, must never block the agent run.
             try:
@@ -1320,6 +1278,57 @@ class BaseAgent(Generic[T]):
                         # if this was the last; harmless — we use the
                         # last non-empty buffer below).
                         turn_buffers.append([])
+                # ----- Empty-output retry (W2.A-v2) -------------------
+                # Live synthesis runs #6, #9, #10 surfaced a second flake
+                # distinct from the W2.A exit-1 path: the SDK stream
+                # completes successfully (no exception, no non-zero
+                # exit) but the model emitted no text — every assistant
+                # turn yielded zero `TextBlock`s, or only whitespace.
+                # Downstream `_parse_output("")` raises
+                # `json.JSONDecodeError("Expecting value: line 1 column
+                # 1 (char 0)")`, killing the agent run.
+                #
+                # Recovery is the same as the exit-1 flake: tear down
+                # the SDK session and try once more with a fresh
+                # `query()` call. We reuse the SHARED `_retried` guard
+                # so the function does AT MOST ONE retry per
+                # invocation, regardless of which signature fired.
+                #
+                # Narrow gate (avoid retrying legitimately-empty
+                # outputs that should surface as parse errors, and
+                # avoid stepping on a different failure mode):
+                #   1. Chunked mode (`expected_turns > 1`) is excluded
+                #      from this check — incomplete chunked streams
+                #      already raise via the `turns_seen != expected_turns`
+                #      branch below with a clearer diagnostic, and
+                #      mid-stream emptiness on intermediate batches is
+                #      normal (acknowledgement turns).
+                #   2. We compute the same "last non-empty turn
+                #      buffer" the post-loop code uses, so the check
+                #      mirrors exactly what `ModelCall.text` would
+                #      contain — no risk of disagreeing with the
+                #      downstream parser about whether output exists.
+                #   3. Whitespace-only counts as empty: a model that
+                #      emitted only `\n` or spaces cannot survive
+                #      `_parse_output` either, and the live-run
+                #      fingerprint was exactly this.
+                if expected_turns == 1 and not _retried:
+                    candidate_buf = next(
+                        (b for b in reversed(turn_buffers) if b), [],
+                    )
+                    candidate_text = "".join(candidate_buf)
+                    if not candidate_text or not candidate_text.strip():
+                        _retried = True
+                        self._log.warning(
+                            "claude_code.empty_output_retry",
+                            agent_role=self.agent_role,
+                            model=self.model,
+                        )
+                        # Loop continues — top of the while block
+                        # rebinds the per-attempt state and a new
+                        # `query()` call below opens a fresh SDK /
+                        # claude.exe session.
+                        continue
                 # Stream completed cleanly — exit the retry loop and
                 # continue with post-stream validation / ModelCall build.
                 break
