@@ -50,8 +50,17 @@ class PortfolioSnapshotDTO(BaseModel):
     parse_warnings: list[str]
 
 
+_PORTFOLIO_TSV_HEADER_MARKER = "Bank account / funds allocation"
+
+
 def _find_latest_tsv() -> Path | None:
-    """Best-effort: pick the newest .tsv anywhere under ARGOSY_HOME."""
+    """Return the newest portfolio TSV under ARGOSY_HOME or None.
+
+    Filters by the presence of the ``"Bank account / funds allocation"``
+    header marker so stray small uploads (e.g. attachment placeholders
+    under ``uploads/<user>/.../<timestamp>__<hash>__p.tsv``) don't shadow
+    the real ``Family Finances Status - <date>.tsv`` file.
+    """
     settings = get_settings()
     home = settings.home
     candidates: list[tuple[float, Path]] = []
@@ -68,7 +77,15 @@ def _find_latest_tsv() -> Path | None:
     if not candidates:
         return None
     candidates.sort(reverse=True)
-    return candidates[0][1]
+    for _, path in candidates:
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as f:
+                head = f.read(4096)
+        except OSError:  # pragma: no cover - defensive
+            continue
+        if _PORTFOLIO_TSV_HEADER_MARKER in head:
+            return path
+    return None
 
 
 @router.get("/snapshot", response_model=PortfolioSnapshotDTO)

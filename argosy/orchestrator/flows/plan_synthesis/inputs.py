@@ -389,11 +389,18 @@ def _extract_plan_targets(baseline) -> dict[str, float]:
     return out
 
 
-def _find_latest_tsv():
-    """Return the newest ``*.tsv`` under ARGOSY_HOME or None.
+_PORTFOLIO_TSV_HEADER_MARKER = "Bank account / funds allocation"
 
-    Mirrors ``argosy.orchestrator.loops.daily_brief._find_latest_tsv``
-    so the synthesis input set matches what the daily brief sees.
+
+def _find_latest_tsv():
+    """Return the newest portfolio TSV under ARGOSY_HOME or None.
+
+    Filters by the presence of the ``"Bank account / funds allocation"``
+    header marker so stray small uploads (e.g. attachment placeholders
+    under ``uploads/<user>/.../<timestamp>__<hash>__p.tsv``) don't shadow
+    the real ``Family Finances Status - <date>.tsv`` file. Same defect
+    pattern caused both this morning's $0k portfolio bug and run #7's
+    empty-tickers symptom.
     """
     try:
         from argosy.config import get_settings
@@ -404,7 +411,17 @@ def _find_latest_tsv():
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        return candidates[0] if candidates else None
+        for path in candidates:
+            try:
+                # Read only the first ~4KB; the header is in the first
+                # few lines of any real Family Finances Status TSV.
+                with path.open("r", encoding="utf-8", errors="ignore") as f:
+                    head = f.read(4096)
+            except OSError:
+                continue
+            if _PORTFOLIO_TSV_HEADER_MARKER in head:
+                return path
+        return None
     except Exception:  # noqa: BLE001 - defensive
         return None
 
