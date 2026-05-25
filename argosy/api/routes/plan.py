@@ -81,16 +81,16 @@ def get_db() -> Generator[Session, None, None]:
         sync_url = settings.database_url.replace("+aiosqlite", "")
         _sync_engine = create_engine(sync_url, connect_args={"check_same_thread": False})
 
-        # SQLite WAL + busy_timeout — see argosy/state/db.py for rationale.
-        # This sync engine is what the /check-in BackgroundTask wrapper uses
-        # (via session_factory bound to db.get_bind()), so it must also enable
-        # WAL or the synthesis flow's W1.C persistence writes will lock up.
+        # SQLite WAL + busy_timeout + synchronous=NORMAL — see
+        # argosy/state/db.py for the rationale. busy_timeout bumped to
+        # 60 s after run #9 hit 11 s waits at 10 s.
         if sync_url.startswith("sqlite") and ":memory:" not in sync_url:
             @event.listens_for(_sync_engine, "connect")
             def _set_sqlite_pragmas(dbapi_connection, _connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA journal_mode=WAL")
-                cursor.execute("PRAGMA busy_timeout=10000")
+                cursor.execute("PRAGMA busy_timeout=60000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
                 cursor.close()
 
         _sync_session_factory = sessionmaker(bind=_sync_engine, expire_on_commit=False)

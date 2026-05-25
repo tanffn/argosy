@@ -1708,7 +1708,19 @@ class BaseAgent(Generic[T]):
             if lines and lines[-1].startswith("```"):
                 lines = lines[:-1]
             cleaned = "\n".join(lines).strip()
-        data = json.loads(cleaned)
+        # Two tolerances vs naive json.loads(cleaned):
+        #   - `strict=False` allows raw control characters (\n, \r, \t)
+        #     inside string values. Models sometimes emit literal newlines
+        #     inside long string fields instead of the escaped \n form;
+        #     strict=True (the default) rejects them as "Invalid control
+        #     character". W1.B verification run #9 hit this on PlanCritique.
+        #   - `JSONDecoder().raw_decode(cleaned)` parses the first complete
+        #     JSON value and returns the end position. Anything after is
+        #     trailing prose that the model occasionally appends after the
+        #     JSON object (Concentration/FX/Macro hit "Extra data: line N
+        #     column 1 (char N)" in run #9). We discard the trailing text.
+        decoder = json.JSONDecoder(strict=False)
+        data, _end = decoder.raw_decode(cleaned)
         return self.output_model.model_validate(data)
 
     def _validate_citations(self, output: BaseModel) -> None:

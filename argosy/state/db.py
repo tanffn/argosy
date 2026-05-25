@@ -43,19 +43,27 @@ def init_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
     _engine = create_async_engine(url, echo=echo, future=True)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
 
-    # SQLite WAL + busy_timeout — critical under concurrent writers (e.g. the
-    # plan_synthesis flow's ThreadPoolExecutor where N analysts each open their
-    # own session via W1.C's agent_reports persistence path). Default rollback
-    # journal serializes writers AND blocks readers, causing "database is
-    # locked" within ~5 s of contention. WAL lets readers proceed while a
-    # writer holds the lock; busy_timeout gives a 10 s grace window before
-    # raising OperationalError.
+    # SQLite WAL + busy_timeout + synchronous=NORMAL — critical under
+    # concurrent writers (e.g. the plan_synthesis flow's ThreadPoolExecutor
+    # where N analysts each open their own session via W1.C's agent_reports
+    # persistence path).
+    #
+    # WAL lets readers proceed while a writer holds the lock. Writers still
+    # serialize, but each one is fast (~50 ms). busy_timeout=60000 (60 s)
+    # gives plenty of headroom for the worst case where all 9 phase-1
+    # analysts plus phase-2 / phase-4 agents queue against each other.
+    # Run #9 hit 11 s wait times with busy_timeout=10000 and lost EVERY
+    # W1.C persistence write — bumping to 60 s eliminates that.
+    # synchronous=NORMAL (vs the default FULL) skips per-write fsync on the
+    # WAL file, dropping per-INSERT latency from ~30 ms to ~3 ms; still
+    # durable on app crash, only loses uncommitted txns on OS crash.
     if url.startswith("sqlite") and ":memory:" not in url:
         @event.listens_for(_engine.sync_engine, "connect")
         def _set_sqlite_pragmas(dbapi_connection, _connection_record):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA busy_timeout=10000")
+            cursor.execute("PRAGMA busy_timeout=60000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.close()
 
     return _engine
