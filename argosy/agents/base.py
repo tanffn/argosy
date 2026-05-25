@@ -1090,6 +1090,7 @@ class BaseAgent(Generic[T]):
             from claude_agent_sdk import (
                 AssistantMessage,
                 ClaudeAgentOptions,
+                ProcessError,
                 ResultMessage,
                 TextBlock,
                 query,
@@ -1105,6 +1106,11 @@ class BaseAgent(Generic[T]):
         # line is appended to `stderr_lines` and also forwarded to the
         # structured logger; on failure we attach the captured tail to
         # the AgentRunError so the caller / UI sees the real cause.
+        #
+        # NOTE: `stderr_lines` is re-bound on each retry attempt below so
+        # that the transient-flake detector inspects only the lines
+        # captured during the most recent attempt. `_capture_stderr`
+        # closes over the name (not the list) so reassignment works.
         stderr_lines: list[str] = []
 
         def _capture_stderr(line: str) -> None:
@@ -1187,14 +1193,24 @@ class BaseAgent(Generic[T]):
             )
             expected_turns = len(user_messages)
 
-            async def _prompt_stream():
-                for msg in user_messages:
-                    yield msg
+            def _make_sdk_prompt() -> Any:
+                # Async generators are single-use. The retry path below
+                # rebuilds the prompt by calling this factory again so a
+                # second `query()` call has a fresh, un-iterated stream.
+                async def _prompt_stream():
+                    for msg in user_messages:
+                        yield msg
 
-            sdk_prompt: Any = _prompt_stream()
+                return _prompt_stream()
         else:
             expected_turns = 1
-            sdk_prompt = user_with_sources
+
+            def _make_sdk_prompt() -> Any:
+                # Plain-string prompts are reusable across retries, but we
+                # keep the factory shape consistent with the streaming
+                # branch so the retry loop below can call it
+                # unconditionally.
+                return user_with_sources
 
         # Raise the SDK turn cap to match the actual number of yielded
         # user messages, with one turn of headroom. The default of 1 is
@@ -1206,13 +1222,6 @@ class BaseAgent(Generic[T]):
             options_kwargs["max_turns"] = expected_turns + 1
             # Re-build options now that max_turns is finalized.
             options = ClaudeAgentOptions(**options_kwargs)
-
-        tokens_in = 0
-        tokens_out = 0
-        cache_input_tokens = 0
-        cache_creation_tokens = 0
-        thinking_tokens = 0
-        cost_usd_from_sdk = 0.0
 
         def _usage_get(usage: Any, key: str) -> int:
             """Pull an int from `usage` whether it's a dict or an object.
@@ -1233,66 +1242,150 @@ class BaseAgent(Generic[T]):
             except (TypeError, ValueError):
                 return 0
 
-        # Track text per turn (one buffer per assistant turn). With multi-
-        # batch chunking, intermediate turns are short acknowledgements;
-        # only the LAST turn carries the structured response we want.
-        # Tokens/cost accumulate across all turns (with multi-batch, turn
-        # 2+ usage rows include the prompt-cache reads from prior turns).
-        turn_buffers: list[list[str]] = [[]]
-        turns_seen = 0
+        # ------------------------------------------------------------------
+        # Retry loop — at most one retry on the transient claude.exe exit-1
+        # flake (SDD open-gap #4 / W2.A). The whole streaming session is
+        # restarted from a fresh SDK `query()` call so any process-state
+        # corruption in the dying subprocess does not leak into the second
+        # attempt. Per-attempt accumulators (tokens, turn_buffers,
+        # stderr_lines) are rebound at the top of the loop so a half-
+        # streamed first attempt cannot contaminate the retry's totals.
+        # ------------------------------------------------------------------
+        _retried = False
+        while True:
+            tokens_in = 0
+            tokens_out = 0
+            cache_input_tokens = 0
+            cache_creation_tokens = 0
+            thinking_tokens = 0
+            cost_usd_from_sdk = 0.0
 
-        try:
-            async for message in query(prompt=sdk_prompt, options=options):
-                if isinstance(message, AssistantMessage):
-                    for block in getattr(message, "content", []) or []:
-                        if isinstance(block, TextBlock):
-                            turn_buffers[-1].append(block.text)
-                elif isinstance(message, ResultMessage):
-                    turns_seen += 1
-                    cost_usd_from_sdk += float(
-                        getattr(message, "total_cost_usd", 0.0) or 0.0
+            # Track text per turn (one buffer per assistant turn). With
+            # multi-batch chunking, intermediate turns are short
+            # acknowledgements; only the LAST turn carries the structured
+            # response we want. Tokens/cost accumulate across all turns
+            # (with multi-batch, turn 2+ usage rows include the prompt-
+            # cache reads from prior turns).
+            turn_buffers: list[list[str]] = [[]]
+            turns_seen = 0
+
+            # Reset the captured-stderr buffer on each attempt so the
+            # transient-flake detector below only inspects this attempt's
+            # stderr (rebinding works because `_capture_stderr` closes
+            # over the name in this function's scope, not the list
+            # object).
+            stderr_lines = []
+
+            # Build a fresh prompt on every attempt. For streaming-mode
+            # (image/PDF attachments) the prompt is an async generator
+            # which is single-use; on retry we MUST get a new one or the
+            # second `query()` call would iterate an already-exhausted
+            # stream and produce zero turns.
+            sdk_prompt: Any = _make_sdk_prompt()
+
+            try:
+                async for message in query(prompt=sdk_prompt, options=options):
+                    if isinstance(message, AssistantMessage):
+                        for block in getattr(message, "content", []) or []:
+                            if isinstance(block, TextBlock):
+                                turn_buffers[-1].append(block.text)
+                    elif isinstance(message, ResultMessage):
+                        turns_seen += 1
+                        cost_usd_from_sdk += float(
+                            getattr(message, "total_cost_usd", 0.0) or 0.0
+                        )
+                        usage = getattr(message, "usage", None)
+                        if usage is not None:
+                            tokens_in += _usage_get(usage, "input_tokens")
+                            tokens_out += _usage_get(usage, "output_tokens")
+                            # Wave A.5 — cache + thinking telemetry.
+                            # Anthropic's Messages API returns these under
+                            # the same keys the api_key backend reads; the
+                            # agent-sdk forwards them unchanged on its
+                            # `usage` dict.
+                            cache_input_tokens += _usage_get(
+                                usage, "cache_read_input_tokens",
+                            )
+                            cache_creation_tokens += _usage_get(
+                                usage, "cache_creation_input_tokens",
+                            )
+                            # Thinking tokens: Anthropic exposes these as
+                            # `thinking_tokens` on the extra fields of
+                            # Usage (model_config={"extra": "allow"} in
+                            # the SDK). On the agent-sdk's usage dict the
+                            # same key flows through; if a future SDK rev
+                            # renames it we fall back to 0 silently.
+                            thinking_tokens += _usage_get(usage, "thinking_tokens")
+                        # Open a new buffer for the next turn (stays empty
+                        # if this was the last; harmless — we use the
+                        # last non-empty buffer below).
+                        turn_buffers.append([])
+                # Stream completed cleanly — exit the retry loop and
+                # continue with post-stream validation / ModelCall build.
+                break
+            except Exception as exc:  # pragma: no cover - exercised by integration only
+                # ----- Transient-flake detection ----------------------
+                # SDD open-gap #4: claude.exe occasionally exits 1 with
+                # an empty stderr after the subprocess has been alive a
+                # while — a process-state-corruption flake, not a
+                # deterministic input issue. Retry exactly once with a
+                # brand-new SDK session; on success the run proceeds
+                # transparently, on second failure surface the original
+                # error class as before.
+                #
+                # We gate the retry on a narrow signature so deterministic
+                # failures (e.g. an encrypted PDF the encryption gate
+                # missed, a model 400, JSON parse errors) never get
+                # silently doubled in cost/latency before surfacing:
+                #
+                #   1. `exc` must be `ProcessError` (not e.g. a JSON
+                #      decode error from CLIJSONDecodeError or a
+                #      generic SDK error).
+                #   2. `exc.exit_code` must be exactly 1 (other non-zero
+                #      codes have different root causes).
+                #   3. The `stderr_lines` buffer captured by
+                #      `_capture_stderr` during this attempt must be
+                #      empty — any stderr output means claude.exe gave us
+                #      a diagnostic, which is a deterministic failure
+                #      signal, not the silent-flake fingerprint.
+                #   4. We have not retried yet on this call (`_retried`
+                #      ensures at most one retry per `_call_via_claude_code_inner`
+                #      invocation, even if the retry hits the same flake).
+                is_transient_flake = (
+                    isinstance(exc, ProcessError)
+                    and getattr(exc, "exit_code", None) == 1
+                    and not stderr_lines
+                    and not _retried
+                )
+                if is_transient_flake:
+                    _retried = True
+                    self._log.warning(
+                        "claude_code.transient_exit1_retry",
+                        agent_role=self.agent_role,
+                        model=self.model,
+                        error=str(exc),
                     )
-                    usage = getattr(message, "usage", None)
-                    if usage is not None:
-                        tokens_in += _usage_get(usage, "input_tokens")
-                        tokens_out += _usage_get(usage, "output_tokens")
-                        # Wave A.5 — cache + thinking telemetry. Anthropic's
-                        # Messages API returns these under the same keys the
-                        # api_key backend reads; the agent-sdk forwards them
-                        # unchanged on its `usage` dict.
-                        cache_input_tokens += _usage_get(
-                            usage, "cache_read_input_tokens",
-                        )
-                        cache_creation_tokens += _usage_get(
-                            usage, "cache_creation_input_tokens",
-                        )
-                        # Thinking tokens: Anthropic exposes these as
-                        # `thinking_tokens` on the extra fields of Usage
-                        # (model_config={"extra": "allow"} in the SDK). On
-                        # the agent-sdk's usage dict the same key flows
-                        # through; if a future SDK rev renames it we fall
-                        # back to 0 silently.
-                        thinking_tokens += _usage_get(usage, "thinking_tokens")
-                    # Open a new buffer for the next turn (stays empty if
-                    # this was the last; harmless — we use the last
-                    # non-empty buffer below).
-                    turn_buffers.append([])
-        except Exception as exc:  # pragma: no cover - exercised by integration only
-            # Attach the tail of claude.exe stderr (captured by
-            # `_capture_stderr`) so the AgentRunError surfaces the actual
-            # cause instead of the SDK's hardcoded "Check stderr output
-            # for details" placeholder (subprocess_cli.py:677). Limit to
-            # the last ~2000 chars to keep the exception message readable
-            # while still preserving the failure tail.
-            stderr_tail = "".join(stderr_lines)[-2000:].strip()
-            stderr_suffix = (
-                f"\n[claude.exe stderr]\n{stderr_tail}" if stderr_tail
-                else "\n[claude.exe stderr was empty]"
-            )
-            raise AgentRunError(
-                f"{self.agent_role}: claude-agent-sdk error: {exc}"
-                f"{stderr_suffix}"
-            ) from exc
+                    # Loop continues — top of the while block rebinds the
+                    # per-attempt state and a new `query()` call below
+                    # opens a fresh SDK / claude.exe session.
+                    continue
+
+                # Attach the tail of claude.exe stderr (captured by
+                # `_capture_stderr`) so the AgentRunError surfaces the
+                # actual cause instead of the SDK's hardcoded "Check
+                # stderr output for details" placeholder
+                # (subprocess_cli.py:677). Limit to the last ~2000 chars
+                # to keep the exception message readable while still
+                # preserving the failure tail.
+                stderr_tail = "".join(stderr_lines)[-2000:].strip()
+                stderr_suffix = (
+                    f"\n[claude.exe stderr]\n{stderr_tail}" if stderr_tail
+                    else "\n[claude.exe stderr was empty]"
+                )
+                raise AgentRunError(
+                    f"{self.agent_role}: claude-agent-sdk error: {exc}"
+                    f"{stderr_suffix}"
+                ) from exc
 
         # Validate that every batched user message produced a turn.
         # Only enforce in chunked mode (expected_turns > 1) — single-turn

@@ -728,3 +728,281 @@ async def test_call_via_claude_code_inner_raises_on_incomplete_chunked_turns(
         )
     msg = str(exc_info.value)
     assert "expected 2 turn(s), got 1" in msg
+
+
+# ----------------------------------------------------------------------
+# Transient claude.exe exit-1 retry (SDD open-gap #4 / W2.A)
+# ----------------------------------------------------------------------
+#
+# Live synthesis run #6 surfaced a flake where claude.exe exits 1 with
+# an empty stderr after the subprocess has been alive a while. We retry
+# the SDK `query()` call exactly once with a fresh session; retries that
+# look deterministic (exit code != 1, or non-empty stderr) bypass the
+# retry and surface the original error immediately.
+
+
+class _RecordingLogger:
+    """Minimal stub mimicking structlog's BoundLogger surface used by
+    `_call_via_claude_code_inner`. Records every warning call so a test
+    can assert both the event name and the structured kwargs.
+    """
+
+    def __init__(self) -> None:
+        self.warnings: list[tuple[str, dict[str, Any]]] = []
+
+    def warning(self, event: str, *args: Any, **kwargs: Any) -> None:
+        # `_capture_stderr` calls with kwargs; the thinking-fallback path
+        # uses positional %-formatting. We only need the event name +
+        # kwargs for the retry assertion.
+        self.warnings.append((event, dict(kwargs)))
+
+    # Defensive — claude_code path only emits warning() today but other
+    # code paths in BaseAgent may call info/error during construction.
+    def info(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+    def error(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+def _install_fake_query_with_call_counter(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    side_effects: list[Any],
+) -> dict[str, Any]:
+    """Patch `claude_agent_sdk.query` so each call pops the next item
+    from `side_effects`:
+
+      * A `BaseException` instance → raised when `query()` body runs.
+      * A `list` of messages → yielded as the stream.
+
+    Returns a `captured` dict with `n_calls` so the test can verify the
+    exact number of `query()` invocations (must be 2 for retry-once).
+    """
+    captured: dict[str, Any] = {"n_calls": 0}
+    pending = list(side_effects)
+
+    async def _fake_query(*, prompt, options):
+        captured["n_calls"] += 1
+        if not pending:
+            raise AssertionError(
+                "fake query() called more times than side_effects allows"
+            )
+        effect = pending.pop(0)
+        # Drain streaming-mode prompts to mimic the real SDK's behavior.
+        if hasattr(prompt, "__aiter__"):
+            async for _ in prompt:
+                pass
+        if isinstance(effect, BaseException):
+            raise effect
+        for message in effect:
+            yield message
+
+    monkeypatch.setattr("claude_agent_sdk.query", _fake_query)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_claude_code_retry_on_transient_exit1_flake(monkeypatch):
+    """ProcessError(exit_code=1, empty stderr) → retry once, succeed.
+
+    Replicates the live-run #6 fingerprint: claude.exe exits 1 without
+    writing to stderr. The retry must:
+      - Re-call `query()` exactly once more (n_calls == 2 total).
+      - Emit a `claude_code.transient_exit1_retry` warning with
+        structured fields (agent_role, model, error).
+      - Return the SECOND attempt's output text in the ModelCall.
+    """
+    from claude_agent_sdk import AssistantMessage, ProcessError, TextBlock
+
+    flake = ProcessError(
+        "Command failed with exit code 1",
+        exit_code=1,
+        stderr="Check stderr output for details",
+    )
+    # Second attempt: success path — one assistant message + one result.
+    success_stream = [
+        AssistantMessage(
+            content=[TextBlock(text="retry-success-payload")],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=11, output_tokens=22),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[flake, success_stream],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # 1. Exactly one retry (initial + one retry == 2 total).
+    assert captured["n_calls"] == 2
+
+    # 2. ModelCall text comes from the SECOND (successful) attempt.
+    assert call.text == "retry-success-payload"
+    # Token counters reflect ONLY the successful attempt — the first-
+    # attempt accumulators must have been reset by the retry loop, not
+    # double-counted.
+    assert call.tokens_in == 11
+    assert call.tokens_out == 22
+
+    # 3. Retry warning fired exactly once with structured fields.
+    retry_events = [
+        kw for ev, kw in recorder.warnings
+        if ev == "claude_code.transient_exit1_retry"
+    ]
+    assert len(retry_events) == 1, (
+        f"expected exactly 1 retry warning, got {len(retry_events)}: "
+        f"{recorder.warnings}"
+    )
+    fields = retry_events[0]
+    assert fields["agent_role"] == agent.agent_role
+    assert fields["model"] == agent.model
+    assert "exit code 1" in fields["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_claude_code_no_retry_when_stderr_non_empty(monkeypatch):
+    """ProcessError(exit_code=1) but with claude.exe stderr output → do
+    NOT retry. Non-empty stderr means the failure is deterministic (e.g.
+    a model error message) and retrying would just double cost/latency.
+    """
+    from claude_agent_sdk import ProcessError
+
+    from argosy.agents.errors import AgentRunError
+
+    flake_with_stderr = ProcessError(
+        "Command failed with exit code 1", exit_code=1, stderr="ignored",
+    )
+
+    pending = [flake_with_stderr]
+
+    async def _fake_query(*, prompt, options):
+        # Simulate claude.exe writing to stderr before exiting — the SDK
+        # invokes the user-supplied `stderr` callback as lines arrive.
+        if hasattr(options, "stderr") and options.stderr is not None:
+            options.stderr("deterministic error line\n")
+        if not pending:
+            raise AssertionError("fake query() called too many times")
+        raise pending.pop(0)
+        yield  # pragma: no cover — make this an async generator
+
+    monkeypatch.setattr("claude_agent_sdk.query", _fake_query)
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    with pytest.raises(AgentRunError) as exc_info:
+        await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # No retry should have fired.
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.transient_exit1_retry"
+    ]
+    assert retry_events == []
+    # Error message should include the captured stderr tail.
+    assert "deterministic error line" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_claude_code_no_retry_when_exit_code_not_1(monkeypatch):
+    """ProcessError with exit_code != 1 → do NOT retry. The transient-
+    flake fingerprint is specifically exit-1; other codes (e.g. 137 OOM,
+    2 SIGINT, 130 user-cancel) have different root causes that retrying
+    won't fix.
+    """
+    from claude_agent_sdk import ProcessError
+
+    from argosy.agents.errors import AgentRunError
+
+    flake_wrong_code = ProcessError(
+        "Command failed with exit code 137", exit_code=137, stderr="",
+    )
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[flake_wrong_code],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    with pytest.raises(AgentRunError):
+        await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # Only one call — no retry on non-1 exit codes.
+    assert captured["n_calls"] == 1
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.transient_exit1_retry"
+    ]
+    assert retry_events == []
+
+
+@pytest.mark.asyncio
+async def test_claude_code_no_retry_on_non_process_error(monkeypatch):
+    """Non-ProcessError exceptions (e.g. CLIJSONDecodeError, generic
+    RuntimeError) bypass the retry path — they signal a different class
+    of failure that retrying with a fresh session won't help.
+    """
+    from argosy.agents.errors import AgentRunError
+
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[RuntimeError("parser exploded")],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    with pytest.raises(AgentRunError):
+        await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    assert captured["n_calls"] == 1
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.transient_exit1_retry"
+    ]
+    assert retry_events == []
+
+
+@pytest.mark.asyncio
+async def test_claude_code_retry_caps_at_one_on_repeated_flake(monkeypatch):
+    """If the transient flake hits twice in a row, the second occurrence
+    must surface as an AgentRunError — we never retry more than once per
+    `_call_via_claude_code_inner` invocation.
+    """
+    from claude_agent_sdk import ProcessError
+
+    from argosy.agents.errors import AgentRunError
+
+    flake_a = ProcessError(
+        "Command failed with exit code 1", exit_code=1, stderr="",
+    )
+    flake_b = ProcessError(
+        "Command failed with exit code 1", exit_code=1, stderr="",
+    )
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[flake_a, flake_b],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    with pytest.raises(AgentRunError):
+        await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # Exactly two calls: original + one retry. No third attempt.
+    assert captured["n_calls"] == 2
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.transient_exit1_retry"
+    ]
+    # Exactly one retry warning — the retry happened once, then the
+    # second occurrence surfaced rather than triggering retry #2.
+    assert len(retry_events) == 1
