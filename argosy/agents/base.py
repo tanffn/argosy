@@ -689,6 +689,70 @@ class BaseAgent(Generic[T]):
                 user_prompt=user_prompt,
             )
 
+            # W1.C — synthesis-flow forensic trail. Mirror the AgentReport
+            # dataclass to the agent_reports DB table when this run is part
+            # of a decision (synthesis / debate / risk / FM flows pass
+            # decision_id). Advisor / intake / decisions.flow paths already
+            # write the row themselves via their own _persist_turn helpers
+            # and pass decision_id=None into BaseAgent.run, so this branch
+            # is skipped for them to avoid double-write. Persistence is
+            # best-effort: any failure logs a warning and leaves
+            # persisted_id=None on the WS payload — it MUST NOT block the
+            # agent run or mask the returned dataclass.
+            persisted_id: int | None = None
+            if decision_id is not None:
+                try:
+                    # Local import to keep module-load cost flat and to avoid
+                    # a name clash with the local `AgentReport` dataclass.
+                    from argosy.state import db as db_mod
+                    from argosy.state.models import (
+                        AgentReport as AgentReportRow,
+                    )
+
+                    async with db_mod.get_session() as session:
+                        ar_row = AgentReportRow(
+                            user_id=self.user_id,
+                            agent_role=report.agent_role,
+                            decision_id=decision_id,
+                            intake_session_id=intake_session_id,
+                            prompt_hash=report.prompt_hash,
+                            response_text=report.response_text,
+                            tokens_in=report.tokens_in,
+                            tokens_out=report.tokens_out,
+                            cost_usd=report.cost_usd,
+                            model=report.model,
+                            confidence=(
+                                report.confidence.value
+                                if report.confidence
+                                else None
+                            ),
+                            cache_input_tokens=report.cache_input_tokens,
+                            cache_creation_tokens=report.cache_creation_tokens,
+                            thinking_tokens=report.thinking_tokens,
+                            citations_json=report.citations_json,
+                            sources_json=report.sources_json,
+                            run_correlation_id=report.run_correlation_id,
+                            system_prompt=report.system_prompt,
+                            user_prompt=report.user_prompt,
+                        )
+                        session.add(ar_row)
+                        await session.commit()
+                        await session.refresh(ar_row)
+                        persisted_id = ar_row.id
+                except Exception as persist_exc:  # noqa: BLE001
+                    # Best-effort: never block the run. The WS payload will
+                    # report agent_report_id=None and downstream consumers
+                    # fall back to the run_correlation_id (already on the
+                    # event) for joining.
+                    self._log.warning(
+                        "agent_report_persist_failed",
+                        agent_role=self.agent_role,
+                        decision_id=decision_id,
+                        run_correlation_id=run_correlation_id,
+                        error=str(persist_exc),
+                    )
+                    persisted_id = None
+
             # Emit agent.run.finished — best-effort, must never block the agent run.
             try:
                 from argosy.api.events import publish_event_threadsafe
@@ -712,7 +776,7 @@ class BaseAgent(Generic[T]):
                     "citations_count": _citations_count,
                     "cost_usd": cost,
                     "confidence": confidence.value if confidence else None,
-                    "agent_report_id": None,
+                    "agent_report_id": persisted_id,
                     "turn_id": turn_id,
                 }
                 publish_event_threadsafe("agent.run.finished", _finished_payload)
