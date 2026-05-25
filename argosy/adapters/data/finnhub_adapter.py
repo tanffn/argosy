@@ -98,6 +98,73 @@ class FinnhubAdapter:
             fetch=_fetch,
         )
 
+    async def get_company_financials(
+        self,
+        symbol: str,
+        *,
+        ttl_seconds: int = 60 * 60 * 24,  # SDD §8.3: 24h fundamentals-class
+    ) -> dict[str, Any]:
+        """Return a curated dict of fundamentals metrics for ``symbol``.
+
+        Wraps Finnhub's ``/stock/metric?symbol=<t>&metric=all`` endpoint
+        (exposed via the SDK as ``company_basic_financials(symbol, "all")``).
+        The raw payload carries dozens of keys under ``metric``; this
+        method returns a curated subset matched to the keys the
+        ``FundamentalsAnalystAgent`` prompt advertises (pe_ratio, peg,
+        ev_ebitda, growth, debt/equity, 52w range, beta, dividend yield).
+
+        Raises:
+            MissingAPIKeyError: when no API key resolved.
+            MissingDataSourceError: when Finnhub returns an empty
+                ``metric`` block (typical for non-US listings / unsupported
+                tickers) so the caller can skip + degrade gracefully.
+        """
+        client = self._resolve_client()
+        key = f"basic_financials:{symbol}:all"
+
+        def _fetch() -> dict[str, Any]:
+            raw = client.company_basic_financials(symbol, "all")
+            if not isinstance(raw, dict):
+                raise MissingDataSourceError(
+                    f"finnhub: unexpected payload type for {symbol}: {type(raw).__name__}"
+                )
+            metric = raw.get("metric") if isinstance(raw.get("metric"), dict) else None
+            if not metric:
+                raise MissingDataSourceError(
+                    f"finnhub: empty metrics for {symbol} (likely non-US / unsupported)"
+                )
+            # Curated subset; keys match the FundamentalsAnalystAgent
+            # prompt advertised fields. Missing source values stay None.
+            return {
+                "pe_ratio_ttm": metric.get("peTTM"),
+                "pe_normalized_annual": metric.get("peNormalizedAnnual"),
+                "pe_ratio": metric.get("peTTM") or metric.get("peNormalizedAnnual"),
+                "peg_ratio": metric.get("pegRatio") or metric.get("pegTTM"),
+                "eps_ttm": metric.get("epsTTM"),
+                "market_cap_m": metric.get("marketCapitalization"),
+                "revenue_per_share_ttm": metric.get("revenuePerShareTTM"),
+                "revenue_growth_yoy": metric.get("revenueGrowthTTMYoy"),
+                "earnings_growth_yoy": metric.get("epsGrowthTTMYoy"),
+                "gross_margin_ttm": metric.get("grossMarginTTM"),
+                "operating_margin_ttm": metric.get("operatingMarginTTM"),
+                "net_margin_ttm": metric.get("netProfitMarginTTM"),
+                "debt_to_equity": metric.get("totalDebt/totalEquityQuarterly"),
+                "ev_ebitda": metric.get("currentEv/freeCashFlowTTM") or metric.get("enterpriseValue/EBITDATTM"),
+                "dividend_yield": metric.get("dividendYieldIndicatedAnnual"),
+                "52w_high": metric.get("52WeekHigh"),
+                "52w_low": metric.get("52WeekLow"),
+                "beta": metric.get("beta"),
+                "source_url": f"https://finnhub.io/api/v1/stock/metric?symbol={symbol}",
+            }
+
+        return await cached_call(
+            kind=CacheKind.NEWS,
+            provider=self.PROVIDER,
+            key=key,
+            ttl_seconds=ttl_seconds,
+            fetch=_fetch,
+        )
+
     async def get_earnings_calendar(
         self,
         *,
