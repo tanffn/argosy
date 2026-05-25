@@ -1242,42 +1242,53 @@ class BaseAgent(Generic[T]):
             sdk_prompt: Any = _make_sdk_prompt()
 
             try:
-                async for message in query(prompt=sdk_prompt, options=options):
-                    if isinstance(message, AssistantMessage):
-                        for block in getattr(message, "content", []) or []:
-                            if isinstance(block, TextBlock):
-                                turn_buffers[-1].append(block.text)
-                    elif isinstance(message, ResultMessage):
-                        turns_seen += 1
-                        cost_usd_from_sdk += float(
-                            getattr(message, "total_cost_usd", 0.0) or 0.0
-                        )
-                        usage = getattr(message, "usage", None)
-                        if usage is not None:
-                            tokens_in += _usage_get(usage, "input_tokens")
-                            tokens_out += _usage_get(usage, "output_tokens")
-                            # Wave A.5 — cache + thinking telemetry.
-                            # Anthropic's Messages API returns these under
-                            # the same keys the api_key backend reads; the
-                            # agent-sdk forwards them unchanged on its
-                            # `usage` dict.
-                            cache_input_tokens += _usage_get(
-                                usage, "cache_read_input_tokens",
+                # Wrap the SDK stream in a hard timeout. Live synthesis run
+                # #15 had a phase-2 agent (likely bear_researcher on long
+                # horizon) HANG with no exception for 3+ hours — the W2.A /
+                # W2.A-v2 retries only fire on exceptions, so a silently-
+                # stuck query() never recovers. 10 minutes is well above
+                # the longest legitimate single-agent call (~3-5 min for
+                # the synthesizer's 8000-token Opus output) but bounded so
+                # the synthesis can't hang the orchestrator indefinitely.
+                # asyncio.TimeoutError is caught below as another retry
+                # trigger (shares the same _retried guard).
+                async with asyncio.timeout(600):
+                    async for message in query(prompt=sdk_prompt, options=options):
+                        if isinstance(message, AssistantMessage):
+                            for block in getattr(message, "content", []) or []:
+                                if isinstance(block, TextBlock):
+                                    turn_buffers[-1].append(block.text)
+                        elif isinstance(message, ResultMessage):
+                            turns_seen += 1
+                            cost_usd_from_sdk += float(
+                                getattr(message, "total_cost_usd", 0.0) or 0.0
                             )
-                            cache_creation_tokens += _usage_get(
-                                usage, "cache_creation_input_tokens",
-                            )
-                            # Thinking tokens: Anthropic exposes these as
-                            # `thinking_tokens` on the extra fields of
-                            # Usage (model_config={"extra": "allow"} in
-                            # the SDK). On the agent-sdk's usage dict the
-                            # same key flows through; if a future SDK rev
-                            # renames it we fall back to 0 silently.
-                            thinking_tokens += _usage_get(usage, "thinking_tokens")
-                        # Open a new buffer for the next turn (stays empty
-                        # if this was the last; harmless — we use the
-                        # last non-empty buffer below).
-                        turn_buffers.append([])
+                            usage = getattr(message, "usage", None)
+                            if usage is not None:
+                                tokens_in += _usage_get(usage, "input_tokens")
+                                tokens_out += _usage_get(usage, "output_tokens")
+                                # Wave A.5 — cache + thinking telemetry.
+                                # Anthropic's Messages API returns these under
+                                # the same keys the api_key backend reads; the
+                                # agent-sdk forwards them unchanged on its
+                                # `usage` dict.
+                                cache_input_tokens += _usage_get(
+                                    usage, "cache_read_input_tokens",
+                                )
+                                cache_creation_tokens += _usage_get(
+                                    usage, "cache_creation_input_tokens",
+                                )
+                                # Thinking tokens: Anthropic exposes these as
+                                # `thinking_tokens` on the extra fields of
+                                # Usage (model_config={"extra": "allow"} in
+                                # the SDK). On the agent-sdk's usage dict the
+                                # same key flows through; if a future SDK rev
+                                # renames it we fall back to 0 silently.
+                                thinking_tokens += _usage_get(usage, "thinking_tokens")
+                            # Open a new buffer for the next turn (stays empty
+                            # if this was the last; harmless — we use the
+                            # last non-empty buffer below).
+                            turn_buffers.append([])
                 # ----- Empty-output retry (W2.A-v2) -------------------
                 # Live synthesis runs #6, #9, #10 surfaced a second flake
                 # distinct from the W2.A exit-1 path: the SDK stream
@@ -1435,6 +1446,25 @@ class BaseAgent(Generic[T]):
                     # Loop continues — top of the while block rebinds the
                     # per-attempt state and a new `query()` call below
                     # opens a fresh SDK / claude.exe session.
+                    continue
+
+                # W3b.G: SDK call timeout. The asyncio.timeout(600) wrapper
+                # above raises asyncio.TimeoutError if the stream stalls
+                # for 10+ minutes (live run #15 had this hang for 3+ hours
+                # with no other exception). Same retry semantics as the
+                # exit-1 path — try once with a fresh session.
+                is_sdk_timeout = (
+                    isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+                    and not _retried
+                )
+                if is_sdk_timeout:
+                    _retried = True
+                    self._log.warning(
+                        "claude_code.sdk_timeout_retry",
+                        agent_role=self.agent_role,
+                        model=self.model,
+                        timeout_seconds=600,
+                    )
                     continue
 
                 # Attach the tail of claude.exe stderr (captured by
