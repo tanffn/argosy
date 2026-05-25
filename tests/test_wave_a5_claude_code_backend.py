@@ -1006,3 +1006,266 @@ async def test_claude_code_retry_caps_at_one_on_repeated_flake(monkeypatch):
     # Exactly one retry warning — the retry happened once, then the
     # second occurrence surfaced rather than triggering retry #2.
     assert len(retry_events) == 1
+
+
+# ----------------------------------------------------------------------
+# Empty-output retry (W2.A-v2)
+# ----------------------------------------------------------------------
+#
+# Live synthesis runs #6, #9, #10 hit a second flake fingerprint:
+# `claude_agent_sdk.query()` completes cleanly (no exception, no
+# non-zero exit) but the model emitted zero text. The downstream
+# `_parse_output("")` then raises a JSONDecodeError. The recovery is
+# the same as the exit-1 path — restart the SDK session once with a
+# fresh `query()` call — and the SHARED `_retried` guard ensures both
+# triggers together do at most one retry per invocation.
+
+
+@pytest.mark.asyncio
+async def test_claude_code_retry_on_empty_model_output(monkeypatch):
+    """SDK returns successfully but model output is empty → retry once,
+    succeed on second call.
+
+    Replicates the live-run #10 fingerprint: the streaming session ends
+    cleanly with a `ResultMessage` but every `AssistantMessage` had no
+    `TextBlock` content (or whitespace-only). The retry must:
+      - Re-call `query()` exactly once more (n_calls == 2 total).
+      - Emit a `claude_code.empty_output_retry` warning with
+        structured fields (agent_role, model).
+      - Return the SECOND attempt's text in the ModelCall.
+      - Surface tokens from ONLY the second attempt (the first-
+        attempt accumulators must be reset by the retry loop).
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    # First attempt: stream completes but no text is emitted. The
+    # `ResultMessage` still arrives (so `turns_seen == expected_turns`
+    # below), but `turn_buffers` ends up empty.
+    empty_stream = [
+        AssistantMessage(content=[], model="claude-sonnet-4-6"),
+        _make_result_message(input_tokens=7, output_tokens=0),
+    ]
+    # Second attempt: success — one assistant message + one result.
+    success_stream = [
+        AssistantMessage(
+            content=[TextBlock(text='{"confidence":"HIGH"}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=11, output_tokens=22),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[empty_stream, success_stream],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # 1. Exactly one retry (initial + one retry == 2 total).
+    assert captured["n_calls"] == 2
+
+    # 2. ModelCall text comes from the SECOND (successful) attempt.
+    assert call.text == '{"confidence":"HIGH"}'
+    # Token counters reflect ONLY the second attempt — first-attempt
+    # accumulators must have been reset by the retry loop, not double-
+    # counted with the empty-attempt's 7/0.
+    assert call.tokens_in == 11
+    assert call.tokens_out == 22
+
+    # 3. Retry warning fired exactly once with structured fields.
+    retry_events = [
+        kw for ev, kw in recorder.warnings
+        if ev == "claude_code.empty_output_retry"
+    ]
+    assert len(retry_events) == 1, (
+        f"expected exactly 1 empty-output retry warning, got "
+        f"{len(retry_events)}: {recorder.warnings}"
+    )
+    fields = retry_events[0]
+    assert fields["agent_role"] == agent.agent_role
+    assert fields["model"] == agent.model
+
+    # 4. The W2.A exit-1 retry warning must NOT have fired — this is a
+    # different fingerprint and we shouldn't double-log.
+    exit1_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.transient_exit1_retry"
+    ]
+    assert exit1_events == []
+
+
+@pytest.mark.asyncio
+async def test_claude_code_retry_on_whitespace_only_model_output(monkeypatch):
+    """Whitespace-only text counts as empty: the model emitted only
+    spaces / newlines, which would still kill `_parse_output`. Same
+    retry path as fully-empty.
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    whitespace_stream = [
+        AssistantMessage(
+            content=[TextBlock(text="   \n\t  \n")],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=3, output_tokens=1),
+    ]
+    success_stream = [
+        AssistantMessage(
+            content=[TextBlock(text='{"ok":true}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=11, output_tokens=22),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[whitespace_stream, success_stream],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    assert captured["n_calls"] == 2
+    assert call.text == '{"ok":true}'
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.empty_output_retry"
+    ]
+    assert len(retry_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_claude_code_empty_output_retry_caps_at_one(monkeypatch):
+    """If the empty-output flake hits twice in a row, the second
+    occurrence does NOT trigger a third call — `_retried` is shared
+    across both retry signatures and bounds the function at one retry
+    total per invocation. The ModelCall returns with empty text (the
+    downstream `_parse_output` will then surface the JSONDecodeError
+    that motivated this work).
+    """
+    from claude_agent_sdk import AssistantMessage
+
+    empty_a = [
+        AssistantMessage(content=[], model="claude-sonnet-4-6"),
+        _make_result_message(input_tokens=1, output_tokens=0),
+    ]
+    empty_b = [
+        AssistantMessage(content=[], model="claude-sonnet-4-6"),
+        _make_result_message(input_tokens=2, output_tokens=0),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[empty_a, empty_b],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # Exactly two calls — original + one retry, no third attempt.
+    assert captured["n_calls"] == 2
+    # Returned ModelCall carries empty text; downstream parse will fail
+    # (that's the existing JSONDecodeError surface, not this loop's
+    # concern).
+    assert call.text == ""
+    # Only one retry warning fired.
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.empty_output_retry"
+    ]
+    assert len(retry_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_claude_code_no_retry_on_empty_after_exit1_retry(monkeypatch):
+    """`_retried` is SHARED across the W2.A exit-1 path and the W2.A-v2
+    empty-output path: at most one retry per invocation, regardless of
+    which signature fires first.
+
+    Scenario: first call hits the exit-1 flake → retry consumed. The
+    retry returns successfully but with empty model output. The
+    function MUST NOT retry again (would be the 3rd call) — it returns
+    a ModelCall with empty text, and the downstream `_parse_output`
+    raises the JSONDecodeError that surfaces the underlying issue.
+    """
+    from claude_agent_sdk import AssistantMessage, ProcessError
+
+    flake = ProcessError(
+        "Command failed with exit code 1",
+        exit_code=1,
+        stderr="Check stderr output for details",
+    )
+    empty_stream = [
+        AssistantMessage(content=[], model="claude-sonnet-4-6"),
+        _make_result_message(input_tokens=5, output_tokens=0),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[flake, empty_stream],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # Exactly two calls — the exit-1 retry consumed the single retry
+    # budget, so the subsequent empty-text result does NOT trigger
+    # another call.
+    assert captured["n_calls"] == 2
+    # ModelCall text is empty; downstream parse will surface the
+    # original empty-output failure mode as a JSONDecodeError.
+    assert call.text == ""
+
+    # The exit-1 retry warning fired (the first flake).
+    exit1_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.transient_exit1_retry"
+    ]
+    assert len(exit1_events) == 1
+    # The empty-output retry warning did NOT fire — `_retried` was
+    # already True by the time the empty-text check ran on attempt #2.
+    empty_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.empty_output_retry"
+    ]
+    assert empty_events == []
+
+
+@pytest.mark.asyncio
+async def test_claude_code_no_empty_retry_when_text_non_empty(monkeypatch):
+    """Sanity check: non-empty text on the first call must NOT trigger
+    the empty-output retry path. Guards against a too-broad signature
+    that would silently double cost on every call.
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    success_stream = [
+        AssistantMessage(
+            content=[TextBlock(text='{"confidence":"HIGH"}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=11, output_tokens=22),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[success_stream],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # Exactly one call — no retry on non-empty output.
+    assert captured["n_calls"] == 1
+    assert call.text == '{"confidence":"HIGH"}'
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.empty_output_retry"
+    ]
+    assert retry_events == []
