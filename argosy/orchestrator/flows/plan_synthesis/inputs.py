@@ -192,8 +192,13 @@ def assemble_phase1_inputs(
             from argosy.ingest.tsv import parse_portfolio_tsv
 
             snapshot = parse_portfolio_tsv(tsv_path)
+            # PortfolioPosition uses `.symbol` (not `.ticker`); filter out the
+            # cash sentinel "-" and any other non-ticker values.
             inputs.tickers = sorted(
-                {p.ticker for p in getattr(snapshot, "positions", []) if p.ticker}
+                {
+                    p.symbol for p in getattr(snapshot, "positions", []) or []
+                    if getattr(p, "symbol", None) and p.symbol != "-"
+                }
             )
             inputs.positions_summary = _summarize_positions(snapshot)
         else:
