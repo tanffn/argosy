@@ -17,6 +17,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -41,6 +42,22 @@ def init_engine(url: str | None = None, *, echo: bool = False) -> AsyncEngine:
         url = settings.database_url
     _engine = create_async_engine(url, echo=echo, future=True)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+
+    # SQLite WAL + busy_timeout — critical under concurrent writers (e.g. the
+    # plan_synthesis flow's ThreadPoolExecutor where N analysts each open their
+    # own session via W1.C's agent_reports persistence path). Default rollback
+    # journal serializes writers AND blocks readers, causing "database is
+    # locked" within ~5 s of contention. WAL lets readers proceed while a
+    # writer holds the lock; busy_timeout gives a 10 s grace window before
+    # raising OperationalError.
+    if url.startswith("sqlite") and ":memory:" not in url:
+        @event.listens_for(_engine.sync_engine, "connect")
+        def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=10000")
+            cursor.close()
+
     return _engine
 
 
