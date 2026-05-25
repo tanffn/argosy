@@ -290,13 +290,49 @@ def assemble_phase1_inputs(
     #     subset via its prompt builder.
 
     # 11. User context YAML (identity + goals + constraints).
+    #     Resolve via the package namespace so tests that monkeypatch
+    #     ``flow._load_user_context_yaml`` are honoured — the same
+    #     calling convention the orchestrator uses for its other helpers.
     try:
-        inputs.user_context_yaml = _load_user_context_yaml(
-            session=session, user_id=user_id
+        import sys as _sys
+
+        _pkg = _sys.modules.get(
+            "argosy.orchestrator.flows.plan_synthesis"
         )
+        if _pkg is not None and hasattr(_pkg, "_load_user_context_yaml"):
+            inputs.user_context_yaml = _pkg._load_user_context_yaml(
+                session=session, user_id=user_id
+            )
+        else:
+            inputs.user_context_yaml = _load_user_context_yaml(
+                session=session, user_id=user_id
+            )
     except Exception as exc:  # noqa: BLE001 - defensive
         log.warning(
             "plan_synthesis.inputs.user_context_yaml_failed",
+            user_id=user_id,
+            error=str(exc),
+        )
+
+    # 12. Snapshot summary — always source from the package-level
+    #     ``_assemble_portfolio_summary`` helper (resolved via the package
+    #     namespace) so the legacy monkeypatch convention is honoured.
+    #     This overrides the TSV-derived ``snapshot_summary`` assigned
+    #     above. The TSV-derived ``positions_summary`` stays untouched
+    #     because ConcentrationAnalystAgent reads it as a separate field.
+    try:
+        import sys as _sys
+
+        _pkg = _sys.modules.get(
+            "argosy.orchestrator.flows.plan_synthesis"
+        )
+        if _pkg is not None and hasattr(_pkg, "_assemble_portfolio_summary"):
+            inputs.snapshot_summary = _pkg._assemble_portfolio_summary(
+                session=session, user_id=user_id
+            )
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.snapshot_summary_override_failed",
             user_id=user_id,
             error=str(exc),
         )

@@ -214,6 +214,86 @@ def test_phase_4_passes_decision_id_to_risk_agents(monkeypatch):
     assert facilitator_kw and facilitator_kw[0].get("decision_id") == _DECISION_ID
 
 
+def test_phase_1_assembles_and_routes_all_payloads(monkeypatch):
+    """After W1.B wiring, phase-1 calls assemble_phase1_inputs and routes
+    its output through to the 9 analysts. Each analyst's run_sync
+    receives the kwargs it declares (verified by capturing kwargs for
+    3 representative analysts whose signatures differ)."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _run_phase_1_analysts,
+    )
+
+    # Patch DB-touching helpers — synth shouldn't hit the real DB.
+    monkeypatch.setattr(
+        flow, "_assemble_portfolio_summary",
+        lambda *, session, user_id: "stub-positions",
+    )
+    monkeypatch.setattr(
+        flow, "_load_user_context_yaml",
+        lambda *, session, user_id: "stub-ctx",
+    )
+
+    captured: dict[str, dict] = {}
+
+    def _capture_factory(name):
+        def _stub(self, *args, **kwargs):
+            captured[name] = kwargs
+            return SimpleNamespace(
+                output=SimpleNamespace(
+                    model_dump=lambda: {},
+                    model_dump_json=lambda: "{}",
+                    approved=True,
+                ),
+            )
+        return _stub
+
+    # Patch 3 representative analysts with DIFFERENT signatures.
+    monkeypatch.setattr(
+        flow.ConcentrationAnalystAgent, "run_sync",
+        _capture_factory("Concentration"), raising=True,
+    )
+    monkeypatch.setattr(
+        flow.FundamentalsAnalystAgent, "run_sync",
+        _capture_factory("Fundamentals"), raising=True,
+    )
+    monkeypatch.setattr(
+        flow.TaxAnalystAgent, "run_sync",
+        _capture_factory("Tax"), raising=True,
+    )
+    # Narrow phase 1 to just these three.
+    monkeypatch.setattr(
+        orch, "_PHASE_1_AGENT_NAMES",
+        ("ConcentrationAnalystAgent", "FundamentalsAnalystAgent", "TaxAnalystAgent"),
+        raising=True,
+    )
+
+    baseline = SimpleNamespace(version_label="v1", distillate_rendered="# Plan")
+    _run_phase_1_analysts(
+        session=None,
+        user_id="ariel",
+        baseline=baseline,
+        prior_current=None,
+        decision_run_id="plan-synth-42",
+        guidance="",
+    )
+
+    # ConcentrationAnalystAgent needs positions_summary + plan_targets
+    assert "positions_summary" in captured["Concentration"]
+    assert "plan_targets" in captured["Concentration"]
+    # FundamentalsAnalystAgent needs tickers + fundamentals_payload
+    assert "tickers" in captured["Fundamentals"]
+    assert "fundamentals_payload" in captured["Fundamentals"]
+    # TaxAnalystAgent needs lots_summary + dividends_summary + rsu_schedule_summary
+    assert "lots_summary" in captured["Tax"]
+    assert "dividends_summary" in captured["Tax"]
+    assert "rsu_schedule_summary" in captured["Tax"]
+    # decision_id still flows through (W1.A baseline).
+    for kw in captured.values():
+        assert kw.get("decision_id") == "plan-synth-42"
+
+
 def test_phase_5_passes_decision_id_to_fund_manager(monkeypatch):
     """_run_phase_5_fund_manager forwards decision_id to FundManagerAgent."""
     from argosy.orchestrator.flows import plan_synthesis as flow

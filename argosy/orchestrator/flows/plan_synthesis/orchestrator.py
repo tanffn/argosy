@@ -362,9 +362,19 @@ _PHASE_1_AGENT_NAMES = (
 )
 
 
+_CONTROL_PLANE_KWARGS = frozenset({"decision_id", "turn_id", "intake_session_id"})
+
+
 def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
                            decision_run_id, guidance) -> str:
-    """Run all 9 analysts in parallel. Concatenate their reports as text."""
+    """Run all 9 analysts in parallel. Concatenate their reports as text.
+
+    W1.B: kwargs are sourced from ``assemble_phase1_inputs`` (W1.A), which
+    populates every per-analyst payload up front. ``_safe_run_agent``
+    narrows the kwargs per-agent via ``inspect.signature(build_prompt)``
+    so each analyst receives only the fields it declares; control-plane
+    keys (``decision_id`` etc.) are always passed through.
+    """
     log.info("plan_synthesis.phase_1.start",
              user_id=user_id, decision_run_id=decision_run_id)
 
@@ -375,20 +385,38 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
     _pkg_mod = sys.modules["argosy.orchestrator.flows.plan_synthesis"]
     phase_1_agents = tuple(getattr(_pkg_mod, name) for name in _PHASE_1_AGENT_NAMES)
 
-    # Each agent's run_sync(...) signature varies; we pass a shared kwargs
-    # bag and rely on each agent's build_prompt to consume what it needs.
-    # The base agents' run_sync forwards **kwargs to build_prompt.
-    from argosy.orchestrator.flows import plan_synthesis as _pkg
-    common_kwargs = dict(
-        plan_label=baseline.version_label or "Imported plan",
-        plan_markdown=baseline.distillate_rendered or "",
-        snapshot_label=f"synthesis-{decision_run_id}",
-        snapshot_summary=_pkg._assemble_portfolio_summary(session=session, user_id=user_id),
-        user_context_yaml=_pkg._load_user_context_yaml(session=session, user_id=user_id),
-        domain_kb_files={},  # Each analyst's prompt picks its own; pass empty.
-        recent_events="",
-        decision_id=decision_run_id,  # string audit token; BaseAgent.run reads inputs.get("decision_id")
+    # W1.A produces every per-analyst payload up front (positions_summary,
+    # plan_targets, fx_payload, tickers, fundamentals/news/social/indicators
+    # payloads, macro_snapshot, lots/dividends/RSU summaries, plan_label
+    # /markdown, snapshot_label/summary, user_context_yaml, domain_kb_files,
+    # recent_events). The orchestrator hands the full bag to _safe_run_agent
+    # which narrows it per-agent via inspect.signature so each analyst
+    # receives only the kwargs its build_prompt declares.
+    #
+    # decision_run_id here is the *string audit token* (e.g. "plan-synth-42"),
+    # threaded in at orchestrator.py:136 as ``decision_audit_token``. We pass
+    # it positionally to assemble_phase1_inputs so the inputs helper stamps
+    # snapshot_label with the same token.
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        assemble_phase1_inputs,
     )
+
+    inputs = assemble_phase1_inputs(
+        session,
+        user_id=user_id,
+        baseline=baseline,
+        prior_current=prior_current,
+        decision_audit_token=decision_run_id,
+    )
+
+    # Build the kwargs bag from the dataclass plus the control-plane key.
+    # ``decision_id`` is consumed by BaseAgent.run (pops it before
+    # build_prompt) — it must survive _safe_run_agent's narrowing, hence
+    # _CONTROL_PLANE_KWARGS below.
+    from dataclasses import asdict as _asdict
+
+    common_kwargs: dict = _asdict(inputs)
+    common_kwargs["decision_id"] = decision_run_id
 
     reports: list[str] = []
     with ThreadPoolExecutor(max_workers=len(phase_1_agents)) as ex:
@@ -425,27 +453,63 @@ def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
     agent. We try ``AgentCls(user_id=user_id)`` first and fall back to
     ``AgentCls()`` for stubs/tests whose constructors don't accept it.
 
-    On a TypeError from ``run_sync`` (i.e. the agent's ``build_prompt``
-    rejects one of our common kwargs), we narrow the kwargs to only those
-    explicitly named in the agent's ``build_prompt`` signature and retry.
+    W1.B: narrow kwargs *upfront* via ``inspect.signature(agent.build_prompt)``
+    so the first run_sync call already passes only what the agent declares.
+    Control-plane keys (``decision_id``, ``turn_id``, ``intake_session_id``)
+    are exempt from narrowing — BaseAgent.run pops them before calling
+    build_prompt. Falls back to the legacy "pass-all-then-narrow-on-TypeError"
+    path for stub agents whose build_prompt signature inspection misbehaves.
     """
     try:
         agent = AgentCls(user_id=user_id)
     except TypeError:
         agent = AgentCls()
+
+    # Narrow upfront: keep only keys the agent's build_prompt declares,
+    # plus the control-plane keys BaseAgent.run consumes. If the agent's
+    # build_prompt has VAR_KEYWORD (**kwargs), pass everything — it can
+    # accept the full bag without TypeError. Stub agents in tests may
+    # not define build_prompt at all (they override run_sync directly);
+    # in that case we pass the full bag and let the stub's run_sync
+    # ignore what it doesn't need.
     try:
-        result = agent.run_sync(**kwargs)
+        bp = getattr(agent, "build_prompt", None)
+        if bp is None:
+            narrowed = dict(kwargs)
+        else:
+            sig = inspect.signature(bp)
+            params = sig.parameters
+            has_var_keyword = any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+            if has_var_keyword:
+                narrowed = dict(kwargs)
+            else:
+                accepted = set(params.keys()) | _CONTROL_PLANE_KWARGS
+                narrowed = {k: v for k, v in kwargs.items() if k in accepted}
+    except (TypeError, ValueError):
+        # Signature introspection failed (rare; e.g. a C-implemented stub).
+        # Fall back to passing the full bag and rely on the TypeError-retry
+        # below.
+        narrowed = dict(kwargs)
+
+    try:
+        result = agent.run_sync(**narrowed)
         out = getattr(result, "output", None)
         if out is not None and hasattr(out, "model_dump_json"):
             return out.model_dump_json()
         return str(out) if out is not None else ""
     except TypeError:
-        # If the agent doesn't accept all the common kwargs, retry with
-        # only the ones it explicitly declares. Cheap defensive retry.
-        # inspect.signature gives only the declared parameters; co_varnames
-        # would include all locals too and falsely accept them.
-        sig = inspect.signature(agent.build_prompt)
-        accepted = set(sig.parameters.keys())
+        # Defensive fallback: re-narrow against the live signature in case
+        # the agent's build_prompt was monkeypatched between introspection
+        # and the call. Wrap the re-inspect itself in try/except — if the
+        # agent has no build_prompt at all, or introspection fails again,
+        # fall back to passing only the control-plane keys.
+        try:
+            sig = inspect.signature(agent.build_prompt)
+            accepted = set(sig.parameters.keys()) | _CONTROL_PLANE_KWARGS
+        except (AttributeError, TypeError, ValueError):
+            accepted = set(_CONTROL_PLANE_KWARGS)
         narrowed = {k: v for k, v in kwargs.items() if k in accepted}
         result = agent.run_sync(**narrowed)
         out = getattr(result, "output", None)
