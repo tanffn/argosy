@@ -253,16 +253,20 @@ def assemble_phase1_inputs(
             error=str(exc),
         )
 
-    # 7. Fundamentals — no adapter wired today. The fundamentals
-    #    analyst's payload contract (pe_ratio, peg_ratio, ev_ebitda,
-    #    revenue_growth_yoy, ...) doesn't have a single canonical
-    #    source; W3a wires SEC EDGAR + yfinance. Empty + warn for now.
+    # 7. Fundamentals (Finnhub /stock/metric). Per-ticker, capped at
+    #    25 tickers to keep the free-tier rate limit happy. Same
+    #    defensive shape as the news section: per-ticker try/except,
+    #    global key/data errors abort the loop, all failures degrade
+    #    to an empty payload.
     if inputs.tickers:
-        log.warning(
-            "plan_synthesis.inputs.fundamentals_no_adapter",
-            user_id=user_id,
-            tickers_count=len(inputs.tickers),
-        )
+        try:
+            inputs.fundamentals_payload = _gather_fundamentals(inputs.tickers)
+        except Exception as exc:  # noqa: BLE001 - defensive
+            log.warning(
+                "plan_synthesis.inputs.fundamentals_failed",
+                user_id=user_id,
+                error=str(exc),
+            )
 
     # 8. Sentiment — TipRanks blogger sentiment per ticker. Stored as
     #    a single-element list keyed by ticker so the
@@ -278,15 +282,18 @@ def assemble_phase1_inputs(
                 error=str(exc),
             )
 
-    # 9. Indicators — no canonical pre-computed indicators source yet
-    #    (we'd compute MA/RSI/MACD from yfinance OHLC ourselves). Empty
-    #    + warn for now; W3a fills it.
+    # 9. Indicators — yfinance-backed (W3b.D). Per-ticker, capped at 25
+    #    to match the news fan-out and keep us well clear of any yfinance
+    #    rate-limit surprise.
     if inputs.tickers:
-        log.warning(
-            "plan_synthesis.inputs.indicators_no_adapter",
-            user_id=user_id,
-            tickers_count=len(inputs.tickers),
-        )
+        try:
+            inputs.indicators_payload = _gather_indicators_payload(inputs.tickers)
+        except Exception as exc:  # noqa: BLE001 - defensive
+            log.warning(
+                "plan_synthesis.inputs.indicators_failed",
+                user_id=user_id,
+                error=str(exc),
+            )
 
     # 10. Tax fields (lots / dividends / RSU schedule). Operational
     #     tables are still empty (`lots=0`, `fills=0`); leave the
@@ -351,6 +358,8 @@ def assemble_phase1_inputs(
         fx_count=len(inputs.fx_payload),
         macro_count=len(inputs.macro_snapshot),
         social_count=len(inputs.social_payload),
+        indicators_count=len(inputs.indicators_payload),
+        fundamentals_count=len(inputs.fundamentals_payload),
         plan_targets_count=len(inputs.plan_targets),
     )
     return inputs
@@ -493,6 +502,129 @@ def _gather_news(tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
     except Exception as exc:  # noqa: BLE001 - defensive
         log.warning(
             "plan_synthesis.inputs.news_failed",
+            error=str(exc),
+        )
+    return out
+
+
+def _gather_fundamentals(
+    tickers: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Per-ticker Finnhub fundamentals (W3b.E).
+
+    Calls ``FinnhubAdapter.get_company_financials`` for up to the first
+    25 tickers. Same defensive shape as ``_gather_news``: API-key /
+    missing-package failures abort the loop (they're global), individual
+    ticker failures log + continue. Israeli ETFs and other non-US
+    listings typically return empty ``metric`` blocks, surface as
+    ``MissingDataSourceError`` per-ticker, get skipped, do not raise.
+    """
+    from argosy.adapters import (
+        MissingAPIKeyError as AdapterMissingAPIKeyError,
+        MissingDataSourceError,
+    )
+
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        from argosy.adapters.data.finnhub_adapter import FinnhubAdapter
+
+        adapter = FinnhubAdapter()
+        for ticker in tickers[:25]:
+            try:
+                payload = asyncio.run(
+                    adapter.get_company_financials(ticker)
+                )
+            except AdapterMissingAPIKeyError as exc:
+                log.warning(
+                    "plan_synthesis.inputs.fundamentals_skipped",
+                    ticker=ticker,
+                    reason=str(exc).splitlines()[0],
+                )
+                # API-key failure is global — stop iterating.
+                return out
+            except MissingDataSourceError as exc:
+                # Per-ticker "no data" — Finnhub doesn't cover this
+                # symbol (typical for Israeli ETFs / non-US listings).
+                # Skip and continue.
+                log.warning(
+                    "plan_synthesis.inputs.fundamentals_per_ticker_skipped",
+                    ticker=ticker,
+                    reason=str(exc).splitlines()[0],
+                )
+                continue
+            except Exception as exc:  # noqa: BLE001 - per-ticker defensive
+                log.warning(
+                    "plan_synthesis.inputs.fundamentals_per_ticker_failed",
+                    ticker=ticker,
+                    error=str(exc),
+                )
+                continue
+            if payload:
+                out[ticker] = payload
+    except (AdapterMissingAPIKeyError, MissingDataSourceError) as exc:
+        log.warning(
+            "plan_synthesis.inputs.fundamentals_skipped",
+            reason=str(exc).splitlines()[0],
+        )
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.fundamentals_failed",
+            error=str(exc),
+        )
+    return out
+
+
+def _gather_indicators_payload(
+    tickers: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Per-ticker yfinance-derived technical indicators (W3b.D).
+
+    Capped at the first 25 tickers (same as the news fan-out) to keep us
+    well clear of any yfinance rate-limit surprise. Empty on a global
+    failure (e.g. package missing) with a structured warning; per-ticker
+    failures degrade to a missing entry rather than aborting the loop.
+    """
+    from argosy.adapters import (
+        MissingAPIKeyError as AdapterMissingAPIKeyError,
+        MissingDataSourceError,
+    )
+
+    out: dict[str, dict[str, Any]] = {}
+    try:
+        from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
+
+        adapter = YFinanceAdapter()
+        for ticker in tickers[:25]:
+            try:
+                payload = asyncio.run(adapter.get_indicators(ticker))
+            except (AdapterMissingAPIKeyError, MissingDataSourceError) as exc:
+                log.warning(
+                    "plan_synthesis.inputs.indicators_skipped",
+                    ticker=ticker,
+                    reason=str(exc).splitlines()[0],
+                )
+                # MissingDataSourceError at the package level is global —
+                # bail rather than retry per ticker.
+                if "package is not installed" in str(exc):
+                    return out
+                continue
+            except Exception as exc:  # noqa: BLE001 - per-ticker defensive
+                log.warning(
+                    "plan_synthesis.inputs.indicators_per_ticker_failed",
+                    ticker=ticker,
+                    error=str(exc).splitlines()[0],
+                )
+                continue
+            if payload:
+                out[ticker] = payload
+    except (AdapterMissingAPIKeyError, MissingDataSourceError) as exc:
+        log.warning(
+            "plan_synthesis.inputs.indicators_skipped",
+            reason=str(exc).splitlines()[0],
+        )
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.indicators_failed",
             error=str(exc),
         )
     return out
