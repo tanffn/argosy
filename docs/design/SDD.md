@@ -17,7 +17,19 @@
 
 **Last edit:** 2026-05-25 by Claude. **Argosy gap-closure session in progress — autonomous overnight run.** Read this section IF YOU ARE A FRESH SESSION RESUMING AFTER A CRASH. The session is closing 21 structural gaps documented at `docs/design/argosy-gap-analysis-2026-05-25.md` per the master roadmap `docs/superpowers/plans/2026-05-25-argosy-gaps-master-roadmap.md`. Active todos visible in TaskList.
 
+**🎉 END-TO-END SYNTHESIS WORKS — first successful run #19 at 22:15 UTC.** PlanVersion #6 persisted with `role='draft'`, `version_label='synth-2026-05-25-2215-fm-rejected'`, `decision_run_id=19`. 22 agent_reports rows ingested from JSONL trail. `GET /api/plan/draft?user_id=ariel` returns the structured draft (3 long-horizon targets, 3 actions). The UI on `/plan` (or wherever consumes the draft endpoint) will surface it. FM rejected with substantive concerns (Section 102 tax sequencing, escalate-not-resolved, weak position data); user reviews and decides whether to accept. **All cumulative session deliverables are now production-quality.**
+
+**Recommended next session focus** (in priority order):
+1. **`/plan` UI verification.** Reload `http://localhost:1337/plan` — the draft card should populate with horizon targets/actions. FM rejection should be visible via the `-fm-rejected` suffix in version_label OR via the `agent_reports` rows for the fund_manager role (use `GET /api/agent-activity?decision_id=plan-synth-19` or similar).
+2. **The `_record_negotiation_phase` datetime bug.** Run #19 logged `plan_synthesis.record_phase_failed: "can't subtract offset-naive and offset-aware datetimes"` — minor cosmetic; doesn't break synthesis. Fix in `argosy/services/negotiation_recorder.py` (or wherever `record_negotiation_phase` lives). Stamp DecisionRun.finished_at after that — currently left in 'running' state without the manual UPDATE I just ran.
+3. **PlanCritique reliability.** Hits SDK timeout on ~100% of runs for ariel's plan (large output, 22k+ tokens). Options: (a) split into smaller phase-1.5 sub-agents, (b) reduce max_tokens, (c) shorten the prompt.
+4. **Wire ConcentrationAnalyst input correctly.** FM's #1 complaint was that ConcentrationAnalyst sees `qty=None, value=None, acct=''` because `_assemble_portfolio_summary` returns a placeholder string. Real positions data needs to flow through.
+5. **W3b.B/C tax adapter + RSU schedule** (gap doc). Without these, TaxAnalyst will keep failing citation.
+
 **Commits this session (most recent first):**
+- `096fddf` yfinance None-drop — TechnicalReport pydantic schema requires non-null floats; live run #19 had 18 validation errors because ma_200 was None for tickers with <200d history.
+- `045dc51` W3b.H' — write role='draft' always (was 'draft_rejected'); suffix version_label with '-fm-rejected'. UI now surfaces FM-rejected drafts via the existing /api/plan/draft endpoint.
+- `bd52126` SDD refresh noting the W3b.H UI gap.
 - `878b349` W3b.H — `run_synthesis` persists the draft as `role='draft_rejected'` (instead of raising) when fund_manager rejects. Run #16's FM rejection produced SUBSTANTIVE reasoning (Section 102 sequencing, escalate-not-resolved, bogus null positions in ConcentrationAnalyst). Throwing that away with RuntimeError forfeits 15-20 minutes of real Opus reasoning; persisting gives the UI something to show + the user can review/override. NOTE: `get_pending_draft` only matches `role='draft'`, so 'draft_rejected' rows aren't surfaced by `GET /api/plan/draft` yet. To make UI show them, either widen the query OR change W3b.H to always write 'draft'. Quick follow-up.
 - `739958e` SDD refresh including W3b.D/E/F summary.
 - `38a85bc` W3b.G — 10-min asyncio.timeout around the SDK stream + 4th retry trigger (`claude_code.sdk_timeout_retry`). Live run #15 hung 3+ hours silently because no exception ever fired; without this, synthesis can stall indefinitely.
