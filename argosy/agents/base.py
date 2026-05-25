@@ -1329,6 +1329,64 @@ class BaseAgent(Generic[T]):
                         # `query()` call below opens a fresh SDK /
                         # claude.exe session.
                         continue
+                # ----- Malformed-JSON retry (W3b.F) -------------------
+                # Live synthesis runs #6, #9, #10, #11, #12, #13 hit a
+                # third flake fingerprint, mostly in `PlanCritiqueAgent`
+                # but occasionally in other long-output agents: the SDK
+                # stream completes cleanly with non-empty text, but the
+                # model emitted STRUCTURALLY invalid JSON — a missing
+                # comma, an unclosed bracket, etc. Symptoms surfaced as
+                # `json.JSONDecodeError("Expecting ',' delimiter: line N
+                # column M (char N)")` from `_parse_output` (which uses
+                # `JSONDecoder(strict=False).raw_decode()` — tolerant of
+                # trailing prose + raw control chars, but powerless
+                # against true syntactic errors).
+                #
+                # A fresh re-roll typically succeeds (the corruption is
+                # in the assistant turn's token stream, not in the
+                # prompt). Recovery is the same as W2.A and W2.A-v2:
+                # tear down the SDK session and try once more. We reuse
+                # the SHARED `_retried` guard so the function does AT
+                # MOST ONE retry per invocation, regardless of which of
+                # the three signatures fires.
+                #
+                # Trial-parse design: parse here ONLY to gate the
+                # retry decision. The real parse still happens later in
+                # `BaseAgent.run`. This double-parses on the happy path
+                # (negligible cost vs the LLM call). We catch ONLY
+                # `json.JSONDecodeError` — pydantic `ValidationError`
+                # is a deterministic schema failure (wrong shape, not a
+                # model flake) and must surface as-is on the second
+                # parse downstream rather than be re-rolled silently.
+                #
+                # Narrow gate (mirroring W2.A-v2): single-turn (chunked
+                # mode has a different failure surface) AND we haven't
+                # already retried.
+                if expected_turns == 1 and not _retried:
+                    candidate_buf = next(
+                        (b for b in reversed(turn_buffers) if b), [],
+                    )
+                    candidate_text = "".join(candidate_buf)
+                    try:
+                        self._parse_output(candidate_text)
+                    except json.JSONDecodeError as parse_exc:
+                        _retried = True
+                        self._log.warning(
+                            "claude_code.malformed_json_retry",
+                            agent_role=self.agent_role,
+                            model=self.model,
+                            error=str(parse_exc)[:200],
+                        )
+                        # Loop continues — fresh `query()` call below.
+                        continue
+                    except Exception:
+                        # Non-JSON-decode failures (pydantic
+                        # ValidationError, citation gates, etc.) are
+                        # deterministic schema errors and must NOT
+                        # trigger a re-roll. Swallow here and let the
+                        # downstream `BaseAgent.run` parse surface the
+                        # actual exception cleanly.
+                        pass
                 # Stream completed cleanly — exit the retry loop and
                 # continue with post-stream validation / ModelCall build.
                 break

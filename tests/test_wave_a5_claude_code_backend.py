@@ -1269,3 +1269,242 @@ async def test_claude_code_no_empty_retry_when_text_non_empty(monkeypatch):
         if ev == "claude_code.empty_output_retry"
     ]
     assert retry_events == []
+
+
+# ----------------------------------------------------------------------
+# Malformed-JSON retry (W3b.F)
+# ----------------------------------------------------------------------
+#
+# Live synthesis runs #6, #9, #10, #11, #12, #13 surfaced a third flake
+# fingerprint, mostly in `PlanCritiqueAgent` but occasionally in other
+# long-output agents: the SDK stream completes cleanly with non-empty
+# text, but the model emitted STRUCTURALLY invalid JSON (missing comma,
+# unclosed bracket, etc.). Recovery is the same as W2.A and W2.A-v2 —
+# fresh `query()` call. The SHARED `_retried` guard ensures all three
+# triggers together do at most one retry per invocation.
+
+
+@pytest.mark.asyncio
+async def test_claude_code_retry_on_malformed_json(monkeypatch):
+    """Model emits structurally invalid JSON on first call (missing
+    delimiter) but valid JSON on second → retry once, succeed.
+
+    Replicates the live-run #9/#12/#13 fingerprint: `_parse_output`
+    raises `json.JSONDecodeError("Expecting ',' delimiter: ...")`. The
+    retry must:
+      - Re-call `query()` exactly once more (n_calls == 2 total).
+      - Emit a `claude_code.malformed_json_retry` warning with
+        structured fields (agent_role, model, error).
+      - Return the SECOND attempt's text in the ModelCall.
+      - Surface tokens from ONLY the second attempt.
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    # First attempt: stream completes with non-empty text, but the JSON
+    # is missing a comma between the two fields — a real-world live-run
+    # fingerprint that neither strict=False nor raw_decode can recover.
+    malformed_stream = [
+        AssistantMessage(
+            content=[TextBlock(text='{"foo": 1 "bar": 2}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=7, output_tokens=3),
+    ]
+    success_stream = [
+        AssistantMessage(
+            content=[TextBlock(text='{"confidence":"HIGH"}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=11, output_tokens=22),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[malformed_stream, success_stream],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # 1. Exactly one retry (initial + one retry == 2 total).
+    assert captured["n_calls"] == 2
+
+    # 2. ModelCall text comes from the SECOND (successful) attempt.
+    assert call.text == '{"confidence":"HIGH"}'
+    # Token counters reflect ONLY the second attempt — first-attempt
+    # accumulators must have been reset by the retry loop, not double-
+    # counted with the malformed-attempt's 7/3.
+    assert call.tokens_in == 11
+    assert call.tokens_out == 22
+
+    # 3. Retry warning fired exactly once with structured fields.
+    retry_events = [
+        kw for ev, kw in recorder.warnings
+        if ev == "claude_code.malformed_json_retry"
+    ]
+    assert len(retry_events) == 1, (
+        f"expected exactly 1 malformed-json retry warning, got "
+        f"{len(retry_events)}: {recorder.warnings}"
+    )
+    fields = retry_events[0]
+    assert fields["agent_role"] == agent.agent_role
+    assert fields["model"] == agent.model
+    # Error string is truncated at 200 chars; just check it contains
+    # the diagnostic the parser produced for missing-delimiter.
+    assert "delimiter" in fields["error"].lower() or "expecting" in fields["error"].lower()
+
+    # 4. The W2.A exit-1 + W2.A-v2 empty-output warnings must NOT have
+    # fired — this is a distinct fingerprint and we shouldn't double-log.
+    other_events = [
+        ev for ev, _ in recorder.warnings
+        if ev in (
+            "claude_code.transient_exit1_retry",
+            "claude_code.empty_output_retry",
+        )
+    ]
+    assert other_events == []
+
+
+@pytest.mark.asyncio
+async def test_claude_code_no_retry_on_valid_json(monkeypatch):
+    """Sanity check: well-formed JSON on the first call must NOT trigger
+    the malformed-JSON retry path. Guards against a too-broad signature
+    that would silently double cost on every call.
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    success_stream = [
+        AssistantMessage(
+            content=[TextBlock(text='{"text":"ok"}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=11, output_tokens=22),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[success_stream],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # Exactly one call — no retry on valid JSON.
+    assert captured["n_calls"] == 1
+    assert call.text == '{"text":"ok"}'
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.malformed_json_retry"
+    ]
+    assert retry_events == []
+
+
+@pytest.mark.asyncio
+async def test_claude_code_no_retry_on_pydantic_validation_error(monkeypatch):
+    """JSON that PARSES OK but fails pydantic schema validation must NOT
+    trigger the malformed-JSON retry path. That's a deterministic schema
+    error (wrong shape from the model), not a syntactic flake — retrying
+    won't change the schema mismatch, and silently doubling cost on
+    every schema error would hide a real bug. The downstream
+    `BaseAgent.run` parse will surface the `ValidationError` cleanly.
+    """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    # Valid JSON but wrong shape for `_Out`: an array, not an object.
+    # `JSONDecoder.raw_decode` accepts this (it's valid JSON), but
+    # `_Out.model_validate(["not", "a", "dict"])` raises ValidationError.
+    bad_shape_stream = [
+        AssistantMessage(
+            content=[TextBlock(text='["not", "a", "dict"]')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=7, output_tokens=3),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[bad_shape_stream],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    # _call_via_claude_code_inner itself does NOT raise — the
+    # validation error surfaces later in BaseAgent.run. So just call
+    # and inspect the returned ModelCall + the recorder.
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # Exactly one call — no retry on schema mismatch (deterministic).
+    assert captured["n_calls"] == 1
+    # The original (bad-shape) text is returned so the downstream
+    # parse can surface the ValidationError with its real diagnostic.
+    assert call.text == '["not", "a", "dict"]'
+    # No malformed-JSON retry fired.
+    retry_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.malformed_json_retry"
+    ]
+    assert retry_events == []
+
+
+@pytest.mark.asyncio
+async def test_claude_code_no_retry_on_malformed_after_first_retry(monkeypatch):
+    """`_retried` is SHARED across all three retry signatures (W2.A
+    exit-1, W2.A-v2 empty-output, W3b.F malformed-JSON): at most one
+    retry per invocation, regardless of which signature fires first.
+
+    Scenario: first call hits the exit-1 flake → retry consumed. The
+    retry returns successfully but with malformed JSON. The function
+    MUST NOT retry again (would be the 3rd call) — it returns a
+    ModelCall with the malformed text, and the downstream
+    `_parse_output` surfaces the JSONDecodeError that motivated this
+    work (with a clear diagnostic so the operator can see the model
+    flaked twice rather than the silently-double-billing alternative).
+    """
+    from claude_agent_sdk import AssistantMessage, ProcessError, TextBlock
+
+    flake = ProcessError(
+        "Command failed with exit code 1",
+        exit_code=1,
+        stderr="Check stderr output for details",
+    )
+    # Retry result: parses-as-JSON-fails (missing colon).
+    malformed_stream = [
+        AssistantMessage(
+            content=[TextBlock(text='{"foo": 1 "bar": 2}')],
+            model="claude-sonnet-4-6",
+        ),
+        _make_result_message(input_tokens=5, output_tokens=3),
+    ]
+    captured = _install_fake_query_with_call_counter(
+        monkeypatch, side_effects=[flake, malformed_stream],
+    )
+
+    agent = _make_agent()
+    recorder = _RecordingLogger()
+    agent._log = recorder  # type: ignore[assignment]
+
+    call = await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    # Exactly two calls — the exit-1 retry consumed the single retry
+    # budget, so the subsequent malformed-JSON result does NOT trigger
+    # another call.
+    assert captured["n_calls"] == 2
+    # Malformed text is returned; downstream parse surfaces the
+    # JSONDecodeError as the original failure mode.
+    assert call.text == '{"foo": 1 "bar": 2}'
+
+    # The exit-1 retry warning fired (the first flake).
+    exit1_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.transient_exit1_retry"
+    ]
+    assert len(exit1_events) == 1
+    # The malformed-JSON retry warning did NOT fire — `_retried` was
+    # already True by the time the trial parse ran on attempt #2.
+    malformed_events = [
+        ev for ev, _ in recorder.warnings
+        if ev == "claude_code.malformed_json_retry"
+    ]
+    assert malformed_events == []
