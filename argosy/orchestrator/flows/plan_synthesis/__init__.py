@@ -68,11 +68,15 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     _run_phase_5_fund_manager,
     _make_fund_manager,
     _safe_run_agent,
-    # W1.C-v2 — single-writer batch persist at each phase boundary.
-    # Exposed on the package namespace so tests can monkeypatch and
-    # the orchestrator's call sites (which resolve via _pkg) honour
-    # the patch.
+    # W1.C-v4 — JSONL forensic trail writer (replaces W1.C-v3 raw sqlite3
+    # bulk persist).  Exposed on the package namespace so tests can
+    # monkeypatch and the orchestrator's call sites (which resolve via
+    # _pkg) honour the patch.
     _persist_agent_reports,
+    # W1.C-v4 — end-of-synthesis JSONL → agent_reports ingest helper.
+    # Called from run_synthesis after the orchestrator's session has
+    # finished its own writes (so the writer lock is clean).
+    _ingest_synthesis_trail,
 )
 
 # Input-assembly helpers (monkeypatched in tests).
@@ -104,6 +108,7 @@ __all__ = [
     "_make_fund_manager",
     "_safe_run_agent",
     "_persist_agent_reports",
+    "_ingest_synthesis_trail",
     # Input helpers (monkeypatched in tests)
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",

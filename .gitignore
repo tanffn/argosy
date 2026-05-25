@@ -35,6 +35,10 @@ pnpm-debug.log*
 db/
 backups/
 logs/
+# W1.C-v4 plan-synthesis JSONL forensic trail (one .jsonl per synthesis run).
+# Already covered by logs/ above; listed explicitly so the location is
+# discoverable when grepping .gitignore for "synthesis".
+logs/synthesis/
 secrets/
 uploads/
 transcripts/

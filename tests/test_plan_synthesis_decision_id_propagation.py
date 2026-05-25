@@ -294,47 +294,18 @@ def test_phase_1_assembles_and_routes_all_payloads(monkeypatch):
         assert kw.get("decision_id") == "plan-synth-42"
 
 
-def test_phase_1_bulk_persists_all_successful_agents(monkeypatch):
-    """W1.C-v2: _run_phase_1_analysts collects each analyst's AgentReport
-    dataclass and bulk-persists once at the end of the phase via a single
-    sync writer (no aiosqlite contention).
+def _phase_1_stub_agents(monkeypatch, flow):
+    """Patch the 9 phase-1 analysts to return real ``AgentReport`` dataclasses.
 
-    Patches the analyst run_sync to return real ``AgentReport`` instances
-    (so the orchestrator's ``isinstance(result, AgentReport)`` filter lets
-    them through to the bulk persist), wires up a real in-memory SQLite
-    session, and asserts the expected number of rows are written.
+    The orchestrator's ``isinstance(result, AgentReport)`` filter relies on
+    a real dataclass coming back, so each stub returns one (not a
+    SimpleNamespace).  Shared between
+    ``test_phase_1_writes_trail`` and
+    ``test_ingest_trail_writes_agent_reports``.
     """
-    from sqlalchemy import create_engine, select
-    from sqlalchemy.orm import sessionmaker
     from types import SimpleNamespace as _NS
-
     from argosy.agents.base import AgentReport, ConfidenceBand
-    from argosy.orchestrator.flows import plan_synthesis as flow
-    from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch
-    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
-        _run_phase_1_analysts,
-    )
-    from argosy.state.models import (
-        AgentReport as AgentReportRow,
-        Base,
-        User,
-    )
 
-    # In-memory SQLite engine + schema + user.
-    engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False},
-    )
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
-    session = SessionLocal()
-    session.add(User(id="ariel", plan="free"))
-    session.commit()
-
-    # Build a real AgentReport dataclass for the stub to return — its
-    # ``output`` attribute carries the SimpleNamespace payload (so the
-    # caller's ``out.model_dump_json()`` path still works) AND the
-    # orchestrator's ``isinstance(result, AgentReport)`` check passes,
-    # so the report is collected for bulk persist.
     def _make_stub(role: str):
         def _stub(self, *args, **kwargs):
             return AgentReport(
@@ -357,9 +328,6 @@ def test_phase_1_bulk_persists_all_successful_agents(monkeypatch):
             )
         return _stub
 
-    # Patch all 9 analyst classes. The orchestrator routes through the
-    # package namespace (``_pkg.<AgentClsName>``) so we patch via ``flow``
-    # rather than the submodule.
     for name in (
         "ConcentrationAnalystAgent",
         "FxAnalystAgent",
@@ -386,6 +354,111 @@ def test_phase_1_bulk_persists_all_successful_agents(monkeypatch):
         lambda *, session, user_id: "",
     )
 
+
+def test_phase_1_writes_trail(tmp_path, monkeypatch):
+    """W1.C-v4: _run_phase_1_analysts appends each analyst's AgentReport
+    to the JSONL forensic trail at the end of the phase.
+
+    The trail lives at ``${ARGOSY_HOME}/logs/synthesis/<token>.jsonl``;
+    DB ingest is deferred to the end of ``run_synthesis``. This test
+    asserts FILE-level behavior only — DB ingest is covered separately
+    by ``test_ingest_trail_writes_agent_reports``.
+    """
+    from types import SimpleNamespace as _NS
+    import json as _json
+
+    # Point ARGOSY_HOME at tmp_path so the trail writes into an
+    # isolated dir, then clear the settings cache so the new env value
+    # takes effect.
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+    reload_settings()
+
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _run_phase_1_analysts,
+    )
+
+    _phase_1_stub_agents(monkeypatch, flow)
+
+    baseline = _NS(version_label="v1", distillate_rendered="# Plan")
+    _run_phase_1_analysts(
+        session=None,  # _persist_agent_reports doesn't use the session
+        user_id="ariel",
+        baseline=baseline,
+        prior_current=None,
+        decision_run_id=_DECISION_ID,
+        guidance="",
+    )
+
+    trail_path = tmp_path / "logs" / "synthesis" / f"{_DECISION_ID}.jsonl"
+    assert trail_path.exists(), (
+        f"W1.C-v4: expected JSONL trail at {trail_path}, but it was not created"
+    )
+    lines = [
+        line for line in trail_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(lines) == 9, (
+        f"W1.C-v4: expected 9 trail rows for phase 1, got {len(lines)}"
+    )
+    # Spot-check a couple of fields on each row to confirm shape.
+    seen_roles: set[str] = set()
+    for line in lines:
+        row = _json.loads(line)
+        assert row["user_id"] == "ariel"
+        assert row["decision_id"] == _DECISION_ID
+        assert row["run_correlation_id"] is not None
+        assert row["model"] == "stub-model"
+        seen_roles.add(row["agent_role"])
+    assert len(seen_roles) == 9, (
+        f"W1.C-v4: expected 9 distinct agent_roles in trail, got {seen_roles}"
+    )
+
+    # Cleanup: clear cached settings so other tests that don't set
+    # ARGOSY_HOME aren't poisoned.
+    reload_settings()
+
+
+def test_ingest_trail_writes_agent_reports(tmp_path, monkeypatch):
+    """W1.C-v4: _ingest_synthesis_trail reads the JSONL trail and writes
+    each row to ``agent_reports`` via the supplied session.
+
+    Builds a trail by running phase 1 first (same path as the orchestrator),
+    then invokes the ingest helper against a separate in-memory session.
+    Asserts the row count + populated fields.
+    """
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+    from types import SimpleNamespace as _NS
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+    reload_settings()
+
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _run_phase_1_analysts,
+        _ingest_synthesis_trail,
+    )
+    from argosy.state.models import (
+        AgentReport as AgentReportRow,
+        Base,
+        User,
+    )
+
+    # In-memory SQLite engine + schema + user for the ingest target.
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    session = SessionLocal()
+    session.add(User(id="ariel", plan="free"))
+    session.commit()
+
+    _phase_1_stub_agents(monkeypatch, flow)
+
     baseline = _NS(version_label="v1", distillate_rendered="# Plan")
     _run_phase_1_analysts(
         session=session,
@@ -396,12 +469,18 @@ def test_phase_1_bulk_persists_all_successful_agents(monkeypatch):
         guidance="",
     )
 
-    # All 9 agent_reports rows must be written via the single bulk
-    # writer at phase end.  decision_id and other fields are populated
-    # from the dataclass.
+    # Trail file must exist before ingest (sanity check).
+    trail_path = tmp_path / "logs" / "synthesis" / f"{_DECISION_ID}.jsonl"
+    assert trail_path.exists()
+
+    count = _ingest_synthesis_trail(session, _DECISION_ID)
+    assert count == 9, (
+        f"W1.C-v4 ingest: expected 9 rows ingested, got {count}"
+    )
+
     rows = session.execute(select(AgentReportRow)).scalars().all()
     assert len(rows) == 9, (
-        f"W1.C-v2 bulk persist: expected 9 rows for phase 1, got {len(rows)}"
+        f"W1.C-v4 ingest: expected 9 agent_reports rows, got {len(rows)}"
     )
     for row in rows:
         assert row.decision_id == _DECISION_ID, (
@@ -412,6 +491,9 @@ def test_phase_1_bulk_persists_all_successful_agents(monkeypatch):
         assert row.run_correlation_id is not None
     session.close()
     engine.dispose()
+
+    # Cleanup: clear cached settings.
+    reload_settings()
 
 
 def test_phase_5_passes_decision_id_to_fund_manager(monkeypatch):

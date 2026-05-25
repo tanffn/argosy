@@ -26,6 +26,7 @@ from argosy.cli.proposals import app as proposals_app
 from argosy.cli.run import run
 from argosy.cli.secrets import app as secrets_app
 from argosy.cli.security import app as security_app
+from argosy.cli.synthesis import app as synthesis_app
 
 app = typer.Typer(
     name="argosy",
@@ -60,6 +61,8 @@ app.add_typer(expenses_app, name="expenses",
               help="Household-expenses admin utilities (verify-file, backfill).")
 app.add_typer(diagnose_app, name="diagnose",
               help="Environment diagnostics: adapter health, key resolution.")
+app.add_typer(synthesis_app, name="synthesis",
+              help="Plan-synthesis operator commands (forensic-trail replay).")
 
 
 def main() -> None:  # pragma: no cover

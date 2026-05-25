@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import NamedTuple, cast
 
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from argosy.agents.base import AgentReport
 from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
@@ -290,6 +290,20 @@ def run_synthesis(
         decision_run.status = "completed"
         session.commit()
 
+    # W1.C-v4: ingest the agent_reports forensic trail now that the
+    # orchestrator's session has finished its own writes and the writer
+    # lock is clean (the session just committed PlanVersion + DecisionRun
+    # successfully, so it can write more rows in the same connection).
+    # Best-effort — the JSONL stays behind on disk for manual replay via
+    # ``argosy synthesis ingest-trail <decision_run_id>`` if this fails.
+    try:
+        _pkg._ingest_synthesis_trail(session, decision_audit_token)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "plan_synthesis.trail_ingest_exception",
+            decision_run_id=decision_run_id, error=str(exc),
+        )
+
     # Invalidate the home-brief cache so the "ready to review" draft bullet
     # surfaces immediately (within the same request cycle) rather than waiting
     # for the 30-minute TTL to expire.  Failure is swallowed — synthesis must
@@ -386,142 +400,176 @@ class _AgentRunResult(NamedTuple):
 def _persist_agent_reports(
     session: Session, reports: list[AgentReport],
 ) -> None:
-    """Bulk-persist a phase's AgentReport dataclasses to ``agent_reports``.
+    """Append a phase's AgentReport dataclasses to a JSONL forensic trail.
 
-    W1.C-v2: replaces the per-agent inline async writes that used to live
-    in ``BaseAgent.run``.
+    W1.C-v4 (lock-avoidance via file IO): rather than fighting the
+    SQLite writer lock that the orchestrator's main Session holds for
+    the entire synthesis (12-15+ min), we write each phase's reports
+    to a per-synthesis JSONL file under
+    ``${ARGOSY_HOME}/logs/synthesis/<decision_audit_token>.jsonl``.
+    File IO has no SQLite contention; ingest into the DB happens once
+    at the END of ``run_synthesis`` via ``_ingest_synthesis_trail``,
+    when the orchestrator's session has finished its own writes and
+    the writer lock is clean.
 
-    W1.C-v3 (lock-resistance fix): bypasses SQLAlchemy entirely and uses
-    raw ``sqlite3`` with a 5-minute busy_timeout. Live observation:
-    SQLAlchemy's sub-session approach (W1.C-v2) STILL hit "database is
-    locked" in run #11 despite WAL + 60s timeout — some interaction
-    between the synthesis orchestrator's open Session connection and
-    the sub-session's commit was contending for the writer. A bare
-    sqlite3 connection has no SQLAlchemy session/pool state and a much
-    longer busy_timeout, so it queues behind any open writer rather than
-    timing out at 60s.
+    Background — failed approaches:
+      * W1.C-v1: per-agent inline async writes inside ``BaseAgent.run``
+        → "database is locked" under the 9-way ThreadPool.
+      * W1.C-v2: SQLAlchemy sub-session committed at phase boundary
+        → still locked because the orchestrator's main Session holds
+        the writer.
+      * W1.C-v3: raw ``sqlite3`` with 5-minute ``busy_timeout``
+        → the lock-holder outlasts ANY reasonable timeout; verified
+        live: killing uvicorn instantly releases the lock.
 
-    ``session`` parameter is kept (unused) so callers don't change shape;
-    we resolve the DB URL from settings directly.
+    Idempotent within a synthesis run: each call appends new rows to
+    the end of the file (one JSON object per ``AgentReport``). The
+    ingest helper reads the full file and writes to the DB in one
+    batch via the orchestrator's session.
 
-    Best-effort: any failure logs ``plan_synthesis.bulk_persist_failed``.
-    The synthesis run continues — the per-agent dataclasses are still
-    returned to the caller via the phase helper's return value.
+    Crash-safety: if synthesis dies mid-flight at phase 3, the JSONL
+    file still contains phases 1-2 on disk. ``argosy synthesis
+    ingest-trail <decision_run_id>`` reads the file and writes the
+    rows to the DB after the fact.
+
+    ``session`` parameter is kept (unused) so callers don't change
+    shape.
     """
     if not reports:
         return
+    _ = session
 
-    import sqlite3 as _sqlite3
-    from argosy.state.models import AgentReport as AgentReportRow
+    from pathlib import Path  # noqa: F401 — kept for type-hint clarity
+    from argosy.config import get_settings
 
-    # Resolve the underlying SQLite filesystem path from the session's bind.
-    # For in-memory or non-file SQLite engines (used by tests), fall back to
-    # the SQLAlchemy sub-session path because raw sqlite3 can't share an
-    # in-memory database across separate connections.
-    bind = session.get_bind()
-    bind_url = str(bind.url) if hasattr(bind, "url") else ""
-    is_file_sqlite = (
-        bind_url.startswith("sqlite")
-        and ":memory:" not in bind_url
-        and "///" in bind_url
-    )
+    settings = get_settings()
+    # All reports in a phase share decision_id (synthesis flow guarantees
+    # this — common_kwargs["decision_id"] is the audit token for every
+    # phase-1 agent; phase 2 / 4 callers thread it the same way).
+    decision_audit_token = getattr(reports[0], "decision_id", None) or "unknown"
+    trail_dir = settings.home / "logs" / "synthesis"
+    try:
+        trail_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.warning(
+            "plan_synthesis.trail_dir_mkdir_failed",
+            error=str(exc),
+        )
+        return
+    trail_path = trail_dir / f"{decision_audit_token}.jsonl"
 
-    if not is_file_sqlite:
-        # SQLAlchemy fallback for in-memory / non-sqlite tests. Same shape
-        # as W1.C-v2 (sub-sessionmaker, commit once).
-        SubSession = sessionmaker(bind=bind, expire_on_commit=False)
-        sub = SubSession()
-        try:
+    try:
+        with trail_path.open("a", encoding="utf-8") as f:
             for r in reports:
-                sub.add(AgentReportRow(
-                    user_id=r.user_id, agent_role=r.agent_role,
-                    decision_id=getattr(r, "decision_id", None),
-                    intake_session_id=None,
-                    prompt_hash=r.prompt_hash, response_text=r.response_text,
-                    tokens_in=r.tokens_in, tokens_out=r.tokens_out, cost_usd=r.cost_usd,
-                    cache_input_tokens=r.cache_input_tokens,
-                    cache_creation_tokens=r.cache_creation_tokens,
-                    thinking_tokens=r.thinking_tokens,
-                    citations_json=r.citations_json, sources_json=r.sources_json,
-                    run_correlation_id=r.run_correlation_id,
-                    system_prompt=r.system_prompt, user_prompt=r.user_prompt,
-                    model=r.model,
-                    confidence=r.confidence.value if r.confidence else None,
-                ))
-            sub.commit()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("plan_synthesis.bulk_persist_failed",
-                        count=len(reports), error=str(exc))
-            sub.rollback()
-        finally:
-            sub.close()
-        return
-
-    db_path = bind_url.split("///", 1)[-1]
-
-    try:
-        conn = _sqlite3.connect(db_path, timeout=300.0)
-    except Exception as exc:  # noqa: BLE001
-        log.warning(
-            "plan_synthesis.bulk_persist_failed",
-            count=len(reports), error=f"connect_failed: {exc}",
+                row = {
+                    "user_id": r.user_id,
+                    "agent_role": r.agent_role,
+                    "decision_id": getattr(r, "decision_id", None),
+                    "intake_session_id": None,
+                    "prompt_hash": r.prompt_hash,
+                    "response_text": r.response_text,
+                    "tokens_in": r.tokens_in,
+                    "tokens_out": r.tokens_out,
+                    "cost_usd": r.cost_usd,
+                    "cache_input_tokens": r.cache_input_tokens,
+                    "cache_creation_tokens": r.cache_creation_tokens,
+                    "thinking_tokens": r.thinking_tokens,
+                    "citations_json": r.citations_json,
+                    "sources_json": r.sources_json,
+                    "run_correlation_id": r.run_correlation_id,
+                    "system_prompt": r.system_prompt,
+                    "user_prompt": r.user_prompt,
+                    "model": r.model,
+                    "confidence": r.confidence.value if r.confidence else None,
+                }
+                f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        log.info(
+            "plan_synthesis.trail_appended",
+            count=len(reports),
+            trail=str(trail_path.name),
         )
-        return
-
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=300000")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        # `created_at` is a server-default column on the ORM model; sqlite3
-        # won't auto-populate it because the default is set via SQLAlchemy
-        # Column(default=...) rather than a DDL DEFAULT. We supply NOW()
-        # explicitly to keep the audit timestamp correct.
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
-        rows = [
-            (
-                r.user_id, r.agent_role,
-                getattr(r, "decision_id", None), None,
-                r.prompt_hash, r.response_text,
-                r.tokens_in, r.tokens_out, r.cost_usd,
-                r.cache_input_tokens, r.cache_creation_tokens, r.thinking_tokens,
-                r.citations_json, r.sources_json, r.run_correlation_id,
-                r.system_prompt, r.user_prompt,
-                r.model, (r.confidence.value if r.confidence else None),
-                now_iso,
-            )
-            for r in reports
-        ]
-        conn.executemany(
-            """
-            INSERT INTO agent_reports (
-                user_id, agent_role,
-                decision_id, intake_session_id,
-                prompt_hash, response_text,
-                tokens_in, tokens_out, cost_usd,
-                cache_input_tokens, cache_creation_tokens, thinking_tokens,
-                citations_json, sources_json, run_correlation_id,
-                system_prompt, user_prompt,
-                model, confidence,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        conn.commit()
-    except Exception as exc:  # noqa: BLE001 — best-effort batch
+    except OSError as exc:
         log.warning(
-            "plan_synthesis.bulk_persist_failed",
+            "plan_synthesis.trail_write_failed",
             count=len(reports), error=str(exc),
         )
+
+
+def _ingest_synthesis_trail(
+    session: Session, decision_audit_token: str,
+) -> int:
+    """Ingest the JSONL forensic trail into ``agent_reports``.
+
+    Called at the end of ``run_synthesis`` after the PlanVersion +
+    DecisionRun writes complete (when the orchestrator's session is
+    clean for new writes). Uses the orchestrator's session directly —
+    which we KNOW can write because it's the connection that's been
+    holding the writer lock throughout synthesis.
+
+    Returns the count of rows ingested. Best-effort: any failure logs
+    and returns 0. Leaves the JSONL file in place for forensic / replay
+    purposes (don't delete it; lets the operator re-ingest manually via
+    ``argosy synthesis ingest-trail <decision_run_id>`` if the auto-
+    ingest path missed for any reason).
+
+    Returns 0 if the JSONL file doesn't exist (e.g. synthesis with no
+    successful agents, or trail-write itself failed earlier).
+    """
+    from pathlib import Path  # noqa: F401 — kept for type-hint clarity
+    from argosy.config import get_settings
+    from argosy.state.models import AgentReport as AgentReportRow
+
+    settings = get_settings()
+    trail_path = (
+        settings.home / "logs" / "synthesis" / f"{decision_audit_token}.jsonl"
+    )
+    if not trail_path.exists():
+        return 0
+
+    rows: list[dict] = []
+    try:
+        with trail_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    log.warning(
+                        "plan_synthesis.trail_line_skipped_bad_json",
+                        trail=trail_path.name, error=str(exc),
+                    )
+    except OSError as exc:
+        log.warning(
+            "plan_synthesis.trail_read_failed",
+            trail=str(trail_path), error=str(exc),
+        )
+        return 0
+
+    if not rows:
+        return 0
+
+    try:
+        for row_dict in rows:
+            ar = AgentReportRow(**row_dict)
+            session.add(ar)
+        session.commit()
+        log.info(
+            "plan_synthesis.trail_ingested",
+            count=len(rows), trail=trail_path.name,
+        )
+        return len(rows)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "plan_synthesis.trail_ingest_failed",
+            count=len(rows), error=str(exc),
+        )
         try:
-            conn.rollback()
-        except Exception:  # pragma: no cover - defensive
+            session.rollback()
+        except Exception:  # pragma: no cover
             pass
-    finally:
-        try:
-            conn.close()
-        except Exception:  # pragma: no cover - defensive
-            pass
+        return 0
 
 
 def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
