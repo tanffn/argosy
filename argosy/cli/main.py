@@ -14,6 +14,7 @@ from argosy.cli.brief import brief
 from argosy.cli.critique import critique
 from argosy.cli.data import app as data_app
 from argosy.cli.decide import decide
+from argosy.cli.diagnose import app as diagnose_app
 from argosy.cli.email import app as email_app
 from argosy.cli.execute import execute
 from argosy.cli.fills import app as fills_app
@@ -57,6 +58,8 @@ app.add_typer(data_app, name="data",
               help="Investor-event feeds: 13F, Form 4, capitoltrades, tipranks.")
 app.add_typer(expenses_app, name="expenses",
               help="Household-expenses admin utilities (verify-file, backfill).")
+app.add_typer(diagnose_app, name="diagnose",
+              help="Environment diagnostics: adapter health, key resolution.")
 
 
 def main() -> None:  # pragma: no cover
