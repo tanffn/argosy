@@ -260,6 +260,11 @@ class ReplayResponse(BaseModel):
     phases: list[PhaseDTO]
     inputs: dict[str, Any]
     sequence_mmd_full: str
+    # T0.5 — relative URL the UI hits to fetch the FM-rooted agent-tree
+    # view for this run. Only meaningful for synthesis runs; the route
+    # itself returns 404 on non-synthesis kinds, so the UI can probe
+    # without a kind check.
+    agent_tree_url: str
 
 
 @router.get("/{decision_run_id}/replay", response_model=ReplayResponse)
@@ -414,6 +419,7 @@ async def get_decision_replay(
             ],
         },
         sequence_mmd_full="\n\n".join(full_seq_parts),
+        agent_tree_url=f"/api/decisions/{decision_run_id}/agent-tree",
     )
 
 

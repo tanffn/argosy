@@ -37,6 +37,7 @@ from argosy.api.routes.argonaut import router as argonaut_router
 from argosy.api.routes.branding import router as branding_router
 from argosy.api.routes.daily_brief import router as daily_brief_router
 from argosy.api.routes.decisions import router as decisions_router
+from argosy.api.routes.decisions_tree import router as decisions_tree_router
 from argosy.api.routes.domain_kb import router as domain_kb_router
 from argosy.api.routes.execution import router as execution_router
 from argosy.api.routes.files import router as files_router
@@ -98,6 +99,10 @@ def create_app() -> FastAPI:
     # Phase 3 — proposals + decisions
     app.include_router(proposals_router, prefix=api_prefix)
     app.include_router(decisions_router, prefix=api_prefix)
+    # T0.5 — FM-rooted agent-tree view, mounted as a sibling router so it
+    # doesn't have to share a get_db pattern with the async decisions
+    # router. Same /decisions prefix, distinct path => no conflict.
+    app.include_router(decisions_tree_router, prefix=api_prefix)
 
     # Phase 4 — execution router + lots/fills/audit + email-link approval
     app.include_router(execution_router, prefix=api_prefix)
