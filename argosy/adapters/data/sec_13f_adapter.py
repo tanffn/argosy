@@ -22,10 +22,21 @@ Implementation notes:
   - SEC requires a polite ``User-Agent: <Org> <email>`` header — they
     will rate-limit / block missing or generic UAs. We send
     ``Argosy/<version> <email>``.
+  - We deliberately do NOT pin a ``Host`` header. The adapter touches
+    two hostnames (``www.sec.gov`` for archives, ``efts.sec.gov`` for
+    full-text search). A hard-coded ``Host: www.sec.gov`` made the
+    FTS endpoint serve HTTP 404 (CDN routed to an unknown vhost) — see
+    SDD §"Project-wide conventions / gotchas". Letting httpx derive
+    the header per URL fixes it.
   - Free, public, no auth.
   - Filings are throttled to 10 req/sec by SEC; the adapter never fans
     out so we're naturally below.
-  - On unreachable site / 5xx / parse failure → ``MissingDataSourceError``.
+  - On HTTP / network failure: the public methods record an outcome
+    via ``track_adapter_call`` (status=``http_error`` or
+    ``exception``) and return ``[]`` rather than raising. This lets
+    one broken adapter call surface in the UI without bringing down a
+    synthesis run. Programmer-error invariants (e.g. ``days <= 0``,
+    empty accession) still raise ``ValueError``.
 
 Test injection:
 
@@ -83,12 +94,36 @@ def _user_agent() -> str:
 
 
 def _default_headers() -> dict[str, str]:
+    """Polite headers SEC EDGAR accepts.
+
+    Historical note: we used to pin ``Host: www.sec.gov`` here, which is
+    correct for ``www.sec.gov`` but wrong for ``efts.sec.gov`` (the
+    full-text-search endpoint). The CDN routed the FTS request as an
+    unknown vhost and returned HTTP 404, silently breaking the adapter
+    (see SDD §"Project-wide conventions / gotchas"). We now omit the
+    ``Host`` header so httpx derives it correctly per URL.
+    """
     return {
         "User-Agent": _user_agent(),
         "Accept-Encoding": "gzip, deflate",
         "Accept": "application/json,text/html,*/*",
-        "Host": "www.sec.gov",
     }
+
+
+def _ticker_query(ticker: str | None) -> str:
+    """Normalize a ticker (or symbol) into a quoted FTS query string.
+
+    Empty / falsy → empty query (= 'all 13F-HR filings in the window').
+    Otherwise: strip + uppercase + wrap in double-quotes so EDGAR treats
+    it as an exact phrase. Returning unquoted strings causes EDGAR to
+    tokenize, which makes 'AA' match 'AAPL', 'AAL', etc.
+    """
+    if not ticker:
+        return ""
+    t = ticker.strip().upper()
+    if not t:
+        return ""
+    return f'"{t}"'
 
 
 # ----------------------------------------------------------------------
@@ -125,38 +160,49 @@ class Sec13FAdapter:
         self,
         *,
         days: int = 90,
+        ticker: str | None = None,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
     ) -> list[dict[str, Any]]:
-        """Return recent 13F-HR filings across all filers.
+        """Return recent 13F-HR filings, optionally narrowed to one ticker.
 
         Args:
             days: lookback window. Default 90 — one quarter, which is
                 the natural cadence of 13Fs.
+            ticker: optional symbol filter. When set, the FTS request
+                sends ``q="<TICKER>"`` (uppercased, quoted) so EDGAR
+                returns only filings mentioning that exact symbol.
+                Empty / None → no symbol filter (all 13F-HR filings).
             ttl_seconds: cache lifetime. Default 90 days.
 
         Returns:
             List of dicts with keys ``cik``, ``fund_name``,
             ``period_of_report``, ``accession_number``, ``filed_at``,
-            ``document_url``.
+            ``document_url``. Empty list on HTTP error / outage — the
+            failure is recorded on the per-synthesis adapter-outcome
+            buffer (status=``http_error`` or ``exception``) so the UI
+            shows a human-readable reason instead of crashing the run.
 
         Raises:
-            ValueError: if ``days`` is non-positive.
-            MissingDataSourceError: on outage / parse failure.
+            ValueError: if ``days`` is non-positive. (Programmer-error
+                guards still raise; only HTTP / network failures are
+                swallowed-and-recorded.)
         """
         if days <= 0:
             raise ValueError(f"days must be positive; got {days}")
 
+        q = _ticker_query(ticker)
+        # SEC EDGAR FTS expects an actual ISO date range when
+        # ``dateRange=custom``. Empty values either 400 or are silently
+        # ignored, so we compute the window from ``days``.
+        today = datetime.now(UTC).date()
+        startdt = (today - timedelta(days=days)).isoformat()
+        enddt = today.isoformat()
+
         with track_adapter_call("sec_13f", target="13F-HR") as _outcome:
-            # SEC EDGAR FTS expects an actual ISO date range when
-            # ``dateRange=custom``. Empty values either 400 or are silently
-            # ignored, so we compute the window from ``days``.
-            today = datetime.now(UTC).date()
-            startdt = (today - timedelta(days=days)).isoformat()
-            enddt = today.isoformat()
 
             async def _fetch() -> list[dict[str, Any]]:
                 params = {
-                    "q": "",
+                    "q": q,
                     "forms": "13F-HR",
                     "dateRange": "custom",
                     "startdt": startdt,
@@ -165,18 +211,33 @@ class Sec13FAdapter:
                 data = await self._fetch_json(EDGAR_FTS_URL, params=params)
                 return _parse_fts_hits(data)
 
-            # Include `enddt` in the cache key so a Monday tick and a
-            # Wednesday tick don't collide. ``days`` alone made the key day-
-            # independent — the second tick would silently serve the first
-            # tick's stale 90-day window even though the underlying date
-            # range had moved forward.
-            out: list[dict[str, Any]] = await cached_call(
-                kind=CacheKind.PRICES,
-                provider=self.PROVIDER,
-                key=f"recent:days={days}:enddt={enddt}",
-                ttl_seconds=ttl_seconds,
-                fetch=_fetch,
-            )
+            # Include `enddt` AND the (normalized) ticker in the cache
+            # key. Without `enddt`, a Monday tick and a Wednesday tick
+            # would collide and silently serve the first tick's stale
+            # 90-day window. Without the ticker, a per-symbol call
+            # would clobber the no-symbol call's result.
+            cache_q = q or "all"
+            try:
+                out: list[dict[str, Any]] = await cached_call(
+                    kind=CacheKind.PRICES,
+                    provider=self.PROVIDER,
+                    key=f"recent:q={cache_q}:days={days}:enddt={enddt}",
+                    ttl_seconds=ttl_seconds,
+                    fetch=_fetch,
+                )
+            except MissingDataSourceError as exc:
+                # Network / HTTP failure inside ``_fetch``. Surface the
+                # outcome so the UI can show "sec_13f: HTTP 404" (or
+                # similar) instead of crashing the synthesis run.
+                _outcome.record_http_error(
+                    status_code=_extract_http_status(exc) or 0,
+                    body=str(exc),
+                )
+                _log.warning(
+                    "sec_13f.list_recent_13f.http_error",
+                    reason=str(exc).splitlines()[0] if str(exc) else "",
+                )
+                return []
             _outcome.set_payload_size_bytes(_approx_size_bytes(out))
             return out
 
@@ -206,17 +267,33 @@ class Sec13FAdapter:
             raise ValueError("accession_number is required")
         accession = accession_number.strip()
 
-        async def _fetch() -> list[dict[str, Any]]:
-            xml_text = await self._fetch_information_table_xml(accession)
-            return _parse_information_table_xml(xml_text)
+        with track_adapter_call("sec_13f", target=f"holdings:{accession}") as _outcome:
 
-        return await cached_call(
-            kind=CacheKind.PRICES,
-            provider=self.PROVIDER,
-            key=f"holdings:{accession}",
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
+            async def _fetch() -> list[dict[str, Any]]:
+                xml_text = await self._fetch_information_table_xml(accession)
+                return _parse_information_table_xml(xml_text)
+
+            try:
+                out: list[dict[str, Any]] = await cached_call(
+                    kind=CacheKind.PRICES,
+                    provider=self.PROVIDER,
+                    key=f"holdings:{accession}",
+                    ttl_seconds=ttl_seconds,
+                    fetch=_fetch,
+                )
+            except MissingDataSourceError as exc:
+                _outcome.record_http_error(
+                    status_code=_extract_http_status(exc) or 0,
+                    body=str(exc),
+                )
+                _log.warning(
+                    "sec_13f.get_filing_holdings.http_error",
+                    accession=accession,
+                    reason=str(exc).splitlines()[0] if str(exc) else "",
+                )
+                return []
+            _outcome.set_payload_size_bytes(_approx_size_bytes(out))
+            return out
 
     async def get_filer_history(
         self,
@@ -244,26 +321,42 @@ class Sec13FAdapter:
 
         cik_padded = str(cik).strip().lstrip("0").zfill(10)
 
-        async def _fetch() -> list[dict[str, Any]]:
-            params = {
-                "action": "getcompany",
-                "CIK": cik_padded,
-                "type": "13F-HR",
-                "dateb": "",
-                "owner": "include",
-                "count": str(max(quarters, 10)),
-                "output": "atom",
-            }
-            text = await self._fetch_text(EDGAR_BROWSE_URL, params=params)
-            return _parse_browse_atom(text, cik=cik_padded)[:quarters]
+        with track_adapter_call("sec_13f", target=f"history:{cik_padded}") as _outcome:
 
-        return await cached_call(
-            kind=CacheKind.PRICES,
-            provider=self.PROVIDER,
-            key=f"history:{cik_padded}:q={quarters}",
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
+            async def _fetch() -> list[dict[str, Any]]:
+                params = {
+                    "action": "getcompany",
+                    "CIK": cik_padded,
+                    "type": "13F-HR",
+                    "dateb": "",
+                    "owner": "include",
+                    "count": str(max(quarters, 10)),
+                    "output": "atom",
+                }
+                text = await self._fetch_text(EDGAR_BROWSE_URL, params=params)
+                return _parse_browse_atom(text, cik=cik_padded)[:quarters]
+
+            try:
+                out: list[dict[str, Any]] = await cached_call(
+                    kind=CacheKind.PRICES,
+                    provider=self.PROVIDER,
+                    key=f"history:{cik_padded}:q={quarters}",
+                    ttl_seconds=ttl_seconds,
+                    fetch=_fetch,
+                )
+            except MissingDataSourceError as exc:
+                _outcome.record_http_error(
+                    status_code=_extract_http_status(exc) or 0,
+                    body=str(exc),
+                )
+                _log.warning(
+                    "sec_13f.get_filer_history.http_error",
+                    cik=cik_padded,
+                    reason=str(exc).splitlines()[0] if str(exc) else "",
+                )
+                return []
+            _outcome.set_payload_size_bytes(_approx_size_bytes(out))
+            return out
 
     # ----- internals --------------------------------------------------
 
@@ -624,6 +717,26 @@ def _filing_url(cik: str, accession: str) -> str:
     return f"{EDGAR_BASE}/Archives/edgar/data/{cik_clean}/{nodash}/"
 
 
+def _extract_http_status(exc: BaseException) -> int | None:
+    """Pull an HTTP status code out of a MissingDataSourceError message.
+
+    The adapter formats its HTTP-error message as
+    ``"SEC EDGAR returned HTTP <code> for <url>"``; this helper parses
+    that out so the recorded outcome carries the structured status code
+    in addition to the human-readable error text. Network exceptions
+    (DNS, timeout) won't have a code — returns None in that case so the
+    outcome's ``http_status_code`` stays None and the UI can distinguish
+    HTTP-level vs. network-level failures.
+    """
+    m = re.search(r"HTTP\s+(\d{3})\b", str(exc))
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:  # pragma: no cover - defensive
+            return None
+    return None
+
+
 # Quietly load json module — referenced in tests via patches that
 # return raw dicts. Imported here so static analysis sees usage.
 _ = json
@@ -638,7 +751,9 @@ __all__ = [
     "EDGAR_FTS_URL",
     "Sec13FAdapter",
     "_accession_dashed",
+    "_extract_http_status",
     "_parse_browse_atom",
     "_parse_fts_hits",
     "_parse_information_table_xml",
+    "_ticker_query",
 ]

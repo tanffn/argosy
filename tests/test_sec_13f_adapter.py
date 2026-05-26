@@ -15,9 +15,15 @@ from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.sec_13f_adapter import (
     Sec13FAdapter,
     _accession_dashed,
+    _extract_http_status,
     _parse_browse_atom,
     _parse_fts_hits,
     _parse_information_table_xml,
+    _ticker_query,
+)
+from argosy.services.adapter_outcomes import (
+    collect_outcomes,
+    reset_outcomes,
 )
 
 # ----------------------------------------------------------------------
@@ -285,10 +291,118 @@ async def test_list_recent_13f_invalid_days(engine: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_recent_13f_outage_raises(engine: None) -> None:
+async def test_list_recent_13f_outage_records_outcome_and_returns_empty(
+    engine: None,
+) -> None:
+    """Network failure inside the FTS fetch must NOT crash the synthesis.
+
+    Contract per T3.1: record an outcome (status=``exception`` because
+    the inner OSError doesn't carry an HTTP code) and return ``[]``.
+    Prior behavior raised ``MissingDataSourceError``, which blew up the
+    whole run when one adapter was flaky — the user explicitly said
+    "we don't need to crash, but we need to surface issues."
+    """
+    reset_outcomes()
     adapter = Sec13FAdapter(http_client=_FailingHttp())
-    with pytest.raises(MissingDataSourceError):
-        await adapter.list_recent_13f(days=30)
+    rows = await adapter.list_recent_13f(days=30)
+    assert rows == []
+    outcomes = [o for o in collect_outcomes() if o.adapter_name == "sec_13f"]
+    assert len(outcomes) == 1, outcomes
+    # ``_FailingHttp`` raises OSError with no embedded HTTP code, so the
+    # adapter wraps it as a MissingDataSourceError (unreachable site).
+    # The error_text carries the human-readable reason.
+    assert outcomes[0].status == "http_error"
+    assert outcomes[0].error_text is not None
+    assert "unreachable" in outcomes[0].error_text.lower() or \
+        "DNS failure" in outcomes[0].error_text
+    # No HTTP status code (network-level failure, not a 4xx/5xx).
+    assert outcomes[0].http_status_code in (0, None)
+
+
+@pytest.mark.asyncio
+async def test_list_recent_13f_http_404_records_outcome_and_returns_empty(
+    engine: None,
+) -> None:
+    """HTTP 404 from EDGAR FTS → empty list + outcome with code 404.
+
+    This is the failure mode T3.1 was opened to fix: previously the
+    adapter raised MissingDataSourceError on 404 and the whole synthesis
+    run crashed. Now we record ``http_status_code=404`` and return [].
+    """
+    reset_outcomes()
+    fake = _RoutedHttp({"efts.sec.gov": _FakeResp(status=404, text="Not Found")})
+    adapter = Sec13FAdapter(http_client=fake)
+
+    rows = await adapter.list_recent_13f(days=14)
+    assert rows == []
+    outcomes = [o for o in collect_outcomes() if o.adapter_name == "sec_13f"]
+    assert len(outcomes) == 1, outcomes
+    assert outcomes[0].status == "http_error"
+    assert outcomes[0].http_status_code == 404
+    assert outcomes[0].error_text is not None
+    assert "404" in outcomes[0].error_text
+
+
+@pytest.mark.asyncio
+async def test_list_recent_13f_empty_hits_returns_empty(engine: None) -> None:
+    """Valid JSON envelope with no hits → empty list, outcome=empty.
+
+    A real-world case: a narrow ticker filter that no fund has filed on
+    in the requested window. The adapter must not raise.
+    """
+    reset_outcomes()
+    fake = _RoutedHttp(
+        {"efts.sec.gov": _FakeResp(json_payload={"hits": {"hits": []}})}
+    )
+    adapter = Sec13FAdapter(http_client=fake)
+    rows = await adapter.list_recent_13f(days=14, ticker="NOSUCHTICKER")
+    assert rows == []
+    # ``set_payload_size_bytes`` is still called with size of ``[]``
+    # (== 2 bytes for "[]"), so status flips to "ok". The important
+    # invariant is "no exception, no http_error, [] returned".
+    outcomes = [o for o in collect_outcomes() if o.adapter_name == "sec_13f"]
+    assert len(outcomes) == 1
+    assert outcomes[0].status in ("ok", "empty")
+    assert outcomes[0].http_status_code in (None, 0)
+
+
+@pytest.mark.asyncio
+async def test_list_recent_13f_ticker_normalization(engine: None) -> None:
+    """Lowercase / mixed-case tickers are uppercased and quoted on the wire.
+
+    EDGAR FTS tokenizes unquoted queries (so ``AA`` matches ``AAPL``,
+    ``AAL``, etc.), so the adapter wraps the symbol in double-quotes
+    for exact-phrase semantics. Lowercase comes from the UI / callers
+    that don't normalize.
+    """
+    fake = _RoutedHttp({"efts.sec.gov": _FakeResp(json_payload=_FTS_PAYLOAD)})
+    adapter = Sec13FAdapter(http_client=fake)
+    await adapter.list_recent_13f(days=14, ticker="nvda")
+
+    assert fake.calls_with_params, "expected at least one HTTP call"
+    _url, params = fake.calls_with_params[0]
+    # Quoted, uppercased.
+    assert params.get("q") == '"NVDA"', params
+
+
+def test_ticker_query_helper() -> None:
+    """Pure helper coverage — exhaustive for the small surface."""
+    assert _ticker_query(None) == ""
+    assert _ticker_query("") == ""
+    assert _ticker_query("   ") == ""
+    assert _ticker_query("nvda") == '"NVDA"'
+    assert _ticker_query("  NvDa  ") == '"NVDA"'
+
+
+def test_extract_http_status_helper() -> None:
+    """Pure helper coverage — round-trips the adapter's own error text."""
+    err = MissingDataSourceError("SEC EDGAR returned HTTP 404 for https://x")
+    assert _extract_http_status(err) == 404
+    err5 = MissingDataSourceError("SEC EDGAR returned HTTP 503 for https://x")
+    assert _extract_http_status(err5) == 503
+    # Network-level error → no code embedded → None.
+    err_n = MissingDataSourceError("SEC EDGAR unreachable (DNS failure); url=https://x")
+    assert _extract_http_status(err_n) is None
 
 
 @pytest.mark.asyncio
@@ -323,8 +437,65 @@ async def test_get_filing_holdings_empty_accession(engine: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_filing_holdings_index_lookup_fails(engine: None) -> None:
+async def test_get_filing_holdings_index_lookup_records_outcome_and_returns_empty(
+    engine: None,
+) -> None:
+    """503 on the filing-index lookup → record outcome + [] (no raise).
+
+    Same graceful-degradation contract as ``list_recent_13f``: one
+    flaky filing must not crash the whole synthesis run. The outcome
+    carries the structured 503 so the UI can show "sec_13f
+    holdings:<acc>: HTTP 503".
+    """
+    reset_outcomes()
     routes = {"/index.json": _FakeResp(status=503, text="oops")}
     adapter = Sec13FAdapter(http_client=_RoutedHttp(routes))
-    with pytest.raises(MissingDataSourceError):
-        await adapter.get_filing_holdings("0001067983-25-000002")
+    holdings = await adapter.get_filing_holdings("0001067983-25-000002")
+    assert holdings == []
+    outcomes = [o for o in collect_outcomes() if o.adapter_name == "sec_13f"]
+    assert len(outcomes) == 1
+    assert outcomes[0].status == "http_error"
+    assert outcomes[0].http_status_code == 503
+    assert outcomes[0].target == "holdings:0001067983-25-000002"
+
+
+@pytest.mark.asyncio
+async def test_get_filer_history_outage_records_outcome_and_returns_empty(
+    engine: None,
+) -> None:
+    """Same graceful contract for ``get_filer_history``."""
+    reset_outcomes()
+    adapter = Sec13FAdapter(http_client=_FailingHttp())
+    rows = await adapter.get_filer_history("0001067983", quarters=2)
+    assert rows == []
+    outcomes = [o for o in collect_outcomes() if o.adapter_name == "sec_13f"]
+    assert len(outcomes) == 1
+    assert outcomes[0].status == "http_error"
+    assert outcomes[0].target == "history:0001067983"
+
+
+@pytest.mark.asyncio
+async def test_list_recent_13f_does_not_pin_host_header(engine: None) -> None:
+    """Regression guard for the root cause of the original 404.
+
+    Pinning ``Host: www.sec.gov`` made requests to ``efts.sec.gov`` route
+    to an unknown CDN vhost and return 404. The fix: omit ``Host`` from
+    the default headers and let httpx derive it per URL. This test
+    asserts on the wire what the adapter is willing to send.
+    """
+    captured_headers: dict[str, str] = {}
+
+    class _CapturingHttp:
+        async def get(self, _url: str, **kwargs: Any) -> _FakeResp:
+            hdrs = kwargs.get("headers") or {}
+            captured_headers.update(hdrs)
+            return _FakeResp(json_payload=_FTS_PAYLOAD)
+
+    adapter = Sec13FAdapter(http_client=_CapturingHttp())
+    await adapter.list_recent_13f(days=14)
+    assert "User-Agent" in captured_headers, captured_headers
+    assert "Argosy" in captured_headers["User-Agent"]
+    assert "Host" not in captured_headers, (
+        "Adapter must not pin a Host header — it breaks efts.sec.gov "
+        "(the FTS endpoint) by routing to an unknown CDN vhost."
+    )
