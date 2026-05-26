@@ -1,0 +1,420 @@
+"""Tests for ``argosy.services.agent_tree_builder.build_agent_tree`` (T0.4).
+
+Two surfaces are exercised:
+
+1. Against the real ``db/argosy.db`` (run #23) — proves the builder copes
+   with the pre-T0.1 / pre-T0.3 schema, where ``participants_json`` is
+   empty and Phase 1 has no ``adapter_outcomes``. The 18 agent_reports
+   rows must still produce a FM-rooted tree.
+
+2. Against a synthetic in-memory SQLite session — fully controlled
+   topology, plus an injected ``adapter_outcomes`` list so the status
+   summary, role->adapter mapping, and dedup walker all get covered.
+"""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+import sqlalchemy as sa
+from sqlalchemy.orm import sessionmaker
+
+from argosy.services.agent_tree_builder import (
+    AdapterNode,
+    AgentNode,
+    AgentTreeResponse,
+    build_agent_tree,
+)
+from argosy.state.models import (
+    AgentReport,
+    Base,
+    DecisionPhase,
+    DecisionRun,
+    User,
+)
+
+
+# ---------------------------------------------------------------------------
+# Fixture: in-memory session ready for a hand-rolled synthesis run.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def inmem_session():
+    engine = sa.create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}
+    )
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    sess = SessionLocal()
+    try:
+        sess.add(User(id="ariel", plan="free"))
+        sess.commit()
+        yield sess
+    finally:
+        sess.close()
+        engine.dispose()
+
+
+def _seed_synthesis_run(
+    sess,
+    *,
+    user_id: str = "ariel",
+    run_id: int | None = None,
+    decision_kind: str = "plan_revision",
+    include_plan_critique: bool = True,
+    adapter_outcomes: list[dict] | None = None,
+    risk_officer_count: int = 3,
+) -> int:
+    """Create a decision_run + a Phase-1 decision_phase + 18 agent_reports.
+
+    ``adapter_outcomes`` (when given) is dumped under
+    ``phase_output_json["adapter_outcomes"]`` exactly the way T0.3 writes
+    it.
+
+    Returns the new ``decision_runs.id``.
+    """
+    now = datetime.now(timezone.utc)
+    run = DecisionRun(
+        user_id=user_id,
+        ticker="(plan)",
+        tier=None,
+        decision_kind=decision_kind,
+        status="completed",
+        started_at=now,
+        finished_at=now,
+    )
+    if run_id is not None:
+        run.id = run_id
+    sess.add(run)
+    sess.commit()
+    sess.refresh(run)
+    rid = run.id
+
+    decision_id_str = f"plan-synth-{rid}"
+
+    def mk(role: str, confidence: str | None = "MEDIUM",
+           model: str = "claude-sonnet-4-6",
+           response: str = "ok") -> AgentReport:
+        ar = AgentReport(
+            user_id=user_id,
+            agent_role=role,
+            decision_id=decision_id_str,
+            response_text=response,
+            confidence=confidence,
+            model=model,
+            tokens_in=10,
+            tokens_out=20,
+            cost_usd=0.001,
+        )
+        sess.add(ar)
+        return ar
+
+    analyst_roles = [
+        "concentration", "fx", "fundamentals", "news",
+        "sentiment", "technical", "macro", "tax",
+        "household_budget",
+    ]
+    if include_plan_critique:
+        analyst_roles.append("plan_critique")
+    for role in analyst_roles:
+        mk(role)
+    mk("bull_researcher", model="claude-opus-4-7")
+    mk("bear_researcher", model="claude-opus-4-7")
+    mk("researcher_facilitator")
+    mk("plan_synthesizer", confidence=None, model="claude-opus-4-7")
+    for _ in range(risk_officer_count):
+        mk("risk_officer")
+    mk("risk_facilitator", confidence="LOW")
+    mk("fund_manager", confidence=None, model="claude-opus-4-7")
+    sess.commit()
+
+    phase_output: dict = {"phase": 1}
+    if adapter_outcomes is not None:
+        phase_output["adapter_outcomes"] = adapter_outcomes
+    phase = DecisionPhase(
+        decision_run_id=rid,
+        user_id=user_id,
+        seq=1,
+        kind="synthesis.phase_1",
+        started_at=now,
+        finished_at=now,
+        participants_json="[]",
+        phase_output_json=json.dumps(phase_output),
+    )
+    sess.add(phase)
+    sess.commit()
+    return rid
+
+
+# ---------------------------------------------------------------------------
+# 1) Real DB — run #23.
+# ---------------------------------------------------------------------------
+
+
+def _real_db_session():
+    db_path = Path(os.environ.get("ARGOSY_HOME", ".")) / "db" / "argosy.db"
+    if not db_path.exists():
+        # Try the project-relative default.
+        alt = Path("D:/Projects/financial-advisor/db/argosy.db")
+        if alt.exists():
+            db_path = alt
+    if not db_path.exists():
+        return None
+    engine = sa.create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False},
+    )
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    return SessionLocal()
+
+
+def test_build_agent_tree_for_existing_run_23() -> None:
+    sess = _real_db_session()
+    if sess is None:
+        pytest.skip("real db/argosy.db not available; skipping live-DB check")
+    try:
+        tree = build_agent_tree(sess, decision_run_id=23)
+    finally:
+        sess.close()
+
+    # FM at root.
+    assert isinstance(tree, AgentTreeResponse)
+    assert tree.root.agent_role == "fund_manager"
+    assert tree.decision_kind == "plan_revision"
+    assert tree.decision_run_id == 23
+
+    # FM's three children: synth, risk_facilitator, plan_critique (legacy).
+    child_roles = {c.agent_role for c in tree.root.children}
+    assert {"plan_synthesizer", "risk_facilitator", "plan_critique"} <= child_roles
+
+    # The synth has the three researcher facilitators + 10 analysts as children.
+    synth = next(c for c in tree.root.children if c.agent_role == "plan_synthesizer")
+    facilitator_children = [
+        c for c in synth.children if c.agent_role == "researcher_facilitator"
+    ]
+    assert len(facilitator_children) == 3
+    # Run #23 only has one bull + bear + facilitator row, so two of the three
+    # facilitator subtrees will be "skipped" — that's fine and expected for
+    # legacy data.
+
+    # Risk facilitator must have three risk-officer children, perspectives
+    # stamped in aggressive/neutral/conservative order.
+    rf = next(c for c in tree.root.children if c.agent_role == "risk_facilitator")
+    assert [c.perspective for c in rf.children] == [
+        "aggressive", "neutral", "conservative",
+    ]
+
+    # Dedup summary — at least the FM ran, and there should be more
+    # "agents_ok" than the 18 raw reports because analysts appear under
+    # multiple parents BUT the dedup walker should keep the unique count
+    # to roughly the topology size (FM + synth + risk_fac + 3 risk officers
+    # + 3 fac + 1 bull + 1 bear + 10 analysts = ~21). Two of the three
+    # facilitator subtrees have skipped bull/bear; the analyst nodes are
+    # shared so they only count once.
+    summary = tree.status_summary
+    assert summary["agents_ok"] >= 1
+    # Sanity: dedup actually happened — without it the count would balloon
+    # past 50.
+    assert summary["agents_ok"] + summary["agents_failed"] < 50
+
+
+# ---------------------------------------------------------------------------
+# 2) Synthetic in-memory run.
+# ---------------------------------------------------------------------------
+
+
+def test_build_agent_tree_happy_path_with_adapters(inmem_session) -> None:
+    outcomes = [
+        {"adapter_name": "finnhub_news", "target": "NVDA", "status": "ok",
+         "latency_ms": 120, "payload_size_bytes": 9001,
+         "http_status_code": 200, "error_text": None},
+        {"adapter_name": "yfinance", "target": "NVDA", "status": "ok",
+         "latency_ms": 80, "payload_size_bytes": 500,
+         "http_status_code": None, "error_text": None},
+        {"adapter_name": "sec_13f", "target": "NVDA", "status": "http_error",
+         "latency_ms": 1500, "payload_size_bytes": 0,
+         "http_status_code": 404, "error_text": "Not Found"},
+    ]
+    rid = _seed_synthesis_run(
+        inmem_session, adapter_outcomes=outcomes,
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+
+    # Topology sanity.
+    assert tree.root.agent_role == "fund_manager"
+    assert tree.decision_kind == "plan_revision"
+    fm_children_roles = [c.agent_role for c in tree.root.children]
+    assert fm_children_roles == [
+        "plan_synthesizer", "risk_facilitator", "plan_critique",
+    ]
+
+    # Three researcher_facilitator subtrees under the synth.
+    synth = tree.root.children[0]
+    rf_subtrees = [c for c in synth.children
+                   if c.agent_role == "researcher_facilitator"]
+    assert len(rf_subtrees) == 3
+    for rf in rf_subtrees:
+        kids = [c.agent_role for c in rf.children]
+        assert kids == ["bull_researcher", "bear_researcher"]
+
+    # The synth also has the 10 analysts as direct children (after the
+    # facilitators).
+    analyst_children = [
+        c for c in synth.children if c.agent_role not in {
+            "researcher_facilitator",
+        }
+    ]
+    analyst_roles = {c.agent_role for c in analyst_children}
+    assert analyst_roles == {
+        "concentration", "fx", "fundamentals", "news", "sentiment",
+        "technical", "macro", "tax", "household_budget", "plan_critique",
+    }
+
+    # The "news" analyst should have the finnhub_news adapter attached.
+    news = next(c for c in analyst_children if c.agent_role == "news")
+    assert [a.adapter_name for a in news.adapters] == ["finnhub_news"]
+    # The "technical" analyst should have yfinance attached.
+    tech = next(c for c in analyst_children if c.agent_role == "technical")
+    assert [a.adapter_name for a in tech.adapters] == ["yfinance"]
+    # "sec_13f" doesn't map to any role in the current table — it stays
+    # only in the run-level summary (failed).
+    for c in analyst_children:
+        assert "sec_13f" not in [a.adapter_name for a in c.adapters]
+
+    # DAG sharing: bull's analyst children must be the SAME Python objects
+    # as the synth's analyst children (so the UI can recognise a shared
+    # node).
+    bull = rf_subtrees[0].children[0]
+    assert bull.agent_role == "bull_researcher"
+    assert any(c is news for c in bull.children)
+
+    # Risk officers — exactly three, perspectives stamped left to right.
+    rf_node = tree.root.children[1]
+    assert [c.perspective for c in rf_node.children] == [
+        "aggressive", "neutral", "conservative",
+    ]
+    # All three officers were seeded -> all "ok".
+    assert {c.status for c in rf_node.children} == {"ok"}
+
+    # Risk facilitator had confidence=LOW -> degraded.
+    assert rf_node.status == "degraded"
+
+    # Status summary: dedup count must equal the count of unique node
+    # identities. Topology = FM (1) + synth (1) + risk_fac (1) + 3 risk
+    # officers (3) + 3 researcher_facilitators (3) + 3 bulls (3) + 3 bears
+    # (3) + 10 analyst leaves (10, shared) = 25 unique. Two of those 25
+    # are degraded/ok (synth + plan_synthesizer's None confidence) — both
+    # count as "ok" in the summary.
+    summary = tree.status_summary
+    assert summary["agents_ok"] + summary["agents_failed"] == 25
+    # Two adapters reported ok, one http_error.
+    assert summary["adapters_ok"] == 2
+    assert summary["adapters_failed"] == 1
+
+
+def test_build_agent_tree_skipped_nodes_for_old_run(inmem_session) -> None:
+    """When researcher rows are missing, the facilitator subtree's bull
+    and bear come back as ``skipped`` and propagate ``failure_reason``."""
+    rid = _seed_synthesis_run(
+        inmem_session,
+        adapter_outcomes=None,
+        include_plan_critique=False,
+        risk_officer_count=0,
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+
+    # plan_critique was not seeded -> the FM's third child is a "skipped"
+    # placeholder.
+    plan_critique = tree.root.children[2]
+    assert plan_critique.agent_role == "plan_critique"
+    assert plan_critique.status == "skipped"
+    assert plan_critique.failure_reason == "agent did not run"
+    assert plan_critique.agent_report_id is None
+
+    # All three risk officers were skipped, but their perspectives still
+    # render so the UI can show empty slots.
+    rf = tree.root.children[1]
+    perspectives = [c.perspective for c in rf.children]
+    assert perspectives == ["aggressive", "neutral", "conservative"]
+    assert all(c.status == "skipped" for c in rf.children)
+
+    # No adapter_outcomes -> both adapter counts are zero.
+    summary = tree.status_summary
+    assert summary["adapters_ok"] == 0
+    assert summary["adapters_failed"] == 0
+
+
+def test_build_agent_tree_rejects_unknown_decision_kind(inmem_session) -> None:
+    rid = _seed_synthesis_run(
+        inmem_session, decision_kind="trade_proposal",
+    )
+    with pytest.raises(ValueError, match="unsupported decision_kind"):
+        build_agent_tree(inmem_session, decision_run_id=rid)
+
+
+def test_build_agent_tree_rejects_missing_run(inmem_session) -> None:
+    with pytest.raises(ValueError, match="not found"):
+        build_agent_tree(inmem_session, decision_run_id=999_999)
+
+
+def test_build_agent_tree_tolerates_malformed_phase_output(inmem_session) -> None:
+    """If ``phase_output_json`` isn't valid JSON or doesn't carry
+    ``adapter_outcomes``, the builder must still produce a tree with an
+    empty adapter list, not crash."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+
+    # Overwrite phase_output_json with garbage.
+    phase = inmem_session.query(DecisionPhase).filter_by(
+        decision_run_id=rid, seq=1
+    ).first()
+    phase.phase_output_json = "{not valid json"
+    inmem_session.commit()
+
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    assert tree.root.agent_role == "fund_manager"
+    assert tree.status_summary["adapters_ok"] == 0
+    assert tree.status_summary["adapters_failed"] == 0
+
+
+def test_build_agent_tree_dag_dedup_is_correct(inmem_session) -> None:
+    """The same analyst node is reachable through (bull, bear, synth) on
+    each of the three facilitator subtrees plus directly through synth.
+    The summary walker must visit each analyst exactly once."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+
+    # Walk and count every (id(node)) reachable from root.
+    counts: dict[int, int] = {}
+
+    def walk(n: AgentNode) -> None:
+        counts[id(n)] = counts.get(id(n), 0) + 1
+        for c in n.children:
+            walk(c)
+    walk(tree.root)
+
+    # Any analyst node should be reached via:
+    #   - synth direct child         (+1)
+    #   - 3 bull subtrees × child    (+3)
+    #   - 3 bear subtrees × child    (+3)
+    # = 7 raw visits. plan_critique is additionally a child of the FM
+    # itself, so its raw visit count is 8.
+    synth = tree.root.children[0]
+    news = next(c for c in synth.children if c.agent_role == "news")
+    assert counts[id(news)] == 7
+
+    plan_critique = next(
+        c for c in synth.children if c.agent_role == "plan_critique"
+    )
+    # plan_critique also reachable from FM directly.
+    assert counts[id(plan_critique)] == 8
+
+    # ...but the deduped summary count includes plan_critique just once.
+    # Unique node identities = 25 (see happy path test).
+    assert (
+        tree.status_summary["agents_ok"] + tree.status_summary["agents_failed"]
+        == 25
+    )
