@@ -1390,3 +1390,123 @@ class FxRate(Base):
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )
+
+
+# ----------------------------------------------------------------------
+# FM objection plain-English translation cache (migration 0035)
+# ----------------------------------------------------------------------
+
+
+class FMObjectionTranslation(Base):
+    """Precomputed plain-English translation of one FM objection.
+
+    Owned by a draft (``plan_version_id`` FK with CASCADE delete) and
+    keyed within the draft by ``objection_index`` (the position in the
+    list emitted by ``GET /api/plan/draft/objections``).
+
+    Filled eagerly on the first call to that endpoint by
+    ``argosy.services.fm_objection_translation_cache.get_or_compute_translations``
+    so that subsequent loads of the same draft return translations
+    inline without paying the Sonnet round-trip again — the UI toggle
+    between "original Fund Manager wording" and "plain English" is then
+    instant.
+
+    ``topic_hash`` is sha256 of ``(severity, topic, detail)``; the cache
+    helper re-translates a slot whose stored hash no longer matches the
+    live FM text (defense in depth — the FM objection list is meant to
+    be stable per ``decision_run_id``, but this guards against any
+    upstream re-evaluation slipping the text under us).
+    """
+
+    __tablename__ = "fm_objection_translations"
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_version_id",
+            "objection_index",
+            name="uq_fm_objection_translations_plan_idx",
+        ),
+        Index(
+            "ix_fm_objection_translations_plan_version",
+            "plan_version_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    plan_version_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("plan_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    objection_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    topic_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    headline: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    plain_english: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    recommended_actions_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+# ----------------------------------------------------------------------
+# Per-FM-objection user stance (migration 0036)
+# ----------------------------------------------------------------------
+
+
+class FMObjectionUserState(Base):
+    """Per-(user, plan_version, objection_index) stance on a FM objection.
+
+    Added by migration 0036. Lets the user mark each Fund Manager
+    objection AGREE / DISAGREE / DEFER and, when disagreeing, attach a
+    free-text counter-position. The companion
+    ``POST /api/plan/draft/objections/start-new-round`` endpoint reads
+    every row for the draft, composes a structured guidance string from
+    the stances + counter-positions, and routes through the existing
+    advisor check-in flow so the cost-cap wiring is reused.
+
+    ``topic_hash`` is defense-in-depth — the FM objection list is parsed
+    live from ``fund_manager`` agent_report.response_text on every GET,
+    so if the list shifts between renders we can detect a stale row.
+
+    DEFER is the default state on the UI side; rows for DEFER objections
+    are still written so we can render the same state after navigating
+    away and back.
+    """
+
+    __tablename__ = "fm_objection_user_state"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "plan_version_id",
+            "objection_index",
+            name="uq_fm_obj_state_per_objection",
+        ),
+        Index(
+            "ix_fm_obj_state_plan",
+            "plan_version_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_version_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("plan_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    objection_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    topic_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    stance: Mapped[str] = mapped_column(String(16), nullable=False)
+    counter_position: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        onupdate=_utcnow,
+        nullable=False,
+    )

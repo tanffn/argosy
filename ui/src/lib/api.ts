@@ -518,6 +518,27 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function putJSON<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(apiUrl(path), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    // Bubble up the server's detail string so the UI can surface a
+    // meaningful error (e.g. "counter_position is required when ...").
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body.detail) detail = body.detail;
+    } catch {
+      // ignore — fall back to status
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as T;
+}
+
 export const api = {
   portfolioSnapshot: (userId: string) =>
     getJSON<PortfolioSnapshotDTO>(
@@ -968,6 +989,43 @@ export const api = {
       `/api/plan/draft/objections/translate?user_id=${encodeURIComponent(userId)}`,
       body,
     ),
+  // Per-FM-objection user stance + start-new-round flow. See
+  // argosy/api/routes/plan_objection_state.py for the backend.
+  planDraftObjectionStateGet: (userId: string, planVersionId: number) =>
+    getJSON<FMObjectionStateMapResponse>(
+      `/api/plan/draft/objections/state?user_id=${encodeURIComponent(
+        userId,
+      )}&plan_version_id=${planVersionId}`,
+    ),
+  planDraftObjectionStatePut: (body: {
+    user_id: string;
+    plan_version_id: number;
+    objection_index: number;
+    stance: "AGREE" | "DISAGREE" | "DEFER";
+    counter_position?: string | null;
+    topic?: string;
+    detail?: string;
+  }) =>
+    putJSON<{
+      status: string;
+      objection_index: number;
+      stance: string;
+    }>(`/api/plan/draft/objections/state`, body),
+  planDraftObjectionsStartNewRound: (userId: string, planVersionId: number) =>
+    postJSON<{
+      status: string;
+      decision_run_id: number;
+      decision_audit_token: string;
+      n_agreed: number;
+      n_disagreed: number;
+      n_deferred: number;
+      guidance_preview: string;
+    }>(
+      `/api/plan/draft/objections/start-new-round?user_id=${encodeURIComponent(
+        userId,
+      )}&plan_version_id=${planVersionId}`,
+      {},
+    ),
   planDraftNvdaTrajectory: (userId: string) =>
     getJSON<NvdaTrajectoryResponse>(
       `/api/plan/draft/nvda-trajectory?user_id=${encodeURIComponent(userId)}`,
@@ -1343,10 +1401,23 @@ export interface DeltaItem {
   provenance_agent_labels?: string[];
 }
 
+export interface FMObjectionTranslation {
+  headline: string;
+  plain_english: string;
+  recommended_actions: string[];
+}
+
 export interface FMObjection {
   severity: "RED" | "AMBER" | "YELLOW";
   topic: string;
   detail: string;
+  // Precomputed by the backend on first draft load (cached in
+  // fm_objection_translations) and returned inline so the UI toggle
+  // between "original Fund Manager wording" and "plain English" is
+  // instant — no per-click API round-trip. Null when the translator
+  // agent failed; the UI falls back to the on-demand button which
+  // POSTs to /api/plan/draft/objections/translate.
+  translation?: FMObjectionTranslation | null;
 }
 
 export interface FMObjectionsResponse {
@@ -1355,6 +1426,23 @@ export interface FMObjectionsResponse {
   cited_sources: string[];
   decision_run_id: number | null;
   raw_response_excerpt: string;
+}
+
+// Per-FM-objection stance map returned by GET
+// /api/plan/draft/objections/state. Keys are objection_index as a
+// string (JSON object keys are strings); missing keys are implicitly
+// DEFER. ``plan_version_id`` is echoed back so the UI can pass it to
+// PUT/POST without a separate /api/plan/draft round-trip.
+export type FMObjectionStance = "AGREE" | "DISAGREE" | "DEFER";
+
+export interface FMObjectionStateRow {
+  stance: FMObjectionStance;
+  counter_position: string | null;
+}
+
+export interface FMObjectionStateMapResponse {
+  states: Record<string, FMObjectionStateRow>;
+  plan_version_id: number;
 }
 
 export interface NvdaVestEvent {

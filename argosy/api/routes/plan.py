@@ -715,10 +715,34 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
 # ---------------------------------------------------------------------------
 
 
+class FMObjectionTranslationDTO(BaseModel):
+    """Plain-English rendering of one FM objection, attached inline to
+    the objection list returned by GET /api/plan/draft/objections.
+
+    Populated by argosy.services.fm_objection_translation_cache on
+    the first hit for a draft (parallel asyncio.gather batch of N
+    translator calls, ~10-15 s for N=6). Persisted to
+    fm_objection_translations so subsequent loads return inline
+    with no LLM round-trip and the UI toggle is instant.
+
+    None when the translator agent failed for that slot - the UI
+    falls back to the lazy on-demand POST to
+    /api/plan/draft/objections/translate.
+    """
+
+    headline: str
+    plain_english: str
+    recommended_actions: list[str] = []
+
+
 class FMObjection(BaseModel):
     severity: str  # "RED" | "AMBER" | "YELLOW"
     topic: str
     detail: str
+    # Precomputed plain-English rendering; None when the translator
+    # failed or the cache helper was skipped (legacy clients). UI falls
+    # back to the on-demand POST when null.
+    translation: FMObjectionTranslationDTO | None = None
 
 
 class FMObjectionsResponse(BaseModel):
@@ -1380,25 +1404,62 @@ def get_draft_objections(
     parsed = _parse_fm_response(fm_row.response_text)
     approved = bool(parsed.get("approved", True))
     reasons = parsed.get("reasons") or []
-    cited = parsed.get("cited_sources") or []
+    cited = [c for c in (parsed.get("cited_sources") or []) if isinstance(c, str)]
 
     objections: list[FMObjection] = []
+    raw_for_cache: list[dict] = []
     for r in reasons:
         if not isinstance(r, str) or not r.strip():
             continue
         topic, detail = _split_reason(r)
+        sev = _classify_severity(topic, detail)
         objections.append(
-            FMObjection(
-                severity=_classify_severity(topic, detail),
-                topic=topic,
-                detail=detail,
-            )
+            FMObjection(severity=sev, topic=topic, detail=detail)
         )
+        raw_for_cache.append({"severity": sev, "topic": topic, "detail": detail})
+
+    # Precompute (or read from cache) plain-English translations and
+    # attach them inline so the UI toggle between original FM wording
+    # and plain English is instant - no per-click round-trip. First
+    # hit for this draft pays ~10-15 s for N translations in parallel
+    # via asyncio.gather; subsequent loads return cached rows
+    # immediately. Wrapped in a broad try/except so a cache-layer
+    # failure (DB lock, translator crash) never breaks the route.
+    if objections:
+        try:
+            from argosy.services.fm_objection_translation_cache import (
+                get_or_compute_translations,
+            )
+
+            translations = get_or_compute_translations(
+                db,
+                user_id=user_id,
+                plan_version_id=pv.id,
+                objections=raw_for_cache,
+                cited_sources=cited,
+            )
+        except Exception as exc:  # noqa: BLE001 - never crash the endpoint over cache
+            logger.warning(
+                "fm_objection_translation_cache failed user_id=%s "
+                "plan_version_id=%s err=%s",
+                user_id, pv.id, exc,
+            )
+            translations = {}
+
+        for idx, obj in enumerate(objections):
+            dto = translations.get(idx)
+            if dto is None:
+                continue
+            obj.translation = FMObjectionTranslationDTO(
+                headline=dto.headline,
+                plain_english=dto.plain_english,
+                recommended_actions=list(dto.recommended_actions or []),
+            )
 
     return FMObjectionsResponse(
         approved=approved,
         objections=objections,
-        cited_sources=[c for c in cited if isinstance(c, str)],
+        cited_sources=cited,
         decision_run_id=pv.decision_run_id,
         raw_response_excerpt=fm_row.response_text[:500],
     )
