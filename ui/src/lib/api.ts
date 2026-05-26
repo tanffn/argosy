@@ -1178,7 +1178,52 @@ export const api = {
       `/api/advisor/amendment/${decisionRunId}/cancel?user_id=${encodeURIComponent(userId)}`,
       {},
     ),
+
+  // ----------------------------------------------------------------------
+  // Fleet self-review (migration 0037) — anomaly detector reports.
+  // ----------------------------------------------------------------------
+
+  fleetSelfReviewLatest: (userId: string) =>
+    getJSON<FleetSelfReviewDTO | null>(
+      `/api/fleet-self-review/latest?user_id=${encodeURIComponent(userId)}`,
+    ),
+
+  fleetSelfReview: (userId: string, id: number) =>
+    getJSON<FleetSelfReviewDTO>(
+      `/api/fleet-self-review/${id}?user_id=${encodeURIComponent(userId)}`,
+    ),
+
+  fleetSelfReviewRun: (userId: string) =>
+    postJSON<FleetSelfReviewDTO>(
+      `/api/fleet-self-review/run?user_id=${encodeURIComponent(userId)}`,
+      {},
+    ),
 };
+
+// ----------------------------------------------------------------------
+// Fleet self-review DTOs
+// ----------------------------------------------------------------------
+
+export interface FleetSelfReviewFinding {
+  id: string;
+  detector: string;
+  severity: "RED" | "AMBER" | "YELLOW";
+  category: string;
+  title: string;
+  evidence: Record<string, unknown>;
+  suggested_fix: string;
+}
+
+export interface FleetSelfReviewDTO {
+  id: number;
+  user_id: string;
+  generated_at: string;
+  scope_kind: "post_synthesis" | "daily" | "manual";
+  decision_run_id: number | null;
+  content_md: string;
+  findings: FleetSelfReviewFinding[];
+  severity_summary: { RED?: number; AMBER?: number; YELLOW?: number };
+}
 
 // ----------------------------------------------------------------------
 // Phase 7 type definitions

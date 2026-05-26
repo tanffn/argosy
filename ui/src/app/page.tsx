@@ -22,9 +22,11 @@ import {
   type DailyBriefDTO,
   type DomainKbTreeNode,
   type DraftResponse,
+  type FleetSelfReviewDTO,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
 } from "@/lib/api";
+import Link from "next/link";
 import { useWSEvents } from "@/lib/ws";
 import { DecisionAccordion } from "@/components/agent/DecisionAccordion";
 
@@ -86,6 +88,10 @@ interface HomeData {
   monthlySpend: number | null;
   domainKb: DomainKbTreeNode | null;
   cadenceLastTick: Record<string, string | null>;
+  // Most-recent fleet self-review report.  Surfaced as a banner so the
+  // user sees RED / AMBER counts the moment they hit the page, BEFORE
+  // having to ask "is anything broken?".
+  fleetReview: FleetSelfReviewDTO | null;
   error: string | null;
 }
 
@@ -101,6 +107,7 @@ const initial: HomeData = {
   monthlySpend: null,
   domainKb: null,
   cadenceLastTick: {},
+  fleetReview: null,
   error: null,
 };
 
@@ -177,6 +184,7 @@ export default function Home() {
         monthlySummary,
         monthlyAgentRows,
         cadenceTickAudit,
+        fleetReviewLatest,
       ] = await Promise.all([
         api.portfolioSnapshot(USER_ID).catch(() => null),
         api.planCurrent(USER_ID).catch(() => null),
@@ -233,6 +241,9 @@ export default function Home() {
             limit: 200,
           })
           .catch(() => null),
+        // Fleet self-review banner — most-recent report.  Fails gracefully
+        // when the migration hasn't been applied yet or no report exists.
+        api.fleetSelfReviewLatest(USER_ID).catch(() => null),
       ]);
 
       // ---- Monthly spend resolution -------------------------------------
@@ -293,6 +304,7 @@ export default function Home() {
         monthlySpend,
         domainKb,
         cadenceLastTick,
+        fleetReview: fleetReviewLatest,
         error: null,
       });
     } catch (e: unknown) {
@@ -318,6 +330,10 @@ export default function Home() {
     "daily_brief.ready",
     "proposal.created",
     "proposal.updated",
+    // Self-review fires on every synthesis completion; banner needs to
+    // refresh so the user sees the new RED / AMBER counts without a
+    // manual page reload.
+    "fleet_self_review.completed",
   ]);
   useEffect(() => {
     if (!lastEvent) return;
@@ -514,6 +530,14 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      {/* Fleet self-review banner — auto-fires after every synthesis +
+          daily.  Surfaces RED/AMBER counts so the user can SEE
+          anomalies without asking "did anything go wrong?".  Hidden
+          when no report exists yet (fresh install). */}
+      {data.fleetReview ? (
+        <FleetSelfReviewBanner report={data.fleetReview} />
+      ) : null}
 
       {/* Advisor brief — front-and-center glance card so the advisor is a
           primary surface, not buried in nav. Composed server-side from
@@ -1001,6 +1025,81 @@ function FlashBorderBox({ flashKey, children }: FlashBorderBoxProps) {
     >
       {children}
     </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// Fleet self-review banner — RED / AMBER / YELLOW glance + "Read report".
+// Sits between the brand hero and the advisor brief so anomalies surface
+// BEFORE the user starts reading anything else.  The tile only renders
+// when a report row exists (api returns null for a fresh install).
+// ----------------------------------------------------------------------
+
+interface FleetSelfReviewBannerProps {
+  report: FleetSelfReviewDTO;
+}
+
+function FleetSelfReviewBanner({ report }: FleetSelfReviewBannerProps) {
+  const sev = report.severity_summary;
+  const red = sev.RED ?? 0;
+  const amber = sev.AMBER ?? 0;
+  const yellow = sev.YELLOW ?? 0;
+  const total = red + amber + yellow;
+
+  const tone: "success" | "warning" | "error" =
+    red > 0 ? "error" : amber > 0 ? "warning" : "success";
+  const borderClass =
+    tone === "error"
+      ? "border-l-error/70"
+      : tone === "warning"
+        ? "border-l-warning/70"
+        : "border-l-success/70";
+
+  const generatedLabel = report.generated_at
+    ? new Date(report.generated_at).toLocaleString()
+    : "—";
+
+  return (
+    <section
+      className={`rounded-lg border border-border ${borderClass} border-l-2 bg-card px-4 py-3 flex items-center justify-between gap-3 flex-wrap`}
+      data-slot="fleet-self-review-banner"
+    >
+      <div className="flex flex-col gap-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-mono text-xs uppercase tracking-wider text-muted-foreground">
+            Fleet self-review
+          </span>
+          <span className="font-mono text-[10px] text-muted-foreground/80">
+            #{report.id} · {report.scope_kind}
+          </span>
+        </div>
+        <div className="font-mono text-sm">
+          {total === 0
+            ? "No anomalies detected in scope."
+            : `${total} finding${total === 1 ? "" : "s"} — ${red} RED · ${amber} AMBER · ${yellow} YELLOW`}
+        </div>
+        <div className="font-mono text-[11px] text-muted-foreground">
+          generated {generatedLabel}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <StatusPill tone="error" mono>
+          RED {red}
+        </StatusPill>
+        <StatusPill tone="warning" mono>
+          AMBER {amber}
+        </StatusPill>
+        <StatusPill tone="neutral" mono>
+          YELLOW {yellow}
+        </StatusPill>
+        <Link
+          href={`/fleet-review/${report.id}`}
+          className="ml-2 font-mono text-xs text-info hover:underline"
+        >
+          Read report -&gt;
+        </Link>
+      </div>
+    </section>
   );
 }
 

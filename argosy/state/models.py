@@ -1133,6 +1133,8 @@ __all__ = [
     "ExpenseReviewQueue",
     # FX rate cache (Wave EX1.1 — migration 0023)
     "FxRate",
+    # Fleet self-review (migration 0037)
+    "FleetSelfReviewReport",
 ]
 
 
@@ -1509,4 +1511,71 @@ class FMObjectionUserState(Base):
         default=_utcnow,
         onupdate=_utcnow,
         nullable=False,
+    )
+
+
+# ----------------------------------------------------------------------
+# Fleet self-review report (migration 0037)
+# ----------------------------------------------------------------------
+
+
+class FleetSelfReviewReport(Base):
+    """One persisted output of the ``FleetSelfReviewAgent`` runner.
+
+    The runner fires automatically:
+
+      * ``scope_kind='post_synthesis'`` — after each plan_revision
+        ``decision_runs`` completion (orchestrator hook fires the runner
+        on a background thread once the draft + verdict are persisted).
+        ``decision_run_id`` points at the synthesis run that just
+        finished.
+      * ``scope_kind='daily'``         — once a day alongside the daily
+        brief (gated by ``ARGOSY_DAILY_BRIEF_ENABLED=1``).
+        ``decision_run_id`` is NULL because the sweep is portfolio-wide.
+      * ``scope_kind='manual'``        — ``argosy fleet self-review``
+        CLI / a future on-demand admin action.
+
+    ``content_md`` is the human-readable markdown report.  The optional
+    LLM-composed top section is appended after the deterministic
+    detector output — detector findings are NEVER hallucinated.
+
+    ``findings_json`` is a list of ``Finding`` dataclasses
+    (``id``, ``detector``, ``severity``, ``category``, ``title``,
+    ``evidence``, ``suggested_fix``).  ``severity_summary_json`` is the
+    pre-joined ``{"RED": N, "AMBER": M, "YELLOW": K}`` for the
+    home-page badge.
+    """
+
+    __tablename__ = "fleet_self_review_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    # 'post_synthesis' | 'daily' | 'manual' — DB CHECK constraint enforces.
+    scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    decision_run_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("decision_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    content_md: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    findings_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    severity_summary_json: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default='{"RED":0,"AMBER":0,"YELLOW":0}',
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_fleet_self_review_user_generated",
+            "user_id",
+            "generated_at",
+        ),
+        Index(
+            "ix_fleet_self_review_decision_run",
+            "decision_run_id",
+        ),
     )

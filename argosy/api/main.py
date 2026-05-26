@@ -41,6 +41,7 @@ from argosy.api.routes.decisions_tree import router as decisions_tree_router
 from argosy.api.routes.domain_kb import router as domain_kb_router
 from argosy.api.routes.execution import router as execution_router
 from argosy.api.routes.files import router as files_router
+from argosy.api.routes.fleet_self_review import router as fleet_self_review_router
 from argosy.api.routes.health import router as health_router
 from argosy.api.routes.intake import router as intake_router
 from argosy.api.routes.internal import router as internal_router
@@ -140,6 +141,13 @@ def create_app() -> FastAPI:
 
     # Provenance Wave A — user-files catalog list/stream surface.
     app.include_router(files_router, prefix=api_prefix)
+
+    # Fleet self-review (migration 0037) — surfaces anomalies the user
+    # shouldn't have to find by hand.  Auto-fires from the plan_synthesis
+    # orchestrator on every completion + from the daily-brief loop on
+    # the daily sweep.  See argosy/services/fleet_self_review.py for
+    # detector implementations.
+    app.include_router(fleet_self_review_router, prefix=api_prefix)
 
     # T2.2 — startup orphan sweep. Mark any decision_runs that are still
     # status='running' from a prior process that was killed mid-flight as

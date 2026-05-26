@@ -488,8 +488,55 @@ async def background_loop(
             await _sleep_until_07_local(user_tz)
             async with db_mod.get_session() as session:
                 await generate_daily_brief(user_id, session, user_tz=user_tz)
+            # Fleet self-review — daily sweep fires alongside the brief
+            # so accumulated architectural / behavioural anomalies
+            # surface every morning.  Gated by the SAME enable flag
+            # (we're already inside background_loop, which only runs
+            # under ARGOSY_DAILY_BRIEF_ENABLED=1).  Failures are
+            # logged + swallowed; the brief loop NEVER breaks because
+            # of an observability surface.
+            try:
+                await _run_daily_self_review(user_id)
+            except Exception:  # pragma: no cover - defensive
+                _log.exception("fleet_self_review.daily_sweep_failed")
         except Exception:  # pragma: no cover - defensive: NEVER break the loop
             _log.exception("daily_brief_runner.background_tick_failed")
+
+
+async def _run_daily_self_review(user_id: str) -> None:
+    """Fire the daily fleet self-review sweep on a worker thread.
+
+    The detectors are sync (sqlalchemy.orm.Session) so we run them
+    via ``asyncio.to_thread`` to keep the asyncio loop responsive.
+    """
+    import asyncio
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.config import get_settings
+    from argosy.services.fleet_self_review_runner import (
+        generate_fleet_self_review,
+    )
+
+    settings = get_settings()
+    sync_url = settings.database_url.replace("+aiosqlite", "")
+    engine = create_engine(sync_url, connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def _run() -> None:
+        db = SessionLocal()
+        try:
+            generate_fleet_self_review(
+                db,
+                user_id=user_id,
+                scope_kind="daily",
+                decision_run_id=None,
+            )
+        finally:
+            db.close()
+            engine.dispose()
+
+    await asyncio.to_thread(_run)
 
 
 __all__ = [

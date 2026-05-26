@@ -578,6 +578,32 @@ def run_synthesis(
             draft_id=draft.id,
         )
 
+    # Fleet self-review — fire-and-forget post-synthesis sweep. Runs a
+    # daemon thread against a fresh sessionmaker so the orchestrator
+    # returns immediately even if the detectors are slow. Failures are
+    # logged + swallowed inside ``schedule_post_synthesis_review`` so
+    # synthesis never breaks because of an observability surface.
+    #
+    # The trigger lives HERE (rather than in an event subscriber) because
+    # we want the review to see the draft + agent_reports that THIS run
+    # produced — every write above this line has been committed.
+    try:
+        from argosy.services.fleet_self_review_runner import (
+            schedule_post_synthesis_review,
+        )
+        schedule_post_synthesis_review(
+            session=session,
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning(
+            "fleet_self_review.schedule_failed",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            error=str(exc),
+        )
+
     # Provenance Wave C — final FM-decision row with the parsed verdict
     # DTO. The 5 per-phase rows (kinds 'synthesis.phase_1'..'phase_5')
     # were already persisted by _record_phase_completion during the
