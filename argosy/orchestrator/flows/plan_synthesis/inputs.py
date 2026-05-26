@@ -244,6 +244,39 @@ def assemble_phase1_inputs(
     # plan-vs-snapshot delta.
     inputs.snapshot_summary = inputs.positions_summary
 
+    # NVDA YTD sales accounting — ConcentrationAnalystAgent reads these as
+    # ``nvda_shares_sold_ytd`` + ``nvda_target_shares_ytd``. Sourced from
+    # ``argosy.services.nvda_sales_history`` (fills table preferred, TSV
+    # ``nvda_sales`` block as fallback; target pro-rated from the active
+    # draft's annual NVDA-sale plan). Best-effort: missing data logs a
+    # WARNING and leaves the fields at 0 so synthesis doesn't crash.
+    try:
+        from argosy.services.nvda_sales_history import (
+            compute_nvda_shares_sold_ytd,
+        )
+
+        inputs.nvda_shares_sold_ytd = compute_nvda_shares_sold_ytd(
+            session, user_id
+        )
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.nvda_shares_sold_ytd_failed",
+            user_id=user_id, error=str(exc),
+        )
+    try:
+        from argosy.services.nvda_sales_history import (
+            compute_nvda_target_shares_ytd,
+        )
+
+        inputs.nvda_target_shares_ytd = compute_nvda_target_shares_ytd(
+            session, user_id
+        )
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.nvda_target_shares_ytd_failed",
+            user_id=user_id, error=str(exc),
+        )
+
     # TaxAnalyst inputs — read from the `lots` table + identity_yaml RSU
     # grants. Both are best-effort and degrade to an explanatory empty
     # sentinel; TaxAnalyst's prompt is tolerant of "(no lots imported)".
@@ -422,6 +455,8 @@ def assemble_phase1_inputs(
         indicators_count=len(inputs.indicators_payload),
         fundamentals_count=len(inputs.fundamentals_payload),
         plan_targets_count=len(inputs.plan_targets),
+        nvda_shares_sold_ytd=inputs.nvda_shares_sold_ytd,
+        nvda_target_shares_ytd=inputs.nvda_target_shares_ytd,
     )
     return inputs
 

@@ -586,3 +586,148 @@ def test_fundamentals_helper_caps_fanout_at_25(monkeypatch):
     out = inputs_mod._gather_fundamentals(tickers)
     assert len(fake_adapter.calls) == 25
     assert set(out.keys()) == set(tickers[:25])
+
+
+# ----------------------------------------------------------------------
+# NVDA YTD pace — assembler must populate nvda_shares_sold_ytd /
+# nvda_target_shares_ytd when fills + a plan target exist.
+#
+# Before this wiring, Phase1Inputs declared those fields but nothing ever
+# set them; ConcentrationAnalystAgent then emitted shares_sold_ytd=0 in
+# every synthesis report and the home widget showed "0 / 10,000 BEHIND
+# PACE" forever.
+# ----------------------------------------------------------------------
+
+
+def test_nvda_shares_sold_ytd_populates_from_fills(tmp_path, monkeypatch):
+    """A NVDA SELL fill in the current year flows into
+    Phase1Inputs.nvda_shares_sold_ytd via the assembler.
+    """
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from argosy.orchestrator.flows.plan_synthesis import inputs as inputs_mod
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        assemble_phase1_inputs,
+    )
+    from argosy.state.models import Fill
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    try:
+        from argosy.config import reload_settings
+
+        reload_settings()
+    except Exception:
+        pass
+
+    # Silence the network-touching adapters so we only exercise the NVDA
+    # YTD wiring (same defensive shape the other assembler tests use).
+    def _empty(*_a, **_kw):
+        return {}
+
+    monkeypatch.setattr(inputs_mod, "_gather_news", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_macro_snapshot", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_fx_payload", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_social_payload", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_indicators_payload", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_fundamentals", _empty)
+    monkeypatch.setattr(inputs_mod, "_find_latest_tsv", lambda: None)
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+    session.add(
+        Fill(
+            user_id="ariel",
+            broker="schwab",
+            broker_order_id="x1",
+            ticker="NVDA",
+            action="SELL",
+            quantity=Decimal("520"),
+            price=Decimal("199"),
+            commission=Decimal("0"),
+            filled_at=datetime.now(timezone.utc).replace(month=2, day=15),
+            paper=False,
+        )
+    )
+    session.commit()
+
+    inputs = assemble_phase1_inputs(
+        session,
+        user_id="ariel",
+        baseline=None,
+        prior_current=None,
+        decision_audit_token="plan-synth-nvda",
+    )
+    assert inputs.nvda_shares_sold_ytd == 520, (
+        f"expected 520 shares sold YTD via fills, got "
+        f"{inputs.nvda_shares_sold_ytd}"
+    )
+
+
+def test_nvda_target_shares_ytd_populates_from_draft(tmp_path, monkeypatch):
+    """An active draft with a horizon_medium NVDA-sale target flows into
+    Phase1Inputs.nvda_target_shares_ytd via the assembler.
+    """
+    import json
+    from datetime import date
+
+    from argosy.orchestrator.flows.plan_synthesis import inputs as inputs_mod
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        assemble_phase1_inputs,
+    )
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+
+    def _empty(*_a, **_kw):
+        return {}
+
+    monkeypatch.setattr(inputs_mod, "_gather_news", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_macro_snapshot", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_fx_payload", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_social_payload", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_indicators_payload", _empty)
+    monkeypatch.setattr(inputs_mod, "_gather_fundamentals", _empty)
+    monkeypatch.setattr(inputs_mod, "_find_latest_tsv", lambda: None)
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+    session.add(
+        PlanVersion(
+            user_id="ariel",
+            role="draft",
+            version_label="t",
+            horizon_medium_json=json.dumps({
+                "targets": [
+                    {
+                        "label": "NVDA deconcentration shares to sell (next 12 months)",
+                        "value": 1440.0,
+                        "unit": "shares",
+                    }
+                ],
+            }),
+        )
+    )
+    session.commit()
+
+    inputs = assemble_phase1_inputs(
+        session,
+        user_id="ariel",
+        baseline=None,
+        prior_current=None,
+        decision_audit_token="plan-synth-nvda-target",
+    )
+    # Target should be a sensible pro-rata of 1440 (i.e. > 0 and <= 1440).
+    # We don't pin to as_of because the assembler reads "today" from the
+    # service helper — assert the structural invariant instead.
+    assert 0 < inputs.nvda_target_shares_ytd <= 1440, (
+        f"expected pro-rated target in (0, 1440], got "
+        f"{inputs.nvda_target_shares_ytd}"
+    )
+    # And confirm the value is in the right *order of magnitude* for
+    # the typical synth-day (about 30%-90% of 1440 between Apr-Nov).
+    today = date.today()
+    days = (today - date(today.year, 1, 1)).days + 1
+    expected = round(1440 * days / 365.0)
+    assert abs(inputs.nvda_target_shares_ytd - expected) <= 2

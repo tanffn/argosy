@@ -483,20 +483,39 @@ export default function Home() {
   // argosy/api/routes/plan.py). Falls back to 0 + an "awaiting synthesis"
   // tooltip when no concentration report exists yet — the tile still
   // renders so the user sees the target rather than a blank slot.
+  //
+  // Status badge logic (softened for non-linear quarterly schedules):
+  //
+  //   target_shares_ytd > 0 AND shares_sold_ytd >= target_shares_ytd → ON PACE (success)
+  //   under target by   < 20%                                        → ON PACE (success)
+  //   under target by  >= 20%                                        → BEHIND PACE (warning)
+  //   target_shares_ytd == 0                                         → neutral "—" (no badge)
+  //
+  // Prefer the agent's own ``on_track`` boolean when ahead-of-target —
+  // the agent owns the schedule semantics. Below-target we apply the
+  // 20% tolerance band locally so a small lag against a linear pro-rata
+  // doesn't flash a warning when the actual plan cadence is back-loaded.
   const nvdaPace = data.planDraft?.nvda_pace ?? null;
+  const inFlightSynth = data.inFlightSynthesis;
   const nvdaSold = nvdaPace?.shares_sold_ytd ?? 0;
+  const nvdaTargetYtd = nvdaPace?.target_shares_ytd ?? 0;
   const nvdaPctSold = (nvdaSold / NVDA_TARGET_2026) * 100;
-  // Prefer the agent's explicit ``on_track`` boolean when we have one; it's
-  // computed against the YTD pro-rated target (target_shares_ytd), which is
-  // a tighter signal than "pct of annual target vs pct of year elapsed".
-  // When nvda_pace is unavailable, fall back to the prior heuristic so the
-  // tile still toggles between ON PACE / BEHIND PACE.
-  const nvdaOnPace =
-    nvdaPace !== null
-      ? nvdaPace.on_track
-      : nvdaPctSold >= pctOfYearElapsed();
+
+  type NvdaStatus = "on_pace" | "behind_pace" | "neutral";
+  const nvdaStatus: NvdaStatus = (() => {
+    if (nvdaPace === null) return "neutral";
+    if (nvdaTargetYtd <= 0) return "neutral";
+    if (nvdaPace.on_track || nvdaSold >= nvdaTargetYtd) return "on_pace";
+    const underPct = ((nvdaTargetYtd - nvdaSold) / nvdaTargetYtd) * 100;
+    return underPct < 20 ? "on_pace" : "behind_pace";
+  })();
+  const nvdaOnPace = nvdaStatus === "on_pace";
   const nvdaPaceTooltip =
-    nvdaPace === null ? "Awaiting synthesis run" : undefined;
+    nvdaPace === null
+      ? inFlightSynth !== null
+        ? `Synthesis #${inFlightSynth.decision_run_id} in flight · pace will refresh when complete`
+        : "Awaiting synthesis run"
+      : undefined;
 
   // Domain KB freshness.
   const kbStats = useMemo(() => {
@@ -808,9 +827,15 @@ export default function Home() {
         <SectionHeader
           label="NVDA PACE"
           action={
-            <StatusPill tone={nvdaOnPace ? "success" : "warning"} mono>
-              {nvdaOnPace ? "ON PACE" : "BEHIND PACE"}
-            </StatusPill>
+            nvdaStatus === "neutral" ? (
+              <StatusPill tone="warning" mono>
+                —
+              </StatusPill>
+            ) : (
+              <StatusPill tone={nvdaOnPace ? "success" : "warning"} mono>
+                {nvdaOnPace ? "ON PACE" : "BEHIND PACE"}
+              </StatusPill>
+            )
           }
         />
         <div
