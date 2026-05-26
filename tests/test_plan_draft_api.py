@@ -979,3 +979,277 @@ def test_get_draft_nvda_pace_null_when_response_text_malformed(app_with_draft):
     r = app_with_draft.get("/api/plan/draft?user_id=ariel")
     assert r.status_code == 200, r.text
     assert r.json()["nvda_pace"] is None
+
+
+# ---------------------------------------------------------------------------
+# /api/plan/in-flight-synthesis — surfaces an in-flight plan_revision
+# decision_run so the /plan page can render a "Synthesis #N · phase X of 5"
+# card when the prior draft was superseded by the kickoff and /api/plan/draft
+# 404s. See argosy.api.routes.plan.get_in_flight_synthesis for the route.
+# ---------------------------------------------------------------------------
+
+
+def test_in_flight_synthesis_returns_running_run_with_phase_count(client_with_db):
+    """In-flight plan_revision run + no draft -> endpoint returns the
+    in-flight payload with ``completed_phases`` matching the count of
+    ``decision_phases`` rows that have ``finished_at IS NOT NULL`` for
+    the matched run.
+    """
+    from datetime import datetime, timezone
+
+    from argosy.state.models import DecisionPhase, DecisionRun, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.commit()
+        now = datetime.now(timezone.utc)
+        run = DecisionRun(
+            user_id="ariel",
+            ticker="(plan)",
+            tier=None,
+            decision_kind="plan_revision",
+            status="running",
+            started_at=now,
+        )
+        sess.add(run)
+        sess.commit()
+        sess.refresh(run)
+        rid = run.id
+
+        # Two phases finished, one started but not finished — the
+        # endpoint must count only the finished ones.
+        sess.add(DecisionPhase(
+            decision_run_id=rid, user_id="ariel", seq=1,
+            kind="synthesis.phase_1",
+            started_at=now, finished_at=now,
+            participants_json="[]",
+        ))
+        sess.add(DecisionPhase(
+            decision_run_id=rid, user_id="ariel", seq=2,
+            kind="synthesis.phase_2",
+            started_at=now, finished_at=now,
+            participants_json="[]",
+        ))
+        sess.add(DecisionPhase(
+            decision_run_id=rid, user_id="ariel", seq=3,
+            kind="synthesis.phase_3",
+            started_at=now, finished_at=None,
+            participants_json="[]",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/in-flight-synthesis?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    payload = body["in_flight_synthesis"]
+    assert payload is not None
+    assert payload["decision_run_id"] == rid
+    assert payload["decision_audit_token"] == f"plan-synth-{rid}"
+    assert payload["completed_phases"] == 2
+    assert payload["total_phases"] == 5
+    assert payload["status"] == "running"
+    assert payload["started_at"]  # ISO timestamp present
+
+
+def test_in_flight_synthesis_returns_null_when_nothing_running(client_with_db):
+    """No in-flight run + no draft -> endpoint returns 200 with null.
+
+    The polling loop on /plan calls this every 10 s; returning 404 would
+    pollute the network panel and force the UI into a try/except dance.
+    """
+    from argosy.state.models import User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/in-flight-synthesis?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"in_flight_synthesis": None}
+
+
+def test_in_flight_synthesis_ignores_completed_runs(client_with_db):
+    """A completed plan_revision run must NOT be reported as in-flight.
+
+    The endpoint filters ``status='running'`` precisely so a finished
+    synthesis (whose draft was then accepted/superseded) doesn't keep
+    the /plan card stuck on "synthesizing".
+    """
+    from datetime import datetime, timezone
+
+    from argosy.state.models import DecisionRun, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.commit()
+        now = datetime.now(timezone.utc)
+        sess.add(DecisionRun(
+            user_id="ariel",
+            ticker="(plan)",
+            tier=None,
+            decision_kind="plan_revision",
+            status="completed",
+            started_at=now,
+            finished_at=now,
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/in-flight-synthesis?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"in_flight_synthesis": None}
+
+
+def test_in_flight_synthesis_picks_latest_running_run(client_with_db):
+    """When multiple running plan_revision runs exist (a regression that
+    shouldn't happen but might during fleet bugs) the endpoint picks the
+    one with the highest ``id`` so the UI tracks the freshest kickoff.
+    """
+    from datetime import datetime, timezone
+
+    from argosy.state.models import DecisionRun, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.commit()
+        now = datetime.now(timezone.utc)
+        sess.add(DecisionRun(
+            user_id="ariel", ticker="(plan)", tier=None,
+            decision_kind="plan_revision", status="running",
+            started_at=now,
+        ))
+        sess.add(DecisionRun(
+            user_id="ariel", ticker="(plan)", tier=None,
+            decision_kind="plan_revision", status="running",
+            started_at=now,
+        ))
+        sess.commit()
+        latest_id = sess.execute(
+            __import__("sqlalchemy").select(DecisionRun.id)
+            .where(
+                DecisionRun.user_id == "ariel",
+                DecisionRun.status == "running",
+            )
+            .order_by(__import__("sqlalchemy").desc(DecisionRun.id))
+        ).scalars().first()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/in-flight-synthesis?user_id=ariel")
+    assert r.status_code == 200, r.text
+    payload = r.json()["in_flight_synthesis"]
+    assert payload is not None
+    assert payload["decision_run_id"] == latest_id
+
+
+def test_in_flight_synthesis_scoped_to_user(client_with_db):
+    """A running plan_revision run for another user must not leak into
+    this user's in-flight response. Multi-tenancy hygiene.
+    """
+    from datetime import datetime, timezone
+
+    from argosy.state.models import DecisionRun, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+        if sess.get(User, "other") is None:
+            sess.add(User(id="other", plan="free"))
+        sess.commit()
+        sess.add(DecisionRun(
+            user_id="other", ticker="(plan)", tier=None,
+            decision_kind="plan_revision", status="running",
+            started_at=datetime.now(timezone.utc),
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/in-flight-synthesis?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"in_flight_synthesis": None}
+
+
+def test_in_flight_synthesis_works_alongside_pending_draft(app_with_draft):
+    """Transition state: a pending draft exists AND a fresh synthesis is
+    running for a re-revision. The endpoint reports the in-flight run; the
+    /plan page reads both ``/api/plan/draft`` and
+    ``/api/plan/in-flight-synthesis`` and decides which UI to render.
+    """
+    from datetime import datetime, timezone
+
+    from argosy.state.models import DecisionRun
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        sess.add(DecisionRun(
+            user_id="ariel",
+            ticker="(plan)",
+            tier=None,
+            decision_kind="plan_revision",
+            status="running",
+            started_at=datetime.now(timezone.utc),
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    # Draft endpoint still returns the pending draft.
+    r1 = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r1.status_code == 200
+    assert r1.json()["plan_version_id"] is not None
+
+    # In-flight endpoint reports the running run alongside.
+    r2 = app_with_draft.get("/api/plan/in-flight-synthesis?user_id=ariel")
+    assert r2.status_code == 200, r2.text
+    payload = r2.json()["in_flight_synthesis"]
+    assert payload is not None
+    assert payload["status"] == "running"
+
+
+def test_in_flight_synthesis_does_not_pick_other_decision_kinds(client_with_db):
+    """A running ``trade_proposal`` or ``plan_amendment_chat`` run must NOT
+    be reported as a plan_revision in-flight synthesis. Only the plan
+    synthesis surface uses this card.
+    """
+    from datetime import datetime, timezone
+
+    from argosy.state.models import DecisionRun, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+            sess.commit()
+        now = datetime.now(timezone.utc)
+        sess.add(DecisionRun(
+            user_id="ariel", ticker="NVDA", tier="T0",
+            decision_kind="trade_proposal", status="running",
+            started_at=now,
+        ))
+        sess.add(DecisionRun(
+            user_id="ariel", ticker="(plan)", tier="small",
+            decision_kind="plan_amendment_chat", status="running",
+            started_at=now,
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/in-flight-synthesis?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"in_flight_synthesis": None}

@@ -32,6 +32,7 @@ import {
   type DraftResponse,
   type FMObjectionsResponse,
   type HorizonView,
+  type InFlightSynthesisDTO,
   type NvdaTrajectoryResponse,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
@@ -110,6 +111,16 @@ export default function PlanPage() {
   const [synthesisDraftId, setSynthesisDraftId] = useState<number | null>(null);
   const [synthesisError, setSynthesisError] = useState<string | null>(null);
 
+  // Snapshot of any plan-synthesis decision_run currently in flight,
+  // sourced from /api/plan/in-flight-synthesis. Populated independently
+  // of synthesisRunning so a synthesis triggered outside the UI (cron,
+  // direct API call, another tab) still surfaces on /plan and locks the
+  // "Run synthesis" button. Polled every 10 s while non-null because the
+  // backend doesn't emit per-phase WS events; the polling loop is cheap
+  // (one indexed DecisionRun lookup + one DecisionPhase count).
+  const [inFlightSynthesis, setInFlightSynthesis] =
+    useState<InFlightSynthesisDTO | null>(null);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -119,27 +130,52 @@ export default function PlanPage() {
     const snapP = api.portfolioSnapshot(USER_ID).catch(() => null);
     const nvdaP = api.planDraftNvdaTrajectory(USER_ID).catch(() => null);
     const projP = api.planDraftProjection(USER_ID, 10).catch(() => null);
+    // In-flight synthesis polling — returns 200 + null when nothing is
+    // running, so a swallowed network error returns the same shape as
+    // "no run". The polling effect below repeats this fetch every 10 s
+    // while a run is in flight so the phase counter ticks up live.
+    const inFlightP = api
+      .planInFlightSynthesis(USER_ID)
+      .catch(() => ({ in_flight_synthesis: null }));
     try {
-      const [planV, draftV, objV, snapV, nvdaV, projV] = await Promise.all([
-        planP,
-        draftP,
-        objP,
-        snapP,
-        nvdaP,
-        projP,
-      ]);
+      const [planV, draftV, objV, snapV, nvdaV, projV, inFlightV] =
+        await Promise.all([planP, draftP, objP, snapP, nvdaP, projP, inFlightP]);
       setPlan(planV);
       setDraft(draftV);
       setObjections(objV);
       setSnapshot(snapV);
       setNvda(nvdaV);
       setProjection(projV);
+      setInFlightSynthesis(inFlightV?.in_flight_synthesis ?? null);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
   }, []);
+
+  // Poll the in-flight synthesis endpoint while one is running so the
+  // phase counter on the "Synthesis in flight" card ticks up live. The
+  // backend doesn't emit per-phase WS events; we'd otherwise have to
+  // wait for plan.draft.completed to know anything changed. 10 s cadence
+  // is the spec'd interval; the route is cheap (indexed lookup + count)
+  // so the polling load is negligible. The interval clears whenever
+  // ``inFlightSynthesis`` flips back to null (synth completed or was
+  // never running on the most recent refresh).
+  useEffect(() => {
+    if (inFlightSynthesis == null) return;
+    const handle = window.setInterval(() => {
+      api
+        .planInFlightSynthesis(USER_ID)
+        .then((r) => setInFlightSynthesis(r.in_flight_synthesis ?? null))
+        .catch(() => {
+          // Swallow transient errors — the next tick (or the next
+          // refresh()) will recover. Don't surface a polling failure
+          // as a banner error.
+        });
+    }, 10_000);
+    return () => window.clearInterval(handle);
+  }, [inFlightSynthesis]);
 
   useEffect(() => {
     refresh();
@@ -271,7 +307,18 @@ export default function PlanPage() {
     {
       onEvent: (e) => {
         if (e.payload.user_id !== USER_ID) return;
-        if (synthesisDecisionToken === null) return;
+        // Always clear the in-flight banner + re-fetch — even when the
+        // synthesis was kicked off outside this UI session (no
+        // synthesisDecisionToken set), the user is staring at a page
+        // that should now show a fresh draft. The early-return below
+        // is gated on synthesisDecisionToken only so we don't try to
+        // populate the kickoff-banner draftId for a run we didn't
+        // start ourselves.
+        setInFlightSynthesis(null);
+        if (synthesisDecisionToken === null) {
+          refresh();
+          return;
+        }
         if (typeof e.payload.draft_id === "number") {
           setSynthesisDraftId(e.payload.draft_id);
         }
@@ -463,6 +510,21 @@ export default function PlanPage() {
   const draftDecisionToken =
     draft?.decision_run_id != null ? `plan-synth-${draft.decision_run_id}` : null;
 
+  // Effective in-flight state — true if EITHER this UI session kicked
+  // off a synthesis OR the backend reports a running plan_revision run
+  // (which catches API/cron/other-tab kickoffs that synthesisRunning
+  // would otherwise miss). Drives the "Run synthesis" button's disabled
+  // + label state so the button never lies about what's happening.
+  const anyInFlight =
+    synthesisRunning || inFlightSynthesis != null;
+  // The "Synthesis in flight" card renders only when there's no draft
+  // to look at (draft would otherwise dominate the page). When BOTH a
+  // draft and an in-flight run exist (the transition state after a
+  // fleet successfully revised an existing draft), we trust the draft
+  // surface — the AgentCascadePanel kickoff banner already shows the
+  // running run.
+  const showInFlightCard = inFlightSynthesis != null && draft == null;
+
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
       <header className="flex items-center justify-between">
@@ -475,18 +537,21 @@ export default function PlanPage() {
             {draft
               ? ` · pending draft #${draft.plan_version_id}${fmRejected ? " (Fund Manager rejected)" : ""}`
               : ""}
+            {inFlightSynthesis != null
+              ? ` · synthesizing (#${inFlightSynthesis.decision_run_id})`
+              : ""}
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Button
             variant="default"
             onClick={onRunSynthesis}
-            disabled={synthesisRunning || !plan?.plan_version_id}
+            disabled={anyInFlight || !plan?.plan_version_id}
             title={
               !plan?.plan_version_id ? "Import a baseline plan first" : undefined
             }
           >
-            {synthesisRunning ? "Synthesizing…" : "Run synthesis"}
+            {anyInFlight ? "Synthesizing…" : "Run synthesis"}
           </Button>
           <Button
             variant="outline"
@@ -534,6 +599,18 @@ export default function PlanPage() {
         </p>
       )}
 
+      {/* "Synthesis in flight" card — surfaces a running plan_revision
+          decision_run when no draft is currently pending (the previous
+          draft was superseded by the kickoff and the new one isn't
+          written yet). Without this card the page would render only
+          the baseline plan markdown + the two header buttons, which
+          looks like the page is broken while a 30-min synthesis runs
+          in the background. The Drill-in link opens the live agent
+          cascade tree under /decisions/<id>. */}
+      {showInFlightCard && inFlightSynthesis && (
+        <InFlightSynthesisCard inFlight={inFlightSynthesis} />
+      )}
+
       {/* T0.7 — Synthesis fleet health banner. Renders above the
           ExecutiveSummaryCard (which embeds FMObjectionsCard) so the user
           always sees how the fleet ran, even when FM approved (in which
@@ -557,7 +634,7 @@ export default function PlanPage() {
           onAcceptAll={onAcceptAll}
           onRejectAll={onRejectAll}
           onResynthesize={onResynthesizeWithObjections}
-          resynthesizing={synthesisRunning}
+          resynthesizing={anyInFlight}
           onDiscussObjection={onDiscussObjection}
           onStartNewRound={onStartNewRound}
         />
@@ -716,7 +793,7 @@ export default function PlanPage() {
         </Card>
       ) : null}
 
-      {!loading && !draft && !plan?.raw_markdown && (
+      {!loading && !draft && !plan?.raw_markdown && !showInFlightCard && (
         <p className="text-sm text-muted-foreground">
           Run <code>argosy ingest plan &lt;path&gt;</code> to import a plan, or
           click <em>Run synthesis</em> to generate a draft from your active
@@ -786,6 +863,50 @@ function HorizonDeltaList({
         </li>
       ))}
     </ul>
+  );
+}
+
+interface InFlightSynthesisCardProps {
+  inFlight: InFlightSynthesisDTO;
+}
+
+function InFlightSynthesisCard({ inFlight }: InFlightSynthesisCardProps) {
+  // Format the started_at timestamp as HH:MM in the user's locale so the
+  // "started 18:51" hint matches the wall clock they're staring at. ISO
+  // string from the backend; let toLocaleTimeString do the heavy lifting.
+  let startedAtLabel = "";
+  if (inFlight.started_at) {
+    const d = new Date(inFlight.started_at);
+    if (!Number.isNaN(d.getTime())) {
+      startedAtLabel = d.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+  }
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          Synthesis #{inFlight.decision_run_id} in flight
+        </CardTitle>
+        <CardDescription>
+          {startedAtLabel ? `started ${startedAtLabel} · ` : ""}
+          phase {inFlight.completed_phases} of {inFlight.total_phases} complete
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          A new draft will appear when complete (~30 min).
+        </p>
+        <Link
+          href={`/decisions/${inFlight.decision_run_id}`}
+          className="text-sm text-primary hover:underline"
+        >
+          Drill in →
+        </Link>
+      </CardContent>
+    </Card>
   );
 }
 

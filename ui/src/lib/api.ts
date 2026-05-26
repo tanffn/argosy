@@ -947,6 +947,16 @@ export const api = {
 
   planDraft: (userId: string) =>
     getJSON<DraftResponse>(`/api/plan/draft?user_id=${encodeURIComponent(userId)}`),
+  // Live snapshot of the user's currently-running synthesis run, used by
+  // the /plan page to render a "Synthesis #N · phase X of 5" card when
+  // /api/plan/draft has 404'd because the prior draft was superseded.
+  // Returns 200 + ``in_flight_synthesis=null`` when there's no run in
+  // flight — never 404 — so the UI's polling loop can treat the result
+  // as a single nullable state without an exception branch every tick.
+  planInFlightSynthesis: (userId: string) =>
+    getJSON<InFlightSynthesisResponse>(
+      `/api/plan/in-flight-synthesis?user_id=${encodeURIComponent(userId)}`,
+    ),
   planDraftObjections: (userId: string) =>
     getJSON<FMObjectionsResponse>(
       `/api/plan/draft/objections?user_id=${encodeURIComponent(userId)}`,
@@ -1629,6 +1639,32 @@ export interface NvdaPaceDTO {
   target_shares_ytd: number;
   delta_shares: number;
   on_track: boolean;
+}
+
+/**
+ * Live snapshot of an in-flight plan synthesis run (mirrors backend
+ * ``argosy.api.routes.plan.InFlightSynthesisDTO``).
+ *
+ * Surfaced by ``GET /api/plan/in-flight-synthesis`` so the /plan page
+ * can render a "Synthesis #N · phase X of 5" card while a synthesis is
+ * mid-flight — useful when the run was triggered outside the UI and the
+ * /api/plan/draft endpoint 404s because the prior draft was superseded.
+ *
+ * ``decision_audit_token`` always shapes as ``plan-synth-<id>`` so the UI
+ * can drop it straight into the ``AgentCascadePanel`` filter + the
+ * ``/decisions/<id>`` drill-in link.
+ */
+export interface InFlightSynthesisDTO {
+  decision_run_id: number;
+  decision_audit_token: string;
+  started_at: string;
+  completed_phases: number;
+  total_phases: number;
+  status: string;
+}
+
+export interface InFlightSynthesisResponse {
+  in_flight_synthesis: InFlightSynthesisDTO | null;
 }
 
 export interface DraftResponse {

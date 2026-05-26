@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
 from argosy.adapters.data.cache import invalidate_home_brief
@@ -34,8 +34,14 @@ from argosy.agents.plan_critique import PlanCritiqueAgent
 from argosy.agents.plan_synthesizer_types import Delta, SpeculativeCandidate
 from argosy.api.events import publish_event, publish_event_threadsafe
 from argosy.state import db as db_mod
-from argosy.state.models import PlanCritique, PlanVersion, UserContext
-from argosy.state.models import AgentReport
+from argosy.state.models import (
+    AgentReport,
+    DecisionPhase,
+    DecisionRun,
+    PlanCritique,
+    PlanVersion,
+    UserContext,
+)
 from argosy.state.queries import get_active_baseline
 
 router = APIRouter(prefix="/plan", tags=["plan"])
@@ -707,6 +713,111 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         horizon_short_md=pv.horizon_short_md,
         synthesis_health=_build_synthesis_health(db, pv.decision_run_id),
         nvda_pace=_build_nvda_pace(db, user_id, pv.decision_run_id),
+    )
+
+
+# ---------------------------------------------------------------------------
+# In-flight synthesis surface — for /plan to render a "Synthesis in flight"
+# card when a plan_revision DecisionRun is running but the prior draft has
+# been superseded (so /api/plan/draft 404s and the page would otherwise look
+# blank). Polled every ~10 s by the UI; cheap (one indexed lookup + one
+# count). Returns the payload (200) when a run is in flight, or null (200)
+# when there isn't — never 404, so the UI's "loading" → "in flight" → "draft
+# ready" transition is a single state machine and not three exception
+# branches.
+# ---------------------------------------------------------------------------
+
+
+class InFlightSynthesisDTO(BaseModel):
+    """Live snapshot of an in-flight plan synthesis run.
+
+    Used by the /plan page to render the "Synthesis #N · phase X of 5"
+    card while a synthesis is mid-flight. Updated by the UI's 10 s polling
+    loop until either ``status`` flips away from "running" or the
+    ``plan.draft.completed`` WS event fires (whichever happens first —
+    the WS event is authoritative; the polling is just a fallback so
+    the phase counter ticks up even without a WS event for each phase).
+    """
+
+    decision_run_id: int
+    decision_audit_token: str  # always "plan-synth-<id>"
+    started_at: str
+    completed_phases: int  # decision_phases rows where finished_at IS NOT NULL
+    total_phases: int = 5  # constant for synthesis runs (phase_1..phase_5)
+    status: str  # "running" today; surfaced verbatim so we can extend later
+
+
+class InFlightSynthesisResponse(BaseModel):
+    """Wrapper so the route can return 200 + null when there's no in-flight run.
+
+    Returning 200 with a nullable field (instead of 404) lets the /plan
+    page treat the polling result as a normal state transition without a
+    try/except branch every refresh tick.
+    """
+
+    in_flight_synthesis: InFlightSynthesisDTO | None = None
+
+
+@router.get(
+    "/in-flight-synthesis",
+    response_model=InFlightSynthesisResponse,
+)
+def get_in_flight_synthesis(
+    user_id: str = Query(...),
+    db: Session = Depends(get_db),
+) -> InFlightSynthesisResponse:
+    """Return the user's currently-running plan synthesis run, if any.
+
+    Picks the most recent ``decision_runs`` row with
+    ``decision_kind='plan_revision'`` and ``status='running'``. The
+    ``decision_audit_token`` always shapes as ``plan-synth-<id>`` to match
+    the orchestrator's convention; the UI uses it to filter WS events
+    + drill into the agent cascade panel for the live run.
+
+    ``completed_phases`` is the count of ``decision_phases`` rows with
+    ``finished_at IS NOT NULL`` for the matched run. Synthesis writes five
+    phases (``synthesis.phase_1`` .. ``synthesis.phase_5``); we cap the
+    UI-facing total at 5 regardless of what's actually in the DB so a
+    bug-emitting orchestrator can't push the progress chip past 5/5.
+
+    Returns ``{in_flight_synthesis: null}`` (200) when no in-flight run
+    exists — never 404. The UI consumes this on a 10 s polling loop and
+    we don't want every tick to look like an error in the network panel.
+    """
+    run = db.execute(
+        select(DecisionRun)
+        .where(
+            DecisionRun.user_id == user_id,
+            DecisionRun.status == "running",
+            DecisionRun.decision_kind == "plan_revision",
+        )
+        .order_by(desc(DecisionRun.id))
+        .limit(1)
+    ).scalar_one_or_none()
+    if run is None:
+        return InFlightSynthesisResponse(in_flight_synthesis=None)
+
+    completed_phases = db.execute(
+        select(func.count(DecisionPhase.id)).where(
+            DecisionPhase.decision_run_id == run.id,
+            DecisionPhase.finished_at.is_not(None),
+        )
+    ).scalar_one() or 0
+    # Cap at total_phases — a defensive bound so a stray
+    # non-synthesis phase row (or a future bump to 6+ phases on a run
+    # we haven't migrated yet) can't make the UI render "phase 7 of 5".
+    if completed_phases > 5:
+        completed_phases = 5
+
+    return InFlightSynthesisResponse(
+        in_flight_synthesis=InFlightSynthesisDTO(
+            decision_run_id=run.id,
+            decision_audit_token=f"plan-synth-{run.id}",
+            started_at=run.started_at.isoformat() if run.started_at else "",
+            completed_phases=int(completed_phases),
+            total_phases=5,
+            status=run.status or "running",
+        ),
     )
 
 
@@ -1877,6 +1988,8 @@ __all__ = [
     "DistillateItemEditRequest",
     "DraftResponse",
     "HorizonSectionView",
+    "InFlightSynthesisDTO",
+    "InFlightSynthesisResponse",
     "NvdaPaceView",
     "RejectRequest",
     "SynthesisHealth",
