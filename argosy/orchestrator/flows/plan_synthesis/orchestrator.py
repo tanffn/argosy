@@ -104,6 +104,13 @@ def run_synthesis(
     """
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
+    # T0.3 — reset the per-synthesis adapter-outcome buffer up front so
+    # every adapter call recorded during this run lands in a clean
+    # contextvar list. The buffer is contextvars-scoped, so two concurrent
+    # synthesis runs on different asyncio tasks don't stomp on each other.
+    from argosy.services.adapter_outcomes import reset_outcomes
+    reset_outcomes()
+
     baseline = get_active_baseline(session, user_id)
     if baseline is None:
         raise NoBaselineError(f"user {user_id!r} has no active baseline plan")
@@ -196,7 +203,19 @@ def run_synthesis(
     # agent_reports.decision_id which is a String column). The integer FK is
     # only written to PlanVersion and SynthesisInputs below.
     if 1 in resumed_outputs:
-        analyst_reports_text = resumed_outputs[1]
+        # T0.3 — phase 1's persisted payload is a JSON-encoded dict carrying
+        # ``analyst_reports_text`` + ``adapter_outcomes``. Older synthesis
+        # runs persisted the raw text instead, so fall back to treating
+        # the column value as the text directly when JSON parsing fails.
+        _raw_p1 = resumed_outputs[1]
+        try:
+            _parsed_p1 = json.loads(_raw_p1)
+            if isinstance(_parsed_p1, dict) and "analyst_reports_text" in _parsed_p1:
+                analyst_reports_text = _parsed_p1["analyst_reports_text"]
+            else:
+                analyst_reports_text = _raw_p1
+        except (json.JSONDecodeError, TypeError):
+            analyst_reports_text = _raw_p1
         log.info(
             "plan_synthesis.phase_skipped_resumed",
             user_id=user_id, decision_run_id=decision_run_id, phase=1,
@@ -216,10 +235,23 @@ def run_synthesis(
             analyst_reports_text, _phase_1_reports = _phase_1_result
         else:
             analyst_reports_text, _phase_1_reports = _phase_1_result, []
+        # T0.3 — collect every adapter outcome recorded during phase 1
+        # (analyst agents fan out to data adapters; each adapter call
+        # appends to the contextvar buffer reset at the start of this
+        # synthesis run). Attached to the phase row's phase_output_json
+        # as a structured dict so the UI / audit trail can show
+        # "finnhub_news: 14 records" or "sec_13f: HTTP 404".
+        import dataclasses as _dc
+
+        from argosy.services.adapter_outcomes import collect_outcomes
+        _phase_1_output = {
+            "analyst_reports_text": analyst_reports_text,
+            "adapter_outcomes": [_dc.asdict(o) for o in collect_outcomes()],
+        }
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=1, started_at=_phase_1_started_at,
-            phase_output=analyst_reports_text,
+            phase_output=_phase_1_output,
             agent_report_rows=_phase_1_reports,
         )
     _pkg._check_cost_cap(
@@ -978,7 +1010,7 @@ def _record_phase_completion(
     decision_run_id: int,
     phase_n: int,
     started_at: datetime,
-    phase_output: str,
+    phase_output: str | dict,
     agent_report_rows: list[AgentReport] | None = None,
 ) -> None:
     """Persist a per-phase output row to ``decision_phases`` (T2.3).
@@ -1039,12 +1071,19 @@ def _record_phase_completion(
                 verdict=None,
                 phase_output=phase_output,
             )
+            _output_chars: int
+            if isinstance(phase_output, str):
+                _output_chars = len(phase_output)
+            elif isinstance(phase_output, dict):
+                _output_chars = len(json.dumps(phase_output, default=str))
+            else:
+                _output_chars = 0
             log.info(
                 "plan_synthesis.phase_recorded",
                 user_id=user_id,
                 decision_run_id=decision_run_id,
                 phase=phase_n,
-                output_chars=len(phase_output) if phase_output else 0,
+                output_chars=_output_chars,
                 participants=len(ids),
             )
 

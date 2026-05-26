@@ -18,6 +18,17 @@ from typing import Any
 
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
+from argosy.services.adapter_outcomes import track_adapter_call
+
+
+def _approx_size_bytes(payload: Any) -> int:
+    """Cheap size estimate for adapter-outcome tracking."""
+    import json as _json
+
+    try:
+        return len(_json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return 0
 
 
 @dataclass
@@ -287,67 +298,69 @@ class YFinanceAdapter:
         Per-indicator values that can't be computed (e.g. ``ma_200`` on
         <200 bars) are returned as ``None``.
         """
-        client = self._resolve_client()
-        key = f"indicators:{ticker}"
+        with track_adapter_call("yfinance_indicators", target=ticker) as _outcome:
+            client = self._resolve_client()
+            key = f"indicators:{ticker}"
 
-        def _fetch() -> dict[str, Any]:
-            tk = client.Ticker(ticker)
-            try:
-                hist = tk.history(period="6mo", auto_adjust=True)
-            except TypeError:
-                # Some test doubles only accept (start, end). Fall back to
-                # a fixed-window history call.
-                hist = tk.history(period="6mo")
-            if hist is None:
-                raise MissingDataSourceError(
-                    f"yfinance returned no history for {ticker}"
-                )
-            # Duck-typed: a test double may return a list-of-dict.
-            rows: list[dict[str, Any]]
-            if isinstance(hist, list):
-                rows = list(hist)
-            else:
-                rows = []
+            def _fetch() -> dict[str, Any]:
+                tk = client.Ticker(ticker)
                 try:
-                    for _, row in hist.iterrows():
-                        rows.append(
-                            {
-                                "Open": float(row.get("Open", 0) or 0),
-                                "High": float(row.get("High", 0) or 0),
-                                "Low": float(row.get("Low", 0) or 0),
-                                "Close": float(row.get("Close", 0) or 0),
-                                "Volume": float(row.get("Volume", 0) or 0),
-                            }
-                        )
-                except Exception as exc:  # pragma: no cover - defensive
+                    hist = tk.history(period="6mo", auto_adjust=True)
+                except TypeError:
+                    # Some test doubles only accept (start, end). Fall back to
+                    # a fixed-window history call.
+                    hist = tk.history(period="6mo")
+                if hist is None:
                     raise MissingDataSourceError(
-                        f"yfinance history for {ticker} unreadable: {exc}"
-                    ) from exc
-            if not rows:
-                raise MissingDataSourceError(
-                    f"yfinance returned no history for {ticker}"
+                        f"yfinance returned no history for {ticker}"
+                    )
+                # Duck-typed: a test double may return a list-of-dict.
+                rows: list[dict[str, Any]]
+                if isinstance(hist, list):
+                    rows = list(hist)
+                else:
+                    rows = []
+                    try:
+                        for _, row in hist.iterrows():
+                            rows.append(
+                                {
+                                    "Open": float(row.get("Open", 0) or 0),
+                                    "High": float(row.get("High", 0) or 0),
+                                    "Low": float(row.get("Low", 0) or 0),
+                                    "Close": float(row.get("Close", 0) or 0),
+                                    "Volume": float(row.get("Volume", 0) or 0),
+                                }
+                            )
+                    except Exception as exc:  # pragma: no cover - defensive
+                        raise MissingDataSourceError(
+                            f"yfinance history for {ticker} unreadable: {exc}"
+                        ) from exc
+                if not rows:
+                    raise MissingDataSourceError(
+                        f"yfinance returned no history for {ticker}"
+                    )
+
+                closes = [float(r["Close"]) for r in rows]
+                highs = [float(r["High"]) for r in rows]
+                lows = [float(r["Low"]) for r in rows]
+                volumes = [float(r["Volume"]) for r in rows]
+                return _compute_indicators(
+                    ticker=ticker,
+                    closes=closes,
+                    highs=highs,
+                    lows=lows,
+                    volumes=volumes,
                 )
 
-            closes = [float(r["Close"]) for r in rows]
-            highs = [float(r["High"]) for r in rows]
-            lows = [float(r["Low"]) for r in rows]
-            volumes = [float(r["Volume"]) for r in rows]
-            return _compute_indicators(
-                ticker=ticker,
-                closes=closes,
-                highs=highs,
-                lows=lows,
-                volumes=volumes,
+            payload = await cached_call(
+                kind=CacheKind.PRICES,
+                provider=self.PROVIDER,
+                key=key,
+                ttl_seconds=ttl_seconds,
+                fetch=_fetch,
             )
-
-        payload = await cached_call(
-            kind=CacheKind.PRICES,
-            provider=self.PROVIDER,
-            key=key,
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
-        return payload
+            _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
+            return payload
 
     async def get_quote(
         self, ticker: str, *, ttl_seconds: int = 300

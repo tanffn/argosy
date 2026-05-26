@@ -46,6 +46,17 @@ import httpx
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.logging import get_logger
+from argosy.services.adapter_outcomes import track_adapter_call
+
+
+def _approx_size_bytes(payload: Any) -> int:
+    """Cheap size estimate for adapter-outcome tracking."""
+    import json as _json
+
+    try:
+        return len(_json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return 0
 
 _log = get_logger("argosy.adapters.sec_13f")
 
@@ -135,37 +146,39 @@ class Sec13FAdapter:
         if days <= 0:
             raise ValueError(f"days must be positive; got {days}")
 
-        # SEC EDGAR FTS expects an actual ISO date range when
-        # ``dateRange=custom``. Empty values either 400 or are silently
-        # ignored, so we compute the window from ``days``.
-        today = datetime.now(UTC).date()
-        startdt = (today - timedelta(days=days)).isoformat()
-        enddt = today.isoformat()
+        with track_adapter_call("sec_13f", target="13F-HR") as _outcome:
+            # SEC EDGAR FTS expects an actual ISO date range when
+            # ``dateRange=custom``. Empty values either 400 or are silently
+            # ignored, so we compute the window from ``days``.
+            today = datetime.now(UTC).date()
+            startdt = (today - timedelta(days=days)).isoformat()
+            enddt = today.isoformat()
 
-        async def _fetch() -> list[dict[str, Any]]:
-            params = {
-                "q": "",
-                "forms": "13F-HR",
-                "dateRange": "custom",
-                "startdt": startdt,
-                "enddt": enddt,
-            }
-            data = await self._fetch_json(EDGAR_FTS_URL, params=params)
-            return _parse_fts_hits(data)
+            async def _fetch() -> list[dict[str, Any]]:
+                params = {
+                    "q": "",
+                    "forms": "13F-HR",
+                    "dateRange": "custom",
+                    "startdt": startdt,
+                    "enddt": enddt,
+                }
+                data = await self._fetch_json(EDGAR_FTS_URL, params=params)
+                return _parse_fts_hits(data)
 
-        # Include `enddt` in the cache key so a Monday tick and a
-        # Wednesday tick don't collide. ``days`` alone made the key day-
-        # independent — the second tick would silently serve the first
-        # tick's stale 90-day window even though the underlying date
-        # range had moved forward.
-        out: list[dict[str, Any]] = await cached_call(
-            kind=CacheKind.PRICES,
-            provider=self.PROVIDER,
-            key=f"recent:days={days}:enddt={enddt}",
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
-        return out
+            # Include `enddt` in the cache key so a Monday tick and a
+            # Wednesday tick don't collide. ``days`` alone made the key day-
+            # independent — the second tick would silently serve the first
+            # tick's stale 90-day window even though the underlying date
+            # range had moved forward.
+            out: list[dict[str, Any]] = await cached_call(
+                kind=CacheKind.PRICES,
+                provider=self.PROVIDER,
+                key=f"recent:days={days}:enddt={enddt}",
+                ttl_seconds=ttl_seconds,
+                fetch=_fetch,
+            )
+            _outcome.set_payload_size_bytes(_approx_size_bytes(out))
+            return out
 
     async def get_filing_holdings(
         self,

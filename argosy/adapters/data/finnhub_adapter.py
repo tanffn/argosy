@@ -18,9 +18,26 @@ from typing import Any
 from argosy.adapters import MissingAPIKeyError, MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.secrets import get_secret
+from argosy.services.adapter_outcomes import track_adapter_call
 
 KEYCHAIN_KEY = "argosy.finnhub.api_key"
 ENV_VAR = "FINNHUB_API_KEY"
+
+
+def _approx_size_bytes(payload: Any) -> int:
+    """Cheap size estimate for adapter-outcome tracking.
+
+    Serializes via json.dumps with default=str so any embedded date/datetime
+    objects don't blow up. Best-effort only — on serialization failure we
+    return 0 (treated as "empty" by the outcome builder, which is the
+    truthful signal when we can't tell).
+    """
+    import json as _json
+
+    try:
+        return len(_json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _resolve_api_key() -> str:
@@ -69,34 +86,37 @@ class FinnhubAdapter:
         ttl_seconds: int = 60 * 15,  # SDD §8.3: 15min
     ) -> list[dict[str, Any]]:
         """Return list of headline dicts for `symbol` within [start, end]."""
-        client = self._resolve_client()
-        key = f"company_news:{symbol}:{start.isoformat()}:{end.isoformat()}"
+        with track_adapter_call("finnhub_news", target=symbol) as _outcome:
+            client = self._resolve_client()
+            key = f"company_news:{symbol}:{start.isoformat()}:{end.isoformat()}"
 
-        def _fetch() -> list[dict[str, Any]]:
-            raw = client.company_news(symbol, _from=start.isoformat(), to=end.isoformat())
-            if not raw:
-                return []
-            # Normalize: take the keys we care about.
-            out: list[dict[str, Any]] = []
-            for item in raw:
-                out.append(
-                    {
-                        "headline": item.get("headline") or "",
-                        "summary": item.get("summary") or "",
-                        "url": item.get("url") or "",
-                        "source": item.get("source") or "",
-                        "datetime": item.get("datetime"),
-                    }
-                )
-            return out
+            def _fetch() -> list[dict[str, Any]]:
+                raw = client.company_news(symbol, _from=start.isoformat(), to=end.isoformat())
+                if not raw:
+                    return []
+                # Normalize: take the keys we care about.
+                out: list[dict[str, Any]] = []
+                for item in raw:
+                    out.append(
+                        {
+                            "headline": item.get("headline") or "",
+                            "summary": item.get("summary") or "",
+                            "url": item.get("url") or "",
+                            "source": item.get("source") or "",
+                            "datetime": item.get("datetime"),
+                        }
+                    )
+                return out
 
-        return await cached_call(
-            kind=CacheKind.NEWS,
-            provider=self.PROVIDER,
-            key=key,
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
+            payload = await cached_call(
+                kind=CacheKind.NEWS,
+                provider=self.PROVIDER,
+                key=key,
+                ttl_seconds=ttl_seconds,
+                fetch=_fetch,
+            )
+            _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
+            return payload
 
     async def get_company_financials(
         self,
@@ -119,51 +139,54 @@ class FinnhubAdapter:
                 ``metric`` block (typical for non-US listings / unsupported
                 tickers) so the caller can skip + degrade gracefully.
         """
-        client = self._resolve_client()
-        key = f"basic_financials:{symbol}:all"
+        with track_adapter_call("finnhub_financials", target=symbol) as _outcome:
+            client = self._resolve_client()
+            key = f"basic_financials:{symbol}:all"
 
-        def _fetch() -> dict[str, Any]:
-            raw = client.company_basic_financials(symbol, "all")
-            if not isinstance(raw, dict):
-                raise MissingDataSourceError(
-                    f"finnhub: unexpected payload type for {symbol}: {type(raw).__name__}"
-                )
-            metric = raw.get("metric") if isinstance(raw.get("metric"), dict) else None
-            if not metric:
-                raise MissingDataSourceError(
-                    f"finnhub: empty metrics for {symbol} (likely non-US / unsupported)"
-                )
-            # Curated subset; keys match the FundamentalsAnalystAgent
-            # prompt advertised fields. Missing source values stay None.
-            return {
-                "pe_ratio_ttm": metric.get("peTTM"),
-                "pe_normalized_annual": metric.get("peNormalizedAnnual"),
-                "pe_ratio": metric.get("peTTM") or metric.get("peNormalizedAnnual"),
-                "peg_ratio": metric.get("pegRatio") or metric.get("pegTTM"),
-                "eps_ttm": metric.get("epsTTM"),
-                "market_cap_m": metric.get("marketCapitalization"),
-                "revenue_per_share_ttm": metric.get("revenuePerShareTTM"),
-                "revenue_growth_yoy": metric.get("revenueGrowthTTMYoy"),
-                "earnings_growth_yoy": metric.get("epsGrowthTTMYoy"),
-                "gross_margin_ttm": metric.get("grossMarginTTM"),
-                "operating_margin_ttm": metric.get("operatingMarginTTM"),
-                "net_margin_ttm": metric.get("netProfitMarginTTM"),
-                "debt_to_equity": metric.get("totalDebt/totalEquityQuarterly"),
-                "ev_ebitda": metric.get("currentEv/freeCashFlowTTM") or metric.get("enterpriseValue/EBITDATTM"),
-                "dividend_yield": metric.get("dividendYieldIndicatedAnnual"),
-                "52w_high": metric.get("52WeekHigh"),
-                "52w_low": metric.get("52WeekLow"),
-                "beta": metric.get("beta"),
-                "source_url": f"https://finnhub.io/api/v1/stock/metric?symbol={symbol}",
-            }
+            def _fetch() -> dict[str, Any]:
+                raw = client.company_basic_financials(symbol, "all")
+                if not isinstance(raw, dict):
+                    raise MissingDataSourceError(
+                        f"finnhub: unexpected payload type for {symbol}: {type(raw).__name__}"
+                    )
+                metric = raw.get("metric") if isinstance(raw.get("metric"), dict) else None
+                if not metric:
+                    raise MissingDataSourceError(
+                        f"finnhub: empty metrics for {symbol} (likely non-US / unsupported)"
+                    )
+                # Curated subset; keys match the FundamentalsAnalystAgent
+                # prompt advertised fields. Missing source values stay None.
+                return {
+                    "pe_ratio_ttm": metric.get("peTTM"),
+                    "pe_normalized_annual": metric.get("peNormalizedAnnual"),
+                    "pe_ratio": metric.get("peTTM") or metric.get("peNormalizedAnnual"),
+                    "peg_ratio": metric.get("pegRatio") or metric.get("pegTTM"),
+                    "eps_ttm": metric.get("epsTTM"),
+                    "market_cap_m": metric.get("marketCapitalization"),
+                    "revenue_per_share_ttm": metric.get("revenuePerShareTTM"),
+                    "revenue_growth_yoy": metric.get("revenueGrowthTTMYoy"),
+                    "earnings_growth_yoy": metric.get("epsGrowthTTMYoy"),
+                    "gross_margin_ttm": metric.get("grossMarginTTM"),
+                    "operating_margin_ttm": metric.get("operatingMarginTTM"),
+                    "net_margin_ttm": metric.get("netProfitMarginTTM"),
+                    "debt_to_equity": metric.get("totalDebt/totalEquityQuarterly"),
+                    "ev_ebitda": metric.get("currentEv/freeCashFlowTTM") or metric.get("enterpriseValue/EBITDATTM"),
+                    "dividend_yield": metric.get("dividendYieldIndicatedAnnual"),
+                    "52w_high": metric.get("52WeekHigh"),
+                    "52w_low": metric.get("52WeekLow"),
+                    "beta": metric.get("beta"),
+                    "source_url": f"https://finnhub.io/api/v1/stock/metric?symbol={symbol}",
+                }
 
-        return await cached_call(
-            kind=CacheKind.NEWS,
-            provider=self.PROVIDER,
-            key=key,
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
+            payload = await cached_call(
+                kind=CacheKind.NEWS,
+                provider=self.PROVIDER,
+                key=key,
+                ttl_seconds=ttl_seconds,
+                fetch=_fetch,
+            )
+            _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
+            return payload
 
     async def get_earnings_calendar(
         self,

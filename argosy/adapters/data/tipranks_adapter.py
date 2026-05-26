@@ -39,6 +39,17 @@ import httpx
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.logging import get_logger
+from argosy.services.adapter_outcomes import track_adapter_call
+
+
+def _approx_size_bytes(payload: Any) -> int:
+    """Cheap size estimate for adapter-outcome tracking."""
+    import json as _json
+
+    try:
+        return len(_json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return 0
 
 _log = get_logger("argosy.adapters.tipranks")
 
@@ -138,22 +149,25 @@ class TipRanksAdapter:
         if not ticker:
             raise ValueError("ticker is required")
         ticker_norm = ticker.strip().upper()
-        url = BLOGGER_URL_TPL.format(ticker=ticker_norm)
+        with track_adapter_call("tipranks", target=ticker_norm) as _outcome:
+            url = BLOGGER_URL_TPL.format(ticker=ticker_norm)
 
-        async def _fetch() -> dict[str, Any]:
-            text = await self._fetch_text(url)
-            payload = _parse_blogger_sentiment(text)
-            payload["ticker"] = ticker_norm
-            payload["source_url"] = url
+            async def _fetch() -> dict[str, Any]:
+                text = await self._fetch_text(url)
+                payload = _parse_blogger_sentiment(text)
+                payload["ticker"] = ticker_norm
+                payload["source_url"] = url
+                return payload
+
+            payload = await cached_call(
+                kind=CacheKind.PRICES,
+                provider=self.PROVIDER,
+                key=f"blogger:{ticker_norm}",
+                ttl_seconds=ttl_seconds,
+                fetch=_fetch,
+            )
+            _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
             return payload
-
-        return await cached_call(
-            kind=CacheKind.PRICES,
-            provider=self.PROVIDER,
-            key=f"blogger:{ticker_norm}",
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
 
     async def get_hedge_fund_signal(
         self,

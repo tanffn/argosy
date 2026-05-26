@@ -18,9 +18,20 @@ from typing import Any
 from argosy.adapters import MissingAPIKeyError, MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.secrets import get_secret
+from argosy.services.adapter_outcomes import track_adapter_call
 
 KEYCHAIN_KEY = "argosy.fred.api_key"
 ENV_VAR = "FRED_API_KEY"
+
+
+def _approx_size_bytes(payload: Any) -> int:
+    """Cheap size estimate for adapter-outcome tracking."""
+    import json as _json
+
+    try:
+        return len(_json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _resolve_api_key() -> str:
@@ -74,55 +85,58 @@ class FredAdapter:
         ttl_seconds: int = 60 * 60 * 6,  # SDD §8.3: 6h
     ) -> list[dict[str, Any]]:
         """Return list of {'date', 'value'} for a FRED series."""
-        client = self._resolve_client()
-        s = (start.isoformat() if start else "")
-        e = (end.isoformat() if end else "")
-        key = f"series:{series_id}:{s}:{e}"
+        with track_adapter_call("fred", target=series_id) as _outcome:
+            client = self._resolve_client()
+            s = (start.isoformat() if start else "")
+            e = (end.isoformat() if end else "")
+            key = f"series:{series_id}:{s}:{e}"
 
-        def _fetch() -> list[dict[str, Any]]:
-            kwargs: dict[str, Any] = {}
-            if start is not None:
-                kwargs["observation_start"] = start
-            if end is not None:
-                kwargs["observation_end"] = end
-            data = client.get_series(series_id, **kwargs)
-            rows: list[dict[str, Any]] = []
-            if data is None:
-                return rows
-            if isinstance(data, list):
-                # Test-style: list of (date, value) tuples or list of dicts.
-                for item in data:
-                    if isinstance(item, dict):
-                        rows.append(item)
-                    else:
-                        d, v = item
+            def _fetch() -> list[dict[str, Any]]:
+                kwargs: dict[str, Any] = {}
+                if start is not None:
+                    kwargs["observation_start"] = start
+                if end is not None:
+                    kwargs["observation_end"] = end
+                data = client.get_series(series_id, **kwargs)
+                rows: list[dict[str, Any]] = []
+                if data is None:
+                    return rows
+                if isinstance(data, list):
+                    # Test-style: list of (date, value) tuples or list of dicts.
+                    for item in data:
+                        if isinstance(item, dict):
+                            rows.append(item)
+                        else:
+                            d, v = item
+                            rows.append(
+                                {
+                                    "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+                                    "value": float(v) if v is not None else None,
+                                }
+                            )
+                    return rows
+                try:
+                    # pandas Series indexed by Timestamp.
+                    for idx, val in data.items():
                         rows.append(
                             {
-                                "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
-                                "value": float(v) if v is not None else None,
+                                "date": idx.isoformat() if hasattr(idx, "isoformat") else str(idx),
+                                "value": float(val) if val == val and val is not None else None,  # NaN→None
                             }
                         )
+                except Exception:  # pragma: no cover - defensive
+                    return []
                 return rows
-            try:
-                # pandas Series indexed by Timestamp.
-                for idx, val in data.items():
-                    rows.append(
-                        {
-                            "date": idx.isoformat() if hasattr(idx, "isoformat") else str(idx),
-                            "value": float(val) if val == val and val is not None else None,  # NaN→None
-                        }
-                    )
-            except Exception:  # pragma: no cover - defensive
-                return []
-            return rows
 
-        return await cached_call(
-            kind=CacheKind.MACRO,
-            provider=self.PROVIDER,
-            key=key,
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
+            payload = await cached_call(
+                kind=CacheKind.MACRO,
+                provider=self.PROVIDER,
+                key=key,
+                ttl_seconds=ttl_seconds,
+                fetch=_fetch,
+            )
+            _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
+            return payload
 
 
 __all__ = ["FredAdapter"]

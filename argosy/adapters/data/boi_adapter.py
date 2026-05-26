@@ -25,6 +25,17 @@ from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.adapters.data.fred_adapter import FredAdapter
 from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 from argosy.logging import get_logger
+from argosy.services.adapter_outcomes import track_adapter_call
+
+
+def _approx_size_bytes(payload: Any) -> int:
+    """Cheap size estimate for adapter-outcome tracking."""
+    import json as _json
+
+    try:
+        return len(_json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return 0
 
 _log = get_logger("argosy.adapters.boi")
 
@@ -61,6 +72,18 @@ class BoiAdapter:
         the spot cache.
         """
         target = on_or_before or datetime.now(timezone.utc).date()
+        with track_adapter_call("boi", target=target.isoformat()) as _outcome:
+            return await self._get_usd_nis_inner(
+                target=target, ttl_seconds=ttl_seconds, _outcome=_outcome,
+            )
+
+    async def _get_usd_nis_inner(
+        self,
+        *,
+        target: date,
+        ttl_seconds: int,
+        _outcome: Any,
+    ) -> dict[str, Any]:
         key = f"usd_nis:{target.isoformat()}"
 
         async def _fetch() -> dict[str, Any]:
@@ -113,13 +136,15 @@ class BoiAdapter:
                 "of FRED/Finnhub keys, or install yfinance, then retry."
             )
 
-        return await cached_call(
+        payload = await cached_call(
             kind=CacheKind.MACRO,
             provider=self.PROVIDER,
             key=key,
             ttl_seconds=ttl_seconds,
             fetch=_fetch,
         )
+        _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
+        return payload
 
 
 __all__ = ["BoiAdapter"]

@@ -47,6 +47,17 @@ from argosy.adapters.data.sec_13f_adapter import (
     _default_headers,
 )
 from argosy.logging import get_logger
+from argosy.services.adapter_outcomes import track_adapter_call
+
+
+def _approx_size_bytes(payload: Any) -> int:
+    """Cheap size estimate for adapter-outcome tracking."""
+    import json as _json
+
+    try:
+        return len(_json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return 0
 
 _log = get_logger("argosy.adapters.sec_form4")
 
@@ -126,24 +137,27 @@ class SecForm4Adapter:
             raise ValueError(f"days must be positive; got {days}")
         ticker_norm = ticker.strip().upper()
 
-        # Resolve CIK via cached ticker map.
-        cik = await self._resolve_cik_for_ticker(ticker_norm, ttl_seconds=ttl_seconds)
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+        with track_adapter_call("sec_form4", target=ticker_norm) as _outcome:
+            # Resolve CIK via cached ticker map.
+            cik = await self._resolve_cik_for_ticker(ticker_norm, ttl_seconds=ttl_seconds)
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
 
-        async def _fetch() -> list[dict[str, Any]]:
-            return await self._collect_form4_rows(
-                cik=cik,
-                cutoff=cutoff,
-                only_ticker=ticker_norm,
+            async def _fetch() -> list[dict[str, Any]]:
+                return await self._collect_form4_rows(
+                    cik=cik,
+                    cutoff=cutoff,
+                    only_ticker=ticker_norm,
+                )
+
+            payload = await cached_call(
+                kind=CacheKind.PRICES,
+                provider=self.PROVIDER,
+                key=f"by_ticker:{ticker_norm}:days={days}",
+                ttl_seconds=ttl_seconds,
+                fetch=_fetch,
             )
-
-        return await cached_call(
-            kind=CacheKind.PRICES,
-            provider=self.PROVIDER,
-            key=f"by_ticker:{ticker_norm}:days={days}",
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
+            _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
+            return payload
 
     async def get_recent_form4_for_filer(
         self,

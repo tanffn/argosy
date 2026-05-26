@@ -46,6 +46,17 @@ import httpx
 from argosy.adapters import MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
 from argosy.logging import get_logger
+from argosy.services.adapter_outcomes import track_adapter_call
+
+
+def _approx_size_bytes(payload: Any) -> int:
+    """Cheap size estimate for adapter-outcome tracking."""
+    import json as _json
+
+    try:
+        return len(_json.dumps(payload, default=str))
+    except (TypeError, ValueError):
+        return 0
 
 _log = get_logger("argosy.adapters.capitoltrades")
 
@@ -113,26 +124,29 @@ class CapitolTradesAdapter:
         if days <= 0:
             raise ValueError(f"days must be positive; got {days}")
 
-        # Include today's date in the cache key so a Monday tick and a
-        # Wednesday tick don't collide. ``days`` alone made the key day-
-        # independent — at midnight UTC the second tick would silently
-        # serve the first tick's stale window even though the underlying
-        # date range had moved forward.
-        enddt = datetime.now(timezone.utc).date().isoformat()  # noqa: UP017
+        with track_adapter_call("capitoltrades", target="recent") as _outcome:
+            # Include today's date in the cache key so a Monday tick and a
+            # Wednesday tick don't collide. ``days`` alone made the key day-
+            # independent — at midnight UTC the second tick would silently
+            # serve the first tick's stale window even though the underlying
+            # date range had moved forward.
+            enddt = datetime.now(timezone.utc).date().isoformat()  # noqa: UP017
 
-        async def _fetch() -> list[dict[str, Any]]:
-            html_text = await self._fetch_text(TRADES_URL)
-            rows = _parse_trades_html(html_text, source_url=TRADES_URL)
-            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
-            return [r for r in rows if _on_or_after(r.get("transaction_date") or "", cutoff)]
+            async def _fetch() -> list[dict[str, Any]]:
+                html_text = await self._fetch_text(TRADES_URL)
+                rows = _parse_trades_html(html_text, source_url=TRADES_URL)
+                cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+                return [r for r in rows if _on_or_after(r.get("transaction_date") or "", cutoff)]
 
-        return await cached_call(
-            kind=CacheKind.PRICES,
-            provider=self.PROVIDER,
-            key=f"recent:days={days}:enddt={enddt}",
-            ttl_seconds=ttl_seconds,
-            fetch=_fetch,
-        )
+            payload = await cached_call(
+                kind=CacheKind.PRICES,
+                provider=self.PROVIDER,
+                key=f"recent:days={days}:enddt={enddt}",
+                ttl_seconds=ttl_seconds,
+                fetch=_fetch,
+            )
+            _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
+            return payload
 
     async def list_trades_for_politician(
         self,

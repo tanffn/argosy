@@ -650,3 +650,227 @@ def test_phase_completion_threads_agent_report_ids(tmp_path, monkeypatch):
             loop.run_until_complete(db_mod.dispose_engine())
         finally:
             loop.close()
+
+
+# ---------------------------------------------------------------------------
+# T0.3 — phase 1 phase_output_json carries adapter_outcomes
+# ---------------------------------------------------------------------------
+
+
+def test_phase_1_phase_output_carries_adapter_outcomes(tmp_path, monkeypatch):
+    """T0.3 — after a stubbed synthesis run, the persisted phase 1 row's
+    ``phase_output_json`` must be a JSON-encoded dict containing both
+    ``analyst_reports_text`` and ``adapter_outcomes``.
+
+    To prove the outcomes flow through end-to-end we stub the phase 1
+    analyst function to record a couple of adapter outcomes via
+    ``track_adapter_call`` before returning. The orchestrator then calls
+    ``collect_outcomes()`` at end of phase 1 and writes the list onto
+    ``phase_output_json['adapter_outcomes']``. We read it back from the
+    DB and assert the names, statuses, and ordering all flowed through.
+    """
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings, get_settings
+    reload_settings()
+    settings = get_settings()
+    settings.db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    sync_url = f"sqlite:///{settings.db_file}"
+    async_url = f"sqlite+aiosqlite:///{settings.db_file}"
+
+    sync_engine = sa.create_engine(
+        sync_url, connect_args={"check_same_thread": False},
+    )
+
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "head")
+
+    from argosy.state import db as db_mod
+    db_mod.init_engine(async_url)
+
+    SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
+    session = SessionLocal()
+    try:
+        session.add(User(id="ariel", plan="free"))
+        session.add(PlanVersion(
+            user_id="ariel",
+            role="baseline",
+            version_label="Jacobs v2.0",
+            raw_markdown="# Plan",
+            distillate_rendered="# Plan distillate\n\nUCITS-first.\n",
+        ))
+        session.commit()
+
+        from argosy.orchestrator.flows import plan_synthesis as flow
+        from argosy.services.adapter_outcomes import track_adapter_call
+
+        def _stub_phase_1_records_outcomes(**kw):
+            # Simulate two adapter calls landing on the contextvar buffer
+            # during phase 1 — one healthy, one HTTP 404. The orchestrator
+            # is what calls ``collect_outcomes()`` after phase 1 returns,
+            # so this stub doesn't need to do anything else.
+            with track_adapter_call("finnhub_news", target="NVDA") as o:
+                o.set_payload_size_bytes(2048)
+            with track_adapter_call("sec_13f", target="13F-HR") as o:
+                o.record_http_error(status_code=404, body="Not Found")
+            return "(analyst reports text)", []
+
+        monkeypatch.setattr(flow, "_run_phase_1_analysts", _stub_phase_1_records_outcomes)
+        monkeypatch.setattr(flow, "_run_phase_2_debates", lambda **kw: ("(debate)", []))
+        monkeypatch.setattr(flow, "_run_phase_3_synthesizer",
+                            lambda **kw: (_stub_synthesis_output(), []))
+        monkeypatch.setattr(flow, "_run_phase_4_risk", lambda **kw: ("(risk)", []))
+        monkeypatch.setattr(flow, "_run_phase_5_fund_manager", lambda **kw: (True, []))
+        monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+        monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+        result = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+        assert result.draft_id is not None
+
+        # Pull the persisted phase 1 row and parse its JSON payload.
+        phase_1_row = session.execute(
+            select(DecisionPhase)
+            .where(DecisionPhase.decision_run_id == result.decision_run_id)
+            .where(DecisionPhase.kind == "synthesis.phase_1")
+        ).scalar_one_or_none()
+        assert phase_1_row is not None, (
+            "expected a synthesis.phase_1 row to be persisted"
+        )
+        assert phase_1_row.phase_output_json is not None, (
+            "phase 1 phase_output_json must not be NULL — T0.3 writes a dict"
+        )
+        payload = json.loads(phase_1_row.phase_output_json)
+        assert isinstance(payload, dict), (
+            f"phase 1 phase_output_json must be a JSON object dict, got "
+            f"{type(payload).__name__}: {payload!r}"
+        )
+        assert "analyst_reports_text" in payload, (
+            f"phase 1 phase_output_json missing analyst_reports_text key: "
+            f"{sorted(payload.keys())}"
+        )
+        assert payload["analyst_reports_text"] == "(analyst reports text)"
+
+        assert "adapter_outcomes" in payload, (
+            f"phase 1 phase_output_json missing adapter_outcomes key — T0.3 "
+            f"regressed; keys present: {sorted(payload.keys())}"
+        )
+        outcomes = payload["adapter_outcomes"]
+        assert isinstance(outcomes, list), (
+            f"adapter_outcomes must be a list, got {type(outcomes).__name__}"
+        )
+        # The stub recorded exactly two outcomes; the orchestrator's
+        # reset_outcomes() at synthesis start guarantees no spill-over
+        # from earlier tests in this process.
+        assert len(outcomes) == 2, (
+            f"expected 2 adapter outcomes (finnhub_news ok + sec_13f 404), "
+            f"got {len(outcomes)}: {outcomes!r}"
+        )
+        names = [o["adapter_name"] for o in outcomes]
+        statuses = [o["status"] for o in outcomes]
+        assert names == ["finnhub_news", "sec_13f"], (
+            f"outcome ordering wrong: {names!r}"
+        )
+        assert statuses == ["ok", "http_error"], (
+            f"outcome statuses wrong: {statuses!r}"
+        )
+        # And the 404 carries its status code through into the dict shape.
+        assert outcomes[1]["http_status_code"] == 404
+        assert outcomes[1]["target"] == "13F-HR"
+    finally:
+        import asyncio
+        session.close()
+        sync_engine.dispose()
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(db_mod.dispose_engine())
+        finally:
+            loop.close()
+
+
+def test_phase_1_phase_output_adapter_outcomes_empty_when_no_calls(tmp_path, monkeypatch):
+    """T0.3 — when no adapter records an outcome during phase 1, the
+    persisted ``adapter_outcomes`` list must still be present (just empty).
+
+    Without this, downstream consumers (UI / audit) need to defensively
+    check for both "key absent" and "empty list", which is annoying and
+    bug-prone. T0.3 chooses the empty-list contract — the buffer is
+    always reset at synthesis start, so absence-of-calls produces ``[]``.
+    """
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings, get_settings
+    reload_settings()
+    settings = get_settings()
+    settings.db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    sync_url = f"sqlite:///{settings.db_file}"
+    async_url = f"sqlite+aiosqlite:///{settings.db_file}"
+
+    sync_engine = sa.create_engine(
+        sync_url, connect_args={"check_same_thread": False},
+    )
+
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "head")
+
+    from argosy.state import db as db_mod
+    db_mod.init_engine(async_url)
+
+    SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
+    session = SessionLocal()
+    try:
+        session.add(User(id="ariel", plan="free"))
+        session.add(PlanVersion(
+            user_id="ariel",
+            role="baseline",
+            version_label="Jacobs v2.0",
+            raw_markdown="# Plan",
+            distillate_rendered="# Plan distillate\n\nUCITS-first.\n",
+        ))
+        session.commit()
+
+        from argosy.orchestrator.flows import plan_synthesis as flow
+
+        monkeypatch.setattr(flow, "_run_phase_1_analysts",
+                            lambda **kw: ("(analyst reports)", []))
+        monkeypatch.setattr(flow, "_run_phase_2_debates", lambda **kw: ("(debate)", []))
+        monkeypatch.setattr(flow, "_run_phase_3_synthesizer",
+                            lambda **kw: (_stub_synthesis_output(), []))
+        monkeypatch.setattr(flow, "_run_phase_4_risk", lambda **kw: ("(risk)", []))
+        monkeypatch.setattr(flow, "_run_phase_5_fund_manager", lambda **kw: (True, []))
+        monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+        monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+        result = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+
+        phase_1_row = session.execute(
+            select(DecisionPhase)
+            .where(DecisionPhase.decision_run_id == result.decision_run_id)
+            .where(DecisionPhase.kind == "synthesis.phase_1")
+        ).scalar_one_or_none()
+        assert phase_1_row is not None
+        payload = json.loads(phase_1_row.phase_output_json)
+        assert payload.get("adapter_outcomes") == [], (
+            f"expected empty adapter_outcomes list, got "
+            f"{payload.get('adapter_outcomes')!r}"
+        )
+    finally:
+        import asyncio
+        session.close()
+        sync_engine.dispose()
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(db_mod.dispose_engine())
+        finally:
+            loop.close()
