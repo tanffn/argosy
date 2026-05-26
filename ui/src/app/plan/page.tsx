@@ -250,6 +250,22 @@ export default function PlanPage() {
     }
   }, [objections]);
 
+  // Callback for the per-FM-objection agree/disagree flow's "Start new
+  // round with my decisions" button. The endpoint composes its own
+  // structured guidance from the user-state rows; we just need to wire
+  // the returned decision_audit_token into the synthesis banner so the
+  // page transitions cleanly to "synthesis running".
+  const onStartNewRound = useCallback(
+    (decisionAuditToken: string, _decisionRunId: number) => {
+      void _decisionRunId; // captured by FMObjectionsCard via API; UI doesn't need
+      setSynthesisError(null);
+      setSynthesisDraftId(null);
+      setSynthesisDecisionToken(decisionAuditToken);
+      setSynthesisRunning(true);
+    },
+    [],
+  );
+
   useWSEvents<{ user_id?: string; draft_id?: number }>(
     ["plan.draft.completed"],
     {
@@ -543,6 +559,7 @@ export default function PlanPage() {
           onResynthesize={onResynthesizeWithObjections}
           resynthesizing={synthesisRunning}
           onDiscussObjection={onDiscussObjection}
+          onStartNewRound={onStartNewRound}
         />
       )}
 

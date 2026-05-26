@@ -32,6 +32,14 @@ interface ExecutiveSummaryCardProps {
   onDiscussObjection?: (
     objection: { topic: string; detail: string; severity: string },
   ) => void;
+  // Called when the user clicks "Start new round with my decisions" and
+  // the start-new-round endpoint returns 202. Propagates the audit token
+  // and decision_run_id so the parent page can wire the synthesis
+  // banner without re-fetching.
+  onStartNewRound?: (
+    decisionAuditToken: string,
+    decisionRunId: number,
+  ) => void;
 }
 
 function countDeltasByKind(h: HorizonView | null): {
@@ -81,6 +89,7 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
     onResynthesize,
     resynthesizing,
     onDiscussObjection,
+    onStartNewRound,
   } = props;
   const fmRejected = objections?.approved === false;
 
@@ -235,9 +244,11 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
           <FMObjectionsCard
             objections={objections.objections}
             userId={userId}
+            planVersionId={draft.plan_version_id}
             onResynthesize={onResynthesize}
             resynthesizing={resynthesizing}
             onDiscussObjection={onDiscussObjection}
+            onStartNewRound={onStartNewRound}
           />
         )}
       </CardContent>

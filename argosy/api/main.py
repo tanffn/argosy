@@ -46,6 +46,9 @@ from argosy.api.routes.intake import router as intake_router
 from argosy.api.routes.internal import router as internal_router
 from argosy.api.routes.onboarding import router as onboarding_router
 from argosy.api.routes.plan import router as plan_router
+from argosy.api.routes.plan_objection_state import (
+    router as plan_objection_state_router,
+)
 from argosy.api.routes.portfolio import router as portfolio_router
 from argosy.api.routes.positions import router as positions_router
 from argosy.api.routes.proposals import router as proposals_router
@@ -94,6 +97,11 @@ def create_app() -> FastAPI:
     api_prefix = "/api"
     app.include_router(portfolio_router, prefix=api_prefix)
     app.include_router(plan_router, prefix=api_prefix)
+    # Per-FM-objection agree/disagree + start-new-round endpoints. Sibling
+    # router so the agree/disagree work doesn't have to share plan.py with
+    # concurrent edits (translation cache, NVDA PACE). Same /plan/draft/
+    # objections/* URL prefix so the UI doesn't need to distinguish.
+    app.include_router(plan_objection_state_router, prefix=api_prefix)
     # T4.1 — per-position thesis cards. Sibling router so it doesn't have
     # to share the plan router's get_db dependency wiring.
     app.include_router(positions_router, prefix=api_prefix)
