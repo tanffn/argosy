@@ -11,8 +11,9 @@ import {
   CardTitle,
   CardDescription,
 } from "@/components/ui/card";
+import { AgentTree } from "@/components/decisions/agent-tree";
 import { VerdictCard } from "@/components/verdict-card";
-import { api, type ReplayResponse } from "@/lib/api";
+import { api, type AgentTreeResponse, type ReplayResponse } from "@/lib/api";
 
 // Mermaid touches `document` directly; lazy import disables SSR.
 const MermaidDiagram = dynamic(
@@ -62,6 +63,9 @@ export default function DecisionReplayPage(props: {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [transcripts, setTranscripts] = useState<Record<number, string>>({});
+  // T0.6 — FM-rooted agent tree (separate fetch so it can fail independently
+  // of the replay payload; older runs predating T0.4 may not have one).
+  const [agentTree, setAgentTree] = useState<AgentTreeResponse | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,6 +78,24 @@ export default function DecisionReplayPage(props: {
         if (!cancelled) setError(String(e));
       } finally {
         if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [decisionRunId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.getAgentTree(decisionRunId, USER_ID);
+        if (!cancelled) setAgentTree(r);
+      } catch {
+        // Tree fetch failures are non-fatal — the per-phase timeline
+        // below still works. Legacy runs without decision_phases rows
+        // will surface as a 404 here and we just skip the card.
+        if (!cancelled) setAgentTree(null);
       }
     })();
     return () => {
@@ -123,7 +145,11 @@ export default function DecisionReplayPage(props: {
     );
   }
 
-  const { decision_run: run, phases, inputs, sequence_mmd_full } = data;
+  // T0.6 — `sequence_mmd_full` from the replay payload is intentionally
+  // unused now: the top-level mermaid diagram (which only showed phase
+  // boundaries) has been replaced by the FM-rooted <AgentTree>. The
+  // per-phase mermaid diagrams below still come from `p.sequence_mmd`.
+  const { decision_run: run, phases, inputs } = data;
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
@@ -204,14 +230,25 @@ export default function DecisionReplayPage(props: {
         </Card>
       )}
 
-      {/* Sequence diagram (full) */}
-      {sequence_mmd_full && (
+      {/* T0.6 — FM-rooted agent tree. Replaces the old top-level
+          "Sequence (full run)" mermaid diagram, which only showed phase
+          boundaries (not the actual who-fed-whom DAG). The per-phase
+          mermaid diagrams further down still render via `p.sequence_mmd`. */}
+      {agentTree && (
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Sequence (full run)</CardTitle>
+            <CardTitle className="text-base">
+              Agent tree — Fund Manager at root
+            </CardTitle>
+            <CardDescription>
+              {agentTree.status_summary.agents_ok} agents OK ·{" "}
+              {agentTree.status_summary.agents_failed} failed/skipped ·{" "}
+              {agentTree.status_summary.adapters_ok} adapters OK ·{" "}
+              {agentTree.status_summary.adapters_failed} adapter failures
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <MermaidDiagram src={sequence_mmd_full} className="overflow-auto" />
+            <AgentTree root={agentTree.root} />
           </CardContent>
         </Card>
       )}

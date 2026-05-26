@@ -327,6 +327,60 @@ export interface ReplayResponse {
 }
 
 // ----------------------------------------------------------------------
+// T0.5/T0.6: FM-rooted agent tree for /decisions/[id]
+//
+// Backend builder lives at argosy/services/agent_tree_builder.py and is
+// exposed via GET /api/decisions/{id}/agent-tree?user_id=...
+// Replaces the meaningless top-level sequence diagram with a structured
+// DAG rooted at fund_manager, with per-agent status + adapter outcomes.
+// ----------------------------------------------------------------------
+
+export type AgentNodeStatus = "ok" | "degraded" | "failed" | "skipped";
+
+export type AdapterNodeStatus = "ok" | "empty" | "http_error" | "exception";
+
+export interface AdapterNode {
+  adapter_name: string;
+  target: string | null;
+  status: AdapterNodeStatus;
+  latency_ms: number;
+  payload_size_bytes: number;
+  http_status_code: number | null;
+  error_text: string | null;
+}
+
+export interface AgentNode {
+  agent_role: string;
+  agent_report_id: number | null;
+  status: AgentNodeStatus;
+  confidence: string | null;
+  model: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  cost_usd: number | null;
+  side: string | null;
+  perspective: string | null;
+  response_excerpt: string;
+  failure_reason: string | null;
+  children: AgentNode[];
+  adapters: AdapterNode[];
+}
+
+export interface AgentTreeStatusSummary {
+  agents_ok: number;
+  agents_failed: number;
+  adapters_ok: number;
+  adapters_failed: number;
+}
+
+export interface AgentTreeResponse {
+  decision_run_id: number;
+  decision_kind: string;
+  status_summary: AgentTreeStatusSummary;
+  root: AgentNode;
+}
+
+// ----------------------------------------------------------------------
 // Phase 5: Argonaut + security
 // ----------------------------------------------------------------------
 
@@ -554,6 +608,11 @@ export const api = {
   getDecisionReplay: (decisionRunId: number, userId: string) =>
     getJSON<ReplayResponse>(
       `/api/decisions/${decisionRunId}/replay?user_id=${encodeURIComponent(userId)}`,
+    ),
+  // T0.6 — FM-rooted agent tree for /decisions/[id]. See AgentTreeResponse.
+  getAgentTree: (decisionRunId: number, userId: string) =>
+    getJSON<AgentTreeResponse>(
+      `/api/decisions/${decisionRunId}/agent-tree?user_id=${encodeURIComponent(userId)}`,
     ),
   getPhaseTranscriptUrl: (
     decisionRunId: number,
