@@ -85,6 +85,13 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     _read_synthesis_trail_costs,
     _record_phase_completion,
     _load_completed_phase_outputs,
+    # Fire-and-forget cache warmer for FM objection translations —
+    # eliminates the 100+ second first-load latency on /plan by warming
+    # ``fm_objection_translations`` at synthesis completion. Exposed on
+    # the package namespace so the orchestrator's ``_pkg.<name>`` call
+    # site resolves through monkeypatches in tests.
+    _schedule_fm_objection_translation_precompute,
+    _precompute_fm_objection_translations,
 )
 
 # Input-assembly helpers (monkeypatched in tests).
@@ -121,6 +128,8 @@ __all__ = [
     "_read_synthesis_trail_costs",
     "_record_phase_completion",
     "_load_completed_phase_outputs",
+    "_schedule_fm_objection_translation_precompute",
+    "_precompute_fm_objection_translations",
     # Input helpers (monkeypatched in tests)
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",

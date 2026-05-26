@@ -544,6 +544,38 @@ def run_synthesis(
              user_id=user_id, draft_id=draft.id, decision_run_id=decision_run_id)
     _emit_event("plan.draft.completed", {"user_id": user_id, "draft_id": draft.id})
 
+    # Fire-and-forget: precompute plain-English translations of any FM
+    # objections so that the user's first /plan load doesn't pay the
+    # 100+ second wall-clock for N parallel Sonnet translator calls. The
+    # on-demand path on GET /api/plan/draft/objections still works as a
+    # fallback when this best-effort warm-fill fails. Skipped entirely
+    # when FM approved (no objections to translate). Errors here are
+    # NON-FATAL — synthesis completed successfully; the cache warm is a
+    # pure latency optimisation.
+    if not approved:
+        try:
+            _pkg._schedule_fm_objection_translation_precompute(
+                session=session,
+                user_id=user_id,
+                plan_version_id=draft.id,
+                decision_run_id=decision_run_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            log.warning(
+                "fm_objection_translation_precompute.schedule_failed",
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                draft_id=draft.id,
+                error=str(exc),
+            )
+    else:
+        log.info(
+            "fm_objection_translation_precompute.skipped_fm_approved",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            draft_id=draft.id,
+        )
+
     # Provenance Wave C — final FM-decision row with the parsed verdict
     # DTO. The 5 per-phase rows (kinds 'synthesis.phase_1'..'phase_5')
     # were already persisted by _record_phase_completion during the
@@ -580,6 +612,238 @@ def run_synthesis(
         )
 
     return SynthesisResult(decision_run_id=decision_run_id, draft_id=draft.id)
+
+
+# ----------------------------------------------------------------------
+# Fire-and-forget cache warmer for FM objection translations.
+#
+# The user's first GET /api/plan/draft/objections previously paid 100+
+# seconds for N parallel Sonnet translator calls (run #4131b69 measured
+# 125 s for 6 objections). By warming the
+# ``fm_objection_translations`` cache eagerly at synthesis completion,
+# every subsequent /plan load returns instantly. Failures here are
+# logged and swallowed — the on-demand path on the route is still the
+# fallback.
+#
+# Why a separate Thread rather than asyncio.create_task?
+#   ``run_synthesis`` is a sync function executed on a worker thread
+#   (FastAPI BackgroundTasks → threadpool, or directly from sync code
+#   in tests). There's no running event loop to attach to, and even if
+#   there were, the cache helper's ``_run_async`` already spins up its
+#   own loop. A daemon thread is the minimal, portable mechanism.
+# ----------------------------------------------------------------------
+
+
+def _schedule_fm_objection_translation_precompute(
+    *,
+    session: Session,
+    user_id: str,
+    plan_version_id: int,
+    decision_run_id: int,
+) -> None:
+    """Fire-and-forget: schedule cache-warming of FM objection translations.
+
+    Spawns a daemon thread that runs ``_precompute_fm_objection_translations``
+    against a fresh session bound to the same engine as the orchestrator's
+    session. The thread is daemonised so it doesn't block process exit if
+    the user's first /plan load arrives before the precompute finishes
+    (the on-demand path takes over as the fallback in that case).
+
+    Early-exits BEFORE spawning the thread when:
+      * the FM agent_report row for this decision_run is missing (nothing
+        to parse — the trail ingest must have failed earlier), OR
+      * cache rows already exist for ``plan_version_id`` (some other
+        path already warmed it; the get_or_compute_translations helper
+        has its own hash-based dedupe but we skip spawning a thread
+        entirely as a cheaper guard).
+
+    The actual translator parsing + dispatch lives in the thread function
+    so the orchestrator's call site stays a near-constant-time scheduler.
+    """
+    from sqlalchemy import select as _select
+    from sqlalchemy.orm import sessionmaker
+    from argosy.state.models import AgentReport, FMObjectionTranslation
+
+    # Early-exit guard #1: if the FM agent_report didn't make it to the
+    # DB (trail ingest failed upstream), there's nothing to parse. Log
+    # and bail without spawning a thread.
+    decision_id_str = f"plan-synth-{decision_run_id}"
+    fm_exists = session.execute(
+        _select(AgentReport.id).where(
+            AgentReport.user_id == user_id,
+            AgentReport.decision_id == decision_id_str,
+            AgentReport.agent_role == "fund_manager",
+        ).limit(1)
+    ).scalar_one_or_none()
+    if fm_exists is None:
+        log.info(
+            "fm_objection_translation_precompute.skipped_no_fm_report",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            plan_version_id=plan_version_id,
+        )
+        return
+
+    # Early-exit guard #2: cache already warm for this draft. Cheap COUNT
+    # before paying for a thread spawn.
+    cached_count = session.execute(
+        _select(FMObjectionTranslation.id).where(
+            FMObjectionTranslation.plan_version_id == plan_version_id,
+        ).limit(1)
+    ).scalar_one_or_none()
+    if cached_count is not None:
+        log.info(
+            "fm_objection_translation_precompute.skipped_already_cached",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            plan_version_id=plan_version_id,
+        )
+        return
+
+    # Bind a fresh sessionmaker to the same engine as the orchestrator's
+    # session. The orchestrator session itself is closed by its caller
+    # after run_synthesis returns; the background thread can't reuse it.
+    engine = session.get_bind()
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    import threading
+
+    thread = threading.Thread(
+        target=_precompute_fm_objection_translations,
+        kwargs={
+            "session_factory": session_factory,
+            "user_id": user_id,
+            "plan_version_id": plan_version_id,
+            "decision_run_id": decision_run_id,
+        },
+        daemon=True,
+        name=f"fm-objection-precompute-{decision_run_id}",
+    )
+    thread.start()
+    log.info(
+        "fm_objection_translation_precompute.scheduled",
+        user_id=user_id,
+        decision_run_id=decision_run_id,
+        plan_version_id=plan_version_id,
+        thread_name=thread.name,
+    )
+
+
+def _precompute_fm_objection_translations(
+    *,
+    session_factory,
+    user_id: str,
+    plan_version_id: int,
+    decision_run_id: int,
+) -> None:
+    """Background worker: parse FM objections + warm the translation cache.
+
+    Mirrors the parsing logic in ``argosy.api.routes.plan.get_draft_objections``
+    (same ``_parse_fm_response`` / ``_split_reason`` / ``_classify_severity``)
+    so the rows it persists are byte-identical to what the on-demand path
+    would compute on a cache miss — letting the route's hash-based
+    invalidation use them as cache hits without re-translating.
+
+    All exceptions are logged + swallowed. The on-demand route path
+    remains the fallback when this warm-fill fails for any reason
+    (translator down, DB locked, etc.).
+    """
+    # Import inside the worker so the orchestrator's import-time graph
+    # stays free of the route module (circular import risk via Pydantic
+    # response models that pull in plan_synthesizer_types).
+    from sqlalchemy import select as _select
+
+    from argosy.api.routes.plan import (
+        _classify_severity,
+        _parse_fm_response,
+        _split_reason,
+    )
+    from argosy.services.fm_objection_translation_cache import (
+        get_or_compute_translations,
+    )
+    from argosy.state.models import AgentReport
+
+    log.info(
+        "fm_objection_translation_precompute.started",
+        user_id=user_id,
+        decision_run_id=decision_run_id,
+        plan_version_id=plan_version_id,
+    )
+
+    db = session_factory()
+    try:
+        decision_id_str = f"plan-synth-{decision_run_id}"
+        fm_row = db.execute(
+            _select(AgentReport).where(
+                AgentReport.user_id == user_id,
+                AgentReport.decision_id == decision_id_str,
+                AgentReport.agent_role == "fund_manager",
+            ).order_by(AgentReport.created_at.desc()).limit(1)
+        ).scalar_one_or_none()
+
+        if fm_row is None or not fm_row.response_text:
+            log.info(
+                "fm_objection_translation_precompute.skipped_no_fm_response_text",
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                plan_version_id=plan_version_id,
+            )
+            return
+
+        parsed = _parse_fm_response(fm_row.response_text)
+        reasons = parsed.get("reasons") or []
+        cited = [
+            c for c in (parsed.get("cited_sources") or []) if isinstance(c, str)
+        ]
+
+        objections: list[dict] = []
+        for r in reasons:
+            if not isinstance(r, str) or not r.strip():
+                continue
+            topic, detail = _split_reason(r)
+            sev = _classify_severity(topic, detail)
+            objections.append(
+                {"severity": sev, "topic": topic, "detail": detail}
+            )
+
+        if not objections:
+            log.info(
+                "fm_objection_translation_precompute.skipped_no_objections",
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                plan_version_id=plan_version_id,
+            )
+            return
+
+        translations = get_or_compute_translations(
+            db,
+            user_id=user_id,
+            plan_version_id=plan_version_id,
+            objections=objections,
+            cited_sources=cited,
+        )
+
+        log.info(
+            "fm_objection_translation_precompute.done",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            plan_version_id=plan_version_id,
+            objections_count=len(objections),
+            translations_count=len(translations),
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort warm-fill
+        log.warning(
+            "fm_objection_translation_precompute.failed",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            plan_version_id=plan_version_id,
+            error=str(exc),
+        )
+    finally:
+        try:
+            db.close()
+        except Exception:  # pragma: no cover — defensive
+            pass
 
 
 # ----------------------------------------------------------------------
