@@ -38,6 +38,12 @@ class MacroReport(BaseModel):
 _SNAPSHOT_SOURCE_MAP: dict[str, tuple[str, str]] = {
     "vix":       ("FRED", "VIXCLS"),
     "fred_10y":  ("FRED", "DGS10"),
+    # The synthesis input assembler fetches WTI (DCOILWTICO) and labels
+    # it `oil_wti` (see inputs.py::_gather_macro_snapshot). Brent
+    # (DCOILBRENTEU) is also valid if the fetcher ever switches; both
+    # mappings live here so either label resolves to a real FRED series
+    # rather than falling through to `macro/UNKNOWN/...`.
+    "oil_wti":   ("FRED", "DCOILWTICO"),
     "oil_brent": ("FRED", "DCOILBRENTEU"),
     "dxy":       ("FRED", "DTWEXBGS"),
     "usd_nis":   ("BOI",  "USD_NIS"),
