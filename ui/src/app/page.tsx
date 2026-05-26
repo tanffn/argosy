@@ -731,6 +731,56 @@ export default function Home() {
         </div>
       </section>
 
+      {/* T4.5 — Daily brief lands at the top of the page so the user
+          sees it first thing in the morning. When the T4.5 runner has
+          produced a brief, render its content_md; otherwise render a
+          placeholder explaining when the next brief will land. */}
+      <section>
+        <SectionHeader
+          label="TODAY'S BRIEF"
+          action={
+            data.brief?.brief_date ? (
+              <a
+                href="/briefs"
+                className="text-[11px] font-mono text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+              >
+                view all
+              </a>
+            ) : null
+          }
+        />
+        <Card>
+          <CardHeader>
+            <CardTitle className="font-mono">
+              {data.brief?.brief_date
+                ? `Brief — ${data.brief.brief_date}`
+                : "Daily brief will land tomorrow at 07:00"}
+            </CardTitle>
+            <CardDescription>
+              {data.brief?.run_at
+                ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
+                : "Set ARGOSY_DAILY_BRIEF_ENABLED=1 to enable the production scheduler, or run `argosy brief --user-id ariel` for a one-shot."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {data.brief?.content_md ? (
+              <pre className="whitespace-pre-wrap text-xs font-mono text-foreground tabular-nums">
+                {data.brief.content_md}
+              </pre>
+            ) : data.brief?.summary_text ? (
+              <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
+                {data.brief.summary_text}
+              </pre>
+            ) : (
+              <p className="text-xs font-mono text-muted-foreground">
+                No brief on file yet. The runner fires daily at 07:00
+                Asia/Jerusalem when enabled.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
       {/* Plan + brief row */}
       <section>
         <SectionHeader label="PLAN" count={1} />
@@ -757,16 +807,16 @@ export default function Home() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="font-mono">Today&apos;s brief</CardTitle>
+              <CardTitle className="font-mono">Phase 2 brief summary</CardTitle>
               <CardDescription>
                 {data.brief?.run_at
                   ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
-                  : "No brief yet — run `argosy brief --user-id ariel`."}
+                  : "No legacy four-agent brief yet."}
               </CardDescription>
             </CardHeader>
             <CardContent>
               <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
-                {data.brief?.summary_text || "(no daily brief on file)"}
+                {data.brief?.summary_text || "(no Phase 2 brief on file)"}
               </pre>
             </CardContent>
           </Card>

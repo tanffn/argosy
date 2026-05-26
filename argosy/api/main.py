@@ -178,6 +178,24 @@ def create_app() -> FastAPI:
     from argosy.api.routes import expenses as expenses_routes
     app.include_router(expenses_routes.router)
 
+    # T4.5 — daily-brief production loop. Off by default; opt-in via
+    # ARGOSY_DAILY_BRIEF_ENABLED=1. Always off under pytest so tests
+    # never spawn a real background fire. The loop sleeps until 07:00
+    # in Asia/Jerusalem, then fires generate_daily_brief() once and
+    # sleeps again. See argosy/services/daily_brief_runner.py.
+    @app.on_event("startup")
+    async def _start_daily_brief_loop() -> None:
+        from argosy.services.daily_brief_runner import (
+            background_loop,
+            is_enabled_for_runtime,
+        )
+
+        if not is_enabled_for_runtime():
+            log.info("daily_brief_runner.disabled")
+            return
+        log.info("daily_brief_runner.scheduled", tz="Asia/Jerusalem", at="07:00")
+        asyncio.create_task(background_loop(), name="daily_brief_runner")
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()

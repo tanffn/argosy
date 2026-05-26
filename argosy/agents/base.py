@@ -109,6 +109,9 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # confidence threshold >= 0.85. Sonnet is accurate enough and far
     # cheaper than Opus for high-volume transaction labeling.
     "household_categorizer": "claude-sonnet-4-6",
+    # Daily-briefer (T4.5): single-pass one-pager composer. Sonnet —
+    # daily-summary doesn't justify Opus, and cost cap is ~$1/brief.
+    "daily_briefer": "claude-sonnet-4-6",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence

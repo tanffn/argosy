@@ -471,10 +471,24 @@ class CadenceState(Base):
 
 
 class DailyBrief(Base):
-    """One Daily Brief run record. Holds the four analyst reports + summary.
+    """One Daily Brief run record.
 
-    `news_report_json`, `macro_report_json`, `concentration_report_json`, and
-    `plan_delta_json` are pydantic-validated payloads serialized to JSON.
+    Two-shape table — Phase 2 columns + T4.5 (migration 0034) columns:
+
+    - Phase 2 (legacy ``DailyBriefLoop``): ``run_at`` + four analyst
+      report-JSON columns + ``summary_text`` composed from them. The
+      ``DailyBriefLoop.tick`` in ``argosy/orchestrator/loops/daily_brief.py``
+      writes these.
+    - T4.5 (``daily_brief_runner.generate_daily_brief``): ``brief_date``
+      (calendar key for idempotency), ``content_md`` (the one-pager
+      markdown rendered by ``DailyBrieferAgent``), and
+      ``decision_run_id`` pointing back at the ``decision_runs`` row
+      that produced it.
+
+    Both shapes coexist so the legacy loop + the legacy
+    ``/api/daily-brief/latest`` route keep working unchanged. The
+    T4.5 runner leaves the four analyst-report-JSON columns empty
+    and lets ``content_md`` carry the user-facing brief.
     """
 
     __tablename__ = "daily_briefs"
@@ -495,6 +509,19 @@ class DailyBrief(Base):
     plan_delta_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    # T4.5 — one-pager markdown produced by ``DailyBrieferAgent``.
+    # Empty string for legacy rows from the Phase 2 loop.
+    content_md: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # T4.5 — calendar date the brief covers; NULL for legacy rows.
+    # Partial UNIQUE index ``uq_daily_briefs_user_date`` enforces one
+    # row per (user_id, brief_date) for new rows so the runner is
+    # idempotent on the same calendar day.
+    brief_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # T4.5 — back-pointer to ``decision_runs`` (decision_kind='daily_brief').
+    # NULL for legacy rows that pre-date the runner.
+    decision_run_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("decision_runs.id"), nullable=True
     )
 
 

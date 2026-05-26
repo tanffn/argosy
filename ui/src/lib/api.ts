@@ -68,6 +68,16 @@ export interface DailyBriefDTO {
   macro_report: Record<string, unknown> | null;
   concentration_report: Record<string, unknown> | null;
   plan_delta: Record<string, unknown> | null;
+  // T4.5 — runner-produced one-pager. ``content_md`` carries the
+  // markdown body the home page renders front-and-center;
+  // ``brief_date`` is the calendar date the brief covers (ISO
+  // ``YYYY-MM-DD``); ``decision_run_id`` is the back-pointer to the
+  // ``decision_runs`` row that produced it. All three are non-null on
+  // T4.5 rows; legacy Phase 2 rows leave content_md="" and
+  // brief_date=null.
+  content_md: string;
+  brief_date: string | null;
+  decision_run_id: number | null;
 }
 
 export interface AgentActivityRow {

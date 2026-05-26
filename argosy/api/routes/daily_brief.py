@@ -24,6 +24,14 @@ class DailyBriefDTO(BaseModel):
     macro_report: dict[str, Any] | None
     concentration_report: dict[str, Any] | None
     plan_delta: dict[str, Any] | None
+    # T4.5 — runner-produced one-pager markdown body + calendar date.
+    # Both are populated by ``argosy.services.daily_brief_runner``; the
+    # legacy Phase 2 ``DailyBriefLoop`` leaves them blank/null. UI
+    # prefers ``content_md`` when non-empty, falling back to
+    # ``summary_text``.
+    content_md: str = ""
+    brief_date: str | None = None
+    decision_run_id: int | None = None
 
 
 def _parse(blob: str) -> dict[str, Any] | None:
@@ -59,6 +67,13 @@ async def get_latest_brief(
             macro_report=_parse(row.macro_report_json),
             concentration_report=_parse(row.concentration_report_json),
             plan_delta=_parse(row.plan_delta_json),
+            # T4.5 — new runner columns. ``brief_date`` is a python
+            # ``date``; render ISO so the UI gets a stable string.
+            content_md=row.content_md or "",
+            brief_date=(
+                row.brief_date.isoformat() if row.brief_date is not None else None
+            ),
+            decision_run_id=row.decision_run_id,
         )
 
 
