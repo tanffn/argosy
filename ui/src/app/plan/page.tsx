@@ -9,7 +9,10 @@ import { AgentCascadeStrip } from "@/components/plan/agent-cascade-strip";
 import { AgentReasoningDrawer } from "@/components/plan/agent-reasoning-drawer";
 import { AllocationChart } from "@/components/plan/allocation-chart";
 import { DeltaCard } from "@/components/plan/delta-card";
+import { DeltaMap } from "@/components/plan/delta-map";
 import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
+import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
+import { SourcesHeatmap } from "@/components/plan/sources-heatmap";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,6 +29,7 @@ import {
   type DraftResponse,
   type FMObjectionsResponse,
   type HorizonView,
+  type NvdaTrajectoryResponse,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
 } from "@/lib/api";
@@ -83,6 +87,7 @@ export default function PlanPage() {
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [objections, setObjections] = useState<FMObjectionsResponse | null>(null);
   const [snapshot, setSnapshot] = useState<PortfolioSnapshotDTO | null>(null);
+  const [nvda, setNvda] = useState<NvdaTrajectoryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,17 +111,20 @@ export default function PlanPage() {
     const draftP = api.planDraft(USER_ID).catch(() => null);
     const objP = api.planDraftObjections(USER_ID).catch(() => null);
     const snapP = api.portfolioSnapshot(USER_ID).catch(() => null);
+    const nvdaP = api.planDraftNvdaTrajectory(USER_ID).catch(() => null);
     try {
-      const [planV, draftV, objV, snapV] = await Promise.all([
+      const [planV, draftV, objV, snapV, nvdaV] = await Promise.all([
         planP,
         draftP,
         objP,
         snapP,
+        nvdaP,
       ]);
       setPlan(planV);
       setDraft(draftV);
       setObjections(objV);
       setSnapshot(snapV);
+      setNvda(nvdaV);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -313,7 +321,9 @@ export default function PlanPage() {
       {draft && (
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <AllocationChart snapshot={snapshot} draft={draft} />
-          {/* B.2 NVDA trajectory and B.3/B.4 maps land here later. */}
+          <NvdaTrajectoryChart data={nvda} />
+          <DeltaMap draft={draft} />
+          <SourcesHeatmap draft={draft} />
         </section>
       )}
 

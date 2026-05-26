@@ -813,6 +813,10 @@ export const api = {
     getJSON<FMObjectionsResponse>(
       `/api/plan/draft/objections?user_id=${encodeURIComponent(userId)}`,
     ),
+  planDraftNvdaTrajectory: (userId: string) =>
+    getJSON<NvdaTrajectoryResponse>(
+      `/api/plan/draft/nvda-trajectory?user_id=${encodeURIComponent(userId)}`,
+    ),
   planDraftAccept: (draftId: number, userId: string) =>
     postJSON<{ status: string; new_current_id: number }>(
       `/api/plan/draft/${draftId}/accept?user_id=${encodeURIComponent(userId)}`,
@@ -1125,6 +1129,26 @@ export interface FMObjectionsResponse {
   cited_sources: string[];
   decision_run_id: number | null;
   raw_response_excerpt: string;
+}
+
+export interface NvdaVestEvent {
+  date: string;
+  shares: number;
+  note: string;
+}
+
+export interface NvdaTrajectoryResponse {
+  today_date: string;
+  today_shares: number | null;
+  vests: NvdaVestEvent[];
+  reduction_program: {
+    remaining: number | null;
+    sold_ytd: number | null;
+    target: number | null;
+    progress_pct: number | null;
+  };
+  ceiling_target_shares: number | null;
+  ceiling_target_label: string | null;
 }
 
 /**

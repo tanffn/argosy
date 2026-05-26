@@ -639,6 +639,166 @@ def _parse_fm_response(response_text: str) -> dict:
     return {}
 
 
+class NvdaVestEvent(BaseModel):
+    date: str  # YYYY-MM-DD
+    shares: int
+    note: str = ""
+
+
+class NvdaTrajectoryResponse(BaseModel):
+    today_date: str  # YYYY-MM-DD
+    today_shares: int | None
+    vests: list[NvdaVestEvent]
+    reduction_program: dict
+    ceiling_target_shares: float | None
+    ceiling_target_label: str | None
+
+
+def _deep_find(node, key: str):
+    """First-match DFS for `key` anywhere in a nested dict/list. Returns the
+    found value or None. Used to locate ``nvda_sale_progress`` regardless of
+    which intake stage nested it (currently under ``brokerage_accounts``).
+    """
+    if isinstance(node, dict):
+        if key in node:
+            return node[key]
+        for v in node.values():
+            r = _deep_find(v, key)
+            if r is not None:
+                return r
+    elif isinstance(node, list):
+        for v in node:
+            r = _deep_find(v, key)
+            if r is not None:
+                return r
+    return None
+
+
+def _extract_nvda_trajectory_from_yaml(yaml_text: str) -> tuple[list[dict], dict]:
+    """Pull (vests, reduction_program) out of identity_yaml.
+
+    Defensive: any parse failure yields empty defaults so the chart degrades
+    gracefully to "no schedule available".
+    """
+    try:
+        import yaml
+
+        data = yaml.safe_load(yaml_text) or {}
+    except Exception:  # noqa: BLE001
+        return ([], {})
+
+    if not isinstance(data, dict):
+        return ([], {})
+
+    vests: list[dict] = []
+    rsu = _deep_find(data, "rsu_vest_schedule") or {}
+    if isinstance(rsu, dict):
+        # Explicit quarterly_vests entries (preferred — already have dates).
+        for ev in rsu.get("quarterly_vests") or []:
+            if not isinstance(ev, dict):
+                continue
+            d = ev.get("date")
+            sh = ev.get("shares")
+            if isinstance(d, str) and isinstance(sh, (int, float)):
+                vests.append({
+                    "date": d,
+                    "shares": int(sh),
+                    "note": str(ev.get("period") or ev.get("note") or ""),
+                })
+
+    reduction = _deep_find(data, "nvda_sale_progress") or {}
+    if not isinstance(reduction, dict):
+        reduction = {}
+
+    return (vests, reduction)
+
+
+@router.get("/draft/nvda-trajectory", response_model=NvdaTrajectoryResponse)
+def get_draft_nvda_trajectory(
+    user_id: str, db: Session = Depends(get_db)
+) -> NvdaTrajectoryResponse:
+    """Return NVDA share-count trajectory data for the /plan trajectory chart.
+
+    Sources:
+      - today_shares: from portfolio_positions / latest TSV (NVDA row).
+      - vests: from identity_yaml::rsu_vest_schedule.quarterly_vests.
+      - reduction_program: from identity_yaml::nvda_sale_progress.
+      - ceiling_target_*: from the draft's long-horizon targets where
+        the label mentions "share count" / "share ceiling".
+    """
+    from argosy.state.models import UserContext
+
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    ctx = db.execute(
+        select(UserContext).where(UserContext.user_id == user_id)
+    ).scalar_one_or_none()
+    vests: list[dict] = []
+    reduction: dict = {}
+    if ctx is not None and ctx.identity_yaml:
+        vests, reduction = _extract_nvda_trajectory_from_yaml(ctx.identity_yaml)
+
+    # today_shares — look up the most recent NVDA position from the TSV
+    # parser. We re-use the same helper /api/portfolio/snapshot uses.
+    today_shares: int | None = None
+    try:
+        from argosy.api.routes.portfolio import _find_latest_tsv
+        from argosy.ingest.tsv import parse_portfolio_tsv
+
+        tsv = _find_latest_tsv()
+        if tsv is not None:
+            snap = parse_portfolio_tsv(tsv)
+            for pos in snap.positions:
+                if (pos.symbol or "").upper() == "NVDA" and pos.shares:
+                    today_shares = int(pos.shares)
+                    break
+    except Exception:  # noqa: BLE001 — best-effort
+        today_shares = None
+
+    # Find the long-horizon ceiling target.
+    ceiling_value: float | None = None
+    ceiling_label: str | None = None
+    from argosy.state.queries import get_pending_draft
+
+    pv = get_pending_draft(db, user_id)
+    if pv is not None and pv.horizon_long_json:
+        try:
+            payload = json.loads(pv.horizon_long_json)
+            for t in payload.get("targets") or []:
+                if not isinstance(t, dict):
+                    continue
+                label = (t.get("label") or "").lower()
+                if "share count" in label or "share ceiling" in label or (
+                    "ceiling" in label and "share" in label
+                ):
+                    val = t.get("value")
+                    if isinstance(val, (int, float)):
+                        ceiling_value = float(val)
+                        ceiling_label = t.get("label") or None
+                        break
+        except json.JSONDecodeError:
+            pass
+
+    return NvdaTrajectoryResponse(
+        today_date=today,
+        today_shares=today_shares,
+        vests=[
+            NvdaVestEvent(
+                date=v["date"], shares=int(v["shares"]), note=v.get("note", "")
+            )
+            for v in vests
+        ],
+        reduction_program={
+            "remaining": reduction.get("remaining"),
+            "sold_ytd": reduction.get("sold_ytd_2026"),
+            "target": reduction.get("target_shares"),
+            "progress_pct": reduction.get("progress_pct"),
+        },
+        ceiling_target_shares=ceiling_value,
+        ceiling_target_label=ceiling_label,
+    )
+
+
 @router.get("/draft/objections", response_model=FMObjectionsResponse)
 def get_draft_objections(
     user_id: str, db: Session = Depends(get_db)
