@@ -1,19 +1,30 @@
 "use client";
 
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, MessageCircle, RefreshCw, Sparkles } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import type { FMObjection } from "@/lib/api";
+import { api, type FMObjection } from "@/lib/api";
 
 interface FMObjectionsCardProps {
   objections: FMObjection[];
+  userId: string;
   // When provided, renders a primary CTA below the list that re-synthesizes
   // the plan with the Fund Manager's objections fed back to the fleet as
   // guidance. The caller wires this to /api/advisor/check-in with the
   // formatted objection text.
   onResynthesize?: () => void | Promise<void>;
   resynthesizing?: boolean;
+  // T4.7 — when provided, the "Discuss" button per objection opens a
+  // conversation with the advisor seeded with the objection content.
+  onDiscussObjection?: (o: FMObjection) => void;
+}
+
+interface Translation {
+  headline: string;
+  plain_english: string;
+  recommended_actions: string[];
 }
 
 function severityClasses(s: FMObjection["severity"]) {
@@ -41,8 +52,41 @@ function severityClasses(s: FMObjection["severity"]) {
 }
 
 export function FMObjectionsCard(props: FMObjectionsCardProps) {
-  const { objections, onResynthesize, resynthesizing } = props;
+  const {
+    objections,
+    userId,
+    onResynthesize,
+    resynthesizing,
+    onDiscussObjection,
+  } = props;
+  // Per-objection translation cache. Keyed by index in the sorted list;
+  // populated lazily when the user clicks "Explain in plain English".
+  const [translations, setTranslations] = useState<
+    Record<number, Translation | "loading" | "error">
+  >({});
+
   if (objections.length === 0) return null;
+
+  const translateObjection = async (idx: number, o: FMObjection) => {
+    setTranslations((prev) => ({ ...prev, [idx]: "loading" }));
+    try {
+      const t = await api.planDraftObjectionTranslate(userId, {
+        topic: o.topic,
+        detail: o.detail,
+        severity: o.severity,
+      });
+      setTranslations((prev) => ({
+        ...prev,
+        [idx]: {
+          headline: t.headline,
+          plain_english: t.plain_english,
+          recommended_actions: t.recommended_actions,
+        },
+      }));
+    } catch {
+      setTranslations((prev) => ({ ...prev, [idx]: "error" }));
+    }
+  };
 
   // Sort RED → AMBER → YELLOW so the most-critical concerns sit on top.
   const sevOrder: Record<FMObjection["severity"], number> = {
@@ -68,6 +112,8 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
       <ul className="flex flex-col gap-2">
         {sorted.map((o, i) => {
           const cls = severityClasses(o.severity);
+          const t = translations[i];
+          const translated = t && t !== "loading" && t !== "error" ? t : null;
           return (
             <li
               key={i}
@@ -79,11 +125,75 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                   aria-hidden
                 />
                 <div className="flex-1">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <span className="font-medium">{o.topic}</span>
+                  <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
+                    <span className="font-medium">
+                      {translated ? translated.headline : o.topic}
+                    </span>
                     <Badge variant={cls.badge}>{o.severity}</Badge>
                   </div>
-                  <p className="text-sm text-muted-foreground">{o.detail}</p>
+                  {translated ? (
+                    <>
+                      <p className="text-sm whitespace-pre-line">
+                        {translated.plain_english}
+                      </p>
+                      {translated.recommended_actions.length > 0 && (
+                        <div className="mt-2">
+                          <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-1">
+                            Recommended actions
+                          </div>
+                          <ul className="text-xs list-disc list-inside space-y-0.5">
+                            {translated.recommended_actions.map((a, j) => (
+                              <li key={j}>{a}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <details className="mt-2 text-xs text-muted-foreground">
+                        <summary className="cursor-pointer hover:text-foreground">
+                          Show original Fund Manager wording
+                        </summary>
+                        <p className="mt-1 pl-3 border-l border-border/40">
+                          {o.detail}
+                        </p>
+                      </details>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      {o.detail}
+                    </p>
+                  )}
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {!translated && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => translateObjection(i, o)}
+                        disabled={t === "loading"}
+                      >
+                        <Sparkles className="h-3 w-3 mr-1" />
+                        {t === "loading"
+                          ? "Translating…"
+                          : "Explain in plain English"}
+                      </Button>
+                    )}
+                    {t === "error" && (
+                      <span className="text-xs text-error">
+                        Translation failed; raw text shown above.
+                      </span>
+                    )}
+                    {onDiscussObjection && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => onDiscussObjection(o)}
+                      >
+                        <MessageCircle className="h-3 w-3 mr-1" />
+                        Discuss with advisor
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </div>
             </li>

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { AgentCascadePanel } from "@/components/advisor/AgentCascadePanel";
@@ -85,6 +86,7 @@ function provenanceLabelToAgentRole(label: string): string | null {
 }
 
 export default function PlanPage() {
+  const router = useRouter();
   const [plan, setPlan] = useState<PlanCurrentDTO | null>(null);
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [objections, setObjections] = useState<FMObjectionsResponse | null>(null);
@@ -198,6 +200,28 @@ export default function PlanPage() {
   // objection (severity + topic + detail) prefixed with an instruction
   // telling the analysts + synthesizer to address each concern in the
   // next draft.
+  // T4.7 — open the advisor page with the objection pre-seeded as the
+  // user's question. The advisor agent reads user_context + plan
+  // critiques on every turn, so it already has portfolio + identity
+  // context; we just thread the specific FM objection in via a query
+  // string the advisor page reads on mount and inserts as the first
+  // user message.
+  const onDiscussObjection = useCallback(
+    (objection: { topic: string; detail: string; severity: string }) => {
+      const seed = (
+        `The Fund Manager objected to the pending draft #${draft?.plan_version_id ?? "?"} ` +
+        `with this [${objection.severity}] concern titled "${objection.topic}":\n\n` +
+        `${objection.detail}\n\n` +
+        `Please explain what this means in plain English, what data the ` +
+        `Fund Manager looked at to reach this conclusion, and what I should ` +
+        `do about it. Walk me through any math step by step.`
+      );
+      const url = `/advisor?seed=${encodeURIComponent(seed)}`;
+      router.push(url);
+    },
+    [draft, router],
+  );
+
   const onResynthesizeWithObjections = useCallback(async () => {
     if (!objections || objections.objections.length === 0) return;
     setSynthesisError(null);
@@ -437,11 +461,13 @@ export default function PlanPage() {
         <ExecutiveSummaryCard
           draft={draft}
           objections={objections}
+          userId={USER_ID}
           working={working}
           onAcceptAll={onAcceptAll}
           onRejectAll={onRejectAll}
           onResynthesize={onResynthesizeWithObjections}
           resynthesizing={synthesisRunning}
+          onDiscussObjection={onDiscussObjection}
         />
       )}
 

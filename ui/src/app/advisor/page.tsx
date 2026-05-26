@@ -1,5 +1,6 @@
 "use client";
 
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Paperclip, X } from "lucide-react";
 
@@ -115,6 +116,21 @@ export default function AdvisorPage() {
   const [pending, setPending] = useState<AdvisorTurnResponse | null>(null);
   const [userInput, setUserInput] = useState("");
   const [loading, setLoading] = useState(true);
+
+  // T4.7 — pre-seed the textarea from a ?seed= query param so the /plan
+  // page's "Discuss with advisor" button can push a specific Fund Manager
+  // objection straight into the advisor's input. Only fires once on mount;
+  // subsequent edits to the textarea are the user's.
+  const searchParams = useSearchParams();
+  const seedConsumedRef = useRef(false);
+  useEffect(() => {
+    if (seedConsumedRef.current) return;
+    const seed = searchParams.get("seed");
+    if (seed && seed.trim()) {
+      setUserInput(seed);
+      seedConsumedRef.current = true;
+    }
+  }, [searchParams]);
   const [error, setError] = useState<string | null>(null);
 
   // Sidebar gap-tracker state.

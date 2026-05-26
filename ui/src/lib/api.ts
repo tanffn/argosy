@@ -813,6 +813,24 @@ export const api = {
     getJSON<FMObjectionsResponse>(
       `/api/plan/draft/objections?user_id=${encodeURIComponent(userId)}`,
     ),
+  planDraftObjectionTranslate: (
+    userId: string,
+    body: {
+      topic: string;
+      detail: string;
+      severity: string;
+      cited_sources?: string[];
+    },
+  ) =>
+    postJSON<{
+      headline: string;
+      plain_english: string;
+      recommended_actions: string[];
+      cited_sources: string[];
+    }>(
+      `/api/plan/draft/objections/translate?user_id=${encodeURIComponent(userId)}`,
+      body,
+    ),
   planDraftNvdaTrajectory: (userId: string) =>
     getJSON<NvdaTrajectoryResponse>(
       `/api/plan/draft/nvda-trajectory?user_id=${encodeURIComponent(userId)}`,

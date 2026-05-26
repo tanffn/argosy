@@ -97,6 +97,14 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # per user preference (the synthesizer is the firm's intellectual
     # output; its quality dominates the overall flow's value).
     "plan_synthesizer": "claude-opus-4-7",
+    # Objection translator (T4.6): renders FM objections in plain English
+    # for the /plan FMObjectionsCard "Explain" button. Single-purpose
+    # paraphrasing — Sonnet is plenty.
+    "objection_translator": "claude-sonnet-4-6",
+    # Household-budget analyst (synth Phase 1 #10): assess cash-flow
+    # runway + safe-withdrawal headroom. Sonnet — text-only, no
+    # debate / multi-round reasoning.
+    "household_budget": "claude-sonnet-4-6",
     # Household-expenses categorizer: batched LLM categorization with
     # confidence threshold >= 0.85. Sonnet is accurate enough and far
     # cheaper than Opus for high-volume transaction labeling.

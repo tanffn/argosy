@@ -978,6 +978,62 @@ def get_draft_nvda_trajectory(
     )
 
 
+class ObjectionTranslateRequest(BaseModel):
+    topic: str
+    detail: str
+    severity: str = "AMBER"
+    cited_sources: list[str] = []
+
+
+class ObjectionTranslateResponse(BaseModel):
+    headline: str
+    plain_english: str
+    recommended_actions: list[str]
+    cited_sources: list[str]
+
+
+@router.post(
+    "/draft/objections/translate",
+    response_model=ObjectionTranslateResponse,
+)
+def post_translate_objection(
+    body: ObjectionTranslateRequest,
+    user_id: str = Query("ariel"),
+) -> ObjectionTranslateResponse:
+    """Render a Fund Manager objection in plain English (T4.6).
+
+    Synchronous; Sonnet call, typically 2-5 seconds. UI fires this
+    lazily when the user clicks "Explain in plain English" on an
+    objection so we don't burn tokens translating every objection
+    proactively.
+    """
+    from argosy.agents.objection_translator import (
+        ObjectionTranslatorAgent,
+    )
+    from argosy.agents.errors import AgentRunError, MissingAPIKeyError
+
+    agent = ObjectionTranslatorAgent(user_id=user_id)
+    try:
+        report = agent.run_sync(
+            topic=body.topic,
+            detail=body.detail,
+            severity=body.severity,
+            cited_sources=body.cited_sources or None,
+        )
+    except MissingAPIKeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AgentRunError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    out = report.output
+    return ObjectionTranslateResponse(
+        headline=out.headline,
+        plain_english=out.plain_english,
+        recommended_actions=out.recommended_actions,
+        cited_sources=out.cited_sources or body.cited_sources,
+    )
+
+
 @router.get("/draft/objections", response_model=FMObjectionsResponse)
 def get_draft_objections(
     user_id: str, db: Session = Depends(get_db)

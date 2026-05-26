@@ -23,11 +23,15 @@ import { FMObjectionsCard } from "./fm-objections-card";
 interface ExecutiveSummaryCardProps {
   draft: DraftResponse;
   objections: FMObjectionsResponse | null;
+  userId: string;
   working?: boolean;
   onAcceptAll?: () => void | Promise<void>;
   onRejectAll?: () => void | Promise<void>;
   onResynthesize?: () => void | Promise<void>;
   resynthesizing?: boolean;
+  onDiscussObjection?: (
+    objection: { topic: string; detail: string; severity: string },
+  ) => void;
 }
 
 function countDeltasByKind(h: HorizonView | null): {
@@ -70,11 +74,13 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
   const {
     draft,
     objections,
+    userId,
     working,
     onAcceptAll,
     onRejectAll,
     onResynthesize,
     resynthesizing,
+    onDiscussObjection,
   } = props;
   const fmRejected = objections?.approved === false;
 
@@ -228,8 +234,10 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
         {fmRejected && objections && (
           <FMObjectionsCard
             objections={objections.objections}
+            userId={userId}
             onResynthesize={onResynthesize}
             resynthesizing={resynthesizing}
+            onDiscussObjection={onDiscussObjection}
           />
         )}
       </CardContent>
