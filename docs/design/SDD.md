@@ -27,7 +27,15 @@ Sequence of events:
 5. **Fix shipped** in `a5d317c`: moved the verbatim user_directive content from system prompt to the **user prompt** (top of the user message). System prompt retains a short DIRECTIVE POINTER + the AGREED/DISAGREED/DEFERRED instruction language. Same fix applied to fund_manager preemptively (it hadn't hit the bug yet because #27 never reached Phase 5).
 6. **Synthesis #29** ran with `a5d317c` loaded. **Synthesizer (Phase 3) PASSED for the first time** — the prompt-relocation fix worked. But **Phase 5 (FM) failed** with a DIFFERENT bug: `claude.exe Command failed with exit code 1` with empty stderr. The `transient_exit1` retry path didn't fire because `isinstance(exc, ProcessError)` returned False (SDK class identity mismatch — possibly a version drift or a streaming-mode TaskGroup unwrap on some paths). The FM died on the first attempt with no retry.
 7. **Fix shipped** in `f4b2dce`: added a defense-in-depth string-match fallback to the `is_transient_flake` guard. Word-boundary regex `\bexit code 1\b` + literal `(exit code: 1)` so the retry path fires even when the SDK wraps ProcessError in a different class. The existing isinstance check is preserved as the primary; `no_retry_when_exit_code_not_1` test still passes (137 doesn't match the word boundary).
-8. **Synthesis #30** triggered with both `a5d317c` + `f4b2dce` loaded. Watchdog running. If FM passes this time, the loop is fully unblocked and the user wakes up to a fresh draft.
+8. **Synthesis #30 COMPLETED end-to-end** with both fixes loaded. All 6 phases ran. FM rejected the draft but with **4 NEW BLOCKERs** (NVDA price discrepancy across analysts, risk-facilitator ESCALATE not APPROVE, accelerator/re-anchor spec gap, emergency-fund-floor contradiction) **+ explicit acknowledgement that prior round's BLOCKERs were resolved** (tax-rate band 30.7%→50% marginal, 9,059→8,428 ending-share path adjusted). **The loop is fully unblocked and iterating meaningfully** — each round closes some objections and surfaces new ones rather than regurgitating the same themes. New pending draft `synth-2026-05-26-2334-fm-rejected` = plan_versions.id=11. Self-review report #5: 1 RED · 7 AMBER · 9 YELLOW.
+
+### Wake-up state summary
+
+- **Draft #11 pending** with FM's 4 new BLOCKERs visible via the new per-objection UI (precomputed translations, agree/disagree toggle, start-new-round CTA).
+- **Synthesis loop is healthy.** f8faaca closed the guidance pipeline, a5d317c fixed the synthesizer empty-output, f4b2dce hardened the FM retry envelope. Three consecutive runs (#26, #29, #30) each closed prior concerns and surfaced different new ones — the fleet is doing adversarial review properly for the first time.
+- **Fleet self-review is auto-firing** on every synthesis completion + has a manual-fire route. Reports 1–5 persisted; latest is report #5 against #30.
+- **Home page surfaces** in-flight synthesis banner, fleet self-review banner, NVDA YTD = 1,600 / 10,000 ON PACE.
+- **Cost of overnight loop**: ~$15-20 across #26 ($3-4), #27 ($2.17 wasted on empty-output), #29 ($3-4), #30 ($3-4). Within ARGOSY_SYNTHESIS_COST_CAP_USD=$10 per run.
 
 ### Overnight cycle (2026-05-26 evening → night) — 12 additional commits
 
