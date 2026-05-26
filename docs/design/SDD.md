@@ -78,23 +78,21 @@ Phase-1 analysts (concentration, fx, fundamentals, news, sentiment, technical, m
 - **Pre-existing pytest failure** in `test_advisor_image_attachments.py::test_call_via_claude_code_streams_image_content_blocks` + 2 in `test_plan_synthesis_decision_id_propagation.py` (stub-coverage gap). All pre-date this wave.
 - **Phase 2 `DailyBriefLoop`** (the older 4-agent flow at `argosy/orchestrator/loops/daily_brief.py`) still exists; the new T4.5 runner is the single-agent simpler path. Both coexist on the same `daily_briefs` table, distinguishable by `brief_date IS NOT NULL`. Decide later whether to retire the Phase 2 loop.
 
-### Tests — verification at wave HEAD `14245e3`
+### Tests — verification at wave HEAD `f025c7d`
 
 **Wave-targeted run** (14 test files this wave touched): 166 passed / 0 failed.
-**Full repo run** (`pytest -m "not llm_eval"`, 17 min): **1,336 passed · 10 failed · 16 skipped · 11 deselected**.
+**Full repo run** (`pytest -m "not llm_eval"`, ~14 min): **1,346 passed · 0 failed · 16 skipped · 11 deselected**.
 
-The 10 failures are **all pre-existing** — verified by re-running the same 10 against pre-wave commit `1d85a3f`: identical 10 failures, same error signatures. Zero regressions introduced by this wave.
+The 10 pre-existing failures found in the first verification pass at wave HEAD `14245e3` were all fixed in cleanup commit `f025c7d`:
 
-**The 10 pre-existing failures, root-cause classified:**
-
-| Test file | Count | Root cause | Recommendation |
+| Test file | Count | Root cause | Fix shipped |
 |---|---|---|---|
-| `test_wave_a5_claude_code_backend.py` | 5 | Tests assert N=1 retry envelope; T2.6 (`41b3e56`) widened to N=3 shared budget across `transient_exit1`/`sdk_timeout`/`empty_output`/`malformed_json` triggers. Assertions now see 3 calls where they expected 2. | **Rewrite** to validate the new T2.6 contract: 1 initial + up to 3 retries, shared budget, backoff 0.5s/1s/2s. The underlying code is correct (more resilient); the tests just lag the design change. |
-| `test_advisor_route.py` | 2 | `test_post_advisor_checkin_*` triggers a real synthesis without stubbing `HouseholdBudgetAnalystAgent` — Phase 1 fan-out includes 10 agents, the test stubs 9. The 10th hits live Sonnet → cost_usd > 0, real LLM round-trip → test times out / fails. | **Fix**: add `HouseholdBudgetAnalystAgent` to the stub list (same fix as the propagation tests below). |
-| `test_plan_synthesis_decision_id_propagation.py` | 2 | Same root cause as above: `_phase_1_stub_agents()` stubs 9 of 10 phase-1 agents. `HouseholdBudgetAnalystAgent` runs for real. | **Fix**: extend `_phase_1_stub_agents()` to cover all 10 `_PHASE_1_AGENT_NAMES`. |
-| `test_advisor_image_attachments.py` | 1 | `test_call_via_claude_code_streams_image_content_blocks` — claude.exe SDK image-streaming. Surface-area test that drifted as the SDK API changed. | **Investigate** then likely **rewrite** to current SDK shape. Lowest priority. |
+| `test_wave_a5_claude_code_backend.py` | 5 | Tests asserted N=1 retry envelope; T2.6 (`41b3e56`) widened to N=3 shared budget across `transient_exit1`/`sdk_timeout`/`empty_output`/`malformed_json` triggers. | Renamed `caps_at_one_*` → `caps_at_three_*`; n_calls expectations 2 → 4 for budget-exhaustion cases; recovery payloads are now valid JSON so the shared-budget malformed-JSON trial-parse doesn't steal a retry slot. |
+| `test_advisor_route.py` | 2 | `_fake_run` stub signature predated T2.3's `resume_from_phase` kwarg. | Added `resume_from_phase=1` kwarg to all `_fake_run` / `_bomb` stubs. |
+| `test_plan_synthesis_decision_id_propagation.py` | 2 | `_phase_1_stub_agents()` stubbed 9 of 10 phase-1 agents (HouseholdBudgetAnalystAgent from T1.7 missing → hit live Sonnet). | Added `HouseholdBudgetAnalystAgent` to the stub list; count assertions 9 → 10. |
+| `test_advisor_image_attachments.py` | 1 | Empty-output retry envelope (T2.6) re-streamed the prompt when fake `query()` yielded nothing → captured dict accumulated 4 copies. | Fake `query()` now yields a valid AssistantMessage + ResultMessage so no retry fires. |
 
-None of these affect production behavior. They're all test-side debt accumulated across waves where the underlying invariants moved but the tests didn't.
+No production code changed in the cleanup commit. Test scaffolding now matches the production contract.
 
 ### What landed this session (15 commits, all on `main`)
 
