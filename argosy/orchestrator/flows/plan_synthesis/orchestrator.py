@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from argosy.agents.base import AgentReport
 from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
+from argosy.agents.household_budget_analyst import HouseholdBudgetAnalystAgent
 from argosy.agents.fundamentals_analyst import FundamentalsAnalystAgent
 # The FX analyst class is `FXAnalystAgent` in source; the synthesis flow
 # (and its tests) refer to it as `FxAnalystAgent`. Aliased on import.
@@ -389,6 +390,7 @@ _PHASE_1_AGENT_NAMES = (
     "ConcentrationAnalystAgent",
     "FxAnalystAgent",
     "FundamentalsAnalystAgent",
+    "HouseholdBudgetAnalystAgent",
     "MacroAnalystAgent",
     "NewsAnalystAgent",
     "PlanCritiqueAgent",

@@ -75,6 +75,60 @@ def ingest_plan(
     typer.echo(f"Persisted plan version {label!r} for user_id={user_id!r}.")
 
 
+@app.command("schwab-lots")
+def ingest_schwab_lots_cmd(
+    path: Path = typer.Argument(
+        ..., exists=True, dir_okay=False, readable=True,
+        help="Path to a Schwab Equity Awards Center cost-basis CSV.",
+    ),
+    user_id: str = typer.Option("ariel", "--user-id"),
+    account_id: str = typer.Option(
+        "schwab", "--account-id",
+        help="Account id stored on each lot row; defaults to 'schwab'.",
+    ),
+) -> None:
+    """Ingest a Schwab cost-basis CSV into the ``lots`` table.
+
+    Idempotent: re-running on the same CSV updates the existing rows
+    (Schwab adjusts wash-sale figures between exports) rather than
+    duplicating them. Required for the TaxAnalyst's ``lots_summary``
+    payload to be populated on synthesis Phase 1.
+    """
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.config import get_settings
+    from argosy.services.schwab_lots_ingest import ingest_schwab_lots
+    from argosy.state.models import User
+
+    settings = get_settings()
+    sync_url = settings.database_url.replace("+aiosqlite", "")
+    engine = create_engine(sync_url, connect_args={"check_same_thread": False})
+
+    if sync_url.startswith("sqlite") and ":memory:" not in sync_url:
+        @event.listens_for(engine, "connect")
+        def _pragmas(dbapi_connection, _record):
+            cur = dbapi_connection.cursor()
+            cur.execute("PRAGMA journal_mode=WAL")
+            cur.execute("PRAGMA busy_timeout=60000")
+            cur.close()
+
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+    with SessionLocal() as session:
+        # Ensure the user row exists (FK).
+        if session.get(User, user_id) is None:
+            session.add(User(id=user_id))
+            session.commit()
+        inserted = ingest_schwab_lots(
+            session,
+            user_id=user_id,
+            csv_path=path,
+            account_id=account_id,
+        )
+    typer.echo(f"Ingested Schwab lots from {path.name}: {inserted} new rows "
+               f"(updates applied to existing rows in place).")
+
+
 async def _persist_plan(*, user_id: str, version_label: str, source_path: str,
                          raw_markdown: str) -> None:
     from sqlalchemy import select

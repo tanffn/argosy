@@ -47,6 +47,7 @@ from argosy.orchestrator.flows.plan_synthesis._types import (
 from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
 from argosy.agents.fundamentals_analyst import FundamentalsAnalystAgent
 from argosy.agents.fx_analyst import FXAnalystAgent as FxAnalystAgent
+from argosy.agents.household_budget_analyst import HouseholdBudgetAnalystAgent
 from argosy.agents.macro_analyst import MacroAnalystAgent
 from argosy.agents.news_analyst import NewsAnalystAgent
 from argosy.agents.plan_critique import PlanCritiqueAgent
@@ -119,6 +120,7 @@ __all__ = [
     "ConcentrationAnalystAgent",
     "FxAnalystAgent",
     "FundamentalsAnalystAgent",
+    "HouseholdBudgetAnalystAgent",
     "MacroAnalystAgent",
     "NewsAnalystAgent",
     "PlanCritiqueAgent",

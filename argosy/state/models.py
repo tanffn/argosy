@@ -23,6 +23,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -397,6 +398,50 @@ class AgentReportBlob(Base):
     value: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     report: Mapped[AgentReport] = relationship(back_populates="blobs")
+
+
+class PortfolioSnapshotRow(Base):
+    """Persisted snapshot of the parsed Family Finances Status TSV.
+
+    Replaces the filesystem-walk + parse pattern in
+    ``argosy.orchestrator.flows.plan_synthesis.inputs._find_latest_tsv`` —
+    once populated, downstream callers (``/api/portfolio/snapshot``, the
+    synthesis input assembler, the NVDA trajectory endpoint) read from
+    this table by ``(user_id, ORDER BY imported_at DESC LIMIT 1)``.
+
+    The writer fires from the TSV ingest path and from
+    ``/api/portfolio/snapshot`` as a write-through cache when no fresh
+    DB row exists. Migration 0030 creates the schema.
+
+    JSON-serialised columns mirror the PortfolioSnapshot pydantic model:
+
+    * ``positions_json``         — list[PortfolioPosition]
+    * ``allocations_json``       — list[AllocationRow]
+    * ``nvda_sales_json``        — list[NVDASale]
+    * ``real_estate_json``       — list[RealEstatePosition]
+    * ``pensions_json``          — list[PensionEntry]
+    * ``totals_json``            — {total_usd_value_k, cash_balances_usd_k}
+    * ``parse_warnings_json``    — list[str]
+    """
+
+    __tablename__ = "portfolio_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    snapshot_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    positions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    allocations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    nvda_sales_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    real_estate_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    pensions_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    totals_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    fx_usd_nis: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fx_usd_eur: Mapped[float | None] = mapped_column(Float, nullable=True)
+    parse_warnings_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
 
 
 class CadenceState(Base):

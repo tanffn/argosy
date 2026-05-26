@@ -54,10 +54,33 @@ log = get_logger(__name__)
 def _assemble_portfolio_summary(*, session, user_id) -> str:
     """Build a compact portfolio-state summary for synthesis input.
 
-    Wave 2: read latest TSV/CSV ingest + IBKR positions per SDD §8.
-    Tests stub this.
+    Reads the latest Family Finances Status TSV from ``ARGOSY_HOME`` (via
+    ``_find_latest_tsv`` which filters on the canonical header marker so
+    stray uploads don't shadow it) and produces the same per-position
+    summary text used at Phase 1. Synthesizer Phase 3 reads this as the
+    "current state" text it draws horizon targets against.
+
+    Returns ``(no positions)`` when no TSV is reachable so the synthesizer
+    prompt sees a stable sentinel rather than a placeholder string the
+    fund manager would (correctly) reject as null-data.
+
+    The ``session`` + ``user_id`` arguments are kept for monkeypatch
+    compatibility with the test suite (tests stub this helper directly).
     """
-    return "(portfolio snapshot — wired against existing positions ingest)"
+    try:
+        tsv_path = _find_latest_tsv()
+        if tsv_path is None:
+            return "(no positions)"
+        from argosy.ingest.tsv import parse_portfolio_tsv
+
+        snapshot = parse_portfolio_tsv(tsv_path)
+        return _summarize_positions(snapshot)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning(
+            "plan_synthesis.legacy_assemble_portfolio_failed",
+            user_id=user_id, error=str(exc),
+        )
+        return "(no positions — TSV parse failed)"
 
 
 def _assemble_fills_summary(*, session, user_id) -> str:
@@ -119,6 +142,9 @@ class Phase1Inputs:
     lots_summary: str = ""
     dividends_summary: str = ""
     rsu_schedule_summary: str = ""
+
+    # HouseholdBudgetAnalystAgent
+    household_budget_payload: dict[str, Any] = field(default_factory=dict)
 
     # PlanCritiqueAgent
     plan_label: str = ""
@@ -216,6 +242,40 @@ def assemble_phase1_inputs(
     # PlanCritique agent reads it as the "current state" half of the
     # plan-vs-snapshot delta.
     inputs.snapshot_summary = inputs.positions_summary
+
+    # TaxAnalyst inputs — read from the `lots` table + identity_yaml RSU
+    # grants. Both are best-effort and degrade to an explanatory empty
+    # sentinel; TaxAnalyst's prompt is tolerant of "(no lots imported)".
+    try:
+        inputs.lots_summary = _assemble_lots_summary(session, user_id)
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.lots_summary_failed",
+            user_id=user_id,
+            error=str(exc),
+        )
+    try:
+        inputs.rsu_schedule_summary = _assemble_rsu_schedule_summary(session, user_id)
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.rsu_schedule_summary_failed",
+            user_id=user_id,
+            error=str(exc),
+        )
+
+    # HouseholdBudgetAnalystAgent payload — burn + income + safe-withdrawal
+    # context. Assembled from identity_yaml + the parsed TSV positions
+    # (already loaded into Phase1Inputs at this point).
+    try:
+        inputs.household_budget_payload = _assemble_household_budget_payload(
+            session, user_id, positions_summary=inputs.positions_summary,
+        )
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.household_budget_payload_failed",
+            user_id=user_id,
+            error=str(exc),
+        )
 
     # 4. News payload (Finnhub). Per-ticker, capped at 25 tickers to
     #    keep the free-tier rate limit happy. Each section is wrapped
@@ -440,18 +500,278 @@ def _find_latest_tsv():
         return None
 
 
+def _assemble_household_budget_payload(
+    session: Session, user_id: str, *, positions_summary: str = "",
+) -> dict[str, Any]:
+    """Read household-budget context from identity_yaml + the TSV total.
+
+    Returns the dict shape HouseholdBudgetAnalystAgent.build_prompt
+    expects. Best-effort: any parse failure yields partial dict; the
+    agent's prompt is tolerant of missing fields.
+    """
+    from argosy.state.models import UserContext
+
+    payload: dict[str, Any] = {}
+
+    ctx = session.execute(
+        select(UserContext).where(UserContext.user_id == user_id)
+    ).scalar_one_or_none()
+    if ctx is None or not ctx.identity_yaml:
+        return payload
+
+    try:
+        import yaml as _yaml
+
+        data = _yaml.safe_load(ctx.identity_yaml) or {}
+    except Exception:  # noqa: BLE001
+        return payload
+    if not isinstance(data, dict):
+        return payload
+
+    # Direct fields the synthesizer needs to see.
+    for key in (
+        "monthly_expenses_total_nis",
+        "monthly_expenses_window",
+        "rsu_annual_usd",
+        "emergency_fund_months",
+        "employment_household_net_to_bank_monthly",
+        "employment_user_net_monthly_nis",
+        "spouse_net_monthly_nis",
+        "espp_monthly_nis_mar_onwards_2026",
+    ):
+        if key in data:
+            payload[key] = data[key]
+
+    payload["monthly_burn_nis"] = data.get("monthly_expenses_total_nis")
+    payload["monthly_burn_window"] = data.get("monthly_expenses_window")
+
+    # Build a normalized income_streams list from the various per-stream
+    # fields the intake captured (employment user, spouse, ESPP, RSU).
+    streams: list[dict[str, Any]] = []
+    if data.get("employment_user_net_monthly_nis"):
+        streams.append({
+            "source": "employment_user_net",
+            "monthly_nis": data["employment_user_net_monthly_nis"],
+            "note": "",
+        })
+    if data.get("spouse_net_monthly_nis"):
+        streams.append({
+            "source": "employment_spouse_net",
+            "monthly_nis": data["spouse_net_monthly_nis"],
+            "note": "",
+        })
+    if data.get("espp_monthly_nis_mar_onwards_2026"):
+        streams.append({
+            "source": "espp_net",
+            "monthly_nis": data["espp_monthly_nis_mar_onwards_2026"],
+            "note": "Mar 2026 onwards; Jan-Feb 2026 was different",
+        })
+    if data.get("rsu_annual_usd"):
+        streams.append({
+            "source": "rsu_gross_annual_usd",
+            "monthly_nis": None,
+            "note": f"{data['rsu_annual_usd']} USD/yr; convert via FX",
+        })
+    payload["income_streams"] = streams
+
+    # Liquid assets — read from the positions_summary text we already
+    # computed for ConcentrationAnalyst. Parse the header line that says
+    # "Total tradeable positions: N holdings, $XXXk USD".
+    if positions_summary:
+        import re as _re
+
+        m = _re.search(
+            r"Total tradeable positions:\s*\d+\s*holdings,\s*\$([\d,\.]+)k USD",
+            positions_summary,
+        )
+        if m:
+            try:
+                liquid_k = float(m.group(1).replace(",", ""))
+                payload["liquid_assets_usd_k"] = liquid_k
+                # 4% rule: annual = liquid * 0.04 → monthly USD.
+                # Liquid is in thousands so multiply by 1000.
+                payload["safe_withdrawal_monthly_usd"] = round(
+                    (liquid_k * 1000) * 0.04 / 12.0, 2
+                )
+            except ValueError:
+                pass
+
+    return payload
+
+
+def _assemble_lots_summary(session: Session, user_id: str) -> str:
+    """Read tax lots from the ``lots`` table and emit a TaxAnalyst-shaped text.
+
+    Returns ``(no lots imported)`` if the table is empty (the user hasn't
+    run ``argosy ingest schwab-lots`` yet). Per-ticker grouping with
+    quantity + average cost basis + acquired-date range; lets the Tax
+    Analyst reason about long-vs-short-term gains, harvesting opportunity,
+    and Section 102 cost-basis residue.
+    """
+    from argosy.state.models import Lot
+
+    rows = session.execute(
+        select(Lot)
+        .where(Lot.user_id == user_id)
+        .order_by(Lot.ticker, Lot.acquired_at)
+    ).scalars().all()
+    if not rows:
+        return "(no lots imported — run `argosy ingest schwab-lots <csv>` to populate)"
+
+    # Group by ticker.
+    by_ticker: dict[str, list[Lot]] = {}
+    for r in rows:
+        by_ticker.setdefault(r.ticker, []).append(r)
+
+    lines = [f"Tax lots: {len(rows)} lots across {len(by_ticker)} tickers"]
+    for ticker, lots in sorted(by_ticker.items()):
+        total_qty = sum(float(l.quantity or 0) for l in lots)
+        total_basis = sum(float(l.cost_basis_usd or 0) for l in lots)
+        avg_basis = total_basis / total_qty if total_qty else 0.0
+        dates = [l.acquired_at for l in lots if l.acquired_at is not None]
+        date_range = ""
+        if dates:
+            earliest = min(dates).date().isoformat()
+            latest = max(dates).date().isoformat()
+            date_range = f"  acquired {earliest} → {latest}" if earliest != latest else f"  acquired {earliest}"
+        lines.append(
+            f"  {ticker:<8}  {total_qty:g} sh  total_basis=${total_basis:,.0f}"
+            f"  avg=${avg_basis:.2f}/sh  ({len(lots)} lots){date_range}"
+        )
+    return "\n".join(lines)
+
+
+def _assemble_rsu_schedule_summary(session: Session, user_id: str) -> str:
+    """Read identity_yaml::rsu_grants.grants[] and emit a TaxAnalyst-shaped text.
+
+    Pulls from the structured field populated by intake_extractor (or the
+    one-shot backfill in T1.3). Surfaces award_id, award_date, quarterly
+    vest count, and the implied 12-month vest total. Empty when no grants
+    are catalogued.
+    """
+    from argosy.state.models import UserContext
+
+    ctx = session.execute(
+        select(UserContext).where(UserContext.user_id == user_id)
+    ).scalar_one_or_none()
+    if ctx is None or not ctx.identity_yaml:
+        return "(no identity_yaml — intake hasn't been completed)"
+
+    try:
+        import yaml as _yaml
+
+        data = _yaml.safe_load(ctx.identity_yaml) or {}
+    except Exception:  # noqa: BLE001 - defensive
+        return "(identity_yaml parse failed)"
+    if not isinstance(data, dict):
+        return "(identity_yaml not a dict)"
+
+    rsu = data.get("rsu_grants") or {}
+    grants = rsu.get("grants") if isinstance(rsu, dict) else None
+    if not grants or not isinstance(grants, list):
+        return "(no rsu_grants.grants[] catalogued)"
+
+    lines = [f"RSU grants ({len(grants)} active):"]
+    total_quarterly = 0
+    for g in grants:
+        if not isinstance(g, dict):
+            continue
+        award_id = g.get("award_id", "?")
+        award_date = g.get("award_date", "?")
+        quarterly = g.get("quarterly_shares") or 0
+        try:
+            qty = int(quarterly)
+        except (TypeError, ValueError):
+            qty = 0
+        total_quarterly += qty
+        note = g.get("note", "")
+        suffix = f"  — {note}" if note else ""
+        lines.append(
+            f"  award={award_id}  granted={award_date}  quarterly={qty} sh{suffix}"
+        )
+    if isinstance(rsu, dict):
+        implied_price = rsu.get("implied_nvda_price_usd")
+        next_12m = rsu.get("next_12_months_shares")
+        if next_12m or implied_price:
+            footer_bits = []
+            if next_12m:
+                footer_bits.append(f"next 12 months: {next_12m} shares")
+            if implied_price:
+                footer_bits.append(f"implied NVDA price: ${implied_price}")
+            lines.append("  " + " · ".join(footer_bits))
+    return "\n".join(lines)
+
+
 def _summarize_positions(snapshot) -> str:
-    """One-line-per-position summary text. Empty snapshot -> sentinel."""
+    """One-line-per-position summary text. Empty snapshot -> sentinel.
+
+    Reads the structured ``PortfolioPosition`` fields produced by
+    ``argosy.ingest.tsv``:
+
+    * ``symbol``              — ticker (was ``ticker``, never populated)
+    * ``shares``              — quantity (was ``quantity``, never populated)
+    * ``current_value_local`` — value in the position's own currency
+    * ``usd_value_k``         — USD value in thousands (when filled by TSV)
+    * ``current_price``       — last price snapshot
+    * ``location``            — broker / account where the position lives
+
+    The prior implementation was a stub: it queried ``.ticker``, ``.quantity``,
+    ``.market_value`` and ``.account`` — none of which exist on
+    ``PortfolioPosition`` — so every line rendered as ``qty=None value=None
+    acct=''``. ConcentrationAnalyst then disclaimed its own input as
+    "structural nulls", which Fund Manager flagged as the rationale-without-
+    verifiable-base objection on run #19. With this fix the analysts now see
+    real positions; FM has a chance to evaluate the draft on its merits
+    rather than the upstream-data gap.
+
+    Skips rows that have no symbol (cash sentinel lines, real-estate rows,
+    pension rows) so the summary stays focused on tradeable holdings.
+    """
     lines: list[str] = []
+    total_usd_k = 0.0
     for p in getattr(snapshot, "positions", []) or []:
-        ticker = getattr(p, "ticker", "?")
-        qty = getattr(p, "quantity", None)
-        value = getattr(p, "market_value", None) or getattr(p, "value", None)
-        account = getattr(p, "account", "")
-        lines.append(f"  {ticker:<8} qty={qty}  value={value}  acct={account}")
+        symbol = (getattr(p, "symbol", "") or "").strip()
+        if not symbol or symbol == "-":
+            continue
+        shares = getattr(p, "shares", None)
+        usd_k = getattr(p, "usd_value_k", None) or 0.0
+        local_value = getattr(p, "current_value_local", None)
+        price = getattr(p, "current_price", None)
+        currency = getattr(p, "currency", "") or ""
+        location = getattr(p, "location", "") or ""
+        asset_type = getattr(p, "asset_type", "") or ""
+
+        total_usd_k += usd_k
+
+        # Format: "  TICKER       qty=N shares    value=$Xk USD (Y local CCY)    @ $price    acct=Z (TYPE)"
+        # Numbers are optional — some positions have shares but no price,
+        # or value only. Skip None fields rather than printing "None".
+        qty_str = f"qty={shares:g}" if isinstance(shares, (int, float)) else "qty=?"
+        if usd_k:
+            value_str = f"value=${usd_k:,.1f}k USD"
+            if local_value and currency and currency.upper() != "USD":
+                value_str += f" ({local_value:,.0f} {currency})"
+        elif local_value and currency:
+            value_str = f"value={local_value:,.0f} {currency}"
+        else:
+            value_str = "value=?"
+        price_str = f"@ ${price:.2f}" if isinstance(price, (int, float)) else ""
+        acct_str = f"acct={location}" if location else ""
+        type_str = f"({asset_type})" if asset_type else ""
+
+        parts = [f"  {symbol:<10}", qty_str, value_str]
+        if price_str:
+            parts.append(price_str)
+        if acct_str:
+            parts.append(acct_str)
+        if type_str:
+            parts.append(type_str)
+        lines.append("  ".join(parts))
+
     if not lines:
         return "(no positions)"
-    return "\n".join(lines)
+    header = f"Total tradeable positions: {len(lines)} holdings, ${total_usd_k:,.1f}k USD\n"
+    return header + "\n".join(lines)
 
 
 def _gather_news(tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
