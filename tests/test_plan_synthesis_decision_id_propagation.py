@@ -295,13 +295,18 @@ def test_phase_1_assembles_and_routes_all_payloads(monkeypatch):
 
 
 def _phase_1_stub_agents(monkeypatch, flow):
-    """Patch the 9 phase-1 analysts to return real ``AgentReport`` dataclasses.
+    """Patch the 10 phase-1 analysts to return real ``AgentReport`` dataclasses.
 
     The orchestrator's ``isinstance(result, AgentReport)`` filter relies on
     a real dataclass coming back, so each stub returns one (not a
     SimpleNamespace).  Shared between
     ``test_phase_1_writes_trail`` and
     ``test_ingest_trail_writes_agent_reports``.
+
+    The list MUST stay in sync with ``_PHASE_1_AGENT_NAMES`` in
+    ``argosy/orchestrator/flows/plan_synthesis/orchestrator.py``. The 10th
+    agent (``HouseholdBudgetAnalystAgent``, role ``household_budget``) was
+    added in Tier 1 (T1.7); without stubbing it the test hits live Sonnet.
     """
     from types import SimpleNamespace as _NS
     from argosy.agents.base import AgentReport, ConfidenceBand
@@ -332,6 +337,7 @@ def _phase_1_stub_agents(monkeypatch, flow):
         "ConcentrationAnalystAgent",
         "FxAnalystAgent",
         "FundamentalsAnalystAgent",
+        "HouseholdBudgetAnalystAgent",
         "MacroAnalystAgent",
         "NewsAnalystAgent",
         "PlanCritiqueAgent",
@@ -399,8 +405,8 @@ def test_phase_1_writes_trail(tmp_path, monkeypatch):
         line for line in trail_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert len(lines) == 9, (
-        f"W1.C-v4: expected 9 trail rows for phase 1, got {len(lines)}"
+    assert len(lines) == 10, (
+        f"W1.C-v4: expected 10 trail rows for phase 1, got {len(lines)}"
     )
     # Spot-check a couple of fields on each row to confirm shape.
     seen_roles: set[str] = set()
@@ -411,8 +417,8 @@ def test_phase_1_writes_trail(tmp_path, monkeypatch):
         assert row["run_correlation_id"] is not None
         assert row["model"] == "stub-model"
         seen_roles.add(row["agent_role"])
-    assert len(seen_roles) == 9, (
-        f"W1.C-v4: expected 9 distinct agent_roles in trail, got {seen_roles}"
+    assert len(seen_roles) == 10, (
+        f"W1.C-v4: expected 10 distinct agent_roles in trail, got {seen_roles}"
     )
 
     # Cleanup: clear cached settings so other tests that don't set
@@ -474,13 +480,13 @@ def test_ingest_trail_writes_agent_reports(tmp_path, monkeypatch):
     assert trail_path.exists()
 
     count = _ingest_synthesis_trail(session, _DECISION_ID)
-    assert count == 9, (
-        f"W1.C-v4 ingest: expected 9 rows ingested, got {count}"
+    assert count == 10, (
+        f"W1.C-v4 ingest: expected 10 rows ingested, got {count}"
     )
 
     rows = session.execute(select(AgentReportRow)).scalars().all()
-    assert len(rows) == 9, (
-        f"W1.C-v4 ingest: expected 9 agent_reports rows, got {len(rows)}"
+    assert len(rows) == 10, (
+        f"W1.C-v4 ingest: expected 10 agent_reports rows, got {len(rows)}"
     )
     for row in rows:
         assert row.decision_id == _DECISION_ID, (

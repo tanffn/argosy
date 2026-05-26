@@ -71,7 +71,14 @@ async def test_call_via_claude_code_streams_image_content_blocks(tmp_path, monke
     The SDK's prompt API accepts `AsyncIterable[dict]`; we yield a single
     dict in the message-shape claude.exe expects. Verify the shape by
     monkeypatching the SDK's `query()` to capture what we pass.
+
+    The fake `query()` must yield a successful AssistantMessage + ResultMessage
+    so the T2.6 empty-output retry envelope (N=3, shared budget) does not
+    fire and re-stream the prompt on retries — otherwise the captured yields
+    pile up and the shape assertion below sees 4 copies instead of 1.
     """
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
     from argosy.agents.advisor import AdvisorAgent
 
     # Real PNG file so base64 encode succeeds
@@ -83,6 +90,16 @@ async def test_call_via_claude_code_streams_image_content_blocks(tmp_path, monke
 
     captured: dict = {}
 
+    # Build a valid-JSON Advisor-shaped success payload so the malformed-JSON
+    # trial-parse (also under the T2.6 shared budget) does not fire either.
+    _success_text = (
+        '{"stage":"stage_1","question_for_user":"ok",'
+        '"stage_complete":false,"next_stage":null,'
+        '"confidence":"MEDIUM","cited_sources":[],'
+        '"notes_for_orchestrator":"","context_updates":[],'
+        '"intake_session_id":"x","mode":"user_driven"}'
+    )
+
     async def _fake_query(*, prompt, options):
         # Drain the AsyncIterable so we can assert on its yielded shape.
         if hasattr(prompt, "__aiter__"):
@@ -92,10 +109,24 @@ async def test_call_via_claude_code_streams_image_content_blocks(tmp_path, monke
         else:
             captured["mode"] = "string"
             captured["string_prompt"] = prompt
-        # Yield nothing — minimal stub. Inner loop ends without producing
-        # text/usage; we just want to assert what was sent in.
-        if False:
-            yield None
+        # Yield a successful stream so the retry envelope does not fire.
+        yield AssistantMessage(
+            content=[TextBlock(text=_success_text)],
+            model="claude-sonnet-4-6",
+        )
+        from claude_agent_sdk import ResultMessage
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="test",
+            stop_reason="end_turn",
+            total_cost_usd=0.0,
+            usage={"input_tokens": 1, "output_tokens": 1},
+            result="ok",
+        )
 
     monkeypatch.setattr("claude_agent_sdk.query", _fake_query)
 

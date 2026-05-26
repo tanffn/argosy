@@ -807,11 +807,16 @@ async def test_claude_code_retry_on_transient_exit1_flake(monkeypatch):
     """ProcessError(exit_code=1, empty stderr) → retry once, succeed.
 
     Replicates the live-run #6 fingerprint: claude.exe exits 1 without
-    writing to stderr. The retry must:
+    writing to stderr. Under the T2.6 envelope (shared budget N=3) the
+    happy-path "one retry, second attempt succeeds" sequence must:
       - Re-call `query()` exactly once more (n_calls == 2 total).
       - Emit a `claude_code.transient_exit1_retry` warning with
         structured fields (agent_role, model, error).
       - Return the SECOND attempt's output text in the ModelCall.
+
+    NOTE: the second-attempt text must be parseable JSON, otherwise the
+    malformed-JSON trial-parse (shared retry budget) would burn the next
+    retry slot too.
     """
     from claude_agent_sdk import AssistantMessage, ProcessError, TextBlock
 
@@ -821,9 +826,11 @@ async def test_claude_code_retry_on_transient_exit1_flake(monkeypatch):
         stderr="Check stderr output for details",
     )
     # Second attempt: success path — one assistant message + one result.
+    # Use valid JSON so the malformed-JSON trial-parse (which shares the
+    # T2.6 retry budget) does not fire on the recovery turn.
     success_stream = [
         AssistantMessage(
-            content=[TextBlock(text="retry-success-payload")],
+            content=[TextBlock(text='{"text":"retry-success-payload"}')],
             model="claude-sonnet-4-6",
         ),
         _make_result_message(input_tokens=11, output_tokens=22),
@@ -842,7 +849,7 @@ async def test_claude_code_retry_on_transient_exit1_flake(monkeypatch):
     assert captured["n_calls"] == 2
 
     # 2. ModelCall text comes from the SECOND (successful) attempt.
-    assert call.text == "retry-success-payload"
+    assert call.text == '{"text":"retry-success-payload"}'
     # Token counters reflect ONLY the successful attempt — the first-
     # attempt accumulators must have been reset by the retry loop, not
     # double-counted.
@@ -971,23 +978,26 @@ async def test_claude_code_no_retry_on_non_process_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_claude_code_retry_caps_at_one_on_repeated_flake(monkeypatch):
-    """If the transient flake hits twice in a row, the second occurrence
-    must surface as an AgentRunError — we never retry more than once per
-    `_call_via_claude_code_inner` invocation.
+async def test_claude_code_retry_caps_at_three_on_repeated_flake(monkeypatch):
+    """T2.6 contract: shared retry budget of N=3 across all flake triggers.
+
+    If the transient exit-1 flake hits on every attempt, we expect:
+      - 1 initial call + 3 retries = 4 total `query()` invocations,
+      - 3 `claude_code.transient_exit1_retry` warnings (one per retry),
+      - the 4th occurrence surfaces as ``AgentRunError`` (budget exhausted).
     """
     from claude_agent_sdk import ProcessError
 
     from argosy.agents.errors import AgentRunError
 
-    flake_a = ProcessError(
-        "Command failed with exit code 1", exit_code=1, stderr="",
-    )
-    flake_b = ProcessError(
-        "Command failed with exit code 1", exit_code=1, stderr="",
-    )
+    flakes = [
+        ProcessError(
+            "Command failed with exit code 1", exit_code=1, stderr="",
+        )
+        for _ in range(4)
+    ]
     captured = _install_fake_query_with_call_counter(
-        monkeypatch, side_effects=[flake_a, flake_b],
+        monkeypatch, side_effects=list(flakes),
     )
 
     agent = _make_agent()
@@ -997,15 +1007,16 @@ async def test_claude_code_retry_caps_at_one_on_repeated_flake(monkeypatch):
     with pytest.raises(AgentRunError):
         await agent._call_via_claude_code_inner(system="sys", user="hi")
 
-    # Exactly two calls: original + one retry. No third attempt.
-    assert captured["n_calls"] == 2
+    # Initial + 3 retries (T2.6 cap) = 4 total. The 4th flake exhausts
+    # the budget; the loop surfaces it as AgentRunError.
+    assert captured["n_calls"] == 4
     retry_events = [
         ev for ev, _ in recorder.warnings
         if ev == "claude_code.transient_exit1_retry"
     ]
-    # Exactly one retry warning — the retry happened once, then the
-    # second occurrence surfaced rather than triggering retry #2.
-    assert len(retry_events) == 1
+    # Three retry warnings — one per retry attempt before the budget
+    # was exhausted on the fourth occurrence.
+    assert len(retry_events) == 3
 
 
 # ----------------------------------------------------------------------
@@ -1138,26 +1149,27 @@ async def test_claude_code_retry_on_whitespace_only_model_output(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_claude_code_empty_output_retry_caps_at_one(monkeypatch):
-    """If the empty-output flake hits twice in a row, the second
-    occurrence does NOT trigger a third call — `_retried` is shared
-    across both retry signatures and bounds the function at one retry
-    total per invocation. The ModelCall returns with empty text (the
-    downstream `_parse_output` will then surface the JSONDecodeError
-    that motivated this work).
+async def test_claude_code_empty_output_retry_caps_at_three(monkeypatch):
+    """T2.6 contract: empty-output retries share the N=3 budget.
+
+    If the empty-output flake hits on every attempt, we expect:
+      - 1 initial call + 3 retries = 4 total `query()` invocations,
+      - 3 `claude_code.empty_output_retry` warnings,
+      - the function returns a ModelCall with empty text once the
+        budget is exhausted (downstream `_parse_output` then surfaces
+        the JSONDecodeError, matching pre-T2.6 caller expectations).
     """
     from claude_agent_sdk import AssistantMessage
 
-    empty_a = [
-        AssistantMessage(content=[], model="claude-sonnet-4-6"),
-        _make_result_message(input_tokens=1, output_tokens=0),
-    ]
-    empty_b = [
-        AssistantMessage(content=[], model="claude-sonnet-4-6"),
-        _make_result_message(input_tokens=2, output_tokens=0),
+    empties = [
+        [
+            AssistantMessage(content=[], model="claude-sonnet-4-6"),
+            _make_result_message(input_tokens=i + 1, output_tokens=0),
+        ]
+        for i in range(4)
     ]
     captured = _install_fake_query_with_call_counter(
-        monkeypatch, side_effects=[empty_a, empty_b],
+        monkeypatch, side_effects=list(empties),
     )
 
     agent = _make_agent()
@@ -1166,31 +1178,33 @@ async def test_claude_code_empty_output_retry_caps_at_one(monkeypatch):
 
     call = await agent._call_via_claude_code_inner(system="sys", user="hi")
 
-    # Exactly two calls — original + one retry, no third attempt.
-    assert captured["n_calls"] == 2
-    # Returned ModelCall carries empty text; downstream parse will fail
-    # (that's the existing JSONDecodeError surface, not this loop's
-    # concern).
+    # Initial + 3 retries (T2.6 cap) = 4 total. The 4th empty stream
+    # returns from the loop because the budget is exhausted.
+    assert captured["n_calls"] == 4
+    # Returned ModelCall carries empty text; downstream parse surfaces
+    # the JSONDecodeError as before.
     assert call.text == ""
-    # Only one retry warning fired.
+    # Three retry warnings — one per retry attempt.
     retry_events = [
         ev for ev, _ in recorder.warnings
         if ev == "claude_code.empty_output_retry"
     ]
-    assert len(retry_events) == 1
+    assert len(retry_events) == 3
 
 
 @pytest.mark.asyncio
-async def test_claude_code_no_retry_on_empty_after_exit1_retry(monkeypatch):
-    """`_retried` is SHARED across the W2.A exit-1 path and the W2.A-v2
-    empty-output path: at most one retry per invocation, regardless of
-    which signature fires first.
+async def test_claude_code_shared_budget_across_exit1_and_empty(monkeypatch):
+    """T2.6 contract: the N=3 retry budget is SHARED across all triggers
+    (transient_exit1, sdk_timeout, empty_output, malformed_json), so a
+    flaky agent can't cycle through triggers to multiply its retry count.
 
-    Scenario: first call hits the exit-1 flake → retry consumed. The
-    retry returns successfully but with empty model output. The
-    function MUST NOT retry again (would be the 3rd call) — it returns
-    a ModelCall with empty text, and the downstream `_parse_output`
-    raises the JSONDecodeError that surfaces the underlying issue.
+    Scenario: 1 initial exit-1 flake, then 3 empty-output attempts that
+    together exhaust the shared budget. We expect:
+      - 4 total `query()` calls (1 initial + 3 retries),
+      - exactly 1 `transient_exit1_retry` warning (the first retry),
+      - exactly 2 `empty_output_retry` warnings (retries 2 + 3),
+      - the function returns with empty text once the budget is
+        exhausted on the 4th attempt.
     """
     from claude_agent_sdk import AssistantMessage, ProcessError
 
@@ -1199,12 +1213,15 @@ async def test_claude_code_no_retry_on_empty_after_exit1_retry(monkeypatch):
         exit_code=1,
         stderr="Check stderr output for details",
     )
-    empty_stream = [
-        AssistantMessage(content=[], model="claude-sonnet-4-6"),
-        _make_result_message(input_tokens=5, output_tokens=0),
+    empties = [
+        [
+            AssistantMessage(content=[], model="claude-sonnet-4-6"),
+            _make_result_message(input_tokens=i + 1, output_tokens=0),
+        ]
+        for i in range(3)
     ]
     captured = _install_fake_query_with_call_counter(
-        monkeypatch, side_effects=[flake, empty_stream],
+        monkeypatch, side_effects=[flake, *empties],
     )
 
     agent = _make_agent()
@@ -1213,27 +1230,26 @@ async def test_claude_code_no_retry_on_empty_after_exit1_retry(monkeypatch):
 
     call = await agent._call_via_claude_code_inner(system="sys", user="hi")
 
-    # Exactly two calls — the exit-1 retry consumed the single retry
-    # budget, so the subsequent empty-text result does NOT trigger
-    # another call.
-    assert captured["n_calls"] == 2
+    # 1 initial + 3 retries = 4 total. Budget exhausted on attempt #4.
+    assert captured["n_calls"] == 4
     # ModelCall text is empty; downstream parse will surface the
     # original empty-output failure mode as a JSONDecodeError.
     assert call.text == ""
 
-    # The exit-1 retry warning fired (the first flake).
+    # The exit-1 retry warning fired once (the first flake).
     exit1_events = [
         ev for ev, _ in recorder.warnings
         if ev == "claude_code.transient_exit1_retry"
     ]
     assert len(exit1_events) == 1
-    # The empty-output retry warning did NOT fire — `_retried` was
-    # already True by the time the empty-text check ran on attempt #2.
+    # Empty-output retries 2 and 3 fired; the 4th attempt's empty result
+    # observed budget exhaustion (_retry_count == _MAX_RETRIES) and
+    # surfaced empty text instead of retrying again.
     empty_events = [
         ev for ev, _ in recorder.warnings
         if ev == "claude_code.empty_output_retry"
     ]
-    assert empty_events == []
+    assert len(empty_events) == 2
 
 
 @pytest.mark.asyncio
@@ -1449,18 +1465,19 @@ async def test_claude_code_no_retry_on_pydantic_validation_error(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_claude_code_no_retry_on_malformed_after_first_retry(monkeypatch):
-    """`_retried` is SHARED across all three retry signatures (W2.A
-    exit-1, W2.A-v2 empty-output, W3b.F malformed-JSON): at most one
-    retry per invocation, regardless of which signature fires first.
+async def test_claude_code_shared_budget_across_exit1_and_malformed(monkeypatch):
+    """T2.6 contract: the N=3 retry budget is SHARED across all triggers
+    (transient_exit1, sdk_timeout, empty_output, malformed_json), so a
+    flaky agent can't cycle through triggers to multiply its retry count.
 
-    Scenario: first call hits the exit-1 flake → retry consumed. The
-    retry returns successfully but with malformed JSON. The function
-    MUST NOT retry again (would be the 3rd call) — it returns a
-    ModelCall with the malformed text, and the downstream
-    `_parse_output` surfaces the JSONDecodeError that motivated this
-    work (with a clear diagnostic so the operator can see the model
-    flaked twice rather than the silently-double-billing alternative).
+    Scenario: 1 initial exit-1 flake, then 3 malformed-JSON attempts
+    that together exhaust the shared budget. We expect:
+      - 4 total `query()` calls (1 initial + 3 retries),
+      - exactly 1 `transient_exit1_retry` warning (the first retry),
+      - exactly 2 `malformed_json_retry` warnings (retries 2 + 3),
+      - the function returns with the last malformed text once the
+        budget is exhausted on the 4th attempt; downstream
+        `_parse_output` surfaces the JSONDecodeError as before.
     """
     from claude_agent_sdk import AssistantMessage, ProcessError, TextBlock
 
@@ -1469,16 +1486,20 @@ async def test_claude_code_no_retry_on_malformed_after_first_retry(monkeypatch):
         exit_code=1,
         stderr="Check stderr output for details",
     )
-    # Retry result: parses-as-JSON-fails (missing colon).
-    malformed_stream = [
-        AssistantMessage(
-            content=[TextBlock(text='{"foo": 1 "bar": 2}')],
-            model="claude-sonnet-4-6",
-        ),
-        _make_result_message(input_tokens=5, output_tokens=3),
+    # Three malformed-JSON streams (missing comma) — same fingerprint
+    # repeated to exhaust the shared budget.
+    malformed_streams = [
+        [
+            AssistantMessage(
+                content=[TextBlock(text='{"foo": 1 "bar": 2}')],
+                model="claude-sonnet-4-6",
+            ),
+            _make_result_message(input_tokens=5, output_tokens=3),
+        ]
+        for _ in range(3)
     ]
     captured = _install_fake_query_with_call_counter(
-        monkeypatch, side_effects=[flake, malformed_stream],
+        monkeypatch, side_effects=[flake, *malformed_streams],
     )
 
     agent = _make_agent()
@@ -1487,24 +1508,23 @@ async def test_claude_code_no_retry_on_malformed_after_first_retry(monkeypatch):
 
     call = await agent._call_via_claude_code_inner(system="sys", user="hi")
 
-    # Exactly two calls — the exit-1 retry consumed the single retry
-    # budget, so the subsequent malformed-JSON result does NOT trigger
-    # another call.
-    assert captured["n_calls"] == 2
-    # Malformed text is returned; downstream parse surfaces the
-    # JSONDecodeError as the original failure mode.
+    # 1 initial + 3 retries = 4 total. Budget exhausted on attempt #4.
+    assert captured["n_calls"] == 4
+    # Malformed text from the final attempt is returned; downstream
+    # parse surfaces the JSONDecodeError as the original failure mode.
     assert call.text == '{"foo": 1 "bar": 2}'
 
-    # The exit-1 retry warning fired (the first flake).
+    # The exit-1 retry warning fired once (the first flake).
     exit1_events = [
         ev for ev, _ in recorder.warnings
         if ev == "claude_code.transient_exit1_retry"
     ]
     assert len(exit1_events) == 1
-    # The malformed-JSON retry warning did NOT fire — `_retried` was
-    # already True by the time the trial parse ran on attempt #2.
+    # Malformed-JSON retries 2 and 3 fired; the 4th attempt observed
+    # budget exhaustion (_retry_count == _MAX_RETRIES) so its trial
+    # parse short-circuits and the loop returns the malformed text.
     malformed_events = [
         ev for ev, _ in recorder.warnings
         if ev == "claude_code.malformed_json_retry"
     ]
-    assert malformed_events == []
+    assert len(malformed_events) == 2

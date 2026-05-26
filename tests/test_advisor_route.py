@@ -1332,11 +1332,20 @@ def test_post_advisor_checkin_returns_decision_run_id(client_with_db, monkeypatc
 
     captured = {}
 
-    def _fake_run(session, *, user_id, trigger, guidance="", existing_decision_run_id=None):
+    def _fake_run(
+        session,
+        *,
+        user_id,
+        trigger,
+        guidance="",
+        existing_decision_run_id=None,
+        resume_from_phase=1,
+    ):
         captured["user_id"] = user_id
         captured["trigger"] = trigger
         captured["guidance"] = guidance
         captured["existing_decision_run_id"] = existing_decision_run_id
+        captured["resume_from_phase"] = resume_from_phase
         class _R:
             decision_run_id = existing_decision_run_id or 1
             draft_id = 42
@@ -1407,7 +1416,15 @@ def test_post_advisor_checkin_marks_decision_run_failed_on_exception(
     finally:
         sess.close()
 
-    def _bomb(session, *, user_id, trigger, guidance="", existing_decision_run_id=None):
+    def _bomb(
+        session,
+        *,
+        user_id,
+        trigger,
+        guidance="",
+        existing_decision_run_id=None,
+        resume_from_phase=1,
+    ):
         raise RuntimeError("synthesis exploded")
 
     monkeypatch.setattr(flow, "run_synthesis", _bomb)
@@ -1459,7 +1476,15 @@ def test_post_advisor_checkin_invalidates_home_brief_cache(client_with_db, monke
     # inside the function body, so patching the module symbol covers it).
     monkeypatch.setattr(cache_mod, "invalidate_home_brief", lambda uid: purged.append(uid))
 
-    def _fake_run(session, *, user_id, trigger, guidance="", existing_decision_run_id=None):
+    def _fake_run(
+        session,
+        *,
+        user_id,
+        trigger,
+        guidance="",
+        existing_decision_run_id=None,
+        resume_from_phase=1,
+    ):
         # Also call invalidate_home_brief as the real run_synthesis would.
         cache_mod.invalidate_home_brief(user_id)
         class _R:
