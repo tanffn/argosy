@@ -447,7 +447,7 @@ export const api = {
   agentActivity: (
     userId: string,
     limit = 10,
-    opts?: { since?: string; detail?: boolean },
+    opts?: { since?: string; detail?: boolean; decisionId?: string },
   ) => {
     const qs = new URLSearchParams({
       user_id: userId,
@@ -455,6 +455,7 @@ export const api = {
     });
     if (opts?.since) qs.set("since", opts.since);
     if (opts?.detail === false) qs.set("detail", "false");
+    if (opts?.decisionId) qs.set("decision_id", opts.decisionId);
     return getJSON<AgentActivityResponse>(`/api/agent-activity?${qs.toString()}`);
   },
   proposalsList: (userId: string, status?: string) => {
@@ -808,6 +809,10 @@ export const api = {
 
   planDraft: (userId: string) =>
     getJSON<DraftResponse>(`/api/plan/draft?user_id=${encodeURIComponent(userId)}`),
+  planDraftObjections: (userId: string) =>
+    getJSON<FMObjectionsResponse>(
+      `/api/plan/draft/objections?user_id=${encodeURIComponent(userId)}`,
+    ),
   planDraftAccept: (draftId: number, userId: string) =>
     postJSON<{ status: string; new_current_id: number }>(
       `/api/plan/draft/${draftId}/accept?user_id=${encodeURIComponent(userId)}`,
@@ -1102,6 +1107,24 @@ export interface DeltaItem {
   accepted: boolean;
   user_edited: boolean;
   user_edit_note: string | null;
+  // Backend-derived (see plan.py::_citation_to_provenance_label).
+  // Maps each citation prefix to a human-readable agent/source label,
+  // deduplicated in encounter order.
+  provenance_agent_labels?: string[];
+}
+
+export interface FMObjection {
+  severity: "RED" | "AMBER" | "YELLOW";
+  topic: string;
+  detail: string;
+}
+
+export interface FMObjectionsResponse {
+  approved: boolean;
+  objections: FMObjection[];
+  cited_sources: string[];
+  decision_run_id: number | null;
+  raw_response_excerpt: string;
 }
 
 /**
@@ -1139,6 +1162,7 @@ export interface HorizonView {
 
 export interface DraftResponse {
   plan_version_id: number;
+  version_label: string | null;
   drafted_at: string;
   derived_from_id: number | null;
   decision_run_id: number | null;

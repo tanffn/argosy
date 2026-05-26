@@ -307,6 +307,7 @@ def run_synthesis(
     if existing_decision_run_id is None:
         decision_run.finished_at = datetime.now(timezone.utc)
         decision_run.status = "completed"
+        decision_run.fund_manager_decision = "approved" if approved else "rejected"
         session.commit()
 
     # W1.C-v4: ingest the agent_reports forensic trail now that the
@@ -349,9 +350,10 @@ def run_synthesis(
         )
 
         verdict = FundManagerPlanRevisionDecision(
-            approved=True,
+            approved=approved,
             reasons=[
                 f"synthesis completed; draft_id={draft.id}",
+                f"fund_manager verdict: {'approved' if approved else 'rejected'}",
                 f"phase_4 risk verdict text length: {len(risk_verdict)}",
             ],
             cited_sources=["docs/design/SDD.md#§6.11"],

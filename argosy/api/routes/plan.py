@@ -32,6 +32,7 @@ from argosy.agents.plan_synthesizer_types import Delta, SpeculativeCandidate
 from argosy.api.events import publish_event, publish_event_threadsafe
 from argosy.state import db as db_mod
 from argosy.state.models import PlanCritique, PlanVersion, UserContext
+from argosy.state.models import AgentReport
 from argosy.state.queries import get_active_baseline
 
 router = APIRouter(prefix="/plan", tags=["plan"])
@@ -118,14 +119,33 @@ class PlanCurrentDTO(BaseModel):
 @router.get("/current", response_model=PlanCurrentDTO)
 async def get_plan_current(user_id: str = Query("ariel")) -> PlanCurrentDTO:
     async with db_mod.get_session() as session:
+        # Prefer the user's accepted plan (role='current'); fall back to the
+        # baseline if they haven't accepted any drafts yet. Never the draft —
+        # /api/plan/draft serves that. Previously this ordered by
+        # imported_at DESC and would surface a freshly-synthesized draft as
+        # "current", which broke /plan and /home consumers that expected the
+        # last accepted plan.
         plan = (
             await session.execute(
                 select(PlanVersion)
-                .where(PlanVersion.user_id == user_id)
-                .order_by(desc(PlanVersion.imported_at))
+                .where(
+                    PlanVersion.user_id == user_id,
+                    PlanVersion.role == "current",
+                )
                 .limit(1)
             )
         ).scalar_one_or_none()
+        if plan is None:
+            plan = (
+                await session.execute(
+                    select(PlanVersion)
+                    .where(
+                        PlanVersion.user_id == user_id,
+                        PlanVersion.role == "baseline",
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
         if plan is None:
             return PlanCurrentDTO(
                 plan_version_id=None,
@@ -394,6 +414,7 @@ class HorizonSectionView(BaseModel):
 
 class DraftResponse(BaseModel):
     plan_version_id: int
+    version_label: str | None
     drafted_at: str
     derived_from_id: int | None
     decision_run_id: int | None
@@ -415,10 +436,99 @@ class RejectRequest(BaseModel):
     guidance: str = ""
 
 
+_AGENT_CLASS_TO_LABEL = {
+    "TaxAnalystAgent": "TaxAnalyst",
+    "ConcentrationAnalystAgent": "ConcentrationAnalyst",
+    "NewsAnalystAgent": "NewsAnalyst",
+    "MacroAnalystAgent": "MacroAnalyst",
+    "FXAnalystAgent": "FXAnalyst",
+    "FxAnalystAgent": "FXAnalyst",
+    "FundamentalsAnalystAgent": "FundamentalsAnalyst",
+    "SentimentAnalystAgent": "SentimentAnalyst",
+    "TechnicalAnalystAgent": "TechnicalAnalyst",
+    "PlanCritiqueAgent": "PlanCritique",
+    "PlanSynthesizerAgent": "PlanSynthesizer",
+}
+
+
+def _citation_to_provenance_label(citation: str) -> str | None:
+    """Map a citation string to a human-readable provenance label.
+
+    Citations follow patterns the synthesizer + analysts emit:
+
+    * ``agent_report:<ClassName>`` → the agent's short name (e.g. "TaxAnalyst")
+    * ``user_context.<key>``       → "user_context"
+    * ``decision_run:debate_outcome_<horizon>`` → "Debate (<horizon>)"
+    * ``portfolio/holdings``       → "portfolio"
+    * ``fundamentals/<TICKER>``    → "FundamentalsAnalyst"
+    * ``technical/<TICKER>``       → "TechnicalAnalyst"
+    * ``fx/...``                   → "FXAnalyst"
+    * ``news/...``                 → "NewsAnalyst"
+    * ``macro/...``                → "MacroAnalyst"
+    * ``concentration/...``        → "ConcentrationAnalyst"
+    * ``tax/...``                  → "TaxAnalyst"
+    * ``sentiment/...``            → "SentimentAnalyst"
+    * ``domain_knowledge/...``     → "domain_kb"
+    * ``docs/design/SDD*`` or ``SDD*`` → "SDD"
+
+    Returns ``None`` when the citation doesn't match any known pattern;
+    the caller can fall through and surface the raw string as a chip.
+    """
+    if not citation:
+        return None
+    c = citation.strip()
+    if c.startswith("agent_report:"):
+        cls = c.split(":", 1)[1].strip()
+        return _AGENT_CLASS_TO_LABEL.get(cls, cls)
+    if c.startswith("user_context"):
+        return "user_context"
+    if c.startswith("decision_run:debate_outcome_"):
+        horizon = c.split("decision_run:debate_outcome_", 1)[1]
+        return f"Debate ({horizon})"
+    if c.startswith("portfolio/"):
+        return "portfolio"
+    prefix_map = (
+        ("fundamentals/", "FundamentalsAnalyst"),
+        ("technical/", "TechnicalAnalyst"),
+        ("fx/", "FXAnalyst"),
+        ("news/", "NewsAnalyst"),
+        ("macro/", "MacroAnalyst"),
+        ("concentration/", "ConcentrationAnalyst"),
+        ("tax/", "TaxAnalyst"),
+        ("sentiment/", "SentimentAnalyst"),
+        ("domain_knowledge/", "domain_kb"),
+    )
+    for prefix, label in prefix_map:
+        if c.startswith(prefix):
+            return label
+    if c.startswith("docs/design/SDD") or c.startswith("SDD"):
+        return "SDD"
+    return None
+
+
+def _enrich_deltas(payload: dict) -> dict:
+    """Inject ``provenance_agent_labels`` into each delta in-place.
+
+    Dedup-preserving order: ``[FundamentalsAnalyst, TaxAnalyst]`` not
+    ``[FundamentalsAnalyst, FundamentalsAnalyst, TaxAnalyst]``.
+    """
+    for d in payload.get("deltas_from_prior") or []:
+        if not isinstance(d, dict):
+            continue
+        seen: dict[str, None] = {}
+        for src in d.get("cited_sources") or []:
+            label = _citation_to_provenance_label(str(src))
+            if label and label not in seen:
+                seen[label] = None
+        d["provenance_agent_labels"] = list(seen.keys())
+    return payload
+
+
 def _horizon_view(json_str: str | None) -> HorizonSectionView | None:
     if not json_str:
         return None
     payload = json.loads(json_str)
+    payload = _enrich_deltas(payload)
     return HorizonSectionView(**payload)
 
 
@@ -431,6 +541,7 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         raise HTTPException(status_code=404, detail="no pending draft for user")
     return DraftResponse(
         plan_version_id=pv.id,
+        version_label=pv.version_label or None,
         drafted_at=pv.imported_at.isoformat(),
         derived_from_id=pv.derived_from_id,
         decision_run_id=pv.decision_run_id,
@@ -440,6 +551,159 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         horizon_long_md=pv.horizon_long_md,
         horizon_medium_md=pv.horizon_medium_md,
         horizon_short_md=pv.horizon_short_md,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave (this session) — FM objections endpoint for /plan executive summary
+# ---------------------------------------------------------------------------
+
+
+class FMObjection(BaseModel):
+    severity: str  # "RED" | "AMBER" | "YELLOW"
+    topic: str
+    detail: str
+
+
+class FMObjectionsResponse(BaseModel):
+    approved: bool
+    objections: list[FMObjection]
+    cited_sources: list[str]
+    decision_run_id: int | None
+    raw_response_excerpt: str
+
+
+_RED_KEYWORDS = (
+    "hard constraint violation",
+    "time-critical",
+    "permanent-loss",
+    "section 102",
+    "statutory",
+)
+_AMBER_KEYWORDS = (
+    "failure",
+    "missing",
+    "unquantified",
+    "escalate",
+    "unresolved",
+    "conflation",
+)
+
+
+def _classify_severity(topic: str, detail: str) -> str:
+    blob = (topic + " " + detail).lower()
+    if any(k in blob for k in _RED_KEYWORDS):
+        return "RED"
+    if any(k in blob for k in _AMBER_KEYWORDS):
+        return "AMBER"
+    return "YELLOW"
+
+
+def _split_reason(reason: str) -> tuple[str, str]:
+    """Split a FM reason string on " — " into (topic, detail).
+
+    FM emits each rejection reason as ``"TOPIC — long-form detail"``.
+    Falls back to ``(topic="objection", detail=reason)`` if no separator.
+    """
+    for sep in (" — ", " -- ", " - "):
+        if sep in reason:
+            topic, detail = reason.split(sep, 1)
+            return topic.strip(), detail.strip()
+    return ("objection", reason.strip())
+
+
+def _parse_fm_response(response_text: str) -> dict:
+    """Best-effort JSON parse of the FM agent's response_text.
+
+    Tolerates trailing prose + raw control chars via the same
+    ``JSONDecoder(strict=False).raw_decode`` pattern the synthesizer uses
+    so an LLM that emits "{...} <free-form trailing note>" still parses.
+    """
+    import json as _json
+    decoder = _json.JSONDecoder(strict=False)
+    try:
+        obj, _idx = decoder.raw_decode(response_text)
+        if isinstance(obj, dict):
+            return obj
+    except _json.JSONDecodeError:
+        pass
+    # Last-ditch: try to find the first '{' and parse from there.
+    brace = response_text.find("{")
+    if brace >= 0:
+        try:
+            obj, _idx = decoder.raw_decode(response_text[brace:])
+            if isinstance(obj, dict):
+                return obj
+        except _json.JSONDecodeError:
+            pass
+    return {}
+
+
+@router.get("/draft/objections", response_model=FMObjectionsResponse)
+def get_draft_objections(
+    user_id: str, db: Session = Depends(get_db)
+) -> FMObjectionsResponse:
+    """Return structured FM objections for the pending draft.
+
+    Parses the ``fund_manager`` agent_report.response_text into a list of
+    ``{severity, topic, detail}`` objects. Severity is heuristic — a
+    keyword scan over the topic + detail text. Empty objection list means
+    FM approved; UI suppresses the objections card in that case.
+    """
+    from argosy.state.queries import get_pending_draft
+
+    pv = get_pending_draft(db, user_id)
+    if pv is None:
+        raise HTTPException(status_code=404, detail="no pending draft for user")
+    if pv.decision_run_id is None:
+        # Synth-produced drafts always carry decision_run_id; manually-ingested
+        # ones may not. Without it, we can't find the FM row.
+        return FMObjectionsResponse(
+            approved=True, objections=[], cited_sources=[],
+            decision_run_id=None, raw_response_excerpt="",
+        )
+
+    # agent_reports.decision_id is a string column; synthesis writes
+    # ``plan-synth-<int>`` per orchestrator.py.
+    decision_id_str = f"plan-synth-{pv.decision_run_id}"
+    fm_row = db.execute(
+        select(AgentReport).where(
+            AgentReport.user_id == user_id,
+            AgentReport.decision_id == decision_id_str,
+            AgentReport.agent_role == "fund_manager",
+        ).order_by(desc(AgentReport.created_at)).limit(1)
+    ).scalar_one_or_none()
+
+    if fm_row is None or not fm_row.response_text:
+        return FMObjectionsResponse(
+            approved=True, objections=[], cited_sources=[],
+            decision_run_id=pv.decision_run_id, raw_response_excerpt="",
+        )
+
+    parsed = _parse_fm_response(fm_row.response_text)
+    approved = bool(parsed.get("approved", True))
+    reasons = parsed.get("reasons") or []
+    cited = parsed.get("cited_sources") or []
+
+    objections: list[FMObjection] = []
+    for r in reasons:
+        if not isinstance(r, str) or not r.strip():
+            continue
+        topic, detail = _split_reason(r)
+        objections.append(
+            FMObjection(
+                severity=_classify_severity(topic, detail),
+                topic=topic,
+                detail=detail,
+            )
+        )
+
+    return FMObjectionsResponse(
+        approved=approved,
+        objections=objections,
+        cited_sources=[c for c in cited if isinstance(c, str)],
+        decision_run_id=pv.decision_run_id,
+        raw_response_excerpt=fm_row.response_text[:500],
     )
 
 
@@ -465,6 +729,7 @@ def get_current_structured(
         raise HTTPException(status_code=404, detail="no current plan for user")
     return DraftResponse(
         plan_version_id=pv.id,
+        version_label=pv.version_label or None,
         drafted_at=(pv.accepted_at or pv.imported_at).isoformat(),
         derived_from_id=pv.derived_from_id,
         decision_run_id=pv.decision_run_id,

@@ -51,6 +51,104 @@ def test_get_draft_404_when_absent(client_with_db):
     assert r.status_code == 404
 
 
+def test_get_draft_objections_parses_fm_response(app_with_draft):
+    """FM response_text JSON is parsed into severity-tagged objections."""
+    from argosy.state.models import AgentReport, PlanVersion
+
+    # Wire a decision_run_id + a fund_manager agent_report to the draft.
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.decision_run_id = 1
+        sess.add(AgentReport(
+            user_id="ariel",
+            agent_role="fund_manager",
+            decision_id="plan-synth-1",
+            response_text=json.dumps({
+                "approved": False,
+                "reasons": [
+                    "TIME-CRITICAL HARD CONSTRAINT VIOLATION — section 102 missed",
+                    "MISSING DRAWDOWN STOP — no downside trigger defined",
+                    "MINOR THEME — small thing",
+                ],
+                "cited_sources": ["agent_report:TaxAnalystAgent", "user_context.x"],
+            }),
+            model="claude-opus-4-7",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft/objections?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["approved"] is False
+    assert len(body["objections"]) == 3
+    sev = {o["topic"]: o["severity"] for o in body["objections"]}
+    # "TIME-CRITICAL" + "HARD CONSTRAINT VIOLATION" + "section 102" all RED triggers
+    assert sev["TIME-CRITICAL HARD CONSTRAINT VIOLATION"] == "RED"
+    # "MISSING" triggers AMBER
+    assert sev["MISSING DRAWDOWN STOP"] == "AMBER"
+    # No keyword hit -> default YELLOW
+    assert sev["MINOR THEME"] == "YELLOW"
+    assert "agent_report:TaxAnalystAgent" in body["cited_sources"]
+    assert body["decision_run_id"] == 1
+
+
+def test_get_draft_objections_404_when_no_draft(client_with_db):
+    r = client_with_db.get("/api/plan/draft/objections?user_id=newcomer")
+    assert r.status_code == 404
+
+
+def test_get_draft_enriches_deltas_with_provenance_labels(app_with_draft):
+    """Each delta gets a provenance_agent_labels list derived from citations."""
+    from argosy.state.models import PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        # Inject a horizon_long_json with a delta carrying mixed citation kinds.
+        draft.horizon_long_json = json.dumps({
+            "horizon": "long",
+            "freshness_expected": "annual",
+            "status": "major_revision",
+            "posture": "test",
+            "deltas_from_prior": [{
+                "item_kind": "target",
+                "item_id": "long.targets.nvda",
+                "horizon": "long",
+                "change_kind": "added",
+                "summary": "NVDA cap",
+                "rationale": "",
+                "cited_sources": [
+                    "agent_report:TaxAnalystAgent",
+                    "fundamentals/NVDA",
+                    "user_context.rsu_vest_schedule",
+                    "decision_run:debate_outcome_long",
+                ],
+                "accepted": False,
+                "user_edited": False,
+                "user_edit_note": None,
+            }],
+        })
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200
+    deltas = r.json()["horizon_long"]["deltas_from_prior"]
+    assert len(deltas) == 1
+    labels = deltas[0]["provenance_agent_labels"]
+    # Order-preserving dedup; we expect TaxAnalyst (from agent_report:),
+    # FundamentalsAnalyst (from fundamentals/), user_context, Debate (long).
+    assert labels == ["TaxAnalyst", "FundamentalsAnalyst", "user_context", "Debate (long)"]
+
+
 def test_post_draft_accept_promotes_to_current(app_with_draft):
     r1 = app_with_draft.get("/api/plan/draft?user_id=ariel")
     draft_id = r1.json()["plan_version_id"]

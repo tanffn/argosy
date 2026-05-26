@@ -56,6 +56,19 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc_aware(dt: datetime) -> datetime:
+    """Promote a naive datetime to UTC-aware; pass aware ones through.
+
+    SQLite via SQLAlchemy's ``DateTime`` (without ``timezone=True``) reads
+    back stored timestamps as naive, even when written as offset-aware.
+    Downstream arithmetic such as ``finished_at - started_at`` then raises
+    ``TypeError: can't subtract offset-naive and offset-aware datetimes``.
+    Normalizing both ends here keeps the rest of the recorder + transcript
+    writer tz-uniform.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 async def record_negotiation_phase(
     *,
     user_id: str,
@@ -85,7 +98,8 @@ async def record_negotiation_phase(
             knows the labels (it scheduled the agents); the recorder
             doesn't try to infer them.
     """
-    finished_at = finished_at or _utcnow()
+    started_at = _as_utc_aware(started_at)
+    finished_at = _as_utc_aware(finished_at) if finished_at is not None else _utcnow()
     ids = list(agent_report_ids)
     side_by_id = side_by_id or {}
     perspective_by_id = perspective_by_id or {}

@@ -93,6 +93,7 @@ async def get_agent_activity(
     since: str | None = Query(None, description="ISO 8601 datetime; rows newer than this."),
     limit: int = Query(10, ge=1, le=500),
     detail: bool = Query(True, description="Include heavy fields (response_text, citations_json, prompt_hash, sources_preview). Pass detail=false for lightweight cost-only fetches."),
+    decision_id: str | None = Query(None, description="Filter to a specific decision_id (e.g. 'plan-synth-19'). Pairs with limit=500 for full cascades."),
 ) -> AgentActivityResponse:
     """Return up to `limit` most-recent agent reports for `user_id`.
 
@@ -111,6 +112,8 @@ async def get_agent_activity(
             .order_by(desc(AgentReport.created_at))
             .limit(limit)
         )
+        if decision_id:
+            stmt = stmt.where(AgentReport.decision_id == decision_id)
         if since:
             try:
                 cutoff = datetime.fromisoformat(since.replace("Z", "+00:00"))
