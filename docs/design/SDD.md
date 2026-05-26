@@ -15,25 +15,86 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-26 by Claude. **Plan UI redesign + multi-ticker advisor shipped (Tracks A+B+C+D+E).**
+**Last edit:** 2026-05-26 (afternoon) by Claude.
+**Status:** Tier 1 + Tier 2 + most of Tier 4 shipped. Synthesis now runs end-to-end in ~30 min with all 10 analysts succeeding. **Fund Manager has rejected 3 consecutive drafts (#7 → #8 → #9), but objection severity has steadily decreased (RED → AMBER → YELLOW) and infrastructure is solid.** The remaining FM concerns are plan-construction issues (NVDA arithmetic, hard-tax-gate embedding, debate-fork arbitration), not data-quality or infrastructure issues.
 
-**What's new since the prior handover:**
-- **Backend cleanups (Tier A bugfix-class):** `/api/plan/current` now returns the user's accepted plan (or baseline fallback), never a draft. `DraftResponse` exposes `version_label` so the UI can detect FM rejection from the draft itself. Synthesis orchestrator sets `decision_run.fund_manager_decision='approved'|'rejected'` and passes the real `approved` boolean through to the recorded verdict (was hardcoded `True`). `negotiation_recorder.record_negotiation_phase` normalizes naive datetimes to UTC-aware (kills the offset-naive/aware crash from run #19). `/api/agent-activity` gained an optional `decision_id` filter.
-- **New endpoints:** `GET /api/plan/draft/objections` (parses FM `agent_report.response_text` into severity-tagged objections), `GET /api/plan/draft/nvda-trajectory` (vest events + reduction program + ceiling target from user_context + portfolio TSV), `GET /api/plan/draft/projection` (parametric bull/base/bear lognormal projection with mu=8%/σ=18% + 4%-rule safe withdrawal).
-- **Per-delta provenance:** `_citation_to_provenance_label` maps citation prefixes (`agent_report:<Class>`, `fundamentals/*`, `user_context.*`, etc.) to human-readable agent labels. Each delta in `/api/plan/draft` now carries a `provenance_agent_labels` list the UI renders as clickable chips that open the agent reasoning drawer.
-- **`/plan` page rewritten as a decision surface.** New components under `ui/src/components/plan/`: `executive-summary-card.tsx` (verdict + delta count + per-horizon status pills + posture excerpt + Accept-all/Reject buttons), `fm-objections-card.tsx` (severity-sorted RED/AMBER/YELLOW with topic+detail), `delta-card.tsx` (per-delta with before/after, rationale, source chips), `agent-cascade-strip.tsx` (5-phase fleet view with clickable nodes), `agent-reasoning-drawer.tsx` (shared drawer for chip + node clicks). All five visualizations from the spec are wired: `allocation-chart.tsx`, `nvda-trajectory-chart.tsx`, `projection-chart.tsx`, `delta-map.tsx`, `sources-heatmap.tsx`.
-- **New `/decide` page (Phase E):** multi-row form for {ticker, action_hint, rationale, tier}. Submit fires all rows in parallel via `Promise.all` → `/api/decisions/run`. Per-row result cards show approved/blocked + tier + link to `/proposals/{id}` and `/decisions/{id}`. Improves the `/proposals` empty-state copy to point users at `/decide` instead of the CLI hint.
-- **Tests:** 75 passing across `test_plan_draft_api`, `test_api_routes`, `test_negotiation_recorder`, `test_decisions_replay`, `test_decision_flow`, `test_plan_synthesis_flow`, `test_fund_manager`, `test_audit_agent`, `test_speculation_route`. UI tsc clean.
-- **Spec + plan docs:** `docs/superpowers/specs/2026-05-26-plan-ui-redesign-design.md` + `docs/superpowers/plans/2026-05-26-plan-ui-redesign-implementation.md` capture the Tier A/B/C scoping and the brainstorming decisions.
+### What landed this session (15 commits, all on `main`)
 
-**Recommended next session focus** (in priority order):
-1. **Restart uvicorn so the new endpoints surface.** The session-start uvicorn was launched without `--reload`; live `/api/plan/current`, `/api/plan/draft`, `/api/plan/draft/objections`, `/api/plan/draft/nvda-trajectory`, `/api/plan/draft/projection`, `/api/agent-activity?decision_id=...` all reflect the new code only after a restart.
-2. **Browser smoke `/plan`.** Confirm the executive summary card renders the FM objections (run #19 has 6 substantive ones), the allocation chart loads from `/api/portfolio/snapshot`, the NVDA trajectory chart plots the four vest events + reduction-program slope + 8,000-share ceiling, the projection chart shows the bull/base/bear bands over 10y, and the per-delta source chips open the agent reasoning drawer.
-3. **Browser smoke `/decide`.** Submit a single low-risk ticker first (e.g., SPY tier=T0) to confirm the decision flow runs end-to-end against the new UI. Then test multi-ticker parallel submission.
-4. **Fix `_assemble_portfolio_summary` plumbing.** Still a stub returning a placeholder string. ConcentrationAnalyst sees null positions, which is what FM's #3 objection ("ConcentrationAnalyst position data weak") is about. Wire the real TSV-derived positions through to the synthesis Phase 1 inputs.
-5. **Re-run synthesis** once `_assemble_portfolio_summary` is fixed so FM gets real position data and can issue an honest approval/rejection rather than rejecting on null inputs.
+**Tier 1 — Data plumbing** (`dc15d45`): closed the load-bearing gap that caused FM to reject for "ConcentrationAnalyst null positions".
+- **T1.1**: `_summarize_positions` in `argosy/orchestrator/flows/plan_synthesis/inputs.py` had a 4-attribute typo (`ticker/quantity/market_value/account` — none exist on `PortfolioPosition`). Fixed to read `symbol/shares/usd_value_k/current_value_local/current_price/location/asset_type`. Same fix applied to `_assemble_portfolio_summary` (was returning a placeholder string). ConcentrationAnalyst now sees `30 holdings · $3.54M USD · NVDA 11,471 @ $200.14 = $2,296k`.
+- **T1.3 + T1.4**: backfilled `identity.rsu_grants.grants[]` from existing `rsu_vest_schedule.active_grants` data (6 grants). Added rule #7 to `intake_extractor` prompt directing future intakes to write the structured field.
+- **T1.5**: migration `0030_portfolio_snapshots` + `PortfolioSnapshotRow` ORM + `argosy/services/portfolio_snapshot_store.py` helpers. Call-site rewiring deferred — scaffolding ready.
+- **T1.6**: new `_assemble_lots_summary` + `_assemble_rsu_schedule_summary` helpers (TaxAnalyst now gets real input). New `argosy/services/schwab_lots_ingest.py` + CLI `argosy ingest schwab-lots <csv>` populates the `lots` table idempotently.
+- **T1.7**: new `argosy/agents/household_budget_analyst.py` — Phase 1 #10 analyst feeding cash-flow / runway context to the synthesizer.
+- **API key fix**: uvicorn now started with `FINNHUB_API_KEY` + `FRED_API_KEY` in env. Phase 1 adapter payloads went from `news=0 / macro=0 / fundamentals=0` to `news=14 / macro=3 / fundamentals=19`.
 
-**Prior milestone preserved (run #19 evidence):** PlanVersion #6 still persisted with `role='draft'`, `version_label='synth-2026-05-25-2215-fm-rejected'`, `decision_run_id=19`. 22 agent_reports rows ingested. `decision_runs.fund_manager_decision` backfilled to `'rejected'` for consistency with the new orchestrator code. The `/plan` page now surfaces this draft end-to-end with the full agent attribution, objections card, and visualizations the user requested.
+**Tier 2 — Synthesis hardening** (`41b3e56` + `d777a27` + `d48016c`):
+- **H1**: `SynthTarget.unit` literal accepts `months` + `days` (was killing #22 at Phase 3 with `Literal` validation error).
+- **T2.1**: cost cap. `ARGOSY_SYNTHESIS_COST_CAP_USD` (default $10). After each phase, sums JSONL trail costs; raises `cost_cap_exceeded` if breached. Emits `plan_synthesis.cost_update` WS event each check.
+- **T2.2**: startup orphan sweep. `@app.on_event("startup")` marks any `decision_runs` with `status='running'` AND `started_at < now - 4h` as failed with structured note.
+- **T2.3**: per-phase persistence + resume endpoint. Migration `0031` adds `decision_phases.phase_output_json`. After each phase the orchestrator persists output (kind=`synthesis.phase_<N>`). New `POST /api/advisor/check-in/{id}/resume` loads completed phases and resumes from first incomplete one. `run_synthesis` accepts `resume_from_phase: int`.
+- **T2.4**: UI "Resume from last phase" button on `/plan` next to synthesisError, parses run id from `plan-synth-N` token.
+- **T2.5**: WS `ws.send_failed` storm fix. Check `client_state == WebSocketState.CONNECTED` before each send; catch `RuntimeError + WebSocketDisconnect` and break cleanly. One INFO log per disconnect instead of N exceptions.
+- **T2.6**: retry envelope N=1 → N=3 with backoff (0.5s / 1s / 2s). Shared budget across `transient_exit1` / `sdk_timeout` / `empty_output` / `malformed_json` triggers via new `_bump_retry_and_backoff` helper.
+- **T2.7**: per-agent SDK timeout via new `DEFAULT_SDK_TIMEOUT_BY_ROLE` table (plan_critique=1200s, plan_synthesizer/fund_manager/audit=900s, everyone else=600s). `_call_via_claude_code_inner` uses `self.sdk_timeout_seconds`.
+- **T2.8**: `decision_runs.status='completed'` finalization. The orchestrator's end-of-flow stamp was gated on `existing_decision_run_id is None`, but `/api/advisor/check-in` always passes a pre-created run id. Result: every recent synthesis stayed `status='running'` after completion. Fixed; DB backfilled (#23 + #24 marked `completed/rejected`).
+
+**Tier 4 — Product surface** (`8edb4c3` + `0398f65`):
+- **T4.6**: new `argosy/agents/objection_translator.py` (Sonnet) + `POST /api/plan/draft/objections/translate` endpoint. Renders verbose FM objections as `{headline, plain_english, recommended_actions}`. UI button "Explain in plain English" per objection swaps the verbose detail for the readable version; original kept behind `<details>`.
+- **T4.7**: "Discuss with advisor" button per objection. Navigates to `/advisor?seed=<encoded>`. `/advisor` page reads `?seed=` on mount via `useSearchParams` and pre-fills the textarea with a structured "explain what this means, what data the FM looked at, what should I do" prompt.
+- **T4.8a/b/c**: synthesizer item_id lineage contract.
+  - **T4.8a**: `PlanSynthesizerAgent.build_prompt` gains `prior_items_index` kwarg. System prompt instructs the model to REUSE item_ids from the prior draft when revising the same concept; mint new kebab-case slugs only for genuinely new items. New orchestrator helper `_pkg_build_prior_items_index` reads prior_current + latest superseded draft.
+  - **T4.8b**: new `GET /api/plan/item-history?user_id=&item_id=` endpoint. Walks plan_versions, scans deltas (explicit item_id) + targets/themes/actions (via slug heuristic). Dedup'd to one entry per plan_version.
+  - **T4.8c**: History button per DeltaCard. Renders "Item lineage (N versions)" with role + value + label per past iteration.
+  - **Verified live**: 4 of #8's 5 item_ids preserved in #9 (80% retention).
+
+**Other fixes**:
+- `97c6530` — added `oil_wti → (FRED, DCOILWTICO)` to `_SNAPSHOT_SOURCE_MAP` in MacroAnalyst. Citation now resolves to `macro/FRED/DCOILWTICO` instead of `macro/UNKNOWN/oil_wti` (closes a recurring FM YELLOW objection across #23/#24/#25).
+- `0ce962d` + `9a47ee7` — UI feedback round: NVDA toggle on allocation chart with dynamic x-axis; sources heatmap full-width at bottom; "FM" → "Fund Manager" everywhere; tier tooltip on /decide; DeltaCard structured suggestion box + collapsible rationale; persistent push back + reject lines; tz duration bug fix on `/decisions/[id]` (parseAsUTC); projection chart toFixed crash fix (defensive array/string handling); NVDA past-sales rendering with rose-colored ReferenceDots.
+
+### Synthesis runs this session
+
+| # | Wall-clock | Phase 1 success | FM verdict | Notes |
+|---|---|---|---|---|
+| #19 (pre-session) | 38 min | 1/9 | rejected (2 RED + 4 AMBER) | data-integrity-driven; baseline |
+| #20 | killed | — | — | killed mid-Phase-2 to load Tier 1 fixes |
+| #21 | killed | — | — | import bug in new helpers; killed |
+| #22 | killed | 9/10 | — | killed by pydantic `unit='months'` schema error → H1 fix |
+| #23 | 34 min | 9/10 | rejected (0 RED + 4 AMBER + 2 YELLOW) | **Tier 1 verified**; FM rejection shifted from data-integrity to plan-coherence |
+| #24 | 62 min | 9/10 | rejected (parser-glitch RED + 2 AMBER + 4 YELLOW) | T2.6 retry envelope verified live; PlanCritique wasted 30 min on doomed 3-retry → T2.7 |
+| #25 | **29 min** | **10/10** | rejected (0 RED + 2 AMBER + 6 YELLOW) | **T2.7 + T2.8 verified**; plan_critique succeeded for first time; T4.8a lineage 4/5 ids preserved |
+
+**Draft #9 is the current pending draft** (`role='draft'`, `version_label='synth-2026-05-26-1117-fm-rejected'`).
+
+### Open quality gaps (none block shipping; all queued)
+
+- **T2.6b**: bear_researcher's "Fatal error in message reader" raises an exception class NOT matched by `isinstance(exc, ProcessError)`. T2.6 retry path is skipped → one horizon's debate drops cleanly (phase tolerates it via `as_completed`) but loses adversarial coverage. Fix: widen the isinstance check OR add a string-pattern fallback.
+- **FM objections parser fallback**: when the FM doesn't use the `TOPIC — detail` format, my parser falls through to topic=`"objection"` and the detail is lost. Affected ~1 objection per run #24 + #25. Small fix in `_split_reason` in `argosy/api/routes/plan.py`.
+- **T1.5 call-site rewiring**: `portfolio_snapshots` table + helpers exist but no consumer reads from it yet (still walks filesystem via `_find_latest_tsv`). Migrate `/api/portfolio/snapshot` + the synthesis input assembler to prefer DB → fall back to filesystem.
+- **Daily-brief loop in production**: code exists but `daily_briefs=0` in DB. Never produced output.
+- **`recent_fills_summary` is still a placeholder** — `_assemble_fills_summary` in inputs.py mirrors the old `_assemble_portfolio_summary` stub pattern. Synthesizer Phase 3 reads it. Same fix shape as T1.1.
+
+### Recommended next-session focus (in priority order)
+
+1. **Hands-on smoke of the new `/plan` UX against draft #9.** Most of the session's UI work (T4.6 plain-English, T4.7 discuss-with-advisor, T4.8c history chip, push back / reject / accept buttons, 5 visualizations) has never been visually verified by Ariel. Highest-leverage 10 minutes you can spend.
+2. **Decide the FM-rejection iteration strategy.** Three consecutive rejections is informative. Options: (a) click "Re-synthesize addressing concerns" on `/plan` to feed #25's 6 substantive objections back as guidance → triggers #26 automatically. (b) Accept draft #9 despite AMBER/YELLOW concerns (FM has stopped raising REDs). (c) Move to Tier 3 (adapter coverage — would resolve a few of the remaining data-provenance objections).
+3. **T2.6b widen retry catch** (~30 min) — closes the bear-researcher "Fatal error in message reader" miss.
+4. **FM parser fallback fix** (~15 min) — keeps the verbose `detail` text even when the topic separator is missing.
+5. **Tier 3 — adapter coverage** if you decide the data-provenance objections matter more than the construction ones (SEC 13F endpoint switch, TipRanks accept-as-failed, non-US ticker mapping).
+6. **Tier 4 remainder**: per-position thesis cards, daily-brief production, deeper push-back re-evaluation flow.
+
+### Environment state at handover
+
+- uvicorn running on `:8000` with full Tier 2 + Tier 4 + oil_wti fix loaded. Env: `ARGOSY_EXPENSE_SAMPLES_ROOT`, `FINNHUB_API_KEY`, `FRED_API_KEY` all set.
+- DB at `db/argosy.db`. Migrations 0001–0031 applied (0030 + 0031 are this session's).
+- Current pending draft: `plan_versions.id=9`, `version_label='synth-2026-05-26-1117-fm-rejected'`.
+- All decision_runs through #25 properly stamped (`status='completed'` or `'failed'` with notes).
+- Tests: 50+ passing across `test_plan_synthesis_flow`, `test_plan_synthesis_inputs`, `test_plan_draft_api`, `test_api_routes`, `test_negotiation_recorder`, `test_plan_synthesizer`, `test_decisions_replay`, `test_decision_flow`, `test_fund_manager`, `test_audit_agent`, `test_speculation_route`. UI tsc clean.
+- Recent commits (most recent first): `97c6530` (oil_wti fix) · `d48016c` (T2.7+T2.8) · `0398f65` (T4.8) · `8edb4c3` (T4.6+T4.7) · `d777a27` (T2.3+T2.4) · `41b3e56` (Tier 2 quick wins) · `dc15d45` (Tier 1) · `9a47ee7` (G1-G4 feedback round) · `0ce962d` (F1-F7 feedback round) · `2653e2a` (Tier C projection) · `23b5eae` (Tier B charts) · `14152d0` (A+B + Tier A redesign) · `0d60813` (/decide tab) · `5b15b50` (SDD refresh after Tier A-E).
+
+### Master plan reference
+
+`docs/superpowers/plans/2026-05-26-everything-but-autonomous-master-plan.md` — the user's locked sequencing: Tier 1 → Tier 2 → Tier 3 → Tier 4 → Tier 5 → Tier 6 (manual live) → Tier 7 (productization) → LAST (autonomous live trading). Tier 1 + Tier 2 done; most of Tier 4's UX-leverage items done (T4.6/T4.7/T4.8). Tier 3 + Tier 4 remainder are next.
 
 **Recommended next session focus** (in priority order):
 1. **`/plan` UI verification.** Reload `http://localhost:1337/plan` — the draft card should populate with horizon targets/actions. FM rejection should be visible via the `-fm-rejected` suffix in version_label OR via the `agent_reports` rows for the fund_manager role (use `GET /api/agent-activity?decision_id=plan-synth-19` or similar).
