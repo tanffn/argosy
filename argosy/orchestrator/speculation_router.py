@@ -92,6 +92,16 @@ def route_accepted_candidate(
     target_account_class = cap.allowed_account_classes[0]
 
     paper = execution_mode != "live"
+    # T4.2: forward the candidate's ``sourced_from`` list onto the
+    # persisted proposal so the /api/proposals route can surface the
+    # citations under ``cited_sources`` (see proposal_lifecycle for the
+    # storage shape: it lands inside ``expected_impact_json``).
+    sourced_from_raw = candidate.get("sourced_from") or []
+    sourced_from = (
+        [str(x) for x in sourced_from_raw if isinstance(x, (str, int, float))]
+        if isinstance(sourced_from_raw, list)
+        else []
+    )
     proposal = _create_proposal(
         session=session,
         user_id=user_id,
@@ -109,6 +119,7 @@ def route_accepted_candidate(
         # through so the routed proposal links back to the synthesis run
         # that emitted the candidate (per SDD §6.11).
         decision_run_id=getattr(pv, "decision_run_id", None),
+        sourced_from=sourced_from,
     )
     session.commit()
 

@@ -146,6 +146,14 @@ export interface ProposalListItem {
   cooling_off_until: string | null;
   created_at: string;
   updated_at: string;
+  // T4.2: surface speculative-candidate metadata alongside every row so
+  // the proposals page can split speculative (account_class="limited")
+  // from regular plan deltas and show conviction + a top citation.
+  // ``conviction`` mirrors ``confidence`` (the canonical column); kept
+  // separate so the UI can adopt the user-facing "conviction" term
+  // without renaming the underlying column.
+  conviction: string | null;
+  cited_sources: string[];
 }
 
 export interface ProposalListResponse {

@@ -51,6 +51,7 @@ def create_speculative_proposal(
     execution_mode: str = "paper",
     paper: bool = True,
     decision_run_id: int | None = None,
+    sourced_from: list[str] | None = None,
 ) -> ProposalRow:
     """Persist one speculation-origin proposal and return the ORM row.
 
@@ -99,9 +100,14 @@ def create_speculative_proposal(
     # JSON column to dedicated columns via an alembic migration + a
     # one-shot backfill. For now the JSON column is sufficient — the
     # data is read back in the proposal-detail UI, never aggregated.
+    # T4.2: persist ``sourced_from`` (the synthesizer's per-candidate
+    # citation list) alongside the other speculation metadata so the
+    # /api/proposals route can surface it as ``cited_sources`` without a
+    # second hop through plan_versions.
     expected_impact_json = json.dumps({
         "exit_trigger": exit_trigger,
         "execution_mode": execution_mode,
+        "sourced_from": list(sourced_from or []),
     })
 
     row = ProposalRow(

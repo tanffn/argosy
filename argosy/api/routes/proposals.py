@@ -67,6 +67,15 @@ class ProposalListItem(BaseModel):
     cooling_off_until: str | None
     created_at: str
     updated_at: str
+    # T4.2: surface speculative-candidate metadata onto the row so the
+    # UI can render conviction + citations without a second round-trip.
+    # ``conviction`` is an alias of ``confidence`` (HIGH/MEDIUM/LOW) — we
+    # keep both for backwards-compat with existing consumers.
+    # ``cited_sources`` is pulled from ``expected_impact_json.sourced_from``
+    # for speculation-origin proposals; empty list for non-speculative
+    # proposals or when the synthesizer did not emit sources.
+    conviction: str | None = None
+    cited_sources: list[str] = []
 
 
 class ProposalListResponse(BaseModel):
@@ -120,6 +129,29 @@ class ProposalActionResponse(BaseModel):
 # ----------------------------------------------------------------------
 
 
+def _extract_cited_sources(expected_impact_json: str | None) -> list[str]:
+    """Pull ``sourced_from`` (a list[str]) out of ``expected_impact_json``.
+
+    Speculation-origin proposals (T4.2) persist ``sourced_from`` from the
+    synthesizer's ``SpeculativeCandidate`` into ``expected_impact_json``
+    under the ``sourced_from`` key. Non-speculation proposals do not
+    populate this key, so we return an empty list. Any parse error or
+    unexpected shape is also treated as "no citations".
+    """
+    if not expected_impact_json:
+        return []
+    try:
+        blob = json.loads(expected_impact_json)
+    except Exception:
+        return []
+    if not isinstance(blob, dict):
+        return []
+    raw = blob.get("sourced_from")
+    if not isinstance(raw, list):
+        return []
+    return [str(x) for x in raw if isinstance(x, (str, int, float))]
+
+
 def _row_to_item(row: ProposalRow) -> ProposalListItem:
     return ProposalListItem(
         id=row.id,
@@ -138,6 +170,10 @@ def _row_to_item(row: ProposalRow) -> ProposalListItem:
         cooling_off_until=row.cooling_off_until.isoformat() if row.cooling_off_until else None,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
+        # T4.2: ``conviction`` mirrors ``confidence`` (the column was named
+        # ``confidence`` before the UI/spec adopted the term "conviction").
+        conviction=row.confidence,
+        cited_sources=_extract_cited_sources(row.expected_impact_json),
     )
 
 
