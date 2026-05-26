@@ -1,19 +1,33 @@
 "use client";
 
 import { useState } from "react";
-import { Check, MessageSquareWarning, X } from "lucide-react";
+import { Check, History, MessageSquareWarning, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import type { DeltaItem } from "@/lib/api";
+import { api, type DeltaItem } from "@/lib/api";
 
 interface DeltaCardProps {
   delta: DeltaItem;
+  userId: string;
   disabled?: boolean;
   onAccept?: (delta: DeltaItem) => void | Promise<void>;
   onReject?: (delta: DeltaItem) => void | Promise<void>;
   onPushBack?: (delta: DeltaItem) => void | Promise<void>;
   onSourceClick?: (agentLabel: string) => void;
+}
+
+interface HistoryEntry {
+  plan_version_id: number;
+  version_label: string | null;
+  role: string;
+  drafted_at: string;
+  horizon: string;
+  label: string;
+  value: number | string | null;
+  unit: string | null;
+  rationale: string;
+  accepted: boolean;
 }
 
 function changeKindBadge(kind: DeltaItem["change_kind"]) {
@@ -63,8 +77,37 @@ function proposedLabel(p: Record<string, unknown> | null): string | null {
 }
 
 export function DeltaCard(props: DeltaCardProps) {
-  const { delta, disabled, onAccept, onReject, onPushBack, onSourceClick } = props;
+  const {
+    delta,
+    userId,
+    disabled,
+    onAccept,
+    onReject,
+    onPushBack,
+    onSourceClick,
+  } = props;
   const [rejectedLocally, setRejectedLocally] = useState(false);
+  const [history, setHistory] = useState<
+    HistoryEntry[] | "loading" | "error" | null
+  >(null);
+
+  const loadHistory = async () => {
+    setHistory("loading");
+    try {
+      const r = await api.planItemHistory(userId, delta.item_id);
+      setHistory(r.entries);
+    } catch {
+      setHistory("error");
+    }
+  };
+
+  const toggleHistory = () => {
+    if (history === null || history === "error") {
+      void loadHistory();
+    } else {
+      setHistory(null);
+    }
+  };
   const badge = changeKindBadge(delta.change_kind);
 
   const propValue = formatTargetValue(delta.proposed);
@@ -183,6 +226,69 @@ export function DeltaCard(props: DeltaCardProps) {
             </button>
           ))}
         </div>
+      )}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 text-xs"
+          onClick={toggleHistory}
+          title="Show how this item has evolved across plan iterations"
+        >
+          <History className="h-3 w-3 mr-1" />
+          {history === "loading"
+            ? "Loading…"
+            : Array.isArray(history)
+              ? "Hide history"
+              : "History"}
+        </Button>
+      </div>
+
+      {Array.isArray(history) && history.length > 0 && (
+        <div className="mt-3 rounded-md border border-border/40 bg-muted/20 p-3">
+          <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-2">
+            Item lineage ({history.length} versions)
+          </div>
+          <ul className="text-xs space-y-2">
+            {history.map((h, i) => {
+              const valueStr =
+                h.value !== null
+                  ? `${h.value}${h.unit ? " " + h.unit : ""}`
+                  : "—";
+              return (
+                <li
+                  key={`${h.plan_version_id}-${i}`}
+                  className="flex items-baseline gap-2 border-l-2 border-border/40 pl-2"
+                >
+                  <span className="font-mono text-muted-foreground text-[10px] min-w-[64px]">
+                    plan #{h.plan_version_id}
+                  </span>
+                  <Badge variant="outline" className="text-[10px]">
+                    {h.role}
+                  </Badge>
+                  <span className="font-mono">{valueStr}</span>
+                  {h.label && (
+                    <span className="text-muted-foreground truncate">
+                      — {h.label}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+      {Array.isArray(history) && history.length === 0 && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          No prior versions for this item — first appearance.
+        </p>
+      )}
+      {history === "error" && (
+        <p className="mt-3 text-xs text-error">
+          Couldn&apos;t load history; the endpoint may not be available yet.
+        </p>
       )}
 
       {pushbackLines.length > 0 && (

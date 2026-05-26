@@ -509,6 +509,7 @@ export default function PlanPage() {
               <TabsContent value="long" className="mt-3">
                 <HorizonDeltaList
                   h={draft.horizon_long}
+                  userId={USER_ID}
                   onAccept={onAcceptDelta}
                   onReject={onRejectDelta}
                   onPushBack={onPushBackDelta}
@@ -519,6 +520,7 @@ export default function PlanPage() {
               <TabsContent value="medium" className="mt-3">
                 <HorizonDeltaList
                   h={draft.horizon_medium}
+                  userId={USER_ID}
                   onAccept={onAcceptDelta}
                   onReject={onRejectDelta}
                   onPushBack={onPushBackDelta}
@@ -529,6 +531,7 @@ export default function PlanPage() {
               <TabsContent value="short" className="mt-3">
                 <HorizonDeltaList
                   h={draft.horizon_short}
+                  userId={USER_ID}
                   onAccept={onAcceptDelta}
                   onReject={onRejectDelta}
                   onPushBack={onPushBackDelta}
@@ -639,6 +642,7 @@ export default function PlanPage() {
 
 interface HorizonDeltaListProps {
   h: HorizonView | null;
+  userId: string;
   onAccept: (d: DeltaItem) => void | Promise<void>;
   onReject: (d: DeltaItem) => void | Promise<void>;
   onPushBack: (d: DeltaItem) => void | Promise<void>;
@@ -648,6 +652,7 @@ interface HorizonDeltaListProps {
 
 function HorizonDeltaList({
   h,
+  userId,
   onAccept,
   onReject,
   onPushBack,
@@ -667,6 +672,7 @@ function HorizonDeltaList({
         <li key={d.item_id}>
           <DeltaCard
             delta={d}
+            userId={userId}
             disabled={disabled}
             onAccept={onAccept}
             onReject={onReject}

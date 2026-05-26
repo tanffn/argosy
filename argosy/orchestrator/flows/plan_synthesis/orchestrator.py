@@ -723,6 +723,123 @@ def _ingest_synthesis_trail(
         return 0
 
 
+def _pkg_build_prior_items_index(
+    session, *, user_id: str, prior_current,
+) -> list[dict]:
+    """Flatten {targets, themes, actions, deltas} from prior plans into a
+    structured index keyed by item_id.
+
+    Reads:
+      - the user's prior_current PlanVersion (if exists)
+      - the most-recently-superseded draft for the same user
+
+    Both contribute item_ids the synthesizer should preserve when revising.
+    Returns a flat list of dicts: {item_id, item_kind, horizon, label,
+    value, unit, from_plan}. Defensive — every plan_version row's JSON is
+    try/excepted so a single corrupt row doesn't break synthesis.
+    """
+    from argosy.state.models import PlanVersion
+    from sqlalchemy import desc, select
+
+    seen_ids: set[str] = set()
+    out: list[dict] = []
+
+    def _harvest(pv: PlanVersion, source_label: str) -> None:
+        for horizon, json_str in (
+            ("long", pv.horizon_long_json),
+            ("medium", pv.horizon_medium_json),
+            ("short", pv.horizon_short_json),
+        ):
+            if not json_str:
+                continue
+            try:
+                payload = json.loads(json_str)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            for kind_key in ("targets", "themes", "actions"):
+                for entry in payload.get(kind_key) or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    # Synthesizer-emitted targets/themes/actions don't
+                    # carry an item_id at the top level (only Delta does);
+                    # we derive a synthetic id from horizon + kind + label
+                    # so the index can surface "before/after" pairs even
+                    # when no delta exists between iterations.
+                    label = entry.get("label", "") or ""
+                    if not label:
+                        continue
+                    slug = (
+                        "".join(
+                            c if c.isalnum() else "_"
+                            for c in label.lower()
+                        ).strip("_")[:40]
+                    )
+                    if not slug:
+                        continue
+                    iid = f"{horizon}.{kind_key}.{slug}"
+                    if iid in seen_ids:
+                        continue
+                    seen_ids.add(iid)
+                    out.append({
+                        "item_id": iid,
+                        "item_kind": kind_key.rstrip("s"),  # 'target', 'theme', 'action'
+                        "horizon": horizon,
+                        "label": label,
+                        "value": entry.get("value", ""),
+                        "unit": entry.get("unit", ""),
+                        "from_plan": source_label,
+                    })
+            # Deltas DO carry their own item_id — surface those verbatim.
+            for delta in payload.get("deltas_from_prior") or []:
+                if not isinstance(delta, dict):
+                    continue
+                iid = delta.get("item_id")
+                if not iid or iid in seen_ids:
+                    continue
+                seen_ids.add(iid)
+                proposed = delta.get("proposed") or {}
+                if not isinstance(proposed, dict):
+                    proposed = {}
+                out.append({
+                    "item_id": iid,
+                    "item_kind": delta.get("item_kind") or "?",
+                    "horizon": delta.get("horizon") or horizon,
+                    "label": proposed.get("label", delta.get("summary", "")),
+                    "value": proposed.get("value", ""),
+                    "unit": proposed.get("unit", ""),
+                    "from_plan": source_label,
+                })
+
+    if prior_current is not None:
+        try:
+            _harvest(prior_current, f"#{prior_current.id} (current)")
+        except Exception as exc:  # noqa: BLE001 — defensive
+            log.warning(
+                "plan_synthesis.prior_items_harvest_failed",
+                source="current", error=str(exc),
+            )
+
+    # Also harvest the most-recent superseded draft for this user (rejected
+    # drafts contain the synthesizer's most-recent thinking).
+    try:
+        latest_super = session.execute(
+            select(PlanVersion)
+            .where(PlanVersion.user_id == user_id)
+            .where(PlanVersion.role == "superseded")
+            .order_by(desc(PlanVersion.imported_at))
+            .limit(1)
+        ).scalar_one_or_none()
+        if latest_super is not None:
+            _harvest(latest_super, f"#{latest_super.id} (last draft)")
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "plan_synthesis.prior_items_harvest_failed",
+            source="superseded", error=str(exc),
+        )
+
+    return out
+
+
 def _record_phase_completion(
     *,
     user_id: str,
@@ -1273,6 +1390,12 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
             prior_current.horizon_medium_md,
             prior_current.horizon_short_md,
         ]))
+    # T4.8a — build the prior-items index from both prior_current AND
+    # the most-recent superseded draft (if any). The synthesizer uses
+    # this to preserve item_id when revising the same logical item.
+    prior_items_index = _pkg_build_prior_items_index(
+        session, user_id=user_id, prior_current=prior_current,
+    )
     result = agent.run_sync(
         baseline_distillate_md=baseline_md,
         prior_current_md=prior_md,
@@ -1282,6 +1405,7 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
         recent_fills_summary=fills_summary,
         speculation_cap_pct=speculation_cap_pct,
         speculation_cap_concurrent=speculation_cap_concurrent,
+        prior_items_index=prior_items_index,
         decision_id=decision_run_id,
     )
     # W1.C-v2: single-agent phase still uses the uniform bulk-persist

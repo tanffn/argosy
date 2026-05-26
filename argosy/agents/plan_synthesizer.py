@@ -41,6 +41,7 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
         recent_fills_summary: str,
         speculation_cap_pct: float | None = None,
         speculation_cap_concurrent: int | None = None,
+        prior_items_index: list[dict] | None = None,
     ) -> tuple[str, str]:
         system = (
             "You are the plan synthesizer on the Argosy fleet — Phase 3 of the "
@@ -64,6 +65,29 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "DELTAS: every change vs. the prior current plan must produce a "
             "Delta entry with a stable item_id (e.g. 'medium.targets.nvda'), "
             "rationale, and citations. Per-delta accept/reject relies on these.\n\n"
+            "ITEM_ID LINEAGE CONTRACT (T4.8a — load-bearing for the UI's "
+            "history view): the user's UI shows how a target/action/theme "
+            "EVOLVED across plan iterations using item_id as the join key.\n"
+            "  - If you're REVISING something that existed in the prior "
+            "    draft or prior current plan, KEEP THE SAME item_id. Look "
+            "    at the PRIOR ITEMS INDEX block below; if any item matches "
+            "    your concept (same horizon + same intent + same target "
+            "    variable), reuse its exact item_id verbatim. Do NOT mint "
+            "    a new id for what is conceptually the same target.\n"
+            "  - If you're adding a GENUINELY NEW item that has no prior "
+            "    counterpart, generate a stable kebab-case id following the "
+            "    convention `<horizon>.<kind>.<slug>` (e.g. "
+            "    `medium.targets.nvda_share_of_portfolio_12mo`) — choose a "
+            "    slug that will survive future revisions (don't bake a "
+            "    transient number like '2026' into the slug unless it's "
+            "    truly anchored to that year).\n"
+            "  - If a prior item should be DROPPED, emit a Delta with "
+            "    change_kind='removed' using its original item_id; don't "
+            "    just omit it silently.\n"
+            "Reusing the id when intent is the same is the most common "
+            "case. Missing this contract breaks the history chip on the "
+            "/plan page and forces the user to manually match revisions "
+            "across drafts.\n\n"
             "CITATIONS REQUIRED for every numeric or directional claim. Use "
             "the format `agent_report:<id>` for analyst evidence, "
             "`decision_run:<id>` for prior synthesis lineage, "
@@ -90,16 +114,56 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             )
             system = system + cap_block
 
+        # T4.8a — render the prior-items index for the lineage contract.
+        # Group by horizon so the model can scan one column at a time.
+        prior_items_block: str
+        if prior_items_index:
+            by_horizon: dict[str, list[dict]] = {"long": [], "medium": [], "short": []}
+            for it in prior_items_index:
+                h = (it.get("horizon") or "").lower()
+                if h in by_horizon:
+                    by_horizon[h].append(it)
+            lines: list[str] = []
+            for h in ("long", "medium", "short"):
+                items = by_horizon[h]
+                if not items:
+                    continue
+                lines.append(f"  [{h}]")
+                for it in items:
+                    label = it.get("label", "")
+                    value = it.get("value", "")
+                    unit = it.get("unit", "")
+                    kind = it.get("item_kind", "")
+                    iid = it.get("item_id", "?")
+                    src = it.get("from_plan", "")
+                    suffix = (
+                        f"  (from plan #{src})" if src else ""
+                    )
+                    lines.append(
+                        f"    - {iid}  ({kind})  label={label!r}"
+                        f"  value={value} {unit}{suffix}"
+                    )
+            prior_items_block = "\n".join(lines) if lines else "  (none)"
+        else:
+            prior_items_block = "  (no prior items — first synthesis for this user)"
+
         usr = "\n\n".join([
             "=== BASELINE DISTILLATE ===\n" + (baseline_distillate_md or "(no baseline)"),
             "=== PRIOR CURRENT PLAN ===\n" + (prior_current_md or "(no prior current — first synthesis)"),
+            # T4.8a lineage payload — placed prominently AFTER the prior
+            # plan markdown so the model has both the narrative + the
+            # structured ids next to each other.
+            "=== PRIOR ITEMS INDEX (T4.8a — preserve item_id across revisions) ===\n"
+            + prior_items_block,
             "=== ANALYST REPORTS (Phase 1 outputs) ===\n" + analyst_reports_text,
             "=== DEBATE OUTCOMES (Phase 2 outputs, one per horizon) ===\n" + debate_outcomes_text,
             "=== PORTFOLIO SNAPSHOT ===\n" + portfolio_snapshot_summary,
             "=== RECENT FILLS + DECISIONS (last 90 days) ===\n" + recent_fills_summary,
             "Produce the PlanSynthesisOutput JSON now. Honor the medium-horizon "
             "centerpiece framing. If status=no_change for a horizon, deltas_from_prior "
-            "must be empty AND the rationale must explicitly justify why nothing changed.",
+            "must be empty AND the rationale must explicitly justify why nothing changed. "
+            "Honor the item_id lineage contract — REUSE ids from the PRIOR ITEMS INDEX "
+            "when revising; only mint new ids for genuinely new items.",
         ])
         return system, usr
 

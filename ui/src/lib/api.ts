@@ -813,6 +813,26 @@ export const api = {
     getJSON<FMObjectionsResponse>(
       `/api/plan/draft/objections?user_id=${encodeURIComponent(userId)}`,
     ),
+  // T4.8b — history of one item_id across plan_versions for the user.
+  planItemHistory: (userId: string, itemId: string) =>
+    getJSON<{
+      item_id: string;
+      entries: Array<{
+        plan_version_id: number;
+        version_label: string | null;
+        role: string;
+        drafted_at: string;
+        horizon: string;
+        summary: string;
+        label: string;
+        value: number | string | null;
+        unit: string | null;
+        rationale: string;
+        accepted: boolean;
+      }>;
+    }>(
+      `/api/plan/item-history?user_id=${encodeURIComponent(userId)}&item_id=${encodeURIComponent(itemId)}`,
+    ),
   planDraftObjectionTranslate: (
     userId: string,
     body: {

@@ -978,6 +978,152 @@ def get_draft_nvda_trajectory(
     )
 
 
+class PlanItemHistoryEntry(BaseModel):
+    plan_version_id: int
+    version_label: str | None
+    role: str
+    drafted_at: str
+    horizon: str
+    summary: str
+    label: str
+    value: float | int | str | None
+    unit: str | None
+    rationale: str
+    accepted: bool
+
+
+class PlanItemHistoryResponse(BaseModel):
+    item_id: str
+    entries: list[PlanItemHistoryEntry]
+
+
+@router.get(
+    "/item-history",
+    response_model=PlanItemHistoryResponse,
+)
+def get_item_history(
+    item_id: str = Query(...),
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> PlanItemHistoryResponse:
+    """Return the trajectory of one item_id across the user's plan_versions.
+
+    T4.8b. Walks every plan_versions row for the user in chronological
+    order; for each, scans the three horizon JSON payloads looking for
+    matching ``item_id`` either in ``deltas_from_prior`` (Delta carries
+    item_id directly) OR derived from ``targets``/``actions``/``themes``
+    using the same slug heuristic as ``_pkg_build_prior_items_index``.
+
+    Each match returns the proposed value, label, rationale, accepted
+    flag, and the lineage metadata (which plan version, when drafted).
+    The UI's history chip uses this to render "in plan #19 we said X,
+    in plan #23 X became Y".
+    """
+    from argosy.state.models import PlanVersion
+    from sqlalchemy import asc
+
+    rows = db.execute(
+        select(PlanVersion)
+        .where(PlanVersion.user_id == user_id)
+        .order_by(asc(PlanVersion.imported_at))
+    ).scalars().all()
+
+    def _slug(label: str) -> str:
+        return (
+            "".join(c if c.isalnum() else "_" for c in label.lower()).strip("_")[
+                :40
+            ]
+        )
+
+    entries: list[PlanItemHistoryEntry] = []
+    seen_per_plan: set[int] = set()  # dedupe to one entry per plan_version_id
+    for pv in rows:
+        for horizon, json_str in (
+            ("long", pv.horizon_long_json),
+            ("medium", pv.horizon_medium_json),
+            ("short", pv.horizon_short_json),
+        ):
+            if not json_str:
+                continue
+            try:
+                payload = json.loads(json_str)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            # First: scan deltas for explicit item_id matches.
+            for delta in payload.get("deltas_from_prior") or []:
+                if not isinstance(delta, dict):
+                    continue
+                if delta.get("item_id") != item_id:
+                    continue
+                if pv.id in seen_per_plan:
+                    continue
+                seen_per_plan.add(pv.id)
+                proposed = delta.get("proposed") or {}
+                if not isinstance(proposed, dict):
+                    proposed = {}
+                value = proposed.get("value")
+                entries.append(
+                    PlanItemHistoryEntry(
+                        plan_version_id=pv.id,
+                        version_label=pv.version_label,
+                        role=pv.role or "?",
+                        drafted_at=pv.imported_at.isoformat()
+                        if pv.imported_at
+                        else "",
+                        horizon=delta.get("horizon") or horizon,
+                        summary=delta.get("summary") or "",
+                        label=proposed.get("label", "")
+                        or delta.get("summary", ""),
+                        value=value if isinstance(value, (int, float, str)) else None,
+                        unit=proposed.get("unit"),
+                        rationale=delta.get("rationale") or "",
+                        accepted=bool(delta.get("accepted", False)),
+                    )
+                )
+
+            # Second: scan targets/themes/actions by slug-of-label match
+            # so items that existed BEFORE this revision (and weren't
+            # emitted as deltas) still appear in the history. We compute
+            # the synthetic id the same way _pkg_build_prior_items_index
+            # does.
+            for kind_key in ("targets", "themes", "actions"):
+                for entry in payload.get(kind_key) or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    label = entry.get("label", "") or ""
+                    if not label:
+                        continue
+                    synth_id = (
+                        f"{horizon}.{kind_key}.{_slug(label)}"
+                    )
+                    if synth_id != item_id:
+                        continue
+                    if pv.id in seen_per_plan:
+                        continue
+                    seen_per_plan.add(pv.id)
+                    value = entry.get("value")
+                    entries.append(
+                        PlanItemHistoryEntry(
+                            plan_version_id=pv.id,
+                            version_label=pv.version_label,
+                            role=pv.role or "?",
+                            drafted_at=pv.imported_at.isoformat()
+                            if pv.imported_at
+                            else "",
+                            horizon=horizon,
+                            summary=label,
+                            label=label,
+                            value=value if isinstance(value, (int, float, str)) else None,
+                            unit=entry.get("unit"),
+                            rationale=entry.get("rationale") or "",
+                            accepted=False,
+                        )
+                    )
+
+    return PlanItemHistoryResponse(item_id=item_id, entries=entries)
+
+
 class ObjectionTranslateRequest(BaseModel):
     topic: str
     detail: str
