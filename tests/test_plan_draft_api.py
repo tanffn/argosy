@@ -320,8 +320,16 @@ def test_post_delta_reject_stamps_user_edit_note(app_with_draft):
     assert "timeline" in delta["user_edit_note"]
 
 
-def test_post_delta_pushback_accumulates_in_user_edit_note(app_with_draft):
-    """Multiple pushbacks append to user_edit_note rather than overwriting."""
+def test_post_delta_pushback_accumulates_in_user_edit_note(
+    app_with_draft, monkeypatch,
+):
+    """Multiple pushbacks append to user_edit_note rather than overwriting.
+
+    T4.3 — disable the slim re-debate background dispatch so the test
+    asserts only on the legacy user_edit_note persistence side-effect
+    (the slim flow gets its own coverage in test_per_delta_pushback.py).
+    """
+    monkeypatch.setenv("ARGOSY_DISABLE_PER_DELTA_PUSHBACK_REDEBATE", "1")
     from argosy.state.models import PlanVersion
 
     sess = app_with_draft.app.state.session_factory()
@@ -374,8 +382,11 @@ def test_post_delta_pushback_accumulates_in_user_edit_note(app_with_draft):
     assert note.count("PUSHBACK:") == 2
 
 
-def test_post_delta_pushback_400_when_feedback_empty(app_with_draft):
+def test_post_delta_pushback_400_when_feedback_empty(
+    app_with_draft, monkeypatch,
+):
     """Empty feedback rejected — pushback must carry actual user input."""
+    monkeypatch.setenv("ARGOSY_DISABLE_PER_DELTA_PUSHBACK_REDEBATE", "1")
     from argosy.state.models import PlanVersion
 
     sess = app_with_draft.app.state.session_factory()

@@ -341,6 +341,15 @@ export default function PlanPage() {
     [draft, refresh],
   );
 
+  // T4.3 — per-delta slim re-debate state. Maps the item_id of a
+  // delta currently being re-debated to the backend's decision_run_id
+  // so the DeltaCard can show "Re-debate running…" and the user can
+  // drill into /decisions/<id>. The map clears (per-item) when the
+  // matching WS ``plan.delta.pushback.completed`` arrives.
+  const [pushbackRuns, setPushbackRuns] = useState<
+    Record<string, { decisionRunId: number; status: "running" | "completed" | "failed" }>
+  >({});
+
   const onPushBackDelta = useCallback(
     async (delta: DeltaItem) => {
       if (!draft) return;
@@ -351,12 +360,31 @@ export default function PlanPage() {
       setWorking(true);
       setError(null);
       try {
-        await api.planDraftDeltaPushback(
+        const resp = await api.planDraftDeltaPushback(
           draft.plan_version_id,
           delta.item_id,
           USER_ID,
           feedback.trim(),
         );
+        if (resp.decision_run_id != null) {
+          // Capture the in-flight run_id so the DeltaCard can render a
+          // "Re-debate running…" indicator. The WS subscription below
+          // flips it to "completed" / "failed" when the slim flow
+          // finishes (or errors).
+          setPushbackRuns((prev) => ({
+            ...prev,
+            [delta.item_id]: {
+              decisionRunId: resp.decision_run_id as number,
+              status: "running",
+            },
+          }));
+        } else if (resp.status === "cost_cap_refused") {
+          // Surface as a soft error so the user knows the slim flow
+          // didn't fire (the user_edit_note IS persisted regardless).
+          setError(
+            `Pushback recorded, but slim re-debate refused: ${resp.detail ?? "cost cap reached"}.`,
+          );
+        }
         await refresh();
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : String(e));
@@ -366,6 +394,39 @@ export default function PlanPage() {
     },
     [draft, refresh],
   );
+
+  // T4.3 — subscribe to slim-redebate completion events. The backend
+  // emits ``plan.delta.pushback.completed`` with ``user_id``,
+  // ``item_id``, ``decision_run_id``, ``verdict`` once the
+  // bull/bear/facilitator triad lands its verdict. Refresh the draft
+  // so the user can see any updated state, and flip the per-item
+  // status so the DeltaCard's badge changes from "running" to
+  // "completed".
+  useWSEvents<{
+    user_id?: string;
+    item_id?: string;
+    decision_run_id?: number;
+    verdict?: string;
+    error?: string;
+  }>(["plan.delta.pushback.completed"], {
+    onEvent: (e) => {
+      if (e.payload.user_id !== USER_ID) return;
+      const iid = e.payload.item_id;
+      if (typeof iid !== "string") return;
+      setPushbackRuns((prev) => {
+        const existing = prev[iid];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [iid]: {
+            ...existing,
+            status: e.payload.error ? "failed" : "completed",
+          },
+        };
+      });
+      refresh();
+    },
+  });
 
   const openDrawerForLabel = useCallback((label: string) => {
     const role = provenanceLabelToAgentRole(label);
@@ -529,6 +590,7 @@ export default function PlanPage() {
                   onPushBack={onPushBackDelta}
                   onSourceClick={openDrawerForLabel}
                   disabled={working}
+                  pushbackRuns={pushbackRuns}
                 />
               </TabsContent>
               <TabsContent value="medium" className="mt-3">
@@ -540,6 +602,7 @@ export default function PlanPage() {
                   onPushBack={onPushBackDelta}
                   onSourceClick={openDrawerForLabel}
                   disabled={working}
+                  pushbackRuns={pushbackRuns}
                 />
               </TabsContent>
               <TabsContent value="short" className="mt-3">
@@ -551,6 +614,7 @@ export default function PlanPage() {
                   onPushBack={onPushBackDelta}
                   onSourceClick={openDrawerForLabel}
                   disabled={working}
+                  pushbackRuns={pushbackRuns}
                 />
               </TabsContent>
             </Tabs>
@@ -662,6 +726,13 @@ interface HorizonDeltaListProps {
   onPushBack: (d: DeltaItem) => void | Promise<void>;
   onSourceClick: (label: string) => void;
   disabled?: boolean;
+  // T4.3 — per-delta slim re-debate state. Keyed by ``item_id`` so the
+  // DeltaCard can render a "Re-debate running" / "Re-debate done" pill
+  // and a /decisions drill-in link.
+  pushbackRuns?: Record<
+    string,
+    { decisionRunId: number; status: "running" | "completed" | "failed" }
+  >;
 }
 
 function HorizonDeltaList({
@@ -672,6 +743,7 @@ function HorizonDeltaList({
   onPushBack,
   onSourceClick,
   disabled,
+  pushbackRuns,
 }: HorizonDeltaListProps) {
   if (!h || h.deltas_from_prior.length === 0) {
     return (
@@ -692,6 +764,7 @@ function HorizonDeltaList({
             onReject={onReject}
             onPushBack={onPushBack}
             onSourceClick={onSourceClick}
+            pushbackRun={pushbackRuns?.[d.item_id] ?? null}
           />
         </li>
       ))}

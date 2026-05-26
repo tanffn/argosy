@@ -1505,14 +1505,36 @@ def post_delta_pushback(
     body: DeltaPushbackRequest,
     db: Session = Depends(get_db),
 ):
-    """Record the user's pushback feedback against one delta.
+    """Record the user's pushback feedback + kick off a slim re-debate (T4.3).
 
-    Persists the feedback into the delta's ``user_edit_note`` under a
-    ``PUSHBACK:`` prefix and flips ``user_edited=true`` so future
-    re-synthesis can read the feedback as input. Does NOT auto-trigger
-    a re-synthesis; that's a separate route (TODO: a per-delta
-    re-evaluation flow that runs a slimmer debate scoped to just this
-    item with the user's feedback in the prompt).
+    Two side effects (both happen, in order):
+
+      1. The legacy persistence: prepend a ``PUSHBACK: <feedback>`` line
+         to the delta's ``user_edit_note`` and flip ``user_edited=true``.
+         Multiple pushbacks accumulate (a follow-up clicker sees their
+         prior note plus the new one). This survives even if the slim
+         re-debate flow refuses (e.g. cost cap breached) — the user's
+         intent is captured in the draft regardless.
+
+      2. **T4.3** — fire ``per_delta_pushback.start_per_delta_pushback``
+         which opens a ``decision_runs`` row with
+         ``decision_kind="delta_pushback"`` and dispatches a slim
+         bull/bear/facilitator re-debate scoped to ONE horizon + ONE
+         delta + the user's pushback text. Total cost ~$0.50/run. The
+         flow runs on a background thread; the UI subscribes to
+         ``plan.delta.pushback.completed`` WS events for completion and
+         drills into ``/decisions/<run_id>`` for the verdict.
+
+    Returns ``decision_run_id`` so the UI can:
+      * subscribe to that specific run's WS events
+      * surface a "re-debate running…" indicator on the delta-card
+      * navigate to ``/decisions/<id>`` for the full verdict trail
+
+    The endpoint returns synchronously after kicking off the background
+    task (200 OK with ``decision_run_id``). If the cost cap refuses the
+    dispatch, returns 200 with ``decision_run_id=null`` and a
+    ``cost_cap_refused`` status so the UI can render a clean message
+    rather than burning a generic 500.
     """
     feedback = (body.feedback or "").strip()
     if not feedback:
@@ -1536,11 +1558,83 @@ def post_delta_pushback(
         "plan.draft.delta.pushback",
         {"user_id": user_id, "draft_id": draft_id, "item_id": item_id},
     )
+
+    # T4.3 — dispatch the slim re-debate. Defensive: the legacy
+    # user_edit_note side-effect above is the source of truth for
+    # user intent; if the slim flow refuses (cost cap, transient
+    # dispatch failure) the UI still has the feedback persisted.
+    #
+    # The ``ARGOSY_DISABLE_PER_DELTA_PUSHBACK_REDEBATE`` env var is an
+    # opt-out for tests / debugging: when set to "1" the route persists
+    # the user_edit_note and returns with ``status="pushback_recorded"``
+    # but does NOT fire the slim flow. The legacy ``test_plan_draft_api``
+    # tests set this so they don't kick off background LLM calls.
+    import os as _os
+    from argosy.orchestrator.flows.per_delta_pushback import (
+        CostCapExceededError,
+        DeltaNotFoundError,
+        start_per_delta_pushback,
+    )
+
+    decision_run_id: int | None = None
+    inflight = False
+    flow_status = "slim_redebate_started"
+    detail: str | None = None
+
+    if _os.environ.get("ARGOSY_DISABLE_PER_DELTA_PUSHBACK_REDEBATE") == "1":
+        return {
+            "status": "pushback_recorded",
+            "draft_id": draft_id,
+            "item_id": item_id,
+            "feedback": feedback,
+            "decision_run_id": None,
+            "inflight": False,
+            "detail": "slim re-debate disabled via env",
+        }
+
+    try:
+        result = start_per_delta_pushback(
+            db,
+            user_id=user_id,
+            draft_id=draft_id,
+            item_id=item_id,
+            user_feedback=feedback,
+        )
+        decision_run_id = result.decision_run_id
+        inflight = result.inflight
+        if inflight:
+            flow_status = "slim_redebate_inflight"
+    except DeltaNotFoundError:  # pragma: no cover — already validated above
+        # The find_delta validation above should have caught this; if
+        # not, treat as 404 for parity with the existing surface.
+        raise HTTPException(status_code=404, detail="item_id not found")
+    except CostCapExceededError as exc:
+        flow_status = "cost_cap_refused"
+        detail = str(exc)
+        logger.warning(
+            "post_delta_pushback cost cap refused user_id=%s draft_id=%s "
+            "item_id=%s detail=%s",
+            user_id, draft_id, item_id, detail,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Dispatch failure: log + return so the legacy persistence side
+        # effect is still surfaced cleanly.
+        flow_status = "slim_redebate_failed_to_start"
+        detail = str(exc)
+        logger.warning(
+            "post_delta_pushback dispatch failed user_id=%s draft_id=%s "
+            "item_id=%s err=%s",
+            user_id, draft_id, item_id, detail,
+        )
+
     return {
-        "status": "pushback_recorded",
+        "status": flow_status,
         "draft_id": draft_id,
         "item_id": item_id,
         "feedback": feedback,
+        "decision_run_id": decision_run_id,
+        "inflight": inflight,
+        "detail": detail,
     }
 
 

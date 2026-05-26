@@ -15,6 +15,14 @@ interface DeltaCardProps {
   onReject?: (delta: DeltaItem) => void | Promise<void>;
   onPushBack?: (delta: DeltaItem) => void | Promise<void>;
   onSourceClick?: (agentLabel: string) => void;
+  // T4.3 — when a slim re-debate is in flight for this delta, the
+  // parent passes the backend ``decision_run_id`` + status so we can
+  // render an inline "Re-debate running…" pill and a link to
+  // /decisions/<id> for the verdict trail.
+  pushbackRun?: {
+    decisionRunId: number;
+    status: "running" | "completed" | "failed";
+  } | null;
 }
 
 interface HistoryEntry {
@@ -85,6 +93,7 @@ export function DeltaCard(props: DeltaCardProps) {
     onReject,
     onPushBack,
     onSourceClick,
+    pushbackRun,
   } = props;
   const [rejectedLocally, setRejectedLocally] = useState(false);
   const [history, setHistory] = useState<
@@ -303,6 +312,42 @@ export function DeltaCard(props: DeltaCardProps) {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* T4.3 — slim re-debate progress / verdict surface. Shown when
+          the user clicked Push back and the backend kicked off a slim
+          bull/bear/facilitator run scoped to this delta. The
+          decision_run_id links into /decisions for the full trail. */}
+      {pushbackRun && (
+        <div
+          className={
+            "mt-3 rounded-md px-3 py-2 border flex items-center justify-between gap-3 " +
+            (pushbackRun.status === "running"
+              ? "border-info/40 bg-info/5"
+              : pushbackRun.status === "failed"
+              ? "border-error/40 bg-error/5"
+              : "border-success/40 bg-success/5")
+          }
+        >
+          <div className="text-xs">
+            <span className="font-mono uppercase tracking-wide mr-2">
+              {pushbackRun.status === "running"
+                ? "Re-debate running…"
+                : pushbackRun.status === "failed"
+                ? "Re-debate failed"
+                : "Re-debate complete"}
+            </span>
+            <span className="text-muted-foreground">
+              bull / bear / facilitator scoped to this delta
+            </span>
+          </div>
+          <a
+            href={`/decisions/${pushbackRun.decisionRunId}`}
+            className="text-xs text-primary hover:underline whitespace-nowrap"
+          >
+            View trail #{pushbackRun.decisionRunId}
+          </a>
         </div>
       )}
 

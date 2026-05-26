@@ -1009,11 +1009,25 @@ export const api = {
     userId: string,
     feedback: string,
   ) =>
+    // T4.3 — the response now carries a ``decision_run_id`` for the
+    // slim re-debate the backend kicked off. The UI subscribes to
+    // ``plan.delta.pushback.completed`` WS events keyed on this id and
+    // can navigate to /decisions/<id> for the verdict trail.
+    //
+    // ``status`` values:
+    //   - "slim_redebate_started"        — flow kicked off; run_id is real
+    //   - "slim_redebate_inflight"       — idempotent; run_id is the existing one
+    //   - "cost_cap_refused"             — refused cleanly (run_id is null)
+    //   - "slim_redebate_failed_to_start" — dispatcher errored (rare; logged)
+    //   - "pushback_recorded"            — slim flow disabled via env var
     postJSON<{
       status: string;
       draft_id: number;
       item_id: string;
       feedback: string;
+      decision_run_id: number | null;
+      inflight: boolean;
+      detail: string | null;
     }>(
       `/api/plan/draft/${draftId}/items/${encodeURIComponent(itemId)}/pushback?user_id=${encodeURIComponent(userId)}`,
       { feedback },
