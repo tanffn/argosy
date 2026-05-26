@@ -123,13 +123,40 @@ class AgentNode:
     adapters: list[AdapterNode] = field(default_factory=list)
 
 
+# T4.4 — recognised non-synthesis kinds that the decisions-replay surface
+# routes through ``build_agent_tree`` without crashing. Each is a small,
+# single-purpose run that doesn't have the 18-agent topology synthesis
+# does; the builder returns ``root=None`` for them and lets the route /
+# UI render a kind-appropriate summary instead.
+#
+# Listed here (not in a separate constant) so the builder is the single
+# source of truth — any new kind must show up here AND get a row renderer
+# in ui/src/components/agent/DecisionAccordion.tsx.
+NON_SYNTHESIS_KINDS: frozenset[str] = frozenset({
+    "delta_pushback",     # T4.3 — slim re-debate per PlanDeltaItem
+    "daily_brief",        # T4.5 — daily brief generation run
+    "trade_proposal",     # legacy per-trade decision flow (Phase 3)
+    "plan_amendment_chat",  # Wave 4 chat-driven amendment flow
+})
+
+
 @dataclass
 class AgentTreeResponse:
     decision_run_id: int
     decision_kind: str
     status_summary: dict[str, int]
     # ^ e.g. {"agents_ok": 17, "agents_failed": 1, "adapters_ok": 5, "adapters_failed": 2}
-    root: AgentNode  # fund_manager at the top for synthesis kind
+    # T4.4 — ``root`` is ``None`` for non-synthesis kinds (delta_pushback,
+    # daily_brief, trade_proposal, plan_amendment_chat). The status_summary
+    # still carries useful counts in that case (one row per unique
+    # agent_role under the run's decision_id). The route returns 200 with
+    # an empty-tree payload rather than 404 so the UI can render a
+    # kind-appropriate summary instead of an error banner.
+    root: AgentNode | None
+    # T4.4 — populated when the builder doesn't produce a DAG (i.e. the
+    # decision_kind isn't a synthesis kind). The UI surfaces this string
+    # in the "no tree available" placeholder. None for synthesis runs.
+    unsupported_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -149,18 +176,65 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
         a deduplicated ``status_summary``.
 
     Raises:
-        ValueError: if the run doesn't exist or its ``decision_kind`` is
-            not a synthesis-flow kind. Other flow kinds will get their own
-            builder in a future task.
+        ValueError: if the run doesn't exist. (Unknown decision_kinds NO
+            LONGER raise — see T4.4 note below.)
+
+    T4.4 behaviour change: for any recognised non-synthesis kind (see
+    ``NON_SYNTHESIS_KINDS``) the builder returns an ``AgentTreeResponse``
+    with ``root=None`` and a populated ``unsupported_reason`` so the
+    /decisions/{id} route can serve a 200 with an explanatory payload
+    instead of a 404. Truly unknown kinds (not in either
+    ``SYNTHESIS_KINDS`` or ``NON_SYNTHESIS_KINDS``) are treated the same
+    way — the builder degrades gracefully rather than crashing the
+    replay UI for an unrecognised future kind.
     """
     run = db.get(DecisionRun, decision_run_id)
     if run is None:
         raise ValueError(f"decision_run_id={decision_run_id} not found")
+
     if run.decision_kind not in SYNTHESIS_KINDS:
-        raise ValueError(
-            f"unsupported decision_kind={run.decision_kind!r} for "
-            f"decision_run_id={decision_run_id}; build_agent_tree currently "
-            f"only handles synthesis runs (one of {sorted(SYNTHESIS_KINDS)})"
+        # T4.4 — return a populated DTO with root=None for any
+        # non-synthesis kind. We still pull the agent_reports for the
+        # run so status_summary carries meaningful "how many agents
+        # ran" / "how many failed" counts that the UI can show in lieu
+        # of a tree.
+        decision_id_str_simple = str(decision_run_id)
+        # Most non-synthesis flows stamp agent_reports.decision_id as
+        # str(decision_run_id) directly; the synthesis flow uses the
+        # plan-synth-<id> prefix. Try both so legacy + future-non-
+        # synthesis runs both light up.
+        non_synth_reports = list(
+            db.execute(
+                select(AgentReport)
+                .where(
+                    AgentReport.decision_id.in_([
+                        decision_id_str_simple,
+                        f"plan-synth-{decision_run_id}",
+                    ])
+                )
+                .order_by(AgentReport.id)
+            ).scalars()
+        )
+        agents_ok = sum(
+            1 for r in non_synth_reports
+            if (r.confidence or "").upper() != "LOW"
+        )
+        agents_failed = len(non_synth_reports) - agents_ok
+        return AgentTreeResponse(
+            decision_run_id=decision_run_id,
+            decision_kind=run.decision_kind or "unknown",
+            status_summary={
+                "agents_ok": agents_ok,
+                "agents_failed": agents_failed,
+                "adapters_ok": 0,
+                "adapters_failed": 0,
+            },
+            root=None,
+            unsupported_reason=(
+                f"agent-tree DAG is only built for synthesis runs; "
+                f"decision_kind={run.decision_kind!r} is rendered as a "
+                f"flat row in /decisions instead"
+            ),
         )
 
     # Pull all agent_reports for this synthesis run, ordered by id so role

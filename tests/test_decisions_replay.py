@@ -236,6 +236,70 @@ def test_phase_transcript_endpoint_streams_when_present(
     assert "Transcript" in r.text or "transcript" in r.text.lower()
 
 
+def test_replay_drill_in_works_for_delta_pushback_kind(client_with_db, _seed):
+    """T4.4: a delta_pushback decision_run drill-in via /replay must
+    succeed (no 500), and the linked agent-tree URL must serve 200 with
+    root=None + unsupported_reason instead of crashing.
+
+    The replay endpoint itself doesn't care about decision_kind — it just
+    serves whatever DecisionPhase + AgentReport rows exist for the run. The
+    agent_tree_url is the kind-sensitive surface; this test confirms that
+    when the UI follows the URL it gets a graceful "no tree for this kind"
+    answer instead of a 404 or 500.
+    """
+    import json as _json
+    sess = client_with_db.app.state.session_factory()
+    try:
+        run = DecisionRun(
+            user_id="ariel", ticker="(plan)", tier=None,
+            decision_kind="delta_pushback", status="completed",
+            started_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(timezone.utc),
+            notes_json=_json.dumps({
+                "delta_item_id": "DI-2026-05-26-NVDA-trim",
+                "feedback": "wait for earnings",
+            }),
+        )
+        sess.add(run)
+        sess.commit()
+        sess.refresh(run)
+        run_id = run.id
+
+        # T4.3 will produce ~3 agent_reports for a pushback run; mimic
+        # that here so the replay payload has something concrete.
+        for role in ("bull_researcher", "bear_researcher", "plan_synthesizer"):
+            sess.add(AgentReport(
+                user_id="ariel", agent_role=role,
+                decision_id=str(run_id), response_text=f"{role} pushback response",
+                confidence="MEDIUM", model="claude-opus-4-7",
+                tokens_in=10, tokens_out=20, cost_usd=0.03,
+            ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    # /replay must succeed (no 500) regardless of decision_kind.
+    r = client_with_db.get(f"/api/decisions/{run_id}/replay?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["decision_run"]["id"] == run_id
+    assert body["decision_run"]["decision_kind"] == "delta_pushback"
+    assert body["decision_run"]["notes_json"] is not None
+    notes = _json.loads(body["decision_run"]["notes_json"])
+    assert notes["delta_item_id"] == "DI-2026-05-26-NVDA-trim"
+    # Agent-tree URL is surfaced for the UI to hop to.
+    assert body["agent_tree_url"] == f"/api/decisions/{run_id}/agent-tree"
+
+    # Following the agent_tree_url must return 200 with root=None +
+    # unsupported_reason (T4.4 contract change — used to be 404).
+    r2 = client_with_db.get(body["agent_tree_url"] + "?user_id=ariel")
+    assert r2.status_code == 200, r2.text
+    tree = r2.json()
+    assert tree["root"] is None
+    assert tree["decision_kind"] == "delta_pushback"
+    assert "delta_pushback" in tree["unsupported_reason"]
+
+
 def test_phase_transcript_404_for_other_user(client_with_db, _seed):
     """Wrong user gets 404 (don't leak existence)."""
     sess = client_with_db.app.state.session_factory()

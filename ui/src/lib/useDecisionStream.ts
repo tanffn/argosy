@@ -74,6 +74,11 @@ export type DecisionGroup = {
   tier: string | null;
   ticker: string | null;
   decision_kind: string | null;
+  /** T4.4 — opaque blob from DecisionRun.notes_json. The row renderer
+   *  parses it kind-specifically (delta_pushback -> delta_item_id;
+   *  daily_brief -> brief_date). Null for synthesis runs and WS-only
+   *  entries. */
+  notes_json: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -618,6 +623,8 @@ export function useDecisionStream(
         tier: wireGroup?.tier ?? null,
         ticker: wireGroup?.ticker ?? null,
         decision_kind: wireGroup?.decision_kind ?? null,
+        // T4.4 — opaque blob; parsed in DecisionAccordion row renderer.
+        notes_json: wireGroup?.notes_json ?? null,
       });
     }
 

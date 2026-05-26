@@ -1,6 +1,12 @@
-"""Tests for GET /api/decisions/recent — grouped cascade payload (spec §3.6)."""
+"""Tests for GET /api/decisions/recent — grouped cascade payload (spec §3.6).
+
+T4.4: extended to cover the new decision_kind taxonomy (delta_pushback,
+daily_brief) and the new decision_kind filter query parameter.
+"""
 
 from __future__ import annotations
+
+import json
 
 import pytest
 from httpx import AsyncClient
@@ -213,3 +219,190 @@ async def test_decisions_recent_unjoinable_decision_id(
     assert joinable_group["tier"] == "T2"
     assert joinable_group["ticker"] == "AAPL"
     assert joinable_group["decision_kind"] == "trade_proposal"
+
+
+# ---------------------------------------------------------------------------
+# T4.4 — new decision kinds (delta_pushback + daily_brief) + filter param.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decisions_recent_includes_delta_pushback_kind(
+    engine: None, client: AsyncClient,
+) -> None:
+    """T4.4: a seeded delta_pushback DecisionRun row appears in /recent
+    with the correct decision_kind label and notes_json passthrough.
+
+    Mimics the row shape T4.3 will produce when it ships (the synthesis
+    pipeline doesn't generate one yet, but the endpoint must already
+    handle it so T4.3 has a home immediately).
+    """
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        dr = DecisionRun(
+            user_id="ariel",
+            ticker="(plan)",
+            tier=None,
+            decision_kind="delta_pushback",
+            status="done",
+            notes_json=json.dumps({
+                "delta_item_id": "DI-2026-05-26-NVDA-trim",
+                "feedback": "wait until Q1 earnings",
+            }),
+        )
+        session.add(dr)
+        await session.flush()
+        # Slim agent set — bull + bear + plan_synthesizer scoped to the item.
+        for role in ("bull_researcher", "bear_researcher", "plan_synthesizer"):
+            session.add(AgentReportRow(
+                user_id="ariel", agent_role=role,
+                decision_id=str(dr.id),
+                response_text="{}", prompt_hash="h",
+                tokens_in=10, tokens_out=20, cost_usd=0.03,
+                model="claude-opus-4-7",
+                cache_input_tokens=0, cache_creation_tokens=0, thinking_tokens=0,
+            ))
+        await session.commit()
+
+    res = await client.get("/api/decisions/recent?user_id=ariel&limit=20")
+    assert res.status_code == 200, res.text
+    groups = res.json()
+    g = next(g for g in groups if g["decision_id"] == str(dr.id))
+    assert g["decision_kind"] == "delta_pushback"
+    assert g["agent_count"] == 3
+    # delta_pushback rows use the synthesis "(plan)" sentinel ticker (the
+    # DB column is NOT NULL); the UI suppresses display of "(plan)" via
+    # the !group.ticker branch when no real ticker is present.
+    assert g["ticker"] == "(plan)"
+    assert g["tier"] is None
+    # notes_json passthrough — parsed client-side by DecisionAccordion.
+    assert g["notes_json"] is not None
+    parsed = json.loads(g["notes_json"])
+    assert parsed["delta_item_id"] == "DI-2026-05-26-NVDA-trim"
+
+
+@pytest.mark.asyncio
+async def test_decisions_recent_filter_by_daily_brief_returns_only_briefs(
+    engine: None, client: AsyncClient,
+) -> None:
+    """T4.4: ?decision_kind=daily_brief returns only daily_brief groups."""
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        # Mix of kinds.
+        brief1 = DecisionRun(
+            user_id="ariel", ticker="(plan)", tier=None,
+            decision_kind="daily_brief", status="done",
+            notes_json=json.dumps({"brief_date": "2026-05-25"}),
+        )
+        brief2 = DecisionRun(
+            user_id="ariel", ticker="(plan)", tier=None,
+            decision_kind="daily_brief", status="done",
+            notes_json=json.dumps({"brief_date": "2026-05-26"}),
+        )
+        trade = DecisionRun(
+            user_id="ariel", ticker="AAPL", tier="T1",
+            decision_kind="trade_proposal", status="done",
+        )
+        pushback = DecisionRun(
+            user_id="ariel", ticker="(plan)", tier=None,
+            decision_kind="delta_pushback", status="done",
+            notes_json=json.dumps({"delta_item_id": "DI-x"}),
+        )
+        session.add_all([brief1, brief2, trade, pushback])
+        await session.flush()
+        for dr in (brief1, brief2, trade, pushback):
+            session.add(AgentReportRow(
+                user_id="ariel", agent_role="news",
+                decision_id=str(dr.id),
+                response_text="{}", prompt_hash="h",
+                tokens_in=5, tokens_out=5, cost_usd=0.01,
+                model="claude-sonnet-4-6",
+                cache_input_tokens=0, cache_creation_tokens=0,
+                thinking_tokens=0,
+            ))
+        await session.commit()
+        brief_ids = {str(brief1.id), str(brief2.id)}
+
+    # Unfiltered: all four groups returned.
+    res_all = await client.get("/api/decisions/recent?user_id=ariel&limit=20")
+    assert res_all.status_code == 200
+    assert len(res_all.json()) == 4
+
+    # Filtered by daily_brief: only brief1 + brief2.
+    res = await client.get(
+        "/api/decisions/recent?user_id=ariel&limit=20&decision_kind=daily_brief"
+    )
+    assert res.status_code == 200, res.text
+    groups = res.json()
+    assert len(groups) == 2
+    assert {g["decision_id"] for g in groups} == brief_ids
+    for g in groups:
+        assert g["decision_kind"] == "daily_brief"
+
+    # Filtered by delta_pushback: only the pushback row.
+    res2 = await client.get(
+        "/api/decisions/recent?user_id=ariel&limit=20&decision_kind=delta_pushback"
+    )
+    assert res2.status_code == 200
+    g2 = res2.json()
+    assert len(g2) == 1
+    assert g2[0]["decision_kind"] == "delta_pushback"
+
+    # Filter with no matches returns empty list, not 404.
+    res3 = await client.get(
+        "/api/decisions/recent?user_id=ariel&limit=20&decision_kind=plan_revision"
+    )
+    assert res3.status_code == 200
+    assert res3.json() == []
+
+
+@pytest.mark.asyncio
+async def test_decisions_recent_filter_excludes_unjoinable_groups(
+    engine: None, client: AsyncClient,
+) -> None:
+    """T4.4: groups with an unjoinable decision_id (no DecisionRun row)
+    are excluded when the filter is active — they have no decision_kind
+    to compare against. Without the filter they still appear.
+    """
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        dr = DecisionRun(
+            user_id="ariel", ticker="(plan)", tier=None,
+            decision_kind="daily_brief", status="done",
+            notes_json=json.dumps({"brief_date": "2026-05-26"}),
+        )
+        session.add(dr)
+        await session.flush()
+        session.add(AgentReportRow(
+            user_id="ariel", agent_role="news",
+            decision_id=str(dr.id),
+            response_text="{}", prompt_hash="h",
+            tokens_in=5, tokens_out=5, cost_usd=0.01,
+            model="claude-sonnet-4-6",
+            cache_input_tokens=0, cache_creation_tokens=0, thinking_tokens=0,
+        ))
+        # Unjoinable group (intake-session UUID).
+        session.add(AgentReportRow(
+            user_id="ariel", agent_role="intake_agent",
+            decision_id="intake-zzz-999",
+            response_text="{}", prompt_hash="h",
+            tokens_in=5, tokens_out=5, cost_usd=0.01,
+            model="claude-sonnet-4-6",
+            cache_input_tokens=0, cache_creation_tokens=0, thinking_tokens=0,
+        ))
+        await session.commit()
+
+    # Without filter: both groups present.
+    res_all = await client.get("/api/decisions/recent?user_id=ariel&limit=20")
+    decision_ids = {g["decision_id"] for g in res_all.json()}
+    assert "intake-zzz-999" in decision_ids
+    assert str(dr.id) in decision_ids
+
+    # With filter: only joinable group with matching kind.
+    res = await client.get(
+        "/api/decisions/recent?user_id=ariel&limit=20&decision_kind=daily_brief"
+    )
+    assert res.status_code == 200
+    groups = res.json()
+    assert len(groups) == 1
+    assert groups[0]["decision_id"] == str(dr.id)

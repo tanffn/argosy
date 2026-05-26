@@ -348,12 +348,54 @@ def test_build_agent_tree_skipped_nodes_for_old_run(inmem_session) -> None:
     assert summary["adapters_failed"] == 0
 
 
-def test_build_agent_tree_rejects_unknown_decision_kind(inmem_session) -> None:
+def test_build_agent_tree_returns_root_none_for_non_synthesis_kind(
+    inmem_session,
+) -> None:
+    """T4.4: non-synthesis kinds (delta_pushback, daily_brief,
+    trade_proposal, plan_amendment_chat) used to raise ValueError; now
+    the builder returns root=None + unsupported_reason so the /decisions/{id}
+    route can serve 200 with an explanatory payload.
+    """
     rid = _seed_synthesis_run(
         inmem_session, decision_kind="trade_proposal",
     )
-    with pytest.raises(ValueError, match="unsupported decision_kind"):
-        build_agent_tree(inmem_session, decision_run_id=rid)
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    assert tree.root is None
+    assert tree.decision_kind == "trade_proposal"
+    assert tree.unsupported_reason is not None
+    assert "trade_proposal" in tree.unsupported_reason
+    # status_summary is still meaningful — analyst rows we seeded count.
+    summary = tree.status_summary
+    assert summary["agents_ok"] + summary["agents_failed"] > 0
+    assert summary["adapters_ok"] == 0
+    assert summary["adapters_failed"] == 0
+
+
+def test_build_agent_tree_returns_root_none_for_delta_pushback(
+    inmem_session,
+) -> None:
+    """T4.4: delta_pushback kind (new in T4.3, ships later) is handled
+    gracefully even though the synthesis pipeline doesn't produce one yet."""
+    rid = _seed_synthesis_run(
+        inmem_session, decision_kind="delta_pushback",
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    assert tree.root is None
+    assert tree.decision_kind == "delta_pushback"
+    assert tree.unsupported_reason is not None
+
+
+def test_build_agent_tree_returns_root_none_for_daily_brief(
+    inmem_session,
+) -> None:
+    """T4.4: daily_brief kind (new in T4.5, ships later) is handled gracefully."""
+    rid = _seed_synthesis_run(
+        inmem_session, decision_kind="daily_brief",
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    assert tree.root is None
+    assert tree.decision_kind == "daily_brief"
+    assert tree.unsupported_reason is not None
 
 
 def test_build_agent_tree_rejects_missing_run(inmem_session) -> None:

@@ -233,8 +233,14 @@ export default function DecisionReplayPage(props: {
       {/* T0.6 — FM-rooted agent tree. Replaces the old top-level
           "Sequence (full run)" mermaid diagram, which only showed phase
           boundaries (not the actual who-fed-whom DAG). The per-phase
-          mermaid diagrams further down still render via `p.sequence_mmd`. */}
-      {agentTree && (
+          mermaid diagrams further down still render via `p.sequence_mmd`.
+
+          T4.4 — for non-synthesis kinds (delta_pushback, daily_brief,
+          trade_proposal, plan_amendment_chat) the backend returns
+          `root: null` + `unsupported_reason`. We render a small
+          placeholder card so the user understands why the DAG view is
+          missing for these kinds. */}
+      {agentTree && agentTree.root && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
@@ -250,6 +256,29 @@ export default function DecisionReplayPage(props: {
           <CardContent>
             <AgentTree root={agentTree.root} />
           </CardContent>
+        </Card>
+      )}
+      {agentTree && !agentTree.root && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Agent tree — not available
+            </CardTitle>
+            <CardDescription>
+              {agentTree.status_summary.agents_ok +
+                agentTree.status_summary.agents_failed}{" "}
+              agent run(s) recorded for this{" "}
+              <span className="font-mono">{agentTree.decision_kind}</span>{" "}
+              decision; the FM-rooted DAG is only built for synthesis runs.
+            </CardDescription>
+          </CardHeader>
+          {agentTree.unsupported_reason && (
+            <CardContent>
+              <p className="text-xs text-muted-foreground italic">
+                {agentTree.unsupported_reason}
+              </p>
+            </CardContent>
+          )}
         </Card>
       )}
 

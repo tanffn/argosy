@@ -108,6 +108,52 @@ function statusTone(
   return "neutral"; // running — the pulsing border handles in-progress visual
 }
 
+// T4.4 — synthesis-family runs (plan_revision, delta_pushback, daily_brief)
+// stamp ticker = "(plan)" because the DB column is NOT NULL but those flows
+// aren't ticker-scoped. Treat the sentinel as "no real ticker" for display.
+function hasRealTicker(ticker: string | null): boolean {
+  return !!ticker && ticker !== "(plan)";
+}
+
+// T4.4 — extract a kind-appropriate label from DecisionRun.notes_json.
+// Returns null when the kind isn't one of the new T4.4 kinds OR when the
+// notes blob is missing / malformed. The accordion row always falls back
+// to the raw decision_kind label when this returns null, so a parse miss
+// is non-fatal.
+//
+// Schemas (defined here so the renderer is self-documenting):
+//   delta_pushback -> { "delta_item_id": "<string>", ... }
+//   daily_brief    -> { "brief_date": "YYYY-MM-DD", ... }
+function kindLabel(
+  decisionKind: string | null,
+  notesJson: string | null | undefined,
+): string | null {
+  if (!decisionKind || !notesJson) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(notesJson);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const obj = parsed as Record<string, unknown>;
+  if (decisionKind === "delta_pushback") {
+    const itemId = obj.delta_item_id;
+    if (typeof itemId === "string" && itemId.length > 0) {
+      return `pushback · ${itemId}`;
+    }
+    return "pushback";
+  }
+  if (decisionKind === "daily_brief") {
+    const date = obj.brief_date;
+    if (typeof date === "string" && date.length > 0) {
+      return `brief · ${date}`;
+    }
+    return "brief";
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // DecisionRow — one collapsed/expanded decision entry
 // ---------------------------------------------------------------------------
@@ -172,8 +218,10 @@ function DecisionRow({
           {group.rows.length} agent{group.rows.length !== 1 ? "s" : ""}
         </span>
 
-        {/* Ticker — shown when present (trade_proposal / speculative runs) */}
-        {group.ticker && (
+        {/* Ticker — shown when present (trade_proposal / speculative runs).
+            T4.4: "(plan)" sentinel suppressed so kind-specific label shows
+            instead for synthesis-family runs. */}
+        {hasRealTicker(group.ticker) && (
           <span className="font-mono text-xs font-semibold text-foreground shrink-0 uppercase">
             {group.ticker}
           </span>
@@ -186,10 +234,18 @@ function DecisionRow({
           </span>
         )}
 
-        {/* decision_kind — shown as muted label when no ticker (e.g. plan_revision runs) */}
-        {!group.ticker && group.decision_kind && (
-          <span className="font-mono text-[10px] text-muted-foreground/70 shrink-0 truncate max-w-[10rem]">
-            {group.decision_kind}
+        {/* decision_kind — shown as muted label when no ticker (e.g.
+            plan_revision / delta_pushback / daily_brief runs). T4.4: for
+            new kinds (delta_pushback, daily_brief) we surface a
+            kind-specific summary (delta item id, brief date) parsed from
+            notes_json. Falls back to the raw decision_kind if notes_json
+            is missing / malformed. */}
+        {!hasRealTicker(group.ticker) && group.decision_kind && (
+          <span
+            className="font-mono text-[10px] text-muted-foreground/70 shrink-0 truncate max-w-[14rem]"
+            title={group.decision_kind}
+          >
+            {kindLabel(group.decision_kind, group.notes_json) ?? group.decision_kind}
           </span>
         )}
 

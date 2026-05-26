@@ -127,6 +127,10 @@ export interface DecisionGroup {
   total_cost_usd: number;
   agent_count: number;
   agent_runs: AgentActivityRow[];
+  // T4.4 — raw notes_json blob from DecisionRun. Parsed kind-specifically
+  // by the row renderer: delta_pushback surfaces `delta_item_id`,
+  // daily_brief surfaces `brief_date`. Synthesis runs leave it null.
+  notes_json?: string | null;
 }
 
 export interface ProposalListItem {
@@ -385,7 +389,13 @@ export interface AgentTreeResponse {
   decision_run_id: number;
   decision_kind: string;
   status_summary: AgentTreeStatusSummary;
-  root: AgentNode;
+  // T4.4 — `root` is null for non-synthesis kinds (delta_pushback,
+  // daily_brief, trade_proposal, plan_amendment_chat). The UI surfaces a
+  // kind-appropriate placeholder using `unsupported_reason` in that case.
+  root: AgentNode | null;
+  // T4.4 — populated when `root === null`. Human-readable explanation of
+  // why no DAG was built; safe to render verbatim.
+  unsupported_reason?: string | null;
 }
 
 // ----------------------------------------------------------------------
@@ -516,10 +526,20 @@ export const api = {
     getJSON<DailyBriefDTO | null>(
       `/api/daily-brief/latest?user_id=${encodeURIComponent(userId)}`,
     ),
-  decisionsRecent: (userId: string, limit = 20): Promise<DecisionGroup[]> =>
-    getJSON<DecisionGroup[]>(
-      `/api/decisions/recent?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
-    ),
+  decisionsRecent: (
+    userId: string,
+    limit = 20,
+    opts?: { decisionKind?: string },
+  ): Promise<DecisionGroup[]> => {
+    const qs = new URLSearchParams({
+      user_id: userId,
+      limit: String(limit),
+    });
+    // T4.4 — optional server-side filter. Accepted values: trade_proposal,
+    // plan_revision, plan_amendment_chat, delta_pushback, daily_brief.
+    if (opts?.decisionKind) qs.set("decision_kind", opts.decisionKind);
+    return getJSON<DecisionGroup[]>(`/api/decisions/recent?${qs.toString()}`);
+  },
   // Wave B-UI follow-up Item B — fetch full prompts on-demand for the Prompt tab.
   // Separate endpoint: prompts are 10-100KB and should not bloat list responses.
   agentActivityPrompt: (id: number, userId: string): Promise<AgentPrompt> =>

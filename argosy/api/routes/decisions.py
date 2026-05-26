@@ -475,12 +475,29 @@ class DecisionGroupDTO(BaseModel):
     total_cost_usd: float
     agent_count: int
     agent_runs: list[Any]    # list of AgentActivityRow-shaped dicts
+    # T4.4 — opaque JSON blob from DecisionRun.notes_json. The UI parses
+    # it kind-specifically: delta_pushback rows surface ``delta_item_id``;
+    # daily_brief rows surface ``brief_date``; synthesis runs leave it
+    # null. Forwarded as a raw string (not pre-parsed) so the wire shape
+    # remains stable regardless of which kinds are added later.
+    notes_json: str | None = None
 
 
 @router.get("/recent", response_model=list[DecisionGroupDTO])
 async def get_decisions_recent(
     user_id: str = Query("ariel"),
     limit: int = Query(20, ge=1, le=200),
+    decision_kind: str | None = Query(
+        None,
+        description=(
+            "T4.4 — optional filter. Accepted values include "
+            "'trade_proposal', 'plan_revision', 'plan_amendment_chat', "
+            "'delta_pushback', 'daily_brief'. When set, only groups whose "
+            "joined DecisionRun row has a matching decision_kind are "
+            "returned. Groups with an unjoinable decision_id (no "
+            "DecisionRun row) are excluded when the filter is active."
+        ),
+    ),
 ) -> list[DecisionGroupDTO]:
     """Return recent decision groups for `user_id`, each containing all
     agent_reports that share a decision_id.
@@ -490,6 +507,9 @@ async def get_decisions_recent(
     already handles them client-side via its "Standalone" fallback.
 
     `limit` caps the number of *groups* (decisions), not individual rows.
+
+    `decision_kind` (T4.4) is a server-side filter joining via
+    DecisionRun. When unset (default) all kinds are returned.
     """
     # Import here to avoid circular-import at module load; agent_activity
     # router imports no decisions symbols so this is safe.
@@ -499,7 +519,21 @@ async def get_decisions_recent(
     )
 
     async with db_mod.get_session() as session:
-        # --- Step 1: find the top-N decision_ids by their max(created_at) ---
+        # --- Step 1: find candidate decision_ids by max(created_at) ---
+        #
+        # T4.4 — when a decision_kind filter is active we over-fetch
+        # (10x the requested limit) so the post-filter step has enough
+        # candidates to satisfy ``limit`` even if many recent decisions
+        # don't match the filter. We then re-apply ``limit`` in Python
+        # after joining to DecisionRun.
+        #
+        # Why over-fetch instead of joining inside SQL? agent_reports
+        # .decision_id is a free-form string (intake-session UUIDs,
+        # plan-synth-<id> prefixes, plain integers, etc.); a clean
+        # CAST(... AS INTEGER) join is brittle on SQLite (returns NULL
+        # for non-numeric values, behaviour varies across DB backends).
+        # Post-filtering in Python keeps the SQL portable and correct.
+        candidate_cap = limit * 10 if decision_kind is not None else limit
         subq = (
             select(
                 AgentReportRow.decision_id,
@@ -511,7 +545,7 @@ async def get_decisions_recent(
             )
             .group_by(AgentReportRow.decision_id)
             .order_by(desc("latest"))
-            .limit(limit)
+            .limit(candidate_cap)
             .subquery()
         )
         top_ids_rows = (await session.execute(select(subq.c.decision_id))).scalars().all()
@@ -554,6 +588,9 @@ async def get_decisions_recent(
     # Preserve the ordering from top_ids_rows (already max(created_at) DESC).
     result: list[DecisionGroupDTO] = []
     for did in top_ids_rows:
+        if len(result) >= limit:
+            # T4.4: when over-fetching for the filter we cap output here.
+            break
         rows = groups.get(did, [])
         if not rows:
             continue
@@ -564,6 +601,14 @@ async def get_decisions_recent(
             dr = dr_by_id.get(int(did))
         except (ValueError, TypeError):
             pass
+
+        # T4.4 — decision_kind filter is applied post-join because the
+        # agent_reports decision_id column is free-form (see Step 1 note).
+        # Unjoinable groups (dr is None) are excluded when the filter is
+        # active — they have no decision_kind to compare against.
+        if decision_kind is not None:
+            if dr is None or dr.decision_kind != decision_kind:
+                continue
 
         created_ats = [r.created_at for r in rows]
         started_at_dt = min(created_ats)
@@ -611,6 +656,8 @@ async def get_decisions_recent(
             total_cost_usd=total_cost,
             agent_count=len(rows),
             agent_runs=agent_runs_out,
+            # T4.4 — opaque blob; UI parses by decision_kind.
+            notes_json=(dr.notes_json if dr else None),
         ))
 
     return result

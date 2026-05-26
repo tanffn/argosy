@@ -203,17 +203,60 @@ def test_agent_tree_404_for_other_user(client_with_db, _seed_users) -> None:
     assert r.status_code == 404
 
 
-def test_agent_tree_404_for_non_synthesis_kind(
+def test_agent_tree_200_with_root_none_for_non_synthesis_kind(
     client_with_db, _seed_users,
 ) -> None:
-    """Builder raises ValueError for trade_proposal — route maps to 404."""
+    """T4.4: non-synthesis kinds (trade_proposal, delta_pushback, daily_brief,
+    plan_amendment_chat) used to return 404; now they return 200 with
+    root=None + unsupported_reason so the UI can render a kind-appropriate
+    placeholder instead of an error.
+    """
     rid = _seed_synthesis_run(
         client_with_db, user_id="ariel", decision_kind="trade_proposal",
     )
     r = client_with_db.get(
         f"/api/decisions/{rid}/agent-tree?user_id=ariel"
     )
-    assert r.status_code == 404
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["root"] is None
+    assert body["decision_kind"] == "trade_proposal"
+    assert body["unsupported_reason"] is not None
+
+
+def test_agent_tree_200_for_delta_pushback_kind(
+    client_with_db, _seed_users,
+) -> None:
+    """T4.4: delta_pushback decision_kind is handled — non-synthesis kind
+    surfaces as 200 with root=None, status_summary populated from the
+    run's agent_reports (zero in this minimal seed)."""
+    rid = _seed_synthesis_run(
+        client_with_db, user_id="ariel", decision_kind="delta_pushback",
+    )
+    r = client_with_db.get(
+        f"/api/decisions/{rid}/agent-tree?user_id=ariel"
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["root"] is None
+    assert body["decision_kind"] == "delta_pushback"
+    assert isinstance(body["status_summary"]["agents_ok"], int)
+
+
+def test_agent_tree_200_for_daily_brief_kind(
+    client_with_db, _seed_users,
+) -> None:
+    """T4.4: daily_brief decision_kind is handled — non-synthesis kind."""
+    rid = _seed_synthesis_run(
+        client_with_db, user_id="ariel", decision_kind="daily_brief",
+    )
+    r = client_with_db.get(
+        f"/api/decisions/{rid}/agent-tree?user_id=ariel"
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["root"] is None
+    assert body["decision_kind"] == "daily_brief"
 
 
 # ---------------------------------------------------------------------------
