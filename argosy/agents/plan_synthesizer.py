@@ -116,25 +116,30 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             system = system + cap_block
 
         # User directive — authoritative input from the human captured on
-        # this synthesis run (e.g. per-objection stances from the prior
-        # FM verdict, free-text guidance from the /api/advisor/check-in
-        # endpoint, or the body of the
-        # POST /api/plan/draft/objections/start-new-round payload). When
-        # empty (default), the section is omitted entirely so the system
-        # prompt is byte-identical to the pre-feature behavior.
+        # this synthesis run. **Note**: in f8faaca this lived in the
+        # system prompt, but synthesis #27 + #28 reproducibly hit empty
+        # output from Opus via the bundled claude.exe SDK (4 retries
+        # each, all returned ""). System prompts in Claude have
+        # different parsing (prefix-caching, length heuristics) and
+        # large variable content there appears to trigger the empty-
+        # stream path. We instead include a short DIRECTIVE POINTER in
+        # the system prompt (so the model knows to look for it) and
+        # place the actual text in the user prompt below where Claude
+        # tolerates variable content cleanly.
         if user_directive:
-            directive_block = (
-                "\n\nUSER DIRECTIVE — authoritative input from the human on this run:\n"
-                f"{user_directive}\n\n"
-                "Treat the directive as binding. Where it states AGREED objections (the user accepts these\n"
-                "constraints), bake them into the new draft and don't re-litigate. Where it states DISAGREED\n"
-                "objections with a user counter-position, use the user's counter-position as the target — derive\n"
-                "the targets / actions / numbers from it. Where it states DEFERRED objections, re-evaluate\n"
-                "honestly and produce a fresh recommendation. If the directive conflicts with hard data\n"
-                "constraints (e.g., legal deadlines, mandate-coherence), surface the conflict prominently in the\n"
-                "rationale rather than papering over either side.\n"
+            system = system + (
+                "\n\nUSER DIRECTIVE PRESENT: a USER DIRECTIVE block appears "
+                "in the user message below. Treat it as authoritative human "
+                "input. Where it states AGREED objections, bake them into "
+                "the new draft and don't re-litigate. Where it states "
+                "DISAGREED objections with a user counter-position, use "
+                "the counter-position as the target — derive the targets / "
+                "actions / numbers from it. Where it states DEFERRED, "
+                "re-evaluate honestly. If the directive conflicts with "
+                "hard data constraints (legal deadlines, mandate-coherence), "
+                "surface the conflict prominently in the rationale rather "
+                "than papering over either side.\n"
             )
-            system = system + directive_block
 
         # T4.8a — render the prior-items index for the lineage contract.
         # Group by horizon so the model can scan one column at a time.
@@ -169,7 +174,17 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
         else:
             prior_items_block = "  (no prior items — first synthesis for this user)"
 
-        usr = "\n\n".join([
+        # User directive lives at the TOP of the user prompt (when
+        # present) so the model encounters it before the rest of the
+        # context. Empty (default) omits the section entirely.
+        directive_section: list[str] = []
+        if user_directive:
+            directive_section.append(
+                "=== USER DIRECTIVE (authoritative human input on this run) ===\n"
+                + user_directive
+            )
+
+        usr = "\n\n".join(directive_section + [
             "=== BASELINE DISTILLATE ===\n" + (baseline_distillate_md or "(no baseline)"),
             "=== PRIOR CURRENT PLAN ===\n" + (prior_current_md or "(no prior current — first synthesis)"),
             # T4.8a lineage payload — placed prominently AFTER the prior

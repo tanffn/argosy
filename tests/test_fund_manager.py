@@ -159,17 +159,22 @@ def test_build_prompt_includes_user_directive_when_provided() -> None:
         "DISAGREED: tax-loss harvest urgency — user counter is defer to Q4.\n"
         "DEFERRED: FX hedge sizing."
     )
-    sys, _usr = agent.build_prompt(
+    sys, usr = agent.build_prompt(
         decision_kind="plan_revision",
         draft_plan='{"long": {}}',
         risk_verdict="APPROVE",
         user_directive=directive,
     )
-    assert "USER DIRECTIVE FROM THE PRIOR ROUND" in sys
-    assert "AGREED: max NVDA concentration is 12%." in sys
-    assert "DISAGREED: tax-loss harvest urgency" in sys
-    assert "DEFERRED: FX hedge sizing." in sys
-    # Instruction language for the three stances must be present.
+    # Post-fix (post-f8faaca): system holds the POINTER + instructions
+    # for the three stances; verbatim directive content lives in the
+    # user prompt to dodge the bundled claude.exe SDK's empty-output
+    # path observed on plan_synthesizer with large variable content
+    # in system prompts (synthesis #27 + #28 both reproduced).
+    assert "USER DIRECTIVE PRESENT" in sys
+    assert "AGREED: max NVDA concentration is 12%." in usr
+    assert "DISAGREED: tax-loss harvest urgency" in usr
+    assert "DEFERRED: FX hedge sizing." in usr
+    # Instruction language for the three stances must be in system prompt.
     assert "do NOT re-raise" in sys
     assert "evaluate freshly" in sys
     assert "NEW objections" in sys
@@ -193,7 +198,8 @@ def test_build_prompt_omits_directive_section_when_empty() -> None:
         "to the no-kwarg call"
     )
     assert usr_a == usr_b
-    assert "USER DIRECTIVE FROM THE PRIOR ROUND" not in sys_a
+    assert "USER DIRECTIVE PRESENT" not in sys_a
+    assert "USER DIRECTIVE" not in usr_a
 
 
 @pytest.mark.asyncio

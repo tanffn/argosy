@@ -197,21 +197,23 @@ def test_build_prompt_includes_user_directive_when_provided():
         "DEFERRED: FX hedge sizing — re-evaluate honestly."
     )
     agent = PlanSynthesizerAgent(user_id="test")
-    sys, _usr = agent.build_prompt(
+    sys, usr = agent.build_prompt(
         baseline_distillate_md="x", prior_current_md="x",
         analyst_reports_text="x", debate_outcomes_text="x",
         portfolio_snapshot_summary="x", recent_fills_summary="x",
         user_directive=directive,
     )
-    # Section header anchors the directive prominently.
+    # Post-fix (post-f8faaca): system holds the POINTER + instructions
+    # for how to treat the three stances; the verbatim directive
+    # content lives in the user prompt to avoid the bundled
+    # claude.exe SDK's empty-output path that fired on synthesis #27.
     assert "USER DIRECTIVE" in sys
-    # Verbatim directive content reaches the prompt.
-    assert "AGREED: NVDA concentration must be capped at 12%." in sys
-    assert "DISAGREED: tax-loss harvest is NOT urgent" in sys
-    assert "DEFERRED: FX hedge sizing" in sys
+    # Verbatim directive content reaches the model — via the USER prompt.
+    assert "AGREED: NVDA concentration must be capped at 12%." in usr
+    assert "DISAGREED: tax-loss harvest is NOT urgent" in usr
+    assert "DEFERRED: FX hedge sizing" in usr
     # Instruction language for the three stances must accompany the
-    # directive so the model knows how to act on it.
-    assert "binding" in sys.lower()
+    # directive pointer in the system prompt so the model knows how to act.
     assert "AGREED" in sys and "DISAGREED" in sys and "DEFERRED" in sys
 
 
