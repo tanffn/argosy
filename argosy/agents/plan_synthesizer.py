@@ -42,6 +42,7 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
         speculation_cap_pct: float | None = None,
         speculation_cap_concurrent: int | None = None,
         prior_items_index: list[dict] | None = None,
+        user_directive: str = "",
     ) -> tuple[str, str]:
         system = (
             "You are the plan synthesizer on the Argosy fleet — Phase 3 of the "
@@ -113,6 +114,27 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
                 "confused glance by getting it right here.\n"
             )
             system = system + cap_block
+
+        # User directive — authoritative input from the human captured on
+        # this synthesis run (e.g. per-objection stances from the prior
+        # FM verdict, free-text guidance from the /api/advisor/check-in
+        # endpoint, or the body of the
+        # POST /api/plan/draft/objections/start-new-round payload). When
+        # empty (default), the section is omitted entirely so the system
+        # prompt is byte-identical to the pre-feature behavior.
+        if user_directive:
+            directive_block = (
+                "\n\nUSER DIRECTIVE — authoritative input from the human on this run:\n"
+                f"{user_directive}\n\n"
+                "Treat the directive as binding. Where it states AGREED objections (the user accepts these\n"
+                "constraints), bake them into the new draft and don't re-litigate. Where it states DISAGREED\n"
+                "objections with a user counter-position, use the user's counter-position as the target — derive\n"
+                "the targets / actions / numbers from it. Where it states DEFERRED objections, re-evaluate\n"
+                "honestly and produce a fresh recommendation. If the directive conflicts with hard data\n"
+                "constraints (e.g., legal deadlines, mandate-coherence), surface the conflict prominently in the\n"
+                "rationale rather than papering over either side.\n"
+            )
+            system = system + directive_block
 
         # T4.8a — render the prior-items index for the lineage contract.
         # Group by horizon so the model can scan one column at a time.

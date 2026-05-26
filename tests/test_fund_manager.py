@@ -144,6 +144,58 @@ async def test_trade_proposal_still_uses_fund_manager_decision() -> None:
     assert out.decision == "green_light"
 
 
+def test_build_prompt_includes_user_directive_when_provided() -> None:
+    """When the orchestrator threads a non-empty user_directive into the
+    FM's plan_revision prompt, the FM's system prompt MUST include the
+    directive verbatim plus the per-stance instructions that tell it to
+    respect AGREED / DISAGREED / DEFERRED resolutions from the user.
+
+    Without this, the FM re-raises the same objections the user has
+    already resolved — exactly the failure mode this fix targets.
+    """
+    agent = FundManagerAgent(user_id="ariel")
+    directive = (
+        "AGREED: max NVDA concentration is 12%.\n"
+        "DISAGREED: tax-loss harvest urgency — user counter is defer to Q4.\n"
+        "DEFERRED: FX hedge sizing."
+    )
+    sys, _usr = agent.build_prompt(
+        decision_kind="plan_revision",
+        draft_plan='{"long": {}}',
+        risk_verdict="APPROVE",
+        user_directive=directive,
+    )
+    assert "USER DIRECTIVE FROM THE PRIOR ROUND" in sys
+    assert "AGREED: max NVDA concentration is 12%." in sys
+    assert "DISAGREED: tax-loss harvest urgency" in sys
+    assert "DEFERRED: FX hedge sizing." in sys
+    # Instruction language for the three stances must be present.
+    assert "do NOT re-raise" in sys
+    assert "evaluate freshly" in sys
+    assert "NEW objections" in sys
+
+
+def test_build_prompt_omits_directive_section_when_empty() -> None:
+    """Empty user_directive (default) MUST produce a byte-identical
+    system prompt to the no-kwarg call. Guards the happy path on the
+    monthly synthesis cycle that doesn't carry user feedback.
+    """
+    agent = FundManagerAgent(user_id="ariel")
+    base = dict(
+        decision_kind="plan_revision",
+        draft_plan='{"long": {}}',
+        risk_verdict="APPROVE",
+    )
+    sys_a, usr_a = agent.build_prompt(**base)
+    sys_b, usr_b = agent.build_prompt(**base, user_directive="")
+    assert sys_a == sys_b, (
+        "empty user_directive must produce a byte-identical system prompt "
+        "to the no-kwarg call"
+    )
+    assert usr_a == usr_b
+    assert "USER DIRECTIVE FROM THE PRIOR ROUND" not in sys_a
+
+
 @pytest.mark.asyncio
 async def test_default_decision_kind_is_trade_proposal() -> None:
     """Omitting decision_kind defaults to trade_proposal schema."""

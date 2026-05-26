@@ -113,6 +113,115 @@ def test_synthesis_flow_replaces_existing_draft(session, monkeypatch):
         "first draft should be moved to role=superseded after replacement"
 
 
+def test_guidance_threads_to_synthesizer_and_fm(session, monkeypatch):
+    """CRITICAL — verifies the user's ``guidance`` reaches the
+    PlanSynthesizerAgent (Phase 3) AND the FundManagerAgent (Phase 5)
+    via the ``user_directive`` kwarg of each agent's ``run_sync`` call.
+
+    Pre-fix: ``run_synthesis(guidance=...)`` accepted the string and
+    forwarded only to Phase 1, where it was silently discarded. Phases
+    3/5 never saw it — so every POST /api/plan/draft/objections/start-new-round
+    payload, every onResynthesizeWithObjections click, and every
+    /api/advisor/check-in body was dropped at the orchestrator
+    boundary. The FM then re-rejected the new draft on identical
+    concerns, producing the 3-consecutive-rejections symptom.
+
+    The test substitutes ``PlanSynthesizerAgent`` and
+    ``FundManagerAgent`` on the orchestrator module with fakes whose
+    ``run_sync`` captures the kwargs it was called with. Asserts that
+    ``user_directive=<guidance>`` is in both call kwargs.
+
+    Phases 1/2/4 are stubbed away (they don't need guidance for this
+    fix — follow-up scope per the bug report).
+    """
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch_mod
+
+    GUIDANCE = (
+        "AGREED: NVDA concentration capped at 12%.\n"
+        "DISAGREED: tax-loss harvest is not urgent — defer to Q4 2026.\n"
+        "DEFERRED: FX hedge sizing."
+    )
+
+    captured_synth_kwargs: dict = {}
+    captured_fm_kwargs: dict = {}
+
+    class _FakeSynth:
+        agent_role = "plan_synthesizer"
+
+        def __init__(self, *_args, **_kw):
+            pass
+
+        def run_sync(self, **kw):
+            captured_synth_kwargs.update(kw)
+
+            class _R:
+                output = _stub_synthesis_output()
+                model = "fake"
+
+            return _R()
+
+    class _FakeFM:
+        agent_role = "fund_manager"
+
+        def __init__(self, *_args, **_kw):
+            pass
+
+        def run_sync(self, **kw):
+            captured_fm_kwargs.update(kw)
+
+            class _Out:
+                approved = True
+
+                def model_dump_json(self):
+                    return '{"approved": true}'
+
+            class _R:
+                output = _Out()
+                model = "fake"
+
+            return _R()
+
+    # Phase 3 instantiates PlanSynthesizerAgent directly via the
+    # module-scoped import; patch the orchestrator submodule's binding.
+    monkeypatch.setattr(orch_mod, "PlanSynthesizerAgent", _FakeSynth)
+    # Phase 5 obtains the FM via _make_fund_manager — patch that seam
+    # on the package facade so the orchestrator's _pkg.<name> resolution
+    # honours it.
+    monkeypatch.setattr(flow, "_make_fund_manager", lambda *a, **kw: _FakeFM())
+
+    # Stub Phases 1/2/4 so the run completes — they don't need guidance
+    # for this fix per the bug report (follow-up scope).
+    monkeypatch.setattr(flow, "_run_phase_1_analysts", lambda **kw: "(analyst reports)")
+    monkeypatch.setattr(flow, "_run_phase_2_debates", lambda **kw: "(debate outcomes)")
+    monkeypatch.setattr(flow, "_run_phase_4_risk", lambda **kw: "(risk verdict)")
+    monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+    result = flow.run_synthesis(
+        session, user_id="ariel", trigger="check_in", guidance=GUIDANCE,
+    )
+    assert result.draft_id is not None
+
+    # CRITICAL — the synthesizer must have received the guidance verbatim
+    # via user_directive. Without this, the new draft cannot honor the
+    # user's directive.
+    assert "user_directive" in captured_synth_kwargs, (
+        "PlanSynthesizerAgent.run_sync was NOT called with user_directive — "
+        "guidance is still being dropped at the orchestrator boundary"
+    )
+    assert captured_synth_kwargs["user_directive"] == GUIDANCE
+
+    # CRITICAL — the FM must have received the guidance verbatim too.
+    # Without this, the FM re-rejects on objections the user has
+    # already AGREED with — explaining 3x FM rejection on the same draft.
+    assert "user_directive" in captured_fm_kwargs, (
+        "FundManagerAgent.run_sync was NOT called with user_directive — "
+        "guidance is still being dropped at Phase 5"
+    )
+    assert captured_fm_kwargs["user_directive"] == GUIDANCE
+
+
 def test_synthesis_flow_fails_loudly_when_no_baseline(alembic_engine_at_head, monkeypatch):
     """Without a baseline, synthesis cannot run — the orchestrator must
     raise rather than silently produce a draft from nothing.

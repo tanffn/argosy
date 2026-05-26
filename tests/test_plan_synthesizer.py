@@ -177,6 +177,69 @@ def test_synthesizer_prompt_includes_speculation_cap():
     assert "speculative" in (sys + usr).lower()
 
 
+def test_build_prompt_includes_user_directive_when_provided():
+    """When the orchestrator threads a non-empty user_directive, the
+    synthesizer's system prompt MUST include the directive verbatim
+    and the section header that tells the model how to treat it.
+
+    This is the load-bearing assertion that closes the
+    `guidance dropped at orchestrator boundary` bug. Without this, the
+    user's AGREED/DISAGREED/DEFERRED stances from
+    POST /api/plan/draft/objections/start-new-round never reach the
+    model — explaining 3 consecutive FM rejections on the same draft.
+    """
+    from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
+
+    directive = (
+        "AGREED: NVDA concentration must be capped at 12%.\n"
+        "DISAGREED: tax-loss harvest is NOT urgent — user counter-position\n"
+        "  is to defer harvesting until Q4 2026.\n"
+        "DEFERRED: FX hedge sizing — re-evaluate honestly."
+    )
+    agent = PlanSynthesizerAgent(user_id="test")
+    sys, _usr = agent.build_prompt(
+        baseline_distillate_md="x", prior_current_md="x",
+        analyst_reports_text="x", debate_outcomes_text="x",
+        portfolio_snapshot_summary="x", recent_fills_summary="x",
+        user_directive=directive,
+    )
+    # Section header anchors the directive prominently.
+    assert "USER DIRECTIVE" in sys
+    # Verbatim directive content reaches the prompt.
+    assert "AGREED: NVDA concentration must be capped at 12%." in sys
+    assert "DISAGREED: tax-loss harvest is NOT urgent" in sys
+    assert "DEFERRED: FX hedge sizing" in sys
+    # Instruction language for the three stances must accompany the
+    # directive so the model knows how to act on it.
+    assert "binding" in sys.lower()
+    assert "AGREED" in sys and "DISAGREED" in sys and "DEFERRED" in sys
+
+
+def test_build_prompt_omits_directive_section_when_empty():
+    """When user_directive is empty (the default — no user guidance for
+    this run), the system prompt must be BYTE-IDENTICAL to a synthesis
+    that doesn't pass the kwarg at all. Guards against accidental
+    behavior change on the happy path / scheduled monthly cycle.
+    """
+    from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
+
+    agent = PlanSynthesizerAgent(user_id="test")
+    base_kwargs = dict(
+        baseline_distillate_md="x", prior_current_md="x",
+        analyst_reports_text="x", debate_outcomes_text="x",
+        portfolio_snapshot_summary="x", recent_fills_summary="x",
+    )
+    sys_a, usr_a = agent.build_prompt(**base_kwargs)
+    sys_b, usr_b = agent.build_prompt(**base_kwargs, user_directive="")
+    assert sys_a == sys_b, (
+        "empty user_directive must produce a byte-identical system prompt "
+        "to the no-kwarg call"
+    )
+    assert usr_a == usr_b
+    # The section header must NOT appear when directive is empty.
+    assert "USER DIRECTIVE" not in sys_a
+
+
 def test_synthesizer_post_validates_speculative_candidates(monkeypatch):
     """If the model emits a candidate over cap, the orchestrator drops it."""
     from argosy.agents.plan_synthesizer_types import (

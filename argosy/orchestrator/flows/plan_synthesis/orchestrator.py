@@ -350,6 +350,7 @@ def run_synthesis(
             decision_run_id=decision_audit_token,
             speculation_cap_pct=cap.max_pct_of_net_worth,
             speculation_cap_concurrent=cap.max_concurrent_positions,
+            guidance=guidance,
         )
         # T0.1 — new return shape is (PlanSynthesisOutput, list[AgentReport]);
         # legacy stubs (``lambda **kw: _stub_synthesis_output()``) return
@@ -431,6 +432,7 @@ def run_synthesis(
         _phase_5_result = _pkg._run_phase_5_fund_manager(
             session=session, user_id=user_id, draft_output=output,
             risk_verdict=risk_verdict, decision_run_id=decision_audit_token,
+            guidance=guidance,
         )
         if isinstance(_phase_5_result, tuple) and len(_phase_5_result) == 2:
             approved, _phase_5_reports = _phase_5_result
@@ -1848,6 +1850,7 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
                              decision_run_id,
                              speculation_cap_pct: float | None = None,
                              speculation_cap_concurrent: int | None = None,
+                             guidance: str = "",
                              ) -> tuple[PlanSynthesisOutput, list[AgentReport]]:
     """Default Phase 3: call PlanSynthesizerAgent.
 
@@ -1858,6 +1861,17 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
     after the model returns, so a model that fluffs the constraint cannot
     harm the user.  Both kwargs default to None for backwards compat with
     tests / call sites that don't load the cap.
+
+    ``guidance``: free-text user directive carried forward from
+    ``run_synthesis``. When non-empty, it is forwarded as
+    ``user_directive`` to ``PlanSynthesizerAgent.build_prompt`` so the
+    synthesizer's system prompt includes the AGREED / DISAGREED /
+    DEFERRED stances the user recorded on the prior round (or the
+    free-text guidance from /api/advisor/check-in). Without this thread,
+    the user's resolved positions never reach the model and the FM
+    re-rejects on objections the user has already accepted — the bug
+    that produced 3 consecutive rejections of structurally similar
+    drafts.
     """
     # ADAPTATION: spec wrote PlanSynthesizerAgent() but BaseAgent.__init__
     # requires user_id as a mandatory keyword argument.
@@ -1886,6 +1900,7 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
         speculation_cap_pct=speculation_cap_pct,
         speculation_cap_concurrent=speculation_cap_concurrent,
         prior_items_index=prior_items_index,
+        user_directive=guidance,
         decision_id=decision_run_id,
     )
     # W1.C-v2: single-agent phase still uses the uniform bulk-persist
@@ -2169,7 +2184,8 @@ def _make_fund_manager(user_id: str | None = None):
 
 def _run_phase_5_fund_manager(*, session, user_id,
                               draft_output: PlanSynthesisOutput,
-                              risk_verdict: str, decision_run_id: str
+                              risk_verdict: str, decision_run_id: str,
+                              guidance: str = "",
                               ) -> tuple[bool, list[AgentReport]]:
     """Final integrity check.
 
@@ -2178,6 +2194,15 @@ def _run_phase_5_fund_manager(*, session, user_id,
       - three horizons cohere
       - every target has rationale + cited source
       - 'no_change' justified by evidence if claimed
+
+    ``guidance``: free-text user directive carried forward from
+    ``run_synthesis``. When non-empty, it is forwarded as
+    ``user_directive`` to ``FundManagerAgent.build_prompt`` so the FM
+    sees the user's per-objection stances from the prior round and
+    stops re-raising objections the user has already AGREED / DISAGREED
+    with. Without this thread, the FM re-rejects on identical concerns
+    round after round — the bug that produced 3 consecutive rejections
+    of structurally similar drafts.
 
     Returns True to green-light the draft, False to reject.
     """
@@ -2190,6 +2215,7 @@ def _run_phase_5_fund_manager(*, session, user_id,
         decision_kind="plan_revision",
         draft_plan=draft_output.model_dump_json(),
         risk_verdict=risk_verdict,
+        user_directive=guidance,
         decision_id=decision_run_id,
     )
     # W1.C-v2: uniform bulk-persist pattern. Phase 5 calls exactly one

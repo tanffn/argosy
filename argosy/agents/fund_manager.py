@@ -171,6 +171,7 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         *,
         draft_plan: str,
         risk_verdict: str,
+        user_directive: str = "",
     ) -> tuple[str, str]:
         """Plan-revision integrity check (Wave 2 Phase 5).
 
@@ -178,6 +179,14 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         the synthesized plan honours hard constraints, that the three
         horizons cohere, and that every claimed target has rationale and
         cited evidence.
+
+        ``user_directive``: when non-empty, the system prompt includes a
+        section telling the FM to respect the user's per-objection stances
+        from the prior round (AGREED / DISAGREED / DEFERRED). When empty
+        (default), the section is omitted so the prompt is byte-identical
+        to the pre-feature behavior. This is how the
+        /api/plan/draft/objections/start-new-round payload reaches the FM
+        so it stops re-raising objections the user has already resolved.
         """
         from argosy.agents._plan_authority import AUTHORITY_DISCLAIMER
 
@@ -191,6 +200,21 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{FundManagerPlanRevisionDecision.model_json_schema()}\n"
         )
+        if user_directive:
+            directive_block = (
+                "\nUSER DIRECTIVE FROM THE PRIOR ROUND — the human has reviewed your earlier objections and\n"
+                "recorded per-objection stances:\n"
+                f"{user_directive}\n\n"
+                "Respect the user's resolved positions:\n"
+                "  - For AGREED objections: do NOT re-raise these. The user accepted them.\n"
+                "  - For DISAGREED objections: evaluate the synthesizer's response to the user's counter-position\n"
+                "    on its merits. If the synthesizer correctly honored the user's counter-position, do not\n"
+                "    re-raise the original objection.\n"
+                "  - For DEFERRED objections: evaluate freshly.\n"
+                "You retain authority to raise NEW objections on issues the user has not addressed, or to call\n"
+                "out where the synthesizer has ignored a load-bearing directive.\n"
+            )
+            system = system + directive_block
         user = (
             f"=== DRAFT PLAN ===\n{draft_plan}\n\n"
             f"=== CONSOLIDATED RISK VERDICT ===\n{risk_verdict}\n\n"
