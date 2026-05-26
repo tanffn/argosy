@@ -389,6 +389,26 @@ export interface AgentTreeResponse {
 }
 
 // ----------------------------------------------------------------------
+// T4.1 — per-position thesis cards
+// ----------------------------------------------------------------------
+
+export type PositionVerdict = "HOLD" | "BUY" | "TRIM" | "SELL" | "ADD";
+export type PositionConviction = "HIGH" | "MEDIUM" | "LOW";
+
+export interface PositionThesisDTO {
+  ticker: string;
+  current_shares: number | null;
+  current_weight_pct: number | null;
+  current_usd_value: number | null;
+  verdict: PositionVerdict;
+  conviction: PositionConviction;
+  reasoning_md: string;
+  cited_sources: string[];
+  target_weight_pct: number | null;
+  target_shares: number | null;
+}
+
+// ----------------------------------------------------------------------
 // Phase 5: Argonaut + security
 // ----------------------------------------------------------------------
 
@@ -1036,6 +1056,15 @@ export const api = {
     postJSON<{ status: string; proposal_id: number; ticker: string; paper: boolean }>(
       `/api/plan/current/speculative/${encodeURIComponent(ticker)}/take?user_id=${encodeURIComponent(userId)}&execution_mode=${executionMode}`,
       {},
+    ),
+
+  // ----------------------------------------------------------------------
+  // T4.1: per-position thesis cards
+  // ----------------------------------------------------------------------
+
+  positionTheses: (userId: string) =>
+    getJSON<PositionThesisDTO[]>(
+      `/api/positions/thesis?user_id=${encodeURIComponent(userId)}`,
     ),
 
   // ----------------------------------------------------------------------

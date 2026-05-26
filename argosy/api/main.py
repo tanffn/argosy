@@ -47,6 +47,7 @@ from argosy.api.routes.internal import router as internal_router
 from argosy.api.routes.onboarding import router as onboarding_router
 from argosy.api.routes.plan import router as plan_router
 from argosy.api.routes.portfolio import router as portfolio_router
+from argosy.api.routes.positions import router as positions_router
 from argosy.api.routes.proposals import router as proposals_router
 from argosy.api.routes.security import router as security_router
 from argosy.api.routes.settings import (
@@ -93,6 +94,9 @@ def create_app() -> FastAPI:
     api_prefix = "/api"
     app.include_router(portfolio_router, prefix=api_prefix)
     app.include_router(plan_router, prefix=api_prefix)
+    # T4.1 — per-position thesis cards. Sibling router so it doesn't have
+    # to share the plan router's get_db dependency wiring.
+    app.include_router(positions_router, prefix=api_prefix)
     app.include_router(daily_brief_router, prefix=api_prefix)
     app.include_router(agent_activity_router, prefix=api_prefix)
 
