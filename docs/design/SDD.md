@@ -25,7 +25,9 @@ Sequence of events:
 3. Synthesis **#28** triggered with same guidance to test reproducibility. Killed mid-Phase-1 once #27's failure mode was diagnosed — would have hit the same wall and wasted ~70 more min.
 4. **Root cause hypothesis**: f8faaca placed the user_directive section in the **system prompt** of plan_synthesizer + fund_manager. The bundled claude.exe SDK appears to silently return empty for large variable content in system prompts. #25's synthesizer had a 12.3 KB system prompt; #27's was ~21 KB once f8faaca's directive + the prior_items_index growth landed.
 5. **Fix shipped** in `a5d317c`: moved the verbatim user_directive content from system prompt to the **user prompt** (top of the user message). System prompt retains a short DIRECTIVE POINTER + the AGREED/DISAGREED/DEFERRED instruction language. Same fix applied to fund_manager preemptively (it hadn't hit the bug yet because #27 never reached Phase 5).
-6. **Synthesis #29** triggered with #26's objections + the `a5d317c` fix loaded. In flight. Watchdog will fire self-review + dump FM verdict when it lands.
+6. **Synthesis #29** ran with `a5d317c` loaded. **Synthesizer (Phase 3) PASSED for the first time** — the prompt-relocation fix worked. But **Phase 5 (FM) failed** with a DIFFERENT bug: `claude.exe Command failed with exit code 1` with empty stderr. The `transient_exit1` retry path didn't fire because `isinstance(exc, ProcessError)` returned False (SDK class identity mismatch — possibly a version drift or a streaming-mode TaskGroup unwrap on some paths). The FM died on the first attempt with no retry.
+7. **Fix shipped** in `f4b2dce`: added a defense-in-depth string-match fallback to the `is_transient_flake` guard. Word-boundary regex `\bexit code 1\b` + literal `(exit code: 1)` so the retry path fires even when the SDK wraps ProcessError in a different class. The existing isinstance check is preserved as the primary; `no_retry_when_exit_code_not_1` test still passes (137 doesn't match the word boundary).
+8. **Synthesis #30** triggered with both `a5d317c` + `f4b2dce` loaded. Watchdog running. If FM passes this time, the loop is fully unblocked and the user wakes up to a fresh draft.
 
 ### Overnight cycle (2026-05-26 evening → night) — 12 additional commits
 
@@ -45,6 +47,7 @@ After the T3+T4+observability wave shipped (`14245e3`), the user smoke-tested li
 - **`8e2ea62`** — NVDA YTD sales now flow from `fills` table (or TSV fallback) → `Phase1Inputs.nvda_shares_sold_ytd` → `ConcentrationAnalyst`. Live data: 1,600 sold YTD against 1,800 target = ON PACE.
 - **`138cbef`** — FM objection parser fixes: `_classify_severity` recognizes BLOCKER/catastrophic/critical as RED; `_split_reason` handles `[SEVERITY — TOPIC] detail` shape; topic preserves first 80 chars on fallback instead of swallowing detail.
 - **`a5d317c`** — synthesizer + FM `user_directive` moved from system prompt to user prompt. Fixes the empty-output bug observed in #27 + #28. See "Synthesizer empty-output bug" section above for the root-cause analysis.
+- **`f4b2dce`** — `transient_exit1` retry guard now has a defense-in-depth string-match fallback. SDK class identity drift (ProcessError isinstance check failed in #29's FM call) was bypassing the retry path. Word-boundary regex avoids false-positives on exit-codes like 137 / 12.
 
 ### Synthesis runs this overnight
 
