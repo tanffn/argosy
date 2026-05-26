@@ -29,6 +29,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1505,9 +1506,35 @@ class BaseAgent(Generic[T]):
                 #   4. We have not retried yet on this call (`_retried`
                 #      ensures at most one retry per `_call_via_claude_code_inner`
                 #      invocation, even if the retry hits the same flake).
+                # Primary signature: ProcessError instance with exit_code=1.
+                # Defense in depth (T2.6b-overnight): also accept the same
+                # fingerprint by error-string match. Live evidence from
+                # synthesis #29 phase 5: the fund_manager hit this exact
+                # error shape ("Command failed with exit code 1 (exit code:
+                # 1)\nError output: Check stderr output for details") with
+                # empty stderr_lines — yet the isinstance check did not
+                # match. The SDK appears to wrap the ProcessError in a
+                # different class on some code paths (possibly streaming-
+                # mode TaskGroup unwrap), or a newer SDK version's class
+                # identity differs from our import. The string-match
+                # fallback is gated by the SAME guards (exit-1 fingerprint
+                # + empty stderr_lines + budget) so deterministic failures
+                # aren't silently retried.
+                _exc_str = str(exc)
+                # Word-boundary regex so "exit code 1" doesn't match the
+                # "1" inside "137" / "127" / "12" etc. The parenthesized
+                # form `(exit code: 1)` is also exact because of the
+                # closing paren — "(exit code: 137)" is a different string.
+                _has_exit1_signature = bool(
+                    re.search(r"\bexit code 1\b", _exc_str)
+                    or "(exit code: 1)" in _exc_str
+                )
                 is_transient_flake = (
-                    isinstance(exc, ProcessError)
-                    and getattr(exc, "exit_code", None) == 1
+                    (
+                        (isinstance(exc, ProcessError)
+                         and getattr(exc, "exit_code", None) == 1)
+                        or _has_exit1_signature
+                    )
                     and not stderr_lines
                     and _retry_count < _MAX_RETRIES
                 )
