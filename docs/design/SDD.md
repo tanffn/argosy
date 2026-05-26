@@ -15,8 +15,72 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-26 (afternoon) by Claude.
-**Status:** Tier 1 + Tier 2 + most of Tier 4 shipped. Synthesis now runs end-to-end in ~30 min with all 10 analysts succeeding. **Fund Manager has rejected 3 consecutive drafts (#7 → #8 → #9), but objection severity has steadily decreased (RED → AMBER → YELLOW) and infrastructure is solid.** The remaining FM concerns are plan-construction issues (NVDA arithmetic, hard-tax-gate embedding, debate-fork arbitration), not data-quality or infrastructure issues.
+**Last edit:** 2026-05-26 (late evening) by Claude — T3 + T4 + observability wave shipped end-to-end. **13 commits** landed across Phase 0 (observability tree) → Phase 1 (Tier 3 adapters) → Phase 2 (Tier 4 surfaces) → Phase 3 (pushback + daily brief). Plan at `docs/superpowers/plans/2026-05-26-tier3-tier4-observability-implementation.md`.
+**Status:** Tier 1 + Tier 2 + Tier 3 + Tier 4 (all 13 items: T4.1-T4.8) all shipped. Synthesis runs end-to-end in ~30 min with all 10 analysts succeeding. **Fund Manager has rejected 3 consecutive drafts (#7 → #8 → #9), but objection severity has steadily decreased (RED → AMBER → YELLOW) and infrastructure is solid.** Remaining FM concerns are plan-construction (NVDA arithmetic, hard-tax-gate embedding, debate-fork arbitration), not data-quality or infrastructure.
+
+### This wave shipped (2026-05-26 late evening) — 13 commits
+
+**Phase 0 — FM-rooted observability tree** (7 commits):
+- `70c481e` (T0.1) — orchestrator threads real `agent_report_ids` into per-phase recorder. `decision_phases.participants_json` no longer empty.
+- `872fff7` (T0.2) — `argosy/services/adapter_outcomes.py` contextvar + `track_adapter_call(adapter_name, *, target=)` context manager. Records `{status: ok|empty|http_error|exception, latency_ms, payload_size_bytes, http_status_code, error_text}` per call.
+- `cd79755` (T0.3) — all 8 data adapters (finnhub, finnhub_social, fred, yfinance, tipranks, sec_13f, sec_form4, boi, capitoltrades) wired to the tracker. Phase 1's `phase_output_json` carries `adapter_outcomes: list[dict]` alongside `analyst_reports_text`.
+- `9c0a6c7` (T0.4) — `argosy/services/agent_tree_builder.py::build_agent_tree(db, run_id)`. FM-rooted DAG with `AgentNode{status, confidence, model, cost_usd, side, perspective, children, adapters}` + `AdapterNode{adapter_name, status, http_status_code, error_text}` + dedup'd `status_summary{agents_ok, agents_failed, adapters_ok, adapters_failed}`. Handles missing `participants_json` via fallback to `agent_reports.decision_id == "plan-synth-<id>"`.
+- `f061652` (T0.5) — `GET /api/decisions/{id}/agent-tree` endpoint. `agent_tree_url` added to `/api/decisions/{id}/replay` response.
+- `8cd6606` (T0.6) — `ui/src/components/decisions/agent-tree.tsx` + `adapter-leaf.tsx` replace the meaningless mermaid sequence on `/decisions/[id]`. Recursive tree, FM at root, expand-on-click, per-node response excerpt + cost + tokens.
+- `3347682` (T0.7) — `<SynthesisHealthBanner>` on `/plan` above the FM objections card. "N agents OK · M failed · K adapter failures · Drill in →".
+
+**Phase 1 — Tier 3 adapter coverage** (2 commits):
+- `be76454` (T3.1) — SEC 13F: **root cause was a hard-coded `Host: www.sec.gov` header** on requests to `efts.sec.gov` (different vhost). Removed the header, now hits EDGAR FTS cleanly (9,625 13F-HR hits live). Wraps all public methods in `track_adapter_call`; HTTP errors return `[]` instead of raising.
+- `e6f492b` (T3.2) — TipRanks accepts 403/500/etc. via `track_adapter_call`. Falls back to Finnhub `/stock/social-sentiment?symbol=...` (US-listed only). Both outcomes visible in the agent tree. Returns zero-shape default when both providers fail.
+
+**Phase 2 — Tier 4 surfaces** (3 commits):
+- `229c76a` (T4.1) — `/positions` page with one card per holding: HOLD/BUY/TRIM/SELL verdict + HIGH/MEDIUM/LOW conviction + reasoning_md + cited_sources + target_weight_pct. Plus ADD cards for tickers in the plan but not in the portfolio. Derivation is pure-Python (`argosy/services/per_position_thesis.py`) — no LLM call.
+- `c5f17cc` (T4.2) — `/proposals` cleanly separates Argonaut (limited-account) speculative candidates from real-plan deltas. Speculative cards collapsed by default; conviction badge + top citation visible on collapse; expand for full reasoning + all cited sources.
+- `8070695` (T4.4) — `decision_kind="delta_pushback"` + `decision_kind="daily_brief"` recognized in `/decisions` + drill-in. `/api/decisions/recent?decision_kind=<value>` filter. `decision_runs.notes_json` carries kind-specific labels. Agent-tree builder gracefully returns `root=None` + `unsupported_reason` for non-synthesis kinds (rather than raising).
+
+**Phase 3 — Pushback + daily brief** (2 commits):
+- `d1bf8c5` (T4.3) — slim per-delta re-debate. `POST /api/plan/draft/delta/{id}/pushback` now triggers `argosy/orchestrator/flows/per_delta_pushback.py` (bull + bear + facilitator on the disputed delta only, ~$0.30/run typical). Writes a `decision_runs` row with `decision_kind="delta_pushback"`. UI shows "Re-debate running…" per card; WS event on completion. Idempotent on (user_id, draft_id, item_id) within 30s.
+- `86fb3e3` (T4.5) — daily-brief production loop. `argosy/agents/daily_briefer.py` (Sonnet, ~$1/run cap) + `argosy/services/daily_brief_runner.py::generate_daily_brief(user_id, db)`. Reads pending or accepted draft + overnight FRED + Finnhub deltas (tracked via `track_adapter_call`). FastAPI startup spawns `background_loop()` that wakes at 07:00 `Asia/Jerusalem` daily — **gated by `ARGOSY_DAILY_BRIEF_ENABLED=1`**, always off under pytest. Home page renders the latest brief at the top.
+
+### Observability — agent tree (new)
+
+The decision-replay surface for synthesis runs now produces a Fund-Manager-rooted DAG instead of a flat mermaid sequence. Topology is hard-coded in `argosy/services/agent_tree_builder.py` for `decision_kind in {"plan_revision", "synthesis"}`:
+
+```
+fund_manager
+  ├─ plan_synthesizer
+  │   ├─ researcher_facilitator × 3 (one per horizon — currently rendered as 3 sibling subtrees since horizon tagging is not yet in the DB)
+  │   │   ├─ bull_researcher (side="bull")
+  │   │   │   └─ analysts × 10 (shared leaves; status_summary dedups by id)
+  │   │   └─ bear_researcher (side="bear")
+  │   │       └─ analysts × 10
+  │   └─ analysts × 10 (synth also reads phase 1 directly)
+  ├─ risk_facilitator
+  │   ├─ risk_officer (perspective="aggressive")
+  │   ├─ risk_officer (perspective="neutral")
+  │   └─ risk_officer (perspective="conservative")
+  └─ plan_critique  (FM reads critique findings directly alongside synth + risk verdict)
+```
+
+Phase-1 analysts (concentration, fx, fundamentals, news, sentiment, technical, macro, tax, household_budget, plan_critique) each carry the adapter outcomes that fed them (`_adapter_feeds_role` mapping in the builder).
+
+**Non-synthesis kinds** (`delta_pushback`, `daily_brief`, `trade_proposal`): the builder returns `root=None` + `unsupported_reason: str`. The UI shows an "Agent tree — not available for this kind" placeholder; the per-phase timeline still renders if phases exist. To extend tree support to a new kind, add it to `SYNTHESIS_KINDS` and define its topology.
+
+**Adapter outcomes** flow through `argosy/services/adapter_outcomes.py`'s contextvar. `reset_outcomes()` is called at the start of every flow that wants tracking; `collect_outcomes()` returns the accumulated list. The contextvar pattern lets adapters report without threading a tracker through every method signature.
+
+**Binding rule from this session**: the user does not debug agents. If an adapter fails (e.g., SEC 13F endpoint 404, TipRanks 403) the failure MUST surface in the UI with a human-readable reason, not silently return empty payload. The `/plan` synthesis-health banner + the agent tree drill-in are the surfaces for this. The block-completion banner format (`**** new feature done! ****`) is the convention for session-ship messages.
+
+### Open follow-ups (none block shipping)
+
+- **T0.1 — FM verdict recorder still passes `agent_report_ids=[]`** at the end of `run_synthesis` (the synthesis-verdict row, separate from the 5 per-phase rows). Captured in the T0.1 commit notes; small fix.
+- **Adapter rate limits** — SEC.gov took 4-5 calls without 429, but a high-volume synthesis could trigger throttling. No rate limiter wired yet; add if seen.
+- **Pre-existing eslint errors** in `agent-cascade-strip.tsx`, `agent-reasoning-drawer.tsx`, `ui/sheet.tsx`, `plan/page.tsx:145` (set-state-in-effect). All pre-date this wave; documented across multiple sub-agent reports.
+- **Pre-existing pytest failure** in `test_advisor_image_attachments.py::test_call_via_claude_code_streams_image_content_blocks` + 2 in `test_plan_synthesis_decision_id_propagation.py` (stub-coverage gap). All pre-date this wave.
+- **Phase 2 `DailyBriefLoop`** (the older 4-agent flow at `argosy/orchestrator/loops/daily_brief.py`) still exists; the new T4.5 runner is the single-agent simpler path. Both coexist on the same `daily_briefs` table, distinguishable by `brief_date IS NOT NULL`. Decide later whether to retire the Phase 2 loop.
+
+### Tests
+
+`pytest -m "not llm_eval"` should pass ≥ 1,020 tests post-wave (Tier 2 baseline) + ~80 new tests added across the wave (adapter_outcomes, agent_tree_builder, decisions_tree_route, per_position_thesis, speculation_route, decisions_replay, decisions_recent_route, per_delta_pushback, daily_brief_runner). Final-pass count is reported in the wrap-up commit.
 
 ### What landed this session (15 commits, all on `main`)
 
