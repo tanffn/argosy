@@ -870,6 +870,9 @@ _RED_KEYWORDS = (
     "permanent-loss",
     "section 102",
     "statutory",
+    "blocker",
+    "catastrophic",
+    "critical",
 )
 _AMBER_KEYWORDS = (
     "failure",
@@ -878,6 +881,9 @@ _AMBER_KEYWORDS = (
     "escalate",
     "unresolved",
     "conflation",
+    "regression",
+    "coherence gap",
+    "amber",
 )
 
 
@@ -891,16 +897,41 @@ def _classify_severity(topic: str, detail: str) -> str:
 
 
 def _split_reason(reason: str) -> tuple[str, str]:
-    """Split a FM reason string on " — " into (topic, detail).
+    """Split a FM reason string into (topic, detail).
 
-    FM emits each rejection reason as ``"TOPIC — long-form detail"``.
-    Falls back to ``(topic="objection", detail=reason)`` if no separator.
+    Recognized shapes (in order):
+      * ``"[BLOCKER — TOPIC] detail"`` (severity-prefixed; FM post-f8faaca)
+      * ``"[CATEGORY] TOPIC — detail"`` (legacy severity-prefixed)
+      * ``"TOPIC — long-form detail"`` (plain em-dash split)
+    Falls back to ``(topic=reason[:80], detail=reason)`` so the verbose
+    text is never lost (was previously ``topic="objection"`` swallowing
+    the detail entirely).
     """
+    import re
+
+    # Pattern 1: "[SEVERITY — TOPIC] detail" — used by FM post-f8faaca
+    # (verdicts like "[BLOCKER — internal coherence] Tax-rate citation...").
+    m = re.match(r"^\s*\[([A-Z]+)\s+[—-]+\s+([^\]]+)\]\s*(.*)$", reason, re.DOTALL)
+    if m:
+        sev_label = m.group(1).strip()
+        topic_inside = m.group(2).strip()
+        detail = m.group(3).strip()
+        # Topic carries the severity hint forward so _classify_severity
+        # can pick it up via the keyword scan ("blocker"/"amber" lowercased).
+        topic = f"{sev_label} — {topic_inside}" if topic_inside else sev_label
+        return (topic, detail or reason)
+
+    # Pattern 2: plain "TOPIC — detail" — the original FM shape.
     for sep in (" — ", " -- ", " - "):
         if sep in reason:
             topic, detail = reason.split(sep, 1)
             return topic.strip(), detail.strip()
-    return ("objection", reason.strip())
+
+    # Fallback: keep the first 80 chars as a synthetic topic so the
+    # detail isn't lost. Previously this used topic="objection" which
+    # threw away searchability + made the UI render a uniform list of
+    # "objection" pills.
+    return (reason.strip()[:80], reason.strip())
 
 
 def _parse_fm_response(response_text: str) -> dict:
