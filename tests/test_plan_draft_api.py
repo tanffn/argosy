@@ -97,6 +97,147 @@ def test_get_draft_objections_parses_fm_response(app_with_draft):
     assert body["decision_run_id"] == 1
 
 
+def test_post_delta_reject_stamps_user_edit_note(app_with_draft):
+    """Per-delta reject writes REJECTED prefix + flips user_edited."""
+    from argosy.state.models import PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.horizon_long_json = json.dumps({
+            "horizon": "long",
+            "freshness_expected": "annual",
+            "status": "no_change",
+            "posture": "test",
+            "deltas_from_prior": [{
+                "item_kind": "target",
+                "item_id": "long.targets.x",
+                "horizon": "long",
+                "change_kind": "added",
+                "summary": "x",
+                "rationale": "",
+                "cited_sources": [],
+                "accepted": False,
+                "user_edited": False,
+                "user_edit_note": None,
+            }],
+        })
+        sess.commit()
+        draft_id = draft.id
+    finally:
+        sess.close()
+
+    r = app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/items/long.targets.x/reject?user_id=ariel",
+        json={"reason": "doesn't fit my timeline"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "rejected"
+
+    # Re-fetch and verify persisted state
+    r2 = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    delta = r2.json()["horizon_long"]["deltas_from_prior"][0]
+    assert delta["accepted"] is False
+    assert delta["user_edited"] is True
+    assert delta["user_edit_note"].startswith("REJECTED:")
+    assert "timeline" in delta["user_edit_note"]
+
+
+def test_post_delta_pushback_accumulates_in_user_edit_note(app_with_draft):
+    """Multiple pushbacks append to user_edit_note rather than overwriting."""
+    from argosy.state.models import PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.horizon_medium_json = json.dumps({
+            "horizon": "medium",
+            "freshness_expected": "quarterly",
+            "status": "minor_revision",
+            "posture": "test",
+            "deltas_from_prior": [{
+                "item_kind": "action",
+                "item_id": "medium.actions.foo",
+                "horizon": "medium",
+                "change_kind": "modified",
+                "summary": "foo",
+                "rationale": "",
+                "cited_sources": [],
+                "accepted": False,
+                "user_edited": False,
+                "user_edit_note": None,
+            }],
+        })
+        sess.commit()
+        draft_id = draft.id
+    finally:
+        sess.close()
+
+    # First pushback
+    r1 = app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/items/medium.actions.foo/pushback?user_id=ariel",
+        json={"feedback": "consider tax implications"},
+    )
+    assert r1.status_code == 200
+
+    # Second pushback — should APPEND, not overwrite
+    r2 = app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/items/medium.actions.foo/pushback?user_id=ariel",
+        json={"feedback": "also check FX exposure"},
+    )
+    assert r2.status_code == 200
+
+    r3 = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    delta = r3.json()["horizon_medium"]["deltas_from_prior"][0]
+    note = delta["user_edit_note"]
+    assert "PUSHBACK: consider tax" in note
+    assert "PUSHBACK: also check FX" in note
+    assert note.count("PUSHBACK:") == 2
+
+
+def test_post_delta_pushback_400_when_feedback_empty(app_with_draft):
+    """Empty feedback rejected — pushback must carry actual user input."""
+    from argosy.state.models import PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.horizon_short_json = json.dumps({
+            "horizon": "short",
+            "freshness_expected": "monthly",
+            "status": "no_change",
+            "posture": "x",
+            "deltas_from_prior": [{
+                "item_kind": "target",
+                "item_id": "short.targets.y",
+                "horizon": "short",
+                "change_kind": "added",
+                "summary": "y",
+                "rationale": "",
+                "cited_sources": [],
+                "accepted": False,
+                "user_edited": False,
+                "user_edit_note": None,
+            }],
+        })
+        sess.commit()
+        draft_id = draft.id
+    finally:
+        sess.close()
+
+    r = app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/items/short.targets.y/pushback?user_id=ariel",
+        json={"feedback": "   "},
+    )
+    assert r.status_code == 400
+
+
 def test_get_draft_objections_404_when_no_draft(client_with_db):
     r = client_with_db.get("/api/plan/draft/objections?user_id=newcomer")
     assert r.status_code == 404

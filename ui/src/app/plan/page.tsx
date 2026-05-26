@@ -234,6 +234,57 @@ export default function PlanPage() {
     [draft, refresh],
   );
 
+  const onRejectDelta = useCallback(
+    async (delta: DeltaItem) => {
+      if (!draft) return;
+      const reason = window.prompt(
+        `Reject "${delta.summary}" — what should the fleet know? (optional)`,
+      ) ?? "";
+      setWorking(true);
+      setError(null);
+      try {
+        await api.planDraftDeltaReject(
+          draft.plan_version_id,
+          delta.item_id,
+          USER_ID,
+          reason,
+        );
+        await refresh();
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setWorking(false);
+      }
+    },
+    [draft, refresh],
+  );
+
+  const onPushBackDelta = useCallback(
+    async (delta: DeltaItem) => {
+      if (!draft) return;
+      const feedback = window.prompt(
+        `Push back on "${delta.summary}" — what's missing or wrong? (required)`,
+      ) ?? "";
+      if (!feedback.trim()) return;
+      setWorking(true);
+      setError(null);
+      try {
+        await api.planDraftDeltaPushback(
+          draft.plan_version_id,
+          delta.item_id,
+          USER_ID,
+          feedback.trim(),
+        );
+        await refresh();
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setWorking(false);
+      }
+    },
+    [draft, refresh],
+  );
+
   const openDrawerForLabel = useCallback((label: string) => {
     const role = provenanceLabelToAgentRole(label);
     if (!role) return;
@@ -263,7 +314,7 @@ export default function PlanPage() {
               ? `Active: ${plan.version_label}`
               : "No plan imported yet."}
             {draft
-              ? ` · pending draft #${draft.plan_version_id}${fmRejected ? " (FM rejected)" : ""}`
+              ? ` · pending draft #${draft.plan_version_id}${fmRejected ? " (Fund Manager rejected)" : ""}`
               : ""}
           </p>
         </div>
@@ -328,8 +379,9 @@ export default function PlanPage() {
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <AllocationChart snapshot={snapshot} draft={draft} />
           <NvdaTrajectoryChart data={nvda} />
-          <ProjectionChart data={projection} />
           <DeltaMap draft={draft} />
+          {/* Projection + Heatmap are wide-data — span both columns. */}
+          <ProjectionChart data={projection} />
           <SourcesHeatmap draft={draft} />
         </section>
       )}
@@ -361,6 +413,8 @@ export default function PlanPage() {
                 <HorizonDeltaList
                   h={draft.horizon_long}
                   onAccept={onAcceptDelta}
+                  onReject={onRejectDelta}
+                  onPushBack={onPushBackDelta}
                   onSourceClick={openDrawerForLabel}
                   disabled={working}
                 />
@@ -369,6 +423,8 @@ export default function PlanPage() {
                 <HorizonDeltaList
                   h={draft.horizon_medium}
                   onAccept={onAcceptDelta}
+                  onReject={onRejectDelta}
+                  onPushBack={onPushBackDelta}
                   onSourceClick={openDrawerForLabel}
                   disabled={working}
                 />
@@ -377,6 +433,8 @@ export default function PlanPage() {
                 <HorizonDeltaList
                   h={draft.horizon_short}
                   onAccept={onAcceptDelta}
+                  onReject={onRejectDelta}
+                  onPushBack={onPushBackDelta}
                   onSourceClick={openDrawerForLabel}
                   disabled={working}
                 />
@@ -485,6 +543,8 @@ export default function PlanPage() {
 interface HorizonDeltaListProps {
   h: HorizonView | null;
   onAccept: (d: DeltaItem) => void | Promise<void>;
+  onReject: (d: DeltaItem) => void | Promise<void>;
+  onPushBack: (d: DeltaItem) => void | Promise<void>;
   onSourceClick: (label: string) => void;
   disabled?: boolean;
 }
@@ -492,6 +552,8 @@ interface HorizonDeltaListProps {
 function HorizonDeltaList({
   h,
   onAccept,
+  onReject,
+  onPushBack,
   onSourceClick,
   disabled,
 }: HorizonDeltaListProps) {
@@ -510,6 +572,8 @@ function HorizonDeltaList({
             delta={d}
             disabled={disabled}
             onAccept={onAccept}
+            onReject={onReject}
+            onPushBack={onPushBack}
             onSourceClick={onSourceClick}
           />
         </li>

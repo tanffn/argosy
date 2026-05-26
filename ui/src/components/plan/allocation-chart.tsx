@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -62,7 +62,12 @@ function extractWeightTargets(d: DraftResponse): WeightTarget[] {
 
 // Bucket positions into coarse categories for the bar chart. We collapse on
 // asset_type since the TSV's `details` field is too granular to chart cleanly.
-function bucketPositions(snapshot: PortfolioSnapshotDTO): {
+// When `excludeNvda=true`, NVDA-symbol positions are dropped before bucketing
+// so a concentrated single-name doesn't visually crush the rest of the mix.
+function bucketPositions(
+  snapshot: PortfolioSnapshotDTO,
+  excludeNvda: boolean,
+): {
   category: string;
   usd_value_k: number;
   pct: number;
@@ -70,6 +75,7 @@ function bucketPositions(snapshot: PortfolioSnapshotDTO): {
   const buckets = new Map<string, number>();
   for (const p of snapshot.positions) {
     if (!p.usd_value_k) continue;
+    if (excludeNvda && (p.symbol || "").toUpperCase() === "NVDA") continue;
     const key = (p.asset_type || p.details || "other").trim() || "other";
     buckets.set(key, (buckets.get(key) ?? 0) + p.usd_value_k);
   }
@@ -82,6 +88,16 @@ function bucketPositions(snapshot: PortfolioSnapshotDTO): {
       pct: (usd_value_k / total) * 100,
     }))
     .sort((a, b) => b.usd_value_k - a.usd_value_k);
+}
+
+function nvdaValueK(snapshot: PortfolioSnapshotDTO): number {
+  let total = 0;
+  for (const p of snapshot.positions) {
+    if ((p.symbol || "").toUpperCase() === "NVDA" && p.usd_value_k) {
+      total += p.usd_value_k;
+    }
+  }
+  return total;
 }
 
 // Pleasant palette for the bars.
@@ -97,25 +113,48 @@ const BAR_COLORS = [
 
 export function AllocationChart(props: AllocationChartProps) {
   const { snapshot, draft } = props;
+  const [hideNvda, setHideNvda] = useState(false);
 
   const bars = useMemo(
-    () => (snapshot ? bucketPositions(snapshot) : []),
-    [snapshot],
+    () => (snapshot ? bucketPositions(snapshot, hideNvda) : []),
+    [snapshot, hideNvda],
   );
   const weightTargets = useMemo(() => extractWeightTargets(draft), [draft]);
+  const nvdaSize = useMemo(
+    () => (snapshot ? nvdaValueK(snapshot) : 0),
+    [snapshot],
+  );
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Current allocation</CardTitle>
-        <CardDescription>
-          {snapshot?.snapshot_date
-            ? `from Family Finances Status ${snapshot.snapshot_date}`
-            : "no portfolio snapshot found"}
-          {snapshot?.total_usd_value_k
-            ? ` · total $${(snapshot.total_usd_value_k * 1000).toLocaleString()}`
-            : ""}
-        </CardDescription>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle className="text-base">Current allocation</CardTitle>
+            <CardDescription>
+              {snapshot?.snapshot_date
+                ? `from Family Finances Status ${snapshot.snapshot_date}`
+                : "no portfolio snapshot found"}
+              {snapshot?.total_usd_value_k
+                ? ` · total $${(snapshot.total_usd_value_k * 1000).toLocaleString()}`
+                : ""}
+              {hideNvda && nvdaSize > 0
+                ? ` · NVDA hidden ($${(nvdaSize * 1000).toLocaleString()})`
+                : ""}
+            </CardDescription>
+          </div>
+          {nvdaSize > 0 && (
+            <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none whitespace-nowrap">
+              <input
+                type="checkbox"
+                checked={hideNvda}
+                onChange={(e) => setHideNvda(e.target.checked)}
+                className="accent-primary"
+              />
+              Hide NVDA
+            </label>
+          )}
+        </div>
       </CardHeader>
       <CardContent>
         {bars.length === 0 ? (

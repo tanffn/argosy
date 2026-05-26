@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { HelpCircle, Plus, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -214,7 +214,22 @@ export default function DecidePage() {
             </Button>
 
             <div className="flex items-center gap-3">
-              <label className="text-xs text-muted-foreground">tier</label>
+              <label className="text-xs text-muted-foreground flex items-center gap-1">
+                tier
+                <span
+                  className="inline-flex"
+                  title={
+                    "Tier = how many checks the fleet runs before the decision can execute.\n\n" +
+                    "auto: resolver picks based on proposed size + ticker + account class.\n" +
+                    "T0:  paper-only sandbox (researcher + trader, no fund manager). Fastest, no real-money path.\n" +
+                    "T1:  small live trades. Researcher + trader + light risk review. Single human approval.\n" +
+                    "T2:  medium trades. Full bull/bear debate + risk team + fund manager. The default for most decisions.\n" +
+                    "T3:  large or plan-structural changes. Adds a second-factor approval (TOTP or delay) on top of T2."
+                  }
+                >
+                  <HelpCircle className="h-3 w-3 text-muted-foreground" />
+                </span>
+              </label>
               <select
                 value={tier}
                 onChange={(e) => setTier(e.target.value as (typeof TIERS)[number])}

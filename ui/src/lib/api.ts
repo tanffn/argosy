@@ -838,6 +838,31 @@ export const api = {
       `/api/plan/draft/${draftId}/items/${encodeURIComponent(itemId)}/accept?user_id=${encodeURIComponent(userId)}`,
       {},
     ),
+  planDraftDeltaReject: (
+    draftId: number,
+    itemId: string,
+    userId: string,
+    reason: string = "",
+  ) =>
+    postJSON<{ status: string; draft_id: number; item_id: string }>(
+      `/api/plan/draft/${draftId}/items/${encodeURIComponent(itemId)}/reject?user_id=${encodeURIComponent(userId)}`,
+      { reason },
+    ),
+  planDraftDeltaPushback: (
+    draftId: number,
+    itemId: string,
+    userId: string,
+    feedback: string,
+  ) =>
+    postJSON<{
+      status: string;
+      draft_id: number;
+      item_id: string;
+      feedback: string;
+    }>(
+      `/api/plan/draft/${draftId}/items/${encodeURIComponent(itemId)}/pushback?user_id=${encodeURIComponent(userId)}`,
+      { feedback },
+    ),
   planDraftDeltaEdit: (
     draftId: number,
     itemId: string,

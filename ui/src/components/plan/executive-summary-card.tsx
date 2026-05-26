@@ -109,7 +109,7 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
                   Draft #{draft.plan_version_id} · Fund Manager approved
                 </>
               ) : (
-                <>Draft #{draft.plan_version_id}</>
+                <>Draft #{draft.plan_version_id} · loading verdict…</>
               )}
             </CardTitle>
             <CardDescription className="font-mono text-xs">

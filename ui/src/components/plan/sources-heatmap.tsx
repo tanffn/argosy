@@ -123,7 +123,7 @@ export function SourcesHeatmap(props: SourcesHeatmapProps) {
   }
 
   return (
-    <Card>
+    <Card className="lg:col-span-2">
       <CardHeader>
         <CardTitle className="text-base">Cited sources by item</CardTitle>
         <CardDescription>

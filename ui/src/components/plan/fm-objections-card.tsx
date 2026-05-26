@@ -54,6 +54,9 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
         <h3 className="text-sm font-semibold tracking-wide uppercase text-error">
           Fund Manager objections ({objections.length})
         </h3>
+        <span className="ml-2 text-[10px] font-mono text-muted-foreground">
+          (the agent that signs off on the synthesized plan)
+        </span>
       </div>
       <ul className="flex flex-col gap-2">
         {sorted.map((o, i) => {

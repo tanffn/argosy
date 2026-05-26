@@ -42,7 +42,7 @@ const PHASES: Array<{ label: string; roles: string[] }> = [
     roles: ["risk_facilitator"],
   },
   {
-    label: "FM (5)",
+    label: "Fund Manager (5)",
     roles: ["fund_manager"],
   },
 ];

@@ -24,15 +24,26 @@ const USER_ID = "ariel";
 
 function formatTimestamp(iso: string | null): string {
   if (!iso) return "—";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toISOString().slice(0, 19).replace("T", " ") + "Z";
+  const ms = parseAsUTC(iso);
+  if (isNaN(ms)) return iso;
+  return new Date(ms).toISOString().slice(0, 19).replace("T", " ") + "Z";
+}
+
+// Backend serializes decision_runs.started_at via plain .isoformat(),
+// which drops the tzinfo for naive datetimes stored in SQLite. The JS
+// Date constructor then interprets a tz-less ISO string as LOCAL time.
+// Without this coercion the displayed duration is off by the local UTC
+// offset (e.g. 38min synthesis appears as 218min for an Israel UTC+3
+// reader). We treat any naive ISO string as UTC.
+function parseAsUTC(iso: string): number {
+  const hasTz = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(iso);
+  return Date.parse(hasTz ? iso : iso + "Z");
 }
 
 function formatDuration(start: string, end: string | null): string {
   if (!end) return "running";
-  const a = new Date(start).getTime();
-  const b = new Date(end).getTime();
+  const a = parseAsUTC(start);
+  const b = parseAsUTC(end);
   const ms = b - a;
   if (ms < 1000) return `${ms}ms`;
   const s = ms / 1000;

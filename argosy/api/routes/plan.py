@@ -1137,6 +1137,100 @@ def post_delta_accept(
     return {"status": "accepted", "draft_id": draft_id, "item_id": item_id}
 
 
+class DeltaRejectRequest(BaseModel):
+    reason: str = ""
+
+
+class DeltaPushbackRequest(BaseModel):
+    feedback: str
+
+
+@router.post("/draft/{draft_id}/items/{item_id}/reject")
+def post_delta_reject(
+    draft_id: int,
+    item_id: str,
+    user_id: str,
+    body: DeltaRejectRequest,
+    db: Session = Depends(get_db),
+):
+    """Mark one delta as user-rejected.
+
+    Sets ``accepted=false``, ``user_edited=true``, and stamps the reason
+    into ``user_edit_note`` with a ``REJECTED:`` prefix so the audit trail
+    can distinguish a rejection from an edit. The pending-draft row stays
+    in role='draft' — only the individual delta is closed out; the rest
+    of the draft remains reviewable.
+    """
+    pv = db.get(PlanVersion, draft_id)
+    if pv is None or pv.user_id != user_id or pv.role != "draft":
+        raise HTTPException(status_code=404, detail="draft not found")
+    found = _find_delta_horizon_field(pv, item_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="item_id not found")
+    field, payload, delta = found
+    delta["accepted"] = False
+    delta["user_edited"] = True
+    reason = (body.reason or "").strip()
+    delta["user_edit_note"] = (
+        f"REJECTED: {reason}" if reason else "REJECTED"
+    )
+    setattr(pv, field, json.dumps(payload))
+    db.commit()
+    invalidate_home_brief(user_id)
+    _publish(
+        "plan.draft.delta.rejected",
+        {"user_id": user_id, "draft_id": draft_id, "item_id": item_id},
+    )
+    return {"status": "rejected", "draft_id": draft_id, "item_id": item_id}
+
+
+@router.post("/draft/{draft_id}/items/{item_id}/pushback")
+def post_delta_pushback(
+    draft_id: int,
+    item_id: str,
+    user_id: str,
+    body: DeltaPushbackRequest,
+    db: Session = Depends(get_db),
+):
+    """Record the user's pushback feedback against one delta.
+
+    Persists the feedback into the delta's ``user_edit_note`` under a
+    ``PUSHBACK:`` prefix and flips ``user_edited=true`` so future
+    re-synthesis can read the feedback as input. Does NOT auto-trigger
+    a re-synthesis; that's a separate route (TODO: a per-delta
+    re-evaluation flow that runs a slimmer debate scoped to just this
+    item with the user's feedback in the prompt).
+    """
+    feedback = (body.feedback or "").strip()
+    if not feedback:
+        raise HTTPException(status_code=400, detail="feedback is required")
+    pv = db.get(PlanVersion, draft_id)
+    if pv is None or pv.user_id != user_id or pv.role != "draft":
+        raise HTTPException(status_code=404, detail="draft not found")
+    found = _find_delta_horizon_field(pv, item_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="item_id not found")
+    field, payload, delta = found
+    delta["user_edited"] = True
+    # Append rather than overwrite so multiple pushbacks accumulate.
+    prior = (delta.get("user_edit_note") or "").strip()
+    suffix = f"PUSHBACK: {feedback}"
+    delta["user_edit_note"] = f"{prior}\n{suffix}" if prior else suffix
+    setattr(pv, field, json.dumps(payload))
+    db.commit()
+    invalidate_home_brief(user_id)
+    _publish(
+        "plan.draft.delta.pushback",
+        {"user_id": user_id, "draft_id": draft_id, "item_id": item_id},
+    )
+    return {
+        "status": "pushback_recorded",
+        "draft_id": draft_id,
+        "item_id": item_id,
+        "feedback": feedback,
+    }
+
+
 @router.patch("/draft/{draft_id}/items/{item_id}")
 def patch_delta_edit(
     draft_id: int,
