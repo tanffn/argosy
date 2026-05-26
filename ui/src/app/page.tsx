@@ -23,6 +23,7 @@ import {
   type DomainKbTreeNode,
   type DraftResponse,
   type FleetSelfReviewDTO,
+  type InFlightSynthesisDTO,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
 } from "@/lib/api";
@@ -92,6 +93,11 @@ interface HomeData {
   // user sees RED / AMBER counts the moment they hit the page, BEFORE
   // having to ask "is anything broken?".
   fleetReview: FleetSelfReviewDTO | null;
+  // Live snapshot of an in-flight plan synthesis run (or null when
+  // nothing is running). Surfaced as a banner at the top of the home
+  // page so the user can SEE that the fleet is working without having
+  // to navigate to /plan first. Polled every 10 s while non-null.
+  inFlightSynthesis: InFlightSynthesisDTO | null;
   error: string | null;
 }
 
@@ -108,6 +114,7 @@ const initial: HomeData = {
   domainKb: null,
   cadenceLastTick: {},
   fleetReview: null,
+  inFlightSynthesis: null,
   error: null,
 };
 
@@ -185,6 +192,7 @@ export default function Home() {
         monthlyAgentRows,
         cadenceTickAudit,
         fleetReviewLatest,
+        inFlightSynth,
       ] = await Promise.all([
         api.portfolioSnapshot(USER_ID).catch(() => null),
         api.planCurrent(USER_ID).catch(() => null),
@@ -244,6 +252,13 @@ export default function Home() {
         // Fleet self-review banner — most-recent report.  Fails gracefully
         // when the migration hasn't been applied yet or no report exists.
         api.fleetSelfReviewLatest(USER_ID).catch(() => null),
+        // In-flight synthesis banner — backend returns 200+null when
+        // nothing is running, so a swallowed network/404 just yields the
+        // same shape.  Polled every 10 s by the effect below while
+        // non-null so the phase counter ticks up live.
+        api
+          .planInFlightSynthesis(USER_ID)
+          .catch(() => ({ in_flight_synthesis: null })),
       ]);
 
       // ---- Monthly spend resolution -------------------------------------
@@ -305,6 +320,7 @@ export default function Home() {
         domainKb,
         cadenceLastTick,
         fleetReview: fleetReviewLatest,
+        inFlightSynthesis: inFlightSynth?.in_flight_synthesis ?? null,
         error: null,
       });
     } catch (e: unknown) {
@@ -345,6 +361,34 @@ export default function Home() {
     }
     refresh();
   }, [lastEvent, refresh]);
+
+  // Poll the in-flight synthesis endpoint while one is running so the
+  // phase counter on the "Synthesis #N in flight" banner ticks up live.
+  // The backend doesn't emit per-phase WS events, so without polling
+  // the banner would freeze at "phase 0 of 5" until plan.draft.completed
+  // arrived ~30 min later.  10 s cadence matches /plan; the route is
+  // cheap (indexed DecisionRun lookup + one DecisionPhase count).  The
+  // interval clears whenever inFlightSynthesis flips back to null
+  // (synth completed or was never running on the most recent refresh).
+  useEffect(() => {
+    if (data.inFlightSynthesis == null) return;
+    const handle = window.setInterval(() => {
+      api
+        .planInFlightSynthesis(USER_ID)
+        .then((r) =>
+          setData((prev) => ({
+            ...prev,
+            inFlightSynthesis: r.in_flight_synthesis ?? null,
+          })),
+        )
+        .catch(() => {
+          // Swallow transient errors; the next tick (or the next
+          // refresh()) will recover.  A polling hiccup shouldn't make
+          // the banner disappear.
+        });
+    }, 10_000);
+    return () => window.clearInterval(handle);
+  }, [data.inFlightSynthesis]);
 
   // ----- Derived values --------------------------------------------------
   const netWorth = data.portfolio?.total_usd_value_k ?? 0;
@@ -530,6 +574,16 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      {/* In-flight synthesis banner — surfaces a "Synthesis #N in
+          flight" card at the top of home so the user can SEE that
+          the fleet is actively working without first having to
+          navigate to /plan.  Suppressed when nothing is running.
+          The polling effect above ticks the phase counter up live
+          every 10 s while non-null. */}
+      {data.inFlightSynthesis ? (
+        <InFlightSynthesisBanner inFlight={data.inFlightSynthesis} />
+      ) : null}
 
       {/* Fleet self-review banner — auto-fires after every synthesis +
           daily.  Surfaces RED/AMBER counts so the user can SEE
@@ -1025,6 +1079,74 @@ function FlashBorderBox({ flashKey, children }: FlashBorderBoxProps) {
     >
       {children}
     </div>
+  );
+}
+
+// ----------------------------------------------------------------------
+// In-flight synthesis banner — "Synthesis #N in flight · phase X of 5".
+// Sits at the very top of the home page (between brand-hero and the fleet
+// self-review banner) so the user lands on / and SEES the fleet is
+// actively working, instead of having to navigate to /plan to find out.
+// Only renders while a plan-revision DecisionRun is running for the user;
+// the polling loop in <Home/> refreshes the phase counter every 10 s.
+// ----------------------------------------------------------------------
+
+interface InFlightSynthesisBannerProps {
+  inFlight: InFlightSynthesisDTO;
+}
+
+function InFlightSynthesisBanner({ inFlight }: InFlightSynthesisBannerProps) {
+  // Format started_at as HH:MM in the user's locale so "started 18:51"
+  // matches the wall clock they're staring at.
+  let startedAtLabel = "";
+  if (inFlight.started_at) {
+    const d = new Date(inFlight.started_at);
+    if (!Number.isNaN(d.getTime())) {
+      startedAtLabel = d.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+  }
+
+  return (
+    <section
+      className="rounded-lg border border-border border-l-2 border-l-info/70 bg-card px-4 py-3 flex items-center justify-between gap-3 flex-wrap"
+      data-slot="in-flight-synthesis-banner"
+    >
+      <div className="flex flex-col gap-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span aria-hidden className="font-mono text-sm text-info">
+            ⏳
+          </span>
+          <span className="font-mono text-sm font-semibold">
+            Synthesis #{inFlight.decision_run_id} in flight
+          </span>
+          <StatusPill tone="accent" mono>
+            phase {inFlight.completed_phases} of {inFlight.total_phases}
+          </StatusPill>
+        </div>
+        <div className="font-mono text-[11px] text-muted-foreground tabular-nums">
+          {startedAtLabel ? `started ${startedAtLabel} · ` : ""}
+          status {inFlight.status} · a new draft will appear when complete
+          (~30 min)
+        </div>
+      </div>
+      <div className="flex items-center gap-3 flex-wrap">
+        <Link
+          href={`/decisions/${inFlight.decision_run_id}`}
+          className="font-mono text-xs text-info hover:underline"
+        >
+          Drill in -&gt;
+        </Link>
+        <Link
+          href="/plan"
+          className="font-mono text-xs text-info hover:underline"
+        >
+          View plan -&gt;
+        </Link>
+      </div>
+    </section>
   );
 }
 
