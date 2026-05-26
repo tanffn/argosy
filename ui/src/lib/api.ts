@@ -817,6 +817,10 @@ export const api = {
     getJSON<NvdaTrajectoryResponse>(
       `/api/plan/draft/nvda-trajectory?user_id=${encodeURIComponent(userId)}`,
     ),
+  planDraftProjection: (userId: string, years = 10) =>
+    getJSON<ProjectionResponse>(
+      `/api/plan/draft/projection?user_id=${encodeURIComponent(userId)}&years=${years}`,
+    ),
   planDraftAccept: (draftId: number, userId: string) =>
     postJSON<{ status: string; new_current_id: number }>(
       `/api/plan/draft/${draftId}/accept?user_id=${encodeURIComponent(userId)}`,
@@ -1149,6 +1153,27 @@ export interface NvdaTrajectoryResponse {
   };
   ceiling_target_shares: number | null;
   ceiling_target_label: string | null;
+}
+
+export interface ProjectionPoint {
+  months_out: number;
+  date: string;
+  bear: number;
+  base: number;
+  bull: number;
+}
+
+export interface ProjectionResponse {
+  today_date: string;
+  today_value_usd: number;
+  series: ProjectionPoint[];
+  safe_withdrawal_monthly_usd: number;
+  assumptions: {
+    mu_annual: number;
+    sigma_annual: number;
+    withdrawal_rate: number;
+    model: string;
+  };
 }
 
 /**

@@ -639,6 +639,136 @@ def _parse_fm_response(response_text: str) -> dict:
     return {}
 
 
+class ProjectionPoint(BaseModel):
+    months_out: int
+    date: str  # YYYY-MM
+    bear: float
+    base: float
+    bull: float
+
+
+class ProjectionResponse(BaseModel):
+    today_date: str
+    today_value_usd: float
+    series: list[ProjectionPoint]
+    safe_withdrawal_monthly_usd: float
+    assumptions: dict
+
+
+def _project_lognormal_path(
+    today_value_usd: float,
+    *,
+    years: int,
+    mu_annual: float,
+    sigma_annual: float,
+) -> list[dict]:
+    """Parametric bull/base/bear projection under lognormal returns.
+
+    Under V_t = V_0 * exp((mu - 0.5*sigma^2)*t + k*sigma*sqrt(t)):
+      - base (k=0): the median of the lognormal distribution at time t
+      - bull (k=+1): roughly the upper 1-sigma band (~84th percentile)
+      - bear (k=-1): roughly the lower 1-sigma band (~16th percentile)
+
+    Monthly resolution over the requested horizon. Returns a flat list of
+    {months_out, date, bear, base, bull} dicts the API serializes via the
+    pydantic ProjectionPoint model. Today's value is the t=0 point with
+    all three bands equal to today_value_usd.
+    """
+    import math
+    from datetime import date, timedelta
+
+    today = date.today()
+    out: list[dict] = []
+    months = years * 12
+    drift = mu_annual - 0.5 * sigma_annual * sigma_annual
+
+    for m in range(months + 1):
+        t = m / 12.0  # time in years
+        log_mean = drift * t
+        log_std = sigma_annual * math.sqrt(t)
+        base = today_value_usd * math.exp(log_mean)
+        bull = today_value_usd * math.exp(log_mean + log_std)
+        bear = today_value_usd * math.exp(log_mean - log_std)
+        # Project month-end dates by adding 30*m days. Close enough for a
+        # 10-year chart; the alternative (calendar month arithmetic) adds
+        # complexity for no visible difference at chart resolution.
+        d = today + timedelta(days=30 * m)
+        out.append({
+            "months_out": m,
+            "date": d.strftime("%Y-%m"),
+            "bear": round(bear, 2),
+            "base": round(base, 2),
+            "bull": round(bull, 2),
+        })
+    return out
+
+
+@router.get("/draft/projection", response_model=ProjectionResponse)
+def get_draft_projection(
+    user_id: str,
+    years: int = 10,
+    db: Session = Depends(get_db),
+) -> ProjectionResponse:
+    """Return a parametric bull/base/bear projection of portfolio value.
+
+    The model uses fixed S&P 500-like historical parameters (mu_annual=0.08,
+    sigma_annual=0.18) under a lognormal-returns assumption. Output bands
+    represent the median (base) and ±1σ band edges (bull/bear).
+
+    Labeled "simplified parametric projection" on the UI; not Monte Carlo,
+    and does NOT account for the user's actual portfolio composition. A
+    future revision can per-ticker-weight mu/sigma from yfinance.
+    """
+    # Per the legacy /api/portfolio/snapshot route — reuse the same TSV
+    # discovery + parser so we agree on "today's value" with the
+    # allocation chart card.
+    from argosy.api.routes.portfolio import _find_latest_tsv
+    from argosy.ingest.tsv import parse_portfolio_tsv
+
+    today_value_usd = 0.0
+    try:
+        tsv = _find_latest_tsv()
+        if tsv is not None:
+            snap = parse_portfolio_tsv(tsv)
+            # total_usd_value_k is in thousands; convert to whole dollars.
+            today_value_usd = float(snap.total_usd_value_k or 0.0) * 1000.0
+    except Exception:  # noqa: BLE001 — defensive
+        today_value_usd = 0.0
+
+    mu_annual = 0.08
+    sigma_annual = 0.18
+    withdrawal_rate = 0.04
+
+    points_raw = _project_lognormal_path(
+        today_value_usd,
+        years=max(1, min(years, 30)),
+        mu_annual=mu_annual,
+        sigma_annual=sigma_annual,
+    )
+    series = [ProjectionPoint(**p) for p in points_raw]
+
+    safe_withdrawal_monthly_usd = round(
+        (today_value_usd * withdrawal_rate) / 12.0, 2
+    )
+
+    return ProjectionResponse(
+        today_date=datetime.now(timezone.utc).date().isoformat(),
+        today_value_usd=round(today_value_usd, 2),
+        series=series,
+        safe_withdrawal_monthly_usd=safe_withdrawal_monthly_usd,
+        assumptions={
+            "mu_annual": mu_annual,
+            "sigma_annual": sigma_annual,
+            "withdrawal_rate": withdrawal_rate,
+            "model": (
+                "lognormal V_t = V_0 * exp((mu - 0.5*sigma^2)*t + k*sigma*sqrt(t)) "
+                "with k in {-1, 0, +1} for bear/base/bull bands; "
+                "S&P 500 historical mu/sigma; NOT Monte Carlo"
+            ),
+        },
+    )
+
+
 class NvdaVestEvent(BaseModel):
     date: str  # YYYY-MM-DD
     shares: int
