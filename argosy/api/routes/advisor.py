@@ -1062,15 +1062,26 @@ async def _gap_bullet(user_id: str) -> HomeBriefBullet | None:
 
     reason = _GAP_REASON.get(target.path)
     stale_paths = {s.path for s, _ in status.stale}
-    if target.path in stale_paths:
-        verb = "due for refresh"
-    else:
-        verb = "still missing"
+    is_stale = target.path in stale_paths
+
+    # Render the field as a grammatical subject. Some `FieldSpec.label`
+    # strings collide with the bare `"{label} still missing"` template
+    # because the label begins with a noun that reads as a verb when the
+    # sentence has no copula (notably "Will last reviewed (year)" → "Will
+    # last reviewed (year) still missing", which parses as future tense).
+    # The per-path overrides below produce proper noun-phrase subjects.
+    # Otherwise we fall back to the original label.
+    _SUBJECT_OVERRIDES: dict[str, str] = {
+        "constraints.will_last_review_year": "Last-reviewed year of legal will",
+        "constraints.will_exists": "Legal will status",
+    }
+    subject = _SUBJECT_OVERRIDES.get(target.path, target.label)
+    predicate = "is due for refresh" if is_stale else "is still missing"
 
     if reason:
-        text = f"{target.label} {verb} — {reason}."
+        text = f"{subject} {predicate} — {reason}."
     else:
-        text = f"{target.label} {verb}."
+        text = f"{subject} {predicate}."
     return HomeBriefBullet(kind="gap", text=text)
 
 

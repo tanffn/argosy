@@ -1,6 +1,6 @@
 "use client";
 
-import { Anchor } from "lucide-react";
+import { Anchor, Shield, ShieldOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AdvisorBriefCard } from "@/components/advisor-brief-card";
@@ -34,8 +34,12 @@ import { DecisionAccordion } from "@/components/agent/DecisionAccordion";
 const USER_ID = "ariel";
 
 // SDD §3.1 fleet size and §5.1 cadence-loop count. Hardcoded today; can later
-// be sourced from a /config endpoint.
-const AGENT_FLEET_SIZE = 17;
+// be sourced from a /config endpoint. The 28 count is the concrete count of
+// `class \w+Agent` declarations under `argosy/agents/` (excluding `BaseAgent`
+// and the private `_ResearcherAgent` helper). RiskOfficerAgent counts as one
+// class even though it's instantiated three times per decision (perspective
+// kwarg in {aggressive, neutral, conservative}).
+const AGENT_FLEET_SIZE = 28;
 const CADENCE_LOOPS = 9;
 
 // Pass-2 hardcoded knobs (see UI brief). MONTHLY_BUDGET_USD is the
@@ -63,8 +67,13 @@ interface HealthStatus {
 }
 
 interface DbSizeResponse {
+  // Backend (argosy.api.routes.health.db_size) returns size_bytes +
+  // size_human. We tolerate the legacy field names so older backends
+  // that haven't been redeployed still render something useful.
   size_bytes?: number;
   size_human?: string;
+  bytes?: number;
+  human?: string;
 }
 
 interface AuditEventRow {
@@ -213,14 +222,19 @@ export default function Home() {
         fetch("/api/health", { cache: "no-store" })
           .then((r) => ({ ok: r.ok, checkedAt: Date.now() }) as HealthStatus)
           .catch(() => null),
-        // Optional internal endpoint — we don't expect this to exist yet.
-        fetch("/api/internal/db-size", { cache: "no-store" })
+        // SQLite state-DB file size — see argosy.api.routes.health.db_size.
+        // The endpoint is mounted at /api/system/db-size (and also at root
+        // for the watchdog). We tolerate the legacy `bytes` / `human` field
+        // names so this code keeps working against older backends.
+        fetch("/api/system/db-size", { cache: "no-store" })
           .then(async (r): Promise<string | null> => {
             if (!r.ok) return null;
             const j = (await r.json()) as DbSizeResponse;
             if (typeof j.size_human === "string") return j.size_human;
+            if (typeof j.human === "string") return j.human;
             if (typeof j.size_bytes === "number")
               return humanBytes(j.size_bytes);
+            if (typeof j.bytes === "number") return humanBytes(j.bytes);
             return null;
           })
           .catch(() => null),
@@ -607,7 +621,7 @@ export default function Home() {
             value={loading ? "…" : `$${netWorth.toLocaleString()}K`}
             pillLabel="liquid"
             pillTone="neutral"
-            sub="Δ vs prior — wired in Phase 4"
+            sub="Δ vs prior — not yet computed"
             sparkData={netWorthSeries}
             sparkTone="success"
           />
@@ -616,7 +630,15 @@ export default function Home() {
             value={nvdaPct === null ? "—" : `${nvdaPct.toFixed(1)}%`}
             pillLabel="NVDA"
             pillTone={concentrationTone}
-            sub="Sector caps wire in Phase 3"
+            sub={
+              nvdaPct === null
+                ? "No position data yet"
+                : nvdaPct > 30
+                  ? "Above 30% cap — trim recommended"
+                  : nvdaPct > 15
+                    ? "Above 15% target band"
+                    : "Within target band"
+            }
             sparkData={concentrationSeries}
             sparkTone="accent"
           />
@@ -625,7 +647,7 @@ export default function Home() {
             value="0"
             pillLabel="idle"
             pillTone="neutral"
-            sub="Proposals queue arrives in Phase 3"
+            sub="No proposals yet"
             sparkData={proposalsSeries}
             sparkTone="neutral"
           />
@@ -683,6 +705,18 @@ export default function Home() {
             label="Kill switch"
             value={killSwitchArmed ? "ARMED" : "DISARMED"}
             tone={killSwitchArmed ? "success" : "warning"}
+            // ARMED = safety net engaged. The green dot alone reads as
+            // "running / healthy" (the same convention as the Engine tile
+            // immediately to its left), which conflicts with the operator
+            // meaning here. Swap to a Shield icon so the safety semantics
+            // come through visually; the tone (and tooltip) preserve the
+            // green=safe / red=unsafe convention.
+            icon={killSwitchArmed ? Shield : ShieldOff}
+            tooltip={
+              killSwitchArmed
+                ? "Kill switch is ARMED — automated trades are blocked."
+                : "Kill switch is DISARMED — automated trades may execute."
+            }
           />
           <div className="rounded-lg border border-border bg-card px-3 py-2.5 flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
@@ -937,7 +971,7 @@ export default function Home() {
         <SectionHeader label="PROPOSALS" count={0} />
         <FlashBorderBox flashKey={proposalFlash}>
           <div className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-6 text-center text-xs text-muted-foreground font-mono">
-            No proposals queued · awaiting Phase 3
+            No proposals queued
           </div>
         </FlashBorderBox>
       </section>
@@ -1004,9 +1038,25 @@ interface SystemTileProps {
   value: string;
   tone: "success" | "warning" | "error" | "neutral";
   pulse?: boolean;
+  /**
+   * Optional Lucide icon component to render in place of the default
+   * status dot. Used for the Kill-switch tile so ARMED / DISARMED reads
+   * as a safety affordance rather than a generic running/stopped lamp.
+   */
+  icon?: React.ComponentType<{ className?: string }>;
+  /** Optional title-attribute tooltip on the value row. */
+  tooltip?: string;
 }
 
-function SystemTile({ label, value, tone, pulse }: SystemTileProps) {
+function SystemTile({ label, value, tone, pulse, icon: Icon, tooltip }: SystemTileProps) {
+  const toneTextClass =
+    tone === "success"
+      ? "text-success"
+      : tone === "warning"
+        ? "text-warning"
+        : tone === "error"
+          ? "text-error"
+          : "text-muted-foreground";
   const dotClass =
     tone === "success"
       ? "bg-success"
@@ -1020,13 +1070,20 @@ function SystemTile({ label, value, tone, pulse }: SystemTileProps) {
       <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
         {label}
       </span>
-      <div className="flex items-center gap-2">
-        <span
-          aria-hidden
-          className={`inline-block h-2 w-2 rounded-full ${dotClass} ${
-            pulse ? "argosy-pulse-dot" : ""
-          }`}
-        />
+      <div className="flex items-center gap-2" title={tooltip}>
+        {Icon ? (
+          <Icon
+            className={`h-4 w-4 shrink-0 ${toneTextClass} ${pulse ? "argosy-pulse-dot" : ""}`}
+            aria-hidden
+          />
+        ) : (
+          <span
+            aria-hidden
+            className={`inline-block h-2 w-2 rounded-full ${dotClass} ${
+              pulse ? "argosy-pulse-dot" : ""
+            }`}
+          />
+        )}
         <span className="font-mono text-base font-semibold tabular-nums">
           {value}
         </span>
