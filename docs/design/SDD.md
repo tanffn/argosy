@@ -15,7 +15,48 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-26 (late evening) by Claude — T3 + T4 + observability wave shipped end-to-end. **13 commits** landed across Phase 0 (observability tree) → Phase 1 (Tier 3 adapters) → Phase 2 (Tier 4 surfaces) → Phase 3 (pushback + daily brief). Plan at `docs/superpowers/plans/2026-05-26-tier3-tier4-observability-implementation.md`.
+**Last edit:** 2026-05-26 (overnight) by Claude — wave continues into UX polish + CRITICAL guidance-pipeline fix + fleet self-review agent.
+
+### Overnight cycle (2026-05-26 evening → night) — 11 additional commits
+
+After the T3+T4+observability wave shipped (`14245e3`), the user smoke-tested live and surfaced UX gaps + one critical hidden bug:
+
+- **`b771fe1`** — NVDA PACE wired to real ConcentrationAnalyst data (home widget was hardcoded `0` placeholder).
+- **`4131b69`** — FM objection translations precomputed + cached in `fm_objection_translations` table; instant toggle.
+- **`5863c16`** — Per-FM-objection AGREE/DISAGREE/DEFER toggle + counter-position textarea + "Start new round with my decisions" CTA.
+- **`67828b5`** — Translation precompute moved to synthesis-completion background thread (125s → ~200ms first-load).
+- **`f8faaca` — CRITICAL FIX**: `run_synthesis(guidance=...)` had been silently dropping user feedback at the orchestrator boundary forever. `_run_phase_1_analysts` accepted `guidance` but never used it; phases 2-5 never saw it. **This is why FM rejected drafts #7→#8→#9 with overlapping themes — user feedback never reached any agent.** Fix: thread `guidance` into `plan_synthesizer` (Phase 3) + `fund_manager` (Phase 5) `build_prompt` as `user_directive` kwarg. System prompts now include load-bearing USER DIRECTIVE section. **Verified working in synthesis #26** — the new FM verdict explicitly cites which prior objections were resolved.
+- **`73b20a6`** — `FleetSelfReviewAgent` with 10 deterministic detectors auto-firing on synthesis completion + daily sweep. The D1 detector self-prophetically caught the same `f8faaca` bug shape in Phase 1 (still open).
+- **`0f1dcf2`** — `/plan` surfaces in-flight synthesis state. New endpoint `/api/plan/in-flight-synthesis`. 10s polling for live phase-count.
+- **`eb56ebd`** — Home page mirrors the in-flight banner + adds fleet self-review banner.
+- **`43e4d4d`** — Home-page UX cleanup: broken English on gap banner; removed "Phase N" jargon; DB SIZE renders bytes; KILL SWITCH ARMED uses `<Shield>` icon; agent count corrected 17 → 28.
+- **`8e2ea62`** — NVDA YTD sales now flow from `fills` table (or TSV fallback) → `Phase1Inputs.nvda_shares_sold_ytd` → `ConcentrationAnalyst`. Live data: 1,600 sold YTD against 1,800 target = ON PACE.
+- **`138cbef`** — FM objection parser fixes: `_classify_severity` recognizes BLOCKER/catastrophic/critical as RED; `_split_reason` handles `[SEVERITY — TOPIC] detail` shape; topic preserves first 80 chars on fallback instead of swallowing detail.
+
+### Synthesis runs this overnight
+
+- **#26** (70 min): triggered with full "all concerns" guidance from #25's 8 FM objections. FM **rejected** but verdict shape changed dramatically — explicitly cites resolved objections (NVDA arithmetic, oil narrative, life-insurance) + raises 4 BLOCKER + 2 AMBER on different concerns. **`f8faaca` is verified working.** New pending draft `synth-2026-05-26-2001-fm-rejected` = plan_versions.id=10.
+- **Self-review report #1** generated against #26 (manually fired, post-synthesis hook needed new backend version): 1 RED · 6 AMBER · 13 YELLOW. Top finding: D1 — Phase 1 still drops guidance.
+- **#27** triggered (token `plan-synth-27`, started 20:08, ETA ~21:20) with run #26's BLOCKERs+AMBERs as guidance. Post-synthesis hook will auto-fire fleet self-review when complete.
+
+### What the user will see when they wake up
+
+1. **`/decisions/27`** — FM-rooted agent tree for run #27.
+2. **`/plan`** — pending draft #11 (label TBD by outcome) with the full new toolkit: synthesis-health banner, FM objections card with precomputed translations + per-objection agree/disagree, executive summary, push-back buttons.
+3. **`/positions`** — per-holding HOLD/BUY/TRIM/SELL cards.
+4. **`/`** (home) — in-flight banner gone; fleet self-review banner showing latest counts; NVDA PACE showing 1,600/10,000 ON PACE.
+5. **`/fleet-review/2`** — markdown report for #27 with detector findings.
+
+### Wave 1 follow-up (deferred, queued)
+
+- Thread `guidance` into Phase 1 (analysts), Phase 2 (bull/bear/facilitator), Phase 4 (risk officers). The D1 detector will keep flagging this until done.
+- Fix D4 source-id format mismatch in `fx` adapter (`rates/USD/NIS` vs `fx/rates/USD/NIS`).
+- Investigate D4 hallucinated `robotaxi/FSD/Optimus` on fundamentals#221.
+- Backfill D8 phase-participants-empty for historical runs #24/#25, or accept as historical (T0.1 took only for new runs).
+
+### Source-of-truth references
+
+Implementation plan: `docs/superpowers/plans/2026-05-26-tier3-tier4-observability-implementation.md`.
 **Status:** Tier 1 + Tier 2 + Tier 3 + Tier 4 (all 13 items: T4.1-T4.8) all shipped. Synthesis runs end-to-end in ~30 min with all 10 analysts succeeding. **Fund Manager has rejected 3 consecutive drafts (#7 → #8 → #9), but objection severity has steadily decreased (RED → AMBER → YELLOW) and infrastructure is solid.** Remaining FM concerns are plan-construction (NVDA arithmetic, hard-tax-gate embedding, debate-fork arbitration), not data-quality or infrastructure.
 
 ### This wave shipped (2026-05-26 late evening) — 13 commits
