@@ -168,6 +168,40 @@ export default function PlanPage() {
     }
   }, []);
 
+  // Re-synthesize with the Fund Manager's objections fed back in as
+  // guidance. This is the "fleet, fix it yourselves" loop the user asked
+  // for — they shouldn't have to manually translate FM concerns into
+  // synthesizer prompts. The guidance is a structured dump of every
+  // objection (severity + topic + detail) prefixed with an instruction
+  // telling the analysts + synthesizer to address each concern in the
+  // next draft.
+  const onResynthesizeWithObjections = useCallback(async () => {
+    if (!objections || objections.objections.length === 0) return;
+    setSynthesisError(null);
+    setSynthesisRunning(true);
+    setSynthesisDraftId(null);
+    const guidance =
+      "The prior draft was rejected by the Fund Manager. " +
+      "Re-synthesize, explicitly addressing each of the following " +
+      "objections. Resolve them or, where a constraint genuinely " +
+      "can't be met (e.g. an expired statutory deadline), surface " +
+      "that fact prominently in the rationale rather than papering " +
+      "over it.\n\n" +
+      objections.objections
+        .map(
+          (o, i) =>
+            `${i + 1}. [${o.severity}] ${o.topic}\n   ${o.detail}`,
+        )
+        .join("\n\n");
+    try {
+      const r = await api.advisorCheckIn(USER_ID, guidance);
+      setSynthesisDecisionToken(r.decision_audit_token);
+    } catch (e: unknown) {
+      setSynthesisError(e instanceof Error ? e.message : String(e));
+      setSynthesisRunning(false);
+    }
+  }, [objections]);
+
   useWSEvents<{ user_id?: string; draft_id?: number }>(
     ["plan.draft.completed"],
     {
@@ -371,6 +405,8 @@ export default function PlanPage() {
           working={working}
           onAcceptAll={onAcceptAll}
           onRejectAll={onRejectAll}
+          onResynthesize={onResynthesizeWithObjections}
+          resynthesizing={synthesisRunning}
         />
       )}
 

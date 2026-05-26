@@ -775,10 +775,17 @@ class NvdaVestEvent(BaseModel):
     note: str = ""
 
 
+class NvdaSaleEvent(BaseModel):
+    date: str  # YYYY-MM (TSV captures month-only)
+    shares: int
+    price_usd: float | None = None
+
+
 class NvdaTrajectoryResponse(BaseModel):
     today_date: str  # YYYY-MM-DD
     today_shares: int | None
     vests: list[NvdaVestEvent]
+    past_sales: list[NvdaSaleEvent]
     reduction_program: dict
     ceiling_target_shares: float | None
     ceiling_target_label: str | None
@@ -870,7 +877,11 @@ def get_draft_nvda_trajectory(
 
     # today_shares — look up the most recent NVDA position from the TSV
     # parser. We re-use the same helper /api/portfolio/snapshot uses.
+    # While we're parsing the TSV, also extract the historical NVDA sales
+    # block (NVDASale rows: month + shares + price) so the trajectory chart
+    # can plot the user's actual sell history, not just the future plan.
     today_shares: int | None = None
+    past_sales_raw: list[NvdaSaleEvent] = []
     try:
         from argosy.api.routes.portfolio import _find_latest_tsv
         from argosy.ingest.tsv import parse_portfolio_tsv
@@ -882,6 +893,43 @@ def get_draft_nvda_trajectory(
                 if (pos.symbol or "").upper() == "NVDA" and pos.shares:
                     today_shares = int(pos.shares)
                     break
+
+            # NVDA sales — the parser emits {month, shares, price}. Month is
+            # the bare English name (Jan/Feb/...); convert to a YYYY-MM
+            # date using the snapshot's snapshot_date as the anchor year.
+            # Dedup on (month, shares) since the TSV occasionally repeats
+            # the same row.
+            from calendar import month_name, month_abbr
+            month_map = {
+                m.lower(): i
+                for i, m in enumerate(month_name) if m
+            }
+            month_map.update({
+                m.lower(): i
+                for i, m in enumerate(month_abbr) if m
+            })
+            seen: set[tuple[str, int]] = set()
+            anchor_year = (
+                snap.snapshot_date.year
+                if snap.snapshot_date is not None
+                else datetime.now(timezone.utc).year
+            )
+            for s in snap.nvda_sales:
+                if not s.month or not s.shares:
+                    continue
+                m_idx = month_map.get(s.month.strip().lower())
+                if m_idx is None:
+                    continue
+                key = (s.month.strip().lower(), int(s.shares))
+                if key in seen:
+                    continue
+                seen.add(key)
+                past_sales_raw.append(NvdaSaleEvent(
+                    date=f"{anchor_year:04d}-{m_idx:02d}",
+                    shares=int(s.shares),
+                    price_usd=s.price,
+                ))
+            past_sales_raw.sort(key=lambda x: x.date)
     except Exception:  # noqa: BLE001 — best-effort
         today_shares = None
 
@@ -918,6 +966,7 @@ def get_draft_nvda_trajectory(
             )
             for v in vests
         ],
+        past_sales=past_sales_raw,
         reduction_program={
             "remaining": reduction.get("remaining"),
             "sold_ytd": reduction.get("sold_ytd_2026"),

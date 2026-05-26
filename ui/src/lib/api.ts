@@ -1168,10 +1168,17 @@ export interface NvdaVestEvent {
   note: string;
 }
 
+export interface NvdaSaleEvent {
+  date: string; // YYYY-MM
+  shares: number;
+  price_usd: number | null;
+}
+
 export interface NvdaTrajectoryResponse {
   today_date: string;
   today_shares: number | null;
   vests: NvdaVestEvent[];
+  past_sales: NvdaSaleEvent[];
   reduction_program: {
     remaining: number | null;
     sold_ytd: number | null;

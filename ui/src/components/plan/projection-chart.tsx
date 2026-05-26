@@ -36,10 +36,18 @@ interface Row {
   band: [number, number];
 }
 
-function fmtUsd(v: number): string {
-  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
-  if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}K`;
-  return `$${v.toFixed(0)}`;
+function fmtUsd(v: unknown): string {
+  // Recharts can hand us strings, arrays (for two-valued series like the
+  // band Area), or NaN depending on the chart element. Coerce defensively
+  // so a stray non-number doesn't crash the tooltip.
+  if (Array.isArray(v)) {
+    return v.map((x) => fmtUsd(x)).join(" – ");
+  }
+  const n = typeof v === "number" ? v : Number(v);
+  if (!Number.isFinite(n)) return "—";
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+  return `$${n.toFixed(0)}`;
 }
 
 function fmtTickDate(s: string): string {
@@ -115,10 +123,14 @@ export function ProjectionChart(props: ProjectionChartProps) {
               width={64}
             />
             <Tooltip
-              formatter={((value: number, name: string) => [
-                fmtUsd(value),
-                name,
-              ]) as unknown as never}
+              formatter={((value: unknown, name: string) => {
+                // The band Area series ships a tuple [bear, bull]; render
+                // as a range. Other series pass scalars.
+                if (name === "±1σ band" && Array.isArray(value)) {
+                  return [fmtUsd(value), "bear–bull range"];
+                }
+                return [fmtUsd(value), name];
+              }) as unknown as never}
             />
             {/* The bull/bear band rendered as a translucent Area between
                 the two series. Painted first so the base Line sits on top. */}

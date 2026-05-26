@@ -172,7 +172,23 @@ export function AllocationChart(props: AllocationChartProps) {
                 <XAxis
                   type="number"
                   tickFormatter={(v) => `${v.toFixed(0)}%`}
-                  domain={[0, 100]}
+                  // Dynamic upper bound: round the larger of (max bar, max
+                  // target overlay) UP to the next 10% so the chart uses
+                  // the available width when NVDA (or another concentrated
+                  // holding) is hidden, while still showing weight-target
+                  // reference lines.
+                  domain={[
+                    0,
+                    Math.max(
+                      10,
+                      Math.ceil(
+                        Math.max(
+                          ...bars.map((b) => b.pct),
+                          ...weightTargets.map((t) => t.target_pct),
+                        ) / 10,
+                      ) * 10,
+                    ),
+                  ]}
                   fontSize={11}
                 />
                 <YAxis

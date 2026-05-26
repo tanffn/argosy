@@ -26,6 +26,8 @@ interface ExecutiveSummaryCardProps {
   working?: boolean;
   onAcceptAll?: () => void | Promise<void>;
   onRejectAll?: () => void | Promise<void>;
+  onResynthesize?: () => void | Promise<void>;
+  resynthesizing?: boolean;
 }
 
 function countDeltasByKind(h: HorizonView | null): {
@@ -65,7 +67,15 @@ function truncateAt(s: string, n: number): string {
 }
 
 export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
-  const { draft, objections, working, onAcceptAll, onRejectAll } = props;
+  const {
+    draft,
+    objections,
+    working,
+    onAcceptAll,
+    onRejectAll,
+    onResynthesize,
+    resynthesizing,
+  } = props;
   const fmRejected = objections?.approved === false;
 
   const totals = useMemo(() => {
@@ -216,7 +226,11 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
         )}
 
         {fmRejected && objections && (
-          <FMObjectionsCard objections={objections.objections} />
+          <FMObjectionsCard
+            objections={objections.objections}
+            onResynthesize={onResynthesize}
+            resynthesizing={resynthesizing}
+          />
         )}
       </CardContent>
     </Card>

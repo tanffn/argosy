@@ -1,12 +1,19 @@
 "use client";
 
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import type { FMObjection } from "@/lib/api";
 
 interface FMObjectionsCardProps {
   objections: FMObjection[];
+  // When provided, renders a primary CTA below the list that re-synthesizes
+  // the plan with the Fund Manager's objections fed back to the fleet as
+  // guidance. The caller wires this to /api/advisor/check-in with the
+  // formatted objection text.
+  onResynthesize?: () => void | Promise<void>;
+  resynthesizing?: boolean;
 }
 
 function severityClasses(s: FMObjection["severity"]) {
@@ -34,7 +41,7 @@ function severityClasses(s: FMObjection["severity"]) {
 }
 
 export function FMObjectionsCard(props: FMObjectionsCardProps) {
-  const { objections } = props;
+  const { objections, onResynthesize, resynthesizing } = props;
   if (objections.length === 0) return null;
 
   // Sort RED → AMBER → YELLOW so the most-critical concerns sit on top.
@@ -83,6 +90,32 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
           );
         })}
       </ul>
+
+      {onResynthesize && (
+        <div className="mt-3 pt-3 border-t border-error/30 flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-xs text-muted-foreground">
+            Don&apos;t want to handle these yourself? Send the objections back
+            to the fleet — the analysts and synthesizer re-run with the Fund
+            Manager&apos;s concerns as explicit guidance.
+          </p>
+          <Button
+            onClick={onResynthesize}
+            disabled={resynthesizing}
+            variant="default"
+            size="sm"
+            className="whitespace-nowrap"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 mr-1 ${
+                resynthesizing ? "animate-spin" : ""
+              }`}
+            />
+            {resynthesizing
+              ? "Re-synthesizing…"
+              : "Re-synthesize addressing concerns"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

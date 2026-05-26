@@ -33,42 +33,83 @@ interface SeriesPoint {
 }
 
 // Distribute the reduction program across N quarterly steps starting today.
-// Mirrors the spec section 2.2 logic: each step subtracts an even fraction
-// of `reduction.remaining` so the cumulative line bends down quarterly.
+// Each step subtracts an even fraction of `reduction.remaining` so the
+// cumulative line bends down quarterly.
 const REDUCTION_PROGRAM_QUARTERS = 8;
+
+function parseMonthMs(date: string): number {
+  // Accept "YYYY-MM" or "YYYY-MM-DD". Default day = 15 for month-only so
+  // events land in the middle of the month rather than at the boundary.
+  const s = date.length === 7 ? `${date}-15` : date;
+  return Date.parse(`${s}T00:00:00Z`);
+}
 
 function buildSeries(data: NvdaTrajectoryResponse): SeriesPoint[] {
   if (data.today_shares == null) return [];
   const todayMs = Date.parse(data.today_date + "T00:00:00Z");
   if (Number.isNaN(todayMs)) return [];
 
-  // Build a list of (timestamp, sharesDelta, label) events.
+  // ----- Build the FUTURE half (vests + reduction program) -----
   type Event = { t_ms: number; delta: number };
-  const events: Event[] = [];
-
+  const futureEvents: Event[] = [];
   for (const v of data.vests) {
-    const ms = Date.parse(v.date + (v.date.length === 7 ? "-15" : "") + "T00:00:00Z");
-    if (!Number.isNaN(ms)) events.push({ t_ms: ms, delta: v.shares });
+    const ms = parseMonthMs(v.date);
+    if (!Number.isNaN(ms) && ms >= todayMs) {
+      futureEvents.push({ t_ms: ms, delta: v.shares });
+    }
   }
-
   const remaining = data.reduction_program.remaining;
   if (remaining && remaining > 0) {
     const perStep = Math.round(remaining / REDUCTION_PROGRAM_QUARTERS);
     for (let i = 1; i <= REDUCTION_PROGRAM_QUARTERS; i++) {
       const ms = todayMs + i * 90 * 86400_000;
-      events.push({ t_ms: ms, delta: -perStep });
+      futureEvents.push({ t_ms: ms, delta: -perStep });
     }
   }
+  futureEvents.sort((a, b) => a.t_ms - b.t_ms);
 
-  events.sort((a, b) => a.t_ms - b.t_ms);
+  // ----- Build the PAST half from sales history -----
+  // We can't perfectly reconstruct past share counts because we don't have
+  // past vest events recorded — only the future schedule. So we approximate
+  // by walking BACKWARDS from today's share count: pre-sale = today + sales
+  // that occurred AFTER that month. This shows the user the curve their
+  // sales drew on the share count, ignoring past vest noise.
+  const pastEvents: Event[] = data.past_sales
+    .map((s) => ({ t_ms: parseMonthMs(s.date), delta: s.shares }))
+    .filter((e) => !Number.isNaN(e.t_ms) && e.t_ms < todayMs)
+    .sort((a, b) => a.t_ms - b.t_ms);
 
-  const points: SeriesPoint[] = [{
+  const points: SeriesPoint[] = [];
+
+  // Walk past events forward from earliest, with starting share count =
+  // today_shares + sum(all past sales) (i.e. before any of them happened).
+  const totalPastSold = pastEvents.reduce((s, e) => s + e.delta, 0);
+  let running = data.today_shares + totalPastSold;
+  for (const e of pastEvents) {
+    // Plot a point just BEFORE the sale (current running count) and just
+    // AFTER (running - shares_sold), so the chart shows the step-down at
+    // the sale month.
+    points.push({
+      t_ms: e.t_ms - 86400_000, // 1 day before
+      date_iso: new Date(e.t_ms - 86400_000).toISOString().slice(0, 10),
+      shares: running,
+    });
+    running -= e.delta;
+    points.push({
+      t_ms: e.t_ms,
+      date_iso: new Date(e.t_ms).toISOString().slice(0, 10),
+      shares: running,
+    });
+  }
+
+  // Today's anchor point.
+  points.push({
     t_ms: todayMs,
     date_iso: data.today_date,
     shares: data.today_shares,
-  }];
-  let running = data.today_shares;
-  for (const e of events) {
+  });
+  running = data.today_shares;
+  for (const e of futureEvents) {
     running += e.delta;
     points.push({
       t_ms: e.t_ms,
@@ -94,13 +135,40 @@ export function NvdaTrajectoryChart(props: NvdaTrajectoryChartProps) {
     let running = data.today_shares;
     const dots: Array<{ t_ms: number; shares: number; note: string }> = [];
     for (const v of data.vests) {
-      const ms = Date.parse(v.date + (v.date.length === 7 ? "-15" : "") + "T00:00:00Z");
+      const ms = parseMonthMs(v.date);
       if (Number.isNaN(ms)) continue;
       running += v.shares;
       dots.push({ t_ms: ms, shares: running, note: v.note });
     }
     return dots;
   }, [data]);
+
+  // Sale dots show where the user actually transacted, plotted at the
+  // share-count immediately AFTER each sale.
+  const saleDots = useMemo(() => {
+    if (!data || data.today_shares == null) return [];
+    const totalSold = data.past_sales.reduce((s, x) => s + x.shares, 0);
+    let running = data.today_shares + totalSold;
+    const dots: Array<{ t_ms: number; shares: number; note: string }> = [];
+    for (const s of data.past_sales) {
+      const ms = parseMonthMs(s.date);
+      if (Number.isNaN(ms)) continue;
+      running -= s.shares;
+      dots.push({
+        t_ms: ms,
+        shares: running,
+        note: `Sold ${s.shares.toLocaleString()}${
+          s.price_usd != null ? ` @ $${s.price_usd}` : ""
+        }`,
+      });
+    }
+    return dots;
+  }, [data]);
+
+  const todayMs = useMemo(
+    () => (data ? Date.parse(data.today_date + "T00:00:00Z") : null),
+    [data],
+  );
 
   return (
     <Card>
@@ -176,9 +244,22 @@ export function NvdaTrajectoryChart(props: NvdaTrajectoryChartProps) {
                   }}
                 />
               )}
+              {todayMs != null && (
+                <ReferenceLine
+                  x={todayMs}
+                  stroke="#94a3b8"
+                  strokeDasharray="2 4"
+                  label={{
+                    value: "today",
+                    position: "top",
+                    fill: "#94a3b8",
+                    fontSize: 10,
+                  }}
+                />
+              )}
               {vestDots.map((v, i) => (
                 <ReferenceDot
-                  key={i}
+                  key={`vest-${i}`}
                   x={v.t_ms}
                   y={v.shares}
                   r={5}
@@ -186,22 +267,58 @@ export function NvdaTrajectoryChart(props: NvdaTrajectoryChartProps) {
                   stroke="#0e7490"
                 />
               ))}
+              {saleDots.map((s, i) => (
+                <ReferenceDot
+                  key={`sale-${i}`}
+                  x={s.t_ms}
+                  y={s.shares}
+                  r={5}
+                  fill="#f43f5e"
+                  stroke="#9f1239"
+                />
+              ))}
             </LineChart>
           </ResponsiveContainer>
         )}
-        {data && data.vests.length > 0 && (
-          <ul className="mt-3 text-xs grid grid-cols-2 gap-x-4 gap-y-1">
-            {data.vests.map((v, i) => (
-              <li key={i} className="flex items-baseline gap-2">
-                <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 flex-shrink-0" />
-                <span className="font-mono text-muted-foreground">{v.date}</span>
-                <span className="font-mono">+{v.shares}</span>
-                <span className="text-muted-foreground text-[10px] truncate">
-                  {v.note}
-                </span>
-              </li>
-            ))}
-          </ul>
+        {data && (data.vests.length > 0 || data.past_sales.length > 0) && (
+          <div className="mt-3 text-xs grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-1">
+            {data.past_sales.length > 0 && (
+              <ul>
+                <li className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-1">
+                  Past sales ({data.past_sales.length})
+                </li>
+                {data.past_sales.map((s, i) => (
+                  <li key={i} className="flex items-baseline gap-2">
+                    <span className="inline-block w-2 h-2 rounded-full bg-rose-500 flex-shrink-0" />
+                    <span className="font-mono text-muted-foreground">{s.date}</span>
+                    <span className="font-mono">−{s.shares}</span>
+                    {s.price_usd != null && (
+                      <span className="text-muted-foreground text-[10px]">
+                        @ ${s.price_usd}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {data.vests.length > 0 && (
+              <ul>
+                <li className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-1">
+                  Upcoming vests ({data.vests.length})
+                </li>
+                {data.vests.map((v, i) => (
+                  <li key={i} className="flex items-baseline gap-2">
+                    <span className="inline-block w-2 h-2 rounded-full bg-cyan-400 flex-shrink-0" />
+                    <span className="font-mono text-muted-foreground">{v.date}</span>
+                    <span className="font-mono">+{v.shares}</span>
+                    <span className="text-muted-foreground text-[10px] truncate">
+                      {v.note}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
       </CardContent>
     </Card>
