@@ -204,15 +204,23 @@ def run_synthesis(
         )
     else:
         _phase_1_started_at = datetime.now(timezone.utc)
-        analyst_reports_text = _pkg._run_phase_1_analysts(
+        _phase_1_result = _pkg._run_phase_1_analysts(
             session=session, user_id=user_id, baseline=baseline,
             prior_current=prior_current, decision_run_id=decision_audit_token,
             guidance=guidance,
         )
+        # T0.1 — phase functions now return (text, reports). Detect the
+        # tuple shape for backwards compat with test stubs that return a
+        # bare string (e.g. ``lambda **kw: "(analyst reports)"``).
+        if isinstance(_phase_1_result, tuple) and len(_phase_1_result) == 2:
+            analyst_reports_text, _phase_1_reports = _phase_1_result
+        else:
+            analyst_reports_text, _phase_1_reports = _phase_1_result, []
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=1, started_at=_phase_1_started_at,
             phase_output=analyst_reports_text,
+            agent_report_rows=_phase_1_reports,
         )
     _pkg._check_cost_cap(
         decision_audit_token=decision_audit_token,
@@ -235,16 +243,21 @@ def run_synthesis(
         )
     else:
         _phase_2_started_at = datetime.now(timezone.utc)
-        debate_outcomes_text = _pkg._run_phase_2_debates(
+        _phase_2_result = _pkg._run_phase_2_debates(
             session=session, user_id=user_id,
             analyst_reports_text=analyst_reports_text,
             baseline=baseline, prior_current=prior_current,
             decision_run_id=decision_audit_token, trigger=trigger,
         )
+        if isinstance(_phase_2_result, tuple) and len(_phase_2_result) == 2:
+            debate_outcomes_text, _phase_2_reports = _phase_2_result
+        else:
+            debate_outcomes_text, _phase_2_reports = _phase_2_result, []
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=2, started_at=_phase_2_started_at,
             phase_output=debate_outcomes_text,
+            agent_report_rows=_phase_2_reports,
         )
     _pkg._check_cost_cap(
         decision_audit_token=decision_audit_token,
@@ -295,7 +308,7 @@ def run_synthesis(
         )
     else:
         _phase_3_started_at = datetime.now(timezone.utc)
-        output = _pkg._run_phase_3_synthesizer(
+        _phase_3_result = _pkg._run_phase_3_synthesizer(
             session=session, user_id=user_id,
             baseline=baseline, prior_current=prior_current,
             analyst_reports_text=analyst_reports_text,
@@ -306,10 +319,23 @@ def run_synthesis(
             speculation_cap_pct=cap.max_pct_of_net_worth,
             speculation_cap_concurrent=cap.max_concurrent_positions,
         )
+        # T0.1 — new return shape is (PlanSynthesisOutput, list[AgentReport]);
+        # legacy stubs (``lambda **kw: _stub_synthesis_output()``) return
+        # the bare ``PlanSynthesisOutput`` so detect via isinstance of the
+        # expected output type.
+        if (
+            isinstance(_phase_3_result, tuple)
+            and len(_phase_3_result) == 2
+            and not isinstance(_phase_3_result, PlanSynthesisOutput)
+        ):
+            output, _phase_3_reports = _phase_3_result
+        else:
+            output, _phase_3_reports = _phase_3_result, []
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=3, started_at=_phase_3_started_at,
             phase_output=output.model_dump_json(),
+            agent_report_rows=_phase_3_reports,
         )
 
     _pkg._check_cost_cap(
@@ -338,15 +364,20 @@ def run_synthesis(
         )
     else:
         _phase_4_started_at = datetime.now(timezone.utc)
-        risk_verdict = _pkg._run_phase_4_risk(
+        _phase_4_result = _pkg._run_phase_4_risk(
             session=session, user_id=user_id, draft_output=output,
             analyst_reports_text=analyst_reports_text,
             decision_run_id=decision_audit_token,
         )
+        if isinstance(_phase_4_result, tuple) and len(_phase_4_result) == 2:
+            risk_verdict, _phase_4_reports = _phase_4_result
+        else:
+            risk_verdict, _phase_4_reports = _phase_4_result, []
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=4, started_at=_phase_4_started_at,
             phase_output=risk_verdict,
+            agent_report_rows=_phase_4_reports,
         )
     _pkg._check_cost_cap(
         decision_audit_token=decision_audit_token,
@@ -365,14 +396,19 @@ def run_synthesis(
         )
     else:
         _phase_5_started_at = datetime.now(timezone.utc)
-        approved = _pkg._run_phase_5_fund_manager(
+        _phase_5_result = _pkg._run_phase_5_fund_manager(
             session=session, user_id=user_id, draft_output=output,
             risk_verdict=risk_verdict, decision_run_id=decision_audit_token,
         )
+        if isinstance(_phase_5_result, tuple) and len(_phase_5_result) == 2:
+            approved, _phase_5_reports = _phase_5_result
+        else:
+            approved, _phase_5_reports = _phase_5_result, []
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=5, started_at=_phase_5_started_at,
             phase_output="approved" if approved else "rejected",
+            agent_report_rows=_phase_5_reports,
         )
     # W3b.H: when FM rejects, persist the draft anyway (still as 'draft')
     # rather than raising. Without this, every FM rejection forfeits 15-20
@@ -558,6 +594,39 @@ class _AgentRunResult(NamedTuple):
     report: AgentReport | None
 
 
+def _agent_report_to_row_dict(r: AgentReport) -> dict:
+    """Project an ``AgentReport`` dataclass into the column-name dict the
+    ``agent_reports`` ORM row constructor expects.
+
+    Single source of truth for both the JSONL forensic trail (W1.C-v4) and
+    the T0.1 per-phase DB persistence path. Keeping the projection here
+    means both paths emit identical row shapes — important because
+    ``_ingest_synthesis_trail`` constructs an ``AgentReportRow`` from this
+    dict at end-of-flow as a fallback.
+    """
+    return {
+        "user_id": r.user_id,
+        "agent_role": r.agent_role,
+        "decision_id": getattr(r, "decision_id", None),
+        "intake_session_id": None,
+        "prompt_hash": r.prompt_hash,
+        "response_text": r.response_text,
+        "tokens_in": r.tokens_in,
+        "tokens_out": r.tokens_out,
+        "cost_usd": r.cost_usd,
+        "cache_input_tokens": r.cache_input_tokens,
+        "cache_creation_tokens": r.cache_creation_tokens,
+        "thinking_tokens": r.thinking_tokens,
+        "citations_json": r.citations_json,
+        "sources_json": r.sources_json,
+        "run_correlation_id": r.run_correlation_id,
+        "system_prompt": r.system_prompt,
+        "user_prompt": r.user_prompt,
+        "model": r.model,
+        "confidence": r.confidence.value if r.confidence else None,
+    }
+
+
 def _persist_agent_reports(
     session: Session, reports: list[AgentReport],
 ) -> None:
@@ -622,27 +691,7 @@ def _persist_agent_reports(
     try:
         with trail_path.open("a", encoding="utf-8") as f:
             for r in reports:
-                row = {
-                    "user_id": r.user_id,
-                    "agent_role": r.agent_role,
-                    "decision_id": getattr(r, "decision_id", None),
-                    "intake_session_id": None,
-                    "prompt_hash": r.prompt_hash,
-                    "response_text": r.response_text,
-                    "tokens_in": r.tokens_in,
-                    "tokens_out": r.tokens_out,
-                    "cost_usd": r.cost_usd,
-                    "cache_input_tokens": r.cache_input_tokens,
-                    "cache_creation_tokens": r.cache_creation_tokens,
-                    "thinking_tokens": r.thinking_tokens,
-                    "citations_json": r.citations_json,
-                    "sources_json": r.sources_json,
-                    "run_correlation_id": r.run_correlation_id,
-                    "system_prompt": r.system_prompt,
-                    "user_prompt": r.user_prompt,
-                    "model": r.model,
-                    "confidence": r.confidence.value if r.confidence else None,
-                }
+                row = _agent_report_to_row_dict(r)
                 f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
         log.info(
             "plan_synthesis.trail_appended",
@@ -711,16 +760,49 @@ def _ingest_synthesis_trail(
     if not rows:
         return 0
 
+    # T0.1 — when ``_record_phase_completion`` has already persisted per-
+    # phase rows to the DB (via its async sub-session), those rows carry
+    # a ``run_correlation_id`` matching the JSONL entry. Skip lines whose
+    # correlation id is already in the DB so the end-of-flow ingest stays
+    # a defensive no-op for the happy path (and the fallback for crashes
+    # / sub-session failures, where rows live ONLY in the JSONL).
     try:
+        from sqlalchemy import select as _select
+
+        existing_corr_ids: set[str] = set(
+            session.execute(
+                _select(AgentReportRow.run_correlation_id).where(
+                    AgentReportRow.decision_id == decision_audit_token,
+                    AgentReportRow.run_correlation_id.is_not(None),
+                )
+            ).scalars().all()
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "plan_synthesis.trail_dedup_query_failed",
+            error=str(exc),
+        )
+        existing_corr_ids = set()
+
+    try:
+        inserted = 0
+        skipped = 0
         for row_dict in rows:
+            corr = row_dict.get("run_correlation_id")
+            if corr and corr in existing_corr_ids:
+                skipped += 1
+                continue
             ar = AgentReportRow(**row_dict)
             session.add(ar)
+            inserted += 1
+            if corr:
+                existing_corr_ids.add(corr)
         session.commit()
         log.info(
             "plan_synthesis.trail_ingested",
-            count=len(rows), trail=trail_path.name,
+            count=inserted, skipped_dedup=skipped, trail=trail_path.name,
         )
-        return len(rows)
+        return inserted
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "plan_synthesis.trail_ingest_failed",
@@ -850,6 +932,46 @@ def _pkg_build_prior_items_index(
     return out
 
 
+async def _persist_phase_agent_reports_async(
+    agent_report_rows: list[AgentReport],
+) -> list[int]:
+    """Persist a phase's ``AgentReport`` dataclasses to the DB via an
+    async sub-session and return the assigned integer ids (T0.1).
+
+    Sub-session pattern mirrors ``_safe_run_agent`` — opening a short-
+    lived session for this phase boundary avoids contention with the
+    orchestrator's main sync ``Session`` (which holds the writer lock
+    for the full ~12-15 min synthesis). The async engine uses the same
+    underlying SQLite file; WAL + busy_timeout (see
+    ``argosy.state.db.init_engine``) handles the writer-serialization.
+
+    Returns the ids in the same chronological order as the input list so
+    the recorder's ``participants_json`` reflects the order the agents
+    actually ran in.
+
+    Best-effort: on any failure (engine not initialised in a test, FK
+    violation, etc.) we return an empty list and let the caller fall
+    back to ``agent_report_ids=[]`` for the recorder. The end-of-flow
+    JSONL ingest will still pick up the rows from disk as a defensive
+    last-line fallback (see ``_ingest_synthesis_trail``).
+    """
+    if not agent_report_rows:
+        return []
+
+    from argosy.state import db as db_mod
+    from argosy.state.models import AgentReport as AgentReportORM
+
+    ids: list[int] = []
+    async with db_mod.get_session() as session:
+        for row in agent_report_rows:
+            orm = AgentReportORM(**_agent_report_to_row_dict(row))
+            session.add(orm)
+            await session.flush()
+            ids.append(orm.id)
+        await session.commit()
+    return ids
+
+
 def _record_phase_completion(
     *,
     user_id: str,
@@ -857,6 +979,7 @@ def _record_phase_completion(
     phase_n: int,
     started_at: datetime,
     phase_output: str,
+    agent_report_rows: list[AgentReport] | None = None,
 ) -> None:
     """Persist a per-phase output row to ``decision_phases`` (T2.3).
 
@@ -867,6 +990,19 @@ def _record_phase_completion(
     helper can look it up. ``phase_output`` is opaque text (the phase's
     rendered output): str for analyst/debate/risk/fm phases, JSON dump
     for the synthesizer's structured ``PlanSynthesisOutput``.
+
+    T0.1 — ``agent_report_rows`` (when supplied) is the list of
+    ``AgentReport`` dataclasses produced by THIS phase, in chronological
+    order. The function persists them to the ``agent_reports`` table via
+    an async sub-session BEFORE calling the recorder, then threads the
+    resulting integer ids into ``record_negotiation_phase`` so the
+    phase's ``participants_json`` is populated and the agent_reports
+    rows are back-linked via ``phase_id``. Without this, every phase row
+    has ``participants_json='[]'`` and the ``/decisions/[id]`` sequence
+    diagram is empty. When the per-phase DB write fails (e.g. async
+    engine not initialised in a unit test), we fall back to passing an
+    empty id list — the end-of-flow JSONL ingest will still surface the
+    rows so the audit trail is intact, just not phase-linked.
     """
     try:
         import asyncio
@@ -874,22 +1010,45 @@ def _record_phase_completion(
             record_negotiation_phase,
         )
 
-        asyncio.run(record_negotiation_phase(
-            user_id=user_id,
-            decision_run_id=decision_run_id,
-            kind=f"synthesis.phase_{phase_n}",
-            started_at=started_at,
-            agent_report_ids=[],
-            verdict=None,
-            phase_output=phase_output,
-        ))
-        log.info(
-            "plan_synthesis.phase_recorded",
-            user_id=user_id,
-            decision_run_id=decision_run_id,
-            phase=phase_n,
-            output_chars=len(phase_output) if phase_output else 0,
-        )
+        async def _run() -> None:
+            # Sub-session persist FIRST so the recorder can reference
+            # the freshly-assigned ids when it writes the phase row.
+            ids: list[int] = []
+            if agent_report_rows:
+                try:
+                    ids = await _persist_phase_agent_reports_async(
+                        agent_report_rows,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "plan_synthesis.phase_agent_reports_persist_failed",
+                        user_id=user_id,
+                        decision_run_id=decision_run_id,
+                        phase=phase_n,
+                        count=len(agent_report_rows),
+                        error=str(exc),
+                    )
+                    ids = []
+
+            await record_negotiation_phase(
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                kind=f"synthesis.phase_{phase_n}",
+                started_at=started_at,
+                agent_report_ids=ids,
+                verdict=None,
+                phase_output=phase_output,
+            )
+            log.info(
+                "plan_synthesis.phase_recorded",
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                phase=phase_n,
+                output_chars=len(phase_output) if phase_output else 0,
+                participants=len(ids),
+            )
+
+        asyncio.run(_run())
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.warning(
             "plan_synthesis.record_phase_failed",
@@ -1030,7 +1189,7 @@ def _check_cost_cap(
 
 
 def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
-                           decision_run_id, guidance) -> str:
+                           decision_run_id, guidance) -> tuple[str, list[AgentReport]]:
     """Run all 9 analysts in parallel. Concatenate their reports as text.
 
     W1.B: kwargs are sourced from ``assemble_phase1_inputs`` (W1.A), which
@@ -1115,7 +1274,12 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
              user_id=user_id, decision_run_id=decision_run_id,
              reports_count=len(reports),
              persisted_count=len(collected))
-    return "\n\n".join(reports)
+    # T0.1 — return the collected reports alongside the text so the
+    # orchestrator can persist + thread their ids into the recorder.
+    # Existing call sites that stub this function with ``lambda **kw:
+    # "text"`` keep working: the orchestrator detects the tuple shape
+    # and defaults to ``[]`` when the stub returns a bare string.
+    return "\n\n".join(reports), collected
 
 
 def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
@@ -1204,7 +1368,8 @@ def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
 
 
 def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
-                         baseline, prior_current, decision_run_id, trigger) -> str:
+                         baseline, prior_current, decision_run_id, trigger
+                         ) -> tuple[str, list[AgentReport]]:
     """Run bull/bear/facilitator across all three horizons in parallel.
 
     Each horizon argues theses, not trades. Per-horizon facilitator
@@ -1261,7 +1426,9 @@ def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
     # test patching ``flow._persist_agent_reports`` is honoured.
     _pkg._persist_agent_reports(session, collected)
 
-    return "\n\n".join(parts)
+    # T0.1 — surface the collected reports so the orchestrator can
+    # persist them in the DB and thread their ids into the recorder.
+    return "\n\n".join(parts), collected
 
 
 def _run_one_horizon_debate(*, horizon: str, user_id: str,
@@ -1378,7 +1545,7 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
                              decision_run_id,
                              speculation_cap_pct: float | None = None,
                              speculation_cap_concurrent: int | None = None,
-                             ) -> PlanSynthesisOutput:
+                             ) -> tuple[PlanSynthesisOutput, list[AgentReport]]:
     """Default Phase 3: call PlanSynthesizerAgent.
 
     ``speculation_cap_pct`` / ``speculation_cap_concurrent`` (Wave 3, Task
@@ -1425,9 +1592,14 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
     # is honoured. Stub agents return SimpleNamespace; the isinstance
     # guard in _persist_agent_reports filters those out.
     from argosy.orchestrator.flows import plan_synthesis as _pkg
-    if isinstance(result, AgentReport):
-        _pkg._persist_agent_reports(session, [result])
-    return result.output  # type: ignore[attr-defined]
+    collected: list[AgentReport] = (
+        [result] if isinstance(result, AgentReport) else []
+    )
+    if collected:
+        _pkg._persist_agent_reports(session, collected)
+    # T0.1 — return the collected report so the orchestrator can persist
+    # it + thread the id into the recorder.
+    return result.output, collected  # type: ignore[attr-defined]
 
 
 def _enforce_speculation_cap(
@@ -1480,7 +1652,8 @@ def _enforce_speculation_cap(
 
 
 def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
-                      analyst_reports_text: str, decision_run_id: str) -> str:
+                      analyst_reports_text: str, decision_run_id: str
+                      ) -> tuple[str, list[AgentReport]]:
     """Plan-level risk verdict from three perspectives + facilitator merge.
 
     Runs the aggressive / neutral / conservative ``RiskOfficerAgent`` in
@@ -1595,7 +1768,9 @@ def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
     # ``flow._persist_agent_reports`` is honoured.
     _pkg._persist_agent_reports(session, collected)
 
-    return "\n\n".join(parts)
+    # T0.1 — surface the collected reports so the orchestrator can
+    # thread their ids into the recorder.
+    return "\n\n".join(parts), collected
 
 
 def _make_risk_officer(stance: str, *, user_id: str | None = None):
@@ -1691,7 +1866,8 @@ def _make_fund_manager(user_id: str | None = None):
 
 def _run_phase_5_fund_manager(*, session, user_id,
                               draft_output: PlanSynthesisOutput,
-                              risk_verdict: str, decision_run_id: str) -> bool:
+                              risk_verdict: str, decision_run_id: str
+                              ) -> tuple[bool, list[AgentReport]]:
     """Final integrity check.
 
     Validates:
@@ -1717,8 +1893,11 @@ def _run_phase_5_fund_manager(*, session, user_id,
     # agent; wrap its dataclass in a 1-element list and route through
     # the package namespace. Stub agents return SimpleNamespace; only
     # real AgentReport instances are persisted.
-    if isinstance(result, AgentReport):
-        _pkg._persist_agent_reports(session, [result])
+    collected: list[AgentReport] = (
+        [result] if isinstance(result, AgentReport) else []
+    )
+    if collected:
+        _pkg._persist_agent_reports(session, collected)
     out = result.output
 
     # The plan-revision path validates against FundManagerPlanRevisionDecision
@@ -1739,4 +1918,6 @@ def _run_phase_5_fund_manager(*, session, user_id,
     log.info("plan_synthesis.phase_5.verdict",
              user_id=user_id, decision_run_id=decision_run_id,
              approved=approved)
-    return approved
+    # T0.1 — surface the collected report so the orchestrator can
+    # thread its id into the recorder.
+    return approved, collected

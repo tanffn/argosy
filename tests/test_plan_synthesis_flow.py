@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from argosy.state.models import PlanVersion, User
+from argosy.state.models import DecisionPhase, PlanVersion, User
 
 
 @pytest.fixture
@@ -154,7 +156,7 @@ def test_phase_1_runs_all_nine_analysts(session, monkeypatch):
         monkeypatch.setattr(f"argosy.orchestrator.flows.plan_synthesis.{name}", cls, raising=False)
 
     baseline = next(iter(session.query(PlanVersion).filter_by(role="baseline").all()))
-    out = flow._run_phase_1_analysts(
+    result = flow._run_phase_1_analysts(
         session=session,
         user_id="ariel",
         baseline=baseline,
@@ -162,10 +164,14 @@ def test_phase_1_runs_all_nine_analysts(session, monkeypatch):
         decision_run_id="test-run",
         guidance="",
     )
+    # T0.1 — phase functions now return (text, list[AgentReport]).
+    assert isinstance(result, tuple) and len(result) == 2
+    out, collected = result
     # All 9 must have been invoked exactly once.
     assert len(invoked) == 9, f"expected 9 analyst calls, got {len(invoked)}: {invoked}"
     assert isinstance(out, str)
     assert len(out) > 0
+    assert isinstance(collected, list)
 
 
 def test_phase_2_debates_runs_three_horizons(session, monkeypatch):
@@ -181,11 +187,14 @@ def test_phase_2_debates_runs_three_horizons(session, monkeypatch):
     monkeypatch.setattr(flow, "_run_one_horizon_debate", _fake_debate)
 
     baseline = next(iter(session.query(PlanVersion).filter_by(role="baseline").all()))
-    out = flow._run_phase_2_debates(
+    result = flow._run_phase_2_debates(
         session=session, user_id="ariel",
         analyst_reports_text="(stub)", baseline=baseline,
         prior_current=None, decision_run_id="test", trigger="scheduled",
     )
+    # T0.1 — phase 2 now returns (text, list[AgentReport]).
+    assert isinstance(result, tuple) and len(result) == 2
+    out, _collected = result
     assert sorted(horizons_seen) == ["long", "medium", "short"]
     for h in ("long", "medium", "short"):
         assert f"DEBATE OUTCOME for {h}" in out
@@ -207,10 +216,13 @@ def test_phase_4_risk_runs_three_perspectives(monkeypatch, session):
     monkeypatch.setattr(flow, "_make_risk_officer", _fake_officer)
 
     out = _stub_synthesis_output()
-    text = flow._run_phase_4_risk(
+    result = flow._run_phase_4_risk(
         session=session, user_id="ariel", draft_output=out,
         analyst_reports_text="(stub)", decision_run_id="test",
     )
+    # T0.1 — phase 4 now returns (text, list[AgentReport]).
+    assert isinstance(result, tuple) and len(result) == 2
+    text, _collected = result
     assert sorted(perspectives) == ["aggressive", "conservative", "neutral"]
     for s in ("aggressive", "neutral", "conservative"):
         assert f"{s} review" in text
@@ -231,16 +243,21 @@ def test_phase_5_fund_manager_green_lights_or_rejects(monkeypatch, session):
     out = _stub_synthesis_output()
 
     monkeypatch.setattr(flow, "_make_fund_manager", lambda *args, **kw: _FakeFM(True))
-    assert flow._run_phase_5_fund_manager(
+    # T0.1 — phase 5 now returns (approved, list[AgentReport]).
+    result_true = flow._run_phase_5_fund_manager(
         session=session, user_id="ariel", draft_output=out,
         risk_verdict="(ok)", decision_run_id="test",
-    ) is True
+    )
+    assert isinstance(result_true, tuple) and len(result_true) == 2
+    assert result_true[0] is True
 
     monkeypatch.setattr(flow, "_make_fund_manager", lambda *args, **kw: _FakeFM(False))
-    assert flow._run_phase_5_fund_manager(
+    result_false = flow._run_phase_5_fund_manager(
         session=session, user_id="ariel", draft_output=out,
         risk_verdict="(ok)", decision_run_id="test",
-    ) is False
+    )
+    assert isinstance(result_false, tuple) and len(result_false) == 2
+    assert result_false[0] is False
 
 
 # ---------------------------------------------------------------------------
@@ -433,3 +450,203 @@ def test_horizon_md_renders_targets_with_and_without_rationale():
     assert not hold_line.rstrip().endswith("—"), (
         f"empty-rationale theme should not have trailing dash; got: {hold_line!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# T0.1 — per-phase agent_report_ids → decision_phases.participants_json
+# ---------------------------------------------------------------------------
+
+
+def _make_stub_agent_report(role: str, decision_id: str, corr_suffix: str):
+    """Build a real ``AgentReport`` dataclass for the T0.1 threading test.
+
+    The orchestrator's per-phase tuple-detect path only treats list items
+    that are real ``AgentReport`` instances as persistable, so we cannot
+    use ``SimpleNamespace`` here.
+    """
+    from argosy.agents.base import AgentReport, ConfidenceBand
+
+    return AgentReport(
+        agent_role=role,
+        user_id="ariel",
+        model="stub-model",
+        response_text=f"stub response for {role}",
+        tokens_in=10,
+        tokens_out=20,
+        cost_usd=0.001,
+        prompt_hash="stubhash",
+        confidence=ConfidenceBand.MEDIUM,
+        output=SimpleNamespace(
+            model_dump=lambda: {},
+            model_dump_json=lambda: "{}",
+            approved=True,
+        ),
+        decision_id=decision_id,
+        run_correlation_id=f"corr-{role}-{corr_suffix}",
+        system_prompt="sys",
+        user_prompt="usr",
+    )
+
+
+def test_phase_completion_threads_agent_report_ids(tmp_path, monkeypatch):
+    """T0.1 — every ``decision_phases`` row written during synthesis must
+    have a non-empty ``participants_json`` that references the
+    ``agent_reports`` ids that actually participated in the phase.
+
+    Pre-T0.1 behavior: ``_record_phase_completion`` hard-coded
+    ``agent_report_ids=[]`` so the column was always ``[]`` for every
+    phase row — making the ``/decisions/[id]`` sequence diagram
+    meaningless even though 18 agent_reports rows existed.
+
+    This test stubs each phase to return ``(<text>, [AgentReport, ...])``
+    and drives ``run_synthesis`` to completion; afterwards it asserts
+    that all 5 ``synthesis.phase_N`` rows carry a non-empty
+    ``participants_json`` and that each id resolves to an
+    ``agent_reports`` row back-linked via ``phase_id``.
+    """
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings, get_settings
+    reload_settings()
+    settings = get_settings()
+    settings.db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build BOTH the sync engine (for the orchestrator's `session` arg)
+    # and the async engine (for `_record_phase_completion` →
+    # `db_mod.get_session`) pointing at the same SQLite file so writes
+    # from the async path are visible to the sync queries below. The
+    # `alembic_engine_at_head`-based fixture used elsewhere only creates
+    # the sync side; here we recreate both sides ourselves so the test
+    # can exercise the full async-recorder path.
+    sync_url = f"sqlite:///{settings.db_file}"
+    async_url = f"sqlite+aiosqlite:///{settings.db_file}"
+
+    sync_engine = sa.create_engine(
+        sync_url, connect_args={"check_same_thread": False},
+    )
+
+    # Run alembic upgrade to head against the same DB file so the sync
+    # engine sees the same schema the production code expects.
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "head")
+
+    # Re-bind the async engine to the same file (after alembic finishes
+    # so the schema is in place).
+    from argosy.state import db as db_mod
+    db_mod.init_engine(async_url)
+
+    SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
+    session = SessionLocal()
+    try:
+        session.add(User(id="ariel", plan="free"))
+        session.add(PlanVersion(
+            user_id="ariel",
+            role="baseline",
+            version_label="Jacobs v2.0",
+            raw_markdown="# Plan",
+            distillate_rendered="# Plan distillate\n\nUCITS-first.\n",
+        ))
+        session.commit()
+
+        from argosy.orchestrator.flows import plan_synthesis as flow
+
+        def _stub_phase_1(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            reports = [
+                _make_stub_agent_report(role, decision_id, "p1")
+                for role in ("fundamentals_analyst", "news_analyst")
+            ]
+            return "(analyst reports)", reports
+
+        def _stub_phase_2(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            reports = [
+                _make_stub_agent_report(role, decision_id, "p2")
+                for role in ("bull_researcher", "bear_researcher", "researcher_facilitator")
+            ]
+            return "(debate outcomes)", reports
+
+        def _stub_phase_3(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            reports = [_make_stub_agent_report("plan_synthesizer", decision_id, "p3")]
+            return _stub_synthesis_output(), reports
+
+        def _stub_phase_4(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            reports = [
+                _make_stub_agent_report(role, decision_id, "p4")
+                for role in ("risk_aggressive", "risk_neutral", "risk_conservative", "risk_facilitator")
+            ]
+            return "(risk verdict)", reports
+
+        def _stub_phase_5(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            reports = [_make_stub_agent_report("fund_manager", decision_id, "p5")]
+            return True, reports
+
+        monkeypatch.setattr(flow, "_run_phase_1_analysts", _stub_phase_1)
+        monkeypatch.setattr(flow, "_run_phase_2_debates", _stub_phase_2)
+        monkeypatch.setattr(flow, "_run_phase_3_synthesizer", _stub_phase_3)
+        monkeypatch.setattr(flow, "_run_phase_4_risk", _stub_phase_4)
+        monkeypatch.setattr(flow, "_run_phase_5_fund_manager", _stub_phase_5)
+        monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+        monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+        result = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+        assert result.draft_id is not None
+
+        # All 5 synthesis.phase_N rows must exist and have non-empty
+        # participants_json referencing real agent_reports ids.
+        phase_rows = session.execute(
+            select(DecisionPhase).where(
+                DecisionPhase.decision_run_id == result.decision_run_id
+            ).order_by(DecisionPhase.seq.asc())
+        ).scalars().all()
+
+        synthesis_phase_rows = [
+            p for p in phase_rows if p.kind and p.kind.startswith("synthesis.phase_")
+        ]
+        assert len(synthesis_phase_rows) == 5, (
+            f"expected 5 synthesis.phase_N rows, got {len(synthesis_phase_rows)}: "
+            f"{[p.kind for p in synthesis_phase_rows]}"
+        )
+
+        for p in synthesis_phase_rows:
+            participants = json.loads(p.participants_json or "[]")
+            assert isinstance(participants, list) and len(participants) > 0, (
+                f"phase {p.kind} seq={p.seq} has empty participants_json — T0.1 "
+                f"thread-through regressed; participants_json={p.participants_json!r}"
+            )
+            # Every participant id must resolve to a real agent_reports row
+            # whose phase_id back-link points at this phase. Verifies the
+            # full round-trip (persist → record → back-fill).
+            from argosy.state.models import AgentReport as AgentReportRow
+
+            for part in participants:
+                ar_id = part.get("agent_report_id")
+                assert ar_id is not None, (
+                    f"participant entry missing agent_report_id: {part}"
+                )
+                ar = session.get(AgentReportRow, ar_id)
+                assert ar is not None, (
+                    f"agent_report_id={ar_id} from phase {p.kind} does not "
+                    f"resolve to a real row"
+                )
+                assert ar.phase_id == p.id, (
+                    f"agent_reports.phase_id back-link missing: "
+                    f"expected {p.id}, got {ar.phase_id}"
+                )
+    finally:
+        import asyncio
+        session.close()
+        sync_engine.dispose()
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(db_mod.dispose_engine())
+        finally:
+            loop.close()
