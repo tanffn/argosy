@@ -285,3 +285,151 @@ async def test_invalid_inputs(engine: None) -> None:
         await adapter.get_blogger_sentiment("")
     with pytest.raises(ValueError):
         await adapter.get_hedge_fund_signal("")
+
+
+# ----------------------------------------------------------------------
+# T3.2 fallback tests — TipRanks → Finnhub social-sentiment
+# ----------------------------------------------------------------------
+
+
+class _FakeFinnhubAdapter:
+    """Minimal stand-in for the Finnhub adapter that respects the
+    ``get_social_sentiment`` contract our TipRanks fallback expects."""
+
+    def __init__(
+        self,
+        *,
+        payload: dict[str, Any] | None = None,
+        raise_exc: Exception | None = None,
+    ) -> None:
+        self._payload = payload
+        self._raise = raise_exc
+        self.calls: list[str] = []
+
+    async def get_social_sentiment(self, ticker: str) -> dict[str, Any]:
+        # Mirror the real adapter's outcome-tracking so tests that
+        # inspect ``collect_outcomes()`` see both rows.
+        from argosy.services.adapter_outcomes import track_adapter_call
+
+        with track_adapter_call("finnhub_social", target=ticker) as _outcome:
+            self.calls.append(ticker)
+            if self._raise is not None:
+                raise self._raise
+            assert self._payload is not None  # test must set one
+            _outcome.set_payload_size_bytes(len(json.dumps(self._payload)))
+            return self._payload
+
+
+@pytest.mark.asyncio
+async def test_tipranks_succeeds_no_fallback(engine: None) -> None:
+    from argosy.services.adapter_outcomes import collect_outcomes, reset_outcomes
+
+    reset_outcomes()
+    html = _next_data_html(_BLOGGER_PAYLOAD)
+    finnhub = _FakeFinnhubAdapter(payload={"should": "not be used"})
+    adapter = TipRanksAdapter(http_client=_FakeHttp(html), finnhub=finnhub)
+    out = await adapter.get_blogger_sentiment("NVDA")
+    assert out["bullish_pct"] == pytest.approx(78.0)
+    assert out["bearish_pct"] == pytest.approx(22.0)
+    # Finnhub must NOT have been called on the happy path.
+    assert finnhub.calls == []
+    outcomes = collect_outcomes()
+    # Only TipRanks's "ok" outcome should be recorded.
+    assert any(
+        o.adapter_name == "tipranks" and o.status == "ok"
+        for o in outcomes
+    )
+    assert not any(o.adapter_name == "finnhub_social" for o in outcomes)
+
+
+@pytest.mark.asyncio
+async def test_tipranks_falls_back_to_finnhub_on_403(engine: None) -> None:
+    from argosy.services.adapter_outcomes import collect_outcomes, reset_outcomes
+
+    reset_outcomes()
+    finnhub = _FakeFinnhubAdapter(payload={
+        "ticker": "NVDA",
+        "bullish_pct": 65.5,
+        "bearish_pct": 34.5,
+        "source_url": "https://finnhub.io/api/v1/stock/social-sentiment?symbol=NVDA",
+    })
+    adapter = TipRanksAdapter(
+        http_client=_FakeHttp("Forbidden", status=403),
+        finnhub=finnhub,
+    )
+    out = await adapter.get_blogger_sentiment("NVDA")
+    # Mapped Finnhub data is returned with the TipRanks dict shape.
+    assert out["ticker"] == "NVDA"
+    assert out["bullish_pct"] == pytest.approx(65.5)
+    assert out["bearish_pct"] == pytest.approx(34.5)
+    assert "finnhub.io" in out["source_url"]
+    # Finnhub was called exactly once with the normalized ticker.
+    assert finnhub.calls == ["NVDA"]
+    outcomes = collect_outcomes()
+    # Both outcomes recorded: TipRanks=http_error(403), Finnhub=ok.
+    tipranks_outcomes = [o for o in outcomes if o.adapter_name == "tipranks"]
+    finnhub_outcomes = [o for o in outcomes if o.adapter_name == "finnhub_social"]
+    assert len(tipranks_outcomes) == 1
+    assert tipranks_outcomes[0].status == "http_error"
+    assert tipranks_outcomes[0].http_status_code == 403
+    assert len(finnhub_outcomes) == 1
+    assert finnhub_outcomes[0].status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_tipranks_falls_back_to_finnhub_on_500(engine: None) -> None:
+    from argosy.services.adapter_outcomes import collect_outcomes, reset_outcomes
+
+    reset_outcomes()
+    finnhub = _FakeFinnhubAdapter(payload={
+        "ticker": "AAPL",
+        "bullish_pct": 50.0,
+        "bearish_pct": 50.0,
+        "source_url": "https://finnhub.io/api/v1/stock/social-sentiment?symbol=AAPL",
+    })
+    adapter = TipRanksAdapter(
+        http_client=_FakeHttp("Internal Server Error", status=500),
+        finnhub=finnhub,
+    )
+    out = await adapter.get_blogger_sentiment("AAPL")
+    assert out["bullish_pct"] == pytest.approx(50.0)
+    assert finnhub.calls == ["AAPL"]
+    outcomes = collect_outcomes()
+    tipranks_outcomes = [o for o in outcomes if o.adapter_name == "tipranks"]
+    assert tipranks_outcomes[0].status == "http_error"
+    assert tipranks_outcomes[0].http_status_code == 500
+    assert any(
+        o.adapter_name == "finnhub_social" and o.status == "ok"
+        for o in outcomes
+    )
+
+
+@pytest.mark.asyncio
+async def test_both_fail(engine: None) -> None:
+    """TipRanks 403 + Finnhub 503: return zero-shape default, record both."""
+    from argosy.services.adapter_outcomes import collect_outcomes, reset_outcomes
+    from argosy.adapters import MissingDataSourceError
+
+    reset_outcomes()
+    finnhub = _FakeFinnhubAdapter(
+        raise_exc=MissingDataSourceError("finnhub social: HTTP 503"),
+    )
+    adapter = TipRanksAdapter(
+        http_client=_FakeHttp("Forbidden", status=403),
+        finnhub=finnhub,
+    )
+    out = await adapter.get_blogger_sentiment("NVDA")
+    # Existing dict shape; zero-valued — caller treats as "no data".
+    assert out["ticker"] == "NVDA"
+    assert out["bullish_pct"] == 0.0
+    assert out["bearish_pct"] == 0.0
+    assert out["source_url"] == ""
+    outcomes = collect_outcomes()
+    # Both outcomes recorded as failures.
+    tipranks_outcomes = [o for o in outcomes if o.adapter_name == "tipranks"]
+    finnhub_outcomes = [o for o in outcomes if o.adapter_name == "finnhub_social"]
+    assert len(tipranks_outcomes) == 1
+    assert tipranks_outcomes[0].status == "http_error"
+    assert tipranks_outcomes[0].http_status_code == 403
+    assert len(finnhub_outcomes) == 1
+    assert finnhub_outcomes[0].status == "exception"

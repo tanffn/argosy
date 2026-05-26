@@ -81,6 +81,46 @@ class _FakeFinnhubClient:
             ]
         }
 
+    def stock_social_sentiment(self, symbol: str, _from: str, to: str) -> dict:
+        self.calls.append(f"social:{symbol}")
+        # Reddit-shaped row: positiveScore + negativeScore; Twitter row
+        # has only mention counts. Tests that the mapper sums BOTH score
+        # types AND falls back to mention counts when scores are 0.
+        return {
+            "symbol": symbol,
+            "reddit": [
+                {
+                    "atTime": _from,
+                    "mention": 100,
+                    "positiveScore": 0.7,
+                    "negativeScore": 0.3,
+                    "positiveMention": 60,
+                    "negativeMention": 40,
+                    "score": 0.4,
+                },
+                {
+                    "atTime": to,
+                    "mention": 50,
+                    "positiveScore": 0.3,
+                    "negativeScore": 0.2,
+                    "positiveMention": 30,
+                    "negativeMention": 20,
+                    "score": 0.5,
+                },
+            ],
+            "twitter": [
+                {
+                    "atTime": _from,
+                    "mention": 200,
+                    "positiveScore": 0.0,
+                    "negativeScore": 0.0,
+                    "positiveMention": 120,
+                    "negativeMention": 80,
+                    "score": 0.2,
+                },
+            ],
+        }
+
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -140,6 +180,26 @@ async def test_finnhub_adapter_company_news(engine: None) -> None:
     )
     assert len(rows) == 1
     assert rows[0]["headline"].startswith("NVDA")
+
+
+@pytest.mark.asyncio
+async def test_finnhub_social_sentiment_smoke(engine: None) -> None:
+    """T3.2: Finnhub social-sentiment fallback returns the TipRanks dict shape."""
+    fake = _FakeFinnhubClient()
+    adapter = FinnhubAdapter(client=fake, api_key="dummy")
+    out = await adapter.get_social_sentiment(
+        "NVDA", start=date(2026, 1, 1), end=date(2026, 1, 7), ttl_seconds=3600
+    )
+    # Shape matches what TipRanks's get_blogger_sentiment returns so the
+    # caller can swap providers without branching.
+    assert set(out.keys()) >= {"ticker", "bullish_pct", "bearish_pct", "source_url"}
+    assert out["ticker"] == "NVDA"
+    # reddit pos_score: 0.7+0.3=1.0; neg_score: 0.3+0.2=0.5; twitter pos/neg 0/0.
+    # Total = 1.5, bullish = 1.0/1.5*100 ≈ 66.67, bearish ≈ 33.33.
+    assert out["bullish_pct"] == pytest.approx(66.67, rel=1e-2)
+    assert out["bearish_pct"] == pytest.approx(33.33, rel=1e-2)
+    assert "finnhub.io" in out["source_url"]
+    assert fake.calls == ["social:NVDA"]
 
 
 @pytest.mark.asyncio

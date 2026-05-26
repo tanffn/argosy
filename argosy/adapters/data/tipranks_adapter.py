@@ -97,9 +97,17 @@ class TipRanksAdapter:
         *,
         http_client: Any | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT,
+        finnhub: Any | None = None,
     ) -> None:
         self._http = http_client
         self._timeout = timeout_seconds
+        # T3.2: optional Finnhub adapter used as the social-sentiment
+        # fallback when TipRanks 403s (anti-bot) or otherwise fails.
+        # Tracked under its own ``finnhub_social`` adapter-outcome row
+        # so the agent tree surfaces BOTH outcomes (TipRanks failed AND
+        # Finnhub succeeded / also failed) rather than a single
+        # opaque "tipranks: http_error" leaf.
+        self._finnhub = finnhub
 
     # ----- public API -------------------------------------------------
 
@@ -145,27 +153,119 @@ class TipRanksAdapter:
         *,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
     ) -> dict[str, Any]:
-        """Bullish/bearish blogger sentiment for ``ticker``."""
+        """Bullish/bearish blogger sentiment for ``ticker``.
+
+        T3.2: TipRanks's blogger-opinions page now reliably blocks
+        unauthenticated scrapers (HTTP 403 anti-bot). When that
+        happens — or any other HTTP / network failure — we fall back to
+        ``FinnhubAdapter.get_social_sentiment`` if a Finnhub adapter was
+        injected at construction time. Both attempts are tracked as
+        separate adapter outcomes so the agent tree shows the user
+        BOTH failures / both providers' contributions, not just an
+        opaque "tipranks: http_error" leaf.
+
+        On both-providers-fail (or no Finnhub injected and TipRanks
+        failed), returns the zero-shape default
+        ``{"ticker": <T>, "bullish_pct": 0.0, "bearish_pct": 0.0,
+        "source_url": ""}`` rather than raising — the caller
+        (SentimentAnalystAgent via ``_gather_social_payload``) already
+        treats a zero/empty signal as "no usable sentiment". This
+        behaviour change vs the prior raise-on-failure path is the
+        whole point of T3.2: don't crash the synthesis run when the
+        sentiment provider is down.
+        """
         if not ticker:
             raise ValueError("ticker is required")
         ticker_norm = ticker.strip().upper()
+
+        # 1. Try TipRanks first, tracked under "tipranks".
+        tipranks_payload = await self._try_blogger_sentiment_via_tipranks(
+            ticker_norm, ttl_seconds=ttl_seconds,
+        )
+        if tipranks_payload is not None:
+            return tipranks_payload
+
+        # 2. TipRanks failed. Try Finnhub social-sentiment as a fallback,
+        #    tracked separately under "finnhub_social" (the call itself
+        #    wraps track_adapter_call("finnhub_social", target=...)).
+        if self._finnhub is not None:
+            try:
+                fallback = await self._finnhub.get_social_sentiment(ticker_norm)
+                if isinstance(fallback, dict):
+                    # Normalize to the same dict shape callers expect from
+                    # the TipRanks happy-path return.
+                    return {
+                        "ticker": ticker_norm,
+                        "bullish_pct": float(fallback.get("bullish_pct") or 0.0),
+                        "bearish_pct": float(fallback.get("bearish_pct") or 0.0),
+                        "source_url": fallback.get("source_url", ""),
+                    }
+            except Exception as exc:  # noqa: BLE001 — defensive
+                # Finnhub's own track_adapter_call already recorded the
+                # outcome; we just need to swallow so we can return the
+                # zero-shape default below.
+                _log.info(
+                    "tipranks.finnhub_fallback_failed",
+                    ticker=ticker_norm,
+                    reason=str(exc).splitlines()[0],
+                )
+
+        # 3. Both providers failed (or no Finnhub injected). Return the
+        #    zero-shape default rather than raise. Don't crash synthesis.
+        return {
+            "ticker": ticker_norm,
+            "bullish_pct": 0.0,
+            "bearish_pct": 0.0,
+            "source_url": "",
+        }
+
+    async def _try_blogger_sentiment_via_tipranks(
+        self,
+        ticker_norm: str,
+        *,
+        ttl_seconds: int,
+    ) -> dict[str, Any] | None:
+        """Inner helper — returns the parsed payload or None on failure.
+
+        Wraps the TipRanks HTTP + parse cycle in
+        ``track_adapter_call("tipranks", ...)`` and records ``http_error``
+        with the actual status code when the HTTP layer returns non-200,
+        or ``exception`` when the network call itself failed. Returning
+        ``None`` instead of raising lets ``get_blogger_sentiment`` decide
+        whether to fall back to Finnhub — the outcome is already
+        recorded so the agent tree sees the failure either way.
+        """
+        url = BLOGGER_URL_TPL.format(ticker=ticker_norm)
+
         with track_adapter_call("tipranks", target=ticker_norm) as _outcome:
-            url = BLOGGER_URL_TPL.format(ticker=ticker_norm)
+            try:
+                async def _fetch() -> dict[str, Any]:
+                    text, _status = await self._fetch_text_with_status(url)
+                    payload = _parse_blogger_sentiment(text)
+                    payload["ticker"] = ticker_norm
+                    payload["source_url"] = url
+                    return payload
 
-            async def _fetch() -> dict[str, Any]:
-                text = await self._fetch_text(url)
-                payload = _parse_blogger_sentiment(text)
-                payload["ticker"] = ticker_norm
-                payload["source_url"] = url
-                return payload
-
-            payload = await cached_call(
-                kind=CacheKind.PRICES,
-                provider=self.PROVIDER,
-                key=f"blogger:{ticker_norm}",
-                ttl_seconds=ttl_seconds,
-                fetch=_fetch,
-            )
+                payload = await cached_call(
+                    kind=CacheKind.PRICES,
+                    provider=self.PROVIDER,
+                    key=f"blogger:{ticker_norm}",
+                    ttl_seconds=ttl_seconds,
+                    fetch=_fetch,
+                )
+            except _TipRanksHTTPError as exc:
+                _outcome.record_http_error(
+                    status_code=exc.status_code,
+                    body=exc.body or f"HTTP {exc.status_code}",
+                )
+                return None
+            except MissingDataSourceError as exc:
+                # Network/parse failure without a status code (DNS, parse
+                # error, etc.). Outcome falls through as "exception" via
+                # the contextmanager's exception handling — but we
+                # swallow here to enable the fallback path.
+                _outcome.record_exception(exc)
+                return None
             _outcome.set_payload_size_bytes(_approx_size_bytes(payload))
             return payload
 
@@ -204,6 +304,20 @@ class TipRanksAdapter:
     # ----- internals --------------------------------------------------
 
     async def _fetch_text(self, url: str) -> str:
+        text, _status = await self._fetch_text_with_status(url)
+        return text
+
+    async def _fetch_text_with_status(self, url: str) -> tuple[str, int]:
+        """Fetch ``url`` and return ``(text, status_code)``.
+
+        On a non-200 response, raises ``_TipRanksHTTPError`` carrying
+        the status code so callers can record an accurate
+        ``adapter_outcomes`` row (HTTP 403 anti-bot vs HTTP 500 upstream).
+        Other failures (DNS, connect, parse) still raise
+        ``MissingDataSourceError`` to preserve the existing contract for
+        the analyst-consensus + hedge-fund-signal call sites that haven't
+        been migrated to status-aware tracking yet.
+        """
         try:
             if self._http is None:
                 async with httpx.AsyncClient(
@@ -217,15 +331,39 @@ class TipRanksAdapter:
             raise MissingDataSourceError(
                 f"tipranks unreachable ({exc!s}); url={url}"
             ) from exc
-        if getattr(resp, "status_code", 0) != 200:
-            raise MissingDataSourceError(
-                f"tipranks returned HTTP {getattr(resp, 'status_code', '?')} for {url}"
+        status = int(getattr(resp, "status_code", 0) or 0)
+        if status != 200:
+            body_preview = None
+            text_attr = getattr(resp, "text", None)
+            if isinstance(text_attr, str):
+                body_preview = text_attr[:500]
+            raise _TipRanksHTTPError(
+                f"tipranks returned HTTP {status} for {url}",
+                status_code=status,
+                body=body_preview,
             )
         text = getattr(resp, "text", None)
         if text is None:
             raw = getattr(resp, "content", b"")
             text = raw.decode("utf-8", errors="replace")
-        return text
+        return text, status
+
+
+class _TipRanksHTTPError(MissingDataSourceError):
+    """Internal HTTP-error type carrying the status code + body preview.
+
+    Subclasses ``MissingDataSourceError`` so existing callers that catch
+    that exception keep working unchanged; the extra fields are read by
+    ``_try_blogger_sentiment_via_tipranks`` to populate
+    ``adapter_outcomes`` with the actual status.
+    """
+
+    def __init__(
+        self, message: str, *, status_code: int, body: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
 
 
 # ----------------------------------------------------------------------

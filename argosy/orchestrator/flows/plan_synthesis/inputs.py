@@ -1094,7 +1094,21 @@ def _gather_social_payload(
     try:
         from argosy.adapters.data.tipranks_adapter import TipRanksAdapter
 
-        adapter = TipRanksAdapter()
+        # T3.2: pair TipRanks with a Finnhub fallback adapter so when
+        # TipRanks 403s (anti-bot) we still produce a non-empty social
+        # signal. The Finnhub adapter has its own track_adapter_call
+        # wrapping so the agent tree shows both outcomes per ticker.
+        finnhub_fallback: Any | None = None
+        try:
+            from argosy.adapters.data.finnhub_adapter import FinnhubAdapter
+
+            finnhub_fallback = FinnhubAdapter()
+        except Exception as exc:  # noqa: BLE001 - defensive
+            log.warning(
+                "plan_synthesis.inputs.social_finnhub_fallback_unavailable",
+                error=str(exc),
+            )
+        adapter = TipRanksAdapter(finnhub=finnhub_fallback)
         # TipRanks free tier is aggressively rate-limited; cap at 10.
         for ticker in tickers[:10]:
             try:
@@ -1115,17 +1129,39 @@ def _gather_social_payload(
                 continue
             bullish = signal.get("bullish_pct") if isinstance(signal, dict) else None
             bearish = signal.get("bearish_pct") if isinstance(signal, dict) else None
-            polarity = 0.0
-            if isinstance(bullish, (int, float)) and isinstance(bearish, (int, float)):
-                polarity = float(bullish) - float(bearish)
+            # T3.2: get_blogger_sentiment now returns a zero-shape default
+            # when BOTH TipRanks and Finnhub fail rather than raising.
+            # Skip the phantom-row case so the analyst doesn't see a
+            # synthetic "0% bullish / 0% bearish" snippet that looks like
+            # a real measurement.
+            if not (
+                isinstance(bullish, (int, float)) and isinstance(bearish, (int, float))
+                and (float(bullish) > 0 or float(bearish) > 0)
+            ):
+                log.info(
+                    "plan_synthesis.inputs.social_skipped_empty",
+                    ticker=ticker,
+                )
+                continue
+            polarity = float(bullish) - float(bearish)
+            source_url = (
+                signal.get("source_url", "tipranks")
+                if isinstance(signal, dict) else "tipranks"
+            )
+            # Label depends on which provider actually answered. The
+            # source_url is the cheapest signal we have for that.
+            provider = (
+                "Finnhub social-sentiment"
+                if "finnhub.io" in (source_url or "")
+                else "TipRanks blogger consensus"
+            )
             text = (
-                f"TipRanks blogger consensus: bullish_pct={bullish}, "
-                f"bearish_pct={bearish}"
+                f"{provider}: bullish_pct={bullish}, bearish_pct={bearish}"
             )
             out[ticker] = [{
                 "text": text,
                 "polarity": polarity,
-                "source": signal.get("source_url", "tipranks") if isinstance(signal, dict) else "tipranks",
+                "source": source_url,
             }]
     except MissingDataSourceError as exc:
         log.warning(
