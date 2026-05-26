@@ -432,6 +432,23 @@ class SynthesisHealth(BaseModel):
     decision_run_id: int
 
 
+class NvdaPaceView(BaseModel):
+    """NVDA divestment pace snapshot lifted from the latest concentration
+    agent_report. Surfaced on the home page's "NVDA PACE" tile so the user
+    sees real numbers instead of the prior hardcoded 0 / 10,000 placeholder.
+
+    All four fields mirror ``argosy.agents.concentration_analyst.NvdaPace``;
+    we re-declare them here to keep the route module free of an import-time
+    dependency on the agent's pydantic schema (the agent module pulls in
+    Anthropic SDK bits the API route doesn't need to import on cold start).
+    """
+
+    shares_sold_ytd: int = 0
+    target_shares_ytd: int = 0
+    delta_shares: int = 0
+    on_track: bool = True
+
+
 class DraftResponse(BaseModel):
     plan_version_id: int
     version_label: str | None
@@ -448,6 +465,11 @@ class DraftResponse(BaseModel):
     # and ``build_agent_tree`` succeeds. ``None`` for legacy drafts without
     # decision_run_id or when the agent-tree builder raises.
     synthesis_health: SynthesisHealth | None = None
+    # Lifted from the latest concentration agent_report tied to the draft's
+    # ``decision_run_id``. ``None`` when no concentration report exists yet
+    # (no synthesis has run, or the report row is missing/malformed). The UI's
+    # NVDA PACE tile renders a "Awaiting synthesis run" tooltip in that case.
+    nvda_pace: NvdaPaceView | None = None
 
 
 class AcceptResponse(BaseModel):
@@ -556,6 +578,77 @@ def _horizon_view(json_str: str | None) -> HorizonSectionView | None:
     return HorizonSectionView(**payload)
 
 
+def _build_nvda_pace(
+    db: Session, user_id: str, decision_run_id: int | None
+) -> NvdaPaceView | None:
+    """Lift NvdaPace from the latest concentration agent_report for this run.
+
+    Returns ``None`` when the draft has no backing ``decision_run_id``, when
+    no ``concentration`` agent_report row exists for ``plan-synth-<run_id>``,
+    or when the row's ``response_text`` is malformed past a best-effort parse.
+    The route returns these as a null field rather than raising — the UI
+    falls back to a "Awaiting synthesis run" hint.
+
+    The agent's ``response_text`` is typically wrapped in ```` ```json ... ```
+    fences, so we use the same lenient ``JSONDecoder(strict=False).raw_decode``
+    pattern ``_parse_fm_response`` uses for the fund-manager agent — find the
+    first ``{`` and parse from there.
+    """
+    if decision_run_id is None:
+        return None
+
+    decision_id_str = f"plan-synth-{decision_run_id}"
+    row = db.execute(
+        select(AgentReport)
+        .where(
+            AgentReport.user_id == user_id,
+            AgentReport.decision_id == decision_id_str,
+            AgentReport.agent_role == "concentration",
+        )
+        .order_by(desc(AgentReport.created_at))
+        .limit(1)
+    ).scalar_one_or_none()
+    if row is None or not row.response_text:
+        return None
+
+    text = row.response_text
+    brace = text.find("{")
+    if brace < 0:
+        return None
+    import json as _json
+
+    decoder = _json.JSONDecoder(strict=False)
+    try:
+        payload, _idx = decoder.raw_decode(text[brace:])
+    except _json.JSONDecodeError:
+        logger.warning(
+            "nvda_pace: could not parse concentration response_text for "
+            "decision_id=%s",
+            decision_id_str,
+        )
+        return None
+    if not isinstance(payload, dict):
+        return None
+    pace = payload.get("nvda_pace")
+    if not isinstance(pace, dict):
+        return None
+    try:
+        return NvdaPaceView(
+            shares_sold_ytd=int(pace.get("shares_sold_ytd") or 0),
+            target_shares_ytd=int(pace.get("target_shares_ytd") or 0),
+            delta_shares=int(pace.get("delta_shares") or 0),
+            on_track=bool(pace.get("on_track", True)),
+        )
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "nvda_pace: bad scalar types in concentration payload for "
+            "decision_id=%s: %s",
+            decision_id_str,
+            exc,
+        )
+        return None
+
+
 def _build_synthesis_health(
     db: Session, decision_run_id: int | None
 ) -> SynthesisHealth | None:
@@ -613,6 +706,7 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         horizon_medium_md=pv.horizon_medium_md,
         horizon_short_md=pv.horizon_short_md,
         synthesis_health=_build_synthesis_health(db, pv.decision_run_id),
+        nvda_pace=_build_nvda_pace(db, user_id, pv.decision_run_id),
     )
 
 
@@ -1342,6 +1436,7 @@ def get_current_structured(
         horizon_long_md=pv.horizon_long_md,
         horizon_medium_md=pv.horizon_medium_md,
         horizon_short_md=pv.horizon_short_md,
+        nvda_pace=_build_nvda_pace(db, user_id, pv.decision_run_id),
     )
 
 
@@ -1721,6 +1816,7 @@ __all__ = [
     "DistillateItemEditRequest",
     "DraftResponse",
     "HorizonSectionView",
+    "NvdaPaceView",
     "RejectRequest",
     "SynthesisHealth",
     "TakeSpeculativeResponse",

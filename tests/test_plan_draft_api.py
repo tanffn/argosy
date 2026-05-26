@@ -879,3 +879,103 @@ def test_delta_edit_invalidates_home_brief_cache(app_with_draft, monkeypatch):
     )
 
     assert "ariel" in purged, f"cache purge not called; purged={purged}"
+
+
+# ---------------------------------------------------------------------------
+# NVDA pace — lifted from the latest concentration agent_report (home page).
+# ---------------------------------------------------------------------------
+
+
+def test_get_draft_nvda_pace_from_concentration_report(app_with_draft):
+    """When the draft has a concentration agent_report with a non-default
+    nvda_pace block, ``GET /api/plan/draft`` surfaces those values verbatim
+    so the home page's NVDA PACE tile shows real numbers (not 0/10,000).
+    """
+    from argosy.state.models import AgentReport, PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.decision_run_id = 42
+        # The real concentration agent emits ```` ```json ... ``` ````-fenced
+        # JSON; the route's lenient decoder must strip the fence. Use the
+        # same shape here so we exercise that code path.
+        sess.add(AgentReport(
+            user_id="ariel",
+            agent_role="concentration",
+            decision_id="plan-synth-42",
+            response_text=(
+                "```json\n"
+                + json.dumps({
+                    "breaches": [],
+                    "deltas_vs_target": {},
+                    "nvda_pace": {
+                        "shares_sold_ytd": 2000,
+                        "target_shares_ytd": 4000,
+                        "delta_shares": -2000,
+                        "on_track": False,
+                    },
+                    "summary": "behind plan",
+                    "confidence": "HIGH",
+                    "cited_sources": ["portfolio/holdings"],
+                })
+                + "\n```"
+            ),
+            model="claude-sonnet-4-6",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "nvda_pace" in body
+    pace = body["nvda_pace"]
+    assert pace is not None
+    assert pace["shares_sold_ytd"] == 2000
+    assert pace["target_shares_ytd"] == 4000
+    assert pace["delta_shares"] == -2000
+    assert pace["on_track"] is False
+
+
+def test_get_draft_nvda_pace_null_when_no_concentration_report(app_with_draft):
+    """A draft with no backing decision_run_id (the default fixture state)
+    or no concentration agent_report degrades cleanly to ``nvda_pace=None``.
+    The home page renders an "Awaiting synthesis run" tooltip in that case.
+    """
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "nvda_pace" in body
+    assert body["nvda_pace"] is None
+
+
+def test_get_draft_nvda_pace_null_when_response_text_malformed(app_with_draft):
+    """A concentration agent_report whose response_text isn't parseable JSON
+    must not crash the route — the field simply degrades to ``None``.
+    """
+    from argosy.state.models import AgentReport, PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.decision_run_id = 7
+        sess.add(AgentReport(
+            user_id="ariel",
+            agent_role="concentration",
+            decision_id="plan-synth-7",
+            response_text="<not-json> totally unparseable",
+            model="claude-sonnet-4-6",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert r.json()["nvda_pace"] is None

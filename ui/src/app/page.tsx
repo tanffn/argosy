@@ -21,6 +21,7 @@ import {
   type ArgonautSnapshot,
   type DailyBriefDTO,
   type DomainKbTreeNode,
+  type DraftResponse,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
 } from "@/lib/api";
@@ -73,6 +74,10 @@ interface AuditEventRow {
 interface HomeData {
   portfolio: PortfolioSnapshotDTO | null;
   plan: PlanCurrentDTO | null;
+  // Used for the NVDA PACE tile's real-numbers wiring — the draft response
+  // carries the latest concentration agent_report's nvda_pace block. Null
+  // when no pending draft exists (newly bootstrapped accounts).
+  planDraft: DraftResponse | null;
   brief: DailyBriefDTO | null;
   agents: AgentActivityRow[];
   argonautSnapshots: ArgonautSnapshot[];
@@ -87,6 +92,7 @@ interface HomeData {
 const initial: HomeData = {
   portfolio: null,
   plan: null,
+  planDraft: null,
   brief: null,
   agents: [],
   argonautSnapshots: [],
@@ -161,6 +167,7 @@ export default function Home() {
       const [
         portfolio,
         plan,
+        planDraft,
         brief,
         agents,
         argonautSnaps,
@@ -173,6 +180,10 @@ export default function Home() {
       ] = await Promise.all([
         api.portfolioSnapshot(USER_ID).catch(() => null),
         api.planCurrent(USER_ID).catch(() => null),
+        // Used by the NVDA PACE tile to read nvda_pace.shares_sold_ytd. We
+        // tolerate 404 (no pending draft yet) by falling back to null; the
+        // tile then renders an "Awaiting synthesis run" hint.
+        api.planDraft(USER_ID).catch(() => null),
         api.dailyBriefLatest(USER_ID).catch(() => null),
         api.agentActivity(USER_ID, 30).catch(() => ({
           rows: [] as AgentActivityRow[],
@@ -273,6 +284,7 @@ export default function Home() {
       setData({
         portfolio,
         plan,
+        planDraft,
         brief,
         agents: agents?.rows ?? [],
         argonautSnapshots: argonautSnaps?.rows ?? [],
@@ -392,10 +404,25 @@ export default function Home() {
     process.env.NEXT_PUBLIC_ARGOSY_KILL === "armed" ||
     process.env.NEXT_PUBLIC_ARGOSY_KILL === "ARMED";
 
-  // NVDA pace.
-  const nvdaSold = 0; // placeholder until real fills land
+  // NVDA pace. Sourced from the latest concentration agent_report tied to
+  // the user's pending draft (see backend ``_build_nvda_pace`` in
+  // argosy/api/routes/plan.py). Falls back to 0 + an "awaiting synthesis"
+  // tooltip when no concentration report exists yet — the tile still
+  // renders so the user sees the target rather than a blank slot.
+  const nvdaPace = data.planDraft?.nvda_pace ?? null;
+  const nvdaSold = nvdaPace?.shares_sold_ytd ?? 0;
   const nvdaPctSold = (nvdaSold / NVDA_TARGET_2026) * 100;
-  const nvdaOnPace = nvdaPctSold >= pctOfYearElapsed();
+  // Prefer the agent's explicit ``on_track`` boolean when we have one; it's
+  // computed against the YTD pro-rated target (target_shares_ytd), which is
+  // a tighter signal than "pct of annual target vs pct of year elapsed".
+  // When nvda_pace is unavailable, fall back to the prior heuristic so the
+  // tile still toggles between ON PACE / BEHIND PACE.
+  const nvdaOnPace =
+    nvdaPace !== null
+      ? nvdaPace.on_track
+      : nvdaPctSold >= pctOfYearElapsed();
+  const nvdaPaceTooltip =
+    nvdaPace === null ? "Awaiting synthesis run" : undefined;
 
   // Domain KB freshness.
   const kbStats = useMemo(() => {
@@ -674,7 +701,10 @@ export default function Home() {
             </StatusPill>
           }
         />
-        <div className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-2">
+        <div
+          className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-2"
+          title={nvdaPaceTooltip}
+        >
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div className="font-mono text-sm tabular-nums">
               {nvdaSold.toLocaleString()} / {NVDA_TARGET_2026.toLocaleString()}{" "}
@@ -683,6 +713,7 @@ export default function Home() {
             <div className="text-[11px] text-muted-foreground tabular-nums">
               {nvdaPctSold.toFixed(1)}% of target ·{" "}
               {pctOfYearElapsed().toFixed(0)}% of year elapsed
+              {nvdaPaceTooltip ? ` · ${nvdaPaceTooltip}` : ""}
             </div>
           </div>
           <ProgressBar

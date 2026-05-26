@@ -1479,6 +1479,25 @@ export interface SynthesisHealth {
   decision_run_id: number;
 }
 
+/**
+ * NVDA divestment-pace snapshot lifted from the latest concentration
+ * agent_report tied to the draft's decision_run_id. Mirrors the backend's
+ * ``argosy.api.routes.plan.NvdaPaceView`` (itself a thin DTO around
+ * ``argosy.agents.concentration_analyst.NvdaPace``).
+ *
+ * The home page's NVDA PACE tile reads ``shares_sold_ytd`` directly; the
+ * displayed annual target stays the UI-side ``NVDA_TARGET_2026`` constant
+ * because ``target_shares_ytd`` is the YTD pro-rated number, not the cap.
+ * ``on_track`` is authoritative — prefer it over the UI's prior heuristic
+ * (pct-of-target vs pct-of-year) when both are available.
+ */
+export interface NvdaPaceDTO {
+  shares_sold_ytd: number;
+  target_shares_ytd: number;
+  delta_shares: number;
+  on_track: boolean;
+}
+
 export interface DraftResponse {
   plan_version_id: number;
   version_label: string | null;
@@ -1496,6 +1515,11 @@ export interface DraftResponse {
   // the agent-tree builder rejected the run; the SynthesisHealthBanner
   // simply doesn't render in that case.
   synthesis_health?: SynthesisHealth | null;
+  // Latest concentration agent_report's nvda_pace block; null when no
+  // synthesis has run for this draft or the report is missing/malformed.
+  // The home page's NVDA PACE tile renders an "Awaiting synthesis run"
+  // tooltip in the null case.
+  nvda_pace?: NvdaPaceDTO | null;
 }
 
 // ----------------------------------------------------------------------
