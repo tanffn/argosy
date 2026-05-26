@@ -130,6 +130,26 @@ DEFAULT_THINKING_BUDGET_BY_ROLE: dict[str, int] = {
     "audit":            4000,
 }
 
+# Per-role SDK call timeout (seconds). The default (FALLBACK_SDK_TIMEOUT)
+# is conservative; agents that emit long outputs need more. Override via
+# the agent_settings.yaml (TODO) or this table.
+#
+# Why these specific values:
+# - plan_critique: emits 30K+ output tokens for ariel's full plan;
+#   measured live on synthesis #24 to hit the 10-min default repeatedly.
+#   20 min gives Opus enough wall-clock to finish + ~30% headroom.
+# - plan_synthesizer: 16K max_tokens; observed 3-5 min typical, bump to
+#   15 min so an outlier doesn't trigger timeout retries.
+# - fund_manager: similar reasoning to synthesizer.
+# All others fall through to FALLBACK_SDK_TIMEOUT.
+FALLBACK_SDK_TIMEOUT_SECONDS: int = 600  # 10 minutes
+DEFAULT_SDK_TIMEOUT_BY_ROLE: dict[str, int] = {
+    "plan_critique":    1200,  # 20 min — known-long agent (T2.7)
+    "plan_synthesizer":  900,  # 15 min
+    "fund_manager":      900,  # 15 min
+    "audit":             900,  # 15 min
+}
+
 # Per-role Citations API enablement. Source consumers + synthesizers get
 # citations; conversational/categorical agents do not (they don't read sources).
 DEFAULT_CITATIONS_BY_ROLE: dict[str, bool] = {
@@ -507,6 +527,14 @@ class BaseAgent(Generic[T]):
         )
         self.citations_enabled: bool = DEFAULT_CITATIONS_BY_ROLE.get(
             self.agent_role, False,
+        )
+        # T2.7 — per-agent SDK timeout. Wraps the asyncio.timeout(...) call
+        # around the `query()` stream in _call_via_claude_code_inner. The
+        # default 600s catches genuine hangs (live run #15 stuck 3+ hours);
+        # the override exists for known-slow agents (plan_critique 1200s)
+        # so they don't waste 30+ minutes on doomed retries from T2.6.
+        self.sdk_timeout_seconds: int = DEFAULT_SDK_TIMEOUT_BY_ROLE.get(
+            self.agent_role, FALLBACK_SDK_TIMEOUT_SECONDS,
         )
 
         # Wave A — apply per-user YAML overrides on top of per-role defaults.
@@ -1285,13 +1313,15 @@ class BaseAgent(Generic[T]):
                 # #15 had a phase-2 agent (likely bear_researcher on long
                 # horizon) HANG with no exception for 3+ hours — the W2.A /
                 # W2.A-v2 retries only fire on exceptions, so a silently-
-                # stuck query() never recovers. 10 minutes is well above
-                # the longest legitimate single-agent call (~3-5 min for
-                # the synthesizer's 8000-token Opus output) but bounded so
-                # the synthesis can't hang the orchestrator indefinitely.
-                # asyncio.TimeoutError is caught below as another retry
-                # trigger (shares the same _retried guard).
-                async with asyncio.timeout(600):
+                # stuck query() never recovers.
+                #
+                # T2.7 — per-agent timeout. The default 600s catches genuine
+                # hangs but is too tight for known-long-output agents
+                # (plan_critique emits 30K+ tokens and consistently runs
+                # 12-15 min on Opus). DEFAULT_SDK_TIMEOUT_BY_ROLE overrides
+                # the default for those agents. asyncio.TimeoutError is
+                # caught below as another retry trigger.
+                async with asyncio.timeout(self.sdk_timeout_seconds):
                     async for message in query(prompt=sdk_prompt, options=options):
                         if isinstance(message, AssistantMessage):
                             for block in getattr(message, "content", []) or []:
@@ -1507,7 +1537,7 @@ class BaseAgent(Generic[T]):
                         "claude_code.sdk_timeout_retry",
                         agent_role=self.agent_role,
                         model=self.model,
-                        timeout_seconds=600,
+                        timeout_seconds=self.sdk_timeout_seconds,
                         attempt=_retry_count + 1,
                         max_retries=_MAX_RETRIES,
                     )

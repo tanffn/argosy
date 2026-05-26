@@ -431,15 +431,25 @@ def run_synthesis(
     # SDD §6.11 promises: you can reconstruct the full synthesis by joining
     # plan_versions.decision_run_id → decision_runs.id.
     #
-    # Skipped when the caller passed `existing_decision_run_id` (e.g. the
-    # plan_amendment_chat large worker): the caller owns the row and may
-    # need to re-check cancellation between synthesis-end and the
-    # completed stamp. Stamping here would race that check.
-    if existing_decision_run_id is None:
-        decision_run.finished_at = datetime.now(timezone.utc)
-        decision_run.status = "completed"
-        decision_run.fund_manager_decision = "approved" if approved else "rejected"
-        session.commit()
+    # T2.8 — the prior implementation gated this on
+    # `existing_decision_run_id is None` to avoid racing the plan_amendment
+    # cancellation check. The downside: /api/advisor/check-in ALWAYS passes
+    # the pre-created run_id, so every "normal" synthesis kept its
+    # decision_run row as `status='running'` forever. Run #24 surfaced this
+    # — the draft persisted + FM verdict fired but #24's row still showed
+    # status='running' after completion.
+    #
+    # Fix: always stamp the completion fields when the orchestrator owns
+    # the synthesis to its end. The amendment-cancel path uses a different
+    # code path (the worker that runs the amendment owns its own
+    # status-transition logic and checks cancellation BEFORE entering
+    # run_synthesis); by the time we reach this line, the synthesis has
+    # already produced the draft, so a late cancellation flip would be
+    # incorrect anyway.
+    decision_run.finished_at = datetime.now(timezone.utc)
+    decision_run.status = "completed"
+    decision_run.fund_manager_decision = "approved" if approved else "rejected"
+    session.commit()
 
     # W1.C-v4: ingest the agent_reports forensic trail now that the
     # orchestrator's session has finished its own writes and the writer
