@@ -18,7 +18,10 @@ Wave 2 will add the draft + current distillate endpoints.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Generator
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -412,6 +415,23 @@ class HorizonSectionView(BaseModel):
     cited_sources: list[str] = []
 
 
+class SynthesisHealth(BaseModel):
+    """Aggregate per-run agent + adapter health summary (T0.7).
+
+    Derived from ``argosy.services.agent_tree_builder.build_agent_tree``'s
+    ``status_summary`` for the draft's ``decision_run_id``. The UI's
+    ``SynthesisHealthBanner`` renders this as a one-line drill-in chip
+    above the FM-objections card so the user can see "all agents OK +
+    all adapters OK" as positive confirmation even when FM approved.
+    """
+
+    agents_ok: int
+    agents_failed: int
+    adapters_ok: int
+    adapters_failed: int
+    decision_run_id: int
+
+
 class DraftResponse(BaseModel):
     plan_version_id: int
     version_label: str | None
@@ -424,6 +444,10 @@ class DraftResponse(BaseModel):
     horizon_long_md: str | None
     horizon_medium_md: str | None
     horizon_short_md: str | None
+    # T0.7 — populated when the draft has a backing synthesis decision_run_id
+    # and ``build_agent_tree`` succeeds. ``None`` for legacy drafts without
+    # decision_run_id or when the agent-tree builder raises.
+    synthesis_health: SynthesisHealth | None = None
 
 
 class AcceptResponse(BaseModel):
@@ -532,6 +556,43 @@ def _horizon_view(json_str: str | None) -> HorizonSectionView | None:
     return HorizonSectionView(**payload)
 
 
+def _build_synthesis_health(
+    db: Session, decision_run_id: int | None
+) -> SynthesisHealth | None:
+    """Look up agent + adapter status_summary for the draft's synthesis run.
+
+    Returns ``None`` when ``decision_run_id`` is missing (legacy / manually
+    ingested drafts), or when the tree builder rejects the run (e.g. the
+    decision_run isn't a synthesis kind, was deleted, etc.). The route
+    deliberately refuses to crash for observability data — losing the
+    health chip is acceptable; losing the whole draft response is not.
+    """
+    if decision_run_id is None:
+        return None
+    try:
+        from argosy.services.agent_tree_builder import build_agent_tree
+
+        tree = build_agent_tree(db, decision_run_id)
+    except ValueError as exc:
+        # Common reason: decision_run_id doesn't exist, or its decision_kind
+        # is not a synthesis kind. Log + return None so the banner just
+        # silently doesn't render.
+        logger.warning(
+            "synthesis_health unavailable for decision_run_id=%s: %s",
+            decision_run_id,
+            exc,
+        )
+        return None
+    summary = tree.status_summary or {}
+    return SynthesisHealth(
+        agents_ok=int(summary.get("agents_ok", 0)),
+        agents_failed=int(summary.get("agents_failed", 0)),
+        adapters_ok=int(summary.get("adapters_ok", 0)),
+        adapters_failed=int(summary.get("adapters_failed", 0)),
+        decision_run_id=decision_run_id,
+    )
+
+
 @router.get("/draft", response_model=DraftResponse)
 def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
     from argosy.state.queries import get_pending_draft
@@ -551,6 +612,7 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         horizon_long_md=pv.horizon_long_md,
         horizon_medium_md=pv.horizon_medium_md,
         horizon_short_md=pv.horizon_short_md,
+        synthesis_health=_build_synthesis_health(db, pv.decision_run_id),
     )
 
 
@@ -1566,6 +1628,7 @@ __all__ = [
     "DraftResponse",
     "HorizonSectionView",
     "RejectRequest",
+    "SynthesisHealth",
     "TakeSpeculativeResponse",
     "_publish",
     "get_db",

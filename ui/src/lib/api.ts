@@ -1382,6 +1382,22 @@ export interface HorizonView {
   cited_sources: string[];
 }
 
+/**
+ * Aggregate per-run agent + adapter health summary (T0.7).
+ *
+ * Mirrors the backend's ``argosy.api.routes.plan.SynthesisHealth`` model,
+ * itself derived from ``build_agent_tree(...).status_summary``. Surfaces
+ * the underlying decision_run_id so the UI can deep-link to
+ * ``/decisions/{decision_run_id}`` from the banner.
+ */
+export interface SynthesisHealth {
+  agents_ok: number;
+  agents_failed: number;
+  adapters_ok: number;
+  adapters_failed: number;
+  decision_run_id: number;
+}
+
 export interface DraftResponse {
   plan_version_id: number;
   version_label: string | null;
@@ -1394,6 +1410,11 @@ export interface DraftResponse {
   horizon_long_md: string | null;
   horizon_medium_md: string | null;
   horizon_short_md: string | null;
+  // T0.7 — derived from build_agent_tree's status_summary on the draft's
+  // backing decision_run. Null for drafts without decision_run_id or when
+  // the agent-tree builder rejected the run; the SynthesisHealthBanner
+  // simply doesn't render in that case.
+  synthesis_health?: SynthesisHealth | null;
 }
 
 // ----------------------------------------------------------------------

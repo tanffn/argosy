@@ -51,6 +51,181 @@ def test_get_draft_404_when_absent(client_with_db):
     assert r.status_code == 404
 
 
+def test_get_draft_synthesis_health_present_when_decision_run_id(app_with_draft):
+    """T0.7: when a pending draft carries a decision_run_id pointing at a
+    synthesis run, the /api/plan/draft response includes a populated
+    ``synthesis_health`` block derived from the FM-rooted agent-tree
+    builder's status_summary.
+    """
+    from datetime import datetime, timezone
+
+    from argosy.state.models import (
+        AgentReport,
+        DecisionPhase,
+        DecisionRun,
+        PlanVersion,
+    )
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        now = datetime.now(timezone.utc)
+        run = DecisionRun(
+            user_id="ariel",
+            ticker="(plan)",
+            tier=None,
+            decision_kind="plan_revision",
+            status="completed",
+            started_at=now,
+            finished_at=now,
+        )
+        sess.add(run)
+        sess.commit()
+        sess.refresh(run)
+        rid = run.id
+        decision_id_str = f"plan-synth-{rid}"
+
+        # Wire the draft to the synthesis run.
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.decision_run_id = rid
+
+        # Seed the 18 agent_reports the builder expects, all OK confidence.
+        analyst_roles = [
+            "concentration", "fx", "fundamentals", "news",
+            "sentiment", "technical", "macro", "tax",
+            "household_budget", "plan_critique",
+        ]
+        for role in analyst_roles:
+            sess.add(AgentReport(
+                user_id="ariel", agent_role=role,
+                decision_id=decision_id_str, response_text="ok",
+                confidence="MEDIUM", model="claude-sonnet-4-6",
+                tokens_in=10, tokens_out=20, cost_usd=0.001,
+            ))
+        # Three rows each for bull/bear/researcher_facilitator (one per
+        # horizon — the builder pops 3× of each), plus the single
+        # plan_synthesizer row. Without three of each, the missing slots
+        # show up as "skipped" and inflate agents_failed.
+        for _ in range(3):
+            for role in ("bull_researcher", "bear_researcher",
+                         "researcher_facilitator"):
+                sess.add(AgentReport(
+                    user_id="ariel", agent_role=role,
+                    decision_id=decision_id_str, response_text="ok",
+                    confidence="MEDIUM", model="claude-opus-4-7",
+                    tokens_in=10, tokens_out=20, cost_usd=0.001,
+                ))
+        sess.add(AgentReport(
+            user_id="ariel", agent_role="plan_synthesizer",
+            decision_id=decision_id_str, response_text="ok",
+            confidence="MEDIUM", model="claude-opus-4-7",
+            tokens_in=10, tokens_out=20, cost_usd=0.001,
+        ))
+        for _ in range(3):
+            sess.add(AgentReport(
+                user_id="ariel", agent_role="risk_officer",
+                decision_id=decision_id_str, response_text="ok",
+                confidence="MEDIUM", model="claude-opus-4-7",
+                tokens_in=10, tokens_out=20, cost_usd=0.001,
+            ))
+        sess.add(AgentReport(
+            user_id="ariel", agent_role="risk_facilitator",
+            decision_id=decision_id_str, response_text="ok",
+            confidence="MEDIUM", model="claude-opus-4-7",
+            tokens_in=10, tokens_out=20, cost_usd=0.001,
+        ))
+        sess.add(AgentReport(
+            user_id="ariel", agent_role="fund_manager",
+            decision_id=decision_id_str, response_text="ok",
+            confidence="MEDIUM", model="claude-opus-4-7",
+            tokens_in=10, tokens_out=20, cost_usd=0.001,
+        ))
+
+        # Phase 1 row with two adapter outcomes (one ok, one http_error).
+        phase_output = {
+            "phase": 1,
+            "adapter_outcomes": [
+                {
+                    "adapter_name": "finnhub",
+                    "target": "NVDA",
+                    "status": "ok",
+                    "latency_ms": 100,
+                    "payload_size_bytes": 1024,
+                    "http_status_code": 200,
+                    "error_text": None,
+                },
+                {
+                    "adapter_name": "fred",
+                    "target": "DGS10",
+                    "status": "http_error",
+                    "latency_ms": 5000,
+                    "payload_size_bytes": 0,
+                    "http_status_code": 503,
+                    "error_text": "FRED down",
+                },
+            ],
+        }
+        sess.add(DecisionPhase(
+            decision_run_id=rid, user_id="ariel", seq=1,
+            kind="synthesis.phase_1",
+            started_at=now, finished_at=now,
+            participants_json="[]",
+            phase_output_json=json.dumps(phase_output),
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "synthesis_health" in body
+    health = body["synthesis_health"]
+    assert health is not None
+    assert health["decision_run_id"] == rid
+    # Every agent ran -> agents_failed = 0; agents_ok must be >= 1.
+    assert health["agents_failed"] == 0
+    assert health["agents_ok"] >= 1
+    # One ok adapter + one http_error adapter were seeded.
+    assert health["adapters_ok"] == 1
+    assert health["adapters_failed"] == 1
+
+
+def test_get_draft_synthesis_health_null_when_no_decision_run_id(app_with_draft):
+    """T0.7: drafts without a decision_run_id return synthesis_health=None
+    rather than raising. The fixture's draft has decision_run_id=None.
+    """
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "synthesis_health" in body
+    assert body["synthesis_health"] is None
+
+
+def test_get_draft_synthesis_health_null_when_builder_raises(app_with_draft):
+    """T0.7: when build_agent_tree raises ValueError (e.g. decision_run_id
+    points at a non-existent run, or a non-synthesis run), the route
+    degrades to ``synthesis_health=None`` rather than crashing.
+    """
+    from argosy.state.models import PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        # Wire a decision_run_id pointing at no real run.
+        draft.decision_run_id = 999_999
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert r.json()["synthesis_health"] is None
+
+
 def test_get_draft_objections_parses_fm_response(app_with_draft):
     """FM response_text JSON is parsed into severity-tagged objections."""
     from argosy.state.models import AgentReport, PlanVersion

@@ -15,6 +15,7 @@ import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
 import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
 import { ProjectionChart } from "@/components/plan/projection-chart";
 import { SourcesHeatmap } from "@/components/plan/sources-heatmap";
+import { SynthesisHealthBanner } from "@/components/plan/synthesis-health-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -454,6 +455,19 @@ export default function PlanPage() {
             → Review draft on /proposals
           </Link>
         </p>
+      )}
+
+      {/* T0.7 — Synthesis fleet health banner. Renders above the
+          ExecutiveSummaryCard (which embeds FMObjectionsCard) so the user
+          always sees how the fleet ran, even when FM approved (in which
+          case the FMObjectionsCard suppresses itself). The banner itself
+          short-circuits to null when the backend returns
+          synthesis_health=null (legacy drafts or builder failures). */}
+      {draft && (
+        <SynthesisHealthBanner
+          health={draft.synthesis_health}
+          decisionRunId={draft.decision_run_id}
+        />
       )}
 
       {/* Section 1 — Executive summary */}
