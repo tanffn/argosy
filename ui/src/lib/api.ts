@@ -821,6 +821,8 @@ export const api = {
     getJSON<ProjectionResponse>(
       `/api/plan/draft/projection?user_id=${encodeURIComponent(userId)}&years=${years}`,
     ),
+  decisionsRun: (body: DecisionRunRequest) =>
+    postJSON<DecisionRunResponse>(`/api/decisions/run`, body),
   planDraftAccept: (draftId: number, userId: string) =>
     postJSON<{ status: string; new_current_id: number }>(
       `/api/plan/draft/${draftId}/accept?user_id=${encodeURIComponent(userId)}`,
@@ -1174,6 +1176,31 @@ export interface ProjectionResponse {
     withdrawal_rate: number;
     model: string;
   };
+}
+
+export interface DecisionRunRequest {
+  user_id: string;
+  ticker: string;
+  tier: "auto" | "T0" | "T1" | "T2" | "T3";
+  analyst_report_ids?: number[];
+  positions_summary?: string;
+  user_constraints?: string;
+  account_class?: "main" | "limited";
+  proposed_value_usd?: number;
+  portfolio_value_usd?: number;
+  account_value_usd?: number;
+  is_plan_structural?: boolean;
+  crosses_concentration_cap?: boolean;
+  recent_red_flag?: boolean;
+}
+
+export interface DecisionRunResponse {
+  decision_run_id: number;
+  status: "approved" | "blocked";
+  proposal_id: number | null;
+  blocked_reason: string | null;
+  blocked_by: string | null;
+  tier: string;
 }
 
 /**

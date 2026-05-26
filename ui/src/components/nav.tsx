@@ -1,6 +1,6 @@
 "use client";
 
-import { FileText, MessageCircle } from "lucide-react";
+import { FileText, MessageCircle, Target } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ComponentType, SVGProps } from "react";
@@ -22,6 +22,7 @@ const TABS: NavTab[] = [
   { href: "/portfolio", label: "Portfolio" },
   { href: "/expenses", label: "Expenses" },
   { href: "/plan", label: "Plan" },
+  { href: "/decide", label: "Decide", Icon: Target },
   { href: "/proposals", label: "Proposals" },
   { href: "/argonaut", label: "Argonaut" },
   { href: "/agents", label: "Agents" },

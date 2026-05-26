@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -220,10 +221,23 @@ export default function ProposalsPage() {
 
       {!loading && rows.length === 0 && (
         <Card>
-          <CardContent className="py-10 text-center text-sm text-muted-foreground">
-            No proposals match the selected filter. Run{" "}
-            <code className="font-mono">argosy decide --ticker NVDA --tier T2</code>{" "}
-            to produce one.
+          <CardContent className="py-10 text-center text-sm text-muted-foreground flex flex-col gap-3 items-center">
+            <p>No proposals match the selected filter.</p>
+            <p>
+              Proposals are produced by ticker-decision flows. Head to the{" "}
+              <Link
+                href="/decide"
+                className="text-primary hover:underline font-medium"
+              >
+                Decide
+              </Link>{" "}
+              tab to submit a ticker with your rationale and have the agent
+              fleet generate a structured Buy/Sell/Hold proposal.
+            </p>
+            <p className="text-xs">
+              From the CLI you can also run{" "}
+              <code className="font-mono">argosy decide --ticker NVDA --tier T2</code>.
+            </p>
           </CardContent>
         </Card>
       )}
