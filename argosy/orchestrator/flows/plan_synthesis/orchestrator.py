@@ -83,6 +83,7 @@ def run_synthesis(
     trigger: Trigger,
     guidance: str = "",
     existing_decision_run_id: int | None = None,
+    resume_from_phase: int = 1,
 ):
     """Execute the 5-phase synthesis. Writes a role='draft' row.
 
@@ -95,6 +96,11 @@ def run_synthesis(
             spans amendment dispatch + synthesis (no smeared lineage
             across two unrelated rows). When None, behaves as before:
             opens a fresh `decision_kind='plan_revision'` row.
+        resume_from_phase: T2.3. When > 1, load earlier phases' outputs
+            from ``decision_phases`` (kind='synthesis.phase_N',
+            phase_output_json) instead of re-running them. Requires
+            ``existing_decision_run_id`` so we know which prior run's
+            phases to load. Default 1 = run all phases from scratch.
     """
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
@@ -167,15 +173,47 @@ def run_synthesis(
 
     cost_cap_usd = float(_os.environ.get("ARGOSY_SYNTHESIS_COST_CAP_USD", "10.0"))
 
+    # T2.3 — resume support. When `resume_from_phase` > 1, look up any
+    # decision_phases rows already persisted for this decision_run (from
+    # a prior crashed/orphaned run) and surface their phase_output_json
+    # as a dict the per-phase code below can short-circuit against.
+    # Default-empty when nothing is loaded; safe to read freely.
+    resumed_outputs: dict[int, str] = {}
+    if resume_from_phase > 1:
+        resumed_outputs = _pkg._load_completed_phase_outputs(
+            session, decision_run_id=decision_run_id
+        )
+        log.info(
+            "plan_synthesis.resume_loaded",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            resume_from_phase=resume_from_phase,
+            loaded_phases=sorted(resumed_outputs.keys()),
+        )
+
     # Phase 1: analyst reports.
     # Phases 1-5 receive the string audit token (used for log annotations and
     # agent_reports.decision_id which is a String column). The integer FK is
     # only written to PlanVersion and SynthesisInputs below.
-    analyst_reports_text = _pkg._run_phase_1_analysts(
-        session=session, user_id=user_id, baseline=baseline,
-        prior_current=prior_current, decision_run_id=decision_audit_token,
-        guidance=guidance,
-    )
+    if 1 in resumed_outputs:
+        analyst_reports_text = resumed_outputs[1]
+        log.info(
+            "plan_synthesis.phase_skipped_resumed",
+            user_id=user_id, decision_run_id=decision_run_id, phase=1,
+            chars=len(analyst_reports_text),
+        )
+    else:
+        _phase_1_started_at = datetime.now(timezone.utc)
+        analyst_reports_text = _pkg._run_phase_1_analysts(
+            session=session, user_id=user_id, baseline=baseline,
+            prior_current=prior_current, decision_run_id=decision_audit_token,
+            guidance=guidance,
+        )
+        _pkg._record_phase_completion(
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase_n=1, started_at=_phase_1_started_at,
+            phase_output=analyst_reports_text,
+        )
     _pkg._check_cost_cap(
         decision_audit_token=decision_audit_token,
         cost_cap_usd=cost_cap_usd,
@@ -188,12 +226,26 @@ def run_synthesis(
     fills_summary = _pkg._assemble_fills_summary(session=session, user_id=user_id)
 
     # Phase 2: per-horizon debates.
-    debate_outcomes_text = _pkg._run_phase_2_debates(
-        session=session, user_id=user_id,
-        analyst_reports_text=analyst_reports_text,
-        baseline=baseline, prior_current=prior_current,
-        decision_run_id=decision_audit_token, trigger=trigger,
-    )
+    if 2 in resumed_outputs:
+        debate_outcomes_text = resumed_outputs[2]
+        log.info(
+            "plan_synthesis.phase_skipped_resumed",
+            user_id=user_id, decision_run_id=decision_run_id, phase=2,
+            chars=len(debate_outcomes_text),
+        )
+    else:
+        _phase_2_started_at = datetime.now(timezone.utc)
+        debate_outcomes_text = _pkg._run_phase_2_debates(
+            session=session, user_id=user_id,
+            analyst_reports_text=analyst_reports_text,
+            baseline=baseline, prior_current=prior_current,
+            decision_run_id=decision_audit_token, trigger=trigger,
+        )
+        _pkg._record_phase_completion(
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase_n=2, started_at=_phase_2_started_at,
+            phase_output=debate_outcomes_text,
+        )
     _pkg._check_cost_cap(
         decision_audit_token=decision_audit_token,
         cost_cap_usd=cost_cap_usd,
@@ -232,17 +284,33 @@ def run_synthesis(
         cap = SpeculationCap()  # conservative default — never disable the cap.
 
     # Phase 3: synthesize.
-    output: PlanSynthesisOutput = _pkg._run_phase_3_synthesizer(
-        session=session, user_id=user_id,
-        baseline=baseline, prior_current=prior_current,
-        analyst_reports_text=analyst_reports_text,
-        debate_outcomes_text=debate_outcomes_text,
-        portfolio_summary=portfolio_summary,
-        fills_summary=fills_summary,
-        decision_run_id=decision_audit_token,
-        speculation_cap_pct=cap.max_pct_of_net_worth,
-        speculation_cap_concurrent=cap.max_concurrent_positions,
-    )
+    if 3 in resumed_outputs:
+        # Synthesizer output is the structured PlanSynthesisOutput. Round-
+        # trip via JSON; pydantic re-validates on parse.
+        import json as _json
+        output = PlanSynthesisOutput.model_validate(_json.loads(resumed_outputs[3]))
+        log.info(
+            "plan_synthesis.phase_skipped_resumed",
+            user_id=user_id, decision_run_id=decision_run_id, phase=3,
+        )
+    else:
+        _phase_3_started_at = datetime.now(timezone.utc)
+        output = _pkg._run_phase_3_synthesizer(
+            session=session, user_id=user_id,
+            baseline=baseline, prior_current=prior_current,
+            analyst_reports_text=analyst_reports_text,
+            debate_outcomes_text=debate_outcomes_text,
+            portfolio_summary=portfolio_summary,
+            fills_summary=fills_summary,
+            decision_run_id=decision_audit_token,
+            speculation_cap_pct=cap.max_pct_of_net_worth,
+            speculation_cap_concurrent=cap.max_concurrent_positions,
+        )
+        _pkg._record_phase_completion(
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase_n=3, started_at=_phase_3_started_at,
+            phase_output=output.model_dump_json(),
+        )
 
     _pkg._check_cost_cap(
         decision_audit_token=decision_audit_token,
@@ -262,11 +330,24 @@ def run_synthesis(
     )
 
     # Phase 4: risk team plan-level review.
-    risk_verdict = _pkg._run_phase_4_risk(
-        session=session, user_id=user_id, draft_output=output,
-        analyst_reports_text=analyst_reports_text,
-        decision_run_id=decision_audit_token,
-    )
+    if 4 in resumed_outputs:
+        risk_verdict = resumed_outputs[4]
+        log.info(
+            "plan_synthesis.phase_skipped_resumed",
+            user_id=user_id, decision_run_id=decision_run_id, phase=4,
+        )
+    else:
+        _phase_4_started_at = datetime.now(timezone.utc)
+        risk_verdict = _pkg._run_phase_4_risk(
+            session=session, user_id=user_id, draft_output=output,
+            analyst_reports_text=analyst_reports_text,
+            decision_run_id=decision_audit_token,
+        )
+        _pkg._record_phase_completion(
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase_n=4, started_at=_phase_4_started_at,
+            phase_output=risk_verdict,
+        )
     _pkg._check_cost_cap(
         decision_audit_token=decision_audit_token,
         cost_cap_usd=cost_cap_usd,
@@ -275,10 +356,24 @@ def run_synthesis(
     )
 
     # Phase 5: fund manager integrity check.
-    approved = _pkg._run_phase_5_fund_manager(
-        session=session, user_id=user_id, draft_output=output,
-        risk_verdict=risk_verdict, decision_run_id=decision_audit_token,
-    )
+    if 5 in resumed_outputs:
+        approved = resumed_outputs[5].strip().lower() == "approved"
+        log.info(
+            "plan_synthesis.phase_skipped_resumed",
+            user_id=user_id, decision_run_id=decision_run_id, phase=5,
+            approved=approved,
+        )
+    else:
+        _phase_5_started_at = datetime.now(timezone.utc)
+        approved = _pkg._run_phase_5_fund_manager(
+            session=session, user_id=user_id, draft_output=output,
+            risk_verdict=risk_verdict, decision_run_id=decision_audit_token,
+        )
+        _pkg._record_phase_completion(
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase_n=5, started_at=_phase_5_started_at,
+            phase_output="approved" if approved else "rejected",
+        )
     # W3b.H: when FM rejects, persist the draft anyway (still as 'draft')
     # rather than raising. Without this, every FM rejection forfeits 15-20
     # minutes of analyst+debate+risk reasoning that already lives in the
@@ -371,13 +466,11 @@ def run_synthesis(
              user_id=user_id, draft_id=draft.id, decision_run_id=decision_run_id)
     _emit_event("plan.draft.completed", {"user_id": user_id, "draft_id": draft.id})
 
-    # Provenance Wave C — record a coarse phase row for the synthesis run.
-    # Per-phase recording (analysts/debates/synthesizer/risk/fm) is deferred
-    # because synthesis is a sync flow today and the constituent agents'
-    # outputs aren't currently persisted as agent_reports rows. This single
-    # row is enough for the Replay endpoint to surface "this draft was
-    # produced by synthesis run #X" provenance, with the FM-approval
-    # confirmation. Full phase trace is a follow-up wave.
+    # Provenance Wave C — final FM-decision row with the parsed verdict
+    # DTO. The 5 per-phase rows (kinds 'synthesis.phase_1'..'phase_5')
+    # were already persisted by _record_phase_completion during the
+    # flow; this row carries the FundManagerPlanRevisionDecision DTO so
+    # the replay UI's VerdictCard renders the approval call.
     try:
         import asyncio
         from argosy.agents.fund_manager import FundManagerPlanRevisionDecision
@@ -397,7 +490,7 @@ def run_synthesis(
         asyncio.run(record_negotiation_phase(
             user_id=user_id,
             decision_run_id=decision_run_id,
-            kind="plan_synthesis",
+            kind="plan_synthesis.verdict",
             started_at=decision_run.started_at,
             agent_report_ids=[],
             verdict=verdict,
@@ -628,6 +721,93 @@ def _ingest_synthesis_trail(
         except Exception:  # pragma: no cover
             pass
         return 0
+
+
+def _record_phase_completion(
+    *,
+    user_id: str,
+    decision_run_id: int,
+    phase_n: int,
+    started_at: datetime,
+    phase_output: str,
+) -> None:
+    """Persist a per-phase output row to ``decision_phases`` (T2.3).
+
+    Synchronous wrapper over the async recorder. Best-effort — failure
+    here logs + continues so synthesis isn't broken by a forensic gap.
+
+    The persisted row uses ``kind='synthesis.phase_<N>'`` so the resume
+    helper can look it up. ``phase_output`` is opaque text (the phase's
+    rendered output): str for analyst/debate/risk/fm phases, JSON dump
+    for the synthesizer's structured ``PlanSynthesisOutput``.
+    """
+    try:
+        import asyncio
+        from argosy.services.negotiation_recorder import (
+            record_negotiation_phase,
+        )
+
+        asyncio.run(record_negotiation_phase(
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            kind=f"synthesis.phase_{phase_n}",
+            started_at=started_at,
+            agent_report_ids=[],
+            verdict=None,
+            phase_output=phase_output,
+        ))
+        log.info(
+            "plan_synthesis.phase_recorded",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            phase=phase_n,
+            output_chars=len(phase_output) if phase_output else 0,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning(
+            "plan_synthesis.record_phase_failed",
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase=phase_n, error=str(exc),
+        )
+
+
+def _load_completed_phase_outputs(
+    session: Session, *, decision_run_id: int
+) -> dict[int, str]:
+    """Read previously-persisted phase outputs for a synthesis run (T2.3).
+
+    Returns ``{phase_n: phase_output_json}`` for any
+    ``decision_phases`` rows whose ``kind`` matches the
+    ``synthesis.phase_<N>`` pattern. Used by ``run_synthesis`` when
+    ``resume_from_phase > 1`` to skip already-completed phases instead
+    of re-running them.
+
+    Defensive: a partial / corrupt phase row is skipped (not raised).
+    Multiple rows for the same phase number return the latest (largest
+    seq).
+    """
+    from argosy.state.models import DecisionPhase
+    from sqlalchemy import select
+
+    rows = session.execute(
+        select(DecisionPhase)
+        .where(DecisionPhase.decision_run_id == decision_run_id)
+        .order_by(DecisionPhase.seq.asc())
+    ).scalars().all()
+
+    out: dict[int, str] = {}
+    for r in rows:
+        if not r.kind or not r.kind.startswith("synthesis.phase_"):
+            continue
+        try:
+            phase_n = int(r.kind.split("synthesis.phase_", 1)[1])
+        except ValueError:
+            continue
+        if r.phase_output_json is None:
+            continue
+        # Later rows (higher seq) for the same phase override earlier ones.
+        out[phase_n] = r.phase_output_json
+    return out
 
 
 def _read_synthesis_trail_costs(decision_audit_token: str) -> float:

@@ -168,6 +168,29 @@ export default function PlanPage() {
     }
   }, []);
 
+  // T2.4 — Resume a failed synthesis from the first incomplete phase.
+  // The decision_audit_token has the form "plan-synth-N"; we parse N
+  // out of it to address the backend's /resume route. The button only
+  // makes sense when a synthesisError is set AND we have a token from
+  // the run that just failed.
+  const onResumeSynthesis = useCallback(async () => {
+    if (!synthesisDecisionToken) return;
+    const match = synthesisDecisionToken.match(/(\d+)$/);
+    if (!match) return;
+    const runId = Number(match[1]);
+    setSynthesisError(null);
+    setSynthesisRunning(true);
+    setSynthesisDraftId(null);
+    try {
+      await api.advisorCheckInResume(USER_ID, runId);
+      // Keep the existing decision_audit_token so the cascade panel
+      // continues to filter on the same WS events.
+    } catch (e: unknown) {
+      setSynthesisError(e instanceof Error ? e.message : String(e));
+      setSynthesisRunning(false);
+    }
+  }, [synthesisDecisionToken]);
+
   // Re-synthesize with the Fund Manager's objections fed back in as
   // guidance. This is the "fleet, fix it yourselves" loop the user asked
   // for — they shouldn't have to manually translate FM concerns into
@@ -375,7 +398,19 @@ export default function PlanPage() {
 
       {error && <p className="text-sm text-error font-mono">{error}</p>}
       {synthesisError && (
-        <p className="text-sm text-error font-mono">{synthesisError}</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm text-error font-mono">{synthesisError}</p>
+          {synthesisDecisionToken && /\d+$/.test(synthesisDecisionToken) && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onResumeSynthesis}
+              disabled={synthesisRunning}
+            >
+              {synthesisRunning ? "Resuming…" : "Resume from last phase"}
+            </Button>
+          )}
+        </div>
       )}
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
 

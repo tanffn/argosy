@@ -83,6 +83,8 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     # can monkeypatch _check_cost_cap to force/skip the cap.
     _check_cost_cap,
     _read_synthesis_trail_costs,
+    _record_phase_completion,
+    _load_completed_phase_outputs,
 )
 
 # Input-assembly helpers (monkeypatched in tests).
@@ -117,6 +119,8 @@ __all__ = [
     "_ingest_synthesis_trail",
     "_check_cost_cap",
     "_read_synthesis_trail_costs",
+    "_record_phase_completion",
+    "_load_completed_phase_outputs",
     # Input helpers (monkeypatched in tests)
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",

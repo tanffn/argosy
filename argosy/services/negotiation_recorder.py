@@ -81,6 +81,7 @@ async def record_negotiation_phase(
     side_by_id: dict[int, str] | None = None,
     perspective_by_id: dict[int, str] | None = None,
     round_by_id: dict[int, int] | None = None,
+    phase_output: str | dict | None = None,
 ) -> int:
     """Persist a phase row + write the FS bundle. Returns the phase id.
 
@@ -213,6 +214,14 @@ async def record_negotiation_phase(
     # so this just keeps the FS clean.
     try:
         async with db_mod.get_session() as session:
+            # T2.3 — serialize phase_output. String stays as-is; dict
+            # gets json.dumps'd. None passes through as NULL.
+            phase_output_serialized: str | None = None
+            if isinstance(phase_output, str):
+                phase_output_serialized = phase_output
+            elif isinstance(phase_output, dict):
+                phase_output_serialized = json.dumps(phase_output, default=str)
+
             phase_row = DecisionPhase(
                 decision_run_id=decision_run_id,
                 user_id=user_id,
@@ -227,6 +236,7 @@ async def record_negotiation_phase(
                 verdict_kind=(type(verdict).__name__ if verdict is not None else None),
                 tldr_md=tldr_md,
                 bundle_dir=str(bundle_dir),
+                phase_output_json=phase_output_serialized,
             )
             session.add(phase_row)
             await session.flush()

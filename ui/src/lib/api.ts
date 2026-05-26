@@ -892,6 +892,23 @@ export const api = {
       `/api/advisor/check-in`,
       { user_id: userId, guidance, urgency: "now" },
     ),
+  // T2.3 — Resume a failed synthesis from the first incomplete phase.
+  // Returns { resume_from_phase, skipped_phases, decision_audit_token }.
+  advisorCheckInResume: (
+    userId: string,
+    decisionRunId: number,
+    guidance = "",
+  ) =>
+    postJSON<{
+      status: string;
+      decision_run_id: number;
+      decision_audit_token: string;
+      resume_from_phase: number;
+      skipped_phases: number[];
+    }>(
+      `/api/advisor/check-in/${decisionRunId}/resume`,
+      { user_id: userId, guidance, urgency: "now" },
+    ),
 
   // ----------------------------------------------------------------------
   // Wave 3: speculative candidates ("Take a swing")

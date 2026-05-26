@@ -1322,6 +1322,102 @@ class CheckInResponse(BaseModel):
     draft_id: int | None  # populated later via plan.draft.completed WS event
 
 
+class ResumeResponse(BaseModel):
+    status: str
+    decision_run_id: int
+    decision_audit_token: str
+    resume_from_phase: int
+    skipped_phases: list[int]
+
+
+@router.post(
+    "/check-in/{decision_run_id}/resume",
+    response_model=ResumeResponse,
+    status_code=202,
+)
+def post_check_in_resume(
+    decision_run_id: int,
+    body: CheckInRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> ResumeResponse:
+    """Resume a failed/orphaned synthesis run from its first incomplete phase.
+
+    T2.3. Reads ``decision_phases`` for rows with
+    ``kind LIKE 'synthesis.phase_%'``; the highest completed phase number
+    + 1 is the resume point. Loads completed phases' outputs from
+    ``phase_output_json`` so the resumed run picks up without re-running
+    analyst/debate phases that already cost real money.
+
+    Errors:
+      * 404 — the run id doesn't exist or doesn't belong to ``user_id``.
+      * 400 — no completed phases found (use ``/check-in`` for a fresh run).
+      * 409 — the run is already ``status='completed'`` or ``'running'``.
+    """
+    from argosy.orchestrator.flows.plan_synthesis import (
+        _load_completed_phase_outputs,
+    )
+    from argosy.state.models import DecisionRun
+
+    run = db.get(DecisionRun, decision_run_id)
+    if run is None or run.user_id != body.user_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"decision_run {decision_run_id} not found for "
+                   f"user_id={body.user_id!r}",
+        )
+    if run.status not in ("failed",):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"decision_run {decision_run_id} has status={run.status!r}; "
+                "only failed runs can be resumed. Use /check-in to start a "
+                "fresh synthesis instead."
+            ),
+        )
+
+    completed = _load_completed_phase_outputs(db, decision_run_id=decision_run_id)
+    if not completed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "no completed synthesis.phase_* rows for this decision_run; "
+                "nothing to resume from. Use /check-in to start a fresh run."
+            ),
+        )
+    skipped = sorted(completed.keys())
+    resume_from_phase = max(skipped) + 1
+
+    # Mark the row as running again before relaunching the background task.
+    run.status = "running"
+    run.finished_at = None
+    db.commit()
+
+    # Reuse the existing background wrapper for the actual relaunch; the
+    # CheckInRequest body's guidance flows through unchanged.
+    from sqlalchemy.orm import sessionmaker
+
+    engine = db.get_bind()
+    SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+
+    background_tasks.add_task(
+        _run_synthesis_background,
+        user_id=body.user_id,
+        guidance=body.guidance,
+        decision_run_id=decision_run_id,
+        session_factory=SessionLocal,
+        resume_from_phase=resume_from_phase,
+    )
+
+    return ResumeResponse(
+        status="accepted",
+        decision_run_id=decision_run_id,
+        decision_audit_token=f"plan-synth-{decision_run_id}",
+        resume_from_phase=resume_from_phase,
+        skipped_phases=skipped,
+    )
+
+
 @router.post("/check-in", response_model=CheckInResponse, status_code=202)
 def post_check_in(
     body: CheckInRequest,
@@ -1398,8 +1494,9 @@ def _run_synthesis_background(
     guidance: str,
     decision_run_id: int,
     session_factory,
+    resume_from_phase: int = 1,
 ) -> None:
-    """Background wrapper for /check-in.
+    """Background wrapper for /check-in (+ /check-in/{id}/resume — T2.3).
 
     Receives a ``session_factory`` (``sessionmaker``) bound to the SAME
     engine as the request session — the route handler captured it via
@@ -1409,6 +1506,9 @@ def _run_synthesis_background(
     On exception, re-opens a session via the same factory and marks the
     pre-created DecisionRun row ``status='failed'`` so the row doesn't
     leak as a permanent 'running' zombie.
+
+    ``resume_from_phase`` is forwarded to ``run_synthesis``; >1 means
+    earlier phases are loaded from decision_phases instead of re-run.
     """
     from argosy.orchestrator.flows.plan_synthesis import run_synthesis
     from argosy.state.models import DecisionRun
@@ -1421,6 +1521,7 @@ def _run_synthesis_background(
             trigger="check_in",
             guidance=guidance,
             existing_decision_run_id=decision_run_id,
+            resume_from_phase=resume_from_phase,
         )
     except Exception as exc:  # noqa: BLE001 — mark row + log; never re-raise
         _log.error(

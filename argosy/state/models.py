@@ -362,6 +362,11 @@ class DecisionPhase(Base):
     verdict_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tldr_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     bundle_dir: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    # T2.3 — full phase output captured at phase completion. Lets a retry
+    # load completed phases from DB and skip re-running them instead of
+    # forfeiting their cost. Stores text for analyst/debate phases,
+    # model_dump_json for synthesizer output.
+    phase_output_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
