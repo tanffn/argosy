@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from argosy.logging import get_logger

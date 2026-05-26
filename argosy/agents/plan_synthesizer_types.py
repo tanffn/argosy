@@ -32,6 +32,12 @@ class SynthTarget(BaseModel):
         "shares",
         "ratio",
         "years",
+        # Time-window units the synthesizer reaches for in practice. Run
+        # #22 was killed by long.targets[1].unit='months' (a "revisit in
+        # 12 months" target); 'days' rounds out the short-horizon needs
+        # so a "review in 30 days" target validates instead of crashing.
+        "months",
+        "days",
     ]
     stated_at: date
     revisit_after: date

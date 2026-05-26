@@ -78,6 +78,11 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     # Called from run_synthesis after the orchestrator's session has
     # finished its own writes (so the writer lock is clean).
     _ingest_synthesis_trail,
+    # T2.1 — per-run cost cap helpers. Exposed on the package namespace
+    # so the orchestrator's _pkg.* resolution finds them, and so tests
+    # can monkeypatch _check_cost_cap to force/skip the cap.
+    _check_cost_cap,
+    _read_synthesis_trail_costs,
 )
 
 # Input-assembly helpers (monkeypatched in tests).
@@ -110,6 +115,8 @@ __all__ = [
     "_safe_run_agent",
     "_persist_agent_reports",
     "_ingest_synthesis_trail",
+    "_check_cost_cap",
+    "_read_synthesis_trail_costs",
     # Input helpers (monkeypatched in tests)
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",

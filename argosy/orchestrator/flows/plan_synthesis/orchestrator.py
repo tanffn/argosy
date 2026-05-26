@@ -157,6 +157,16 @@ def run_synthesis(
             user_id=user_id,
         )
 
+    # T2.1 — soft cost cap per synthesis run. Read from env so it can be
+    # bumped without code edits ($10 default). When the cumulative cost
+    # of persisted agent_reports exceeds the cap, we abort with an
+    # explicit RuntimeError after the current phase finishes (we don't
+    # interrupt mid-phase to avoid orphaning in-flight Opus calls that
+    # were already going to charge).
+    import os as _os
+
+    cost_cap_usd = float(_os.environ.get("ARGOSY_SYNTHESIS_COST_CAP_USD", "10.0"))
+
     # Phase 1: analyst reports.
     # Phases 1-5 receive the string audit token (used for log annotations and
     # agent_reports.decision_id which is a String column). The integer FK is
@@ -165,6 +175,12 @@ def run_synthesis(
         session=session, user_id=user_id, baseline=baseline,
         prior_current=prior_current, decision_run_id=decision_audit_token,
         guidance=guidance,
+    )
+    _pkg._check_cost_cap(
+        decision_audit_token=decision_audit_token,
+        cost_cap_usd=cost_cap_usd,
+        phase="phase_1",
+        user_id=user_id,
     )
 
     # Assemble inputs for Phases 2+.
@@ -177,6 +193,12 @@ def run_synthesis(
         analyst_reports_text=analyst_reports_text,
         baseline=baseline, prior_current=prior_current,
         decision_run_id=decision_audit_token, trigger=trigger,
+    )
+    _pkg._check_cost_cap(
+        decision_audit_token=decision_audit_token,
+        cost_cap_usd=cost_cap_usd,
+        phase="phase_2",
+        user_id=user_id,
     )
 
     # Wave 3 / Task 3.2: load the per-user speculation cap so we can both
@@ -222,6 +244,13 @@ def run_synthesis(
         speculation_cap_concurrent=cap.max_concurrent_positions,
     )
 
+    _pkg._check_cost_cap(
+        decision_audit_token=decision_audit_token,
+        cost_cap_usd=cost_cap_usd,
+        phase="phase_3",
+        user_id=user_id,
+    )
+
     # Defense-in-depth: post-filter speculative candidates that breach
     # the cap or lack ``risk_ceiling_check``.  Resolved via the package
     # namespace so tests that monkeypatch ``flow._enforce_speculation_cap``
@@ -237,6 +266,12 @@ def run_synthesis(
         session=session, user_id=user_id, draft_output=output,
         analyst_reports_text=analyst_reports_text,
         decision_run_id=decision_audit_token,
+    )
+    _pkg._check_cost_cap(
+        decision_audit_token=decision_audit_token,
+        cost_cap_usd=cost_cap_usd,
+        phase="phase_4",
+        user_id=user_id,
     )
 
     # Phase 5: fund manager integrity check.
@@ -593,6 +628,98 @@ def _ingest_synthesis_trail(
         except Exception:  # pragma: no cover
             pass
         return 0
+
+
+def _read_synthesis_trail_costs(decision_audit_token: str) -> float:
+    """Sum cost_usd across rows in the per-synthesis JSONL forensic trail.
+
+    Returns 0.0 when the trail file doesn't exist yet (first phase still
+    in flight, or synthesis was skipped). Best-effort parse: malformed
+    lines are skipped rather than failing the whole calc.
+    """
+    from argosy.config import get_settings as _get_settings
+
+    settings = _get_settings()
+    trail = settings.home / "logs" / "synthesis" / f"{decision_audit_token}.jsonl"
+    if not trail.exists():
+        return 0.0
+    total = 0.0
+    try:
+        with trail.open("r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cost = row.get("cost_usd")
+                if isinstance(cost, (int, float)):
+                    total += float(cost)
+    except OSError:
+        return total
+    return round(total, 4)
+
+
+def _check_cost_cap(
+    *,
+    decision_audit_token: str,
+    cost_cap_usd: float,
+    phase: str,
+    user_id: str,
+) -> None:
+    """Raise RuntimeError if cumulative agent cost exceeds the soft cap.
+
+    Reads from the JSONL forensic trail rather than the DB so the check
+    works mid-synthesis (the DB ingest is deferred to end-of-run per
+    W1.C-v4). Fires AFTER each phase completes — by design we don't
+    interrupt mid-phase to avoid orphaning Opus calls that were already
+    going to charge anyway. Emits a WS event ``plan_synthesis.cost_update``
+    on every check so a UI can render the running spend.
+    """
+    spent = _read_synthesis_trail_costs(decision_audit_token)
+    _emit_event(
+        "plan_synthesis.cost_update",
+        {
+            "user_id": user_id,
+            "decision_audit_token": decision_audit_token,
+            "phase": phase,
+            "cost_usd_so_far": spent,
+            "cost_cap_usd": cost_cap_usd,
+        },
+    )
+    log.info(
+        "plan_synthesis.cost_check",
+        user_id=user_id,
+        decision_audit_token=decision_audit_token,
+        phase=phase,
+        cost_usd_so_far=spent,
+        cost_cap_usd=cost_cap_usd,
+    )
+    if spent > cost_cap_usd:
+        log.error(
+            "plan_synthesis.cost_cap_exceeded",
+            user_id=user_id,
+            decision_audit_token=decision_audit_token,
+            phase=phase,
+            cost_usd_so_far=spent,
+            cost_cap_usd=cost_cap_usd,
+        )
+        _emit_event(
+            "plan_synthesis.cost_cap_exceeded",
+            {
+                "user_id": user_id,
+                "decision_audit_token": decision_audit_token,
+                "phase": phase,
+                "cost_usd_so_far": spent,
+                "cost_cap_usd": cost_cap_usd,
+            },
+        )
+        raise RuntimeError(
+            f"cost_cap_exceeded: spent ${spent:.2f} > cap ${cost_cap_usd:.2f} "
+            f"after {phase}. Bump ARGOSY_SYNTHESIS_COST_CAP_USD or "
+            f"investigate runaway agent."
+        )
 
 
 def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,

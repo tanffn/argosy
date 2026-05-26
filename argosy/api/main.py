@@ -26,6 +26,7 @@ import asyncio
 import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
 
 from argosy import __version__
@@ -123,6 +124,47 @@ def create_app() -> FastAPI:
     # Provenance Wave A — user-files catalog list/stream surface.
     app.include_router(files_router, prefix=api_prefix)
 
+    # T2.2 — startup orphan sweep. Mark any decision_runs that are still
+    # status='running' from a prior process that was killed mid-flight as
+    # 'failed' with a structured note so the audit trail is honest and
+    # the home page doesn't render forever-running rows. Runs synchronously
+    # at create_app() time so the first /api/decisions/recent request after
+    # a restart already sees the cleaned state.
+    @app.on_event("startup")
+    async def _orphan_sweep_at_startup() -> None:
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import update
+
+        from argosy.state import db as db_mod
+        from argosy.state.models import DecisionRun
+
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=4)
+            # Compare on naive UTC (SQLite stores naive; new rows persist
+            # tz-aware UTC but DateTime column strips on read).
+            cutoff_naive = cutoff.replace(tzinfo=None)
+            async with db_mod.get_session() as session:
+                result = await session.execute(
+                    update(DecisionRun)
+                    .where(DecisionRun.status == "running")
+                    .where(DecisionRun.started_at < cutoff_naive)
+                    .values(
+                        status="failed",
+                        finished_at=datetime.now(timezone.utc),
+                        notes_json='{"orphaned_by": "uvicorn_restart", "cutoff_hours": 4}',
+                    )
+                )
+                await session.commit()
+                if result.rowcount:
+                    log.info(
+                        "orphan_sweep.swept",
+                        count=result.rowcount,
+                        cutoff_iso=cutoff.isoformat(),
+                    )
+        except Exception as exc:  # noqa: BLE001 — must NEVER block startup
+            log.warning("orphan_sweep.failed", error=str(exc))
+
     # Expenses Wave EX1 — household-expenses ingest surface.
     from argosy.api.routes import expenses as expenses_routes
     app.include_router(expenses_routes.router)
@@ -141,7 +183,33 @@ def create_app() -> FastAPI:
             try:
                 while True:
                     msg = await q.get()
-                    await websocket.send_text(msg)
+                    # T2.5 — check the client_state before sending. The
+                    # ASGI spec rejects sends after a 'websocket.close'
+                    # has been sent, which manifests as the
+                    # `Unexpected ASGI message 'websocket.send' after
+                    # sending 'websocket.close'` storm. The recv_task
+                    # detects disconnects and propagates here via the
+                    # state flip, so we can quietly break out instead
+                    # of raising N times for N pending queue items.
+                    if websocket.client_state != WebSocketState.CONNECTED:
+                        log.info(
+                            "ws.client_disconnected_during_send",
+                            client_state=str(websocket.client_state),
+                        )
+                        break
+                    try:
+                        await websocket.send_text(msg)
+                    except (WebSocketDisconnect, RuntimeError) as exc:
+                        # WebSocketDisconnect: explicit close from client.
+                        # RuntimeError: the ASGI "send after close"
+                        # message — same root cause, race between the
+                        # disconnect detection and the next queue item.
+                        # Treat both as a clean close and bail.
+                        log.info(
+                            "ws.send_after_close",
+                            error_type=type(exc).__name__,
+                        )
+                        break
             except WebSocketDisconnect:
                 log.info("ws.client_disconnected")
             except Exception:  # pragma: no cover - defensive

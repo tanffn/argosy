@@ -77,9 +77,18 @@ def test_assemble_returns_empty_defaults_when_session_is_empty(tmp_path, monkeyp
     assert inputs.macro_snapshot == {}
     assert inputs.social_payload == {}
     assert inputs.indicators_payload == {}
-    assert inputs.lots_summary == ""
+    # T1.6 — lots_summary now returns an explanatory sentinel when the
+    # lots table is empty (helps the TaxAnalyst prompt understand the
+    # absence rather than seeing an empty string). Same applies to
+    # rsu_schedule_summary. dividends_summary stays empty for now —
+    # there's no helper backfilling it yet.
+    assert "no lots imported" in inputs.lots_summary or inputs.lots_summary == ""
     assert inputs.dividends_summary == ""
-    assert inputs.rsu_schedule_summary == ""
+    assert (
+        inputs.rsu_schedule_summary == ""
+        or "rsu_grants" in inputs.rsu_schedule_summary
+        or "no identity_yaml" in inputs.rsu_schedule_summary
+    )
 
 
 def test_assemble_uses_baseline_plan_label_and_markdown_when_present(

@@ -1209,7 +1209,38 @@ class BaseAgent(Generic[T]):
         # stderr_lines) are rebound at the top of the loop so a half-
         # streamed first attempt cannot contaminate the retry's totals.
         # ------------------------------------------------------------------
-        _retried = False
+        # T2.6 — widen the retry envelope from N=1 to N=3 (shared budget
+        # across all flake-detection triggers: exit-1, sdk_timeout,
+        # empty_output, malformed_json). Live evidence from run #23:
+        # bear_researcher hit the claude.exe exit-1 flake AND the single
+        # retry ALSO hit it, defeating the binary _retried guard. With
+        # N=3 + small exponential backoff (0.5s / 1s / 2s) the same flake
+        # pattern would have 2 more retries to recover. Shared budget so
+        # an adversarially flaky agent can't waste 4*3=12 retries by
+        # cycling through each trigger type.
+        _retry_count = 0
+        _MAX_RETRIES = 3
+
+        async def _bump_retry_and_backoff(trigger_label: str) -> None:
+            """Increment the shared retry counter and sleep one backoff step.
+
+            Called from each retry branch so the budget + delay logic is
+            uniform. Backoff: 0.5s, 1s, 2s (cumulative ~3.5s for a 3-retry
+            recovery; capped to keep wall-clock predictable).
+            """
+            nonlocal _retry_count
+            _retry_count += 1
+            delay = min(5.0, 0.5 * (2 ** (_retry_count - 1)))
+            self._log.info(
+                "claude_code.retry_backoff",
+                agent_role=self.agent_role,
+                trigger=trigger_label,
+                attempt=_retry_count,
+                max_retries=_MAX_RETRIES,
+                delay_seconds=delay,
+            )
+            await asyncio.sleep(delay)
+
         while True:
             tokens_in = 0
             tokens_out = 0
@@ -1323,18 +1354,20 @@ class BaseAgent(Generic[T]):
                 #      emitted only `\n` or spaces cannot survive
                 #      `_parse_output` either, and the live-run
                 #      fingerprint was exactly this.
-                if expected_turns == 1 and not _retried:
+                if expected_turns == 1 and _retry_count < _MAX_RETRIES:
                     candidate_buf = next(
                         (b for b in reversed(turn_buffers) if b), [],
                     )
                     candidate_text = "".join(candidate_buf)
                     if not candidate_text or not candidate_text.strip():
-                        _retried = True
                         self._log.warning(
                             "claude_code.empty_output_retry",
                             agent_role=self.agent_role,
                             model=self.model,
+                            attempt=_retry_count + 1,
+                            max_retries=_MAX_RETRIES,
                         )
+                        await _bump_retry_and_backoff("empty_output")
                         # Loop continues — top of the while block
                         # rebinds the per-attempt state and a new
                         # `query()` call below opens a fresh SDK /
@@ -1373,7 +1406,7 @@ class BaseAgent(Generic[T]):
                 # Narrow gate (mirroring W2.A-v2): single-turn (chunked
                 # mode has a different failure surface) AND we haven't
                 # already retried.
-                if expected_turns == 1 and not _retried:
+                if expected_turns == 1 and _retry_count < _MAX_RETRIES:
                     candidate_buf = next(
                         (b for b in reversed(turn_buffers) if b), [],
                     )
@@ -1381,13 +1414,15 @@ class BaseAgent(Generic[T]):
                     try:
                         self._parse_output(candidate_text)
                     except json.JSONDecodeError as parse_exc:
-                        _retried = True
                         self._log.warning(
                             "claude_code.malformed_json_retry",
                             agent_role=self.agent_role,
                             model=self.model,
                             error=str(parse_exc)[:200],
+                            attempt=_retry_count + 1,
+                            max_retries=_MAX_RETRIES,
                         )
+                        await _bump_retry_and_backoff("malformed_json")
                         # Loop continues — fresh `query()` call below.
                         continue
                     except Exception:
@@ -1433,16 +1468,18 @@ class BaseAgent(Generic[T]):
                     isinstance(exc, ProcessError)
                     and getattr(exc, "exit_code", None) == 1
                     and not stderr_lines
-                    and not _retried
+                    and _retry_count < _MAX_RETRIES
                 )
                 if is_transient_flake:
-                    _retried = True
                     self._log.warning(
                         "claude_code.transient_exit1_retry",
                         agent_role=self.agent_role,
                         model=self.model,
                         error=str(exc),
+                        attempt=_retry_count + 1,
+                        max_retries=_MAX_RETRIES,
                     )
+                    await _bump_retry_and_backoff("transient_exit1")
                     # Loop continues — top of the while block rebinds the
                     # per-attempt state and a new `query()` call below
                     # opens a fresh SDK / claude.exe session.
@@ -1455,16 +1492,18 @@ class BaseAgent(Generic[T]):
                 # exit-1 path — try once with a fresh session.
                 is_sdk_timeout = (
                     isinstance(exc, (asyncio.TimeoutError, TimeoutError))
-                    and not _retried
+                    and _retry_count < _MAX_RETRIES
                 )
                 if is_sdk_timeout:
-                    _retried = True
                     self._log.warning(
                         "claude_code.sdk_timeout_retry",
                         agent_role=self.agent_role,
                         model=self.model,
                         timeout_seconds=600,
+                        attempt=_retry_count + 1,
+                        max_retries=_MAX_RETRIES,
                     )
+                    await _bump_retry_and_backoff("sdk_timeout")
                     continue
 
                 # Attach the tail of claude.exe stderr (captured by
