@@ -15,7 +15,19 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-26 (overnight) by Claude — wave continues into UX polish + CRITICAL guidance-pipeline fix + fleet self-review agent.
+**Last edit:** 2026-05-27 (early morning) by Claude — wave continues into UX polish + CRITICAL guidance-pipeline fix + fleet self-review agent + synthesizer empty-output diagnosis.
+
+### Synthesizer empty-output bug (discovered overnight, hypothesis-fixed in `a5d317c`)
+
+Sequence of events:
+1. Synthesis **#26** triggered with #25's 8 FM objections as guidance. Ran 70 min. FM **rejected** but with **substantively different concerns** from #25 — the new verdict explicitly cites which prior objections were resolved (NVDA arithmetic, oil narrative, life-insurance advance), and raises 4 new BLOCKER + 2 AMBER on different topics. **`f8faaca` verified working at the prompt-routing level**: the synthesizer + FM honor the user_directive section.
+2. Synthesis **#27** triggered with #26's 8 objections as guidance. Phase 1 + Phase 2 succeeded (~$2.17, 50 min). **Phase 3 (synthesizer) failed** — Opus via the bundled claude.exe SDK returned **empty output 4 times in a row** (initial + 3 T2.6 retries), each logged as `claude_code.malformed_json_retry: Expecting value: line 1 column 1 (char 0)`. Run marked failed at 23 min after Phase 2 done. No new draft persisted.
+3. Synthesis **#28** triggered with same guidance to test reproducibility. Killed mid-Phase-1 once #27's failure mode was diagnosed — would have hit the same wall and wasted ~70 more min.
+4. **Root cause hypothesis**: f8faaca placed the user_directive section in the **system prompt** of plan_synthesizer + fund_manager. The bundled claude.exe SDK appears to silently return empty for large variable content in system prompts. #25's synthesizer had a 12.3 KB system prompt; #27's was ~21 KB once f8faaca's directive + the prior_items_index growth landed.
+5. **Fix shipped** in `a5d317c`: moved the verbatim user_directive content from system prompt to the **user prompt** (top of the user message). System prompt retains a short DIRECTIVE POINTER + the AGREED/DISAGREED/DEFERRED instruction language. Same fix applied to fund_manager preemptively (it hadn't hit the bug yet because #27 never reached Phase 5).
+6. **Synthesis #29** triggered with #26's objections + the `a5d317c` fix loaded. In flight. Watchdog will fire self-review + dump FM verdict when it lands.
+
+### Overnight cycle (2026-05-26 evening → night) — 12 additional commits
 
 ### Overnight cycle (2026-05-26 evening → night) — 11 additional commits
 
@@ -32,6 +44,7 @@ After the T3+T4+observability wave shipped (`14245e3`), the user smoke-tested li
 - **`43e4d4d`** — Home-page UX cleanup: broken English on gap banner; removed "Phase N" jargon; DB SIZE renders bytes; KILL SWITCH ARMED uses `<Shield>` icon; agent count corrected 17 → 28.
 - **`8e2ea62`** — NVDA YTD sales now flow from `fills` table (or TSV fallback) → `Phase1Inputs.nvda_shares_sold_ytd` → `ConcentrationAnalyst`. Live data: 1,600 sold YTD against 1,800 target = ON PACE.
 - **`138cbef`** — FM objection parser fixes: `_classify_severity` recognizes BLOCKER/catastrophic/critical as RED; `_split_reason` handles `[SEVERITY — TOPIC] detail` shape; topic preserves first 80 chars on fallback instead of swallowing detail.
+- **`a5d317c`** — synthesizer + FM `user_directive` moved from system prompt to user prompt. Fixes the empty-output bug observed in #27 + #28. See "Synthesizer empty-output bug" section above for the root-cause analysis.
 
 ### Synthesis runs this overnight
 
