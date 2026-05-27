@@ -99,25 +99,25 @@ function cacheHitRatio(cacheIn: number, tokensIn: number): string {
 const _promptCache = new Map<number, AgentPrompt>();
 
 function PromptTab({ row }: { row: AgentActivityRow }) {
-  // WS-only rows (id === -1) are not in the DB yet — show a placeholder.
-  if (row.id === -1) {
-    return (
-      <p className="text-sm text-muted-foreground italic">
-        Awaiting persistence — prompt will be available once the run is saved
-        to the database.
-      </p>
-    );
-  }
-
+  // All hooks must be declared unconditionally, BEFORE any early-return.
+  // The WS-only-row placeholder branch (row.id === -1) used to live above
+  // these hook calls — that was a rules-of-hooks violation that would
+  // change the hook-call order between renders of the same component
+  // instance (e.g. if the same drawer is reused for a persisted row after
+  // first showing a WS-only one). Hooks now run for every render; the
+  // placeholder is rendered below as a conditional after the hooks.
   const [prompt, setPrompt] = React.useState<AgentPrompt | null>(
-    _promptCache.get(row.id) ?? null,
+    row.id === -1 ? null : (_promptCache.get(row.id) ?? null),
   );
   const [loading, setLoading] = React.useState<boolean>(false);
 
   React.useEffect(() => {
+    // Skip the fetch for WS-only rows (id === -1) — there is no DB row yet.
+    if (row.id === -1) return;
     // Already fetched for this row — nothing to do.
     if (prompt !== null) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount; toggling the loading flag is the whole point of this effect
     setLoading(true);
     api
       .agentActivityPrompt(row.id, USER_ID)
@@ -140,6 +140,17 @@ function PromptTab({ row }: { row: AgentActivityRow }) {
       cancelled = true;
     };
   }, [row.id, prompt]);
+
+  // WS-only rows (id === -1) are not in the DB yet — show a placeholder.
+  // Rendered AFTER hooks above so hook-call order stays stable.
+  if (row.id === -1) {
+    return (
+      <p className="text-sm text-muted-foreground italic">
+        Awaiting persistence — prompt will be available once the run is saved
+        to the database.
+      </p>
+    );
+  }
 
   if (loading) {
     return (

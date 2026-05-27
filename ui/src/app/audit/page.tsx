@@ -42,6 +42,7 @@ export default function AuditPage() {
   }, [eventType, entityType, since, until]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount; refresh() sets local state from the API
     refresh();
   }, [refresh]);
 

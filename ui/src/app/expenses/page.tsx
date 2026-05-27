@@ -34,6 +34,7 @@ function ExpensesOverviewInner() {
     windowParam === "calendar_year" ? "calendar_year" : "trailing_12";
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount; toggling the loading flag is the whole point of this effect
     setLoading(true);
     expensesApi
       .dashboardOverview(USER_ID, 12, fxMode, selectedWindow)

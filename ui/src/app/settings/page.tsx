@@ -14,7 +14,7 @@ import { api } from "@/lib/api";
 
 const USER_ID = "ariel";
 
-type SettingsShape = Record<string, any>;
+type SettingsShape = Record<string, unknown>;
 
 export default function SettingsPage() {
   const [settings, setSettings] = useState<SettingsShape | null>(null);
@@ -38,6 +38,7 @@ export default function SettingsPage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount; refresh() sets local state from the API
     refresh();
   }, [refresh]);
 
@@ -160,7 +161,7 @@ export default function SettingsPage() {
               <CardTitle className="text-base">Confirm save</CardTitle>
               <CardDescription>
                 This writes agent_settings.yaml. Field-level validation runs
-                server-side; if anything fails you'll see an error.
+                server-side; if anything fails you&apos;ll see an error.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex gap-2 justify-end">

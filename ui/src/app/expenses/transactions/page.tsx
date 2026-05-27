@@ -59,10 +59,11 @@ function TransactionsPageInner() {
     } finally {
       setLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps, react-hooks/use-memo -- deps intentionally include JSON.stringify(filterParams) to re-fire on shape changes; lifting to useMemo would just push the same expression up one line
   }, [JSON.stringify(filterParams), page]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount; refresh() sets local state from the API
     refresh();
   }, [refresh]);
 

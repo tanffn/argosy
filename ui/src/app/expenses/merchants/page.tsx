@@ -109,6 +109,7 @@ function MerchantsPageInner() {
   }, [search, sourceFilter, categoryFilter, maxConfidence, hideConfirmed, sort, order]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount; fetchAll() sets merchant rows from the API
     fetchAll();
   }, [fetchAll]);
 

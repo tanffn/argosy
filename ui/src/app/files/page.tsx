@@ -1,5 +1,12 @@
 "use client";
 
+/* eslint-disable react-hooks/set-state-in-effect --
+ * Fetch-on-mount + filter-reset pattern. The first effect (refresh) pulls
+ * the file list and sets local state; the second resets the pagination
+ * offset whenever filters change. Planned Suspense / React Query migration
+ * will dissolve this — see SDD "fetch-on-mount" note.
+ */
+
 import { useCallback, useEffect, useState } from "react";
 import {
   FileText,

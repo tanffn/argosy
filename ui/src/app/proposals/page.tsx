@@ -1,5 +1,12 @@
 "use client";
 
+/* eslint-disable react-hooks/set-state-in-effect --
+ * Fetch-on-mount + WS-driven refetch pattern. One effect kicks off the
+ * initial proposal list pull; the other re-fires it on proposal.* events
+ * from the /ws stream. Planned Suspense / React Query migration will
+ * dissolve this — see SDD "fetch-on-mount" note.
+ */
+
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 

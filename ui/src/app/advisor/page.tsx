@@ -1,5 +1,15 @@
 "use client";
 
+/* eslint-disable react-hooks/set-state-in-effect --
+ * Fetch-on-mount / WS-event-handler pattern used throughout this page.
+ * Each useEffect either kicks off an initial fetch (refreshDraft, askNext,
+ * refreshGaps), bumps a "last-seen" liveness counter from a WS event, or
+ * seeds the textarea from a query-param on first mount. A Suspense / React
+ * Query migration is the right long-term cleanup; see SDD "fetch-on-mount"
+ * note. Suppressing the rule here keeps the lint output noise-free without
+ * changing behavior.
+ */
+
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Paperclip, X } from "lucide-react";
@@ -131,7 +141,12 @@ export default function AdvisorPage() {
       seedConsumedRef.current = true;
     }
   }, [searchParams]);
-  const [error, setError] = useState<string | null>(null);
+  // `error` is reserved for fatal load errors that aren't tied to a single
+  // submission (none today — `submitError` covers turn failures). The
+  // setter is intentionally dropped from this destructure so unused-vars
+  // doesn't fire; if a future hook needs to surface a fatal error here,
+  // re-add `setError` to the destructure.
+  const [error] = useState<string | null>(null);
 
   // Sidebar gap-tracker state.
   const [gaps, setGaps] = useState<AdvisorGapsResponse | null>(null);

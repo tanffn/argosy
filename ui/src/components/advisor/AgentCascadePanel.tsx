@@ -121,6 +121,7 @@ export function AgentCascadePanel({
 
   // Re-expand whenever a new turn starts (turnId changes to non-null).
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- turnId is the only external signal; reacting to it is the whole point of this effect
     if (turnId !== null) setExpanded(true);
   }, [turnId]);
 

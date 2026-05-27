@@ -45,6 +45,7 @@ function ExpensesMonthlyInner() {
         .finally(() => setLoading(false));
       return;
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount; toggling the loading flag is the whole point of this effect
     setLoading(true);
     expensesApi.dashboardMonthly(USER_ID, selectedMonth, fxMode)
       .then(setData)
