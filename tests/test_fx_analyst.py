@@ -137,3 +137,57 @@ async def test_fx_build_prompt_returns_sources_tuple() -> None:
 
     # System prompt advertises the document-block convention.
     assert "fx/rates/" in system
+
+
+@pytest.mark.asyncio
+async def test_fx_prompt_demands_bucket_prefix_in_citations() -> None:
+    """Self-review D4 (runs #19, #23, #24, #25, #26): the agent was citing
+    `rates/USD/NIS` (without the `fx/` bucket prefix) while
+    `sources_json` registered `fx/rates/USD/NIS`. That mismatch broke the
+    citation-to-source cross-reference. The fix is in the prompt: tell
+    the model explicitly to use the FULL source_id including the `fx/`
+    prefix. This test pins that contract so a future prompt-trim doesn't
+    drop it again.
+    """
+    agent = _MockFXAgent(
+        user_id="ariel",
+        canned_output={
+            "pairs": [],
+            "position_sizing_notes": [],
+            "hedging_recommendations": [],
+            "summary": "",
+            "confidence": "LOW",
+            "cited_sources": ["fred:none"],
+        },
+    )
+    payload = {
+        "USD/NIS": {
+            "spot": 3.65,
+            "pct_change_30d": -1.2,
+            "pct_change_90d": 0.4,
+            "source": "fred:DEXISUS",
+        },
+    }
+    system, user, sources = agent.build_prompt(fx_payload=payload)
+
+    # The source_id registered is `fx/rates/USD/NIS` (bucket-prefixed).
+    assert sources == [("fx/rates/USD/NIS", sources[0][1])]
+
+    # System prompt must (1) name the bucket-prefixed format and
+    # (2) explicitly forbid the bare `rates/<pair>` shape the model
+    # had been emitting.
+    assert "fx/rates/<pair>" in system or "fx/rates/USD/NIS" in system
+    assert "REQUIRED" in system or "STRICT" in system, (
+        "system prompt must use strong language about the bucket prefix; "
+        "soft 'cite those source_ids' was being ignored by the model"
+    )
+    # The negative example must call out the dropped-prefix shape.
+    assert "rates/USD/NIS" in system and "NOT" in system, (
+        "system prompt must explicitly forbid the bare `rates/USD/NIS` "
+        "citation shape (no `fx/` prefix)"
+    )
+
+    # User prompt must repeat the bucket-prefixed shape with the example
+    # so the instruction is in the most-recently-seen turn.
+    assert "fx/" in user
+    assert "fx/rates/USD/NIS" in user
