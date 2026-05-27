@@ -1155,12 +1155,23 @@ export const api = {
     years = 30,
     retirementAge = 49,
     taxRate = 0.25,
-  ) =>
-    getJSON<CashflowProjectionResponse>(
-      `/api/plan/draft/cashflow-projection?user_id=${encodeURIComponent(
-        userId,
-      )}&years=${years}&retirement_age=${retirementAge}&tax_rate=${taxRate}`,
-    ),
+    muNominalAnnual = 0.08,
+    portfolioValueUsdOverride: number | null = null,
+  ) => {
+    const params = new URLSearchParams({
+      user_id: userId,
+      years: String(years),
+      retirement_age: String(retirementAge),
+      tax_rate: String(taxRate),
+      mu_nominal_annual: String(muNominalAnnual),
+    });
+    if (portfolioValueUsdOverride != null) {
+      params.set("portfolio_value_usd_override", String(portfolioValueUsdOverride));
+    }
+    return getJSON<CashflowProjectionResponse>(
+      `/api/plan/draft/cashflow-projection?${params.toString()}`,
+    );
+  },
   planDraftTargetProgress: (userId: string) =>
     getJSON<TargetProgressResponse>(
       `/api/plan/draft/target-progress?user_id=${encodeURIComponent(userId)}`,

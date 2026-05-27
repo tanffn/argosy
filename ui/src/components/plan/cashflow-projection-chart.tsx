@@ -44,6 +44,32 @@ interface ChartRow {
   expenses: number;
 }
 
+function InfoIcon({ title }: { title: string }) {
+  return (
+    <span
+      role="img"
+      aria-label="info"
+      title={title}
+      className="inline-block ml-1 text-[10px] text-muted-foreground/70 cursor-help select-none"
+      style={{ verticalAlign: "super" }}
+    >
+      ⓘ
+    </span>
+  );
+}
+
+function formatPortfolioForPlaceholder(data: CashflowProjectionResponse): string {
+  // We don't get the actual portfolio value back in the response — but we
+  // can derive it from the t=0 base income: income = portfolio * real_return * (1-tax) / 12
+  // → portfolio = income * 12 / real_return / (1-tax).
+  const real = data.assumptions.real_return_annual;
+  const tax = data.assumptions.tax_rate;
+  const income = data.series[0]?.portfolio_income_base_monthly_usd ?? 0;
+  if (real <= 0 || income <= 0 || tax >= 1) return "";
+  const portfolio = (income * 12) / real / (1 - tax);
+  return `$${(portfolio / 1_000_000).toFixed(2)}M`;
+}
+
 function fmtUsd(v: unknown): string {
   if (Array.isArray(v)) return v.map((x) => fmtUsd(x)).join(" – ");
   const n = typeof v === "number" ? v : Number(v);
@@ -63,6 +89,8 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
   const [retirementAge, setRetirementAge] = useState<number>(49);
   const [scenario, setScenario] = useState<Scenario>("typical");
   const [taxRate, setTaxRate] = useState<number>(0.25);
+  const [muNominal, setMuNominal] = useState<number>(0.08);
+  const [portfolioOverrideUsd, setPortfolioOverrideUsd] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -78,7 +106,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
     setLoading(true);
     setError(null);
     api
-      .planDraftCashflowProjection(userId, 30, retirementAge, taxRate)
+      .planDraftCashflowProjection(userId, 30, retirementAge, taxRate, muNominal, portfolioOverrideUsd)
       .then((d) => {
         if (!cancelled) setData(d);
       })
@@ -91,7 +119,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
     return () => {
       cancelled = true;
     };
-  }, [userId, retirementAge, taxRate]);
+  }, [userId, retirementAge, taxRate, muNominal, portfolioOverrideUsd]);
 
   const rows = useMemo<ChartRow[]>(() => {
     if (!data) return [];
@@ -274,10 +302,18 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
             Pension annuity locks at {annuityAge} via mekadem={data.assumptions.mekadem}
             ; annuity inflated nominally after lock. Lump unlock at {lumpAge}.
           </span>
+          {portfolioOverrideUsd != null && (
+            <span className="ml-2 text-amber-500 font-medium">
+              [override active: ${(portfolioOverrideUsd / 1_000_000).toFixed(2)}M]
+            </span>
+          )}
         </CardDescription>
         <div className="mt-3 flex flex-wrap items-center gap-4 text-xs">
           <label className="flex items-center gap-2">
-            <span className="text-muted-foreground">retirement age</span>
+            <span className="text-muted-foreground">
+              retirement age
+              <InfoIcon title="Age at which you stop contributing to pension funds. Lower retirement age → smaller annuity at 67 (less time to compound contributions)." />
+            </span>
             <input
               type="range"
               min={Math.max(30, Math.floor(data.today_age_years))}
@@ -291,7 +327,10 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
             <span className="font-mono w-8 text-right">{retirementAge}</span>
           </label>
           <label className="flex items-center gap-2">
-            <span className="text-muted-foreground">tax (cap gains)</span>
+            <span className="text-muted-foreground">
+              tax (cap gains)
+              <InfoIcon title="Israeli capital gains rate applied to portfolio income (the returns you withdraw). Default 25%. Pension annuity is NOT tax-adjusted in this model." />
+            </span>
             <input
               type="range"
               min={0}
@@ -304,9 +343,61 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
             />
             <span className="font-mono w-8 text-right">{(taxRate * 100).toFixed(0)}%</span>
           </label>
+          <label className="flex items-center gap-2">
+            <span className="text-muted-foreground">
+              μ nominal
+              <InfoIcon
+                title={`Expected portfolio return per year (nominal, before subtracting inflation). Default 0.08 = S&P 500 long-term historical. Drop to 0.04-0.05 for a stress-test of a flat/sideways decade. Real return (what you actually earn after inflation) = μ - 0.025.`}
+              />
+            </span>
+            <input
+              type="range"
+              min={0.02}
+              max={0.15}
+              step={0.005}
+              value={muNominal}
+              onChange={(e) => setMuNominal(Number(e.target.value))}
+              className="w-32"
+              aria-label="mu nominal annual"
+            />
+            <span className="font-mono w-12 text-right">{(muNominal * 100).toFixed(1)}%</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="text-muted-foreground">
+              portfolio override (USD)
+              <InfoIcon
+                title={`Replace the DB-computed portfolio value with a what-if amount. Useful for scenarios like 'what if I sold NVDA today at 65% net? My portfolio drops from $3.8M to $2.99M — does retirement still pencil out?'. Leave empty (or click Reset) to use your actual current portfolio value.`}
+              />
+            </span>
+            <input
+              type="number"
+              min={0}
+              step={50000}
+              placeholder={data ? `actual: ${formatPortfolioForPlaceholder(data)}` : ""}
+              value={portfolioOverrideUsd ?? ""}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setPortfolioOverrideUsd(v === "" ? null : Number(v));
+              }}
+              className="w-32 px-2 py-0.5 text-xs border border-border/60 rounded bg-background"
+              aria-label="portfolio value override USD"
+            />
+            {portfolioOverrideUsd != null && (
+              <button
+                type="button"
+                onClick={() => setPortfolioOverrideUsd(null)}
+                className="text-xs text-primary hover:underline"
+              >
+                reset
+              </button>
+            )}
+          </label>
           <fieldset className="flex items-center gap-2 border-0 p-0 m-0">
             <legend className="text-muted-foreground sr-only">Scenario</legend>
-            <span className="text-muted-foreground">scenario</span>
+            <span className="text-muted-foreground">
+              scenario
+              <InfoIcon title="Picks which lognormal band (bear/typical/bull) drives the headline retire-ready age and the tooltip surplus/shortfall. The other lines remain visible for comparison." />
+            </span>
             {(["bear", "typical", "bull"] as Scenario[]).map((s) => (
               <label key={s} className="flex items-center gap-1 cursor-pointer">
                 <input
@@ -336,7 +427,10 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
               checked={showBand}
               onChange={(e) => setShowBand(e.target.checked)}
             />
-            <span>±1σ band</span>
+            <span>
+              ±1σ band
+              <InfoIcon title="Translucent fill showing the lognormal ±1σ band around the typical scenario. Visual heuristic, not a true forecast quantile. Width grows with sqrt(time)." />
+            </span>
           </label>
           <label className="flex items-center gap-1.5">
             <input
@@ -344,7 +438,10 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
               checked={showAnnuity}
               onChange={(e) => setShowAnnuity(e.target.checked)}
             />
-            <span>pension annuity @ {annuityAge}</span>
+            <span>
+              pension annuity @ {annuityAge}
+              <InfoIcon title="Israeli kupat_pensia + executive_insurance balances locked into a monthly stipend at age 67 (via mekadem = 200). Lower divisor = higher stipend; 200 is conservative." />
+            </span>
           </label>
           <label className="flex items-center gap-1.5">
             <input
@@ -352,7 +449,10 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
               checked={showLumpMarker}
               onChange={(e) => setShowLumpMarker(e.target.checked)}
             />
-            <span>lump marker @ {lumpAge}</span>
+            <span>
+              lump marker @ {lumpAge}
+              <InfoIcon title="At age 60, Israeli law allows withdrawing keren_hishtalmut + kupat_gemel as a lump sum. The lump adds to the portfolio in this model." />
+            </span>
           </label>
           <label className="flex items-center gap-1.5">
             <input
@@ -360,7 +460,10 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
               checked={showRetireReady}
               onChange={(e) => setShowRetireReady(e.target.checked)}
             />
-            <span>retire-ready marker</span>
+            <span>
+              retire-ready marker
+              <InfoIcon title="Vertical orange line at the earliest age where (portfolio income + pension annuity) >= inflated expenses, under the SELECTED scenario." />
+            </span>
           </label>
         </div>
       </CardHeader>
