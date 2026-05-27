@@ -21,7 +21,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { api, type CashflowProjectionResponse } from "@/lib/api";
+import {
+  api,
+  type CashflowProjectionResponse,
+  type MonteCarloProjectionResponse,
+} from "@/lib/api";
 
 interface CashflowProjectionChartProps {
   userId: string;
@@ -96,6 +100,14 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Monte Carlo view state
+  type View = "deterministic" | "monteCarlo";
+  const [view, setView] = useState<View>("deterministic");
+  const [mcData, setMcData] = useState<MonteCarloProjectionResponse | null>(null);
+  const [mcLoading, setMcLoading] = useState(false);
+  const [mcError, setMcError] = useState<string | null>(null);
+  const [nPaths, setNPaths] = useState<number>(1000);
+
   // Overlay toggles
   const [showBand, setShowBand] = useState(true);
   const [showAnnuity, setShowAnnuity] = useState(true);
@@ -122,6 +134,37 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
       cancelled = true;
     };
   }, [userId, retirementAge, taxRate, muNominal, portfolioOverrideUsd, sigmaAnnual, lifestyleDriftAnnual]);
+
+  useEffect(() => {
+    if (view !== "monteCarlo") return;
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- justified: view / nPaths driven fetch; toggling loading/error inside the effect is the whole point
+    setMcLoading(true);
+    setMcError(null);
+    api
+      .planDraftCashflowMonteCarlo(userId, {
+        years: 40,
+        retirementAge,
+        taxRate,
+        muNominalAnnual: muNominal,
+        sigmaAnnual,
+        lifestyleDriftAnnual,
+        portfolioValueUsdOverride: portfolioOverrideUsd,
+        nPaths,
+      })
+      .then((d) => {
+        if (!cancelled) setMcData(d);
+      })
+      .catch((e) => {
+        if (!cancelled) setMcError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setMcLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, userId, retirementAge, taxRate, muNominal, sigmaAnnual, lifestyleDriftAnnual, portfolioOverrideUsd, nPaths]);
 
   const rows = useMemo<ChartRow[]>(() => {
     if (!data) return [];
@@ -150,7 +193,22 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
   const lumpAge = data?.assumptions.lump_pension_age ?? 60;
   const annuityAge = data?.assumptions.annuity_age ?? 67;
 
-  // Scenario-driven retire-ready age
+  // MC tick generation: integer ages every 5 years + key ages (lump/annuity).
+  const xTicksMC = useMemo(() => {
+    const series = mcData?.series ?? data?.series ?? [];
+    if (series.length === 0) return [];
+    const minAge = Math.floor(series[0].age_years);
+    const maxAge = Math.ceil(series[series.length - 1].age_years);
+    const lump = mcData?.assumptions.lump_pension_age ?? lumpAge;
+    const annuity = mcData?.assumptions.annuity_age ?? annuityAge;
+    const out: number[] = [];
+    for (let a = minAge; a <= maxAge; a += 5) out.push(a);
+    if (!out.includes(lump)) out.push(lump);
+    if (!out.includes(annuity)) out.push(annuity);
+    return out.sort((a, b) => a - b);
+  }, [mcData, data, lumpAge, annuityAge]);
+
+  // Scenario-driven retire-ready age (deterministic view only)
   const retireReadyAge: number | null =
     scenario === "bear"
       ? (data?.retire_ready_age_bear ?? null)
@@ -232,6 +290,128 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
     );
   };
 
+  const renderMonteCarloTooltip = (tp: TooltipContentProps) => {
+    if (!tp.active || !tp.payload || tp.payload.length === 0) return null;
+    const row = tp.payload[0]?.payload as {
+      age_years: number;
+      p10_p90_band: [number, number];
+      p25_p75_band: [number, number];
+      p50: number;
+      fraction_solvent: number;
+    } | undefined;
+    if (!row) return null;
+    return (
+      <div className="rounded-md border border-border/60 bg-background/95 px-3 py-2 text-xs shadow-sm">
+        <div className="font-mono text-[10px] text-muted-foreground">
+          age {row.age_years.toFixed(1)}
+        </div>
+        <div className="mt-1 grid grid-cols-[auto_auto] gap-x-3 gap-y-0.5">
+          <span className="text-muted-foreground">P90 (best 10%)</span>
+          <span className="font-mono">{fmtUsd(row.p10_p90_band[1])}</span>
+          <span className="text-muted-foreground">P75</span>
+          <span className="font-mono">{fmtUsd(row.p25_p75_band[1])}</span>
+          <span className="font-medium">P50 (median)</span>
+          <span className="font-mono font-medium">{fmtUsd(row.p50)}</span>
+          <span className="text-muted-foreground">P25</span>
+          <span className="font-mono">{fmtUsd(row.p25_p75_band[0])}</span>
+          <span className="text-muted-foreground">P10 (worst 10%)</span>
+          <span className="font-mono">{fmtUsd(row.p10_p90_band[0])}</span>
+          <span className="border-t border-border/40 pt-1 text-muted-foreground">% paths solvent</span>
+          <span className="border-t border-border/40 pt-1 font-mono">{row.fraction_solvent.toFixed(1)}%</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderMonteCarlo = (mc: MonteCarloProjectionResponse) => {
+    const mcRows = mc.series.map((p) => ({
+      age_years: p.age_years,
+      p10_p90_band: [p.portfolio_value_p10_usd, p.portfolio_value_p90_usd] as [number, number],
+      p25_p75_band: [p.portfolio_value_p25_usd, p.portfolio_value_p75_usd] as [number, number],
+      p50: p.portfolio_value_p50_usd,
+      fraction_solvent: p.fraction_solvent * 100,
+    }));
+    const mcLumpAge = mc.assumptions.lump_pension_age;
+    const mcAnnuityAge = mc.assumptions.annuity_age;
+    return (
+      <>
+        <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+          <div className="rounded-md border border-border/60 bg-muted/20 p-2 text-center">
+            <div className="text-[10px] uppercase text-muted-foreground">P(broke before 75)</div>
+            <div className={`font-mono text-lg font-medium ${mc.p_failure_before_age_75 > 0.10 ? "text-error" : "text-success"}`}>
+              {(mc.p_failure_before_age_75 * 100).toFixed(1)}%
+            </div>
+          </div>
+          <div className="rounded-md border border-border/60 bg-muted/20 p-2 text-center">
+            <div className="text-[10px] uppercase text-muted-foreground">P(broke before 85)</div>
+            <div className={`font-mono text-lg font-medium ${mc.p_failure_before_age_85 > 0.20 ? "text-error" : "text-success"}`}>
+              {(mc.p_failure_before_age_85 * 100).toFixed(1)}%
+            </div>
+          </div>
+          <div className="rounded-md border border-border/60 bg-muted/20 p-2 text-center">
+            <div className="text-[10px] uppercase text-muted-foreground">P(broke before 95)</div>
+            <div className={`font-mono text-lg font-medium ${mc.p_failure_before_age_95 > 0.30 ? "text-error" : "text-success"}`}>
+              {(mc.p_failure_before_age_95 * 100).toFixed(1)}%
+            </div>
+          </div>
+        </div>
+        <ResponsiveContainer width="100%" height={400}>
+          <ComposedChart data={mcRows} margin={{ top: 8, right: 16, bottom: 4, left: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" opacity={0.18} />
+            <XAxis
+              dataKey="age_years"
+              fontSize={11}
+              tickFormatter={(v: number) => `${Math.round(v)}`}
+              domain={["dataMin", "dataMax"]}
+              type="number"
+              ticks={xTicksMC}
+            />
+            <YAxis
+              fontSize={10}
+              tickFormatter={(v) => fmtUsd(v)}
+              width={72}
+              label={{ value: "$ portfolio", angle: -90, position: "insideLeft", style: { fontSize: 10, fill: "#999" } }}
+            />
+            <Tooltip content={renderMonteCarloTooltip} />
+            <Area
+              type="monotone"
+              dataKey="p10_p90_band"
+              stroke="none"
+              fill="#6366f1"
+              fillOpacity={0.10}
+              isAnimationActive={false}
+              name="P10-P90 band"
+            />
+            <Area
+              type="monotone"
+              dataKey="p25_p75_band"
+              stroke="none"
+              fill="#6366f1"
+              fillOpacity={0.20}
+              isAnimationActive={false}
+              name="P25-P75 band"
+            />
+            <Line
+              type="monotone"
+              dataKey="p50"
+              stroke="#6366f1"
+              strokeWidth={2.5}
+              dot={false}
+              isAnimationActive={false}
+              name="median path (P50)"
+            />
+            {showLumpMarker && (
+              <ReferenceLine x={mcLumpAge} stroke="#a3a3a3" strokeDasharray="3 3" label={{ value: `lump @ ${mcLumpAge}`, position: "top", fill: "#a3a3a3", fontSize: 10 }} />
+            )}
+            {showAnnuity && (
+              <ReferenceLine x={mcAnnuityAge} stroke="#10b981" strokeDasharray="3 3" label={{ value: `annuity @ ${mcAnnuityAge}`, position: "top", fill: "#10b981", fontSize: 10 }} />
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </>
+    );
+  };
+
   if (loading && !data) {
     return (
       <Card className="lg:col-span-2">
@@ -310,6 +490,45 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
           )}
         </CardDescription>
         <div className="mt-3 flex flex-wrap items-center gap-4 text-xs">
+          {/* View toggle — must be first in the controls row */}
+          <fieldset className="flex items-center gap-2">
+            <legend className="sr-only">View</legend>
+            <span className="text-muted-foreground">
+              view
+              <InfoIcon title={`Deterministic: shows the bear/typical/bull bands assuming returns equal their mean every month. Sharp lines, no probability info.\nMonte Carlo: simulates ${nPaths} random walks per scenario. Shows percentile bands (P10/P25/P50/P75/P90) and the probability of running out of money before key ages. Captures sequence-of-returns risk that the deterministic chart cannot show.`} />
+            </span>
+            {(["deterministic", "monteCarlo"] as View[]).map((v) => (
+              <label key={v} className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="view"
+                  value={v}
+                  checked={view === v}
+                  onChange={() => setView(v)}
+                />
+                <span className="font-mono text-xs">{v === "monteCarlo" ? "Monte Carlo" : "deterministic"}</span>
+              </label>
+            ))}
+          </fieldset>
+          {view === "monteCarlo" && (
+            <label className="flex items-center gap-2">
+              <span className="text-muted-foreground">
+                paths
+                <InfoIcon title={`Number of independent random-walk simulations. More paths = tighter percentile bands but slower. 1000 is the sweet spot. At 10000 the page may take 5-10 seconds to update on each slider drag.`} />
+              </span>
+              <input
+                type="range"
+                min={100}
+                max={5000}
+                step={100}
+                value={nPaths}
+                onChange={(e) => setNPaths(Number(e.target.value))}
+                className="w-32"
+                aria-label="n paths"
+              />
+              <span className="font-mono w-12 text-right">{nPaths}</span>
+            </label>
+          )}
           <label className="flex items-center gap-2">
             <span className="text-muted-foreground">
               retirement age
@@ -434,7 +653,7 @@ Effective expense growth = inflation_annual + lifestyle_drift.`} />
               </button>
             )}
           </label>
-          <fieldset className="flex items-center gap-2 border-0 p-0 m-0">
+          {view === "deterministic" && <fieldset className="flex items-center gap-2 border-0 p-0 m-0">
             <legend className="text-muted-foreground sr-only">Scenario</legend>
             <span className="text-muted-foreground">
               scenario
@@ -462,8 +681,8 @@ Effective expense growth = inflation_annual + lifestyle_drift.`} />
                 </span>
               </label>
             ))}
-          </fieldset>
-          <label className="flex items-center gap-1.5">
+          </fieldset>}
+          {view === "deterministic" && <label className="flex items-center gap-1.5">
             <input
               type="checkbox"
               checked={showBand}
@@ -473,7 +692,7 @@ Effective expense growth = inflation_annual + lifestyle_drift.`} />
               ±1σ band
               <InfoIcon title="Translucent fill showing the lognormal ±1σ band around the typical scenario. Visual heuristic, not a true forecast quantile. Width grows with sqrt(time)." />
             </span>
-          </label>
+          </label>}
           <label className="flex items-center gap-1.5">
             <input
               type="checkbox"
@@ -496,7 +715,7 @@ Effective expense growth = inflation_annual + lifestyle_drift.`} />
               <InfoIcon title="At age 60, Israeli law allows withdrawing keren_hishtalmut + kupat_gemel as a lump sum. The lump adds to the portfolio in this model." />
             </span>
           </label>
-          <label className="flex items-center gap-1.5">
+          {view === "deterministic" && <label className="flex items-center gap-1.5">
             <input
               type="checkbox"
               checked={showRetireReady}
@@ -506,10 +725,19 @@ Effective expense growth = inflation_annual + lifestyle_drift.`} />
               retire-ready marker
               <InfoIcon title="Vertical orange line at the earliest age where (portfolio income + pension annuity) >= inflated expenses, under the SELECTED scenario." />
             </span>
-          </label>
+          </label>}
         </div>
       </CardHeader>
       <CardContent>
+        {view === "monteCarlo" ? (
+          mcLoading && !mcData ? (
+            <p className="text-sm text-muted-foreground">Running {nPaths} simulations…</p>
+          ) : mcError ? (
+            <p className="text-sm text-error">Error: {mcError}</p>
+          ) : mcData ? (
+            renderMonteCarlo(mcData)
+          ) : null
+        ) : (
         <ResponsiveContainer width="100%" height={380}>
           <ComposedChart
             data={rows}
@@ -644,6 +872,7 @@ Effective expense growth = inflation_annual + lifestyle_drift.`} />
             )}
           </ComposedChart>
         </ResponsiveContainer>
+        )}
       </CardContent>
     </Card>
   );

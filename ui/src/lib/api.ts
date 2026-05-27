@@ -1176,6 +1176,50 @@ export const api = {
       `/api/plan/draft/cashflow-projection?${params.toString()}`,
     );
   },
+  planDraftCashflowMonteCarlo: (
+    userId: string,
+    {
+      years = 40,
+      retirementAge = 49,
+      taxRate = 0.25,
+      muNominalAnnual = 0.08,
+      sigmaAnnual = 0.18,
+      lifestyleDriftAnnual = 0.0,
+      portfolioValueUsdOverride = null,
+      nPaths = 1000,
+      seed = null,
+    }: {
+      years?: number;
+      retirementAge?: number;
+      taxRate?: number;
+      muNominalAnnual?: number;
+      sigmaAnnual?: number;
+      lifestyleDriftAnnual?: number;
+      portfolioValueUsdOverride?: number | null;
+      nPaths?: number;
+      seed?: number | null;
+    } = {},
+  ) => {
+    const params = new URLSearchParams({
+      user_id: userId,
+      years: String(years),
+      retirement_age: String(retirementAge),
+      tax_rate: String(taxRate),
+      mu_nominal_annual: String(muNominalAnnual),
+      sigma_annual: String(sigmaAnnual),
+      lifestyle_drift_annual: String(lifestyleDriftAnnual),
+      n_paths: String(nPaths),
+    });
+    if (portfolioValueUsdOverride != null) {
+      params.set("portfolio_value_usd_override", String(portfolioValueUsdOverride));
+    }
+    if (seed != null) {
+      params.set("seed", String(seed));
+    }
+    return getJSON<MonteCarloProjectionResponse>(
+      `/api/plan/draft/cashflow-monte-carlo?${params.toString()}`,
+    );
+  },
   planDraftTargetProgress: (userId: string) =>
     getJSON<TargetProgressResponse>(
       `/api/plan/draft/target-progress?user_id=${encodeURIComponent(userId)}`,
@@ -1895,6 +1939,46 @@ export interface CashflowProjectionResponse {
     effective_expense_growth: number;     // NEW
     lump_pension_age: number;
     annuity_age: number;
+    model_notes: string;
+  };
+}
+
+export interface MonteCarloPoint {
+  months_out: number;
+  age_years: number;
+  date: string;
+  portfolio_value_p10_usd: number;
+  portfolio_value_p25_usd: number;
+  portfolio_value_p50_usd: number;
+  portfolio_value_p75_usd: number;
+  portfolio_value_p90_usd: number;
+  fraction_solvent: number;
+  pension_annuity_monthly_usd: number;
+  expenses_monthly_usd: number;
+}
+
+export interface MonteCarloProjectionResponse {
+  today_date: string;
+  today_age_years: number;
+  fx_usd_nis: number;
+  retirement_age_assumed: number;
+  n_paths: number;
+  p_failure_before_age_75: number;
+  p_failure_before_age_85: number;
+  p_failure_before_age_95: number;
+  series: MonteCarloPoint[];
+  assumptions: {
+    mu_nominal_annual: number;
+    sigma_annual: number;
+    real_return_annual: number;
+    inflation_annual: number;
+    mekadem: number;
+    tax_rate: number;
+    lifestyle_drift_annual: number;
+    effective_expense_growth: number;
+    lump_pension_age: number;
+    annuity_age: number;
+    n_paths: number;
     model_notes: string;
   };
 }
