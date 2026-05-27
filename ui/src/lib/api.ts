@@ -1154,11 +1154,12 @@ export const api = {
     userId: string,
     years = 30,
     retirementAge = 49,
+    taxRate = 0.25,
   ) =>
     getJSON<CashflowProjectionResponse>(
       `/api/plan/draft/cashflow-projection?user_id=${encodeURIComponent(
         userId,
-      )}&years=${years}&retirement_age=${retirementAge}`,
+      )}&years=${years}&retirement_age=${retirementAge}&tax_rate=${taxRate}`,
     ),
   planDraftTargetProgress: (userId: string) =>
     getJSON<TargetProgressResponse>(
@@ -1852,6 +1853,8 @@ export interface CashflowPoint {
   pension_lump_available_usd: number;
   expenses_monthly_usd: number;
   surplus_base_monthly_usd: number;
+  surplus_bear_monthly_usd: number;
+  surplus_bull_monthly_usd: number;
 }
 
 export interface CashflowProjectionResponse {
@@ -1859,8 +1862,12 @@ export interface CashflowProjectionResponse {
   today_age_years: number;
   fx_usd_nis: number;
   retirement_age_assumed: number;
-  retire_ready_age: number | null;
-  retire_ready_months_out: number | null;
+  retire_ready_age_base: number | null;
+  retire_ready_age_bear: number | null;
+  retire_ready_age_bull: number | null;
+  retire_ready_months_out_base: number | null;
+  retire_ready_months_out_bear: number | null;
+  retire_ready_months_out_bull: number | null;
   series: CashflowPoint[];
   assumptions: {
     mu_nominal_annual: number;
@@ -1871,6 +1878,7 @@ export interface CashflowProjectionResponse {
     lump_pension_age: number;
     annuity_age: number;
     model_notes: string;
+    tax_rate: number;
   };
 }
 

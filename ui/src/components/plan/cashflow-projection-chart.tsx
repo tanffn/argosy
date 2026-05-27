@@ -27,14 +27,20 @@ interface CashflowProjectionChartProps {
   userId: string;
 }
 
+type Scenario = "bear" | "typical" | "bull";
+
 interface ChartRow {
   months_out: number;
   age_years: number;
   date: string;
   portfolio_base: number;
-  portfolio_band: [number, number]; // [bear, bull] for the area
+  portfolio_bear: number;
+  portfolio_bull: number;
+  portfolio_band: [number, number]; // [bear, bull] for the area fill
   pension_annuity: number;
-  total_income: number; // portfolio_base + pension_annuity
+  total_income_base: number; // base + annuity
+  total_income_bear: number; // bear + annuity
+  total_income_bull: number; // bull + annuity
   expenses: number;
 }
 
@@ -55,6 +61,8 @@ function fmtSignedUsd(n: number): string {
 export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps) {
   const [data, setData] = useState<CashflowProjectionResponse | null>(null);
   const [retirementAge, setRetirementAge] = useState<number>(49);
+  const [scenario, setScenario] = useState<Scenario>("typical");
+  const [taxRate, setTaxRate] = useState<number>(0.25);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,11 +74,11 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
 
   useEffect(() => {
     let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- justified: retirement-age driven fetch; toggling loading/error inside the effect is the whole point
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- justified: retirement-age / tax-rate driven fetch; toggling loading/error inside the effect is the whole point
     setLoading(true);
     setError(null);
     api
-      .planDraftCashflowProjection(userId, 30, retirementAge)
+      .planDraftCashflowProjection(userId, 30, retirementAge, taxRate)
       .then((d) => {
         if (!cancelled) setData(d);
       })
@@ -83,7 +91,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
     return () => {
       cancelled = true;
     };
-  }, [userId, retirementAge]);
+  }, [userId, retirementAge, taxRate]);
 
   const rows = useMemo<ChartRow[]>(() => {
     if (!data) return [];
@@ -92,13 +100,19 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
       age_years: p.age_years,
       date: p.date,
       portfolio_base: p.portfolio_income_base_monthly_usd,
+      portfolio_bear: p.portfolio_income_bear_monthly_usd,
+      portfolio_bull: p.portfolio_income_bull_monthly_usd,
       portfolio_band: [
         p.portfolio_income_bear_monthly_usd,
         p.portfolio_income_bull_monthly_usd,
       ],
       pension_annuity: p.pension_annuity_monthly_usd,
-      total_income:
+      total_income_base:
         p.portfolio_income_base_monthly_usd + p.pension_annuity_monthly_usd,
+      total_income_bear:
+        p.portfolio_income_bear_monthly_usd + p.pension_annuity_monthly_usd,
+      total_income_bull:
+        p.portfolio_income_bull_monthly_usd + p.pension_annuity_monthly_usd,
       expenses: p.expenses_monthly_usd,
     }));
   }, [data]);
@@ -107,39 +121,84 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
   const annuityAge = data?.assumptions.annuity_age ?? 67;
   const inflationAnnual = data?.assumptions.inflation_annual ?? 0.025;
   const realReturn = data?.assumptions.real_return_annual ?? 0.055;
+  const taxRateDisplay = data?.assumptions.tax_rate ?? taxRate;
+
+  // Scenario-driven retire-ready age
+  const retireReadyAge: number | null =
+    scenario === "bear"
+      ? (data?.retire_ready_age_bear ?? null)
+      : scenario === "bull"
+        ? (data?.retire_ready_age_bull ?? null)
+        : (data?.retire_ready_age_base ?? null);
 
   const renderTooltip = (tp: TooltipContentProps) => {
     if (!tp.active || !tp.payload || tp.payload.length === 0) return null;
     const row = tp.payload[0]?.payload as ChartRow | undefined;
     if (!row) return null;
-    const delta = row.total_income - row.expenses;
+    const surplus =
+      scenario === "bull"
+        ? row.total_income_bull - row.expenses
+        : scenario === "bear"
+          ? row.total_income_bear - row.expenses
+          : row.total_income_base - row.expenses;
+
+    const isBear = scenario === "bear";
+    const isTypical = scenario === "typical";
+    const isBull = scenario === "bull";
+
     return (
       <div className="rounded-md border border-border/60 bg-background/95 px-3 py-2 text-xs shadow-sm">
         <div className="font-mono text-[10px] text-muted-foreground">
           age {row.age_years.toFixed(1)} · {row.date}
         </div>
         <div className="mt-1 grid grid-cols-[auto_auto] gap-x-3 gap-y-0.5">
-          <span className="text-muted-foreground">portfolio income (base)</span>
-          <span className="font-mono">{fmtUsd(row.portfolio_base)}/mo</span>
+          <span className={isTypical ? "font-medium" : "text-muted-foreground"}>
+            portfolio (base)
+          </span>
+          <span className={`font-mono${isTypical ? " font-medium" : ""}`}>
+            {fmtUsd(row.portfolio_base)}/mo
+          </span>
+          <span className={isBear ? "font-medium text-rose-500" : "text-muted-foreground"}>
+            portfolio (bear)
+          </span>
+          <span className={`font-mono${isBear ? " font-medium text-rose-500" : ""}`}>
+            {fmtUsd(row.portfolio_bear)}/mo
+          </span>
+          <span className={isBull ? "font-medium text-emerald-500" : "text-muted-foreground"}>
+            portfolio (bull)
+          </span>
+          <span className={`font-mono${isBull ? " font-medium text-emerald-500" : ""}`}>
+            {fmtUsd(row.portfolio_bull)}/mo
+          </span>
           {showAnnuity && (
             <>
               <span className="text-muted-foreground">pension annuity</span>
               <span className="font-mono">{fmtUsd(row.pension_annuity)}/mo</span>
             </>
           )}
-          <span className="font-medium">total income</span>
-          <span className="font-mono font-medium">{fmtUsd(row.total_income)}/mo</span>
+          <span className="font-medium">
+            total ({scenario})
+          </span>
+          <span className="font-mono font-medium">
+            {fmtUsd(
+              scenario === "bear"
+                ? row.total_income_bear
+                : scenario === "bull"
+                  ? row.total_income_bull
+                  : row.total_income_base,
+            )}/mo
+          </span>
           <span className="text-muted-foreground">expenses (inflated)</span>
           <span className="font-mono">{fmtUsd(row.expenses)}/mo</span>
-          <span className={delta >= 0 ? "text-success font-medium" : "text-error font-medium"}>
-            {delta >= 0 ? "surplus" : "shortfall"}
+          <span className={surplus >= 0 ? "text-success font-medium" : "text-error font-medium"}>
+            {surplus >= 0 ? "surplus" : "shortfall"} (scenario: {scenario})
           </span>
           <span
             className={`font-mono font-medium ${
-              delta >= 0 ? "text-success" : "text-error"
+              surplus >= 0 ? "text-success" : "text-error"
             }`}
           >
-            {fmtSignedUsd(delta)}/mo
+            {fmtSignedUsd(surplus)}/mo
           </span>
         </div>
       </div>
@@ -194,24 +253,25 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
           portfolio income{" "}
           <span className="font-mono">{fmtUsd(todayPortfolioIncome)}</span>/mo ·
           expenses <span className="font-mono">{fmtUsd(todayExpenses)}</span>/mo.{" "}
-          {data.retire_ready_age != null ? (
+          {retireReadyAge != null ? (
             <>
               <span className="text-success font-medium">
-                Retire-ready at age {data.retire_ready_age.toFixed(1)}
+                Retire-ready at age {retireReadyAge.toFixed(1)}
               </span>{" "}
-              (assumed retirement age:{" "}
+              ({scenario} scenario · assumed retirement age:{" "}
               <span className="font-mono">{retirementAge}</span>).
             </>
           ) : (
             <span className="text-error font-medium">
-              No crossing in 30y at retirement age {retirementAge}.
+              No crossing in 30y under {scenario} at retirement age {retirementAge}.
             </span>
           )}
           <br />
           <span className="text-[10px] font-mono opacity-70">
             Real-return drawdown (mu={data.assumptions.mu_nominal_annual},
-            inflation={inflationAnnual}, real={realReturn.toFixed(3)}). Pension
-            annuity locks at {annuityAge} via mekadem={data.assumptions.mekadem}
+            inflation={inflationAnnual}, real={realReturn.toFixed(3)}, tax={Math.round(taxRateDisplay * 100)}%).
+            Portfolio income shown is NET of tax. Pension annuity not tax-adjusted.
+            Pension annuity locks at {annuityAge} via mekadem={data.assumptions.mekadem}
             ; annuity inflated nominally after lock. Lump unlock at {lumpAge}.
           </span>
         </CardDescription>
@@ -230,6 +290,46 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
             />
             <span className="font-mono w-8 text-right">{retirementAge}</span>
           </label>
+          <label className="flex items-center gap-2">
+            <span className="text-muted-foreground">tax (cap gains)</span>
+            <input
+              type="range"
+              min={0}
+              max={0.5}
+              step={0.05}
+              value={taxRate}
+              onChange={(e) => setTaxRate(Number(e.target.value))}
+              className="w-32"
+              aria-label="Tax rate (capital gains)"
+            />
+            <span className="font-mono w-8 text-right">{(taxRate * 100).toFixed(0)}%</span>
+          </label>
+          <fieldset className="flex items-center gap-2 border-0 p-0 m-0">
+            <legend className="text-muted-foreground sr-only">Scenario</legend>
+            <span className="text-muted-foreground">scenario</span>
+            {(["bear", "typical", "bull"] as Scenario[]).map((s) => (
+              <label key={s} className="flex items-center gap-1 cursor-pointer">
+                <input
+                  type="radio"
+                  name="scenario"
+                  value={s}
+                  checked={scenario === s}
+                  onChange={() => setScenario(s)}
+                />
+                <span
+                  className={
+                    s === "bear"
+                      ? "text-rose-500"
+                      : s === "bull"
+                        ? "text-emerald-500"
+                        : "text-indigo-400"
+                  }
+                >
+                  {s}
+                </span>
+              </label>
+            ))}
+          </fieldset>
           <label className="flex items-center gap-1.5">
             <input
               type="checkbox"
@@ -293,11 +393,34 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
                 name="±1σ portfolio band"
               />
             )}
+            {/* Bear portfolio line */}
+            <Line
+              type="monotone"
+              dataKey="portfolio_bear"
+              stroke="#f43f5e"
+              strokeWidth={scenario === "bear" ? 2.5 : 1}
+              strokeDasharray="6 3"
+              dot={false}
+              isAnimationActive={false}
+              name="portfolio income (bear)"
+            />
+            {/* Bull portfolio line */}
+            <Line
+              type="monotone"
+              dataKey="portfolio_bull"
+              stroke="#10b981"
+              strokeWidth={scenario === "bull" ? 2.5 : 1}
+              strokeDasharray="6 3"
+              dot={false}
+              isAnimationActive={false}
+              name="portfolio income (bull)"
+            />
+            {/* Base portfolio line */}
             <Line
               type="monotone"
               dataKey="portfolio_base"
               stroke="#6366f1"
-              strokeWidth={2.5}
+              strokeWidth={scenario === "typical" ? 2.5 : 1.5}
               dot={false}
               isAnimationActive={false}
               name="portfolio income (base)"
@@ -313,14 +436,16 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
                 name="pension annuity"
               />
             )}
+            {/* Dynamic total income line for selected scenario */}
             <Line
+              key="total_income"
               type="monotone"
-              dataKey="total_income"
+              dataKey={`total_income_${scenario}`}
               stroke="#f59e0b"
               strokeWidth={2}
               dot={false}
               isAnimationActive={false}
-              name="total income"
+              name={`total income (${scenario})`}
             />
             <Line
               type="monotone"
@@ -358,13 +483,13 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
                 }}
               />
             )}
-            {showRetireReady && data.retire_ready_age != null && (
+            {showRetireReady && retireReadyAge != null && (
               <ReferenceLine
-                x={data.retire_ready_age}
+                x={retireReadyAge}
                 stroke="#f59e0b"
                 strokeWidth={2}
                 label={{
-                  value: `retire-ready ${data.retire_ready_age.toFixed(1)}`,
+                  value: `retire-ready ${retireReadyAge.toFixed(1)} (${scenario})`,
                   position: "insideTopRight",
                   fill: "#f59e0b",
                   fontSize: 11,
