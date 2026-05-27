@@ -1407,3 +1407,47 @@ def test_in_flight_synthesis_does_not_pick_other_decision_kinds(client_with_db):
     r = client_with_db.get("/api/plan/in-flight-synthesis?user_id=ariel")
     assert r.status_code == 200, r.text
     assert r.json() == {"in_flight_synthesis": None}
+
+
+def test_cashflow_projection_route_returns_series(client_with_db):
+    """Smoke: full route returns a 30-year monthly series + retire-ready age."""
+    from tests.test_cashflow_projection import _seed_full_state
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        _seed_full_state(s)
+    r = client_with_db.get("/api/plan/draft/cashflow-projection?user_id=ariel")
+    assert r.status_code == 200
+    body = r.json()
+    assert "series" in body
+    assert len(body["series"]) == 30 * 12 + 1
+    assert body["fx_usd_nis"] == pytest.approx(2.94)
+    first = body["series"][0]
+    assert first["months_out"] == 0
+    # 23,084 NIS / 2.94 ≈ 7,851 USD
+    assert first["expenses_monthly_usd"] == pytest.approx(7_851.0, rel=1e-2)
+
+
+def test_cashflow_projection_retirement_age_param(client_with_db):
+    """Different ``retirement_age`` → different pension annuity at 67."""
+    from tests.test_cashflow_projection import _seed_full_state
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        _seed_full_state(s)
+    r1 = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&retirement_age=49"
+    )
+    r2 = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&retirement_age=60"
+    )
+    assert r1.status_code == 200 and r2.status_code == 200
+
+    def first_at_67(body):
+        for p in body["series"]:
+            if p["age_years"] >= 67.0:
+                return p
+        return None
+
+    p49 = first_at_67(r1.json())
+    p60 = first_at_67(r2.json())
+    assert p49 is not None and p60 is not None
+    assert p60["pension_annuity_monthly_usd"] > p49["pension_annuity_monthly_usd"]

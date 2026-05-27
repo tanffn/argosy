@@ -1070,6 +1070,12 @@ class ProjectionResponse(BaseModel):
     today_value_usd: float
     series: list[ProjectionPoint]
     safe_withdrawal_monthly_usd: float
+    # Latest household_budget monthly burn converted to USD. ``None`` when
+    # no household_budget agent_report is parseable for the user. Powers
+    # the projection chart's per-point surplus/shortfall tooltip
+    # (safe_withdraw(t) − expenses(t) where expenses inflate at the
+    # ``inflation_annual`` rate carried in ``assumptions``).
+    current_monthly_expenses_usd: float | None = None
     assumptions: dict
 
 
@@ -1156,6 +1162,7 @@ def get_draft_projection(
     mu_annual = 0.08
     sigma_annual = 0.18
     withdrawal_rate = 0.04
+    inflation_annual = 0.025
 
     points_raw = _project_lognormal_path(
         today_value_usd,
@@ -1169,21 +1176,119 @@ def get_draft_projection(
         (today_value_usd * withdrawal_rate) / 12.0, 2
     )
 
+    from argosy.services.wealth_dashboard import get_current_monthly_expenses_usd
+    current_monthly_expenses_usd = get_current_monthly_expenses_usd(db, user_id)
+
     return ProjectionResponse(
         today_date=datetime.now(timezone.utc).date().isoformat(),
         today_value_usd=round(today_value_usd, 2),
         series=series,
         safe_withdrawal_monthly_usd=safe_withdrawal_monthly_usd,
+        current_monthly_expenses_usd=current_monthly_expenses_usd,
         assumptions={
             "mu_annual": mu_annual,
             "sigma_annual": sigma_annual,
             "withdrawal_rate": withdrawal_rate,
+            "inflation_annual": inflation_annual,
             "model": (
                 "lognormal V_t = V_0 * exp((mu - 0.5*sigma^2)*t + k*sigma*sqrt(t)) "
                 "with k in {-1, 0, +1} for bear/base/bull bands; "
                 "S&P 500 historical mu/sigma; NOT Monte Carlo"
             ),
         },
+    )
+
+
+class CashflowPointDTO(BaseModel):
+    months_out: int
+    age_years: float
+    date: str  # YYYY-MM
+    portfolio_value_base_usd: float
+    portfolio_value_bear_usd: float
+    portfolio_value_bull_usd: float
+    portfolio_income_base_monthly_usd: float
+    portfolio_income_bear_monthly_usd: float
+    portfolio_income_bull_monthly_usd: float
+    pension_annuity_monthly_usd: float
+    pension_lump_available_usd: float
+    expenses_monthly_usd: float
+    surplus_base_monthly_usd: float
+
+
+class CashflowProjectionResponse(BaseModel):
+    today_date: str
+    today_age_years: float
+    fx_usd_nis: float
+    retirement_age_assumed: float
+    retire_ready_age: float | None
+    retire_ready_months_out: int | None
+    series: list[CashflowPointDTO]
+    assumptions: dict
+
+
+@router.get(
+    "/draft/cashflow-projection", response_model=CashflowProjectionResponse
+)
+def get_draft_cashflow_projection(
+    user_id: str = Query("ariel"),
+    years: int = Query(30, ge=1, le=50),
+    retirement_age: float = Query(49.0, ge=30.0, le=80.0),
+    db: Session = Depends(get_db),
+) -> CashflowProjectionResponse:
+    """Return a per-month cashflow projection for the /plan retirement view.
+
+    Pure-math endpoint — no LLM, no external HTTP, just three DB reads
+    + the projection loop. <30 ms for a 30-year horizon."""
+    from argosy.services.cashflow_projection import (
+        extract_household_state,
+        extract_pension_state,
+        project_cashflow,
+    )
+
+    hh = extract_household_state(db, user_id)
+    pen = extract_pension_state(db, user_id)
+    proj = project_cashflow(
+        household=hh,
+        pensions=pen,
+        retirement_age=retirement_age,
+        years=years,
+    )
+
+    fx = hh.fx_usd_nis if hh.fx_usd_nis > 0 else 1.0
+
+    def to_usd(nis: float) -> float:
+        return round(nis / fx, 2)
+
+    series_dto = [
+        CashflowPointDTO(
+            months_out=p.months_out,
+            age_years=round(p.age_years, 3),
+            date=p.date_yyyy_mm,
+            portfolio_value_base_usd=to_usd(p.portfolio_value_base_nis),
+            portfolio_value_bear_usd=to_usd(p.portfolio_value_bear_nis),
+            portfolio_value_bull_usd=to_usd(p.portfolio_value_bull_nis),
+            portfolio_income_base_monthly_usd=to_usd(p.portfolio_income_base_monthly_nis),
+            portfolio_income_bear_monthly_usd=to_usd(p.portfolio_income_bear_monthly_nis),
+            portfolio_income_bull_monthly_usd=to_usd(p.portfolio_income_bull_monthly_nis),
+            pension_annuity_monthly_usd=to_usd(p.pension_annuity_monthly_nis),
+            pension_lump_available_usd=to_usd(p.pension_lump_available_nis),
+            expenses_monthly_usd=to_usd(p.expenses_monthly_nis),
+            surplus_base_monthly_usd=to_usd(p.surplus_base_monthly_nis),
+        )
+        for p in proj.series
+    ]
+    return CashflowProjectionResponse(
+        today_date=datetime.now(timezone.utc).date().isoformat(),
+        today_age_years=round(hh.current_age_years, 3),
+        fx_usd_nis=fx,
+        retirement_age_assumed=round(proj.retirement_age_assumed, 1),
+        retire_ready_age=(
+            round(proj.retire_ready_age, 2)
+            if proj.retire_ready_age is not None else None
+        ),
+        retire_ready_months_out=proj.retire_ready_months_out,
+        series=series_dto,
+        assumptions=proj.assumptions,
     )
 
 
@@ -2656,6 +2761,8 @@ __all__ = [
     "ActionItem",
     "ActionItemsResponse",
     "BaselineResponse",
+    "CashflowPointDTO",
+    "CashflowProjectionResponse",
     "DeltaEditRequest",
     "DistillateItemEditRequest",
     "DraftResponse",
