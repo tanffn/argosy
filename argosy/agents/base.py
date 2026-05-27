@@ -521,6 +521,17 @@ class AgentReport:
     # Prompt tab (migration 0029). None when not yet captured.
     system_prompt: str | None = None
     user_prompt: str | None = None
+    # W7 — source_ids that appear in the model's structured output's
+    # ``cited_sources`` (top-level or any nested list) but do NOT match
+    # any source_id supplied via the ``sources`` argument to
+    # ``build_prompt``. Populated by ``BaseAgent._detect_hallucinated_sources``
+    # in ``run()``. The fleet self-review D4 detector reads this field
+    # directly instead of regex-scanning ``response_text``. Empty list
+    # when no sources were supplied (nothing to validate against) or all
+    # citations were legitimate. We do NOT strip the offending ids from
+    # the output — flagging is preferred so downstream consumers can
+    # decide whether to surface, demote, or accept the citation.
+    hallucinated_sources: list[str] = field(default_factory=list)
 
 
 T = TypeVar("T", bound=BaseModel)
@@ -579,6 +590,13 @@ class BaseAgent(Generic[T]):
         "recommend that the domain-refresh agent investigate; do not fabricate.\n"
         "5. Output strictly conforms to the JSON schema you are given. No "
         "extra commentary outside the schema.\n"
+        "6. Only cite source_ids that appear verbatim in the attached "
+        "`<sources>` block (or in the document blocks supplied via the "
+        "Citations API). Do NOT invent, paraphrase, abbreviate, or "
+        "construct source_ids that aren't in the inputs — copy them "
+        "exactly. Citing an id that doesn't appear in the supplied "
+        "sources is a flagged error and will be surfaced to the audit "
+        "agent as a hallucinated citation.\n"
     )
 
     def __init__(self, *, user_id: str, model: str | None = None) -> None:
@@ -783,6 +801,18 @@ class BaseAgent(Generic[T]):
             if self.require_citations:
                 self._validate_citations(output)
 
+            # W7 — flag (don't strip) source_ids the model invented. The
+            # AgentReport carries the list; D4 in fleet self-review reads
+            # from it directly instead of regex-scanning response_text.
+            hallucinated = self._detect_hallucinated_sources(output, sources)
+            if hallucinated:
+                self._log.warning(
+                    "agent.hallucinated_sources",
+                    agent_role=self.agent_role,
+                    count=len(hallucinated),
+                    ids=hallucinated[:10],
+                )
+
             confidence = self._extract_confidence(output)
             cost = self._estimate_usd(
                 tokens_in=call.tokens_in,
@@ -817,6 +847,8 @@ class BaseAgent(Generic[T]):
                 # built above (full_system = BOILERPLATE + system_prompt).
                 system_prompt=full_system,
                 user_prompt=user_prompt,
+                # W7 — flagged citations the model invented (vs supplied sources).
+                hallucinated_sources=hallucinated,
             )
 
             # W1.C-v2 — synthesis-flow forensic trail moved to batch
@@ -2042,6 +2074,66 @@ class BaseAgent(Generic[T]):
                 f"{self.agent_role}: output is missing required citations "
                 "(`cited_sources` is empty or absent)"
             )
+
+    def _detect_hallucinated_sources(
+        self,
+        output: BaseModel,
+        sources: list[tuple[str, str]] | None,
+    ) -> list[str]:
+        """Return source_ids cited by the model that don't appear in ``sources``.
+
+        W7 — analysts sometimes invent source_ids that look plausible
+        (e.g. ``robotaxi/FSD/Optimus``) but were never supplied as inputs.
+        This helper collects every ``cited_sources`` entry (top-level OR
+        any nested) from the structured output and returns the set that
+        is absent from the supplied ``sources`` list.
+
+        Returns the empty list when:
+          * No sources were supplied (nothing to compare against — the
+            model wasn't given an explicit allowlist, so any citation
+            string the model emitted is at most a free-form reference,
+            not a hallucinated source_id).
+          * The output has no ``cited_sources`` fields.
+          * All citations match a supplied source_id verbatim.
+
+        We do NOT strip offending ids from the output — the AgentReport
+        carries the flagged list so callers / detectors can decide what
+        to do. Fleet self-review D4 reads from this field directly.
+        """
+        if not sources:
+            return []
+        try:
+            payload = output.model_dump()
+        except Exception:
+            return []
+        known = {sid for sid, _content in sources}
+
+        cited: list[str] = []
+
+        def _collect(node: Any) -> None:
+            if isinstance(node, dict):
+                if "cited_sources" in node and isinstance(
+                    node["cited_sources"], list,
+                ):
+                    for item in node["cited_sources"]:
+                        if isinstance(item, str):
+                            cited.append(item)
+                for v in node.values():
+                    _collect(v)
+            elif isinstance(node, list):
+                for v in node:
+                    _collect(v)
+
+        _collect(payload)
+        # Preserve order, dedupe, and keep only the unknown ones.
+        seen: set[str] = set()
+        unknown: list[str] = []
+        for sid in cited:
+            if sid in known or sid in seen:
+                continue
+            seen.add(sid)
+            unknown.append(sid)
+        return unknown
 
     def _extract_confidence(self, output: BaseModel) -> ConfidenceBand | None:
         # Top-level `confidence` if present; else None.

@@ -111,6 +111,84 @@ async def test_fundamentals_payload_omitted_ticker() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unsupported_citation_flagged_in_report() -> None:
+    """W7 — invented source_ids must be flagged on agent_report.hallucinated_sources.
+
+    The model is stubbed to return a per-ticker citation that does NOT
+    appear in the build_prompt's sources list (``fundamentals/NVDA``).
+    The agent should:
+      * Not strip the offending id from the output (verify it's still in
+        the response_text's per-ticker cited_sources).
+      * Surface it on ``AgentReport.hallucinated_sources``.
+    """
+    canned = {
+        "per_ticker": {
+            "NVDA": {
+                "ticker": "NVDA",
+                "pe_ratio": 60.0,
+                "balance_sheet_quality": "strong",
+                "fair_value_estimate_usd": 220.0,
+                "confidence": "MEDIUM",
+                "notes": "AI demand premium",
+                # `fundamentals/NVDA` is supplied as a source — legitimate.
+                # `robotaxi/FSD/Optimus` is invented — should be flagged.
+                "cited_sources": ["fundamentals/NVDA", "robotaxi/FSD/Optimus"],
+            }
+        },
+        "summary": "NVDA: high multiple but justified by AI growth.",
+        "confidence": "MEDIUM",
+        "cited_sources": ["fundamentals/NVDA"],
+    }
+    agent = _MockFundamentalsAgent(user_id="ariel", canned_output=canned)
+    report = await agent.run(
+        tickers=["NVDA"],
+        fundamentals_payload={
+            "NVDA": {
+                "pe_ratio": 60.0,
+                "source_url": "https://www.sec.gov/cgi-bin/browse-edgar?CIK=NVDA",
+            }
+        },
+    )
+
+    assert report.hallucinated_sources == ["robotaxi/FSD/Optimus"], (
+        "invented source_id should be flagged, not silently stripped"
+    )
+    # The invented id is NOT stripped from the output — flag, don't strip.
+    cited = report.output.per_ticker["NVDA"].cited_sources
+    assert "robotaxi/FSD/Optimus" in cited, (
+        "offending citation should remain in the output for downstream review"
+    )
+    assert "fundamentals/NVDA" in cited, "legitimate citation should pass through"
+
+
+@pytest.mark.asyncio
+async def test_legitimate_citations_no_hallucination_flag() -> None:
+    """W7 negative test — citations that match supplied source_ids verbatim
+    must not be flagged."""
+    canned = {
+        "per_ticker": {
+            "NVDA": {
+                "ticker": "NVDA",
+                "pe_ratio": 60.0,
+                "balance_sheet_quality": "strong",
+                "fair_value_estimate_usd": 220.0,
+                "confidence": "MEDIUM",
+                "cited_sources": ["fundamentals/NVDA"],
+            }
+        },
+        "summary": "NVDA strong.",
+        "confidence": "MEDIUM",
+        "cited_sources": ["fundamentals/NVDA"],
+    }
+    agent = _MockFundamentalsAgent(user_id="ariel", canned_output=canned)
+    report = await agent.run(
+        tickers=["NVDA"],
+        fundamentals_payload={"NVDA": {"pe_ratio": 60.0}},
+    )
+    assert report.hallucinated_sources == []
+
+
+@pytest.mark.asyncio
 async def test_fundamentals_build_prompt_empty_payload() -> None:
     """When no tickers have payload, sources is empty and missing list covers all."""
     canned = {
