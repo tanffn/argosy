@@ -266,10 +266,46 @@ export function useDecisionStream(
     let cancelled = false;
     (async () => {
       setIsLoading(true);
+
+      // Inline helper: fetch the flat /api/agent-activity feed. Used both
+      // when /api/decisions/recent throws AND when it returns an empty
+      // array (T5.2 — see below).
+      const fetchAgentActivityFallback = async (): Promise<void> => {
+        try {
+          const resp = await api.agentActivity(userId, 100);
+          if (cancelled) return;
+          // Blocker 1 fix: functional merge so that any WS-triggered rows that
+          // arrived during the async fetch are not wiped out.
+          setRestRows((prev) => {
+            const seen = new Set(prev.map((r) => r.id));
+            const additions = resp.rows.filter((r) => !seen.has(r.id));
+            return additions.length > 0 ? [...prev, ...additions] : prev;
+          });
+        } catch (fallbackErr: unknown) {
+          // Non-fatal — surface in console but don't block the UI.
+          console.warn("useDecisionStream: initial REST fetch failed", fallbackErr);
+        }
+      };
+
       try {
         // Preferred: /api/decisions/recent gives tier/ticker/decision_kind.
         const groups = await api.decisionsRecent(userId, 50);
         if (cancelled) return;
+
+        // T5.2 — fall through to /api/agent-activity when /recent returns
+        // an empty array (was only falling through on HTTP error). Advisor
+        // / intake turns are intake_session_id-keyed (decision_id is NULL),
+        // so /recent returns [] by design (it omits NULL decision_id rows
+        // per Task 8) — meaning the DecisionAccordion would render empty
+        // despite 10+ persisted turns living in agent_reports. The flat
+        // /api/agent-activity endpoint surfaces those NULL-decision_id
+        // rows, and the derive memo groups them under their
+        // intake_session_id (see groupKey).
+        if (groups.length === 0) {
+          await fetchAgentActivityFallback();
+          return;
+        }
+
         // Build wire-groups map for the derive memo.
         const wgMap = new Map<string, WireDecisionGroup>();
         for (const g of groups) {
@@ -285,20 +321,7 @@ export function useDecisionStream(
         });
       } catch {
         // Fall back to flat agent-activity if the new endpoint is unavailable.
-        try {
-          const resp = await api.agentActivity(userId, 100);
-          if (cancelled) return;
-          // Blocker 1 fix: functional merge so that any WS-triggered rows that
-          // arrived during the async fetch are not wiped out.
-          setRestRows((prev) => {
-            const seen = new Set(prev.map((r) => r.id));
-            const additions = resp.rows.filter((r) => !seen.has(r.id));
-            return additions.length > 0 ? [...prev, ...additions] : prev;
-          });
-        } catch (fallbackErr: unknown) {
-          // Non-fatal — surface in console but don't block the UI.
-          console.warn("useDecisionStream: initial REST fetch failed", fallbackErr);
-        }
+        await fetchAgentActivityFallback();
       } finally {
         if (!cancelled) setIsLoading(false);
       }
