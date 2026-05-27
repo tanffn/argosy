@@ -1,24 +1,33 @@
 """GET /api/portfolio/snapshot — latest portfolio snapshot for a user.
 
-Phase 2 doesn't yet persist parsed snapshots into a `portfolio_snapshots`
-table (that lands with the broker integration in Phase 4). Until then,
-this endpoint computes a snapshot on demand from the most recently
-ingested TSV file under `${ARGOSY_HOME}/`. If no TSV is found, returns
-an empty snapshot — the frontend handles the empty state gracefully.
+T1.5 call-site rewiring: this route now prefers the DB-backed
+``portfolio_snapshots`` table when a row exists for the user; the
+filesystem walk + TSV parse is the fallback path. On a fallback, the
+route also write-throughs the parsed snapshot into the DB so subsequent
+requests serve from the DB (idempotent — see
+``portfolio_snapshot_store.write_through_if_changed``).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from argosy.api.routes.plan import get_db
 from argosy.config import get_settings
 from argosy.ingest.tsv import parse_portfolio_tsv
+from argosy.logging import get_logger
+from argosy.services.portfolio_snapshot_store import (
+    get_latest_snapshot_row,
+    row_to_snapshot,
+    write_through_if_changed,
+)
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
+_log = get_logger(__name__)
 
 
 class PositionDTO(BaseModel):
@@ -88,25 +97,8 @@ def _find_latest_tsv() -> Path | None:
     return None
 
 
-@router.get("/snapshot", response_model=PortfolioSnapshotDTO)
-async def get_portfolio_snapshot(
-    user_id: str = Query("ariel"),
-) -> PortfolioSnapshotDTO:
-    _ = user_id  # multi-tenant slot; Phase 2 ignores it
-    tsv = _find_latest_tsv()
-    if tsv is None:
-        return PortfolioSnapshotDTO(
-            snapshot_date=None,
-            fx_usd_nis=None,
-            fx_usd_eur=None,
-            total_usd_value_k=0.0,
-            positions=[],
-            allocations=[],
-            source_path=None,
-            parse_warnings=["No TSV found under ARGOSY_HOME."],
-        )
-
-    snap = parse_portfolio_tsv(tsv)
+def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
+    """Translate a parsed/hydrated PortfolioSnapshot to the route DTO."""
     positions: list[PositionDTO] = []
     for p in snap.positions:
         positions.append(
@@ -141,6 +133,66 @@ async def get_portfolio_snapshot(
         source_path=snap.source_path,
         parse_warnings=snap.parse_warnings,
     )
+
+
+@router.get("/snapshot", response_model=PortfolioSnapshotDTO)
+def get_portfolio_snapshot(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> PortfolioSnapshotDTO:
+    """Return the latest portfolio snapshot for ``user_id``.
+
+    T1.5 lookup order:
+      1. Prefer the most recent ``portfolio_snapshots`` row for the user.
+      2. Fallback: walk ``ARGOSY_HOME`` for the freshest TSV with the
+         canonical header marker, parse it, write-through into the DB
+         (idempotent — same source_path + date + size = no-op), and
+         serve the parsed result.
+      3. Empty DTO when neither path yields data.
+    """
+    # 1. DB-first.
+    try:
+        row = get_latest_snapshot_row(db, user_id)
+    except Exception as exc:  # noqa: BLE001 - defensive
+        _log.warning(
+            "portfolio_snapshot.db_lookup_failed",
+            user_id=user_id, error=str(exc),
+        )
+        row = None
+    if row is not None:
+        try:
+            snap = row_to_snapshot(row)
+            return _snapshot_to_dto(snap)
+        except Exception as exc:  # noqa: BLE001 - defensive
+            _log.warning(
+                "portfolio_snapshot.db_hydrate_failed",
+                user_id=user_id, row_id=row.id, error=str(exc),
+            )
+            # Fall through to filesystem walk.
+
+    # 2. Filesystem fallback + write-through.
+    tsv = _find_latest_tsv()
+    if tsv is None:
+        return PortfolioSnapshotDTO(
+            snapshot_date=None,
+            fx_usd_nis=None,
+            fx_usd_eur=None,
+            total_usd_value_k=0.0,
+            positions=[],
+            allocations=[],
+            source_path=None,
+            parse_warnings=["No TSV found under ARGOSY_HOME."],
+        )
+
+    snap = parse_portfolio_tsv(tsv)
+    try:
+        write_through_if_changed(db, user_id=user_id, snapshot=snap)
+    except Exception as exc:  # noqa: BLE001 - defensive
+        _log.warning(
+            "portfolio_snapshot.write_through_failed",
+            user_id=user_id, error=str(exc),
+        )
+    return _snapshot_to_dto(snap)
 
 
 __all__ = ["router"]

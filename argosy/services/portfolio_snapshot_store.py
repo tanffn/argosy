@@ -47,6 +47,11 @@ def persist_snapshot(
     Each call appends a NEW row (no upsert) — keeping the history is
     cheap and lets the chart pages render historical allocation curves
     later without a migration.
+
+    Idempotency: callers should check ``latest_matches_snapshot`` first
+    so re-running the same TSV doesn't bloat the table with duplicates.
+    This function is intentionally dumb (always writes); the idempotency
+    decision lives at the call site.
     """
     row = PortfolioSnapshotRow(
         user_id=user_id,
@@ -129,9 +134,64 @@ def persist_snapshot_from_tsv(
     return persist_snapshot(session, user_id=user_id, snapshot=snap)
 
 
+def latest_matches_snapshot(
+    session: Session, *, user_id: str, snapshot: PortfolioSnapshot
+) -> bool:
+    """Return True iff the latest row already represents ``snapshot``.
+
+    Used by the write-through path so we don't bloat ``portfolio_snapshots``
+    with duplicate rows when ``/api/portfolio/snapshot`` is hit repeatedly
+    against the same source TSV. The match criterion is ``source_path`` +
+    ``snapshot_date`` + position count + total USD value — strong enough
+    to detect "same parse output" but cheap (no JSON deep-compare).
+    """
+    row = get_latest_snapshot_row(session, user_id)
+    if row is None:
+        return False
+    if (row.source_path or "") != (snapshot.source_path or ""):
+        return False
+    if row.snapshot_date != snapshot.snapshot_date:
+        return False
+    # Position-count + totals proxy for content equality. JSON deep-compare
+    # would be defensible but adds CPU cost for the hot path with no
+    # benefit — a TSV with the same source_path + date + position count +
+    # total value is the same parse output for our purposes.
+    try:
+        positions = json.loads(row.positions_json or "[]")
+        if len(positions) != len(snapshot.positions):
+            return False
+        totals = json.loads(row.totals_json or "{}")
+        if abs(
+            float(totals.get("total_usd_value_k", 0.0))
+            - float(snapshot.total_usd_value_k)
+        ) > 1e-6:
+            return False
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def write_through_if_changed(
+    session: Session, *, user_id: str, snapshot: PortfolioSnapshot
+) -> PortfolioSnapshotRow | None:
+    """Persist ``snapshot`` iff the latest row doesn't already match it.
+
+    Returns the newly-written row, or ``None`` when the existing latest
+    row already represents this snapshot (idempotent no-op). This is the
+    entry point ``/api/portfolio/snapshot`` and the synthesis input
+    assembler use when they fall back to filesystem-walk + parse but want
+    future requests to read from the DB.
+    """
+    if latest_matches_snapshot(session, user_id=user_id, snapshot=snapshot):
+        return None
+    return persist_snapshot(session, user_id=user_id, snapshot=snapshot)
+
+
 __all__ = [
     "get_latest_snapshot_row",
+    "latest_matches_snapshot",
     "persist_snapshot",
     "persist_snapshot_from_tsv",
     "row_to_snapshot",
+    "write_through_if_changed",
 ]
