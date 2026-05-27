@@ -1036,6 +1036,25 @@ export const api = {
       )}&plan_version_id=${planVersionId}`,
       {},
     ),
+  // FM-objection ZigZag (T4.9) — slim FM↔analyst dialogue per objection.
+  // POST kicks off the 3-turn dialogue on a background thread; the UI
+  // subscribes to ``plan.fm_objection.dialogue.completed`` WS events for
+  // completion. GET re-renders prior dialogues after a page reload so
+  // the dialogue state isn't lost.
+  planDraftObjectionDiscuss: (
+    objectionIndex: number,
+    body: { user_id: string; analyst_role: string },
+  ) =>
+    postJSON<FMObjectionDiscussResponse>(
+      `/api/plan/draft/objections/${objectionIndex}/discuss`,
+      body,
+    ),
+  planDraftObjectionDialogues: (objectionIndex: number, userId: string) =>
+    getJSON<FMObjectionDialoguesResponse>(
+      `/api/plan/draft/objections/${objectionIndex}/dialogues?user_id=${encodeURIComponent(
+        userId,
+      )}`,
+    ),
   planDraftNvdaTrajectory: (userId: string) =>
     getJSON<NvdaTrajectoryResponse>(
       `/api/plan/draft/nvda-trajectory?user_id=${encodeURIComponent(userId)}`,
@@ -1505,6 +1524,58 @@ export interface FMObjectionStateRow {
 export interface FMObjectionStateMapResponse {
   states: Record<string, FMObjectionStateRow>;
   plan_version_id: number;
+}
+
+// FM-objection ZigZag (T4.9) — per-objection slim dialogue between the
+// Fund Manager and one analyst. The dialogue runs background-threaded
+// on the backend (~30-60 s end-to-end) and produces a structured
+// resolution from the FM's final-verdict turn.
+export type FMObjectionDialogueResolution =
+  | "FM_ACCEPTS_ANALYST"
+  | "FM_MAINTAINS_OBJECTION"
+  | "FM_REVISES_OBJECTION"
+  | "ESCALATE_TO_USER";
+
+export type FMObjectionAnalystStance = "CONCEDE" | "REBUT" | "CLARIFY";
+
+export interface FMObjectionDiscussResponse {
+  // "dialogue_started" — fresh background run kicked off.
+  // "dialogue_inflight" — idempotency short-circuit; existing run returned.
+  // "cost_cap_refused" — 24h spend would breach the cap; no run created.
+  status:
+    | "dialogue_started"
+    | "dialogue_inflight"
+    | "cost_cap_refused";
+  decision_run_id: number | null;
+  inflight: boolean;
+  // For "dialogue_started" / "_inflight", carries the analyst's canonical
+  // class name (e.g. "TechnicalAnalystAgent") so the UI can echo it back
+  // in the "Dialogue in progress with X" status line. For
+  // "cost_cap_refused" carries the human-readable cap message.
+  detail: string | null;
+}
+
+export interface FMObjectionDialogueRow {
+  decision_run_id: number;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  objection_index: number;
+  analyst_role: string;
+  resolution: FMObjectionDialogueResolution | null;
+  analyst_stance: FMObjectionAnalystStance | null;
+  analyst_reasoning_md: string | null;
+  analyst_suggested_fix: string | null;
+  fm_reasoning_md: string | null;
+  updated_objection_text: string | null;
+  suggested_plan_amendment: string | null;
+  cited_sources: string[];
+}
+
+export interface FMObjectionDialoguesResponse {
+  objection_index: number;
+  plan_version_id: number;
+  dialogues: FMObjectionDialogueRow[];
 }
 
 export interface NvdaVestEvent {

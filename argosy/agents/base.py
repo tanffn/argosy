@@ -102,6 +102,14 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # for the /plan FMObjectionsCard "Explain" button. Single-purpose
     # paraphrasing — Sonnet is plenty.
     "objection_translator": "claude-sonnet-4-6",
+    # FM-objection ZigZag (T4.9): slim dialogue between the FM and one
+    # analyst about a single objection. ``analyst_responder`` is the
+    # generic analyst-perspective responder (Sonnet — cheap, target
+    # ~$0.10-0.20 per call). ``fund_manager_dialogue_verdict`` is the
+    # FM's final-verdict pass; Opus per the standard FM default since
+    # the verdict adjudicates the dialogue.
+    "analyst_responder": "claude-sonnet-4-6",
+    "fund_manager_dialogue_verdict": "claude-opus-4-7",
     # Household-budget analyst (synth Phase 1 #10): assess cash-flow
     # runway + safe-withdrawal headroom. Sonnet — text-only, no
     # debate / multi-round reasoning.
@@ -176,6 +184,10 @@ DEFAULT_CITATIONS_BY_ROLE: dict[str, bool] = {
     "advisor": False, "intake": False, "household_categorizer": False,
     "researcher_facilitator": False, "risk_facilitator": False,
     "domain_refresh": False, "watchlist": False,
+    # FM-objection ZigZag (T4.9). Citations on for both — the analyst
+    # responder cites its prior agent_report and the FM verdict cites
+    # both the original objection and the analyst's response.
+    "analyst_responder": True, "fund_manager_dialogue_verdict": True,
 }
 
 # Anthropic pricing (USD per 1M tokens) for cost tracking.

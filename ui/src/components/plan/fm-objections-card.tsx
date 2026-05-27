@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
   Check,
+  Flag,
+  Loader2,
   MessageCircle,
   Minus,
   RefreshCw,
   Sparkles,
+  Users,
   X,
 } from "lucide-react";
 
@@ -16,10 +19,66 @@ import { Button } from "@/components/ui/button";
 import {
   api,
   type FMObjection,
+  type FMObjectionAnalystStance,
+  type FMObjectionDialogueResolution,
+  type FMObjectionDialogueRow,
   type FMObjectionStance,
   type FMObjectionStateRow,
   type FMObjectionTranslation,
 } from "@/lib/api";
+import { useWSEvents } from "@/lib/ws";
+
+// FM-objection ZigZag (T4.9) — canonical analyst class → role mapping.
+// Mirrors argosy/agents/analyst_responder.py::ANALYST_AGENT_NAME_TO_ROLE
+// so the UI parses the same agent_report:... references the backend
+// recognises. Keeping the table inline (no shared module) is deliberate:
+// the dialogue feature is intentionally localized to this card.
+const ANALYST_AGENT_NAME_TO_ROLE: Record<string, string> = {
+  ConcentrationAnalystAgent: "concentration",
+  TechnicalAnalystAgent: "technical",
+  FundamentalsAnalystAgent: "fundamentals",
+  NewsAnalystAgent: "news",
+  SentimentAnalystAgent: "sentiment",
+  MacroAnalystAgent: "macro",
+  FxAnalystAgent: "fx",
+  TaxAnalystAgent: "tax",
+  HouseholdBudgetAnalystAgent: "household_budget",
+  PlanCritiqueAgent: "plan_critique",
+};
+
+const ANALYST_ROLE_TO_DISPLAY: Record<string, string> = {
+  concentration: "Concentration",
+  technical: "Technical",
+  fundamentals: "Fundamentals",
+  news: "News",
+  sentiment: "Sentiment",
+  macro: "Macro",
+  fx: "FX",
+  tax: "Tax",
+  household_budget: "Household budget",
+  plan_critique: "Plan critique",
+};
+
+// Pulls every distinct agent_report:<AgentClassName> reference from an
+// objection's detail text, then maps each to the canonical analyst role.
+// Returns the list in encounter order, deduplicated. Empty array when
+// no recognized analyst refs are present (button is disabled in that
+// case — the FM's concern is structural / no specific analyst owner).
+function parseAnalystRefsFromObjection(detail: string): string[] {
+  if (!detail) return [];
+  const re = /agent_report:([A-Z][A-Za-z]+Agent)/g;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of detail.matchAll(re)) {
+    const name = m[1];
+    const role = ANALYST_AGENT_NAME_TO_ROLE[name];
+    if (role && !seen.has(role)) {
+      seen.add(role);
+      out.push(role);
+    }
+  }
+  return out;
+}
 
 interface FMObjectionsCardProps {
   objections: FMObjection[];
@@ -89,6 +148,214 @@ function severityClasses(s: FMObjection["severity"]) {
 // cache makes possible.
 type RowFetchState = FMObjectionTranslation | "loading" | "error" | undefined;
 
+// Per-stance badge palette for the analyst's response. CONCEDE is
+// green-on-success, REBUT is red-on-error, CLARIFY is amber. Mirrors
+// the resolution palette below so the user can scan the whole
+// dialogue at a glance.
+function stanceBadgeClasses(s: FMObjectionAnalystStance) {
+  switch (s) {
+    case "CONCEDE":
+      return "border-success/40 bg-success/10 text-success";
+    case "REBUT":
+      return "border-error/40 bg-error/10 text-error";
+    case "CLARIFY":
+    default:
+      return "border-warning/40 bg-warning/10 text-warning";
+  }
+}
+
+// Per-resolution badge palette for the FM's final verdict. Green for
+// FM_ACCEPTS_ANALYST (the FM was convinced), neutral for
+// FM_MAINTAINS_OBJECTION (no change), amber for FM_REVISES_OBJECTION
+// (third-reading), red for ESCALATE_TO_USER (genuine impasse).
+function resolutionBadgeClasses(r: FMObjectionDialogueResolution) {
+  switch (r) {
+    case "FM_ACCEPTS_ANALYST":
+      return "border-success/40 bg-success/10 text-success";
+    case "FM_REVISES_OBJECTION":
+      return "border-warning/40 bg-warning/10 text-warning";
+    case "ESCALATE_TO_USER":
+      return "border-error/40 bg-error/10 text-error";
+    case "FM_MAINTAINS_OBJECTION":
+    default:
+      return "border-border/60 bg-muted/30 text-muted-foreground";
+  }
+}
+
+const RESOLUTION_DISPLAY: Record<FMObjectionDialogueResolution, string> = {
+  FM_ACCEPTS_ANALYST: "FM accepts analyst",
+  FM_MAINTAINS_OBJECTION: "FM maintains objection",
+  FM_REVISES_OBJECTION: "FM revises objection",
+  ESCALATE_TO_USER: "Escalate to user",
+};
+
+/**
+ * Renders the analyst's response + FM's verdict from one prior
+ * dialogue. While the dialogue is in flight (status="starting" |
+ * "running") shows a spinner card instead. When status="error" shows
+ * the error message inline. Empty when no dialogue exists yet (status
+ * == "idle" AND dialogue == null).
+ *
+ * Extracted as a sibling component (not inlined) so the FMObjectionsCard
+ * render path stays readable and the spinner / outcome / error states
+ * are exhaustively covered in one place.
+ */
+function DialogueResultPanel(props: {
+  status: "idle" | "starting" | "running" | "error";
+  errorMessage: string | null;
+  dialogue: FMObjectionDialogueRow | null;
+}) {
+  const { status, errorMessage, dialogue } = props;
+
+  if (status === "starting" || status === "running") {
+    return (
+      <div className="mt-3 pt-2 border-t border-border/30">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span>
+            Dialogue in progress… the analyst is drafting a response and the
+            Fund Manager is preparing a final verdict. Usually 30-60 seconds.
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (status === "error" && errorMessage) {
+    return (
+      <div className="mt-3 pt-2 border-t border-border/30">
+        <p className="text-xs text-error" role="alert">
+          Couldn&apos;t kick off the dialogue: {errorMessage}
+        </p>
+      </div>
+    );
+  }
+
+  if (!dialogue) return null;
+  if (dialogue.status !== "completed") {
+    // Row exists but didn't complete (failed / superseded). Show the
+    // raw status so the user knows something happened but the verdict
+    // isn't trustworthy.
+    return (
+      <div className="mt-3 pt-2 border-t border-border/30">
+        <p className="text-xs text-muted-foreground">
+          Prior dialogue ended with status{" "}
+          <span className="font-mono">{dialogue.status}</span>.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3 pt-3 border-t border-border/30 flex flex-col gap-3">
+      {/* Analyst response section. */}
+      {dialogue.analyst_stance && (
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Badge
+              variant="outline"
+              className={stanceBadgeClasses(dialogue.analyst_stance)}
+            >
+              {dialogue.analyst_stance}
+            </Badge>
+            <span className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+              {ANALYST_ROLE_TO_DISPLAY[dialogue.analyst_role] ??
+                dialogue.analyst_role}{" "}
+              analyst responded
+            </span>
+          </div>
+          {dialogue.analyst_reasoning_md && (
+            <p className="text-xs whitespace-pre-line text-muted-foreground">
+              {dialogue.analyst_reasoning_md}
+            </p>
+          )}
+          {dialogue.analyst_suggested_fix && (
+            <div className="mt-1.5 rounded-sm border border-border/40 bg-muted/30 p-2">
+              <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-0.5">
+                Analyst suggested fix
+              </div>
+              <p className="text-xs whitespace-pre-line">
+                {dialogue.analyst_suggested_fix}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* FM verdict section. */}
+      {dialogue.resolution && (
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Badge
+              variant="outline"
+              className={resolutionBadgeClasses(dialogue.resolution)}
+            >
+              {dialogue.resolution === "FM_ACCEPTS_ANALYST" && (
+                <Check className="h-3 w-3 mr-1" />
+              )}
+              {dialogue.resolution === "ESCALATE_TO_USER" && (
+                <Flag className="h-3 w-3 mr-1" />
+              )}
+              {RESOLUTION_DISPLAY[dialogue.resolution]}
+            </Badge>
+            <span className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+              Fund Manager verdict
+            </span>
+          </div>
+          {dialogue.fm_reasoning_md && (
+            <p className="text-xs whitespace-pre-line text-muted-foreground">
+              {dialogue.fm_reasoning_md}
+            </p>
+          )}
+          {dialogue.resolution === "FM_REVISES_OBJECTION" &&
+            dialogue.updated_objection_text && (
+              <div className="mt-1.5 rounded-sm border border-warning/40 bg-warning/5 p-2">
+                <div className="text-[10px] font-mono uppercase tracking-wide text-warning mb-0.5">
+                  Revised objection text (for next round)
+                </div>
+                <p className="text-xs whitespace-pre-line">
+                  {dialogue.updated_objection_text}
+                </p>
+              </div>
+            )}
+          {dialogue.resolution === "FM_ACCEPTS_ANALYST" &&
+            dialogue.suggested_plan_amendment && (
+              <div className="mt-1.5 rounded-sm border border-success/40 bg-success/5 p-2 flex flex-col gap-1.5">
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-wide text-success mb-0.5">
+                    Plan amendment (FM-accepted)
+                  </div>
+                  <p className="text-xs whitespace-pre-line">
+                    {dialogue.suggested_plan_amendment}
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs self-start"
+                  onClick={() => {
+                    // Stash the amendment text on the clipboard so the
+                    // user can paste it as guidance to the next /start-
+                    // new-round call. A future iteration can wire this
+                    // directly into a "queue for next round" buffer —
+                    // for now clipboard is the lowest-friction surface.
+                    void navigator.clipboard?.writeText(
+                      dialogue.suggested_plan_amendment ?? "",
+                    );
+                  }}
+                  title="Copy the amendment text to the clipboard so you can paste it into the next round's guidance."
+                >
+                  <Sparkles className="h-3 w-3 mr-1" />
+                  Copy amendment for next round
+                </Button>
+              </div>
+            )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function FMObjectionsCard(props: FMObjectionsCardProps) {
   const {
     objections,
@@ -153,6 +420,151 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
       cancelled = true;
     };
   }, [userId, planVersionId]);
+
+  // FM-objection ZigZag (T4.9) per-objection state.
+  //
+  //   * ``dialogueSelectedRole`` — when the objection mentions multiple
+  //     analysts, the user picks one from the dropdown before clicking
+  //     "Discuss with X". For single-analyst objections this is null
+  //     and the click goes straight to the analyst named in the text.
+  //   * ``dialogueRuns`` — the most recent dialogue for each objection
+  //     index. Hydrated from GET .../dialogues on mount and updated as
+  //     the user kicks off new dialogues. Latest dialogue wins (the
+  //     backend orders by started_at DESC).
+  //   * ``dialogueStatus`` — transient UI state machine. "idle" = no
+  //     dialogue running; "starting" = POST in flight; "running" =
+  //     waiting for the WS completion event; "error" = dispatch failed.
+  //   * ``dialogueErrors`` — last per-objection error message; null
+  //     when the prior dispatch succeeded.
+  const [dialogueSelectedRole, setDialogueSelectedRole] = useState<
+    Record<number, string>
+  >({});
+  const [dialogueRuns, setDialogueRuns] = useState<
+    Record<number, FMObjectionDialogueRow | null>
+  >({});
+  const [dialogueStatus, setDialogueStatus] = useState<
+    Record<number, "idle" | "starting" | "running" | "error">
+  >({});
+  const [dialogueErrors, setDialogueErrors] = useState<
+    Record<number, string | null>
+  >({});
+
+  // Hydrate the most-recent dialogue per objection so the user sees
+  // prior results after a page reload. We fetch lazily once per mount
+  // for the indices in the current sorted list. Best-effort — any
+  // failure leaves the dialogue UI in its empty-state.
+  // The fetch fires only when planVersionId is known (the GET requires
+  // a pending draft to disambiguate the objection index).
+  useEffect(() => {
+    if (planVersionId == null) return;
+    const indices = objections.map((_, i) => i);
+    let cancelled = false;
+    (async () => {
+      const results = await Promise.allSettled(
+        indices.map((i) =>
+          api.planDraftObjectionDialogues(i, userId).then((r) => ({ i, r })),
+        ),
+      );
+      if (cancelled) return;
+      const next: Record<number, FMObjectionDialogueRow | null> = {};
+      for (const res of results) {
+        if (res.status !== "fulfilled") continue;
+        const latest = res.value.r.dialogues[0] ?? null;
+        next[res.value.i] = latest;
+      }
+      setDialogueRuns((prev) => ({ ...prev, ...next }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // We intentionally key on planVersionId + objections.length: a
+    // re-mount on a different draft or a different objection count
+    // should re-hydrate. We do NOT depend on objections itself because
+    // the parent passes a fresh array on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, planVersionId, objections.length]);
+
+  // Subscribe to dialogue completion events. When the backend emits
+  // ``plan.fm_objection.dialogue.completed`` for one of our objections,
+  // we flip the status from "running" → "idle" and refetch the
+  // dialogue row so the structured outcome renders.
+  useWSEvents<{
+    user_id?: string;
+    plan_version_id?: number;
+    objection_index?: number;
+    decision_run_id?: number;
+    analyst_role?: string;
+    resolution?: FMObjectionDialogueResolution;
+    error?: string | null;
+  }>(["plan.fm_objection.dialogue.completed"], {
+    onEvent: (e) => {
+      if (e.payload.user_id !== userId) return;
+      if (planVersionId != null && e.payload.plan_version_id !== planVersionId) {
+        return;
+      }
+      const idx = e.payload.objection_index;
+      if (typeof idx !== "number") return;
+      setDialogueStatus((prev) => ({
+        ...prev,
+        [idx]: e.payload.error ? "error" : "idle",
+      }));
+      if (e.payload.error) {
+        setDialogueErrors((prev) => ({
+          ...prev,
+          [idx]: e.payload.error ?? "dialogue failed",
+        }));
+      }
+      // Refetch the latest dialogue row so the outcome renders.
+      void api
+        .planDraftObjectionDialogues(idx, userId)
+        .then((r) =>
+          setDialogueRuns((prev) => ({
+            ...prev,
+            [idx]: r.dialogues[0] ?? null,
+          })),
+        )
+        .catch(() => {});
+    },
+  });
+
+  // Kick off one dialogue. Validates the analyst role, calls POST
+  // .../discuss, and flips the per-objection status to "running" so
+  // the spinner shows. The WS event flips it back when complete; if
+  // the POST itself fails we land in "error".
+  const kickOffDialogue = useCallback(
+    async (idx: number, o: FMObjection, role: string) => {
+      setDialogueErrors((prev) => ({ ...prev, [idx]: null }));
+      setDialogueStatus((prev) => ({ ...prev, [idx]: "starting" }));
+      try {
+        const resp = await api.planDraftObjectionDiscuss(idx, {
+          user_id: userId,
+          analyst_role: role,
+        });
+        if (resp.status === "cost_cap_refused") {
+          setDialogueStatus((prev) => ({ ...prev, [idx]: "error" }));
+          setDialogueErrors((prev) => ({
+            ...prev,
+            [idx]:
+              resp.detail ??
+              "cost cap reached — try again after the 24h window rolls",
+          }));
+          return;
+        }
+        setDialogueStatus((prev) => ({ ...prev, [idx]: "running" }));
+        // No-op for ``o`` — the parent already has the objection text;
+        // we just needed the param to assert the caller is intentional
+        // about which objection it's discussing.
+        void o;
+      } catch (e: unknown) {
+        setDialogueStatus((prev) => ({ ...prev, [idx]: "error" }));
+        setDialogueErrors((prev) => ({
+          ...prev,
+          [idx]: e instanceof Error ? e.message : String(e),
+        }));
+      }
+    },
+    [userId],
+  );
 
   if (objections.length === 0) return null;
 
@@ -413,7 +825,99 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                         Discuss with advisor
                       </Button>
                     )}
+                    {/* FM-objection ZigZag — "Discuss with [analyst]" button.
+                        Renders disabled when the objection text mentions no
+                        recognised agent (the concern is structural / no
+                        analyst owner). When multiple analyst refs are
+                        present, a select dropdown appears alongside so the
+                        user picks which analyst to discuss with. */}
+                    {(() => {
+                      const analystRoles = parseAnalystRefsFromObjection(
+                        o.detail,
+                      );
+                      const status = dialogueStatus[i] ?? "idle";
+                      const inFlight =
+                        status === "starting" || status === "running";
+                      if (analystRoles.length === 0) {
+                        return (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            disabled
+                            title={
+                              "This objection isn't owned by a single analyst — " +
+                              "use 'Discuss with advisor' or mark a stance instead."
+                            }
+                          >
+                            <Users className="h-3 w-3 mr-1" />
+                            No analyst owner
+                          </Button>
+                        );
+                      }
+                      const pickedRole =
+                        dialogueSelectedRole[i] ?? analystRoles[0];
+                      const buttonLabel = inFlight
+                        ? "Dialogue in progress…"
+                        : `Discuss with ${
+                            ANALYST_ROLE_TO_DISPLAY[pickedRole] ?? pickedRole
+                          }`;
+                      return (
+                        <div className="flex items-center gap-1">
+                          {analystRoles.length > 1 && (
+                            <select
+                              value={pickedRole}
+                              onChange={(e) =>
+                                setDialogueSelectedRole((prev) => ({
+                                  ...prev,
+                                  [i]: e.target.value,
+                                }))
+                              }
+                              disabled={inFlight}
+                              className="h-7 text-xs rounded-md border border-border/60 bg-background px-1.5"
+                              aria-label={`Pick analyst to discuss objection ${i + 1} with`}
+                            >
+                              {analystRoles.map((r) => (
+                                <option key={r} value={r}>
+                                  {ANALYST_ROLE_TO_DISPLAY[r] ?? r}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            disabled={inFlight}
+                            onClick={() =>
+                              void kickOffDialogue(i, o, pickedRole)
+                            }
+                          >
+                            {inFlight ? (
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                              <Users className="h-3 w-3 mr-1" />
+                            )}
+                            {buttonLabel}
+                          </Button>
+                        </div>
+                      );
+                    })()}
                   </div>
+
+                  {/* Dialogue result panel. Renders the most recent dialogue
+                      for this objection so the user sees the analyst's
+                      stance + FM's verdict; if the analyst proposed a fix
+                      AND the FM accepted, surfaces an "Apply this fix" CTA.
+                      The block is hidden while no dialogue exists yet, and
+                      replaced by a spinner card while the dialogue is in
+                      flight (the WS-completion handler replaces the spinner
+                      with the structured outcome). */}
+                  <DialogueResultPanel
+                    status={dialogueStatus[i] ?? "idle"}
+                    errorMessage={dialogueErrors[i] ?? null}
+                    dialogue={dialogueRuns[i] ?? null}
+                  />
 
                   {/* Per-objection stance toggle (AGREE / DEFER / DISAGREE).
                       Only rendered when a planVersionId is wired so we know

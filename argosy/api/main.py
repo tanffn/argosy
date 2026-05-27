@@ -50,6 +50,9 @@ from argosy.api.routes.plan import router as plan_router
 from argosy.api.routes.plan_objection_state import (
     router as plan_objection_state_router,
 )
+from argosy.api.routes.fm_objection_dialogue import (
+    router as fm_objection_dialogue_router,
+)
 from argosy.api.routes.portfolio import router as portfolio_router
 from argosy.api.routes.positions import router as positions_router
 from argosy.api.routes.proposals import router as proposals_router
@@ -103,6 +106,10 @@ def create_app() -> FastAPI:
     # concurrent edits (translation cache, NVDA PACE). Same /plan/draft/
     # objections/* URL prefix so the UI doesn't need to distinguish.
     app.include_router(plan_objection_state_router, prefix=api_prefix)
+    # FM-objection ZigZag — slim FM↔analyst dialogue per objection. Sibling
+    # router so the dialogue feature can ship without rebasing on
+    # concurrent plan.py edits. Same /plan/draft/objections/* URL prefix.
+    app.include_router(fm_objection_dialogue_router, prefix=api_prefix)
     # T4.1 — per-position thesis cards. Sibling router so it doesn't have
     # to share the plan router's get_db dependency wiring.
     app.include_router(positions_router, prefix=api_prefix)
