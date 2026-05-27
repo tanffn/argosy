@@ -414,6 +414,12 @@ export interface AgentNode {
 export interface AgentTreeStatusSummary {
   agents_ok: number;
   agents_failed: number;
+  // "skipped" agents (didn't run at all, e.g. codex zigzag wasn't
+  // triggered) are tracked separately from "failed" (ran but errored or
+  // returned low confidence). The backend started splitting these out
+  // after the codex_second_opinion node was added to the FM topology —
+  // previously skipped+failed was conflated in agents_failed.
+  agents_skipped: number;
   adapters_ok: number;
   adapters_failed: number;
 }
@@ -1885,6 +1891,10 @@ export interface HorizonView {
 export interface SynthesisHealth {
   agents_ok: number;
   agents_failed: number;
+  // "skipped" agents (didn't run at all, e.g. codex zigzag wasn't
+  // triggered) are tracked separately from "failed" (ran but errored or
+  // returned low confidence).
+  agents_skipped: number;
   adapters_ok: number;
   adapters_failed: number;
   decision_run_id: number;

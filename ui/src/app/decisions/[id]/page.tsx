@@ -356,8 +356,11 @@ export default function DecisionReplayPage(props: {
             </CardTitle>
             <CardDescription>
               {agentTree.status_summary.agents_ok} agents OK ·{" "}
-              {agentTree.status_summary.agents_failed} failed/skipped ·{" "}
-              {agentTree.status_summary.adapters_ok} adapters OK ·{" "}
+              {agentTree.status_summary.agents_failed} failed
+              {(agentTree.status_summary.agents_skipped ?? 0) > 0
+                ? ` · ${agentTree.status_summary.agents_skipped} skipped`
+                : ""}{" "}
+              · {agentTree.status_summary.adapters_ok} adapters OK ·{" "}
               {agentTree.status_summary.adapters_failed} adapter failures
             </CardDescription>
           </CardHeader>
@@ -374,7 +377,8 @@ export default function DecisionReplayPage(props: {
             </CardTitle>
             <CardDescription>
               {agentTree.status_summary.agents_ok +
-                agentTree.status_summary.agents_failed}{" "}
+                agentTree.status_summary.agents_failed +
+                (agentTree.status_summary.agents_skipped ?? 0)}{" "}
               agent run(s) recorded for this{" "}
               <span className="font-mono">{agentTree.decision_kind}</span>{" "}
               decision; the FM-rooted DAG is only built for synthesis runs.

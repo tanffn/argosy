@@ -8,13 +8,26 @@ from __future__ import annotations
 
 
 def test_bug5_household_categorizer_uses_canonical_model_id():
-    """Bug 5 — model alias 'sonnet' replaced with canonical 'claude-sonnet-4-6'.
+    """Bug 5 — model alias 'sonnet' replaced with a canonical model id.
 
     The api_key backend may reject the alias; only claude_code resolves it.
-    Use the canonical id everywhere for portability.
+    Use the canonical id everywhere for portability. The original assertion
+    pinned the role to Sonnet 4.6; after the fleet bump to Opus 4.7 (commit
+    b9b360c) the assertion was generalized to "the role resolves to ANY known
+    canonical id" — the invariant being protected is "not None / not a typo",
+    not "specifically Sonnet".
     """
     from argosy.agents.base import DEFAULT_MODEL_BY_ROLE
-    assert DEFAULT_MODEL_BY_ROLE["household_categorizer"] == "claude-sonnet-4-6"
+    known_canonical_ids = {
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    }
+    model_id = DEFAULT_MODEL_BY_ROLE["household_categorizer"]
+    assert model_id in known_canonical_ids, (
+        f"household_categorizer resolves to {model_id!r}; expected one of "
+        f"{sorted(known_canonical_ids)} (canonical, non-aliased model ids)."
+    )
 
 
 def test_bug6_categories_resolved_excludes_uncategorized(alembic_engine_at_head):

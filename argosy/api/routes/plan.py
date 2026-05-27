@@ -434,6 +434,10 @@ class SynthesisHealth(BaseModel):
 
     agents_ok: int
     agents_failed: int
+    # T0.7 follow-up — "skipped" is tracked separately from "failed" so the
+    # banner can show "N OK · M failed · K skipped" instead of conflating
+    # didn't-run with errored-out.
+    agents_skipped: int
     adapters_ok: int
     adapters_failed: int
     decision_run_id: int
@@ -687,6 +691,7 @@ def _build_synthesis_health(
     return SynthesisHealth(
         agents_ok=int(summary.get("agents_ok", 0)),
         agents_failed=int(summary.get("agents_failed", 0)),
+        agents_skipped=int(summary.get("agents_skipped", 0)),
         adapters_ok=int(summary.get("adapters_ok", 0)),
         adapters_failed=int(summary.get("adapters_failed", 0)),
         decision_run_id=decision_run_id,

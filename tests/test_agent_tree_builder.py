@@ -322,9 +322,26 @@ def test_build_agent_tree_happy_path_with_adapters(inmem_session) -> None:
     # skipped since not seeded) = 26 unique. Two of those 26 are
     # degraded/ok (synth + plan_synthesizer's None confidence) — both
     # count as "ok" in the summary; codex's "skipped" counts as
-    # "agents_failed".
+    # "agents_skipped" (split out from "agents_failed" so the user-facing
+    # banner doesn't conflate didn't-run with errored-out).
     summary = tree.status_summary
-    assert summary["agents_ok"] + summary["agents_failed"] == 26
+    assert (
+        summary["agents_ok"]
+        + summary["agents_failed"]
+        + summary["agents_skipped"]
+        == 26
+    )
+    # Skipped nodes in this seed: only one bull + one bear + one
+    # researcher_facilitator row are inserted, but the builder expects
+    # three facilitator subtrees (long/medium/short). So 2 facilitators +
+    # 2 bulls + 2 bears render as "skipped", plus codex_second_opinion
+    # (no codex row seeded) = 7 unique skipped nodes. None of these
+    # should bleed into "agents_failed" — that's the whole point of
+    # splitting skipped vs failed.
+    assert summary["agents_skipped"] == 7
+    # No agent_reports row in this seed has a confidence that maps to
+    # "failed", so the failed count is exactly 0.
+    assert summary["agents_failed"] == 0
     # Two adapters reported ok, one http_error.
     assert summary["adapters_ok"] == 2
     assert summary["adapters_failed"] == 1
@@ -479,9 +496,12 @@ def test_build_agent_tree_dag_dedup_is_correct(inmem_session) -> None:
     # ...but the deduped summary count includes plan_critique just once.
     # Unique node identities = 26 (see happy path test) — 25 plus the
     # codex_second_opinion node (skipped since the seed doesn't include
-    # a codex agent_reports row).
+    # a codex agent_reports row). "skipped" is now tracked separately
+    # from "failed", so the total is ok + failed + skipped.
     assert (
-        tree.status_summary["agents_ok"] + tree.status_summary["agents_failed"]
+        tree.status_summary["agents_ok"]
+        + tree.status_summary["agents_failed"]
+        + tree.status_summary["agents_skipped"]
         == 26
     )
 

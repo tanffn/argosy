@@ -36,6 +36,12 @@ export function SynthesisHealthBanner({
   const Icon = anyFailure ? AlertTriangle : CheckCircle2;
   const drillHref = `/decisions/${decisionRunId}`;
 
+  // "skipped" (agent didn't run at all — e.g. codex zigzag not triggered)
+  // is shown as a separate count so it doesn't masquerade as a failure.
+  // Older backends without this field (cached responses) get `?? 0` so
+  // the line still renders.
+  const agentsSkipped = health.agents_skipped ?? 0;
+
   return (
     <Banner
       tone={tone}
@@ -45,7 +51,8 @@ export function SynthesisHealthBanner({
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-xs font-mono">
-          {health.agents_ok} agents OK · {health.agents_failed} failed/skipped
+          {health.agents_ok} agents OK · {health.agents_failed} failed
+          {agentsSkipped > 0 ? ` · ${agentsSkipped} skipped` : ""}
           {" · "}
           {health.adapters_ok} adapters OK · {health.adapters_failed} adapter
           failures

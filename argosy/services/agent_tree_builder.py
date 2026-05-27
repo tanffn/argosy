@@ -253,7 +253,11 @@ class AgentTreeResponse:
     decision_run_id: int
     decision_kind: str
     status_summary: dict[str, int]
-    # ^ e.g. {"agents_ok": 17, "agents_failed": 1, "adapters_ok": 5, "adapters_failed": 2}
+    # ^ e.g. {"agents_ok": 17, "agents_failed": 1, "agents_skipped": 0,
+    #         "adapters_ok": 5, "adapters_failed": 2}.
+    # "skipped" and "failed" are tracked separately — skipped means the
+    # agent didn't run at all (e.g. codex zigzag wasn't triggered);
+    # failed means it ran but reported low confidence or errored.
     # T4.4 — ``root`` is ``None`` for non-synthesis kinds (delta_pushback,
     # daily_brief, trade_proposal, plan_amendment_chat). The status_summary
     # still carries useful counts in that case (one row per unique
@@ -351,6 +355,7 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
             status_summary={
                 "agents_ok": agents_ok,
                 "agents_failed": agents_failed,
+                "agents_skipped": 0,
                 "adapters_ok": 0,
                 "adapters_failed": 0,
             },
@@ -926,9 +931,17 @@ def _summarize(
     Analyst nodes are referenced by multiple parents (bull/bear/synth),
     so a naive recursive count would inflate the totals 3-10×. We walk
     once and skip any node we've already visited.
+
+    "skipped" and "failed" are tracked separately — they are semantically
+    different (skipped = agent didn't run at all, e.g. codex zigzag wasn't
+    triggered; failed = agent ran but reported low confidence or errored).
+    Conflating them inflates the user-facing "agents_failed" count any
+    time a new optional node is added to the topology without backfilling
+    seed data.
     """
     agents_ok = 0
     agents_failed = 0
+    agents_skipped = 0
     seen: set[int] = set()
     # Defensive: the codex_second_opinion row is built once per run and
     # only mounted under FM, so identity dedup (above) is sufficient in
@@ -940,7 +953,7 @@ def _summarize(
     codex_role_counted = False
 
     def walk(n: AgentNode) -> None:
-        nonlocal agents_ok, agents_failed, codex_role_counted
+        nonlocal agents_ok, agents_failed, agents_skipped, codex_role_counted
         key = id(n)
         if key in seen:
             return
@@ -953,7 +966,9 @@ def _summarize(
                     walk(c)
                 return
             codex_role_counted = True
-        if n.status in ("skipped", "failed"):
+        if n.status == "skipped":
+            agents_skipped += 1
+        elif n.status == "failed":
             agents_failed += 1
         else:
             # "ok" and "degraded" both count as "the agent ran".
@@ -970,6 +985,7 @@ def _summarize(
     return {
         "agents_ok": agents_ok,
         "agents_failed": agents_failed,
+        "agents_skipped": agents_skipped,
         "adapters_ok": adapters_ok,
         "adapters_failed": adapters_failed,
     }

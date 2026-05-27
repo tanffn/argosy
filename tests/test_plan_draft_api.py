@@ -106,7 +106,9 @@ def test_get_draft_synthesis_health_present_when_decision_run_id(app_with_draft)
         # Three rows each for bull/bear/researcher_facilitator (one per
         # horizon — the builder pops 3× of each), plus the single
         # plan_synthesizer row. Without three of each, the missing slots
-        # show up as "skipped" and inflate agents_failed.
+        # show up as "skipped" — they no longer inflate agents_failed
+        # (skipped is tracked in its own bucket now) but this test pins
+        # the stronger invariant that every expected agent ran.
         for _ in range(3):
             for role in ("bull_researcher", "bear_researcher",
                          "researcher_facilitator"):
@@ -138,6 +140,26 @@ def test_get_draft_synthesis_health_present_when_decision_run_id(app_with_draft)
         sess.add(AgentReport(
             user_id="ariel", agent_role="fund_manager",
             decision_id=decision_id_str, response_text="ok",
+            confidence="MEDIUM", model="claude-opus-4-7",
+            tokens_in=10, tokens_out=20, cost_usd=0.001,
+        ))
+        # codex_second_opinion row — the FM-rooted tree builder hangs a
+        # codex node under FM (see agent_tree_builder._build_codex_node).
+        # Without a row, the node renders as ``skipped`` (no longer
+        # ``failed`` since the split). The test still seeds it so the
+        # stronger "every agent ran" assertion holds: agents_failed == 0
+        # AND agents_skipped == 0.
+        sess.add(AgentReport(
+            user_id="ariel", agent_role="codex_second_opinion",
+            decision_id=decision_id_str,
+            response_text=json.dumps({
+                "overall_assessment": "APPROVE",
+                "findings": [],
+                "agreement_with_argosy": {
+                    "agrees_with_risk_verdict": True,
+                    "novel_concerns_argosy_missed": [],
+                },
+            }),
             confidence="MEDIUM", model="claude-opus-4-7",
             tokens_in=10, tokens_out=20, cost_usd=0.001,
         ))
@@ -184,8 +206,12 @@ def test_get_draft_synthesis_health_present_when_decision_run_id(app_with_draft)
     health = body["synthesis_health"]
     assert health is not None
     assert health["decision_run_id"] == rid
-    # Every agent ran -> agents_failed = 0; agents_ok must be >= 1.
+    # Every expected agent ran -> agents_failed = 0 AND agents_skipped = 0;
+    # agents_ok must be >= 1. The split exists so future topology additions
+    # (e.g. codex_second_opinion when it shipped) don't silently inflate
+    # the user-facing "failed" count just because seed data is missing.
     assert health["agents_failed"] == 0
+    assert health["agents_skipped"] == 0
     assert health["agents_ok"] >= 1
     # One ok adapter + one http_error adapter were seeded.
     assert health["adapters_ok"] == 1
