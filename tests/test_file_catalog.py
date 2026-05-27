@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
@@ -227,3 +228,105 @@ async def test_catalog_upload_dedup_does_not_emit_second_audit(
             )
         ).scalars().all()
     assert len(rows) == 1, "second (dedup) call should not emit a second audit event"
+
+
+# ----------------------------------------------------------------------
+# EX2 — Discount Bank statement ingest triggers the anomaly runner.
+# ----------------------------------------------------------------------
+
+
+def test_discount_bank_statement_triggers_anomaly_check(
+    expense_client, monkeypatch
+):
+    """Uploading a Discount Bank statement must fire ``schedule_anomaly_check``
+    with ``triggered_by='event'`` so a same-day fee-waiver disappearance
+    surfaces within seconds.
+
+    Uses the canonical Discount fixture (``discount_minimal.xlsx``). We
+    patch ``schedule_anomaly_check`` at its import site inside the
+    expenses route so we can assert without spinning a real LLM thread
+    (the gate would skip it under pytest anyway).
+    """
+    captured: list[dict] = []
+
+    def _spy(**kwargs):
+        captured.append(kwargs)
+
+    # The route imports schedule_anomaly_check at call time, so we
+    # patch the module's exported attribute.
+    monkeypatch.setattr(
+        "argosy.services.anomaly_runner.schedule_anomaly_check",
+        _spy,
+    )
+    # Avoid touching the real category-resolver LLM call.
+    with patch(
+        "argosy.services.expense_ingest.category_resolver._categorize_via_llm",
+        return_value=[],
+    ):
+        with open(
+            Path(__file__).parent / "fixtures" / "expenses"
+            / "discount_minimal.xlsx",
+            "rb",
+        ) as f:
+            files = {"files": (
+                "discount_minimal.xlsx", f.read(),
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet",
+            )}
+            resp = expense_client.post(
+                "/api/expenses/upload",
+                files=files,
+                data={"user_id": "ariel"},
+            )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["results"][0]["status"] == "parsed", body
+    assert body["results"][0]["parser_name"] == "discount", body
+
+    # Anomaly runner was fired with the right shape.
+    assert len(captured) == 1, captured
+    kwargs = captured[0]
+    assert kwargs["user_id"] == "ariel"
+    assert kwargs["triggered_by"] == "event"
+    assert kwargs["source_statement_id"] == body["results"][0]["statement_id"]
+    assert kwargs["triggering_source_file_id"] is not None
+
+
+def test_non_discount_upload_does_not_trigger_anomaly_check(
+    expense_client, monkeypatch
+):
+    """Uploading a non-Discount statement (Isracard / Max / Leumi) must
+    NOT fire the anomaly runner — the event-driven path is scoped to
+    the issuer whose accounts have a watchlist entry."""
+    captured: list[dict] = []
+
+    def _spy(**kwargs):
+        captured.append(kwargs)
+
+    monkeypatch.setattr(
+        "argosy.services.anomaly_runner.schedule_anomaly_check",
+        _spy,
+    )
+    with patch(
+        "argosy.services.expense_ingest.category_resolver._categorize_via_llm",
+        return_value=[],
+    ):
+        with open(
+            Path(__file__).parent / "fixtures" / "expenses"
+            / "isracard_minimal.xlsx",
+            "rb",
+        ) as f:
+            files = {"files": (
+                "isracard_minimal.xlsx", f.read(),
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet",
+            )}
+            resp = expense_client.post(
+                "/api/expenses/upload",
+                files=files,
+                data={"user_id": "ariel"},
+            )
+    assert resp.status_code == 200, resp.text
+    assert captured == [], (
+        "anomaly runner must only fire on Discount Bank ingest"
+    )

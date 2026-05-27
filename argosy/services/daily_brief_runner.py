@@ -499,6 +499,22 @@ async def background_loop(
                 await _run_daily_self_review(user_id)
             except Exception:  # pragma: no cover - defensive
                 _log.exception("fleet_self_review.daily_sweep_failed")
+            # EX2 — daily anomaly-detection backstop. Same gate
+            # semantics: the call only fires when
+            # ARGOSY_ANOMALY_DETECTION_ENABLED=1 AND the process isn't
+            # pytest. Spawns its own daemon thread + sync session.
+            # Failures are swallowed inside schedule_anomaly_check —
+            # the brief loop NEVER breaks because of an anomaly hook.
+            try:
+                from argosy.services.anomaly_runner import (
+                    schedule_anomaly_check,
+                )
+                schedule_anomaly_check(
+                    user_id=user_id,
+                    triggered_by="daily",
+                )
+            except Exception:  # pragma: no cover - defensive
+                _log.exception("anomaly_runner.daily_backstop_failed")
         except Exception:  # pragma: no cover - defensive: NEVER break the loop
             _log.exception("daily_brief_runner.background_tick_failed")
 

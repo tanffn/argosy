@@ -130,6 +130,29 @@ def upload_statements(
             parser_name=ing.parser_name,
         ))
 
+        # EX2 — event-driven anomaly check after a Discount Bank
+        # statement ingest. The fee-waiver disappearance use case
+        # (Card 2923) is what motivated this surface; firing only on
+        # the issuer that actually matters keeps the LLM cost bounded
+        # while still hitting the critical path within seconds of the
+        # statement landing.  Gated by ARGOSY_ANOMALY_DETECTION_ENABLED
+        # + pytest detection inside schedule_anomaly_check, so this
+        # call is a no-op in tests + a no-op for users who opted out.
+        if (ing.parser_name or "").lower() == "discount":
+            try:
+                from argosy.services.anomaly_runner import (
+                    schedule_anomaly_check,
+                )
+                schedule_anomaly_check(
+                    session=db,
+                    user_id=user_id,
+                    triggered_by="event",
+                    source_statement_id=ing.statement_id,
+                    triggering_source_file_id=user_file.id,
+                )
+            except Exception:  # pragma: no cover - defensive: must NEVER break ingest
+                pass
+
     return UploadResponse(results=results)
 
 

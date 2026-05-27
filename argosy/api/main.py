@@ -156,6 +156,14 @@ def create_app() -> FastAPI:
     # detector implementations.
     app.include_router(fleet_self_review_router, prefix=api_prefix)
 
+    # EX2 anomaly-detection report viewer (migration 0038). Auto-fires
+    # from the expense ingest path on every Discount Bank statement
+    # AND from the daily-brief loop as a backstop. See
+    # argosy/services/anomaly_runner.py and
+    # argosy/agents/anomaly_detection.py for the agent and runner.
+    from argosy.api.routes.anomalies import router as anomalies_router
+    app.include_router(anomalies_router, prefix=api_prefix)
+
     # T2.2 — startup orphan sweep. Mark any decision_runs that are still
     # status='running' from a prior process that was killed mid-flight as
     # 'failed' with a structured note so the audit trail is honest and

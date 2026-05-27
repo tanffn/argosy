@@ -341,3 +341,74 @@ def test_is_enabled_for_runtime_respects_env_var(
     assert runner_mod.is_enabled_for_runtime() is True
     monkeypatch.setenv("ARGOSY_DAILY_BRIEF_ENABLED", "0")
     assert runner_mod.is_enabled_for_runtime() is False
+
+
+# ----------------------------------------------------------------------
+# Test 5 (EX2): daily loop fires the anomaly-detection backstop.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_daily_loop_fires_anomaly_backstop(
+    engine: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One pass through ``background_loop`` (sleep stubbed → tick → break)
+    must fire ``schedule_anomaly_check(triggered_by='daily', ...)`` after
+    the brief and the self-review.
+
+    The anomaly runner has its own pytest gate; we stub the
+    ``schedule_anomaly_check`` export with a spy that records the kwargs
+    so we can assert the daily-backstop call shape without needing the
+    runner to actually do work.
+    """
+    import asyncio
+
+    captured: list[dict] = []
+
+    def _spy_schedule(**kwargs):
+        captured.append(kwargs)
+
+    # The daily-brief runner imports schedule_anomaly_check inside the
+    # loop body, so we patch the module attribute.
+    monkeypatch.setattr(
+        "argosy.services.anomaly_runner.schedule_anomaly_check",
+        _spy_schedule,
+    )
+
+    # Stub the inner work: brief + self-review must both succeed but
+    # are not the focus of this test. Bail out of the forever-loop via
+    # a CancelledError on the second sleep so we only exercise one tick.
+    async def _instant_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runner_mod, "_sleep_until_07_local", _instant_sleep)
+
+    async def _stub_generate_brief(*_args, **_kwargs):
+        # Return whatever; the loop doesn't inspect the return value.
+        return None
+
+    monkeypatch.setattr(runner_mod, "generate_daily_brief", _stub_generate_brief)
+
+    async def _stub_self_review(_user_id):
+        return None
+
+    monkeypatch.setattr(runner_mod, "_run_daily_self_review", _stub_self_review)
+
+    # Run one iteration of background_loop, then cancel.
+    task = asyncio.create_task(runner_mod.background_loop(user_id="ariel"))
+
+    # Give the loop a chance to do one full tick.
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if captured:
+            break
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert len(captured) >= 1, f"anomaly backstop not fired: {captured}"
+    kwargs = captured[0]
+    assert kwargs["user_id"] == "ariel"
+    assert kwargs["triggered_by"] == "daily"

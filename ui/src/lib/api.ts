@@ -1227,6 +1227,23 @@ export const api = {
       `/api/fleet-self-review/run?user_id=${encodeURIComponent(userId)}`,
       {},
     ),
+
+  // ----------------------------------------------------------------------
+  // EX2 — anomaly-detection reports (migration 0038). Fires from the
+  // expense ingest path on Discount Bank statements AND from the daily
+  // brief loop as a backstop. Home banner consumes /latest; viewer
+  // consumes /{id}.
+  // ----------------------------------------------------------------------
+
+  anomalyLatest: (userId: string) =>
+    getJSON<AnomalyReportDTO | null>(
+      `/api/anomalies/latest?user_id=${encodeURIComponent(userId)}`,
+    ),
+
+  anomalyById: (userId: string, id: number) =>
+    getJSON<AnomalyReportDTO>(
+      `/api/anomalies/${id}?user_id=${encodeURIComponent(userId)}`,
+    ),
 };
 
 // ----------------------------------------------------------------------
@@ -1252,6 +1269,48 @@ export interface FleetSelfReviewDTO {
   content_md: string;
   findings: FleetSelfReviewFinding[];
   severity_summary: { RED?: number; AMBER?: number; YELLOW?: number };
+}
+
+// ----------------------------------------------------------------------
+// EX2 anomaly-detection DTOs
+// ----------------------------------------------------------------------
+
+/** One detected anomaly from the EX2 watchlist runner. */
+export interface AnomalyItem {
+  severity: "RED" | "AMBER" | "YELLOW";
+  watchlist_entry_name: string;
+  observation: string;
+  last_seen: string;
+  suggested_action: string;
+}
+
+/** Per-watchlist-entry state snapshot from one runner pass. */
+export interface AnomalyWatchlistStatus {
+  name: string;
+  state: "NORMAL" | "ALERT" | "RESOLVED" | "UNKNOWN";
+  last_evidence: string;
+}
+
+/** Parsed ``report_json`` payload — shape of AnomalyDetectionReport. */
+export interface AnomalyReportPayload {
+  anomalies: AnomalyItem[];
+  watchlist_status: AnomalyWatchlistStatus[];
+  cited_sources?: string[];
+  confidence?: string;
+  /** Set when the runner caught an exception while talking to the agent. */
+  _runner_error?: string;
+}
+
+/** Wire shape for /api/anomalies/latest and /api/anomalies/{id}. */
+export interface AnomalyReportDTO {
+  id: number;
+  user_id: string;
+  triggered_by: "event" | "daily" | "manual";
+  triggered_at: string;
+  source_statement_id: number | null;
+  report: AnomalyReportPayload;
+  severity_summary: { RED?: number; AMBER?: number; YELLOW?: number };
+  agent_report_id: number | null;
 }
 
 // ----------------------------------------------------------------------

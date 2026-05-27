@@ -18,6 +18,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import {
   api,
   type AgentActivityRow,
+  type AnomalyReportDTO,
   type ArgonautSnapshot,
   type DailyBriefDTO,
   type DomainKbTreeNode,
@@ -102,6 +103,10 @@ interface HomeData {
   // user sees RED / AMBER counts the moment they hit the page, BEFORE
   // having to ask "is anything broken?".
   fleetReview: FleetSelfReviewDTO | null;
+  // EX2 — most-recent anomaly-detection report. Banner renders ABOVE
+  // the fleet-self-review banner so RED anomalies (e.g. Card 2923's
+  // fee-waiver promo disappearing) surface FIRST.
+  anomalyReport: AnomalyReportDTO | null;
   // Live snapshot of an in-flight plan synthesis run (or null when
   // nothing is running). Surfaced as a banner at the top of the home
   // page so the user can SEE that the fleet is working without having
@@ -123,6 +128,7 @@ const initial: HomeData = {
   domainKb: null,
   cadenceLastTick: {},
   fleetReview: null,
+  anomalyReport: null,
   inFlightSynthesis: null,
   error: null,
 };
@@ -201,6 +207,7 @@ export default function Home() {
         monthlyAgentRows,
         cadenceTickAudit,
         fleetReviewLatest,
+        anomalyLatest,
         inFlightSynth,
       ] = await Promise.all([
         api.portfolioSnapshot(USER_ID).catch(() => null),
@@ -266,6 +273,12 @@ export default function Home() {
         // Fleet self-review banner — most-recent report.  Fails gracefully
         // when the migration hasn't been applied yet or no report exists.
         api.fleetSelfReviewLatest(USER_ID).catch(() => null),
+        // EX2 anomaly-detection banner — most-recent report. Fails
+        // gracefully when migration 0038 hasn't been applied yet or
+        // no report exists (fresh install).  WS event `anomaly.detected`
+        // triggers a refresh so the banner pops the moment a Discount
+        // Bank statement reveals a missing fee-waiver discount.
+        api.anomalyLatest(USER_ID).catch(() => null),
         // In-flight synthesis banner — backend returns 200+null when
         // nothing is running, so a swallowed network/404 just yields the
         // same shape.  Polled every 10 s by the effect below while
@@ -334,6 +347,7 @@ export default function Home() {
         domainKb,
         cadenceLastTick,
         fleetReview: fleetReviewLatest,
+        anomalyReport: anomalyLatest,
         inFlightSynthesis: inFlightSynth?.in_flight_synthesis ?? null,
         error: null,
       });
@@ -364,6 +378,11 @@ export default function Home() {
     // refresh so the user sees the new RED / AMBER counts without a
     // manual page reload.
     "fleet_self_review.completed",
+    // EX2 — fires after every event-driven OR daily anomaly check
+    // that produced at least one Anomaly. Banner refreshes so the
+    // user sees a RED card-2923-fee-waiver disappearance within
+    // seconds of the statement ingest.
+    "anomaly.detected",
   ]);
   useEffect(() => {
     if (!lastEvent) return;
@@ -616,6 +635,15 @@ export default function Home() {
           every 10 s while non-null. */}
       {data.inFlightSynthesis ? (
         <InFlightSynthesisBanner inFlight={data.inFlightSynthesis} />
+      ) : null}
+
+      {/* EX2 — anomaly-detection banner. Renders ABOVE the
+          fleet-self-review banner so user-money-impacting alerts
+          (e.g. Card 2923's fee-waiver promotion disappearing) sit
+          AT THE TOP of the home page. Only renders when the latest
+          report carries at least one RED anomaly. */}
+      {hasRedAnomaly(data.anomalyReport) ? (
+        <AnomalyBanner report={data.anomalyReport!} />
       ) : null}
 
       {/* Fleet self-review banner — auto-fires after every synthesis +
@@ -1301,6 +1329,98 @@ function FleetSelfReviewBanner({ report }: FleetSelfReviewBannerProps) {
           className="ml-2 font-mono text-xs text-info hover:underline"
         >
           Read report -&gt;
+        </Link>
+      </div>
+    </section>
+  );
+}
+
+
+// ----------------------------------------------------------------------
+// EX2 — anomaly banner: surfaces the first RED anomaly from the
+// most-recent /api/anomalies/latest payload. The home-page guard
+// (hasRedAnomaly) suppresses the banner whenever there are no RED
+// items so users don't see a "phantom" alert from an old AMBER /
+// YELLOW report. AMBER/YELLOW remain visible inside the viewer page.
+// ----------------------------------------------------------------------
+
+function hasRedAnomaly(report: AnomalyReportDTO | null): boolean {
+  if (!report) return false;
+  return (report.report?.anomalies ?? []).some((a) => a.severity === "RED");
+}
+
+interface AnomalyBannerProps {
+  report: AnomalyReportDTO;
+}
+
+function AnomalyBanner({ report }: AnomalyBannerProps) {
+  // First RED anomaly drives the banner copy; the rest live inside
+  // the viewer page. Keeps the home banner small + scannable.
+  const firstRed = (report.report?.anomalies ?? []).find(
+    (a) => a.severity === "RED",
+  );
+  if (!firstRed) return null;
+
+  const sev = report.severity_summary;
+  const red = sev.RED ?? 0;
+  const amber = sev.AMBER ?? 0;
+  const yellow = sev.YELLOW ?? 0;
+  const generatedLabel = report.triggered_at
+    ? new Date(report.triggered_at).toLocaleString()
+    : "—";
+
+  // Topic — short label the user can scan. Prefer the watchlist entry
+  // slug (always populated by the agent) over the full observation.
+  const topic =
+    firstRed.watchlist_entry_name || "anomaly detected";
+
+  return (
+    <section
+      className="rounded-lg border border-border border-l-2 border-l-error/80 bg-card px-4 py-3 flex items-center justify-between gap-3 flex-wrap"
+      data-slot="anomaly-banner"
+    >
+      <div className="flex flex-col gap-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span aria-hidden className="font-mono text-sm text-error">
+            ⚠
+          </span>
+          <span className="font-mono text-sm font-semibold">
+            Anomaly detected: {topic}
+          </span>
+          <span className="font-mono text-[10px] text-muted-foreground/80">
+            #{report.id} · {report.triggered_by}
+          </span>
+        </div>
+        <div className="font-mono text-xs text-muted-foreground">
+          {firstRed.observation}
+        </div>
+        <div className="font-mono text-[11px] text-muted-foreground tabular-nums">
+          last observed: {firstRed.last_seen || "—"} · suggested:{" "}
+          {firstRed.suggested_action}
+        </div>
+        <div className="font-mono text-[11px] text-muted-foreground">
+          generated {generatedLabel}
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <StatusPill tone="error" mono>
+          RED {red}
+        </StatusPill>
+        {amber > 0 ? (
+          <StatusPill tone="warning" mono>
+            AMBER {amber}
+          </StatusPill>
+        ) : null}
+        {yellow > 0 ? (
+          <StatusPill tone="neutral" mono>
+            YELLOW {yellow}
+          </StatusPill>
+        ) : null}
+        <Link
+          href={`/anomalies/${report.id}`}
+          className="ml-2 font-mono text-xs text-info hover:underline"
+        >
+          view details -&gt;
         </Link>
       </div>
     </section>

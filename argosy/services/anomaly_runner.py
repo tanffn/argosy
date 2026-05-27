@@ -10,13 +10,18 @@ Public entry points:
         event when at least one Anomaly fired. Returns the persisted
         ORM row. Tests pass a stubbed agent here.
 
+  * ``schedule_anomaly_check(*, user_id, triggered_by,
+    triggering_source_file_id=None, source_statement_id=None)``
+        Canonical fire-and-forget entry. Used by both the event-driven
+        path (expense statement ingest) and the daily backstop. Gates
+        on ``is_enabled_for_runtime()`` + pytest detection, spawns a
+        daemon thread, opens its own fresh sync session inside the
+        worker, persists the report row, and emits the WS event.
+        Failure is logged + swallowed (never propagates).
+
   * ``schedule_event_driven_check(*, session, user_id, source_statement_id)``
-        Fire-and-forget background-thread variant fired from the
-        expense ingest path after a Discount Bank statement is
-        committed. Spawns a daemon thread that opens a fresh sync
-        session, calls ``run_anomaly_check``, and swallows failures so
-        ingest never blocks. Mirrors the ``fleet_self_review_runner``
-        ``schedule_post_synthesis_review`` pattern.
+        Legacy alias kept for the session-bound call shape. New
+        callers should prefer ``schedule_anomaly_check``.
 
   * ``is_enabled_for_runtime()`` — gate on ``ARGOSY_ANOMALY_DETECTION_ENABLED``
     + ``PYTEST_CURRENT_TEST``. Same shape as the daily-brief gate so the
@@ -391,6 +396,167 @@ def run_anomaly_check(
 
 
 # ----------------------------------------------------------------------
+# Canonical fire-and-forget entry — used by event-driven AND daily paths.
+# ----------------------------------------------------------------------
+
+
+def schedule_anomaly_check(
+    *,
+    user_id: str,
+    triggered_by: str,
+    triggering_source_file_id: int | None = None,
+    source_statement_id: int | None = None,
+    session: Session | None = None,
+) -> None:
+    """Fire-and-forget anomaly check.
+
+    Mirrors the ``fleet_self_review_runner.schedule_post_synthesis_review``
+    pattern: gate → daemon thread → fresh sync session → run → swallow.
+
+    Args:
+      user_id: tenant scope.
+      triggered_by: 'event' | 'daily' | 'manual'. DB CHECK enforces.
+      triggering_source_file_id: when ``triggered_by='event'`` and the
+          caller knows the ``user_files.id`` that just got ingested (but
+          not the statement id), the worker resolves it to the most
+          recent ``ExpenseStatement`` whose ``file_id`` matches and
+          uses that as ``source_statement_id``. Useful when the
+          caller doesn't have the statement row in hand (e.g. lower
+          in the catalog stack).
+      source_statement_id: when known directly (the expense-upload
+          REST route has it post-ingest), wins over
+          ``triggering_source_file_id``. Either may be None for
+          ``triggered_by='daily' | 'manual'`` which sweep all
+          watchlist accounts.
+      session: optional caller-owned ``Session`` whose engine we bind
+          the new worker session to. When None we construct an engine
+          from settings (the daily-backstop path).
+
+    Gating:
+      ``is_enabled_for_runtime()`` is checked here so test environments
+      never spawn a background thread that touches the LLM.
+
+    Returns immediately; the work happens on a daemon thread.
+    """
+    if not is_enabled_for_runtime():
+        log.debug(
+            "anomaly_runner.skipped_disabled",
+            user_id=user_id,
+            triggered_by=triggered_by,
+            source_statement_id=source_statement_id,
+            triggering_source_file_id=triggering_source_file_id,
+        )
+        return
+
+    # Build a sessionmaker. Prefer caller's engine when given so the
+    # worker writes to the same DB the caller is using.
+    if session is not None:
+        engine = session.get_bind()
+        engine_owned_locally = False
+    else:
+        from sqlalchemy import create_engine
+
+        from argosy.config import get_settings
+
+        settings = get_settings()
+        sync_url = settings.database_url.replace("+aiosqlite", "")
+        engine = create_engine(
+            sync_url, connect_args={"check_same_thread": False},
+        )
+        engine_owned_locally = True
+
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    thread = threading.Thread(
+        target=_anomaly_check_worker,
+        kwargs={
+            "session_factory": session_factory,
+            "user_id": user_id,
+            "triggered_by": triggered_by,
+            "triggering_source_file_id": triggering_source_file_id,
+            "source_statement_id": source_statement_id,
+            "engine": engine if engine_owned_locally else None,
+        },
+        daemon=True,
+        name=(
+            f"anomaly-check-{triggered_by}-"
+            f"{source_statement_id or triggering_source_file_id or 'sweep'}"
+        ),
+    )
+    thread.start()
+    log.info(
+        "anomaly_runner.scheduled",
+        user_id=user_id,
+        triggered_by=triggered_by,
+        source_statement_id=source_statement_id,
+        triggering_source_file_id=triggering_source_file_id,
+        thread_name=thread.name,
+    )
+
+
+def _anomaly_check_worker(
+    *,
+    session_factory: Any,
+    user_id: str,
+    triggered_by: str,
+    triggering_source_file_id: int | None,
+    source_statement_id: int | None,
+    engine: Any,
+) -> None:
+    """Background worker for ``schedule_anomaly_check``.
+
+    Opens a fresh session, resolves ``triggering_source_file_id`` to
+    the matching ``ExpenseStatement`` if needed, runs the check, and
+    cleans up. Failure is logged + swallowed.
+    """
+    db = session_factory()
+    try:
+        resolved_stmt_id = source_statement_id
+        if resolved_stmt_id is None and triggering_source_file_id is not None:
+            # Resolve file_id → most recent statement for that file.
+            stmt = (
+                db.execute(
+                    select(ExpenseStatement)
+                    .where(
+                        ExpenseStatement.user_id == user_id,
+                        ExpenseStatement.file_id == triggering_source_file_id,
+                    )
+                    .order_by(desc(ExpenseStatement.period_end))
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            if stmt is not None:
+                resolved_stmt_id = stmt.id
+        run_anomaly_check(
+            user_id,
+            db,
+            triggered_by=triggered_by,
+            source_statement_id=resolved_stmt_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning(
+            "anomaly_runner.worker_failed",
+            user_id=user_id,
+            triggered_by=triggered_by,
+            source_statement_id=source_statement_id,
+            triggering_source_file_id=triggering_source_file_id,
+            error=str(exc),
+        )
+    finally:
+        try:
+            db.close()
+        except Exception:  # pragma: no cover — defensive
+            pass
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception:  # pragma: no cover — defensive
+                pass
+
+
+# ----------------------------------------------------------------------
 # Background thread scheduler — fired from the expenses ingest path.
 # ----------------------------------------------------------------------
 
@@ -544,5 +710,6 @@ __all__ = [
     "load_watchlist_seed",
     "run_anomaly_check",
     "run_daily_backstop",
+    "schedule_anomaly_check",
     "schedule_event_driven_check",
 ]
