@@ -12,6 +12,7 @@ import { AllocationChart } from "@/components/plan/allocation-chart";
 import { DeltaCard } from "@/components/plan/delta-card";
 import { DeltaMap } from "@/components/plan/delta-map";
 import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
+import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
 import { ProjectionChart } from "@/components/plan/projection-chart";
 import { SourcesHeatmap } from "@/components/plan/sources-heatmap";
@@ -571,6 +572,7 @@ export default function PlanPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <ExportPlanButton userId={USER_ID} size="default" />
           <Button
             variant="default"
             onClick={onRunSynthesis}

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { PerPositionThesisSection } from "@/components/positions/per-position-thesis-section";
 import { WealthDashboard } from "@/components/portfolio/wealth-dashboard";
 import {
@@ -57,13 +58,16 @@ export default function PortfolioPage() {
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Portfolio</h1>
-        <p className="text-sm text-muted-foreground">
-          {snap?.snapshot_date
-            ? `Snapshot: ${snap.snapshot_date}`
-            : "No portfolio snapshot found."}
-        </p>
+      <header className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Portfolio</h1>
+          <p className="text-sm text-muted-foreground">
+            {snap?.snapshot_date
+              ? `Snapshot: ${snap.snapshot_date}`
+              : "No portfolio snapshot found."}
+          </p>
+        </div>
+        <ExportPlanButton userId={USER_ID} />
       </header>
 
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}

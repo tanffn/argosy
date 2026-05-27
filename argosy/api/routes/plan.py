@@ -24,6 +24,7 @@ from typing import Generator
 logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
@@ -2596,6 +2597,50 @@ def get_action_items(
         overdue_count=overdue_count,
         today_count=today_count,
         upcoming_count=upcoming_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Markdown export — one-pager snapshot of plan + wealth dashboard
+# ---------------------------------------------------------------------------
+
+
+@router.get("/export")
+def get_plan_export(
+    user_id: str = Query("ariel"),
+    format: str = Query("markdown"),
+    window_days: int = Query(14, ge=1, le=365),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Return a downloadable one-pager export of the user's current plan +
+    wealth dashboard + action items + FM objections.
+
+    Only ``format=markdown`` is supported today — PDF generation is
+    intentionally out of scope. Downstream tools (pandoc, browser
+    print-to-PDF) handle conversion. The endpoint returns a
+    ``text/markdown`` body with a ``Content-Disposition: attachment``
+    header so the browser triggers a save dialog.
+    """
+    if format != "markdown":
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported format: {format!r}; only 'markdown' is supported",
+        )
+    from argosy.services.plan_export import (
+        build_plan_export_markdown,
+        export_filename,
+    )
+
+    body = build_plan_export_markdown(
+        db, user_id=user_id, window_days=window_days,
+    )
+    fname = export_filename()
+    return Response(
+        content=body,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+        },
     )
 
 
