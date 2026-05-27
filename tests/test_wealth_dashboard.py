@@ -741,6 +741,187 @@ class TestAssumptionsAndDefaults:
         assert dash.assumptions.swr_rate == SWR
 
 
+class TestCompositionBreakdowns:
+    """Asset-class + sector donut composition.
+
+    The compositions are built from the same positions_json as the rest
+    of the dashboard, but classified through two static taxonomies. The
+    sector taxonomy is hand-curated and an unknown ticker MUST fall into
+    "Other" rather than break the layout.
+    """
+
+    def test_asset_class_composition_sums_to_100pct(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(s, fx_usd_nis=3.0, total_usd_value_k=1000.0)
+            dash = compute_wealth_dashboard(s, user_id="ariel")
+        # Sum to ~100% across all asset-class slices.
+        total_pct = sum(sl.pct for sl in dash.asset_class_composition)
+        assert total_pct == pytest.approx(100.0, abs=0.01)
+        # Names come from the canonical asset-class taxonomy.
+        names = {sl.name for sl in dash.asset_class_composition}
+        # Seeded positions: NVDA (NVIDIA→Equity), Cash, SGOV (→Cash by
+        # special-case), NIS Cash, VOO (Core Equity → Equity).
+        assert "Equity" in names
+        assert "Cash" in names
+        # NVDA should be inside the Equity slice's holdings list.
+        equity = next(sl for sl in dash.asset_class_composition if sl.name == "Equity")
+        assert "NVDA" in equity.holdings
+        # SGOV should land in Cash (special-case in classifier).
+        cash = next(sl for sl in dash.asset_class_composition if sl.name == "Cash")
+        assert "SGOV" in cash.holdings
+
+    def test_sector_composition_includes_all_holdings(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(s, fx_usd_nis=3.0)
+            dash = compute_wealth_dashboard(s, user_id="ariel")
+        # Sum to ~100%.
+        total_pct = sum(sl.pct for sl in dash.sector_composition)
+        assert total_pct == pytest.approx(100.0, abs=0.01)
+        # Every position with positive value should appear in exactly one
+        # sector slice's holdings list.
+        all_holdings: list[str] = []
+        for sl in dash.sector_composition:
+            all_holdings.extend(sl.holdings)
+        # Seeded tickers (NVDA→Tech, SGOV→Cash/T-Bill, VOO→ETF/Index, Cash labels)
+        assert "NVDA" in all_holdings
+        assert "SGOV" in all_holdings
+        assert "VOO" in all_holdings
+        # NVDA → Tech bucket.
+        tech = next((sl for sl in dash.sector_composition if sl.name == "Tech"), None)
+        assert tech is not None
+        assert "NVDA" in tech.holdings
+        # SGOV → Cash/T-Bill bucket.
+        cash_tbill = next(
+            (sl for sl in dash.sector_composition if sl.name == "Cash/T-Bill"), None,
+        )
+        assert cash_tbill is not None
+        assert "SGOV" in cash_tbill.holdings
+
+    def test_asset_class_falls_back_to_per_ticker_map_when_field_missing(
+        self, client_with_db,
+    ):
+        """When asset_type is empty, the per-ticker fallback map fills in."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            # Position with BLANK asset_type — VOO is in the fallback map.
+            _seed_snapshot(
+                s,
+                fx_usd_nis=3.0,
+                positions=[
+                    {
+                        "location": "schwab",
+                        "currency": "USD",
+                        "asset_type": "",  # blank — must fall back by ticker
+                        "details": "ETF",
+                        "symbol": "VOO",
+                        "shares": 100.0,
+                        "current_price": 600.0,
+                        "current_value_local": 60_000.0,
+                        "usd_value_k": 60.0,
+                    },
+                    {
+                        "location": "schwab",
+                        "currency": "USD",
+                        "asset_type": "",
+                        "details": "Treasury",
+                        "symbol": "SGOV",
+                        "shares": 100.0,
+                        "current_price": 100.0,
+                        "current_value_local": 10_000.0,
+                        "usd_value_k": 10.0,
+                    },
+                ],
+                total_usd_value_k=70.0,
+            )
+            dash = compute_wealth_dashboard(s, user_id="ariel")
+        names = {sl.name: sl for sl in dash.asset_class_composition}
+        # VOO (blank asset_type) must land in Equity via fallback map.
+        assert "Equity" in names
+        assert "VOO" in names["Equity"].holdings
+        # SGOV (blank asset_type) must land in Cash via the special-case
+        # rule in the classifier (SGOV is hard-coded to Cash regardless
+        # of asset_type because the spec treats it as a cash equivalent).
+        assert "Cash" in names
+        assert "SGOV" in names["Cash"].holdings
+
+    def test_unknown_ticker_classified_as_other(self, client_with_db):
+        """A ticker not in either map MUST fall into 'Other' rather than
+        crash the route. Also: asset_class still classifies it via
+        asset_type even though sector falls through to Other."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(
+                s,
+                fx_usd_nis=3.0,
+                positions=[
+                    {
+                        "location": "schwab",
+                        "currency": "USD",
+                        # NOTE: asset_type=Growth so asset-class still says Equity.
+                        "asset_type": "Growth",
+                        "details": "Stock",
+                        "symbol": "ZZZUNKNOWN",  # not in any map
+                        "shares": 10.0,
+                        "current_price": 100.0,
+                        "current_value_local": 1_000.0,
+                        "usd_value_k": 1.0,
+                    },
+                ],
+                total_usd_value_k=1.0,
+            )
+            dash = compute_wealth_dashboard(s, user_id="ariel")
+        # Sector: unknown ticker → "Other".
+        sector_names = {sl.name: sl for sl in dash.sector_composition}
+        assert "Other" in sector_names
+        assert "ZZZUNKNOWN" in sector_names["Other"].holdings
+        # Asset-class: Growth asset_type → Equity (NOT Other).
+        ac_names = {sl.name: sl for sl in dash.asset_class_composition}
+        assert "Equity" in ac_names
+        assert "ZZZUNKNOWN" in ac_names["Equity"].holdings
+
+    def test_israeli_etf_classified_by_name_pattern(self, client_with_db):
+        """Hebrew-character symbols/details go to the 'Israeli ETF' sector
+        bucket regardless of asset_type."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(
+                s,
+                fx_usd_nis=3.0,
+                positions=[
+                    {
+                        "location": "leumi",
+                        "currency": "NIS",
+                        "asset_type": "Core Equity",
+                        "details": "ETF",
+                        "symbol": "מחקה ת\"א-200",
+                        "shares": 100.0,
+                        "current_price": 1000.0,
+                        "current_value_local": 100_000.0,
+                        "usd_value_k": 33.0,
+                    },
+                ],
+                total_usd_value_k=33.0,
+            )
+            dash = compute_wealth_dashboard(s, user_id="ariel")
+        sector_names = {sl.name for sl in dash.sector_composition}
+        assert "Israeli ETF" in sector_names
+        # Asset-class still says Equity (Core Equity keyword match).
+        ac_names = {sl.name for sl in dash.asset_class_composition}
+        assert "Equity" in ac_names
+
+
 # ===========================================================================
 # Route-level smoke
 # ===========================================================================
@@ -763,8 +944,15 @@ class TestRouteSmoke:
         assert set(body.keys()) >= {
             "user_id", "generated_at", "retirement", "cash_runway",
             "concentration", "savings_rate", "fx_exposure", "rsu_income",
-            "estate_exposure", "assumptions",
+            "estate_exposure", "asset_class_composition",
+            "sector_composition", "assumptions",
         }
+        # Composition slices serialise as plain dicts with the four
+        # documented fields.
+        assert isinstance(body["asset_class_composition"], list)
+        assert isinstance(body["sector_composition"], list)
+        for sl in body["asset_class_composition"]:
+            assert set(sl.keys()) >= {"name", "value_nis", "pct", "holdings"}
         assert body["retirement"]["net_worth_nis"] == pytest.approx(3_000_000.0)
         assert len(body["retirement"]["scenarios"]) == 3
         assert len(body["retirement"]["trajectory"]) == 26
@@ -788,6 +976,9 @@ class TestRouteSmoke:
         assert body["fx_exposure"]["buckets"] == []
         assert body["rsu_income"]["next_12_months_nis"] is None
         assert body["estate_exposure"]["us_situs_usd"] is None
+        # No snapshot → no compositions; empty lists, not nulls.
+        assert body["asset_class_composition"] == []
+        assert body["sector_composition"] == []
         # Assumptions still populated with defaults.
         assert body["assumptions"]["swr_rate"] == SWR
         assert body["assumptions"]["current_age"] == DEFAULT_CURRENT_AGE

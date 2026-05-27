@@ -2054,6 +2054,13 @@ export interface WealthEstateExposureBlock {
   missing_reasons: string[];
 }
 
+export interface WealthCompositionSlice {
+  name: string;
+  value_nis: number;
+  pct: number;
+  holdings: string[];
+}
+
 export interface WealthAssumptions {
   swr_rate: number;
   scenario_returns: Record<string, number>;
@@ -2077,5 +2084,7 @@ export interface WealthDashboardDTO {
   fx_exposure: WealthFxExposureBlock;
   rsu_income: WealthRsuIncomeBlock;
   estate_exposure: WealthEstateExposureBlock;
+  asset_class_composition: WealthCompositionSlice[];
+  sector_composition: WealthCompositionSlice[];
   assumptions: WealthAssumptions;
 }

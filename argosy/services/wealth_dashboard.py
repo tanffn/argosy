@@ -178,6 +178,22 @@ class EstateExposureBlock:
     missing_reasons: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class CompositionSlice:
+    """One slice of a composition donut (asset class or sector).
+
+    Carries the bucket name, absolute NIS value, percentage of the
+    composition total, and the list of holdings (tickers/labels) that
+    landed in this bucket. The UI surfaces ``holdings`` in the per-slice
+    tooltip.
+    """
+
+    name: str
+    value_nis: float
+    pct: float
+    holdings: list[str]
+
+
 @dataclass
 class Assumptions:
     swr_rate: float
@@ -203,7 +219,186 @@ class WealthDashboard:
     fx_exposure: FxExposureBlock
     rsu_income: RsuIncomeBlock
     estate_exposure: EstateExposureBlock
+    asset_class_composition: list[CompositionSlice]
+    sector_composition: list[CompositionSlice]
     assumptions: Assumptions
+
+
+# ---------------------------------------------------------------------------
+# Composition taxonomy — STATIC ticker → sector map.
+#
+# This is a hand-curated taxonomy for the user's known holdings. It is
+# intentionally narrow: unknown tickers fall into "Other". When the
+# portfolio gains a new symbol that warrants its own bucket, add it
+# here. The asset-class side is driven by ``PortfolioPosition.asset_type``
+# (set during TSV ingest) with this map as a fallback for the cases
+# where ``asset_type`` is blank.
+# ---------------------------------------------------------------------------
+
+#: Per-ticker sector classification. Israeli ETFs are NOT keyed here — they
+#: get the "Israeli ETF" bucket via a name-pattern check (Hebrew-character
+#: detection) which is more robust to label variations than enumerating
+#: every Hebrew-named instrument.
+_TICKER_TO_SECTOR: dict[str, str] = {
+    # Mega-cap tech (incl. AI/cloud/consumer-internet large-caps).
+    "NVDA": "Tech",
+    "AMD": "Tech",
+    "GOOG": "Tech",
+    "GOOGL": "Tech",
+    "AMZN": "Tech",
+    "META": "Tech",
+    "TSLA": "Tech",
+    # Broad-market / index ETFs.
+    "VOO": "ETF/Index",
+    "VTI": "ETF/Index",
+    "QQQM": "ETF/Index",
+    "SCHG": "ETF/Index",
+    "SPMO": "ETF/Index",
+    "SCHD": "ETF/Index",
+    "FWRA": "ETF/Index",
+    "MSCI WORLD": "ETF/Index",
+    "CSPX": "ETF/Index",
+    "ACWD": "ETF/Index",
+    "CNDX": "ETF/Index",
+    "XZEW": "ETF/Index",
+    # Value ETF (kept separate per spec).
+    "VTV": "Value ETF",
+    # Cash equivalents / T-bills.
+    "SGOV": "Cash/T-Bill",
+    # Healthcare / REIT (lumped into Other per spec).
+    "BMY": "Other",
+    "O": "Other",
+    # Conglomerate.
+    "BRK.B": "Conglomerate",
+    # Crypto.
+    "IBIT": "Crypto",
+}
+
+#: Per-ticker asset-class fallback used when a position's ``asset_type``
+#: field is missing/blank. The primary signal is ``asset_type``; this map
+#: only kicks in when that field is absent.
+_TICKER_TO_ASSET_CLASS_FALLBACK: dict[str, str] = {
+    "NVDA": "Equity",
+    "AMD": "Equity",
+    "GOOG": "Equity",
+    "GOOGL": "Equity",
+    "AMZN": "Equity",
+    "META": "Equity",
+    "TSLA": "Equity",
+    "VOO": "Equity",
+    "VTI": "Equity",
+    "QQQM": "Equity",
+    "SCHG": "Equity",
+    "SPMO": "Equity",
+    "SCHD": "Equity",
+    "FWRA": "Equity",
+    "CSPX": "Equity",
+    "ACWD": "Equity",
+    "CNDX": "Equity",
+    "XZEW": "Equity",
+    "VTV": "Equity",
+    "BMY": "Equity",
+    "O": "Equity",
+    "BRK.B": "Equity",
+    "SGOV": "Cash",
+    "IBIT": "Alternatives",
+}
+
+#: Canonical asset-class buckets. Used for deterministic ordering in the
+#: composition list and for clamping unknown classifications to "Other".
+_ASSET_CLASS_ORDER: tuple[str, ...] = (
+    "Equity",
+    "Fixed Income",
+    "Cash",
+    "Alternatives",
+    "Real Estate",
+    "Other",
+)
+
+_SECTOR_ORDER: tuple[str, ...] = (
+    "Tech",
+    "ETF/Index",
+    "Value ETF",
+    "Israeli ETF",
+    "Conglomerate",
+    "Cash/T-Bill",
+    "Crypto",
+    "Other",
+)
+
+
+def _classify_asset_class(asset_type: str, symbol: str) -> str:
+    """Map a position's ``asset_type`` (+ symbol fallback) to one of the
+    canonical asset-class buckets.
+
+    Rules (in order):
+      1. SGOV → Cash (special-cased; technically a T-bill ETF but
+         commonly counted as a cash equivalent for runway/composition).
+      2. ``asset_type`` keyword match — case-insensitive substring on
+         "equity"/"growth"/"core equity"/"individual stocks"/"nvidia"
+         → Equity, "fixed income"/"bond"/"defensive" → Fixed Income, etc.
+      3. If ``asset_type`` is blank, fall back to per-ticker map.
+      4. Otherwise → Other.
+    """
+    sym = (symbol or "").upper().strip()
+    at = (asset_type or "").lower().strip()
+
+    # Spec carve-out: SGOV is a T-bill ETF commonly counted as Cash.
+    if sym == "SGOV":
+        return "Cash"
+
+    if at:
+        if any(k in at for k in ("equity", "growth", "individual stocks", "nvidia", "dividend", "international", "value")):
+            return "Equity"
+        if any(k in at for k in ("fixed income", "bond", "defensive")):
+            return "Fixed Income"
+        if at in ("cash", "money market"):
+            return "Cash"
+        if any(k in at for k in ("alternative", "crypto")):
+            return "Alternatives"
+        if "real estate" in at or at == "reit":
+            # Real Estate as its own bucket — clearer than lumping into
+            # Alternatives or Other.
+            return "Real Estate"
+        # Fall through to fallback map / Other for unknown asset_type
+        # strings (defensive: don't silently mis-classify).
+
+    # asset_type missing → per-ticker fallback map.
+    if sym in _TICKER_TO_ASSET_CLASS_FALLBACK:
+        return _TICKER_TO_ASSET_CLASS_FALLBACK[sym]
+
+    return "Other"
+
+
+def _is_israeli_etf(symbol: str, details: str) -> bool:
+    """Detect Israeli-market ETFs by Hebrew characters in symbol/details.
+
+    The user's snapshot carries names like ``מחקה ת"א-200`` — robust to
+    label variations because we only need to know "this is a Hebrew
+    instrument". Range U+0590..U+05FF covers the Hebrew Unicode block.
+    """
+    haystack = f"{symbol or ''} {details or ''}"
+    return any("֐" <= ch <= "׿" for ch in haystack)
+
+
+def _classify_sector(symbol: str, details: str) -> str:
+    """Map a position's ``symbol`` (+ details fallback) to one of the
+    canonical sector buckets.
+
+    Rules (in order):
+      1. Israeli ETF (Hebrew characters in symbol/details) → "Israeli ETF".
+      2. Static per-ticker map lookup → that bucket.
+      3. Otherwise → "Other".
+
+    The static map is intentionally narrow: it covers the user's known
+    holdings. New tickers warrant a per-PR taxonomy update.
+    """
+    if _is_israeli_etf(symbol, details):
+        return "Israeli ETF"
+    sym = (symbol or "").upper().strip()
+    if sym in _TICKER_TO_SECTOR:
+        return _TICKER_TO_SECTOR[sym]
+    return "Other"
 
 
 # ---------------------------------------------------------------------------
@@ -865,6 +1060,103 @@ def _estate_exposure(
     )
 
 
+def _compositions(
+    *, snapshot: PortfolioSnapshotRow | None, fx_usd_nis: float,
+) -> tuple[list[CompositionSlice], list[CompositionSlice]]:
+    """Return (asset_class_composition, sector_composition).
+
+    Each composition is a list of ``CompositionSlice`` sorted by absolute
+    value descending, with ``pct`` summing to ~100% across the list.
+    Holdings within each slice are de-duplicated tickers (e.g. multiple
+    VOO lots → one "VOO" entry) sorted alphabetically.
+
+    Positions with non-positive ``usd_value_k`` are skipped — they
+    contribute nothing to either composition. Real-estate rows (symbol
+    "-", asset_type "Real estate") flow into "Real Estate" / "Other"
+    naturally via the classifiers.
+    """
+    if snapshot is None:
+        return [], []
+    try:
+        positions = json.loads(snapshot.positions_json or "[]")
+    except json.JSONDecodeError:
+        return [], []
+
+    # Accumulate by bucket: name -> (total NIS, set of holding labels).
+    asset_buckets: dict[str, dict[str, Any]] = {}
+    sector_buckets: dict[str, dict[str, Any]] = {}
+
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        v_k = p.get("usd_value_k") or 0.0
+        try:
+            v_k_f = float(v_k)
+        except (TypeError, ValueError):
+            continue
+        if v_k_f <= 0:
+            continue
+        v_nis = v_k_f * 1000.0 * fx_usd_nis
+
+        symbol = (p.get("symbol") or "").strip()
+        details = (p.get("details") or "").strip()
+        asset_type = p.get("asset_type") or ""
+
+        # Display label preference: ticker, else asset_type ("Cash") or details.
+        if symbol and symbol != "-":
+            label = symbol
+        elif asset_type:
+            label = asset_type
+        elif details:
+            label = details
+        else:
+            label = "(unlabeled)"
+
+        ac = _classify_asset_class(asset_type, symbol)
+        sec = _classify_sector(symbol, details)
+
+        ab = asset_buckets.setdefault(ac, {"value": 0.0, "holdings": set()})
+        ab["value"] += v_nis
+        ab["holdings"].add(label)
+
+        sb = sector_buckets.setdefault(sec, {"value": 0.0, "holdings": set()})
+        sb["value"] += v_nis
+        sb["holdings"].add(label)
+
+    def _finalise(
+        buckets: dict[str, dict[str, Any]], order: tuple[str, ...],
+    ) -> list[CompositionSlice]:
+        total = sum(b["value"] for b in buckets.values())
+        if total <= 0:
+            return []
+        # Sort: known buckets in canonical order first, unknown alphabetical.
+        def sort_key(name: str) -> tuple[int, str]:
+            try:
+                return (order.index(name), name)
+            except ValueError:
+                return (len(order), name)
+
+        slices: list[CompositionSlice] = []
+        for name in sorted(buckets.keys(), key=sort_key):
+            b = buckets[name]
+            slices.append(
+                CompositionSlice(
+                    name=name,
+                    value_nis=b["value"],
+                    pct=(b["value"] / total) * 100.0,
+                    holdings=sorted(b["holdings"]),
+                )
+            )
+        # Final sort: by value descending (UI expects "Equity ~84%" first).
+        slices.sort(key=lambda s: -s.value_nis)
+        return slices
+
+    return (
+        _finalise(asset_buckets, _ASSET_CLASS_ORDER),
+        _finalise(sector_buckets, _SECTOR_ORDER),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public entry point.
 # ---------------------------------------------------------------------------
@@ -942,6 +1234,9 @@ def compute_wealth_dashboard(
         user_ctx=user_ctx, snapshot=snapshot, fx_usd_nis=fx_usd_nis,
     )
     estate_exposure = _estate_exposure(snapshot=snapshot, fx_usd_nis=fx_usd_nis)
+    asset_class_composition, sector_composition = _compositions(
+        snapshot=snapshot, fx_usd_nis=fx_usd_nis,
+    )
 
     assumptions = Assumptions(
         swr_rate=SWR,
@@ -972,6 +1267,8 @@ def compute_wealth_dashboard(
         fx_exposure=fx_exposure,
         rsu_income=rsu_income,
         estate_exposure=estate_exposure,
+        asset_class_composition=asset_class_composition,
+        sector_composition=sector_composition,
         assumptions=assumptions,
     )
 
@@ -994,6 +1291,7 @@ __all__ = [
     "RsuIncomeBlock",
     "RsuQuarter",
     "EstateExposureBlock",
+    "CompositionSlice",
     "Assumptions",
     "compute_wealth_dashboard",
     "wealth_dashboard_to_dict",

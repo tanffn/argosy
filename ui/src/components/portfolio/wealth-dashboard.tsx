@@ -5,6 +5,8 @@ import {
   Bar,
   BarChart,
   Cell,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip as RechartsTooltip,
   XAxis,
@@ -34,6 +36,9 @@ interface WealthDashboardProps {
  *   ROW 2 — 4-column grid: cash runway, NVDA concentration, savings rate,
  *           FX exposure.
  *   ROW 3 — 2-column grid: RSU income (next 12 months), estate exposure.
+ *   ROW 4 — 2-column grid: asset-class composition donut + sector
+ *           composition donut. Each slice click reveals the tickers
+ *           that landed in that bucket via the Recharts tooltip.
  *
  * Every block tolerates missing data: when the backend returns null
  * for a metric, the card renders "—" with the missing-data tooltip
@@ -96,6 +101,20 @@ export function WealthDashboard({ userId }: WealthDashboardProps) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <RsuIncomeCard block={data.rsu_income} />
         <EstateExposureCard block={data.estate_exposure} />
+      </div>
+
+      {/* Row 4: 2-column composition donuts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <CompositionDonutCard
+          eyebrow="Asset class"
+          slices={data.asset_class_composition}
+          palette={ASSET_CLASS_PALETTE}
+        />
+        <CompositionDonutCard
+          eyebrow="Sector"
+          slices={data.sector_composition}
+          palette={SECTOR_PALETTE}
+        />
       </div>
     </section>
   );
@@ -550,5 +569,147 @@ function Donut({ angle, color }: { angle: number; color: string }) {
         strokeLinecap="butt"
       />
     </svg>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Row 4 — composition donuts (asset class + sector)
+// ---------------------------------------------------------------------------
+
+/**
+ * Color palettes for the composition donuts. Keys are the bucket names
+ * emitted by the backend (``argosy/services/wealth_dashboard.py``). When
+ * a bucket name isn't in the palette, the donut falls back to the
+ * muted-foreground token so unknown labels render without crashing.
+ */
+const ASSET_CLASS_PALETTE: Record<string, string> = {
+  Equity: "var(--color-primary)",
+  "Fixed Income": "var(--color-info)",
+  Cash: "var(--color-success)",
+  Alternatives: "var(--color-warning)",
+  "Real Estate": "var(--color-accent)",
+  Other: "var(--color-muted-foreground)",
+};
+
+const SECTOR_PALETTE: Record<string, string> = {
+  Tech: "var(--color-primary)",
+  "ETF/Index": "var(--color-info)",
+  "Value ETF": "var(--color-accent)",
+  "Israeli ETF": "var(--color-warning)",
+  Conglomerate: "var(--color-success)",
+  "Cash/T-Bill": "var(--color-success)",
+  Crypto: "var(--color-error)",
+  Other: "var(--color-muted-foreground)",
+};
+
+interface CompositionDonutCardProps {
+  eyebrow: string;
+  slices: WealthDashboardDTO["asset_class_composition"];
+  palette: Record<string, string>;
+}
+
+function CompositionDonutCard({
+  eyebrow,
+  slices,
+  palette,
+}: CompositionDonutCardProps) {
+  const total = useMemo(
+    () => slices.reduce((s, sl) => s + sl.value_nis, 0),
+    [slices],
+  );
+  const top = slices[0] ?? null;
+  const colorFor = (name: string) =>
+    palette[name] ?? "var(--color-muted-foreground)";
+
+  return (
+    <StatCard
+      eyebrow={eyebrow}
+      value={
+        top != null ? (
+          <>
+            {top.pct.toFixed(0)}
+            <span className="text-sm text-muted-foreground">% {top.name}</span>
+          </>
+        ) : (
+          "—"
+        )
+      }
+      subline={
+        total > 0 ? `${formatNis(total)} NIS total` : "no positions in snapshot"
+      }
+      missingReasons={
+        slices.length === 0 ? ["no portfolio snapshot"] : undefined
+      }
+    >
+      {slices.length === 0 ? (
+        <div className="text-xs text-muted-foreground py-6 text-center">
+          No positions to break down
+        </div>
+      ) : (
+        <div className="flex flex-col sm:flex-row gap-3 items-center">
+          <ResponsiveContainer width="100%" height={180} minWidth={140}>
+            <PieChart>
+              <Pie
+                data={slices}
+                dataKey="value_nis"
+                nameKey="name"
+                innerRadius={45}
+                outerRadius={75}
+                paddingAngle={1.5}
+                isAnimationActive={false}
+              >
+                {slices.map((sl) => (
+                  <Cell key={sl.name} fill={colorFor(sl.name)} />
+                ))}
+              </Pie>
+              <RechartsTooltip
+                formatter={
+                  ((
+                    _value: number,
+                    _name: string,
+                    item: {
+                      payload: WealthDashboardDTO["asset_class_composition"][number];
+                    },
+                  ) => [
+                    `${item.payload.pct.toFixed(1)}% · ${formatNis(item.payload.value_nis)} NIS\n${item.payload.holdings.join(", ")}`,
+                    item.payload.name,
+                  ]) as unknown as never
+                }
+                contentStyle={{
+                  background: "var(--color-popover)",
+                  border: "1px solid var(--color-border)",
+                  fontSize: 11,
+                  whiteSpace: "pre-line",
+                  maxWidth: 260,
+                }}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+          <div className="flex-1 flex flex-col gap-1 text-xs min-w-0">
+            {slices.map((sl) => (
+              <div
+                key={sl.name}
+                className="flex items-center gap-2"
+                title={
+                  sl.holdings.length > 0
+                    ? `${sl.name}: ${sl.holdings.join(", ")}`
+                    : sl.name
+                }
+              >
+                <span
+                  className="inline-block w-2.5 h-2.5 rounded-sm shrink-0"
+                  style={{ background: colorFor(sl.name) }}
+                  aria-hidden
+                />
+                <span className="flex-1 truncate">{sl.name}</span>
+                <span className="text-muted-foreground tabular-nums">
+                  {sl.pct.toFixed(0)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </StatCard>
   );
 }

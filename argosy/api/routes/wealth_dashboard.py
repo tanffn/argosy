@@ -122,6 +122,13 @@ class EstateExposureBlockDTO(BaseModel):
     missing_reasons: list[str]
 
 
+class CompositionSliceDTO(BaseModel):
+    name: str
+    value_nis: float
+    pct: float
+    holdings: list[str]
+
+
 class AssumptionsDTO(BaseModel):
     swr_rate: float
     scenario_returns: dict[str, float]
@@ -145,6 +152,8 @@ class WealthDashboardDTO(BaseModel):
     fx_exposure: FxExposureBlockDTO
     rsu_income: RsuIncomeBlockDTO
     estate_exposure: EstateExposureBlockDTO
+    asset_class_composition: list[CompositionSliceDTO]
+    sector_composition: list[CompositionSliceDTO]
     assumptions: AssumptionsDTO
 
 
