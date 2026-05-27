@@ -222,6 +222,387 @@ def test_guidance_threads_to_synthesizer_and_fm(session, monkeypatch):
     assert captured_fm_kwargs["user_directive"] == GUIDANCE
 
 
+def test_guidance_threads_to_phase_1_2_4(session, monkeypatch):
+    """Wave 1 follow-up — verifies the user's ``guidance`` reaches the
+    Phase 1 plan_critique (ONLY — not the 9 other analysts), the Phase 2
+    bull / bear / researcher_facilitator, and the Phase 4 risk_officer
+    (x3) + risk_facilitator via the ``user_directive`` kwarg.
+
+    Closes the D1 self-review RED finding: pre-fix, ``run_synthesis``
+    only forwarded ``guidance`` to Phase 3 (synthesizer) + Phase 5 (FM).
+    Phase 1's plan_critique, Phase 2's debaters, and Phase 4's risk
+    officers + facilitator never saw it, so they'd feed the synthesizer
+    + FM their unchanged reasoning and force them to overrule with
+    extra tokens.
+
+    Per the spec, the 9 single-ticker analysts (concentration, fx,
+    fundamentals, news, sentiment, technical, macro, tax,
+    household_budget) are pure data-gatherers and don't receive
+    ``user_directive`` — they don't declare it on their build_prompt
+    signatures so ``_safe_run_agent``'s narrowing filter drops it.
+    """
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch_mod
+
+    GUIDANCE = (
+        "AGREED: NVDA concentration capped at 12%.\n"
+        "DISAGREED: tax-loss harvest is not urgent — defer to Q4 2026.\n"
+        "DEFERRED: FX hedge sizing."
+    )
+
+    # Per-agent kwargs capture buckets.
+    captured: dict[str, list[dict]] = {
+        "plan_critique": [],
+        "other_analyst": [],  # any of the 9 non-critique analysts
+        "bull_researcher": [],
+        "bear_researcher": [],
+        "researcher_facilitator": [],
+        "risk_officer": [],
+        "risk_facilitator": [],
+        "plan_synthesizer": [],
+        "fund_manager": [],
+    }
+
+    # ---- Phase 1: plan_critique + 9 other analysts ---------------------
+    # Each fake mirrors the build_prompt signature of its real counterpart
+    # so _safe_run_agent's signature-narrowing decides whether
+    # user_directive flows through. PlanCritique declares it; the other 9
+    # do not — that's the contract under test.
+    #
+    # IMPORTANT: ``_safe_run_agent`` inspects ``build_prompt``'s signature
+    # to decide what to narrow. If the stub declares ``**kw`` the
+    # narrowing is skipped (VAR_KEYWORD passes everything through), so
+    # the stubs below MUST declare explicit keyword-only parameters
+    # matching their real counterparts. Only ``plan_critique`` declares
+    # ``user_directive``.
+    def _make_phase_1_fake(role: str, declares_directive: bool):
+        if declares_directive:
+            class _Fake:
+                agent_role = role
+
+                def __init__(self, *_a, **_kw):
+                    pass
+
+                def build_prompt(
+                    self, *, plan_label="", plan_markdown="",
+                    snapshot_label="", snapshot_summary="",
+                    user_context_yaml="", domain_kb_files=None,
+                    recent_events="", user_directive="",
+                ):  # pragma: no cover - signature only
+                    return "sys", "usr", []
+
+                def run_sync(self, **kw):
+                    captured["plan_critique"].append(dict(kw))
+
+                    class _R:
+                        output = type(
+                            "O", (), {"model_dump_json": lambda self: "{}"}
+                        )()
+                        model = "fake"
+                    return _R()
+            return _Fake
+
+        # Non-critique analyst: build_prompt does NOT declare user_directive.
+        # Use explicit keyword-only parameters (no **kw) so
+        # _safe_run_agent's signature-based narrowing drops user_directive.
+        class _Fake:
+            agent_role = role
+
+            def __init__(self, *_a, **_kw):
+                pass
+
+            def build_prompt(
+                self, *, positions_summary="", plan_targets=None,
+                fx_payload=None, tickers=None, fundamentals_payload=None,
+                news_payload=None, social_payload=None,
+                indicators_payload=None, macro_snapshot=None,
+                lots_summary="", dividends_summary="",
+                rsu_schedule_summary="", household_budget_payload=None,
+                nvda_shares_sold_ytd=0, nvda_target_shares_ytd=0,
+            ):  # pragma: no cover - signature only
+                return "sys", "usr"
+
+            def run_sync(self, **kw):
+                captured["other_analyst"].append({"role": role, **kw})
+
+                class _R:
+                    output = type(
+                        "O", (), {"model_dump_json": lambda self: "{}"}
+                    )()
+                    model = "fake"
+                return _R()
+        return _Fake
+
+    monkeypatch.setattr(
+        flow, "PlanCritiqueAgent",
+        _make_phase_1_fake("plan_critique", declares_directive=True),
+        raising=True,
+    )
+    for cls_name in (
+        "ConcentrationAnalystAgent", "FxAnalystAgent",
+        "FundamentalsAnalystAgent", "HouseholdBudgetAnalystAgent",
+        "MacroAnalystAgent", "NewsAnalystAgent",
+        "SentimentAnalystAgent", "TaxAnalystAgent",
+        "TechnicalAnalystAgent",
+    ):
+        monkeypatch.setattr(
+            flow, cls_name,
+            _make_phase_1_fake(cls_name, declares_directive=False),
+            raising=True,
+        )
+
+    # ---- Phase 2: bull / bear / researcher_facilitator -----------------
+    from argosy.agents.researcher import (
+        BearResearcherAgent,
+        BullResearcherAgent,
+    )
+    from argosy.agents.researcher_facilitator import (
+        ResearcherFacilitatorAgent,
+    )
+
+    def _stub_bull_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "bull_researcher"
+        self.model = "fake"
+
+    def _stub_bull_run_sync(self, **kw):
+        captured["bull_researcher"].append(dict(kw))
+
+        class _Turn:
+            def model_dump(self):
+                return {"side": "bull"}
+
+        class _R:
+            output = _Turn()
+            model = "fake"
+        return _R()
+
+    def _stub_bear_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "bear_researcher"
+        self.model = "fake"
+
+    def _stub_bear_run_sync(self, **kw):
+        captured["bear_researcher"].append(dict(kw))
+
+        class _Turn:
+            def model_dump(self):
+                return {"side": "bear"}
+
+        class _R:
+            output = _Turn()
+            model = "fake"
+        return _R()
+
+    def _stub_fac_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "researcher_facilitator"
+        self.model = "fake"
+
+    def _stub_fac_run_sync(self, **kw):
+        captured["researcher_facilitator"].append(dict(kw))
+
+        class _Out:
+            def model_dump_json(self):
+                return '{"winning_side": "bull"}'
+
+        class _R:
+            output = _Out()
+            model = "fake"
+        return _R()
+
+    monkeypatch.setattr(BullResearcherAgent, "__init__", _stub_bull_init)
+    monkeypatch.setattr(BullResearcherAgent, "run_sync", _stub_bull_run_sync)
+    monkeypatch.setattr(BearResearcherAgent, "__init__", _stub_bear_init)
+    monkeypatch.setattr(BearResearcherAgent, "run_sync", _stub_bear_run_sync)
+    monkeypatch.setattr(ResearcherFacilitatorAgent, "__init__", _stub_fac_init)
+    monkeypatch.setattr(
+        ResearcherFacilitatorAgent, "run_sync", _stub_fac_run_sync,
+    )
+
+    # ---- Phase 4: risk_officer (x3 perspectives) + risk_facilitator ---
+    def _fake_risk_officer(stance, *, user_id=None):
+        class _Stub:
+            agent_role = f"risk_{stance}"
+
+            def run_sync(self, **kw):
+                captured["risk_officer"].append(
+                    {"stance": stance, **kw}
+                )
+
+                class _Out:
+                    def model_dump_json(self):
+                        return f'{{"perspective": "{stance}", "verdict": "APPROVE"}}'
+
+                class _R:
+                    output = _Out()
+                    model = "fake"
+                return _R()
+        return _Stub()
+
+    monkeypatch.setattr(flow, "_make_risk_officer", _fake_risk_officer)
+
+    from argosy.agents.risk_facilitator import RiskFacilitatorAgent
+
+    def _stub_risk_fac_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "risk_facilitator"
+        self.model = "fake"
+
+    def _stub_risk_fac_run_sync(self, **kw):
+        captured["risk_facilitator"].append(dict(kw))
+
+        class _Out:
+            def model_dump_json(self):
+                return '{"consensus_verdict": "APPROVE"}'
+
+        class _R:
+            output = _Out()
+            model = "fake"
+        return _R()
+
+    monkeypatch.setattr(RiskFacilitatorAgent, "__init__", _stub_risk_fac_init)
+    monkeypatch.setattr(
+        RiskFacilitatorAgent, "run_sync", _stub_risk_fac_run_sync,
+    )
+
+    # ---- Phase 3: synthesizer ------------------------------------------
+    class _FakeSynth:
+        agent_role = "plan_synthesizer"
+
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def run_sync(self, **kw):
+            captured["plan_synthesizer"].append(dict(kw))
+
+            class _R:
+                output = _stub_synthesis_output()
+                model = "fake"
+            return _R()
+
+    monkeypatch.setattr(orch_mod, "PlanSynthesizerAgent", _FakeSynth)
+
+    # ---- Phase 5: fund manager -----------------------------------------
+    class _FakeFM:
+        agent_role = "fund_manager"
+
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def run_sync(self, **kw):
+            captured["fund_manager"].append(dict(kw))
+
+            class _Out:
+                approved = True
+
+                def model_dump_json(self):
+                    return '{"approved": true}'
+
+            class _R:
+                output = _Out()
+                model = "fake"
+            return _R()
+
+    monkeypatch.setattr(flow, "_make_fund_manager", lambda *a, **kw: _FakeFM())
+
+    monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+    # Drive the synthesis end-to-end with guidance.
+    result = flow.run_synthesis(
+        session, user_id="ariel", trigger="check_in", guidance=GUIDANCE,
+    )
+    assert result.draft_id is not None
+
+    # ---- Assertions -----------------------------------------------------
+
+    # Phase 1: plan_critique received user_directive=GUIDANCE; the other
+    # 9 analysts did NOT receive a user_directive kwarg.
+    assert len(captured["plan_critique"]) == 1, (
+        f"PlanCritiqueAgent should be invoked exactly once; got "
+        f"{len(captured['plan_critique'])} invocations"
+    )
+    assert captured["plan_critique"][0].get("user_directive") == GUIDANCE, (
+        "PlanCritiqueAgent.run_sync was NOT called with user_directive=GUIDANCE — "
+        "Phase 1 plan_critique is still missing the guidance thread"
+    )
+
+    # The other 9 single-ticker analysts must NOT receive user_directive.
+    # This guards against accidentally widening the surface to data-only
+    # agents that don't need user input.
+    assert len(captured["other_analyst"]) == 9, (
+        f"expected 9 non-critique analyst invocations, got "
+        f"{len(captured['other_analyst'])}: "
+        f"{[c.get('role') for c in captured['other_analyst']]}"
+    )
+    for call in captured["other_analyst"]:
+        assert "user_directive" not in call, (
+            f"non-critique analyst {call.get('role')} received "
+            f"user_directive — signature narrowing failed; the 9 data-"
+            f"gatherer analysts must NOT see user guidance"
+        )
+
+    # Phase 2: bull / bear / facilitator each received user_directive=GUIDANCE
+    # across all three horizons.
+    assert len(captured["bull_researcher"]) == 3, (
+        f"BullResearcherAgent should be invoked 3 times (once per horizon); "
+        f"got {len(captured['bull_researcher'])}"
+    )
+    assert len(captured["bear_researcher"]) == 3, (
+        f"BearResearcherAgent should be invoked 3 times; "
+        f"got {len(captured['bear_researcher'])}"
+    )
+    assert len(captured["researcher_facilitator"]) == 3, (
+        f"ResearcherFacilitatorAgent should be invoked 3 times; "
+        f"got {len(captured['researcher_facilitator'])}"
+    )
+    for kw in captured["bull_researcher"]:
+        assert kw.get("user_directive") == GUIDANCE, (
+            "BullResearcherAgent.run_sync was NOT called with "
+            "user_directive=GUIDANCE — Phase 2 bull thread missing"
+        )
+    for kw in captured["bear_researcher"]:
+        assert kw.get("user_directive") == GUIDANCE, (
+            "BearResearcherAgent.run_sync was NOT called with "
+            "user_directive=GUIDANCE — Phase 2 bear thread missing"
+        )
+    for kw in captured["researcher_facilitator"]:
+        assert kw.get("user_directive") == GUIDANCE, (
+            "ResearcherFacilitatorAgent.run_sync was NOT called with "
+            "user_directive=GUIDANCE — Phase 2 facilitator thread missing"
+        )
+
+    # Phase 4: 3 risk officers + 1 facilitator each received user_directive.
+    assert len(captured["risk_officer"]) == 3, (
+        f"3 risk officers should run (one per perspective); got "
+        f"{len(captured['risk_officer'])}"
+    )
+    stances_seen = sorted(c["stance"] for c in captured["risk_officer"])
+    assert stances_seen == ["aggressive", "conservative", "neutral"], (
+        f"all 3 risk perspectives should fire; got {stances_seen}"
+    )
+    for kw in captured["risk_officer"]:
+        assert kw.get("user_directive") == GUIDANCE, (
+            f"RiskOfficerAgent ({kw['stance']}).run_sync was NOT called "
+            f"with user_directive=GUIDANCE — Phase 4 officer thread missing"
+        )
+    assert len(captured["risk_facilitator"]) == 1, (
+        f"RiskFacilitatorAgent should be invoked exactly once; got "
+        f"{len(captured['risk_facilitator'])}"
+    )
+    assert captured["risk_facilitator"][0].get("user_directive") == GUIDANCE, (
+        "RiskFacilitatorAgent.run_sync was NOT called with "
+        "user_directive=GUIDANCE — Phase 4 facilitator thread missing"
+    )
+
+    # Regression check: Phase 3 + Phase 5 must still receive guidance.
+    assert len(captured["plan_synthesizer"]) == 1
+    assert captured["plan_synthesizer"][0].get("user_directive") == GUIDANCE
+    assert len(captured["fund_manager"]) == 1
+    assert captured["fund_manager"][0].get("user_directive") == GUIDANCE
+
+
 def test_synthesis_flow_fails_loudly_when_no_baseline(alembic_engine_at_head, monkeypatch):
     """Without a baseline, synthesis cannot run — the orchestrator must
     raise rather than silently produce a draft from nothing.

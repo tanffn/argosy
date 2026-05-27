@@ -117,6 +117,68 @@ async def test_plan_critique_produces_findings() -> None:
     assert "plan/markdown" in (agent.last_user or "")
 
 
+def test_build_prompt_includes_user_directive_when_provided() -> None:
+    """When the orchestrator threads a non-empty ``user_directive``, the
+    plan_critique system prompt MUST include the DIRECTIVE POINTER block
+    and the user prompt MUST carry the verbatim directive text at the
+    top. Closes the D1 self-review finding for Phase 1 plan_critique —
+    without this thread the critique re-raises findings the user has
+    already AGREED with, which the synthesizer + FM then re-litigate
+    downstream.
+    """
+    directive = (
+        "AGREED: NVDA concentration must be capped at 12%.\n"
+        "DISAGREED: tax-loss harvest is NOT urgent — user counter-position\n"
+        "  is to defer harvesting until Q4 2026.\n"
+        "DEFERRED: FX hedge sizing — re-evaluate honestly."
+    )
+    agent = PlanCritiqueAgent(user_id="ariel")
+    sys, usr, _sources = agent.build_prompt(
+        plan_label="x", plan_markdown="m", snapshot_label="y",
+        snapshot_summary="s", user_context_yaml="",
+        domain_kb_files={}, recent_events="",
+        user_directive=directive,
+    )
+    # Post-fix: system holds the POINTER + instructions for the three
+    # stances; verbatim directive content lives in the user prompt to
+    # dodge the bundled claude.exe SDK's empty-output path observed
+    # with large variable content in system prompts.
+    assert "USER DIRECTIVE PRESENT" in sys
+    # Verbatim directive content reaches the model — via the USER prompt.
+    assert "AGREED: NVDA concentration must be capped at 12%." in usr
+    assert "DISAGREED: tax-loss harvest is NOT urgent" in usr
+    assert "DEFERRED: FX hedge sizing" in usr
+    # Per-stance instruction language must be in the system prompt so
+    # the critique knows how to act.
+    assert "do NOT re-raise" in sys
+    assert "counter-position" in sys
+    assert "DEFERRED" in sys
+
+
+def test_build_prompt_omits_directive_section_when_empty() -> None:
+    """Empty ``user_directive`` (default) MUST produce a byte-identical
+    system+user prompt to the no-kwarg call. Guards the happy path on
+    the scheduled monthly synthesis cycle that doesn't carry user
+    feedback.
+    """
+    agent = PlanCritiqueAgent(user_id="ariel")
+    base_kwargs = dict(
+        plan_label="x", plan_markdown="m", snapshot_label="y",
+        snapshot_summary="s", user_context_yaml="",
+        domain_kb_files={}, recent_events="",
+    )
+    sys_a, usr_a, _ = agent.build_prompt(**base_kwargs)
+    sys_b, usr_b, _ = agent.build_prompt(**base_kwargs, user_directive="")
+    assert sys_a == sys_b, (
+        "empty user_directive must produce a byte-identical system prompt "
+        "to the no-kwarg call"
+    )
+    assert usr_a == usr_b
+    # The section header must NOT appear when directive is empty.
+    assert "USER DIRECTIVE" not in sys_a
+    assert "USER DIRECTIVE" not in usr_a
+
+
 @pytest.mark.asyncio
 async def test_plan_critique_rejects_uncited_output() -> None:
     canned = {

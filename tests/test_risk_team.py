@@ -104,6 +104,97 @@ async def test_facilitator_extracts_consensus_approve() -> None:
     assert out.consensus_verdict == "APPROVE"
 
 
+# ---------------------------------------------------------------------------
+# Wave 1 follow-up — user_directive threading for risk_officer / risk_facilitator
+# ---------------------------------------------------------------------------
+
+
+_DIRECTIVE = (
+    "AGREED: max NVDA concentration is 12%.\n"
+    "DISAGREED: tax-loss harvest urgency — user counter is defer to Q4.\n"
+    "DEFERRED: FX hedge sizing."
+)
+
+
+def test_risk_officer_build_prompt_includes_user_directive_when_provided() -> None:
+    """Risk officer must surface user_directive so it doesn't REJECT a
+    proposal solely on a risk the user has already accepted. Closes the
+    D1 self-review finding for Phase 4 risk officers.
+    """
+    agent = RiskOfficerAgent(user_id="ariel", perspective="conservative")
+    sys, usr = agent.build_prompt(
+        proposal={"ticker": "NVDA", "action": "buy"},
+        analyst_reports=[{"agent_role": "fundamentals", "cited_sources": ["x"]}],
+        user_constraints="",
+        risk_caps={},
+        prior_rounds=None,
+        round_index=1,
+        n_max=1,
+        user_directive=_DIRECTIVE,
+    )
+    assert "USER DIRECTIVE PRESENT" in sys
+    assert "AGREED: max NVDA concentration is 12%." in usr
+    assert "DISAGREED: tax-loss harvest urgency" in usr
+    assert "DEFERRED: FX hedge sizing." in usr
+    # Officer-specific instruction language must accompany the pointer.
+    assert "AGREED" in sys
+    assert "DISAGREED" in sys
+    assert "DEFERRED" in sys
+
+
+def test_risk_officer_build_prompt_omits_directive_section_when_empty() -> None:
+    agent = RiskOfficerAgent(user_id="ariel", perspective="conservative")
+    base = dict(
+        proposal={"ticker": "NVDA"},
+        analyst_reports=[{"agent_role": "fundamentals", "cited_sources": ["x"]}],
+        user_constraints="",
+        risk_caps={},
+        prior_rounds=None,
+        round_index=1,
+        n_max=1,
+    )
+    sys_a, usr_a = agent.build_prompt(**base)
+    sys_b, usr_b = agent.build_prompt(**base, user_directive="")
+    assert sys_a == sys_b
+    assert usr_a == usr_b
+    assert "USER DIRECTIVE" not in sys_a
+    assert "USER DIRECTIVE" not in usr_a
+
+
+def test_risk_facilitator_build_prompt_includes_user_directive_when_provided() -> None:
+    """Risk facilitator must surface user_directive so the consensus
+    tally doesn't treat an officer's REJECT on a resolved item as a
+    real REJECT vote.
+    """
+    agent = RiskFacilitatorAgent(user_id="ariel")
+    sys, usr = agent.build_prompt(
+        verdicts=[_verdict("aggressive"), _verdict("neutral"), _verdict("conservative")],
+        rounds_run=1,
+        user_directive=_DIRECTIVE,
+    )
+    assert "USER DIRECTIVE PRESENT" in sys
+    assert "AGREED: max NVDA concentration is 12%." in usr
+    assert "DISAGREED: tax-loss harvest urgency" in usr
+    assert "DEFERRED: FX hedge sizing." in usr
+    assert "AGREED" in sys
+    assert "DISAGREED" in sys
+    assert "DEFERRED" in sys
+
+
+def test_risk_facilitator_build_prompt_omits_directive_section_when_empty() -> None:
+    agent = RiskFacilitatorAgent(user_id="ariel")
+    base = dict(
+        verdicts=[_verdict("aggressive"), _verdict("neutral"), _verdict("conservative")],
+        rounds_run=1,
+    )
+    sys_a, usr_a = agent.build_prompt(**base)
+    sys_b, usr_b = agent.build_prompt(**base, user_directive="")
+    assert sys_a == sys_b
+    assert usr_a == usr_b
+    assert "USER DIRECTIVE" not in sys_a
+    assert "USER DIRECTIVE" not in usr_a
+
+
 @pytest.mark.asyncio
 async def test_facilitator_escalates_on_split() -> None:
     canned = {

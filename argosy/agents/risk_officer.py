@@ -110,6 +110,7 @@ class RiskOfficerAgent(BaseAgent[RiskVerdict]):
         prior_rounds: list[dict] | None = None,
         round_index: int = 1,
         n_max: int = 2,
+        user_directive: str = "",
     ) -> tuple[str, str]:
         prior_rounds = prior_rounds or []
         instructions = _PERSPECTIVE_INSTRUCTIONS[self.perspective]
@@ -129,6 +130,30 @@ class RiskOfficerAgent(BaseAgent[RiskVerdict]):
             f"{RiskVerdict.model_json_schema()}\n"
         )
 
+        # User directive — authoritative input from the human captured on
+        # this synthesis run. Same pattern as plan_synthesizer.py /
+        # fund_manager.py (post-a5d317c): a short DIRECTIVE POINTER lives
+        # in the SYSTEM prompt; the verbatim directive content lives at
+        # the TOP of the USER prompt below. Variable content in system
+        # prompts has reproducibly triggered the bundled claude.exe SDK's
+        # empty-output path (synthesis #27/#28).
+        if user_directive:
+            system = system + (
+                "\nUSER DIRECTIVE PRESENT: a USER DIRECTIVE block appears in the "
+                "user message below capturing the human's per-objection stances "
+                "from the prior round. Respect the user's resolved positions:\n"
+                "  - Where the user has AGREED a risk is acceptable, you may "
+                "note residual concern as part of `concerns` but should not "
+                "block the proposal on that resolved item alone — don't REJECT "
+                "solely on a risk the user has accepted.\n"
+                "  - Where the user has DISAGREED with a prior concern and "
+                "supplied a counter-position, treat the counter-position as "
+                "authoritative on that point.\n"
+                "  - DEFERRED items: judge freshly.\n"
+                "You retain authority to flag NEW risks the user has not "
+                "addressed, especially if they breach configured risk caps.\n"
+            )
+
         prior_block = ""
         if prior_rounds:
             chunks: list[str] = []
@@ -145,7 +170,19 @@ class RiskOfficerAgent(BaseAgent[RiskVerdict]):
             payload = {k: v for k, v in r.items() if k not in ("agent_role", "role")}
             report_blocks.append(f"### {role}\n{payload}")
 
+        # User directive lives at the TOP of the user prompt (when
+        # present) so the model encounters it before the rest of the
+        # context. Empty (default) omits the section entirely.
+        directive_prefix = ""
+        if user_directive:
+            directive_prefix = (
+                "=== USER DIRECTIVE (authoritative human input on this run) ===\n"
+                + user_directive
+                + "\n\n"
+            )
+
         user = (
+            f"{directive_prefix}"
             f"Your perspective: {self.perspective}\n"
             f"Round {round_index} of {n_max}.\n\n"
             "TRADER PROPOSAL:\n"

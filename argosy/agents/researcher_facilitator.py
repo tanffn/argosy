@@ -51,6 +51,7 @@ class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
         bear_turns: list[dict],
         rounds_run: int,
         ticker: str = "",
+        user_directive: str = "",
     ) -> tuple[str, str]:
         """Build the prompt.
 
@@ -76,6 +77,27 @@ class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
             f"{DebateOutcome.model_json_schema()}\n"
         )
 
+        # User directive — authoritative input from the human captured on
+        # this synthesis run. Same pattern as plan_synthesizer.py /
+        # fund_manager.py (post-a5d317c): a short DIRECTIVE POINTER lives
+        # in the SYSTEM prompt; the verbatim directive content lives at
+        # the TOP of the USER prompt below. Variable content in system
+        # prompts has reproducibly triggered the bundled claude.exe SDK's
+        # empty-output path (synthesis #27/#28).
+        if user_directive:
+            system = system + (
+                "\nUSER DIRECTIVE PRESENT: a USER DIRECTIVE block appears in the "
+                "user message below capturing the human's per-objection stances "
+                "from the prior round. Where the user has resolved a debate "
+                "point, defer to the user's resolution; don't fork the "
+                "synthesizer further on items the user has already settled.\n"
+                "  - AGREED items: accept the user's resolution as the "
+                "prevailing outcome on that point; reflect it in the synthesis.\n"
+                "  - DISAGREED items: when the user supplied a counter-position, "
+                "treat that as the directional verdict on that point.\n"
+                "  - DEFERRED items: judge on the debate's merits.\n"
+            )
+
         def _render(turns: list[dict], side: str) -> str:
             if not turns:
                 return f"({side}: no turns)"
@@ -89,7 +111,19 @@ class ResearcherFacilitatorAgent(BaseAgent[DebateOutcome]):
                 )
             return "\n".join(chunks)
 
+        # User directive lives at the TOP of the user prompt (when
+        # present) so the model encounters it before the rest of the
+        # context. Empty (default) omits the section entirely.
+        directive_prefix = ""
+        if user_directive:
+            directive_prefix = (
+                "=== USER DIRECTIVE (authoritative human input on this run) ===\n"
+                + user_directive
+                + "\n\n"
+            )
+
         user = (
+            f"{directive_prefix}"
             f"Ticker under debate: {ticker or '(unspecified)'}\n"
             f"Rounds run: {rounds_run}\n\n"
             "=== BULL SIDE ===\n" + _render(bull_turns, "bull") + "\n\n"

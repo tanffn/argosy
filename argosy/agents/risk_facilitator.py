@@ -54,6 +54,7 @@ class RiskFacilitatorAgent(BaseAgent[RiskOutcome]):
         *,
         verdicts: list[dict],
         rounds_run: int,
+        user_directive: str = "",
     ) -> tuple[str, str]:
         """Build the prompt.
 
@@ -80,6 +81,29 @@ class RiskFacilitatorAgent(BaseAgent[RiskOutcome]):
             f"{RiskOutcome.model_json_schema()}\n"
         )
 
+        # User directive — authoritative input from the human captured on
+        # this synthesis run. Same pattern as plan_synthesizer.py /
+        # fund_manager.py (post-a5d317c): a short DIRECTIVE POINTER lives
+        # in the SYSTEM prompt; the verbatim directive content lives at
+        # the TOP of the USER prompt below. Variable content in system
+        # prompts has reproducibly triggered the bundled claude.exe SDK's
+        # empty-output path (synthesis #27/#28).
+        if user_directive:
+            system = system + (
+                "\nUSER DIRECTIVE PRESENT: a USER DIRECTIVE block appears in the "
+                "user message below capturing the human's per-objection stances "
+                "from the prior round. When forming the consensus:\n"
+                "  - Where the user has AGREED a risk is acceptable, treat any "
+                "officer REJECT solely on that resolved item as a non-blocking "
+                "dissent rather than a true REJECT vote for the consensus tally.\n"
+                "  - Where the user has DISAGREED with a prior concern and "
+                "supplied a counter-position, give the counter-position weight "
+                "when consolidating conditions.\n"
+                "  - DEFERRED items: judge on the officers' debate as usual.\n"
+                "Capture any officer dissent that survives the user's resolution "
+                "in `dissent_summary` so the FM sees it.\n"
+            )
+
         chunks: list[str] = []
         for v in verdicts:
             p = v.get("perspective", "?")
@@ -93,7 +117,19 @@ class RiskFacilitatorAgent(BaseAgent[RiskOutcome]):
                 f"    concerns:   {concerns}"
             )
 
+        # User directive lives at the TOP of the user prompt (when
+        # present) so the model encounters it before the rest of the
+        # context. Empty (default) omits the section entirely.
+        directive_prefix = ""
+        if user_directive:
+            directive_prefix = (
+                "=== USER DIRECTIVE (authoritative human input on this run) ===\n"
+                + user_directive
+                + "\n\n"
+            )
+
         user = (
+            f"{directive_prefix}"
             f"Rounds run: {rounds_run}\n"
             f"Total verdicts: {len(verdicts)}\n\n"
             "RISK DEBATE TRANSCRIPT:\n"

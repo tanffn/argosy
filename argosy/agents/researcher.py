@@ -76,6 +76,7 @@ class _ResearcherAgent(BaseAgent[ResearcherTurn]):
         round_index: int = 1,
         n_max: int = 2,
         ticker: str = "",
+        user_directive: str = "",
     ) -> tuple[str, str]:
         """Build the prompt for one debate turn.
 
@@ -110,6 +111,31 @@ class _ResearcherAgent(BaseAgent[ResearcherTurn]):
             f"{ResearcherTurn.model_json_schema()}\n"
         )
 
+        # User directive — authoritative input from the human captured on
+        # this synthesis run. Same pattern as plan_synthesizer.py /
+        # fund_manager.py (post-a5d317c): a short DIRECTIVE POINTER lives
+        # in the SYSTEM prompt with side-specific instructions; the
+        # verbatim directive content lives at the TOP of the USER prompt
+        # below. Variable content in system prompts has reproducibly
+        # triggered the bundled claude.exe SDK's empty-output path
+        # (synthesis #27/#28).
+        if user_directive:
+            system = system + (
+                "\nUSER DIRECTIVE PRESENT: a USER DIRECTIVE block appears in the "
+                "user message below capturing the human's per-objection stances "
+                f"from the prior round. As the {self._side} researcher:\n"
+                f"  - If the user's stance favors your {self._side} side on "
+                "this horizon (AGREED with your earlier position, or DISAGREED "
+                "with the opposite side), lean into it and reinforce the case.\n"
+                "  - If the user's stance opposes your side, you may still "
+                "argue your case but acknowledge the user's position "
+                "explicitly so the facilitator + synthesizer downstream see "
+                "where the disagreement lies.\n"
+                "  - For DEFERRED stances, argue your case normally.\n"
+                "  - Do NOT re-litigate points the user has resolved against "
+                "your side without acknowledging that resolution.\n"
+            )
+
         # Render analyst reports
         report_blocks: list[str] = []
         for r in analyst_reports:
@@ -135,7 +161,20 @@ class _ResearcherAgent(BaseAgent[ResearcherTurn]):
                 + f"\n\nThe LAST {opposite} turn is the one you must respond to."
             )
 
+        # User directive lives at the TOP of the user prompt (when
+        # present) so the model encounters it before the rest of the
+        # context. Empty (default) omits the section entirely so the
+        # byte-identity invariant on the happy path holds.
+        directive_prefix = ""
+        if user_directive:
+            directive_prefix = (
+                "=== USER DIRECTIVE (authoritative human input on this run) ===\n"
+                + user_directive
+                + "\n\n"
+            )
+
         user = (
+            f"{directive_prefix}"
             f"Ticker under debate: {ticker or '(unspecified)'}\n"
             f"Round {round_index} of {n_max}; you argue the {self._side} case.\n\n"
             "ANALYST REPORTS:\n\n" + "\n\n".join(report_blocks)

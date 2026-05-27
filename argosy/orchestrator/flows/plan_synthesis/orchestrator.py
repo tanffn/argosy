@@ -336,6 +336,7 @@ def run_synthesis(
             analyst_reports_text=analyst_reports_text,
             baseline=baseline, prior_current=prior_current,
             decision_run_id=decision_audit_token, trigger=trigger,
+            guidance=guidance,
         )
         if isinstance(_phase_2_result, tuple) and len(_phase_2_result) == 2:
             debate_outcomes_text, _phase_2_reports = _phase_2_result
@@ -457,6 +458,7 @@ def run_synthesis(
             session=session, user_id=user_id, draft_output=output,
             analyst_reports_text=analyst_reports_text,
             decision_run_id=decision_audit_token,
+            guidance=guidance,
         )
         if isinstance(_phase_4_result, tuple) and len(_phase_4_result) == 2:
             risk_verdict, _phase_4_reports = _phase_4_result
@@ -2226,7 +2228,8 @@ def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
                       stance=stance, user_id=user_id,
                       draft_output=draft_output,
                       analyst_reports_text=analyst_reports_text,
-                      decision_run_id=decision_run_id): stance
+                      decision_run_id=decision_run_id,
+                      guidance=guidance): stance
             for stance in ("aggressive", "neutral", "conservative")
         }
         for fut in as_completed(futures):
@@ -2280,6 +2283,7 @@ def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
         merged = facilitator.run_sync(
             verdicts=verdicts,
             rounds_run=1,
+            user_directive=guidance,
             decision_id=decision_run_id,
         )
         if isinstance(merged, AgentReport):
@@ -2323,7 +2327,8 @@ def _make_risk_officer(stance: str, *, user_id: str | None = None):
 def _run_one_risk_perspective(*, stance: str, user_id: str,
                               draft_output: PlanSynthesisOutput,
                               analyst_reports_text: str,
-                              decision_run_id: str
+                              decision_run_id: str,
+                              guidance: str = "",
                               ) -> tuple[str, AgentReport | None]:
     """Run one risk-officer perspective and return ``(text, report)``.
 
@@ -2369,6 +2374,7 @@ def _run_one_risk_perspective(*, stance: str, user_id: str,
         prior_rounds=[],
         round_index=1,
         n_max=1,
+        user_directive=guidance,
         decision_id=decision_run_id,
     )
     out = getattr(result, "output", result)

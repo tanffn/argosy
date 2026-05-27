@@ -95,6 +95,7 @@ class PlanCritiqueAgent(BaseAgent[PlanCritiqueReport]):
         user_context_yaml: str,
         domain_kb_files: dict[str, str],
         recent_events: str = "",
+        user_directive: str = "",
     ) -> tuple[str, str, list[tuple[str, str]]]:
         """Build the system+user prompt.
 
@@ -162,6 +163,29 @@ class PlanCritiqueAgent(BaseAgent[PlanCritiqueReport]):
             f"{PlanCritiqueReport.model_json_schema()}\n"
         )
 
+        # User directive — authoritative input from the human captured on
+        # this synthesis run. Same pattern as plan_synthesizer.py /
+        # fund_manager.py (post-a5d317c): a short DIRECTIVE POINTER lives
+        # in the SYSTEM prompt; the verbatim directive content lives at
+        # the TOP of the USER prompt below. Variable content in system
+        # prompts has reproducibly triggered the bundled claude.exe SDK's
+        # empty-output path (synthesis #27/#28).
+        if user_directive:
+            system = system + (
+                "\nUSER DIRECTIVE PRESENT: a USER DIRECTIVE block appears in the "
+                "user message below capturing the human's per-objection stances "
+                "from the prior round. Respect the user's resolved positions:\n"
+                "  - Where the user has AGREED a critique finding is resolved, "
+                "do NOT re-raise it on this run.\n"
+                "  - Where the user has DISAGREED with a prior finding and "
+                "supplied a counter-position, treat the counter-position as "
+                "authoritative; only re-raise the original finding if the data "
+                "still contradicts the counter-position.\n"
+                "  - Where the user has DEFERRED, evaluate freshly.\n"
+                "You retain authority to raise NEW findings on items the user "
+                "has not addressed.\n"
+            )
+
         plan_ref = (
             "PLAN MARKDOWN: see document `plan/markdown`."
             if plan_markdown.strip()
@@ -174,6 +198,15 @@ class PlanCritiqueAgent(BaseAgent[PlanCritiqueReport]):
         )
 
         user_parts: list[str] = []
+        # User directive lives at the TOP of the user prompt (when
+        # present) so the model encounters it before the rest of the
+        # context. Empty (default) omits the section entirely so the
+        # byte-identity invariant on the happy path holds.
+        if user_directive:
+            user_parts.append(
+                "=== USER DIRECTIVE (authoritative human input on this run) ===\n"
+                + user_directive
+            )
         user_parts.append(f"PLAN LABEL: {plan_label}")
         user_parts.append(f"SNAPSHOT LABEL: {snapshot_label}")
         user_parts.append("=== USER CONTEXT (YAML) ===\n```yaml\n" + user_context_yaml + "\n```")
