@@ -157,38 +157,44 @@ DEFAULT_THINKING_BUDGET_BY_ROLE: dict[str, int] = {
 # so each value here MUST be strictly greater than the role's thinking
 # budget. The invariant in `BaseAgent.__init__` enforces this.
 DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
-    # Heavy: 32K cap (Opus 4.7 supports up to 32K output)
-    "plan_synthesizer": 32000,
-    "fund_manager":     32000,
-    "plan_critique":    32000,
-    # Medium: 16K
-    "audit":                  16000,
-    "trader":                 16000,
-    "bull_researcher":        16000,
-    "bear_researcher":        16000,
-    "researcher_facilitator": 16000,
-    "risk_officer":           16000,
-    "risk_facilitator":       16000,
-    "fund_manager_dialogue_verdict": 16000,
-    # Light: 8K (more than enough for an analyst's structured output)
-    "concentration": 8000, "fx": 8000, "fundamentals": 8000,
-    "news": 8000, "sentiment": 8000, "technical": 8000,
-    "macro": 8000, "tax": 8000, "household_budget": 8000,
-    "objection_translator": 8000, "daily_briefer": 8000,
-    "analyst_responder": 8000, "intake_extractor": 8000,
-    "advisor": 8000,
-    # plan_distiller — kept at 8192 to avoid shrinking the prior class
-    # attr; bumping the table value rather than retaining a class attr
-    # keeps the resolution table-driven for every role.
-    "plan_distiller": 8192,
-    # domain_refresh — kept at 8192 for the same reason (prior class attr).
-    "domain_refresh": 8192,
+    # Heavy: 128K cap (Opus 4.7 supports up to 128K output per Anthropic
+    # docs; 300K via batch beta). Earlier value of 32K was stale — that
+    # was Opus 4's ceiling. The 4-attempt empty-output failure on FM in
+    # run #31 + similar on the synthesizer historically may have been
+    # partly caused by claude.exe SDK's internal heuristics about the
+    # output buffer size; giving the model room to breathe at 128K
+    # eliminates that class of failure as a hypothesis.
+    "plan_synthesizer": 128000,
+    "fund_manager":     128000,
+    "plan_critique":    128000,
+    # Heavy-ish: 64K — these agents emit substantive structured output
+    # (debate outcomes, risk verdicts, trade proposals) but rarely need
+    # full Opus 4.7 ceiling. 64K keeps them well-above thinking budgets.
+    "audit":                  64000,
+    "trader":                 64000,
+    "bull_researcher":        64000,
+    "bear_researcher":        64000,
+    "researcher_facilitator": 64000,
+    "risk_officer":           64000,
+    "risk_facilitator":       64000,
+    "fund_manager_dialogue_verdict": 64000,
+    # Light: 16K — single-ticker analysts produce structured reports
+    # that rarely exceed a few KB. 16K is generous headroom and keeps
+    # thinking_budget=2K well below the cap (Anthropic constraint).
+    "concentration": 16000, "fx": 16000, "fundamentals": 16000,
+    "news": 16000, "sentiment": 16000, "technical": 16000,
+    "macro": 16000, "tax": 16000, "household_budget": 16000,
+    "objection_translator": 16000, "daily_briefer": 16000,
+    "analyst_responder": 16000, "intake_extractor": 16000,
+    "advisor": 16000,
+    "plan_distiller": 16000,
+    "domain_refresh": 16000,
     # Conversational / categorical roles — no thinking, fallback-sized.
-    "intake": 8000,
-    "household_categorizer": 8000,
-    "watchlist": 8000,
+    "intake": 16000,
+    "household_categorizer": 16000,
+    "watchlist": 16000,
 }
-DEFAULT_MAX_TOKENS_FALLBACK: int = 8000
+DEFAULT_MAX_TOKENS_FALLBACK: int = 16000
 
 # Per-role SDK call timeout (seconds). The default (FALLBACK_SDK_TIMEOUT)
 # is conservative; agents that emit long outputs need more. Override via

@@ -236,7 +236,7 @@ class AgentRoleOverride(BaseModel):
 
     model_config = {"extra": "allow"}  # tolerate future per-role fields (model, etc.)
 
-    thinking_budget: int | None = Field(default=None, ge=0, le=64000)
+    thinking_budget: int | None = Field(default=None, ge=0, le=128000)
     citations_enabled: bool | None = None
 
 
