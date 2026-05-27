@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { PerPositionThesisSection } from "@/components/positions/per-position-thesis-section";
 import {
   Card,
   CardContent,
@@ -141,6 +142,8 @@ export default function PortfolioPage() {
           </CardContent>
         </Card>
       ))}
+
+      <PerPositionThesisSection userId={USER_ID} withHeading />
 
       {snap && snap.allocations.length > 0 && (
         <Card>
