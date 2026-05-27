@@ -983,3 +983,199 @@ def test_phase_1_phase_output_adapter_outcomes_empty_when_no_calls(tmp_path, mon
             loop.run_until_complete(db_mod.dispose_engine())
         finally:
             loop.close()
+
+
+# ----------------------------------------------------------------------
+# T2.6b — orchestrator-level bear_researcher retry budget
+# ----------------------------------------------------------------------
+
+
+def test_bear_researcher_exit1_triggers_retry(session, monkeypatch):
+    """Two transient exit-1 flakes then success — `_run_one_horizon_debate`
+    must drive bear.run_sync to 3 calls total and return all three reports.
+
+    Reproduces synthesis #29s failure shape (bear_researcher AgentRunError
+    wrapping the claude.exe `exit code 1` + empty-stderr fingerprint) and
+    asserts the orchestrator-level retry recovers transparently — the
+    horizons debate completes with bull + bear + facilitator reports
+    instead of losing all three to one transient flake.
+    """
+    from argosy.agents.base import AgentReport
+    from argosy.agents.errors import AgentRunError
+    from argosy.agents.researcher import (
+        BearResearcherAgent,
+        BullResearcherAgent,
+    )
+    from argosy.agents.researcher_facilitator import ResearcherFacilitatorAgent
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    _FLAKE_MESSAGE = (
+        "bear_researcher: claude-agent-sdk error: Command failed with exit "
+        "code 1 (exit code: 1)\nError output: Check stderr output for "
+        "details\n[claude.exe stderr was empty]"
+    )
+
+    def _make_report(role, output_obj):
+        return AgentReport(
+            agent_role=role,
+            user_id="ariel",
+            model="claude-opus-4-7",
+            response_text='{"stub": true}',
+            tokens_in=10,
+            tokens_out=20,
+            cost_usd=0.001,
+            prompt_hash="x" * 64,
+            confidence=None,
+            output=output_obj,
+        )
+
+    class _StubTurn:
+        def model_dump(self):
+            return {"side": "bull", "round_index": 1, "points": []}
+
+    class _StubFacilitatorOut:
+        def model_dump_json(self):
+            return '{"verdict": "ok"}'
+
+    def _stub_bull_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "bull_researcher"
+        self.model = "claude-opus-4-7"
+
+    def _stub_bull_run_sync(self, **_kw):
+        return _make_report("bull_researcher", _StubTurn())
+
+    def _stub_fac_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "researcher_facilitator"
+        self.model = "claude-sonnet-4-6"
+
+    def _stub_fac_run_sync(self, **_kw):
+        return _make_report("researcher_facilitator", _StubFacilitatorOut())
+
+    bear_call_count = {"n": 0}
+
+    def _stub_bear_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "bear_researcher"
+        self.model = "claude-opus-4-7"
+
+    def _stub_bear_run_sync(self, **_kw):
+        bear_call_count["n"] += 1
+        if bear_call_count["n"] <= 2:
+            raise AgentRunError(_FLAKE_MESSAGE)
+        return _make_report("bear_researcher", _StubTurn())
+
+    monkeypatch.setattr(BullResearcherAgent, "__init__", _stub_bull_init)
+    monkeypatch.setattr(BullResearcherAgent, "run_sync", _stub_bull_run_sync)
+    monkeypatch.setattr(BearResearcherAgent, "__init__", _stub_bear_init)
+    monkeypatch.setattr(BearResearcherAgent, "run_sync", _stub_bear_run_sync)
+    monkeypatch.setattr(ResearcherFacilitatorAgent, "__init__", _stub_fac_init)
+    monkeypatch.setattr(ResearcherFacilitatorAgent, "run_sync", _stub_fac_run_sync)
+
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as _orch
+    monkeypatch.setattr(
+        _orch, "_BEAR_RESEARCHER_RETRY_BACKOFF_SECONDS", (0.0, 0.0, 0.0),
+    )
+
+    baseline = next(iter(session.query(PlanVersion).filter_by(role="baseline").all()))
+    text, collected = flow._run_one_horizon_debate(
+        horizon="long",
+        user_id="ariel",
+        analyst_reports_text="(analyst stub)",
+        baseline=baseline,
+        prior_current=None,
+        decision_run_id="test-bear-retry",
+        trigger="scheduled",
+    )
+
+    assert bear_call_count["n"] == 3, (
+        f"expected 3 bear.run_sync calls (2 flake + 1 success), "
+        f"got {bear_call_count['n']}"
+    )
+    roles = sorted(r.agent_role for r in collected)
+    assert roles == ["bear_researcher", "bull_researcher", "researcher_facilitator"], (
+        f"expected all 3 phase-2 roles, got {roles}"
+    )
+    assert "verdict" in text
+
+
+def test_bear_researcher_deterministic_failure_not_retried(session, monkeypatch):
+    """A non-transient AgentRunError (e.g. schema validation) must NOT
+    trigger the orchestrator-level retry — that would silently triple
+    the cost of every genuine bug. Only the exit-1 + empty-stderr
+    fingerprint is treated as transient.
+    """
+    from argosy.agents.base import AgentReport
+    from argosy.agents.errors import AgentRunError
+    from argosy.agents.researcher import (
+        BearResearcherAgent,
+        BullResearcherAgent,
+    )
+    from argosy.agents.researcher_facilitator import ResearcherFacilitatorAgent
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    def _make_report(role, output_obj):
+        return AgentReport(
+            agent_role=role, user_id="ariel", model="x",
+            response_text="{}", tokens_in=0, tokens_out=0,
+            cost_usd=0.0, prompt_hash="0" * 64,
+            confidence=None, output=output_obj,
+        )
+
+    class _StubTurn:
+        def model_dump(self):
+            return {}
+
+    def _stub_bull_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "bull_researcher"
+        self.model = "x"
+
+    def _stub_bull_run_sync(self, **_kw):
+        return _make_report("bull_researcher", _StubTurn())
+
+    bear_calls = {"n": 0}
+
+    def _stub_bear_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "bear_researcher"
+        self.model = "x"
+
+    def _stub_bear_run_sync(self, **_kw):
+        bear_calls["n"] += 1
+        raise AgentRunError(
+            "bear_researcher: model output failed schema validation: "
+            "field required"
+        )
+
+    def _stub_fac_init(self, *, user_id):
+        self.user_id = user_id
+        self.agent_role = "researcher_facilitator"
+        self.model = "x"
+
+    monkeypatch.setattr(BullResearcherAgent, "__init__", _stub_bull_init)
+    monkeypatch.setattr(BullResearcherAgent, "run_sync", _stub_bull_run_sync)
+    monkeypatch.setattr(BearResearcherAgent, "__init__", _stub_bear_init)
+    monkeypatch.setattr(BearResearcherAgent, "run_sync", _stub_bear_run_sync)
+    monkeypatch.setattr(ResearcherFacilitatorAgent, "__init__", _stub_fac_init)
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as _orch
+    monkeypatch.setattr(
+        _orch, "_BEAR_RESEARCHER_RETRY_BACKOFF_SECONDS", (0.0, 0.0, 0.0),
+    )
+
+    baseline = next(iter(session.query(PlanVersion).filter_by(role="baseline").all()))
+    with pytest.raises(AgentRunError, match="failed schema validation"):
+        flow._run_one_horizon_debate(
+            horizon="medium",
+            user_id="ariel",
+            analyst_reports_text="(stub)",
+            baseline=baseline,
+            prior_current=None,
+            decision_run_id="test-bear-no-retry",
+            trigger="scheduled",
+        )
+    assert bear_calls["n"] == 1, (
+        f"deterministic failure should not retry; bear was called "
+        f"{bear_calls['n']} times"
+    )

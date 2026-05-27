@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import NamedTuple, cast
@@ -28,6 +30,7 @@ from typing import NamedTuple, cast
 from sqlalchemy.orm import Session
 
 from argosy.agents.base import AgentReport
+from argosy.agents.errors import AgentRunError
 from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
 from argosy.agents.household_budget_analyst import HouseholdBudgetAnalystAgent
 from argosy.agents.fundamentals_analyst import FundamentalsAnalystAgent
@@ -55,6 +58,59 @@ from argosy.state.models import DecisionRun, PlanVersion
 from argosy.state.queries import get_active_baseline, get_current_plan, get_pending_draft
 
 log = get_logger(__name__)
+
+
+# T2.6b — orchestrator-level retry budget for bear_researcher.
+#
+# Belt-and-suspenders on top of BaseAgent's internal N=3 retry envelope
+# (see `argosy/agents/base.py::_call_via_claude_code_inner` retry loop).
+# BaseAgent retries *within* a single SDK session; this retry restarts the
+# whole call (fresh subprocess, fresh prompt build) so corruption that
+# survives the SDK's recovery (rare but observed: synthesis #29 lost both
+# the medium AND long horizons to back-to-back bear_researcher exit-1
+# flakes that escaped the SDK layer as AgentRunError, killing 6 of 9
+# phase-2 reports). Live evidence in `logs/app/application.log` around
+# 2026-05-26T22:39 UTC.
+#
+# Scope: bear_researcher only. Bull failed visibly less in production
+# (likely because its prompt is shorter / always runs first / doesn't have
+# the "rebut the bull's turn" context inflation). If bull starts flaking
+# at a comparable rate we'll widen this. Facilitator is short / synthesis-
+# style and has not been observed to hit the exit-1 flake.
+_BEAR_RESEARCHER_MAX_ATTEMPTS = 3
+_BEAR_RESEARCHER_RETRY_BACKOFF_SECONDS = (0.5, 1.0, 2.0)  # per attempt index 0,1,2
+
+
+def _is_bear_transient_flake(exc: BaseException) -> bool:
+    """Return True iff ``exc`` is the AgentRunError fingerprint of a
+    claude.exe exit-1 flake (empty stderr) for which a fresh retry is
+    likely to succeed.
+
+    Mirrors `BaseAgent._call_via_claude_code_inner`'s `_has_exit1_signature`
+    so the orchestrator retry only fires on the SAME failure mode the
+    SDK-level retry handles — not on deterministic failures (validation
+    errors, citation-gate misses, etc.) that would just burn cost on
+    repeat. The check is by error-string signature because the
+    AgentRunError wraps the SDK exception and erases its concrete class.
+
+    Word-boundary regex on "exit code 1" prevents false-positives like
+    "exit code 137" (SIGKILL) and "exit code 127" (CLI not found) which
+    have different root causes.
+    """
+    s = str(exc)
+    has_exit1_sig = bool(
+        re.search(r"\bexit code 1\b", s)
+        or "(exit code: 1)" in s
+    )
+    has_empty_stderr = "[claude.exe stderr was empty]" in s or (
+        # Some older error strings (pre f4b2dce) omitted the stderr
+        # tail entirely when stderr_lines was empty. Treat the
+        # SDK's placeholder "Check stderr output for details" as the
+        # same fingerprint when no concrete stderr text follows.
+        "Check stderr output for details" in s
+        and "[claude.exe stderr]" not in s
+    )
+    return has_exit1_sig and has_empty_stderr
 
 
 def _emit_event(event_type: str, payload: dict) -> None:
@@ -1839,14 +1895,60 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
     bull_turn = bull_report.output if hasattr(bull_report, "output") else None
     bull_turn_dict = bull_turn.model_dump() if bull_turn is not None else {}
 
-    bear_report = bear.run_sync(
-        analyst_reports=analyst_reports_payload,
-        prior_rounds=[bull_turn_dict] if bull_turn_dict else [],
-        round_index=1,
-        n_max=2,
-        ticker=ticker,
-        decision_id=decision_run_id,
-    )
+    # T2.6b — orchestrator-level retry on the bear_researcher claude.exe
+    # exit-1 flake. BaseAgent already retries N=3 *inside* one SDK session;
+    # this loop restarts the whole call (fresh subprocess) when that
+    # internal budget is exhausted and the AgentRunError escapes anyway.
+    # Live evidence (#29): two horizons died to back-to-back exit-1 flakes
+    # despite the SDK-level retry, taking down 6 of 9 phase-2 reports. The
+    # orchestrator retry handles ONLY the transient_exit1 + empty-stderr
+    # fingerprint — see `_is_bear_transient_flake` — so deterministic
+    # failures (schema validation, citation gate) still surface on the
+    # first attempt without doubling cost.
+    bear_report = None
+    bear_last_exc: BaseException | None = None
+    for _bear_attempt in range(_BEAR_RESEARCHER_MAX_ATTEMPTS):
+        try:
+            bear_report = bear.run_sync(
+                analyst_reports=analyst_reports_payload,
+                prior_rounds=[bull_turn_dict] if bull_turn_dict else [],
+                round_index=1,
+                n_max=2,
+                ticker=ticker,
+                decision_id=decision_run_id,
+            )
+            break
+        except AgentRunError as exc:
+            bear_last_exc = exc
+            is_final = _bear_attempt + 1 >= _BEAR_RESEARCHER_MAX_ATTEMPTS
+            if not _is_bear_transient_flake(exc) or is_final:
+                # Deterministic failure OR last attempt — surface.
+                log.error(
+                    "plan_synthesis.bear_researcher.retry_exhausted",
+                    horizon=horizon,
+                    decision_run_id=decision_run_id,
+                    attempt=_bear_attempt + 1,
+                    max_attempts=_BEAR_RESEARCHER_MAX_ATTEMPTS,
+                    is_transient_flake=_is_bear_transient_flake(exc),
+                    error=str(exc)[:500],
+                )
+                raise
+            delay = _BEAR_RESEARCHER_RETRY_BACKOFF_SECONDS[_bear_attempt]
+            log.warning(
+                "plan_synthesis.bear_researcher.orchestrator_retry",
+                horizon=horizon,
+                decision_run_id=decision_run_id,
+                attempt=_bear_attempt + 1,
+                max_attempts=_BEAR_RESEARCHER_MAX_ATTEMPTS,
+                delay_seconds=delay,
+                error=str(exc)[:500],
+            )
+            time.sleep(delay)
+    if bear_report is None:  # pragma: no cover - defensive; loop always sets or raises
+        raise AgentRunError(
+            f"bear_researcher: orchestrator retry exhausted without "
+            f"raising; horizon={horizon}; last_exc={bear_last_exc}"
+        )
     bear_turn = bear_report.output if hasattr(bear_report, "output") else None
     bear_turn_dict = bear_turn.model_dump() if bear_turn is not None else {}
 
