@@ -1157,6 +1157,8 @@ export const api = {
     taxRate = 0.25,
     muNominalAnnual = 0.08,
     portfolioValueUsdOverride: number | null = null,
+    sigmaAnnual = 0.18,
+    lifestyleDriftAnnual = 0.0,
   ) => {
     const params = new URLSearchParams({
       user_id: userId,
@@ -1164,6 +1166,8 @@ export const api = {
       retirement_age: String(retirementAge),
       tax_rate: String(taxRate),
       mu_nominal_annual: String(muNominalAnnual),
+      sigma_annual: String(sigmaAnnual),
+      lifestyle_drift_annual: String(lifestyleDriftAnnual),
     });
     if (portfolioValueUsdOverride != null) {
       params.set("portfolio_value_usd_override", String(portfolioValueUsdOverride));
@@ -1886,10 +1890,12 @@ export interface CashflowProjectionResponse {
     real_return_annual: number;
     inflation_annual: number;
     mekadem: number;
+    tax_rate: number;
+    lifestyle_drift_annual: number;       // NEW
+    effective_expense_growth: number;     // NEW
     lump_pension_age: number;
     annuity_age: number;
     model_notes: string;
-    tax_rate: number;
   };
 }
 

@@ -48,10 +48,10 @@ function InfoIcon({ title }: { title: string }) {
   return (
     <span
       role="img"
-      aria-label="info"
+      aria-label={title}
       title={title}
-      className="inline-block ml-1 text-[10px] text-muted-foreground/70 cursor-help select-none"
-      style={{ verticalAlign: "super" }}
+      className="inline-block ml-1 text-xs text-primary/80 cursor-help select-none hover:text-primary"
+      style={{ verticalAlign: "baseline" }}
     >
       ⓘ
     </span>
@@ -91,6 +91,8 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
   const [taxRate, setTaxRate] = useState<number>(0.25);
   const [muNominal, setMuNominal] = useState<number>(0.08);
   const [portfolioOverrideUsd, setPortfolioOverrideUsd] = useState<number | null>(null);
+  const [sigmaAnnual, setSigmaAnnual] = useState<number>(0.18);
+  const [lifestyleDriftAnnual, setLifestyleDriftAnnual] = useState<number>(0.0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,7 +108,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
     setLoading(true);
     setError(null);
     api
-      .planDraftCashflowProjection(userId, 30, retirementAge, taxRate, muNominal, portfolioOverrideUsd)
+      .planDraftCashflowProjection(userId, 30, retirementAge, taxRate, muNominal, portfolioOverrideUsd, sigmaAnnual, lifestyleDriftAnnual)
       .then((d) => {
         if (!cancelled) setData(d);
       })
@@ -119,7 +121,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
     return () => {
       cancelled = true;
     };
-  }, [userId, retirementAge, taxRate, muNominal, portfolioOverrideUsd]);
+  }, [userId, retirementAge, taxRate, muNominal, portfolioOverrideUsd, sigmaAnnual, lifestyleDriftAnnual]);
 
   const rows = useMemo<ChartRow[]>(() => {
     if (!data) return [];
@@ -147,9 +149,6 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
 
   const lumpAge = data?.assumptions.lump_pension_age ?? 60;
   const annuityAge = data?.assumptions.annuity_age ?? 67;
-  const inflationAnnual = data?.assumptions.inflation_annual ?? 0.025;
-  const realReturn = data?.assumptions.real_return_annual ?? 0.055;
-  const taxRateDisplay = data?.assumptions.tax_rate ?? taxRate;
 
   // Scenario-driven retire-ready age
   const retireReadyAge: number | null =
@@ -296,11 +295,13 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
           )}
           <br />
           <span className="text-[10px] font-mono opacity-70">
-            Real-return drawdown (mu={data.assumptions.mu_nominal_annual},
-            inflation={inflationAnnual}, real={realReturn.toFixed(3)}, tax={Math.round(taxRateDisplay * 100)}%).
-            Portfolio income shown is NET of tax. Pension annuity not tax-adjusted.
-            Pension annuity locks at {annuityAge} via mekadem={data.assumptions.mekadem}
-            ; annuity inflated nominally after lock. Lump unlock at {lumpAge}.
+            Real-return drawdown (μ={data.assumptions.mu_nominal_annual}, σ={data.assumptions.sigma_annual},
+            inflation={data.assumptions.inflation_annual}, real={data.assumptions.real_return_annual.toFixed(3)},
+            tax={(data.assumptions.tax_rate*100).toFixed(0)}%
+            {data.assumptions.lifestyle_drift_annual > 0 && (
+              <>, expense growth={(data.assumptions.effective_expense_growth*100).toFixed(1)}%</>
+            )}).
+            Pension annuity locks at {annuityAge} via mekadem={data.assumptions.mekadem}. Lump unlock at {lumpAge}.
           </span>
           {portfolioOverrideUsd != null && (
             <span className="ml-2 text-amber-500 font-medium">
@@ -361,6 +362,47 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
               aria-label="mu nominal annual"
             />
             <span className="font-mono w-12 text-right">{(muNominal * 100).toFixed(1)}%</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="text-muted-foreground">
+              σ (volatility)
+              <InfoIcon title={`Portfolio annual volatility (standard deviation).
+Default 0.18 = diversified-equity historical.
+Crank up to 0.40-0.50 to model single-stock concentration risk — a NVDA-heavy portfolio's effective sigma is closer to 0.30-0.40 than 0.18.
+Widens the bear/bull band; matters most at long horizons where sqrt(t) compounding makes the gap material.`} />
+            </span>
+            <input
+              type="range"
+              min={0.05}
+              max={0.60}
+              step={0.01}
+              value={sigmaAnnual}
+              onChange={(e) => setSigmaAnnual(Number(e.target.value))}
+              className="w-32"
+              aria-label="sigma annual"
+            />
+            <span className="font-mono w-12 text-right">{(sigmaAnnual*100).toFixed(0)}%</span>
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="text-muted-foreground">
+              lifestyle drift
+              <InfoIcon title={`Extra expense-growth ABOVE the inflation rate (per year).
+Default 0% means your expenses grow exactly with CPI.
+Set to 1.5% to model personal lifestyle inflation running hotter than CPI (kids' costs, healthcare, lifestyle creep).
+Affects expenses only — pension annuity still indexes to CPI alone.
+Effective expense growth = inflation_annual + lifestyle_drift.`} />
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={0.05}
+              step={0.005}
+              value={lifestyleDriftAnnual}
+              onChange={(e) => setLifestyleDriftAnnual(Number(e.target.value))}
+              className="w-32"
+              aria-label="lifestyle drift"
+            />
+            <span className="font-mono w-12 text-right">+{(lifestyleDriftAnnual*100).toFixed(1)}%</span>
           </label>
           <label className="flex items-center gap-2">
             <span className="text-muted-foreground">
