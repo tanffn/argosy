@@ -1150,6 +1150,16 @@ export const api = {
     getJSON<ProjectionResponse>(
       `/api/plan/draft/projection?user_id=${encodeURIComponent(userId)}&years=${years}`,
     ),
+  planDraftCashflowProjection: (
+    userId: string,
+    years = 30,
+    retirementAge = 49,
+  ) =>
+    getJSON<CashflowProjectionResponse>(
+      `/api/plan/draft/cashflow-projection?user_id=${encodeURIComponent(
+        userId,
+      )}&years=${years}&retirement_age=${retirementAge}`,
+    ),
   planDraftTargetProgress: (userId: string) =>
     getJSON<TargetProgressResponse>(
       `/api/plan/draft/target-progress?user_id=${encodeURIComponent(userId)}`,
@@ -1818,11 +1828,49 @@ export interface ProjectionResponse {
   today_value_usd: number;
   series: ProjectionPoint[];
   safe_withdrawal_monthly_usd: number;
+  current_monthly_expenses_usd: number | null;
   assumptions: {
     mu_annual: number;
     sigma_annual: number;
     withdrawal_rate: number;
+    inflation_annual: number;
     model: string;
+  };
+}
+
+export interface CashflowPoint {
+  months_out: number;
+  age_years: number;
+  date: string; // YYYY-MM
+  portfolio_value_base_usd: number;
+  portfolio_value_bear_usd: number;
+  portfolio_value_bull_usd: number;
+  portfolio_income_base_monthly_usd: number;
+  portfolio_income_bear_monthly_usd: number;
+  portfolio_income_bull_monthly_usd: number;
+  pension_annuity_monthly_usd: number;
+  pension_lump_available_usd: number;
+  expenses_monthly_usd: number;
+  surplus_base_monthly_usd: number;
+}
+
+export interface CashflowProjectionResponse {
+  today_date: string;
+  today_age_years: number;
+  fx_usd_nis: number;
+  retirement_age_assumed: number;
+  retire_ready_age: number | null;
+  retire_ready_months_out: number | null;
+  series: CashflowPoint[];
+  assumptions: {
+    mu_nominal_annual: number;
+    sigma_annual: number;
+    real_return_annual: number;
+    inflation_annual: number;
+    mekadem: number;
+    lump_pension_age: number;
+    annuity_age: number;
+    model_notes: string;
   };
 }
 
