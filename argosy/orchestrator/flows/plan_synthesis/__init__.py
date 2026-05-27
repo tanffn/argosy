@@ -94,6 +94,17 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     _precompute_fm_objection_translations,
 )
 
+# Argosy ZigZag — Phase 4.5 codex (gpt-5) second-opinion reviewer.
+# Exposed on the package namespace so the orchestrator's
+# ``_pkg.run_codex_second_opinion`` resolution finds it (and so tests
+# can monkeypatch the dispatcher without touching the submodule).
+from argosy.orchestrator.flows.plan_synthesis.codex_second_opinion import (
+    CodexAgreement,
+    CodexFinding,
+    CodexSecondOpinion,
+    run_codex_second_opinion,
+)
+
 # Input-assembly helpers (monkeypatched in tests).
 from argosy.orchestrator.flows.plan_synthesis.inputs import (
     _assemble_portfolio_summary,
@@ -130,6 +141,11 @@ __all__ = [
     "_load_completed_phase_outputs",
     "_schedule_fm_objection_translation_precompute",
     "_precompute_fm_objection_translations",
+    # Argosy ZigZag — Phase 4.5 codex second-opinion reviewer
+    "CodexAgreement",
+    "CodexFinding",
+    "CodexSecondOpinion",
+    "run_codex_second_opinion",
     # Input helpers (monkeypatched in tests)
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",

@@ -477,6 +477,52 @@ def run_synthesis(
         user_id=user_id,
     )
 
+    # Phase 4.5 — Argosy ZigZag — codex (gpt-5) as an INDEPENDENT
+    # second-opinion reviewer. Sees the synth draft + analyst reports
+    # + debate outcomes + risk verdict + user directive; does NOT see
+    # the FM's prior-round objections (would mirror FM's framing —
+    # defeats the independent purpose) or any codex output from this
+    # run (this is the FIRST codex call).
+    #
+    # Fail-soft: any error returns (None, None) and Phase 5 runs as if
+    # codex didn't exist. The kill switches (env var, pytest) and
+    # idempotency check live inside ``run_codex_second_opinion``.
+    import asyncio as _asyncio
+
+    codex_opinion = None
+    codex_row = None
+    try:
+        codex_opinion, codex_row = _asyncio.run(
+            _pkg.run_codex_second_opinion(
+                synth_draft_json=output.model_dump_json(),
+                analyst_reports_text=analyst_reports_text,
+                debate_outcomes_text=debate_outcomes_text,
+                risk_verdict_text=risk_verdict,
+                user_directive=guidance,
+                decision_run_id=decision_run_id,
+                user_id=user_id,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft
+        log.warning(
+            "codex_second_opinion.run_failed",
+            user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+        )
+        codex_opinion, codex_row = None, None
+
+    # Persist the codex row through the same recorder pipeline as
+    # every other phase so it appears in agent_reports + the phase
+    # tree. When codex was skipped (None) we don't record an empty
+    # phase row — that would muddy the audit trail.
+    if codex_row is not None:
+        _pkg._record_phase_completion(
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase_n=45,  # 4.5 — half-step between risk and FM
+            started_at=datetime.now(timezone.utc),
+            phase_output=codex_opinion.model_dump_json() if codex_opinion else "",
+            agent_report_rows=[codex_row],
+        )
+
     # Phase 5: fund manager integrity check.
     if 5 in resumed_outputs:
         approved = resumed_outputs[5].strip().lower() == "approved"
@@ -491,6 +537,7 @@ def run_synthesis(
             session=session, user_id=user_id, draft_output=output,
             risk_verdict=risk_verdict, decision_run_id=decision_audit_token,
             guidance=guidance,
+            codex_second_opinion=codex_opinion,
         )
         if isinstance(_phase_5_result, tuple) and len(_phase_5_result) == 2:
             approved, _phase_5_reports = _phase_5_result
@@ -2406,6 +2453,7 @@ def _run_phase_5_fund_manager(*, session, user_id,
                               draft_output: PlanSynthesisOutput,
                               risk_verdict: str, decision_run_id: str,
                               guidance: str = "",
+                              codex_second_opinion=None,
                               ) -> tuple[bool, list[AgentReport]]:
     """Final integrity check.
 
@@ -2424,20 +2472,34 @@ def _run_phase_5_fund_manager(*, session, user_id,
     round after round — the bug that produced 3 consecutive rejections
     of structurally similar drafts.
 
+    ``codex_second_opinion``: optional ``CodexSecondOpinion`` from the
+    Argosy ZigZag Phase 4.5 reviewer. When present, the FM is shown
+    codex's findings + overall_assessment in its user prompt (verbatim
+    JSON dump) so the FM can cite codex's reasoning in its verdict.
+    None when codex was skipped (env var / pytest / kit unavailable /
+    dispatch failure) — the FM's prompt is byte-identical to the
+    pre-feature behavior in that case.
+
     Returns True to green-light the draft, False to reject.
     """
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
     log.info("plan_synthesis.phase_5.start",
-             user_id=user_id, decision_run_id=decision_run_id)
+             user_id=user_id, decision_run_id=decision_run_id,
+             has_codex_opinion=codex_second_opinion is not None)
     fm = _pkg._make_fund_manager(user_id=user_id)
-    result = fm.run_sync(
+    fm_kwargs: dict = dict(
         decision_kind="plan_revision",
         draft_plan=draft_output.model_dump_json(),
         risk_verdict=risk_verdict,
         user_directive=guidance,
         decision_id=decision_run_id,
     )
+    # Only pass codex_second_opinion when present so a test stub FM
+    # whose run_sync doesn't accept the kwarg keeps working unchanged.
+    if codex_second_opinion is not None:
+        fm_kwargs["codex_second_opinion"] = codex_second_opinion
+    result = fm.run_sync(**fm_kwargs)
     # W1.C-v2: uniform bulk-persist pattern. Phase 5 calls exactly one
     # agent; wrap its dataclass in a 1-element list and route through
     # the package namespace. Stub agents return SimpleNamespace; only

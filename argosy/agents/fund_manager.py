@@ -71,7 +71,7 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
     agent_role = "fund_manager"
     output_model = FundManagerDecision
     require_citations = True
-    max_tokens = 2048
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (32000).
 
     def __init__(
         self,
@@ -172,6 +172,7 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         draft_plan: str,
         risk_verdict: str,
         user_directive: str = "",
+        codex_second_opinion=None,
     ) -> tuple[str, str]:
         """Plan-revision integrity check (Wave 2 Phase 5).
 
@@ -187,6 +188,15 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         to the pre-feature behavior. This is how the
         /api/plan/draft/objections/start-new-round payload reaches the FM
         so it stops re-raising objections the user has already resolved.
+
+        ``codex_second_opinion``: optional ``CodexSecondOpinion`` from the
+        Argosy ZigZag Phase 4.5 reviewer (independent gpt-5 verdict). When
+        present, the FM is shown codex's findings in the user prompt and
+        gets a system-prompt pointer telling it to consider + cite codex's
+        reasoning. When None (default), omitted — system + user prompts
+        are byte-identical to the pre-feature behavior. Same pattern as
+        ``user_directive``: pointer in system, content in user prompt to
+        dodge the bundled SDK's empty-output path on large system prompts.
         """
         from argosy.agents._plan_authority import AUTHORITY_DISCLAIMER
 
@@ -218,12 +228,46 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
                 "You retain authority to raise NEW objections on issues the user has not addressed, or to call\n"
                 "out where the synthesizer has ignored a load-bearing directive.\n"
             )
+        # Codex ZigZag second opinion — pointer in system, full JSON in
+        # user prompt. Same anti-empty-output pattern as user_directive.
+        if codex_second_opinion is not None:
+            system = system + (
+                "\nCODEX SECOND OPINION PRESENT: a CODEX SECOND OPINION block "
+                "appears in the user message below, produced by an INDEPENDENT "
+                "gpt-5 reviewer (Argosy ZigZag, Phase 4.5) that saw the same "
+                "evidence you are about to see (synth draft + analyst reports + "
+                "debate outcomes + risk verdict + user directive). Treat it as "
+                "a peer reviewer — you may agree or disagree, but if you reject "
+                "you should engage with its BLOCKER/AMBER findings explicitly "
+                "and either incorporate them or explain why you disagree. If a "
+                "codex finding cites a specific synthesizer paragraph and you "
+                "find the critique valid, cite the same paragraph in your reason. "
+                "If codex flagged user_directive_respected=false, treat that as "
+                "a strong signal that the synthesizer ignored a user stance.\n"
+            )
         directive_section = (
             f"=== USER DIRECTIVE (authoritative human input on this run) ===\n{user_directive}\n\n"
             if user_directive else ""
         )
+        codex_section = ""
+        if codex_second_opinion is not None:
+            try:
+                codex_section = (
+                    "=== CODEX SECOND OPINION (independent gpt-5 reviewer) ===\n"
+                    f"{codex_second_opinion.model_dump_json(indent=2)}\n\n"
+                )
+            except AttributeError:
+                # Defensive: a test that passes a dict-shaped opinion
+                # still gets a serialized block. Production path always
+                # passes a CodexSecondOpinion pydantic model.
+                import json as _json
+                codex_section = (
+                    "=== CODEX SECOND OPINION (independent gpt-5 reviewer) ===\n"
+                    f"{_json.dumps(codex_second_opinion, default=str, indent=2)}\n\n"
+                )
         user = (
             f"{directive_section}"
+            f"{codex_section}"
             f"=== DRAFT PLAN ===\n{draft_plan}\n\n"
             f"=== CONSOLIDATED RISK VERDICT ===\n{risk_verdict}\n\n"
             "Return your JSON verdict now."
