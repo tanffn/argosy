@@ -1150,6 +1150,10 @@ export const api = {
     getJSON<ProjectionResponse>(
       `/api/plan/draft/projection?user_id=${encodeURIComponent(userId)}&years=${years}`,
     ),
+  planDraftTargetProgress: (userId: string) =>
+    getJSON<TargetProgressResponse>(
+      `/api/plan/draft/target-progress?user_id=${encodeURIComponent(userId)}`,
+    ),
   decisionsRun: (body: DecisionRunRequest) =>
     postJSON<DecisionRunResponse>(`/api/decisions/run`, body),
   planDraftAccept: (draftId: number, userId: string) =>
@@ -1820,6 +1824,25 @@ export interface ProjectionResponse {
     withdrawal_rate: number;
     model: string;
   };
+}
+
+export interface TargetProgress {
+  item_id: string;
+  target_value: number;
+  target_unit: string;
+  current_value: number | null;
+  current_unit: string;
+  gap_value: number | null;
+  gap_pct: number | null;
+  status: "AT_TARGET" | "ABOVE_TARGET" | "BELOW_TARGET" | "UNKNOWN";
+  direction_is_good: boolean | null;
+  compute_source: string;
+  last_observation: string;
+}
+
+export interface TargetProgressResponse {
+  plan_version_id: number;
+  progress: Record<string, TargetProgress>;
 }
 
 export interface DecisionRunRequest {
