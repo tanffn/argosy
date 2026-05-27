@@ -148,11 +148,16 @@ def test_disabled_loop_not_run(engine: None) -> None:
 
     settings = AgentSettings(
         cadences=CadencesBlock(
-            daily_brief=CadenceConfig(enabled=False, cron="0 9 * * *")
+            # W9 — daily_brief is no longer registered by the scheduler
+            # (retired in favour of the T4.5 runner); test the disable
+            # mechanism against weekly_review instead.
+            weekly_review=CadenceConfig(enabled=False, cron="0 9 * * 0"),
         )
     )
     scheduler = Scheduler(user_id="ariel", settings=settings)
     scheduler.register_default_loops()
+    assert "weekly_review" not in scheduler._loops  # type: ignore[attr-defined]
+    # daily_brief is also absent (always, post-W9).
     assert "daily_brief" not in scheduler._loops  # type: ignore[attr-defined]
 
 

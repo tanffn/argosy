@@ -1,20 +1,35 @@
-"""Daily Brief loop (SDD §5.1, Phase 2).
+"""Investor-events gather helpers (formerly the Phase 2 DailyBriefLoop).
 
-Runs at the configured cron (default `0 9 * * *` Asia/Jerusalem). Pulls
-overnight news + macro state, computes concentration deltas vs plan
-targets, asks the plan-critique agent for a one-shot adherence delta,
-and writes a `daily_briefs` row. Emits a `daily_brief.ready` WebSocket
-event.
+W9 — retired the four-agent ``DailyBriefLoop`` orchestration. T4.5's
+single-agent runner in ``argosy/services/daily_brief_runner.py`` is now
+the canonical daily-brief path. The CLI (``argosy brief``) and the
+scheduler call that runner; this module no longer registers a loop.
 
-The loop is a thin orchestrator: it composes the four analyst agents +
-data adapters via dependency injection so tests can mock everything.
+What remains here:
+  * ``_default_gather_inputs(user_id)`` — pulls portfolio snapshot,
+    Finnhub news, FRED macro snapshot, SEC Form 4, TipRanks, SEC 13F
+    watchlist, and CapitolTrades signals; persists each adapter pull
+    into the ``investor_events`` table via ``record_investor_events``.
+    The function still returns a ``DailyBriefInputs`` dataclass for
+    backward compatibility with the tests that exercise the gather
+    flow directly (see ``tests/test_daily_brief.py``).
+  * ``DailyBriefInputs`` dataclass — preserved as the gather return
+    type. Pure data carrier; no orchestration responsibility.
+  * Helper functions: ``_find_latest_tsv``, ``_summarize_positions``,
+    ``_resolve_thirteen_f_watchlist``.
+
+Why preserved (vs deleted): the investor-events ingestion path
+(SEC Form 4 / TipRanks / 13F / CapitolTrades → ``investor_events``
+table) is real production behaviour exercised by the home-page signal
+bullet (``argosy/api/routes/advisor.py`` reads from ``investor_events``).
+The new T4.5 runner does NOT yet absorb this ingestion; deleting these
+helpers would silently strand the table. They remain a stable, callable
+collector that a future cadence loop (or the runner itself) can wire in.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -25,16 +40,10 @@ from argosy.adapters import (
 from argosy.adapters import (
     MissingDataSourceError,
 )
-from argosy.agents.concentration_analyst import ConcentrationAnalystAgent
-from argosy.agents.macro_analyst import MacroAnalystAgent
-from argosy.agents.news_analyst import NewsAnalystAgent
-from argosy.agents.plan_critique import PlanCritiqueAgent
-from argosy.api.events import publish_event
 from argosy.config import get_settings
 from argosy.logging import get_logger
-from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule
 from argosy.state import db as db_mod
-from argosy.state.models import DailyBrief, PlanCritique, PlanVersion
+from argosy.state.models import PlanCritique, PlanVersion
 from argosy.state.queries import record_investor_events
 
 _log = get_logger("argosy.loops.daily_brief")
@@ -42,16 +51,15 @@ _log = get_logger("argosy.loops.daily_brief")
 
 @dataclass
 class DailyBriefInputs:
-    """Inputs to one daily-brief run, gathered before the LLM calls.
+    """Inputs gathered for the (now-retired) daily-brief composition.
 
-    Tests construct this directly to avoid touching adapters.
+    Kept as the return type of ``_default_gather_inputs`` so callers /
+    tests that consume the gather output keep working unchanged.
 
     The investor-event fields (``insider_activity``, ``analyst_signals``,
     ``thirteen_f_watchlist``) carry data pulled from the Phase 4
     adapters; each one degrades to an empty dict when its adapter is
-    unreachable or unconfigured. Analyst agents that already accept a
-    ``payload`` dict (news / sentiment / concentration) can opt-in to
-    consuming this auxiliary context without prompt changes.
+    unreachable or unconfigured.
     """
 
     user_id: str
@@ -77,141 +85,8 @@ class DailyBriefInputs:
     )
 
 
-class DailyBriefLoop(CadenceLoop):
-    """Wires news + macro + concentration analysts + plan critique into one daily run."""
-
-    name = "daily_brief"
-
-    def __init__(
-        self,
-        *,
-        schedule: LoopSchedule,
-        enabled: bool = True,
-        user_id: str = "ariel",
-        news_agent_factory: Callable[[], NewsAnalystAgent] | None = None,
-        macro_agent_factory: Callable[[], MacroAnalystAgent] | None = None,
-        concentration_agent_factory: Callable[[], ConcentrationAnalystAgent] | None = None,
-        plan_critique_agent_factory: Callable[[], PlanCritiqueAgent] | None = None,
-        gather_inputs: Callable[[str], DailyBriefInputs] | None = None,
-    ) -> None:
-        super().__init__(schedule=schedule, enabled=enabled)
-        self.user_id = user_id
-        self._news_factory = news_agent_factory or (lambda: NewsAnalystAgent(user_id=user_id))
-        self._macro_factory = macro_agent_factory or (lambda: MacroAnalystAgent(user_id=user_id))
-        self._concentration_factory = concentration_agent_factory or (
-            lambda: ConcentrationAnalystAgent(user_id=user_id)
-        )
-        self._plan_critique_factory = plan_critique_agent_factory or (
-            lambda: PlanCritiqueAgent(user_id=user_id)
-        )
-        self._gather = gather_inputs or _default_gather_inputs
-
-    async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
-        """Run one Daily Brief end-to-end."""
-        run_at = (now or _utcnow)()
-        inputs = await self._maybe_async(self._gather(self.user_id))
-        if not isinstance(inputs, DailyBriefInputs):  # pragma: no cover - defensive
-            raise TypeError(
-                f"gather_inputs must return DailyBriefInputs, got {type(inputs)!r}"
-            )
-
-        # 1. News digest
-        news_agent = self._news_factory()
-        news_report = await news_agent.run(
-            tickers=inputs.tickers,
-            news_payload=inputs.news_payload,
-        )
-
-        # 2. Macro regime
-        macro_agent = self._macro_factory()
-        macro_report = await macro_agent.run(macro_snapshot=inputs.macro_snapshot)
-
-        # 3. Concentration deltas
-        conc_agent = self._concentration_factory()
-        conc_report = await conc_agent.run(
-            positions_summary=inputs.positions_summary,
-            plan_targets=inputs.plan_targets,
-            nvda_shares_sold_ytd=inputs.nvda_shares_sold_ytd,
-            nvda_target_shares_ytd=inputs.nvda_target_shares_ytd,
-        )
-
-        # 4. Plan adherence delta (re-run plan-critique with today's snapshot
-        # so the home page shows fresh RED/YELLOW/GREEN findings).
-        critique_agent = self._plan_critique_factory()
-        critique_report = await critique_agent.run(
-            plan_label=inputs.plan_label,
-            plan_markdown=inputs.plan_markdown,
-            snapshot_label=f"daily_brief:{run_at.isoformat()}",
-            snapshot_summary=inputs.positions_summary,
-            user_context_yaml="",
-            domain_kb_files={},
-        )
-
-        # 5. Compose summary text from all four reports.
-        summary = _compose_summary(
-            news=news_report.output,
-            macro=macro_report.output,
-            concentration=conc_report.output,
-            plan=critique_report.output,
-        )
-
-        # 6. Persist daily_briefs row
-        async with db_mod.get_session() as session:
-            row = DailyBrief(
-                user_id=self.user_id,
-                run_at=run_at,
-                summary_text=summary,
-                news_report_json=news_report.output.model_dump_json(),
-                macro_report_json=macro_report.output.model_dump_json(),
-                concentration_report_json=conc_report.output.model_dump_json(),
-                plan_delta_json=critique_report.output.model_dump_json(),
-            )
-            session.add(row)
-            await session.commit()
-            brief_id = row.id
-
-        _log.info("daily_brief.persisted", brief_id=brief_id, user_id=self.user_id)
-
-        # 7. Emit WebSocket event (best-effort; never crash on a broken pubsub).
-        try:
-            await publish_event(
-                "daily_brief.ready",
-                {"brief_id": brief_id, "user_id": self.user_id, "run_at": run_at.isoformat()},
-            )
-        except Exception:  # pragma: no cover - defensive
-            _log.exception("daily_brief.publish_failed")
-
-    @staticmethod
-    async def _maybe_async(value: Any) -> Any:
-        if hasattr(value, "__await__"):
-            return await value
-        return value
-
-
-def _utcnow() -> datetime:
-    return datetime.now(UTC)
-
-
-def _compose_summary(*, news: Any, macro: Any, concentration: Any, plan: Any) -> str:
-    parts: list[str] = []
-    parts.append("=== DAILY BRIEF ===")
-    parts.append(f"News: {getattr(news, 'top_line', '(no news headlines)')}")
-    regime = getattr(macro, "regime", None)
-    drivers = getattr(macro, "drivers", []) or []
-    parts.append(f"Macro regime: {regime}; drivers: {', '.join(drivers) or '(none)'}")
-    breaches = getattr(concentration, "breaches", []) or []
-    if breaches:
-        parts.append(f"Concentration: {len(breaches)} breach(es)")
-    else:
-        parts.append("Concentration: within caps")
-    overall = getattr(plan, "overall_summary", "")
-    if overall:
-        parts.append(f"Plan delta: {overall}")
-    return "\n".join(parts)
-
-
 async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
-    """Default input gatherer for production runs.
+    """Default input gatherer.
 
     Best-effort wiring of the real adapters with graceful degradation:
     - Latest TSV at ARGOSY_HOME → tickers + positions_summary
@@ -220,8 +95,12 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
     - DB → latest plan_versions row → plan_label + plan_markdown
 
     Each section degrades independently to an empty payload with a
-    structured warning so the LLM agents see "this section is empty"
+    structured warning so callers see "this section is empty"
     rather than fabricated content.
+
+    Side effect: persists Form 4 / TipRanks / 13F / CapitolTrades /
+    Finnhub pulls into ``investor_events`` via ``record_investor_events``
+    so the home-page signal bullet has durable, queryable data.
     """
     plan_label = "(no plan imported)"
     plan_markdown = ""
@@ -563,4 +442,4 @@ def _summarize_positions(snapshot: Any) -> str:
     return "\n".join(lines)
 
 
-__all__ = ["DailyBriefInputs", "DailyBriefLoop"]
+__all__ = ["DailyBriefInputs"]

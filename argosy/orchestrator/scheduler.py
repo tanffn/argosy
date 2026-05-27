@@ -26,7 +26,6 @@ from argosy.orchestrator.loops.annual import AnnualLoop
 from argosy.orchestrator.loops.audit import AuditLoop
 from argosy.orchestrator.loops.backup import BackupLoop
 from argosy.orchestrator.loops.base import CadenceLoop, LoopSchedule, TickStatus
-from argosy.orchestrator.loops.daily_brief import DailyBriefLoop
 from argosy.orchestrator.loops.hour_loop import HourLoop
 from argosy.orchestrator.loops.minute_loop import MinuteLoop
 from argosy.orchestrator.loops.monthly_cycle import MonthlyCycleLoop
@@ -82,23 +81,18 @@ class Scheduler:
     def register_default_loops(self) -> None:
         """Register the Phase 2+3 default set.
 
-        Phase 2: daily_brief.
+        Phase 2: daily_brief — RETIRED W9. The four-agent
+        ``DailyBriefLoop`` (news + macro + concentration + plan_critique
+        composer) is gone; the canonical path is now T4.5's
+        single-agent runner in ``argosy/services/daily_brief_runner.py``,
+        which the ``argosy brief`` CLI invokes directly. The
+        ``cadences.daily_brief`` settings field is preserved for
+        backwards-compat but no longer wires a scheduler loop.
         Phase 3: weekly_review (full T3-style plan-critique re-pass) +
         process_cooling (state-machine advancer for cooling proposals).
         Other loops (minute/hour/monthly/quarterly/annual) land in later
         phases as their tick implementations arrive.
         """
-        cad = self.settings.cadences.daily_brief
-        if cad.enabled:
-            schedule = LoopSchedule.from_config(cad)
-            self.register_loop(
-                DailyBriefLoop(
-                    schedule=schedule,
-                    enabled=True,
-                    user_id=self.user_id,
-                )
-            )
-
         weekly = self.settings.cadences.weekly_review
         if weekly.enabled:
             schedule = LoopSchedule.from_config(weekly)

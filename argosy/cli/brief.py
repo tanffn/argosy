@@ -1,7 +1,9 @@
 """`argosy brief --user-id <id>` — fire one Daily Brief on demand.
 
-Skips the cadence schedule. Useful for testing the loop end-to-end
-without waiting until 09:00. Mocks NOTHING — this calls live agents.
+W9 — wired to T4.5's single-agent runner
+(``argosy/services/daily_brief_runner.py::generate_daily_brief``).
+The Phase 2 four-agent ``DailyBriefLoop`` is retired. Mocks NOTHING —
+this calls a live agent.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ import typer
 
 from argosy.agents.errors import AgentRunError, MissingAPIKeyError
 from argosy.logging import configure_logging
-from argosy.orchestrator import Scheduler
+from argosy.services.daily_brief_runner import generate_daily_brief
 from argosy.state import db as db_mod
 
 
@@ -24,9 +26,8 @@ def brief(
     db_mod.init_engine()
 
     async def _main() -> None:
-        scheduler = Scheduler(user_id=user_id)
-        scheduler.register_default_loops()
-        await scheduler.fire_once("daily_brief")
+        async with db_mod.get_session() as session:
+            await generate_daily_brief(user_id, session)
 
     try:
         asyncio.run(_main())
@@ -37,6 +38,3 @@ def brief(
     except AgentRunError as exc:
         typer.echo(f"Daily Brief failed: {exc}")
         raise typer.Exit(code=3) from exc
-    except KeyError as exc:
-        typer.echo(f"Daily Brief loop is not registered (cadence disabled?): {exc}")
-        raise typer.Exit(code=4) from exc
