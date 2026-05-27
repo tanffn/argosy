@@ -464,3 +464,34 @@ class TestProjectCashflow:
         v_plus_12 = proj.series[unlock_idx + 12].portfolio_value_base_nis
         expected = v_at_unlock * ((1.0 + 0.08 / 12.0) ** 12)
         assert v_plus_12 == pytest.approx(expected, rel=1e-6)
+
+    def test_annuity_inflates_nominally_after_lock(self, client_with_db):
+        """After age 67 the annuity should grow nominally at inflation_annual,
+        not stay flat in nominal terms. This was a real/nominal-mismatch bug
+        caught by codex-tandem review."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0,
+            today=date(2026, 5, 27),
+        )
+        lock_idx = next(
+            i for i, p in enumerate(proj.series) if p.pension_annuity_monthly_nis > 0
+        )
+        # At lock: real value (no inflation yet)
+        v_at_lock = proj.series[lock_idx].pension_annuity_monthly_nis
+        # 12 months later: nominal value = real × (1.025)^1
+        v_plus_12 = proj.series[lock_idx + 12].pension_annuity_monthly_nis
+        expected = v_at_lock * 1.025
+        assert v_plus_12 == pytest.approx(expected, rel=1e-6)

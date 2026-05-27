@@ -75,6 +75,10 @@ class CashflowPoint:
     portfolio_income_base_monthly_nis: float
     portfolio_income_bear_monthly_nis: float
     portfolio_income_bull_monthly_nis: float
+    # ``pension_annuity_monthly_nis`` is in NOMINAL NIS at time t. The
+    # annuity locks at age 67 in real NIS (balance_at_lock / mekadem), but
+    # is inflated forward at ``inflation_annual`` so it's directly
+    # comparable with ``expenses_monthly_nis`` (which is also nominal at t).
     pension_annuity_monthly_nis: float
     # ``pension_lump_available_nis`` is CUMULATIVE-once-unlocked: 0 until
     # age 60, then equal to the total NIS that became available at unlock
@@ -342,8 +346,9 @@ def project_cashflow(
 
     lump_unlocked = False
     lump_amount_nis = 0.0
-    annuity_monthly_nis = 0.0
+    annuity_monthly_nis = 0.0  # real NIS at lock — inflated to nominal at each emit
     annuity_locked = False
+    annuity_lock_t: int | None = None
 
     out: list[CashflowPoint] = []
 
@@ -401,6 +406,7 @@ def project_cashflow(
                 mekadem=mekadem,
             )
             annuity_locked = True
+            annuity_lock_t = t
 
         # Step 5: derive bull/bear from base via lognormal ±1σ band.
         # At t=0 the band collapses to base (no uncertainty yet).
@@ -421,7 +427,15 @@ def project_cashflow(
         expenses_t = inflate_expenses(
             household.monthly_expenses_nis, inflation_annual, t
         )
-        surplus_base = portfolio_income_base + annuity_monthly_nis - expenses_t
+        # Inflate the real-at-lock annuity to nominal NIS at time t so it's
+        # directly comparable with expenses_t (which is also nominal at t).
+        if annuity_locked and annuity_lock_t is not None:
+            annuity_nominal_t = annuity_monthly_nis * (
+                (1.0 + inflation_annual) ** ((t - annuity_lock_t) / 12.0)
+            )
+        else:
+            annuity_nominal_t = 0.0
+        surplus_base = portfolio_income_base + annuity_nominal_t - expenses_t
 
         d = _add_months(today, t)
         out.append(CashflowPoint(
@@ -434,7 +448,7 @@ def project_cashflow(
             portfolio_income_base_monthly_nis=portfolio_income_base,
             portfolio_income_bear_monthly_nis=portfolio_income_bear,
             portfolio_income_bull_monthly_nis=portfolio_income_bull,
-            pension_annuity_monthly_nis=annuity_monthly_nis,
+            pension_annuity_monthly_nis=annuity_nominal_t,   # nominal at time t
             pension_lump_available_nis=lump_amount_nis if lump_unlocked else 0.0,  # CUMULATIVE-once-unlocked, not per-month — see field docstring
             expenses_monthly_nis=expenses_t,
             surplus_base_monthly_nis=surplus_base,
@@ -464,8 +478,15 @@ def project_cashflow(
                 "to portfolio. Annuity (kupat_pensia + executive_insurance) "
                 "locked at age 67 via balance / mekadem; balances frozen "
                 "thereafter. Executive insurance modelled as frozen (no "
-                "contributions). Severance (8.33%) modelled as kupat_pensia "
-                "contribution — flagged for codex-tandem review."
+                "contributions). Severance (8.33%) is modelled as kupat_pensia "
+                "contribution — this is an OPTIMISTIC bias for annuity adequacy: "
+                "in Israeli practice severance typically goes into a separate "
+                "pizurim account and may be withdrawn before 67 rather than "
+                "annuitized. Documented after codex-tandem review."
+                " Pension annuity at age 67 is locked as balance/mekadem in real "
+                "NIS, then inflated at ``inflation_annual`` so the emitted "
+                "``pension_annuity_monthly_nis`` is nominal NIS at time t "
+                "(comparable with expenses)."
             ),
         },
     )
