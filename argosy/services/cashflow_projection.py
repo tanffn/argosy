@@ -15,7 +15,7 @@ layer in ``argosy.api.routes.plan`` wraps this in a FastAPI endpoint.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence
 
 from sqlalchemy.orm import Session
@@ -132,6 +132,10 @@ def inflate_expenses(
     inflation_annual: float,
     months_out: int,
 ) -> float:
+    """Compound ``base_monthly_nis`` forward by ``months_out`` months at
+    ``inflation_annual`` per year. Uses a fractional-year exponent
+    (``months_out / 12``) so the curve is continuous across month
+    boundaries — matches the per-tick semantics of the projection loop."""
     return base_monthly_nis * ((1.0 + inflation_annual) ** (months_out / 12.0))
 
 

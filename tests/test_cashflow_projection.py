@@ -31,9 +31,11 @@ class TestAccumulatePensionBalance:
             real_return_annual=0.055,
             months=12,
         )
-        # Pure compound (no contributions): 100k * 1.055 = 105,500
-        # With 60k of contributions roughly evenly placed: ~167,000
-        assert 165_000 < b < 170_000
+        # Hand-verified: iterating b = b*(1 + 0.055/12) + 5000 twelve times from
+        # starting 100k gives 167,176.63 (rounded). pytest.approx with rel=1e-3
+        # is tight enough to catch a wrong loop ordering (growth vs. contribution
+        # swap) but loose enough not to fight rounding noise.
+        assert b == pytest.approx(167_176.63, rel=1e-3)
 
     def test_frozen_bucket_grows_by_real_return_only(self):
         b = accumulate_pension_balance(
