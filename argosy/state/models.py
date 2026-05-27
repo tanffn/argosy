@@ -1135,6 +1135,8 @@ __all__ = [
     "FxRate",
     # Fleet self-review (migration 0037)
     "FleetSelfReviewReport",
+    # Anomaly detection (EX2 — migration 0038)
+    "AnomalyReport",
 ]
 
 
@@ -1577,5 +1579,70 @@ class FleetSelfReviewReport(Base):
         Index(
             "ix_fleet_self_review_decision_run",
             "decision_run_id",
+        ),
+    )
+
+
+# ----------------------------------------------------------------------
+# Anomaly-detection report (EX2 — migration 0038)
+# ----------------------------------------------------------------------
+
+
+class AnomalyReport(Base):
+    """One persisted output of the ``AnomalyDetectionAgent`` runner (EX2).
+
+    The runner fires automatically:
+
+      * ``triggered_by='event'``  — after every Discount Bank statement
+        ingest (event-driven path so a same-day fee-waiver disappearance
+        surfaces within seconds, not 24h).  ``source_statement_id``
+        points at the statement that just landed.
+      * ``triggered_by='daily'``  — once a day alongside the daily
+        brief (gated by ``ARGOSY_ANOMALY_DETECTION_ENABLED=1``).
+        ``source_statement_id`` is NULL.
+      * ``triggered_by='manual'`` — explicit ``POST /api/anomalies/run``
+        from the UI / CLI.
+
+    ``report_json`` is the ``AnomalyDetectionReport`` pydantic model
+    serialized.  ``severity_summary_json`` is the pre-joined
+    ``{"RED": N, "AMBER": M, "YELLOW": K}`` so the home-page banner can
+    render the severity counters without parsing the full report.
+    """
+
+    __tablename__ = "anomaly_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 'event' | 'daily' | 'manual' — DB CHECK constraint enforces.
+    triggered_by: Mapped[str] = mapped_column(String(16), nullable=False)
+    triggered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    source_statement_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("expense_statements.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    report_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    severity_summary_json: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default='{"RED":0,"AMBER":0,"YELLOW":0}',
+    )
+    agent_report_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("agent_reports.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_anomaly_reports_user_triggered",
+            "user_id",
+            "triggered_at",
+        ),
+        Index(
+            "ix_anomaly_reports_source_statement",
+            "source_statement_id",
         ),
     )

@@ -1,0 +1,44 @@
+# Argosy anomaly-detection watchlist (EX2)
+#
+# Schema (per entry):
+#   name             — slug, used as the WatchlistEntryStatus.name primary key
+#                      in AnomalyDetectionReport rows.
+#   description      — plain-English description of what's being watched.
+#   account_match    — substring matched (case-insensitive) against the
+#                      ExpenseSource's external_id / display_name to decide
+#                      which statements an entry applies to. Empty / null
+#                      means "all accounts".
+#   issuer_match     — optional issuer filter (e.g. 'discount', 'leumi').
+#                      Empty / null means "any issuer".
+#   expected_pattern — what the agent should look for in every statement
+#                      period for matched accounts.
+#   alert_when       — concrete failure conditions the agent must flag.
+#   severity         — default severity if the alert_when condition fires
+#                      ('RED' | 'AMBER' | 'YELLOW').
+#
+# Adding entries: append a new YAML block here. The agent reads ALL entries
+# applicable to the current statement (account/issuer filters) on every run.
+
+entries:
+  - name: discount_bank_card_2923_fee_waiver
+    description: |
+      Discount Bank card 2923 has a fee-waiver promotion. Every monthly
+      statement should show a CHARGE line (the card fee, typically
+      ~₪10-25) AND a matching DISCOUNT line that nets the fee to ₪0.
+      If the discount line disappears, the promotion has expired and the
+      user owes the fees again.
+    account_match: "2923"
+    issuer_match: "discount"
+    expected_pattern: |
+      For account=card_2923, every statement period must contain:
+        - A charge transaction whose merchant matches the regex
+          "(עמלת כרטיס|card fee|דמי כרטיס)"
+        - A discount transaction whose merchant matches
+          "(הנחת עמלה|fee discount|הטבת מועדון|הנחת דמי כרטיס)"
+        - The two amounts must sum to within ₪0.01 of zero
+          (i.e. the discount cancels the charge).
+    alert_when: |
+      Either the discount transaction is missing from the latest
+      period, or the sum of the matched charge+discount pair drifts by
+      more than ₪0.01 from zero.
+    severity: RED
