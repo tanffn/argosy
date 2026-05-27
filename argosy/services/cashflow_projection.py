@@ -280,10 +280,13 @@ def extract_household_state(
         except (ValueError, TypeError):
             portfolio_value_nis = 0.0
 
-    age = _compute_age_years(
-        ctx.get("date_of_birth") if isinstance(ctx, dict) else None,
-        today,
-    )
+    # Accept either ``user_date_of_birth`` (the real key in identity_yaml,
+    # to distinguish from spouse / children) or top-level ``date_of_birth``
+    # for test-seed compatibility. First non-empty wins.
+    dob_iso = None
+    if isinstance(ctx, dict):
+        dob_iso = ctx.get("user_date_of_birth") or ctx.get("date_of_birth")
+    age = _compute_age_years(dob_iso, today)
     return HouseholdState(
         monthly_expenses_nis=monthly_expenses_nis,
         portfolio_value_nis=portfolio_value_nis,
