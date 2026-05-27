@@ -14,7 +14,7 @@ import { DeltaMap } from "@/components/plan/delta-map";
 import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
-import { ProjectionChart } from "@/components/plan/projection-chart";
+import { CashflowProjectionChart } from "@/components/plan/cashflow-projection-chart";
 import { SourcesHeatmap } from "@/components/plan/sources-heatmap";
 import { SynthesisHealthBanner } from "@/components/plan/synthesis-health-banner";
 import { Badge } from "@/components/ui/badge";
@@ -38,7 +38,6 @@ import {
   type NvdaTrajectoryResponse,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
-  type ProjectionResponse,
   type TargetProgressResponse,
 } from "@/lib/api";
 import { useWSEvents } from "@/lib/ws";
@@ -104,7 +103,6 @@ export default function PlanPage() {
     useState<TargetProgressResponse | null>(null);
   const [snapshot, setSnapshot] = useState<PortfolioSnapshotDTO | null>(null);
   const [nvda, setNvda] = useState<NvdaTrajectoryResponse | null>(null);
-  const [projection, setProjection] = useState<ProjectionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -139,7 +137,6 @@ export default function PlanPage() {
     const objP = api.planDraftObjections(USER_ID).catch(() => null);
     const snapP = api.portfolioSnapshot(USER_ID).catch(() => null);
     const nvdaP = api.planDraftNvdaTrajectory(USER_ID).catch(() => null);
-    const projP = api.planDraftProjection(USER_ID, 10).catch(() => null);
     const progressP = api.planDraftTargetProgress(USER_ID).catch(() => null);
     // In-flight synthesis polling — returns 200 + null when nothing is
     // running, so a swallowed network error returns the same shape as
@@ -149,14 +146,13 @@ export default function PlanPage() {
       .planInFlightSynthesis(USER_ID)
       .catch(() => ({ in_flight_synthesis: null }));
     try {
-      const [planV, draftV, objV, snapV, nvdaV, projV, inFlightV, progressV] =
+      const [planV, draftV, objV, snapV, nvdaV, inFlightV, progressV] =
         await Promise.all([
           planP,
           draftP,
           objP,
           snapP,
           nvdaP,
-          projP,
           inFlightP,
           progressP,
         ]);
@@ -165,7 +161,6 @@ export default function PlanPage() {
       setObjections(objV);
       setSnapshot(snapV);
       setNvda(nvdaV);
-      setProjection(projV);
       setInFlightSynthesis(inFlightV?.in_flight_synthesis ?? null);
       setTargetProgress(progressV);
     } catch (e: unknown) {
@@ -670,15 +665,17 @@ export default function PlanPage() {
         />
       )}
 
-      {/* Section 2 — Visualizations */}
+      {/* Section 2 — Visualizations. SourcesHeatmap is rendered at the
+          bottom of the page (after Critique findings) so the top of the
+          plan tab stays focused on the proposal + dynamics, not the
+          citation audit trail. */}
       {draft && (
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <AllocationChart snapshot={snapshot} draft={draft} />
           <NvdaTrajectoryChart data={nvda} />
           <DeltaMap draft={draft} />
-          {/* Projection + Heatmap are wide-data — span both columns. */}
-          <ProjectionChart data={projection} />
-          <SourcesHeatmap draft={draft} />
+          {/* Cashflow projection — spans both columns at lg+. */}
+          <CashflowProjectionChart userId={USER_ID} />
         </section>
       )}
 
@@ -688,8 +685,11 @@ export default function PlanPage() {
           <CardHeader>
             <CardTitle className="text-base">Proposed changes</CardTitle>
             <CardDescription>
-              Review each delta and accept individually, or use Accept all in
-              the summary card above.
+              Pre-stage your approvals — Accept / Reject here only flag the
+              item on the draft, they don&apos;t apply changes to your
+              current plan. Nothing is committed until you accept the whole
+              draft (or trigger a re-synth). Use Push back to fire a slim
+              re-debate on a single item.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -816,6 +816,11 @@ export default function PlanPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Section 6 — Cited sources by item (citation audit trail). Lives
+          at the bottom of the page so the top stays focused on the
+          proposal + dynamics; reviewers scan the heatmap last. */}
+      {draft && <SourcesHeatmap draft={draft} />}
 
       {/* No-draft empty state */}
       {!loading && !draft && plan?.raw_markdown ? (
