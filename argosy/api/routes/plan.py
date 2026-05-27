@@ -969,6 +969,88 @@ def _parse_fm_response(response_text: str) -> dict:
     return {}
 
 
+class TargetProgress(BaseModel):
+    """Live "current vs target" annotation for one plan target.
+
+    Wire shape mirrors ``argosy.services.target_progress.TargetProgress``;
+    the API layer wraps the service dataclass in this pydantic model so
+    the OpenAPI schema documents the contract and the TS client gets a
+    typed object. See the service module for the per-unit classifier.
+    """
+
+    item_id: str
+    target_value: float
+    target_unit: str
+    current_value: float | None
+    current_unit: str
+    gap_value: float | None
+    gap_pct: float | None
+    status: str  # "AT_TARGET" | "ABOVE_TARGET" | "BELOW_TARGET" | "UNKNOWN"
+    direction_is_good: bool | None
+    compute_source: str
+    last_observation: str
+
+
+class TargetProgressResponse(BaseModel):
+    """Map keyed by item_id so the UI can join O(1) against DeltaItem rows.
+
+    ``plan_version_id`` is echoed so the UI can confirm which draft the
+    progress strip is for (the route always reads from the pending draft).
+    """
+
+    plan_version_id: int
+    progress: dict[str, TargetProgress]
+
+
+@router.get("/draft/target-progress", response_model=TargetProgressResponse)
+def get_draft_target_progress(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> TargetProgressResponse:
+    """Return live target-progress annotations for the user's pending draft.
+
+    For each ``target`` row in long/medium/short horizon JSON, computes the
+    live ``current_value`` from the latest portfolio_snapshots row + the
+    freshest household_budget agent_report + the concentration agent_report
+    tied to the draft's decision_run_id. Returns a status classification
+    (AT_TARGET / ABOVE_TARGET / BELOW_TARGET / UNKNOWN) the UI uses to
+    render a thin progress strip on each TARGET DeltaCard.
+
+    Pure-ish: no LLM calls, no external HTTP — three DB reads + a small
+    amount of arithmetic. <10ms in practice.
+
+    404 when no pending draft exists for the user (parity with GET
+    /api/plan/draft).
+    """
+    from argosy.services.target_progress import compute_target_progress_for_plan
+    from argosy.state.queries import get_pending_draft
+
+    pv = get_pending_draft(db, user_id)
+    if pv is None:
+        raise HTTPException(status_code=404, detail="no pending draft for user")
+
+    rows = compute_target_progress_for_plan(db, user_id=user_id, plan=pv)
+    progress_map: dict[str, TargetProgress] = {}
+    for row in rows:
+        progress_map[row.item_id] = TargetProgress(
+            item_id=row.item_id,
+            target_value=row.target_value,
+            target_unit=row.target_unit,
+            current_value=row.current_value,
+            current_unit=row.current_unit,
+            gap_value=row.gap_value,
+            gap_pct=row.gap_pct,
+            status=row.status,
+            direction_is_good=row.direction_is_good,
+            compute_source=row.compute_source,
+            last_observation=row.last_observation,
+        )
+    return TargetProgressResponse(
+        plan_version_id=pv.id,
+        progress=progress_map,
+    )
+
+
 class ProjectionPoint(BaseModel):
     months_out: int
     date: str  # YYYY-MM
@@ -2072,6 +2154,8 @@ __all__ = [
     "RejectRequest",
     "SynthesisHealth",
     "TakeSpeculativeResponse",
+    "TargetProgress",
+    "TargetProgressResponse",
     "_publish",
     "get_db",
     "router",

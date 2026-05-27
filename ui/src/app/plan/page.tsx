@@ -38,6 +38,7 @@ import {
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
   type ProjectionResponse,
+  type TargetProgressResponse,
 } from "@/lib/api";
 import { useWSEvents } from "@/lib/ws";
 
@@ -93,6 +94,13 @@ export default function PlanPage() {
   const [plan, setPlan] = useState<PlanCurrentDTO | null>(null);
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [objections, setObjections] = useState<FMObjectionsResponse | null>(null);
+  // Live target-progress map keyed by item_id — fetched in parallel with
+  // /api/plan/draft and forwarded to each TARGET DeltaCard so the
+  // "current value · gap · status" strip renders. Null on 404 (no draft)
+  // or transient fetch failure; the DeltaCard falls back to a muted
+  // "(live state pending: synthesis required)" line in that case.
+  const [targetProgress, setTargetProgress] =
+    useState<TargetProgressResponse | null>(null);
   const [snapshot, setSnapshot] = useState<PortfolioSnapshotDTO | null>(null);
   const [nvda, setNvda] = useState<NvdaTrajectoryResponse | null>(null);
   const [projection, setProjection] = useState<ProjectionResponse | null>(null);
@@ -131,6 +139,7 @@ export default function PlanPage() {
     const snapP = api.portfolioSnapshot(USER_ID).catch(() => null);
     const nvdaP = api.planDraftNvdaTrajectory(USER_ID).catch(() => null);
     const projP = api.planDraftProjection(USER_ID, 10).catch(() => null);
+    const progressP = api.planDraftTargetProgress(USER_ID).catch(() => null);
     // In-flight synthesis polling — returns 200 + null when nothing is
     // running, so a swallowed network error returns the same shape as
     // "no run". The polling effect below repeats this fetch every 10 s
@@ -139,8 +148,17 @@ export default function PlanPage() {
       .planInFlightSynthesis(USER_ID)
       .catch(() => ({ in_flight_synthesis: null }));
     try {
-      const [planV, draftV, objV, snapV, nvdaV, projV, inFlightV] =
-        await Promise.all([planP, draftP, objP, snapP, nvdaP, projP, inFlightP]);
+      const [planV, draftV, objV, snapV, nvdaV, projV, inFlightV, progressV] =
+        await Promise.all([
+          planP,
+          draftP,
+          objP,
+          snapP,
+          nvdaP,
+          projP,
+          inFlightP,
+          progressP,
+        ]);
       setPlan(planV);
       setDraft(draftV);
       setObjections(objV);
@@ -148,6 +166,7 @@ export default function PlanPage() {
       setNvda(nvdaV);
       setProjection(projV);
       setInFlightSynthesis(inFlightV?.in_flight_synthesis ?? null);
+      setTargetProgress(progressV);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -695,6 +714,7 @@ export default function PlanPage() {
                   disabled={working}
                   pushbackRuns={pushbackRuns}
                   priorRoundObjections={objections?.prior_round_objections}
+                  targetProgress={targetProgress}
                 />
               </TabsContent>
               <TabsContent value="medium" className="mt-3">
@@ -708,6 +728,7 @@ export default function PlanPage() {
                   disabled={working}
                   pushbackRuns={pushbackRuns}
                   priorRoundObjections={objections?.prior_round_objections}
+                  targetProgress={targetProgress}
                 />
               </TabsContent>
               <TabsContent value="short" className="mt-3">
@@ -721,6 +742,7 @@ export default function PlanPage() {
                   disabled={working}
                   pushbackRuns={pushbackRuns}
                   priorRoundObjections={objections?.prior_round_objections}
+                  targetProgress={targetProgress}
                 />
               </TabsContent>
             </Tabs>
@@ -843,6 +865,10 @@ interface HorizonDeltaListProps {
   // through to each DeltaCard so "Blocker #N" / "Objection #N" tokens
   // in the rationale link to the matching prior objection.
   priorRoundObjections?: FMObjection[];
+  // Live target-progress map keyed by item_id (from TargetProgressResponse).
+  // The list looks each TARGET delta's item_id up here and forwards the
+  // matching row to the DeltaCard for the "current · gap · status" strip.
+  targetProgress?: TargetProgressResponse | null;
 }
 
 function HorizonDeltaList({
@@ -855,6 +881,7 @@ function HorizonDeltaList({
   disabled,
   pushbackRuns,
   priorRoundObjections,
+  targetProgress,
 }: HorizonDeltaListProps) {
   if (!h || h.deltas_from_prior.length === 0) {
     return (
@@ -877,6 +904,7 @@ function HorizonDeltaList({
             onSourceClick={onSourceClick}
             pushbackRun={pushbackRuns?.[d.item_id] ?? null}
             priorRoundObjections={priorRoundObjections}
+            targetProgress={targetProgress?.progress?.[d.item_id] ?? null}
           />
         </li>
       ))}

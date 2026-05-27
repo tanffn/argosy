@@ -965,6 +965,15 @@ export const api = {
 
   planDraft: (userId: string) =>
     getJSON<DraftResponse>(`/api/plan/draft?user_id=${encodeURIComponent(userId)}`),
+  // Home-page action-items widget. Reads dated short/medium-horizon
+  // actions out of the user's pending draft (or current accepted plan
+  // when no draft exists) and surfaces them as a checklist with
+  // OVERDUE / TODAY / DUE_SOON / UPCOMING status tones. window_days
+  // defaults to 14 server-side.
+  planActionItems: (userId: string, windowDays = 14) =>
+    getJSON<ActionItemsResponse>(
+      `/api/plan/action-items?user_id=${encodeURIComponent(userId)}&window_days=${windowDays}`,
+    ),
   // Live snapshot of the user's currently-running synthesis run, used by
   // the /plan page to render a "Synthesis #N · phase X of 5" card when
   // /api/plan/draft has 404'd because the prior draft was superseded.
@@ -1870,6 +1879,38 @@ export interface InFlightSynthesisDTO {
 
 export interface InFlightSynthesisResponse {
   in_flight_synthesis: InFlightSynthesisDTO | null;
+}
+
+/**
+ * Home-page action-items widget DTOs — see backend
+ * ``argosy.api.routes.plan.ActionItem`` / ``ActionItemsResponse``.
+ *
+ * Sourced from the user's pending draft (or current accepted plan when
+ * no draft exists) by walking horizon_short_json + horizon_medium_json
+ * ``actions[]`` and keeping those with a parseable ISO date. ``status``
+ * is server-classified by comparing ``dated`` to today's date.
+ */
+export type ActionItemStatus = "UPCOMING" | "DUE_SOON" | "OVERDUE" | "TODAY";
+
+export interface ActionItem {
+  item_id: string;
+  horizon: "short" | "medium" | "long";
+  label: string;
+  detail: string;
+  dated: string | null; // ISO YYYY-MM-DD
+  days_until: number | null;
+  status: ActionItemStatus;
+  rationale: string;
+  cited_sources: string[];
+  plan_version_id: number;
+}
+
+export interface ActionItemsResponse {
+  items: ActionItem[];
+  next_due: string | null;
+  overdue_count: number;
+  today_count: number;
+  upcoming_count: number;
 }
 
 export interface DraftResponse {

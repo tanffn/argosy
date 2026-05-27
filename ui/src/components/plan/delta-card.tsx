@@ -5,7 +5,12 @@ import { Check, History, MessageSquareWarning, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { api, type DeltaItem, type FMObjection } from "@/lib/api";
+import {
+  api,
+  type DeltaItem,
+  type FMObjection,
+  type TargetProgress,
+} from "@/lib/api";
 
 interface DeltaCardProps {
   delta: DeltaItem;
@@ -30,6 +35,13 @@ interface DeltaCardProps {
   // over the chip and see the actual prior-round objection text
   // instead of staring at a bare number.
   priorRoundObjections?: FMObjection[];
+  // Live "current vs target" annotation for TARGET item_kind. The /plan
+  // page fetches GET /api/plan/draft/target-progress once and passes the
+  // matching row in here so each TARGET card renders a thin strip below
+  // the rationale showing current value + gap + status. Null/undefined
+  // when the row is for a non-target delta OR the backend couldn't
+  // compute progress for this item.
+  targetProgress?: TargetProgress | null;
 }
 
 interface HistoryEntry {
@@ -177,6 +189,83 @@ function parseRationaleReferences(rationale: string): RationaleSegment[] {
   return out;
 }
 
+// Format the live current_value the same way we format target values so
+// "LIVE: NVDA 60.5%" vs "suggested 45%" sit on the same visual axis.
+function formatLiveValue(
+  value: number | null,
+  unit: string,
+): string {
+  if (value === null || Number.isNaN(value)) return "—";
+  const u = unit.toLowerCase();
+  if (u.includes("pct")) return `${value.toFixed(1)}%`;
+  if (u === "usd" || u === "$") return `$${Math.round(value).toLocaleString()}`;
+  if (u === "nis") return `₪${Math.round(value).toLocaleString()}`;
+  if (u === "shares") return `${Math.round(value).toLocaleString()} sh`;
+  if (u === "months") return `${value.toFixed(1)} mo`;
+  return `${value.toLocaleString()} ${unit}`;
+}
+
+// Format the gap as "+15.5pp" / "-200 sh" / "+$10,000". Pct units render
+// percentage-points (pp); everything else uses the unit's standard suffix.
+function formatGap(gap: number | null, unit: string): string {
+  if (gap === null || Number.isNaN(gap)) return "—";
+  const u = unit.toLowerCase();
+  const sign = gap > 0 ? "+" : gap < 0 ? "" : "";
+  if (u.includes("pct")) return `${sign}${gap.toFixed(1)}pp`;
+  if (u === "usd" || u === "$") return `${sign}$${Math.round(gap).toLocaleString()}`;
+  if (u === "nis") return `${sign}₪${Math.round(gap).toLocaleString()}`;
+  if (u === "shares") return `${sign}${Math.round(gap).toLocaleString()} sh`;
+  if (u === "months") return `${sign}${gap.toFixed(1)} mo`;
+  return `${sign}${gap.toLocaleString()} ${unit}`;
+}
+
+// Pick the colour token + emoji + headline word for a TargetProgress
+// status. Mapping per spec:
+//   🟢 AT_TARGET (within ±2% relative)
+//   🟡 close-but-off: BELOW for floor-style (direction_is_good=True) OR
+//      ABOVE for ceiling-style (direction_is_good=False) when within
+//      ~10% of target
+//   🔴 wrong-direction: BELOW for floor / ABOVE for ceiling (beyond ~10%)
+//   ⚪ UNKNOWN or ambiguous direction
+function progressStripStyle(progress: TargetProgress): {
+  tone: "success" | "warning" | "error" | "muted";
+  glyph: string;
+  headline: string;
+} {
+  if (progress.status === "AT_TARGET") {
+    return { tone: "success", glyph: "●", headline: "at target" };
+  }
+  if (progress.status === "UNKNOWN" || progress.direction_is_good === null) {
+    return { tone: "muted", glyph: "○", headline: "live state unavailable" };
+  }
+  // Ceiling (direction_is_good=false) → above is bad.
+  // Floor   (direction_is_good=true)  → below is bad.
+  const wrongDirection =
+    (progress.status === "ABOVE_TARGET" && progress.direction_is_good === false) ||
+    (progress.status === "BELOW_TARGET" && progress.direction_is_good === true);
+  // Close-to-target threshold: |gap_pct| within 10% (relative) of target.
+  const closeToTarget =
+    progress.gap_pct !== null && Math.abs(progress.gap_pct) <= 10.0;
+  if (wrongDirection && !closeToTarget) {
+    return {
+      tone: "error",
+      glyph: "●",
+      headline:
+        progress.status === "ABOVE_TARGET" ? "above target" : "below target",
+    };
+  }
+  if (wrongDirection && closeToTarget) {
+    return {
+      tone: "warning",
+      glyph: "●",
+      headline:
+        progress.status === "ABOVE_TARGET" ? "above target" : "below target",
+    };
+  }
+  // Right direction (e.g. ABOVE a floor or BELOW a ceiling) — always good.
+  return { tone: "success", glyph: "●", headline: "on track" };
+}
+
 export function DeltaCard(props: DeltaCardProps) {
   const {
     delta,
@@ -188,6 +277,7 @@ export function DeltaCard(props: DeltaCardProps) {
     onSourceClick,
     pushbackRun,
     priorRoundObjections,
+    targetProgress,
   } = props;
   const [rejectedLocally, setRejectedLocally] = useState(false);
   // Bug 2: chip popovers — keyed by "<segmentIndex>" so each rendered
@@ -444,6 +534,21 @@ export function DeltaCard(props: DeltaCardProps) {
         </div>
       )}
 
+      {/* Live target-progress strip. Renders only for TARGET cards, just
+          below the rationale. Three modes:
+            * full strip when targetProgress has a numeric current_value
+            * "(live state pending: synthesis required)" muted line when
+              compute_source signals the data isn't computable
+            * not rendered at all for non-target deltas (theme / action) */}
+      {delta.item_kind === "target" &&
+        (targetProgress ? (
+          <LiveProgressStrip progress={targetProgress} />
+        ) : (
+          <div className="mt-3 rounded-md bg-muted/20 border border-border/40 px-3 py-1.5 text-[11px] text-muted-foreground italic">
+            (live state pending: synthesis required)
+          </div>
+        ))}
+
       {labels.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <span className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
@@ -615,5 +720,45 @@ export function DeltaCard(props: DeltaCardProps) {
         </div>
       )}
     </article>
+  );
+}
+
+// One-line strip that sits below the rationale on TARGET cards. Renders:
+//   LIVE: <last_observation> · gap <±X> <emoji> <headline>
+// Tone is driven by progressStripStyle (success / warning / error / muted).
+function LiveProgressStrip({ progress }: { progress: TargetProgress }) {
+  const { tone, glyph, headline } = progressStripStyle(progress);
+  const tonal = {
+    success: "border-success/40 bg-success/5 text-success",
+    warning: "border-warning/40 bg-warning/5 text-warning",
+    error: "border-error/40 bg-error/5 text-error",
+    muted: "border-border/40 bg-muted/20 text-muted-foreground",
+  }[tone];
+  const gapStr = formatGap(progress.gap_value, progress.target_unit);
+  const currentStr = formatLiveValue(progress.current_value, progress.current_unit);
+  const noLive = progress.current_value === null;
+  return (
+    <div
+      className={`mt-3 rounded-md border px-3 py-1.5 text-[11px] flex flex-wrap items-center gap-x-3 gap-y-1 ${tonal}`}
+      title={progress.last_observation}
+    >
+      <span className="font-mono uppercase tracking-wide text-[9px] opacity-70">
+        live
+      </span>
+      {noLive ? (
+        <span className="text-muted-foreground italic">
+          {progress.last_observation || "(not yet computable)"}
+        </span>
+      ) : (
+        <>
+          <span className="font-mono">{currentStr}</span>
+          {progress.gap_value !== null && (
+            <span className="font-mono opacity-80">gap {gapStr}</span>
+          )}
+          <span className="font-mono text-[12px] leading-none">{glyph}</span>
+          <span className="opacity-90">{headline}</span>
+        </>
+      )}
+    </div>
   );
 }
