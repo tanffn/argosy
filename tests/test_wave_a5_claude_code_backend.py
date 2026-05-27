@@ -47,8 +47,14 @@ class _Subagent(BaseAgent[_Out]):
 
 def _make_agent(*, thinking_budget: int = 0) -> _Subagent:
     agent = _Subagent(user_id="test")
-    # `agent_role` is unknown to the role defaults table, so the budget
-    # came in as 0. Inject manually so individual tests can control it.
+    # `agent_role` is unknown to the role defaults tables. After the
+    # Opus 4.7 adaptive-thinking migration the instance defaults to
+    # ``thinking_effort = "high"`` for unknown roles; the Wave A.5
+    # tests below pin to the LEGACY fixed-budget mode (they assert on
+    # ``opts.thinking == {"type": "enabled", "budget_tokens": N}`` and
+    # ``opts.max_thinking_tokens``), so we explicitly clear effort here.
+    # Adaptive-thinking shape coverage lives in test_thinking_effort.py.
+    agent.thinking_effort = None
     agent.thinking_budget = thinking_budget
     return agent
 

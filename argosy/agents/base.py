@@ -34,7 +34,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, ClassVar, Generic, TypeVar
+from typing import Any, ClassVar, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -42,6 +42,35 @@ from argosy.agents.errors import AgentRunError, MissingAPIKeyError
 from argosy.config import get_settings
 from argosy.logging import get_logger
 from argosy.secrets import get_secret
+
+
+def _probe_anthropic_adaptive_thinking_support() -> tuple[str, bool]:
+    """Return ``(version, supports_adaptive)`` for the installed anthropic SDK.
+
+    Anthropic's Messages API has been migrating to adaptive thinking
+    (``thinking={"type": "adaptive"}``) for Opus 4.6+. The Python SDK
+    catches up version-by-version. We probe the request-params schema
+    once at import time so the api_key path can fall back gracefully on
+    older SDKs (currently 0.97.x). The claude_code backend has its own
+    SDK (``claude_agent_sdk``) which already ships adaptive support.
+    """
+    try:
+        import anthropic
+        from anthropic.types import message_create_params
+    except ImportError:
+        return ("missing", False)
+    version = getattr(anthropic, "__version__", "unknown")
+    try:
+        import inspect
+        src = inspect.getsource(message_create_params)
+    except (OSError, TypeError):
+        return (version, False)
+    return (version, "adaptive" in src)
+
+
+_ANTHROPIC_SDK_VERSION, _ANTHROPIC_SUPPORTS_ADAPTIVE_THINKING = (
+    _probe_anthropic_adaptive_thinking_support()
+)
 
 # Phase 1+2 model defaults. Phase 2 reads overrides from
 # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2;
@@ -104,12 +133,79 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
 }
 FALLBACK_MODEL = "claude-opus-4-7"
 
-# Per-role extended-thinking budget. Roles not listed default to 0 (no thinking).
-# Anthropic constraint: `thinking_budget_tokens` MUST be >= 1024 AND
-# strictly LESS THAN `max_tokens` (thinking tokens count toward
-# max_tokens, not separately). `BaseAgent.__init__` enforces the
-# `thinking_budget < max_tokens` half of the invariant at construction
-# time; the 1024 floor is the model's own minimum.
+# Per-role adaptive-thinking effort (Opus 4.7 canonical pattern).
+#
+# Effort ladder (Anthropic, https://docs.anthropic.com/en/docs/build-with-claude/effort):
+#   - "low"    — minimal thinking, fastest responses
+#   - "medium" — moderate thinking
+#   - "high"   — deep reasoning (Anthropic's own default)
+#   - "max"    — maximum effort
+#
+# Per the SDD binding preference "accuracy over LLM cost", Argosy leans
+# toward "high" / "max" defaults; "medium" only for pure-data analysts
+# and "low" only for conversational / category-only roles. When this
+# table has an entry for a role, ``BaseAgent`` sets
+# ``thinking={"type": "adaptive"}`` + ``effort=<level>`` on the SDK call
+# (the canonical Opus 4.7 shape). The fixed-budget table below is kept
+# as a legacy fallback for roles that explicitly clear ``thinking_effort``
+# (e.g. via ``agent_settings.yaml`` providing ``thinking_budget`` without
+# ``thinking_effort``).
+DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
+    str, Literal["low", "medium", "high", "max"]
+] = {
+    # Heaviest reasoning — full effort
+    "plan_synthesizer":              "max",
+    "fund_manager":                  "max",
+    "plan_critique":                 "max",
+    "fund_manager_dialogue_verdict": "max",
+    # Debate + arbitration — deep
+    "bull_researcher":         "high",
+    "bear_researcher":         "high",
+    "researcher_facilitator":  "high",
+    "risk_officer":            "high",
+    "risk_facilitator":        "high",
+    "audit":                   "high",
+    "trader":                  "high",
+    "analyst_responder":       "high",
+    "plan_distiller":          "high",
+    "intake_extractor":        "high",
+    "advisor":                 "high",
+    "domain_refresh":          "high",
+    "anomaly_detection":       "high",
+    # Single-ticker analysts + helpers — moderate (data formatting + light reasoning)
+    "concentration":        "medium",
+    "fx":                   "medium",
+    "fundamentals":         "medium",
+    "news":                 "medium",
+    "sentiment":            "medium",
+    "technical":            "medium",
+    "macro":                "medium",
+    "tax":                  "medium",
+    "household_budget":     "medium",
+    "objection_translator": "medium",
+    "daily_briefer":        "medium",
+    # Conversational / categorical roles — low
+    "intake":                "low",
+    "household_categorizer": "low",
+    "watchlist":             "low",
+}
+
+# DEPRECATED — legacy fixed-budget thinking config (Anthropic API pre-4.6).
+# Retained as a fallback when a role explicitly opts out of adaptive
+# thinking (e.g. a user override that sets ``thinking_budget`` without
+# ``thinking_effort`` in ``agent_settings.yaml``). New agents and per-role
+# defaults should use ``DEFAULT_THINKING_EFFORT_BY_ROLE`` instead.
+#
+# When BOTH ``thinking_effort`` is set AND ``thinking_budget > 0`` exist on
+# an agent instance, ``thinking_effort`` wins. The invariant
+# ``thinking_budget < max_tokens`` only applies in the fixed-budget mode
+# (adaptive picks its own internal budget).
+#
+# Anthropic constraint (legacy fixed-budget): ``thinking_budget_tokens``
+# MUST be >= 1024 AND strictly LESS THAN ``max_tokens`` (thinking tokens
+# count toward ``max_tokens``, not separately). ``BaseAgent.__init__``
+# enforces the upper half of that invariant; the 1024 floor is the model's
+# own minimum.
 #
 # Tuned 2026-05-27 — fleet-wide Opus 4.7 bump (see CLAUDE.md / SDD
 # binding preference "accuracy over LLM cost"). Heavy reasoners get
@@ -613,6 +709,16 @@ class BaseAgent(Generic[T]):
         self.thinking_budget: int = DEFAULT_THINKING_BUDGET_BY_ROLE.get(
             self.agent_role, 0,
         )
+        # Adaptive-thinking effort (Opus 4.6+ canonical). When non-None,
+        # the SDK is called with ``thinking={"type": "adaptive"}`` +
+        # ``effort=<level>`` and the legacy fixed-budget config is skipped.
+        # Roles not in the table fall back to "high" (per SDD binding
+        # preference "accuracy over LLM cost"). YAML overrides may set
+        # this to one of "low" / "medium" / "high" / "max", OR clear it
+        # to None to fall back to ``thinking_budget`` (legacy fixed mode).
+        self.thinking_effort: Literal["low", "medium", "high", "max"] | None = (
+            DEFAULT_THINKING_EFFORT_BY_ROLE.get(self.agent_role, "high")
+        )
         self.citations_enabled: bool = DEFAULT_CITATIONS_BY_ROLE.get(
             self.agent_role, False,
         )
@@ -648,6 +754,19 @@ class BaseAgent(Generic[T]):
         # Best-effort: any failure (missing file, malformed YAML, schema
         # mismatch) must not block agent construction. The agent simply
         # runs with its baked-in per-role defaults in that case.
+        #
+        # Mode resolution (Opus 4.7 adaptive-thinking migration):
+        #   1. Explicit YAML ``thinking_effort`` wins — switches the agent
+        #      to adaptive mode at that effort level (or clears thinking
+        #      when explicitly set to null in YAML; pydantic represents
+        #      that as the field being present but None, distinct from
+        #      "absent").
+        #   2. YAML ``thinking_budget`` (no ``thinking_effort``) overrides
+        #      the budget AND clears ``thinking_effort`` so the legacy
+        #      fixed-budget path fires. Users who set a budget explicitly
+        #      have opted out of adaptive thinking for that role.
+        #   3. Neither set → the table defaults (effort first, then budget
+        #      as legacy fallback) apply.
         try:
             from argosy.config import (
                 load_agent_settings,
@@ -658,8 +777,20 @@ class BaseAgent(Generic[T]):
             if yaml_path and yaml_path.exists():
                 settings = load_agent_settings(yaml_path)
                 ov = settings.for_role(self.agent_role)
-                if ov.thinking_budget is not None:
+                # `model_fields_set` distinguishes "field was present in
+                # YAML" from "field defaulted to None because absent" —
+                # critical for the YAML-budget-implies-fixed-mode rule.
+                fields_set = ov.model_fields_set
+                if "thinking_effort" in fields_set:
+                    # User explicitly set thinking_effort (possibly to null) —
+                    # adaptive mode wins, even when also setting a budget.
+                    self.thinking_effort = ov.thinking_effort
+                if "thinking_budget" in fields_set and ov.thinking_budget is not None:
                     self.thinking_budget = ov.thinking_budget
+                    # YAML budget without an explicit effort override means
+                    # the user wants legacy fixed-budget mode — clear effort.
+                    if "thinking_effort" not in fields_set:
+                        self.thinking_effort = None
                 if ov.citations_enabled is not None:
                     self.citations_enabled = ov.citations_enabled
         except Exception as exc:  # noqa: BLE001
@@ -668,11 +799,16 @@ class BaseAgent(Generic[T]):
                 "agent_settings.yaml override load failed: %s", exc,
             )
 
-        # Anthropic API constraint: `thinking_budget_tokens` MUST be
-        # strictly less than `max_tokens` (thinking tokens count toward
-        # max_tokens, not separately). Catch misconfiguration at startup
-        # instead of failing live.
-        if self.thinking_budget > 0 and self.thinking_budget >= self.max_tokens:
+        # Anthropic API constraint (legacy fixed-budget mode only):
+        # ``thinking_budget_tokens`` MUST be strictly less than ``max_tokens``
+        # (thinking tokens count toward max_tokens, not separately). The
+        # adaptive-thinking path picks its own internal budget so this
+        # invariant does NOT apply when ``thinking_effort`` is set.
+        if (
+            self.thinking_budget > 0
+            and self.thinking_effort is None
+            and self.thinking_budget >= self.max_tokens
+        ):
             raise ValueError(
                 f"{self.agent_role}: thinking_budget ({self.thinking_budget}) "
                 f"must be less than max_tokens ({self.max_tokens}) — Anthropic "
@@ -1265,12 +1401,21 @@ class BaseAgent(Generic[T]):
             "model": self.model,
             "stderr": _capture_stderr,
         }
-        # Wave A.5: thread extended thinking through to the agent-sdk.
-        # The SDK accepts the same shape Anthropic's REST API uses
-        # (ThinkingConfigEnabled TypedDict). `max_thinking_tokens` is the
-        # SDK's own ceiling on the CLI; we mirror the budget so the CLI
-        # doesn't truncate before the model's own budget runs out.
-        if self.thinking_budget > 0:
+        # Wave A.5 / Opus 4.7 migration: thread thinking config through to
+        # the agent-sdk. Prefer adaptive thinking (the canonical Opus 4.6+
+        # pattern) when ``thinking_effort`` is configured — Anthropic
+        # recommends this for newer models because the model decides its
+        # own thinking budget based on prompt complexity. Falls back to
+        # the legacy fixed-budget config when ``thinking_effort`` is None
+        # AND ``thinking_budget`` is set (e.g. YAML override that
+        # explicitly opts out of adaptive thinking).
+        if self.thinking_effort is not None:
+            options_kwargs["thinking"] = {"type": "adaptive"}
+            options_kwargs["effort"] = self.thinking_effort
+            # Don't set max_thinking_tokens — adaptive picks its own
+            # internal budget. Setting it would override the adaptive
+            # heuristic and re-introduce the cap we just removed.
+        elif self.thinking_budget > 0:
             options_kwargs["thinking"] = {
                 "type": "enabled",
                 "budget_tokens": self.thinking_budget,
@@ -1931,7 +2076,41 @@ class BaseAgent(Generic[T]):
                 "max_tokens": self.max_tokens,
                 "messages": messages_payload,
             }
-            if self.thinking_budget > 0:
+            # Opus 4.7 migration: prefer adaptive thinking when the
+            # installed Anthropic SDK supports it. The 0.97.x line does
+            # NOT yet expose ``{"type": "adaptive"}`` in its request
+            # schema, so on those versions we log once and fall back to
+            # the legacy fixed-budget path (or no thinking when
+            # ``thinking_budget == 0``). The claude_code backend (our
+            # default per ``argosy.toml``) IS migrated — see
+            # ``_call_via_claude_code_inner``.
+            # TODO: drop the version gate once the anthropic SDK ships
+            # adaptive thinking support on the api_key path.
+            if self.thinking_effort is not None:
+                if _ANTHROPIC_SUPPORTS_ADAPTIVE_THINKING:
+                    call_kwargs["thinking"] = {"type": "adaptive"}
+                    # The Messages API exposes effort under
+                    # ``output_config.effort`` (per Anthropic adaptive-
+                    # thinking docs). Field name kept conservative; if a
+                    # future SDK names this differently the call will
+                    # raise and the fallback retry will engage.
+                    call_kwargs["output_config"] = {"effort": self.thinking_effort}
+                else:
+                    # SDK too old to express adaptive thinking on this
+                    # backend. Log once per agent call and fall back to
+                    # the legacy fixed-budget path when a budget exists.
+                    self._log.warning(
+                        "anthropic SDK %s lacks adaptive-thinking support; "
+                        "falling back to fixed budget for role %s",
+                        _ANTHROPIC_SDK_VERSION,
+                        self.agent_role,
+                    )
+                    if self.thinking_budget > 0:
+                        call_kwargs["thinking"] = {
+                            "type": "enabled",
+                            "budget_tokens": self.thinking_budget,
+                        }
+            elif self.thinking_budget > 0:
                 call_kwargs["thinking"] = {
                     "type": "enabled",
                     "budget_tokens": self.thinking_budget,
@@ -2247,6 +2426,7 @@ __all__ = [
     "DEFAULT_MAX_TOKENS_FALLBACK",
     "DEFAULT_MODEL_BY_ROLE",
     "DEFAULT_THINKING_BUDGET_BY_ROLE",
+    "DEFAULT_THINKING_EFFORT_BY_ROLE",
     "ModelCall",
     "_llm_backend_available",
 ]

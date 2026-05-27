@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -228,14 +228,24 @@ class AgentRoleOverride(BaseModel):
     override.
 
     Fields:
-      * ``thinking_budget`` — extended-thinking token budget (0 disables;
-        upper bound mirrors the Anthropic API ceiling of 64k).
+      * ``thinking_effort`` — adaptive-thinking effort level (Opus 4.6+
+        canonical pattern). One of ``"low" | "medium" | "high" | "max"``,
+        or explicit ``null`` to disable adaptive thinking and fall back
+        to ``thinking_budget`` (legacy fixed-budget mode). When unset in
+        YAML, the per-role default from
+        ``argosy.agents.base.DEFAULT_THINKING_EFFORT_BY_ROLE`` applies.
+      * ``thinking_budget`` — legacy fixed extended-thinking token budget
+        (0 disables; upper bound mirrors the Anthropic API ceiling of
+        128k). Setting this WITHOUT ``thinking_effort`` is interpreted
+        as opting out of adaptive thinking for the role — the fixed-
+        budget path fires.
       * ``citations_enabled`` — toggle Anthropic Citations API blocks for
         this role.
     """
 
     model_config = {"extra": "allow"}  # tolerate future per-role fields (model, etc.)
 
+    thinking_effort: Literal["low", "medium", "high", "max"] | None = None
     thinking_budget: int | None = Field(default=None, ge=0, le=128000)
     citations_enabled: bool | None = None
 
