@@ -731,3 +731,157 @@ def test_nvda_target_shares_ytd_populates_from_draft(tmp_path, monkeypatch):
     days = (today - date(today.year, 1, 1)).days + 1
     expected = round(1440 * days / 365.0)
     assert abs(inputs.nvda_target_shares_ytd - expected) <= 2
+
+
+# ----------------------------------------------------------------------
+# _assemble_fills_summary — was a placeholder string ("(fills summary —
+# wired against fills + proposals tables)") that the synthesizer Phase 3
+# read at every run. Same bug class as T1.1's _assemble_portfolio_summary
+# stub. The helper now reads from the ``fills`` table + the
+# ``decision_runs`` table (status='completed' + fund_manager_decision=
+# 'approved' + decision_kind in ('trade_proposal','plan_revision')) and
+# emits a per-line summary that the synthesizer's user prompt section
+# "=== RECENT FILLS + DECISIONS (last 90 days) ===" can render.
+# ----------------------------------------------------------------------
+
+
+def test_assemble_fills_summary_includes_real_fills():
+    """A BUY + a SELL fill in the last 90 days, plus an approved decision
+    run, all appear in the assembled summary text; the YTD footer counts
+    realized gains derived from the lots table."""
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        _assemble_fills_summary,
+    )
+    from argosy.state.models import DecisionRun, Fill, Lot
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+
+    now = datetime.now(timezone.utc)
+    # A lot for NVDA giving an avg cost basis of $150/share so the
+    # realized gain on the SELL is unambiguous.
+    session.add(
+        Lot(
+            user_id="ariel",
+            account_id="schwab-x",
+            ticker="NVDA",
+            quantity=Decimal("100"),
+            cost_basis_usd=Decimal("15000"),
+            acquired_at=now.replace(year=now.year - 1),
+            source="schwab_csv",
+        )
+    )
+    # SELL fill 10 days ago at $200 → realized = (200 - 150) * 10 = $500.
+    session.add(
+        Fill(
+            user_id="ariel",
+            broker="schwab",
+            broker_order_id="o-sell-1",
+            ticker="NVDA",
+            action="SELL",
+            quantity=Decimal("10"),
+            price=Decimal("200"),
+            commission=Decimal("0"),
+            filled_at=now.replace(hour=0, minute=0, second=0, microsecond=0)
+            - timedelta(days=10),
+            paper=False,
+        )
+    )
+    # BUY fill 30 days ago — should render but contribute no realized gain.
+    session.add(
+        Fill(
+            user_id="ariel",
+            broker="schwab",
+            broker_order_id="o-buy-1",
+            ticker="AAPL",
+            action="BUY",
+            quantity=Decimal("5"),
+            price=Decimal("180"),
+            commission=Decimal("0"),
+            filled_at=now.replace(hour=0, minute=0, second=0, microsecond=0)
+            - timedelta(days=30),
+            paper=False,
+        )
+    )
+    # An approved decision run inside the 90-day window.
+    session.add(
+        DecisionRun(
+            user_id="ariel",
+            ticker="NVDA",
+            tier="T2",
+            started_at=now - timedelta(days=12),
+            finished_at=now - timedelta(days=11),
+            status="completed",
+            fund_manager_decision="approved",
+            decision_kind="trade_proposal",
+        )
+    )
+    # Negative controls: a rejected run + an out-of-window approved run —
+    # neither should appear.
+    session.add(
+        DecisionRun(
+            user_id="ariel",
+            ticker="MSFT",
+            tier="T1",
+            started_at=now - timedelta(days=5),
+            finished_at=now - timedelta(days=4),
+            status="completed",
+            fund_manager_decision="rejected",
+            decision_kind="trade_proposal",
+        )
+    )
+    session.add(
+        DecisionRun(
+            user_id="ariel",
+            ticker="GOOG",
+            tier="T3",
+            started_at=now - timedelta(days=200),
+            finished_at=now - timedelta(days=199),
+            status="completed",
+            fund_manager_decision="approved",
+            decision_kind="trade_proposal",
+        )
+    )
+    session.commit()
+
+    text = _assemble_fills_summary(session=session, user_id="ariel")
+
+    # The SELL fill appears, with the realized gain we expect.
+    assert "NVDA" in text, text
+    assert "side=SELL" in text, text
+    assert "qty=10" in text, text
+    assert "price=$200" in text, text
+    # The realized gain ($500.00) is computed against the avg-cost lot.
+    assert "realized_gain_usd=$500.00" in text, text
+    # The BUY fill is rendered with realized_gain_usd=n/a (no basis).
+    assert "AAPL" in text, text
+    assert "side=BUY" in text, text
+    # The approved decision shows up; rejected + out-of-window don't.
+    assert "approved tier=T2" in text, text
+    assert "/decisions/" in text, text
+    assert "MSFT" not in text, text
+    assert "GOOG" not in text, text
+    # YTD footer reflects exactly the one realized SELL.
+    # (The SELL is 10 days ago; safe assumption it's in the current
+    # calendar year for any plausible test-run date.)
+    assert "Total realized YTD: $500.00 across 1 fills" in text, text
+
+
+def test_assemble_fills_summary_empty_when_no_data():
+    """Empty fills + empty decision_runs → stable sentinel string the
+    synthesizer's user prompt can read without falling through to "null
+    data" objections from Fund Manager.
+    """
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        _assemble_fills_summary,
+    )
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+    session.commit()
+
+    text = _assemble_fills_summary(session=session, user_id="ariel")
+    assert text == "(no recent fills or accepted decisions in last 90 days)"

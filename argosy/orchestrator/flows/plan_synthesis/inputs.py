@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import desc, select
@@ -85,8 +85,214 @@ def _assemble_portfolio_summary(*, session, user_id) -> str:
 
 
 def _assemble_fills_summary(*, session, user_id) -> str:
-    """Last 90 days of fills + decisions, summarized."""
-    return "(fills summary — wired against fills + proposals tables)"
+    """Build a 90-day rear-view of executed fills + accepted decisions.
+
+    Synthesizer Phase 3 reads this as the "=== RECENT FILLS + DECISIONS
+    (last 90 days) ===" section of its user prompt. Before this fix the
+    helper returned a placeholder string ("(fills summary — wired against
+    fills + proposals tables)") that LOOKED real but carried no data —
+    same bug class as T1.1 (commit ``dc15d45``) on
+    ``_assemble_portfolio_summary``.
+
+    Output shape (best-effort, defensive at every step):
+
+    * One line per fill in the last 90 days::
+
+        YYYY-MM-DD  TICKER  side=BUY/SELL  qty=N  price=$X.XX  \
+realized_gain_usd=$Y  acct=schwab
+
+      ``realized_gain_usd`` is computed for SELLs when at least one
+      ``lots`` row exists for the same ``(user_id, ticker)`` — uses
+      ``avg_cost_basis = sum(cost_basis_usd) / sum(quantity)``. BUYs and
+      lots-less SELLs render as ``realized_gain_usd=n/a``.
+
+    * One line per accepted decision run (status='completed' AND
+      ``fund_manager_decision='approved'`` AND ``decision_kind IN
+      ('trade_proposal','plan_revision')``) in the last 90 days::
+
+        YYYY-MM-DD  TICKER  approved tier=Tx  decision_run#NN  \
+→ see /decisions/NN
+
+    * Aggregate footer: ``Total realized YTD: $X across N fills`` (only
+      when at least one fill was rendered).
+
+    * When both fills and decisions are empty: returns the sentinel
+      ``"(no recent fills or accepted decisions in last 90 days)"`` so
+      the synthesizer's prompt sees a stable explanation rather than an
+      empty string the fund manager would flag as null-data.
+    """
+    from argosy.state.models import DecisionRun, Fill, Lot
+
+    today = datetime.now(timezone.utc)
+    cutoff_90d = today - timedelta(days=90)
+    year_start = datetime(today.year, 1, 1, tzinfo=timezone.utc)
+
+    fill_rows: list[Any] = []
+    try:
+        fill_rows = list(
+            session.execute(
+                select(Fill)
+                .where(
+                    Fill.user_id == user_id,
+                    Fill.filled_at >= cutoff_90d,
+                )
+                .order_by(desc(Fill.filled_at))
+            ).scalars()
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning(
+            "plan_synthesis.fills_summary.fills_query_failed",
+            user_id=user_id, error=str(exc),
+        )
+
+    decision_rows: list[Any] = []
+    try:
+        decision_rows = list(
+            session.execute(
+                select(DecisionRun)
+                .where(
+                    DecisionRun.user_id == user_id,
+                    DecisionRun.status == "completed",
+                    DecisionRun.fund_manager_decision == "approved",
+                    DecisionRun.decision_kind.in_(
+                        ("trade_proposal", "plan_revision")
+                    ),
+                    DecisionRun.finished_at >= cutoff_90d,
+                )
+                .order_by(desc(DecisionRun.finished_at))
+            ).scalars()
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning(
+            "plan_synthesis.fills_summary.decisions_query_failed",
+            user_id=user_id, error=str(exc),
+        )
+
+    if not fill_rows and not decision_rows:
+        return "(no recent fills or accepted decisions in last 90 days)"
+
+    # Pre-compute per-ticker avg cost basis from the lots table so we can
+    # render a realized gain on SELL fills.
+    avg_cost_by_ticker: dict[str, float] = {}
+    try:
+        if fill_rows:
+            sell_tickers = sorted({
+                (r.ticker or "").upper()
+                for r in fill_rows
+                if (r.action or "").strip().upper().startswith("SELL")
+                or (float(r.quantity or 0) < 0)
+            })
+            if sell_tickers:
+                lot_rows = list(
+                    session.execute(
+                        select(Lot).where(
+                            Lot.user_id == user_id,
+                            Lot.ticker.in_(sell_tickers),
+                        )
+                    ).scalars()
+                )
+                by_ticker: dict[str, list[Any]] = {}
+                for lot in lot_rows:
+                    by_ticker.setdefault((lot.ticker or "").upper(), []).append(lot)
+                for ticker, lots in by_ticker.items():
+                    total_qty = sum(float(l.quantity or 0) for l in lots)
+                    total_basis = sum(float(l.cost_basis_usd or 0) for l in lots)
+                    if total_qty > 0:
+                        avg_cost_by_ticker[ticker] = total_basis / total_qty
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning(
+            "plan_synthesis.fills_summary.lots_lookup_failed",
+            user_id=user_id, error=str(exc),
+        )
+
+    lines: list[str] = []
+    if fill_rows:
+        lines.append(
+            f"Fills (last 90 days, {len(fill_rows)} rows, newest first):"
+        )
+    total_realized_ytd = 0.0
+    realized_fill_count = 0
+    for r in fill_rows:
+        filled_at = r.filled_at
+        if filled_at is None:
+            date_str = "????-??-??"
+        else:
+            if filled_at.tzinfo is None:
+                filled_at = filled_at.replace(tzinfo=timezone.utc)
+            date_str = filled_at.date().isoformat()
+        ticker = (r.ticker or "?").upper()
+        raw_action = (r.action or "").strip().upper()
+        raw_qty = float(r.quantity or 0)
+        # Normalize side: respect the action string when present, else
+        # fall back to qty sign (negative-qty = SELL convention).
+        if raw_action.startswith("SELL") or raw_action.startswith("SOLD"):
+            side = "SELL"
+        elif raw_action.startswith("BUY") or raw_action.startswith("BOT"):
+            side = "BUY"
+        elif raw_qty < 0:
+            side = "SELL"
+        elif raw_qty > 0:
+            side = "BUY"
+        else:
+            side = raw_action or "?"
+        qty = abs(raw_qty)
+        try:
+            price = float(r.price or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        acct = (r.broker or "").strip() or "?"
+
+        realized_str = "realized_gain_usd=n/a"
+        if side == "SELL" and qty > 0 and price > 0:
+            avg_cost = avg_cost_by_ticker.get(ticker)
+            if avg_cost is not None:
+                realized = (price - avg_cost) * qty
+                realized_str = f"realized_gain_usd=${realized:,.2f}"
+                # YTD aggregate: only count fills within the current
+                # calendar year (Jan 1 .. today).
+                if (
+                    filled_at is not None
+                    and filled_at >= year_start
+                    and filled_at <= today
+                ):
+                    total_realized_ytd += realized
+                    realized_fill_count += 1
+        qty_str = f"qty={qty:g}" if qty else "qty=0"
+        price_str = f"price=${price:,.2f}" if price else "price=$?"
+        lines.append(
+            f"  {date_str}  {ticker:<6}  side={side}  {qty_str}  "
+            f"{price_str}  {realized_str}  acct={acct}"
+        )
+
+    if decision_rows:
+        if lines:
+            lines.append("")
+        lines.append(
+            f"Accepted decisions (last 90 days, {len(decision_rows)} rows, newest first):"
+        )
+        for d in decision_rows:
+            finished_at = d.finished_at or d.started_at
+            if finished_at is None:
+                date_str = "????-??-??"
+            else:
+                if finished_at.tzinfo is None:
+                    finished_at = finished_at.replace(tzinfo=timezone.utc)
+                date_str = finished_at.date().isoformat()
+            ticker = (d.ticker or "?").upper()
+            tier = (d.tier or "?")
+            lines.append(
+                f"  {date_str}  {ticker:<6}  approved tier={tier}  "
+                f"decision_run#{d.id}  → see /decisions/{d.id}"
+            )
+
+    if realized_fill_count:
+        lines.append("")
+        lines.append(
+            f"Total realized YTD: ${total_realized_ytd:,.2f} across "
+            f"{realized_fill_count} fills"
+        )
+
+    return "\n".join(lines)
 
 
 def _load_user_context_yaml(*, session, user_id) -> str:
