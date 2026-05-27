@@ -14,11 +14,20 @@ layer in ``argosy.api.routes.plan`` wraps this in a FastAPI endpoint.
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
+from datetime import date
 from typing import Sequence
 
 from sqlalchemy.orm import Session
+
+from argosy.services.wealth_dashboard import (
+    _latest_household_budget_report,
+    _latest_snapshot,
+    _load_user_context_yaml,
+    _resolve_fx_usd_nis,
+)
 
 # Defaults — surfaced in the response ``assumptions`` block.
 DEFAULT_MU_NOMINAL_ANNUAL = 0.08
@@ -156,14 +165,6 @@ def detect_retire_ready(
 # DB extraction helpers — read real SQLAlchemy state into the dataclasses above
 # ---------------------------------------------------------------------------
 
-from argosy.services.wealth_dashboard import (  # noqa: E402
-    _latest_household_budget_report,
-    _latest_snapshot,
-    _load_user_context_yaml,
-    _resolve_fx_usd_nis,
-)
-
-
 def _safe_float(d: dict, *keys, default: float = 0.0) -> float:
     """Walk ``d[keys[0]][keys[1]]...`` and return as float; default on
     missing/None/un-coerceable values. Used by the extractors to read
@@ -223,9 +224,6 @@ def extract_pension_state(session: Session, user_id: str) -> PensionState:
     )
 
 
-from datetime import date  # noqa: E402
-
-
 def _compute_age_years(date_of_birth_iso: str | None, today: date) -> float:
     """Decimal years between ``date_of_birth_iso`` and ``today``. Falls
     back to 43.0 (Ariel's approximate age) when DOB is missing or
@@ -265,8 +263,7 @@ def extract_household_state(
     portfolio_value_nis = 0.0
     if snapshot is not None:
         try:
-            import json as _json
-            totals = _json.loads(snapshot.totals_json or "{}")
+            totals = json.loads(snapshot.totals_json or "{}")
             usd_k = float(totals.get("total_usd_value_k") or 0.0)
             portfolio_value_nis = usd_k * 1000.0 * fx_usd_nis
         except (ValueError, TypeError):
