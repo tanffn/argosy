@@ -623,6 +623,88 @@ class TestScenarioRetireReady:
         assert proj.retire_ready_months_out == proj.retire_ready_months_out_base
 
 
+class TestMonteCarloSimulator:
+    def test_seed_makes_run_reproducible(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state, extract_pension_state, project_monte_carlo,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+        kwargs = dict(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.25,
+            n_paths=200, today=date(2026, 5, 27),
+        )
+        a = project_monte_carlo(**kwargs, seed=42)
+        b = project_monte_carlo(**kwargs, seed=42)
+        # Same seed → identical P50 path
+        for pa, pb in zip(a.series, b.series):
+            assert pa.portfolio_value_p50_nis == pytest.approx(pb.portfolio_value_p50_nis)
+
+    def test_p10_below_p50_below_p90(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state, extract_pension_state, project_monte_carlo,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+        proj = project_monte_carlo(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.25,
+            n_paths=500, seed=42, today=date(2026, 5, 27),
+        )
+        # Skip t=0 (band collapsed); check year 10
+        p = proj.series[120]
+        assert p.portfolio_value_p10_nis < p.portfolio_value_p25_nis
+        assert p.portfolio_value_p25_nis < p.portfolio_value_p50_nis
+        assert p.portfolio_value_p50_nis < p.portfolio_value_p75_nis
+        assert p.portfolio_value_p75_nis < p.portfolio_value_p90_nis
+
+    def test_failure_probability_higher_at_higher_age(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state, extract_pension_state, project_monte_carlo,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+        proj = project_monte_carlo(
+            household=hh, pensions=pen, retirement_age=49.0, years=50,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.25,
+            n_paths=500, seed=42, today=date(2026, 5, 27),
+        )
+        assert proj.p_failure_before_age_75 <= proj.p_failure_before_age_85
+        assert proj.p_failure_before_age_85 <= proj.p_failure_before_age_95
+
+    def test_fraction_solvent_decreasing(self, client_with_db):
+        """fraction_solvent should monotonically decrease (paths only fail, never recover)."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state, extract_pension_state, project_monte_carlo,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+        proj = project_monte_carlo(
+            household=hh, pensions=pen, retirement_age=49.0, years=50,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.25,
+            n_paths=300, seed=42, today=date(2026, 5, 27),
+        )
+        for i in range(1, len(proj.series)):
+            assert proj.series[i].fraction_solvent <= proj.series[i-1].fraction_solvent + 1e-9
+
+
 class TestLifestyleDrift:
     def test_drift_increases_expense_growth(self, client_with_db):
         """lifestyle_drift_annual=0.015 → expenses inflate at 4% instead of 2.5%."""

@@ -1576,3 +1576,26 @@ def test_cashflow_projection_lifestyle_drift_param(client_with_db):
     e1 = r1.json()["series"][120]["expenses_monthly_usd"]
     expected_ratio = (1.04 / 1.025) ** 10
     assert e1 / e0 == pytest.approx(expected_ratio, rel=1e-2)
+
+
+def test_monte_carlo_route_returns_percentile_bands(client_with_db):
+    """Smoke test the new Monte Carlo route."""
+    from tests.test_cashflow_projection import _seed_full_state
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        _seed_full_state(s)
+    r = client_with_db.get(
+        "/api/plan/draft/cashflow-monte-carlo?user_id=ariel&n_paths=200&seed=42"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["n_paths"] == 200
+    assert "series" in body
+    assert len(body["series"]) > 0
+    # Failure probabilities are in [0, 1]
+    assert 0 <= body["p_failure_before_age_75"] <= 1
+    assert 0 <= body["p_failure_before_age_85"] <= 1
+    assert 0 <= body["p_failure_before_age_95"] <= 1
+    # P50 between P25 and P75 at year 10
+    p = body["series"][120]
+    assert p["portfolio_value_p25_usd"] <= p["portfolio_value_p50_usd"] <= p["portfolio_value_p75_usd"]

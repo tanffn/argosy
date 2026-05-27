@@ -1370,6 +1370,113 @@ def get_draft_cashflow_projection(
     )
 
 
+class MonteCarloPointDTO(BaseModel):
+    months_out: int
+    age_years: float
+    date: str
+    portfolio_value_p10_usd: float
+    portfolio_value_p25_usd: float
+    portfolio_value_p50_usd: float
+    portfolio_value_p75_usd: float
+    portfolio_value_p90_usd: float
+    fraction_solvent: float
+    pension_annuity_monthly_usd: float
+    expenses_monthly_usd: float
+
+
+class MonteCarloProjectionResponse(BaseModel):
+    today_date: str
+    today_age_years: float
+    fx_usd_nis: float
+    retirement_age_assumed: float
+    n_paths: int
+    p_failure_before_age_75: float
+    p_failure_before_age_85: float
+    p_failure_before_age_95: float
+    series: list[MonteCarloPointDTO]
+    assumptions: dict
+
+
+@router.get(
+    "/draft/cashflow-monte-carlo", response_model=MonteCarloProjectionResponse
+)
+def get_draft_cashflow_monte_carlo(
+    user_id: str = Query("ariel"),
+    years: int = Query(40, ge=1, le=50),
+    retirement_age: float = Query(49.0, ge=30.0, le=80.0),
+    tax_rate: float = Query(0.25, ge=0.0, le=0.5),
+    mu_nominal_annual: float = Query(0.08, ge=0.02, le=0.15),
+    sigma_annual: float = Query(0.18, ge=0.05, le=0.60),
+    lifestyle_drift_annual: float = Query(0.0, ge=0.0, le=0.10),
+    portfolio_value_usd_override: float | None = Query(None, ge=0, le=100_000_000),
+    n_paths: int = Query(1000, ge=100, le=10_000),
+    seed: int | None = Query(None),
+    db: Session = Depends(get_db),
+) -> MonteCarloProjectionResponse:
+    """Monte Carlo retirement projection.
+
+    Returns per-tick percentile bands (P10/P25/P50/P75/P90) + failure
+    probabilities at ages 75/85/95. Use for stress-testing 'can I retire'
+    against sequence-of-returns risk."""
+    from argosy.services.cashflow_projection import (
+        extract_household_state,
+        extract_pension_state,
+        project_monte_carlo,
+    )
+    from dataclasses import replace as _dc_replace
+
+    hh = extract_household_state(db, user_id)
+    pen = extract_pension_state(db, user_id)
+
+    if portfolio_value_usd_override is not None:
+        hh = _dc_replace(
+            hh, portfolio_value_nis=portfolio_value_usd_override * hh.fx_usd_nis
+        )
+
+    proj = project_monte_carlo(
+        household=hh, pensions=pen,
+        retirement_age=retirement_age, years=years,
+        mu_nominal_annual=mu_nominal_annual, sigma_annual=sigma_annual,
+        tax_rate=tax_rate, lifestyle_drift_annual=lifestyle_drift_annual,
+        n_paths=n_paths, seed=seed,
+    )
+
+    fx = hh.fx_usd_nis if hh.fx_usd_nis > 0 else 1.0
+
+    def to_usd(nis: float) -> float:
+        return round(nis / fx, 2)
+
+    series_dto = [
+        MonteCarloPointDTO(
+            months_out=p.months_out,
+            age_years=round(p.age_years, 3),
+            date=p.date_yyyy_mm,
+            portfolio_value_p10_usd=to_usd(p.portfolio_value_p10_nis),
+            portfolio_value_p25_usd=to_usd(p.portfolio_value_p25_nis),
+            portfolio_value_p50_usd=to_usd(p.portfolio_value_p50_nis),
+            portfolio_value_p75_usd=to_usd(p.portfolio_value_p75_nis),
+            portfolio_value_p90_usd=to_usd(p.portfolio_value_p90_nis),
+            fraction_solvent=round(p.fraction_solvent, 4),
+            pension_annuity_monthly_usd=to_usd(p.pension_annuity_monthly_nis),
+            expenses_monthly_usd=to_usd(p.expenses_monthly_nis),
+        )
+        for p in proj.series
+    ]
+
+    return MonteCarloProjectionResponse(
+        today_date=datetime.now(timezone.utc).date().isoformat(),
+        today_age_years=round(hh.current_age_years, 3),
+        fx_usd_nis=fx,
+        retirement_age_assumed=round(proj.retirement_age_assumed, 1),
+        n_paths=proj.n_paths,
+        p_failure_before_age_75=round(proj.p_failure_before_age_75, 4),
+        p_failure_before_age_85=round(proj.p_failure_before_age_85, 4),
+        p_failure_before_age_95=round(proj.p_failure_before_age_95, 4),
+        series=series_dto,
+        assumptions=proj.assumptions,
+    )
+
+
 class NvdaVestEvent(BaseModel):
     date: str  # YYYY-MM-DD
     shares: int

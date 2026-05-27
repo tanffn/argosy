@@ -115,6 +115,43 @@ class CashflowProjection:
     assumptions: dict
 
 
+DEFAULT_N_PATHS = 1000
+
+
+@dataclass(frozen=True)
+class MonteCarloPoint:
+    """One projected month — percentile aggregation across N paths."""
+    months_out: int
+    age_years: float
+    date_yyyy_mm: str
+    # Percentile bands of portfolio_value_nis across N paths
+    portfolio_value_p10_nis: float
+    portfolio_value_p25_nis: float
+    portfolio_value_p50_nis: float  # median
+    portfolio_value_p75_nis: float
+    portfolio_value_p90_nis: float
+    # Survival: fraction of paths with portfolio > 0 at this tick
+    fraction_solvent: float
+    # Deterministic helpers (same for all paths)
+    pension_annuity_monthly_nis: float
+    expenses_monthly_nis: float
+
+
+@dataclass(frozen=True)
+class MonteCarloProjection:
+    series: list[MonteCarloPoint]
+    n_paths: int
+    # Failure probability before various ages (1 - survival).
+    # Computed as fraction of paths where portfolio hit 0 before age X.
+    p_failure_before_age_75: float
+    p_failure_before_age_85: float
+    p_failure_before_age_95: float
+    pension_state_at_start: "PensionState"
+    household_state_at_start: "HouseholdState"
+    retirement_age_assumed: float
+    assumptions: dict
+
+
 def accumulate_pension_balance(
     *,
     starting_balance_nis: float,
@@ -484,7 +521,7 @@ def project_cashflow(
             surplus_bull_monthly_nis=surplus_bull,
         ))
 
-    retire_ready_base = detect_retire_ready(out, "base")
+    retire_ready_base = detect_retire_ready(out, "base")  # noqa: E501 — intentional; see below
     retire_ready_bear = detect_retire_ready(out, "bear")
     retire_ready_bull = detect_retire_ready(out, "bull")
     return CashflowProjection(
@@ -538,6 +575,206 @@ def project_cashflow(
                 " Expenses grow at ``inflation_annual + lifestyle_drift_annual``"
                 " per year; pension annuity grows at ``inflation_annual`` only"
                 " (pensions index to CPI, not lifestyle)."
+            ),
+        },
+    )
+
+
+def project_monte_carlo(
+    *,
+    household: HouseholdState,
+    pensions: PensionState,
+    retirement_age: float,
+    years: int,
+    mu_nominal_annual: float = DEFAULT_MU_NOMINAL_ANNUAL,
+    sigma_annual: float = DEFAULT_SIGMA_ANNUAL,
+    inflation_annual: float = DEFAULT_INFLATION_ANNUAL,
+    mekadem: float = DEFAULT_MEKADEM,
+    tax_rate: float = DEFAULT_TAX_RATE,
+    lifestyle_drift_annual: float = DEFAULT_LIFESTYLE_DRIFT_ANNUAL,
+    n_paths: int = DEFAULT_N_PATHS,
+    seed: int | None = None,
+    today: date | None = None,
+) -> MonteCarloProjection:
+    """Random-walk Monte Carlo of consumption-tracking retirement paths.
+
+    Each of ``n_paths`` paths simulates monthly returns ~ lognormal(mu, sigma).
+    User withdraws inflated expenses minus pension annuity each month;
+    portfolio shrinks under bad-return sequences. Path 'fails' when portfolio
+    hits zero.
+
+    Returns per-tick percentile bands + path-failure aggregate stats.
+
+    ``seed``: pin the RNG for reproducible tests. ``None`` = nondeterministic
+    (production usage)."""
+    import numpy as np
+
+    today = today or date.today()
+    months = max(1, min(years, 50)) * 12
+    log_drift = mu_nominal_annual / 12.0 - sigma_annual ** 2 / 24.0
+    log_std = sigma_annual / math.sqrt(12)
+    real_return = mu_nominal_annual - inflation_annual
+    expense_growth = inflation_annual + lifestyle_drift_annual
+
+    rng = np.random.default_rng(seed)
+    # Pre-generate all random returns: shape (n_paths, months)
+    log_returns = rng.normal(loc=log_drift, scale=log_std, size=(n_paths, months))
+
+    # Per-path state, kept in numpy arrays for vectorization.
+    portfolio = np.full(n_paths, household.portfolio_value_nis, dtype=np.float64)
+    pensia_bal = np.full(n_paths, pensions.kupat_pensia_balance_nis, dtype=np.float64)
+    exec_bal = np.full(n_paths, pensions.executive_insurance_balance_nis, dtype=np.float64)
+    hisht_bal = np.full(n_paths, pensions.keren_hishtalmut_balance_nis, dtype=np.float64)
+    gemel_bal = np.full(n_paths, pensions.kupat_gemel_balance_nis, dtype=np.float64)
+
+    lump_unlocked = False
+    annuity_locked = False
+    annuity_real_monthly = 0.0
+    annuity_lock_t = 0
+
+    # Track which paths have permanently failed (hit 0 and been clipped).
+    # Once failed, a path stays at 0 for all subsequent ticks — lump unlock
+    # and annuity do NOT rescue a permanently-exhausted portfolio. This
+    # ensures fraction_solvent is monotone non-increasing (paths only fail,
+    # never recover), which is the correct model semantics for "sequence-of-
+    # returns risk": if you run out of money you're done.
+    failed = np.zeros(n_paths, dtype=bool)
+
+    # Output buffers — per-tick percentile bands + survival counts.
+    portfolio_history = np.zeros((months + 1, n_paths), dtype=np.float64)
+    portfolio_history[0] = portfolio.copy()
+
+    real_monthly = 1.0 + real_return / 12.0
+
+    for t in range(1, months + 1):
+        age_t = household.current_age_years + t / 12.0
+
+        # Portfolio: stochastic step (only for non-failed paths)
+        portfolio[~failed] = portfolio[~failed] * np.exp(log_returns[~failed, t - 1])
+
+        # Pension buckets: deterministic (same across paths)
+        if not annuity_locked:
+            contrib_pensia = (
+                pensions.kupat_pensia_contribution_monthly_nis
+                if age_t < retirement_age else 0.0
+            )
+            pensia_bal = pensia_bal * real_monthly + contrib_pensia
+            exec_bal = exec_bal * real_monthly
+        if not lump_unlocked:
+            contrib_hisht = (
+                pensions.keren_hishtalmut_contribution_monthly_nis
+                if age_t < retirement_age else 0.0
+            )
+            hisht_bal = hisht_bal * real_monthly + contrib_hisht
+            gemel_bal = gemel_bal * real_monthly
+
+        # Lump unlock (deterministic timing; only applied to solvent paths)
+        if age_t >= LUMP_PENSION_AGE and not lump_unlocked:
+            lump_total = hisht_bal[0] + gemel_bal[0]  # same on all paths
+            portfolio[~failed] = portfolio[~failed] + lump_total
+            hisht_bal[:] = 0.0
+            gemel_bal[:] = 0.0
+            lump_unlocked = True
+
+        # Annuity lock (deterministic → same on all paths)
+        if age_t >= ANNUITY_AGE and not annuity_locked:
+            annuity_real_monthly = (pensia_bal[0] + exec_bal[0]) / mekadem
+            annuity_locked = True
+            annuity_lock_t = t
+
+        # Nominal annuity at this tick
+        if annuity_locked:
+            annuity_nominal_t = annuity_real_monthly * (
+                (1.0 + inflation_annual) ** ((t - annuity_lock_t) / 12.0)
+            )
+        else:
+            annuity_nominal_t = 0.0
+
+        # Expenses
+        expenses_t = household.monthly_expenses_nis * (
+            (1.0 + expense_growth) ** (t / 12.0)
+        )
+
+        # Consumption: withdraw (expenses - annuity) pretax — apply tax_rate.
+        # withdraw_pretax * (1 - tax_rate) = expenses_shortfall
+        shortfall = max(0.0, expenses_t - annuity_nominal_t)
+        denom = max(1.0 - tax_rate, 0.01)
+        withdraw_pretax = shortfall / denom
+        portfolio[~failed] = portfolio[~failed] - withdraw_pretax
+        # Clip and mark newly-depleted paths as permanently failed.
+        newly_failed = (~failed) & (portfolio <= 0.0)
+        portfolio = np.maximum(portfolio, 0.0)
+        failed |= newly_failed
+
+        portfolio_history[t] = portfolio.copy()
+
+    # Build output series
+    out: list[MonteCarloPoint] = []
+    for t in range(months + 1):
+        age_t = household.current_age_years + t / 12.0
+        # Percentiles of portfolio_value across paths
+        p10, p25, p50, p75, p90 = np.percentile(
+            portfolio_history[t], [10, 25, 50, 75, 90]
+        )
+        solvent = float((portfolio_history[t] > 0).mean())
+
+        # Deterministic helpers at this tick — re-derive from state machine.
+        ann_t = 0.0
+        if annuity_locked and t >= annuity_lock_t:
+            ann_t = annuity_real_monthly * (
+                (1.0 + inflation_annual) ** ((t - annuity_lock_t) / 12.0)
+            )
+        exp_t = household.monthly_expenses_nis * (
+            (1.0 + expense_growth) ** (t / 12.0)
+        )
+        d = _add_months(today, t)
+        out.append(MonteCarloPoint(
+            months_out=t,
+            age_years=age_t,
+            date_yyyy_mm=d.strftime("%Y-%m"),
+            portfolio_value_p10_nis=float(p10),
+            portfolio_value_p25_nis=float(p25),
+            portfolio_value_p50_nis=float(p50),
+            portfolio_value_p75_nis=float(p75),
+            portfolio_value_p90_nis=float(p90),
+            fraction_solvent=solvent,
+            pension_annuity_monthly_nis=ann_t,
+            expenses_monthly_nis=exp_t,
+        ))
+
+    # Failure-by-age probabilities
+    def fail_before(target_age: float) -> float:
+        target_t = max(0, min(months, int(round((target_age - household.current_age_years) * 12))))
+        return float((portfolio_history[target_t] <= 0).mean())
+
+    return MonteCarloProjection(
+        series=out,
+        n_paths=n_paths,
+        p_failure_before_age_75=fail_before(75),
+        p_failure_before_age_85=fail_before(85),
+        p_failure_before_age_95=fail_before(95),
+        pension_state_at_start=pensions,
+        household_state_at_start=household,
+        retirement_age_assumed=retirement_age,
+        assumptions={
+            "mu_nominal_annual": mu_nominal_annual,
+            "sigma_annual": sigma_annual,
+            "real_return_annual": real_return,
+            "inflation_annual": inflation_annual,
+            "mekadem": mekadem,
+            "tax_rate": tax_rate,
+            "lifestyle_drift_annual": lifestyle_drift_annual,
+            "effective_expense_growth": expense_growth,
+            "lump_pension_age": LUMP_PENSION_AGE,
+            "annuity_age": ANNUITY_AGE,
+            "n_paths": n_paths,
+            "model_notes": (
+                "Monte Carlo: each path simulates monthly log-returns ~ "
+                "N(mu/12 - sigma^2/24, sigma/sqrt(12)). User withdraws "
+                "(inflated_expenses - nominal_pension_annuity) / (1-tax) from "
+                "portfolio each month. Path fails when portfolio hits zero. "
+                "Captures sequence-of-returns risk that the deterministic "
+                "real-return drawdown chart cannot show."
             ),
         },
     )
