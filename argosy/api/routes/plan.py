@@ -1260,6 +1260,29 @@ def get_draft_cashflow_projection(
             "Real return = mu_nominal - inflation_annual (the latter is fixed at 0.025)."
         ),
     ),
+    sigma_annual: float = Query(
+        0.18,
+        ge=0.05,
+        le=0.60,
+        description=(
+            "Portfolio volatility (annual standard deviation). Default 0.18 = "
+            "diversified-equity historical. Crank up to 0.40-0.50 to model "
+            "single-stock concentration risk (e.g., a NVDA-heavy portfolio). "
+            "Widens the bear/bull band around the typical curve."
+        ),
+    ),
+    lifestyle_drift_annual: float = Query(
+        0.0,
+        ge=0.0,
+        le=0.10,
+        description=(
+            "Extra expense-growth ABOVE the inflation rate (per year). "
+            "Default 0 means expenses grow exactly with CPI. Set to e.g. 0.015 "
+            "to model personal lifestyle inflation running 1.5%/yr hotter than "
+            "CPI (kids, healthcare, lifestyle creep). Affects expenses only — "
+            "pension annuity still indexes to CPI."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> CashflowProjectionResponse:
     """Return a per-month cashflow projection for the /plan retirement view.
@@ -1292,6 +1315,8 @@ def get_draft_cashflow_projection(
         retirement_age=retirement_age,
         years=years,
         mu_nominal_annual=mu_nominal_annual,
+        sigma_annual=sigma_annual,
+        lifestyle_drift_annual=lifestyle_drift_annual,
         tax_rate=tax_rate,
     )
 

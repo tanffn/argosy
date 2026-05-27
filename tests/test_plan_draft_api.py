@@ -1530,3 +1530,49 @@ def test_cashflow_projection_mu_bounds(client_with_db):
         "/api/plan/draft/cashflow-projection?user_id=ariel&mu_nominal_annual=0.20"
     )
     assert r.status_code == 422
+
+
+def test_cashflow_projection_sigma_param(client_with_db):
+    """sigma_annual=0.40 should produce wider bear/bull band than default 0.18."""
+    from tests.test_cashflow_projection import _seed_full_state
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        _seed_full_state(s)
+    r_default = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&years=10"
+    )
+    r_high = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&sigma_annual=0.40&years=10"
+    )
+    assert r_default.status_code == 200 and r_high.status_code == 200
+    # At year 10, the bear/bull spread should be MUCH wider under sigma=0.40.
+    p_default = r_default.json()["series"][120]
+    p_high = r_high.json()["series"][120]
+    spread_default = (
+        p_default["portfolio_income_bull_monthly_usd"]
+        - p_default["portfolio_income_bear_monthly_usd"]
+    )
+    spread_high = (
+        p_high["portfolio_income_bull_monthly_usd"]
+        - p_high["portfolio_income_bear_monthly_usd"]
+    )
+    assert spread_high > spread_default * 1.5
+
+
+def test_cashflow_projection_lifestyle_drift_param(client_with_db):
+    """lifestyle_drift_annual=0.015 → expense growth is 4%/yr instead of 2.5%."""
+    from tests.test_cashflow_projection import _seed_full_state
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        _seed_full_state(s)
+    r0 = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&years=10"
+    )
+    r1 = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&lifestyle_drift_annual=0.015&years=10"
+    )
+    # At t=120 months: r0 expenses grow at 2.5%, r1 at 4%.
+    e0 = r0.json()["series"][120]["expenses_monthly_usd"]
+    e1 = r1.json()["series"][120]["expenses_monthly_usd"]
+    expected_ratio = (1.04 / 1.025) ** 10
+    assert e1 / e0 == pytest.approx(expected_ratio, rel=1e-2)

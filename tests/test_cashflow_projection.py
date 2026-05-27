@@ -621,3 +621,80 @@ class TestScenarioRetireReady:
         )
         assert proj.retire_ready_age == proj.retire_ready_age_base
         assert proj.retire_ready_months_out == proj.retire_ready_months_out_base
+
+
+class TestLifestyleDrift:
+    def test_drift_increases_expense_growth(self, client_with_db):
+        """lifestyle_drift_annual=0.015 → expenses inflate at 4% instead of 2.5%."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj_no_drift = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=20,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.0,
+            lifestyle_drift_annual=0.0,
+            today=date(2026, 5, 27),
+        )
+        proj_drift = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=20,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.0,
+            lifestyle_drift_annual=0.015,
+            today=date(2026, 5, 27),
+        )
+        # At t=0 expenses are equal (no inflation yet)
+        assert proj_no_drift.series[0].expenses_monthly_nis == pytest.approx(
+            proj_drift.series[0].expenses_monthly_nis, rel=1e-9
+        )
+        # At t=12 months: no-drift expenses = base * 1.025; drift expenses = base * 1.04.
+        # Ratio should be 1.04/1.025 ≈ 1.0146
+        idx_12 = 12
+        ratio = (
+            proj_drift.series[idx_12].expenses_monthly_nis
+            / proj_no_drift.series[idx_12].expenses_monthly_nis
+        )
+        assert ratio == pytest.approx(1.04 / 1.025, rel=1e-3)
+
+    def test_drift_does_not_affect_pension_annuity(self, client_with_db):
+        """Pension annuity post-lock inflates at inflation_annual only,
+        ignoring lifestyle_drift."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj_no_drift = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.0,
+            lifestyle_drift_annual=0.0,
+            today=date(2026, 5, 27),
+        )
+        proj_drift = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.0,
+            lifestyle_drift_annual=0.05,
+            today=date(2026, 5, 27),
+        )
+        # Find first annuity-active point in both
+        ann_idx = next(i for i, p in enumerate(proj_no_drift.series) if p.pension_annuity_monthly_nis > 0)
+        # Annuity values 5 years post-lock should be IDENTICAL across the two projections
+        annuity_no = proj_no_drift.series[ann_idx + 60].pension_annuity_monthly_nis
+        annuity_with = proj_drift.series[ann_idx + 60].pension_annuity_monthly_nis
+        assert annuity_no == pytest.approx(annuity_with, rel=1e-9)

@@ -36,6 +36,7 @@ DEFAULT_SIGMA_ANNUAL = 0.18
 DEFAULT_INFLATION_ANNUAL = 0.025
 DEFAULT_MEKADEM = 200.0
 DEFAULT_TAX_RATE = 0.25
+DEFAULT_LIFESTYLE_DRIFT_ANNUAL = 0.0
 LUMP_PENSION_AGE = 60
 ANNUITY_AGE = 67
 
@@ -340,6 +341,7 @@ def project_cashflow(
     inflation_annual: float = DEFAULT_INFLATION_ANNUAL,
     mekadem: float = DEFAULT_MEKADEM,
     tax_rate: float = DEFAULT_TAX_RATE,
+    lifestyle_drift_annual: float = DEFAULT_LIFESTYLE_DRIFT_ANNUAL,
     today: date | None = None,
 ) -> CashflowProjection:
     """Project ``years * 12 + 1`` monthly cashflow points and detect
@@ -447,8 +449,9 @@ def project_cashflow(
         portfolio_income_bear = portfolio_real_return_monthly(
             portfolio_value_nis=portfolio_bear_nis, real_return_annual=real_return
         ) * net_factor
+        effective_expense_growth = inflation_annual + lifestyle_drift_annual
         expenses_t = inflate_expenses(
-            household.monthly_expenses_nis, inflation_annual, t
+            household.monthly_expenses_nis, effective_expense_growth, t
         )
         # Inflate the real-at-lock annuity to nominal NIS at time t so it's
         # directly comparable with expenses_t (which is also nominal at t).
@@ -504,6 +507,8 @@ def project_cashflow(
             "sigma_annual": sigma_annual,
             "real_return_annual": real_return,
             "inflation_annual": inflation_annual,
+            "lifestyle_drift_annual": lifestyle_drift_annual,
+            "effective_expense_growth": inflation_annual + lifestyle_drift_annual,
             "mekadem": mekadem,
             "tax_rate": tax_rate,
             "lump_pension_age": LUMP_PENSION_AGE,
@@ -530,6 +535,9 @@ def project_cashflow(
                 " this model (Israeli pension annuities have different tax"
                 " treatment — partial exemption + brackets — captured in a"
                 " future revision)."
+                " Expenses grow at ``inflation_annual + lifestyle_drift_annual``"
+                " per year; pension annuity grows at ``inflation_annual`` only"
+                " (pensions index to CPI, not lifestyle)."
             ),
         },
     )
