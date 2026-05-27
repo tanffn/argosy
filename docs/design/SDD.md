@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-10 — EX6 — Overview/Monthly split shipped: 5 new insight widgets (savings-rate trend, top movers, currency mix, MoM hero deltas, categories-vs-typical), new `/dashboard-monthly` endpoint, `/expenses/monthly` route. 14 EX6 commits + earlier same-day work (EX1.1 + EX4 + EX4.x + EX5 + Schwab RSU cross-validator + Leumi USD parser). Migration head still at 0024 (EX6 has zero migrations). Full corpus ingested: 6 sources / 56 statements / 2,179 transactions. See handover for wave summaries + open items. |
+| **Last updated** | 2026-05-27 (afternoon) — second overnight wave: Argosy ZigZag (codex/gpt-5 second-opinion between Phase 4 risk + Phase 5 FM), all 30 agent roles on Opus 4.7 with adaptive thinking (effort=low/medium/high/max), max_tokens corrected to 128K Opus-4.7 ceiling, EX2 anomaly detection wired event-driven + daily, wealth dashboard at top of `/portfolio` (retirement projection + asset-class/sector donuts + 6 stat cards), live target-progress strip on `/plan`, action items widget on home, fleet-review list + 30-day severity trends, Wave 1 guidance threaded into Phase 1/2/4 (closes D1 RED), FM-objection ZigZag dialogue. 25+ commits since synth #30. Migration head at 0038. See handover for wave summaries + open items. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-27 (early morning) by Claude — wave continues into UX polish + CRITICAL guidance-pipeline fix + fleet self-review agent + synthesizer empty-output diagnosis.
+**Last edit:** 2026-05-27 (afternoon) by Claude — second overnight wave shipped: Argosy ZigZag (codex second-opinion), Opus 4.7 fleet-wide with adaptive thinking + 128K max_tokens ceiling, EX2 anomaly detection live, wealth dashboard + live target-progress + action items + fleet-review trends. Build ON TOP of the earlier handover; the "Synthesizer empty-output bug" + "Overnight cycle" sections below remain current — see the new "Second overnight wave" section beneath them for what's new.
 
 ### Synthesizer empty-output bug (discovered overnight, hypothesis-fixed in `a5d317c`)
 
@@ -29,13 +29,22 @@ Sequence of events:
 7. **Fix shipped** in `f4b2dce`: added a defense-in-depth string-match fallback to the `is_transient_flake` guard. Word-boundary regex `\bexit code 1\b` + literal `(exit code: 1)` so the retry path fires even when the SDK wraps ProcessError in a different class. The existing isinstance check is preserved as the primary; `no_retry_when_exit_code_not_1` test still passes (137 doesn't match the word boundary).
 8. **Synthesis #30 COMPLETED end-to-end** with both fixes loaded. All 6 phases ran. FM rejected the draft but with **4 NEW BLOCKERs** (NVDA price discrepancy across analysts, risk-facilitator ESCALATE not APPROVE, accelerator/re-anchor spec gap, emergency-fund-floor contradiction) **+ explicit acknowledgement that prior round's BLOCKERs were resolved** (tax-rate band 30.7%→50% marginal, 9,059→8,428 ending-share path adjusted). **The loop is fully unblocked and iterating meaningfully** — each round closes some objections and surfaces new ones rather than regurgitating the same themes. New pending draft `synth-2026-05-26-2334-fm-rejected` = plan_versions.id=11. Self-review report #5: 1 RED · 7 AMBER · 9 YELLOW.
 
-### Wake-up state summary
+### Wake-up state summary (refreshed after the second overnight wave)
 
-- **Draft #11 pending** with FM's 4 new BLOCKERs visible via the new per-objection UI (precomputed translations, agree/disagree toggle, start-new-round CTA).
-- **Synthesis loop is healthy.** f8faaca closed the guidance pipeline, a5d317c fixed the synthesizer empty-output, f4b2dce hardened the FM retry envelope. Three consecutive runs (#26, #29, #30) each closed prior concerns and surfaced different new ones — the fleet is doing adversarial review properly for the first time.
-- **Fleet self-review is auto-firing** on every synthesis completion + has a manual-fire route. Reports 1–5 persisted; latest is report #5 against #30.
-- **Home page surfaces** in-flight synthesis banner, fleet self-review banner, NVDA YTD = 1,600 / 10,000 ON PACE.
-- **Cost of overnight loop**: ~$15-20 across #26 ($3-4), #27 ($2.17 wasted on empty-output), #29 ($3-4), #30 ($3-4). Within ARGOSY_SYNTHESIS_COST_CAP_USD=$10 per run.
+- **All 30 agent roles are on Opus 4.7 with adaptive thinking** (`b9b360c` + `c3733a3`). No Sonnet defaults remain. `thinking={"type":"adaptive"}` + `effort="max"|"high"|"medium"|"low"` per role; the legacy fixed-budget path remains for users who pin `thinking_budget` in YAML.
+- **`max_tokens` ceiling corrected to 128K** (`4cceb7a`) per Anthropic docs — Opus 4.7's real ceiling (the prior 32K was the stale Opus 4 limit). Heavy 128K (synth / FM / plan_critique) · medium 64K · light 16K.
+- **Argosy ZigZag wired** (`0bedd9b`) — codex (gpt-5) acts as an independent second-opinion reviewer between Phase 4 (risk verdict) and Phase 5 (FM). Env-gated, fail-soft, idempotent on resume. `decision_phases.kind="synthesis.phase_4_5"`. Visible inline on `/decisions/{id}` as a 4th child of the FM node (`2df92a5`).
+- **EX2 anomaly detection live** (`30730a5` + `3fd8dc5`) — event-driven on Discount Bank statement ingest + daily backstop in the daily-brief background loop. Home banner above the fleet-self-review banner whenever a RED anomaly fires. Card 2923 fee-waiver entry seeded in the watchlist.
+- **`/portfolio` has a wealth dashboard at the top** (`e4fc3b7` + `7ddd523`) — retirement projection (3 scenarios × 25-year trajectory + per-scenario target age), 6 stat tiles (cash runway, concentration, savings rate, FX exposure, RSU income, estate exposure), plus asset-class + sector donut composition cards. Pure-Python, deterministic, no LLM. Live for ariel: 11.17M NIS net worth, FIRE target 7.91M, already at target across all scenarios; NVDA 60.5% (15.5pp over 45% plan target); ~$916K potential US-situs estate liability.
+- **`/plan` has a live target-progress strip** (`c8cb5ce`) — each TARGET row shows current value + gap + status icon next to the planned value. Endpoint: `/api/plan/draft/target-progress`.
+- **Home page has an action items widget** (`905d6de`) — `/api/plan/action-items` returns dated short/medium-horizon actions; UI renders overdue/today/due-soon/upcoming TODO bands.
+- **`/fleet-review` list page** (`6283011`) — newest-first list + stacked RED/AMBER/YELLOW area chart over the last 30 days + most-persistent-findings (detectors appearing in ≥50% of runs). Endpoints: `GET /api/fleet-self-review/{list,trends}`.
+- **FM-objection ZigZag** (`7efb0c9`) — per FM objection, "Discuss with [analyst]" fires a 3-turn FM↔analyst dialogue (~$0.20-0.50/run) without re-running the whole synthesis. New `decision_kind="fm_objection_dialogue"`.
+- **Wave 1 guidance pipeline fully closed** (`a41d408`) — `user_directive` now threads through Phase 1 (plan_critique) + Phase 2 (bull/bear/facilitator) + Phase 4 (risk_officer×3 + risk_facilitator) on top of the earlier Phase 3 + 5 wiring. Verified: 0 RED in run #31's self-review.
+- **Synthesis loop is healthy and iterating meaningfully.** Six fixes deep into the empty-output saga (f8faaca → a5d317c → f4b2dce → b9b360c → 4cceb7a → c3733a3); each round of FM rejection now closes prior concerns and surfaces fresh ones. Runs #26 / #29 / #30 / #31 / #32 demonstrate this.
+- **Fleet self-review** auto-fires on every synthesis completion. Reports 1–N persisted; the list page + trends chart make trajectory visible.
+- **Home page surfaces** anomaly banner (when RED) → fleet-self-review banner → in-flight synthesis banner → NVDA YTD = 1,600 / 10,000 ON PACE → action items widget → DecisionAccordion.
+- **Cost envelope unchanged** — `ARGOSY_SYNTHESIS_COST_CAP_USD=$10` per run; per-zigzag adds ~$0.30-0.50 codex; per FM-objection dialogue ~$0.20-0.50. Within the accuracy-over-cost binding preference.
 
 ### Overnight cycle (2026-05-26 evening → night) — 12 additional commits
 
@@ -57,11 +66,17 @@ After the T3+T4+observability wave shipped (`14245e3`), the user smoke-tested li
 - **`a5d317c`** — synthesizer + FM `user_directive` moved from system prompt to user prompt. Fixes the empty-output bug observed in #27 + #28. See "Synthesizer empty-output bug" section above for the root-cause analysis.
 - **`f4b2dce`** — `transient_exit1` retry guard now has a defense-in-depth string-match fallback. SDK class identity drift (ProcessError isinstance check failed in #29's FM call) was bypassing the retry path. Word-boundary regex avoids false-positives on exit-codes like 137 / 12.
 
-### Synthesis runs this overnight
+### Synthesis runs this overnight (extended with the second wave)
 
-- **#26** (70 min): triggered with full "all concerns" guidance from #25's 8 FM objections. FM **rejected** but verdict shape changed dramatically — explicitly cites resolved objections (NVDA arithmetic, oil narrative, life-insurance) + raises 4 BLOCKER + 2 AMBER on different concerns. **`f8faaca` is verified working.** New pending draft `synth-2026-05-26-2001-fm-rejected` = plan_versions.id=10.
-- **Self-review report #1** generated against #26 (manually fired, post-synthesis hook needed new backend version): 1 RED · 6 AMBER · 13 YELLOW. Top finding: D1 — Phase 1 still drops guidance.
-- **#27** triggered (token `plan-synth-27`, started 20:08, ETA ~21:20) with run #26's BLOCKERs+AMBERs as guidance. Post-synthesis hook will auto-fire fleet self-review when complete.
+| # | Outcome | Notes |
+|---|---|---|
+| #26 | rejected | First with f8faaca guidance pipeline fix; FM verdict shape changed dramatically (explicitly cites which prior objections were resolved). New pending draft `synth-2026-05-26-2001-fm-rejected` = plan_versions.id=10. Self-review report #1: 1 RED · 6 AMBER · 13 YELLOW. Top D1 finding: Phase 1/2/4 still drop guidance. |
+| #27 | failed | Phase 3 (synthesizer) empty-output 4× (initial + 3 T2.6 retries). 50 min Phase 1+2 wasted (~$2.17). Fixed by `a5d317c` (move user_directive from system prompt → user prompt). |
+| #28 | killed | Reproducibility test of #27 — killed mid-Phase-1 once #27's failure mode was diagnosed. |
+| #29 | failed | Phase 3 succeeded for the first time with `a5d317c`. Phase 5 FM died on first attempt with `Command failed exit 1`; isinstance(exc, ProcessError) returned False → no retry. Fixed by `f4b2dce` (string-match fallback in `is_transient_flake`). |
+| #30 | rejected | First successful end-to-end on the new stack. FM rejected with 4 NEW BLOCKERs + explicit acknowledgement of resolved prior BLOCKERs. New pending draft `synth-2026-05-26-2334-fm-rejected` = plan_versions.id=11. Self-review report #5: 1 RED · 7 AMBER · 9 YELLOW. The loop is **fully unblocked and iterating meaningfully**. |
+| #31 | failed | Phase 4 codex zigzag SUCCEEDED first time (APPROVE_WITH_CONDITIONS verdict). FM hit empty-output again — `a5d317c`'s pattern still wasn't enough headroom for the bigger user_directive payload after a41d408. Bumped max_tokens to 128K (`4cceb7a`) as one hypothesis-eliminating fix; subsequent adaptive-thinking migration (`c3733a3`) is the structural answer. |
+| #32 | in flight | Full stack loaded: Opus 4.7 + 128K max_tokens + adaptive thinking + Argosy ZigZag + Wave 1 guidance threaded to phases 1/2/4. First run of the canonical configuration. |
 
 ### What the user will see when they wake up
 
@@ -71,12 +86,178 @@ After the T3+T4+observability wave shipped (`14245e3`), the user smoke-tested li
 4. **`/`** (home) — in-flight banner gone; fleet self-review banner showing latest counts; NVDA PACE showing 1,600/10,000 ON PACE.
 5. **`/fleet-review/2`** — markdown report for #27 with detector findings.
 
-### Wave 1 follow-up (deferred, queued)
+### Wave 1 follow-up (mostly closed in the second overnight wave)
 
-- Thread `guidance` into Phase 1 (analysts), Phase 2 (bull/bear/facilitator), Phase 4 (risk officers). The D1 detector will keep flagging this until done.
-- Fix D4 source-id format mismatch in `fx` adapter (`rates/USD/NIS` vs `fx/rates/USD/NIS`).
-- Investigate D4 hallucinated `robotaxi/FSD/Optimus` on fundamentals#221.
-- Backfill D8 phase-participants-empty for historical runs #24/#25, or accept as historical (T0.1 took only for new runs).
+- ~~Thread `guidance` into Phase 1 (analysts), Phase 2 (bull/bear/facilitator), Phase 4 (risk officers).~~ **DONE in `a41d408`** — `user_directive` now reaches `plan_critique` (Phase 1, NOT the 9 single-ticker analysts), `bull_researcher` / `bear_researcher` / `researcher_facilitator` (Phase 2), and `risk_officer×3` + `risk_facilitator` (Phase 4). Verified: 0 RED in run #31's self-review.
+- ~~Fix D4 source-id format mismatch in `fx` adapter (`rates/USD/NIS` vs `fx/rates/USD/NIS`).~~ **DONE in `78e5861`** — fx adapter now cites with the `fx/` bucket prefix matching `sources_json` registration.
+- ~~Investigate D4 hallucinated `robotaxi/FSD/Optimus` on fundamentals#221.~~ **DONE in `9b594ba`** — tightened the citation prompt (boilerplate rule #6 forbidding invented/paraphrased source_ids) AND added `hallucinated_sources: list[str]` to `AgentReport` plus a `_detect_hallucinated_sources` helper in `run()` that flags offending ids on the report (logged, NOT stripped) so fleet self-review D4 reads a structured field instead of regex-scanning `response_text`.
+- **STILL OPEN**: Backfill D8 phase-participants-empty for historical runs #24/#25, or accept as historical (T0.1 took only for new runs).
+
+### Second overnight wave (2026-05-27 morning → afternoon)
+
+25+ commits shipped between synth #30 and now. The earlier sections above ("Synthesizer empty-output bug" + "Overnight cycle (2026-05-26 evening → night)") remain current — this section documents what landed on top.
+
+#### 1. Argosy ZigZag — codex (gpt-5) as in-line second-opinion reviewer (`0bedd9b`)
+
+The codex-tandem kit's adversarial cross-engine pattern, baked into the live synthesis flow. Between Phase 4 (risk_facilitator's verdict) and Phase 5 (FM), codex is dispatched with the SAME inputs the FM will see — **minus** prior-round FM objections, to keep codex independent.
+
+Codex returns a structured `CodexSecondOpinion`:
+- `overall_assessment`: `APPROVE` / `APPROVE_WITH_CONDITIONS` / `BLOCK`
+- `findings[]`: per-issue severity + topic + detail + suggested_fix + cited paragraphs
+- `agreement_with_argosy`: `agrees_with_risk_verdict` + `novel_concerns`
+- `user_directive_respected`: honest read on whether synth honored user input
+
+The FM's `build_prompt` gains a `codex_second_opinion` kwarg. **System prompt carries only a short DIRECTIVE POINTER** (same pattern as `a5d317c` — avoid large variable content in system prompts that triggers the bundled claude.exe empty-output bug). **User prompt carries the verbatim codex findings** in a dedicated section.
+
+Fail-soft contract (codex review must NEVER abort synthesis):
+- `ARGOSY_CODEX_REVIEW_ENABLED=0` → skipped silently.
+- `PYTEST_CURRENT_TEST` set → skipped silently.
+- codex-tandem kit unavailable → log + skip.
+- codex timeout / network error → log + return `(None, None)` → FM still runs.
+- malformed JSON output → lenient parse, then synthetic "unparseable" verdict so FM sees something.
+- **Idempotent on resume**: existing `codex_second_opinion` row for the same `decision_run_id` is reloaded, not re-dispatched.
+
+New `decision_phases.kind="synthesis.phase_4_5"`. Per-zigzag cost ~$0.30-0.50 (codex/gpt-5). Adds ~$0.50 to a $3-4 synth run — within the accuracy-over-cost binding preference. 13 tests in `tests/test_codex_second_opinion.py` cover env-gate, pytest-gate, valid+malformed JSON parse, fails-soft-on-unreachable, idempotent resume, FM integration smoke.
+
+#### 2. All 30 agent roles on Opus 4.7 (`b9b360c`)
+
+User preference: accuracy > LLM cost. All agent roles default to `claude-opus-4-7`. Eliminated Sonnet defaults (objection_translator + daily_briefer + analyst_responder + plan_distiller + intake_extractor + the 9 single-ticker analysts — all bumped).
+
+Initial thinking budgets (in this commit; later replaced by adaptive in `c3733a3`):
+- Heavy-reasoning (synth / FM / plan_critique): 16K thinking · 32K max_tokens
+- Medium (researchers / risk officers / audit / trader): 8K thinking · 16K max_tokens
+- Light (9 analysts + helpers): 2K thinking · 8K max_tokens
+
+NEW `DEFAULT_MAX_TOKENS_BY_ROLE` table in `argosy/agents/base.py` drives `max_tokens` per role; agent-subclass `max_tokens = N` overrides removed in favor of the table. `BaseAgent.__init__` enforces the Anthropic invariant `thinking_budget < max_tokens` (in legacy fixed-budget mode only).
+
+#### 3. `max_tokens` ceiling corrected to 128K (`4cceb7a`)
+
+Per Anthropic docs (verified via context7): Opus 4.7 supports up to 128K output tokens on standard requests, 300K via the `output-300k-2026-03-24` beta header on the Message Batches API. The earlier table value of 32K was the Opus 4 ceiling — outdated. New table:
+
+| Role tier | max_tokens (4.7) | was (Opus 4 stale) |
+|---|---|---|
+| Heavy (synth / FM / plan_critique) | **128K** | 32K |
+| Medium (researchers / risk officers / audit / trader / dialogue verdict) | **64K** | 16K |
+| Light (single-ticker analysts / helpers) | **16K** | 8K |
+| Fallback | **16K** | 8K |
+
+The `AgentRoleOverride.thinking_budget` YAML override schema was bumped from `le=64000` to `le=128000` so the override path matches the new ceiling. **Why this matters for the run #31 FM empty-output failure**: bigger `max_tokens` gives the bundled claude.exe SDK more headroom on its internal output-buffer heuristics. Not a guaranteed fix but eliminates "too-small max_tokens" as a hypothesis. Thinking budgets are well below the cap so the `budget < max_tokens` constraint holds comfortably.
+
+#### 4. Adaptive thinking migration (`c3733a3`)
+
+Replaces per-role fixed `thinking={"type":"enabled","budget_tokens":N}` with `thinking={"type":"adaptive"}` + `effort="low"|"medium"|"high"|"max"` on the claude_code backend. Adaptive thinking lets Opus 4.6+ decide its own thinking allocation based on prompt complexity — Anthropic's canonical recommendation for newer models.
+
+New `DEFAULT_THINKING_EFFORT_BY_ROLE` table:
+- **max** (heavy reasoners): `plan_synthesizer` / `fund_manager` / `plan_critique` / `fund_manager_dialogue_verdict`
+- **high** (debate + arbitration + audit + trader + analyst_responder + advisor + etc.)
+- **medium** (pure-data analysts): concentration / fx / fundamentals / news / sentiment / technical / macro / tax / household_budget / objection_translator / daily_briefer
+- **low** (chat / category roles): intake / household_categorizer / watchlist
+- Unknown roles fall back to **high** per the accuracy-over-cost binding preference.
+
+`BaseAgent` gains a `thinking_effort` instance attr (defaults from the table). `_call_via_claude_code_inner` prefers adaptive when effort is set; falls back to the legacy fixed-budget path when effort is None. `_call_via_api_key` mirrors the pattern but gates adaptive on installed `anthropic` SDK support (probed at import time) — current 0.97.x line lacks adaptive in its request schema → falls back with a warning. The **claude_code backend** (Argosy's default per `argosy.toml`) IS migrated.
+
+Per-user YAML override: `AgentRoleOverride` gains `thinking_effort: Literal["low","medium","high","max"] | None`. Mode resolution: explicit YAML `thinking_effort` → table effort default → YAML/table `thinking_budget` (legacy) → no thinking. Setting `thinking_budget` in YAML alone is interpreted as opting out of adaptive (effort cleared) — preserves the existing fixed-budget invariant for tests/users that pin.
+
+**The `thinking_budget < max_tokens` invariant ONLY fires in legacy fixed-budget mode** (adaptive picks its own internal budget). `DEFAULT_THINKING_BUDGET_BY_ROLE` is retained as a legacy fallback. Adaptive-shape coverage in `tests/test_thinking_effort.py`. Live demo confirms FM emits `options.thinking={"type":"adaptive"}` + `options.effort="max"` + `options.max_thinking_tokens=None`.
+
+#### 5. EX2 anomaly detection — live + event-driven (`30730a5` + `3fd8dc5`)
+
+`AnomalyDetectionAgent` (Opus, 8K thinking, 16K max_tokens) + structured `AnomalyDetectionReport`. Watchlist seed at `argosy/data/watchlist_seed.yaml` carries the Card 2923 fee-waiver entry matching the user's stored `project_card_2923_fee_waiver` memory.
+
+ORM + schema:
+- Migration `0038_anomaly_reports.py` — `anomaly_reports` table.
+- `argosy/state/models.py::AnomalyReport`.
+- `argosy/services/anomaly_runner.py` — `schedule_anomaly_check()` canonical fire-and-forget entry. Mirrors `fleet_self_review_runner`'s `schedule_post_synthesis_review` pattern. Accepts either a caller-bound session (event path) or constructs its own engine (daily path). Env-gated: `ARGOSY_ANOMALY_DETECTION_ENABLED=1`, always off under pytest.
+
+Trigger surfaces:
+- **Event** — `/api/expenses/upload` (`argosy/api/routes/expenses.py`) fires `schedule_anomaly_check(triggered_by="event")` after a successful Discount Bank ingest, scoped to `parser_name=="discount"` so other issuers don't incur LLM cost.
+- **Daily backstop** — `daily_brief_runner.background_loop` schedules a daily sweep right after the daily-brief + fleet-self-review.
+
+Routes + UI:
+- `GET /api/anomalies/latest` and `GET /api/anomalies/{id}` (new `argosy/api/routes/anomalies.py`, registered in `argosy/api/main.py`). Tenant-scoped via `user_id`; cross-tenant access returns 404.
+- Home page (`ui/src/app/page.tsx`) fetches `/api/anomalies/latest` on mount + subscribes to `anomaly.detected` WS event + renders `<AnomalyBanner>` **above** the fleet-self-review banner whenever the latest report carries a RED anomaly.
+- New `ui/src/app/anomalies/[id]/page.tsx` viewer with structured anomaly list + per-watchlist-entry status snapshot + cited-sources block.
+
+27 tests passing under `pytest -m "not llm_eval"` across `tests/test_anomaly_runner.py`, extended `test_file_catalog.py` (positive Discount fires + negative Isracard doesn't), `test_daily_brief_runner.py` (one-iteration drive), `test_anomalies_route.py` (200+null on empty, most-recent ordering, full payload, 404 on unknown id + cross-tenant).
+
+#### 6. Wave 1 guidance threaded to Phase 1/2/4 (`a41d408`)
+
+Closes the D1 fleet self-review finding flagged after `f8faaca`: the synthesizer (Phase 3) + FM (Phase 5) saw user guidance, but `plan_critique` (Phase 1), `bull/bear/researcher_facilitator` (Phase 2), and the 3 `risk_officer` + `risk_facilitator` (Phase 4) did not. Those agents would feed downstream their unchanged reasoning and force the synthesizer + FM to overrule with extra tokens; FM-objection loops on the same draft would never converge.
+
+Each agent's `build_prompt` gains a `user_directive: str = ""` kwarg following the canonical `a5d317c` pattern: **system prompt carries a domain-appropriate DIRECTIVE POINTER + per-stance instructions; verbatim directive content goes at the TOP of the user prompt** to avoid the bundled claude.exe empty-output path.
+
+Orchestrator updates:
+- `_run_phase_1_analysts` already accepted `guidance`; now propagates it as `user_directive` via `common_kwargs`. `_safe_run_agent`'s signature-narrowing filter delivers it ONLY to `PlanCritique` (the 9 other analysts don't declare `user_directive`).
+- `_run_phase_2_debates` + `_run_one_horizon_debate` gain `guidance` kwargs.
+- `_run_phase_4_risk` + `_run_one_risk_perspective` gain `guidance` kwargs.
+- `run_synthesis` propagates to phases 1+2+4 in addition to existing 3+5.
+
+**Byte-identity invariant** for empty `user_directive=""` holds per agent (covered by paired tests) — the scheduled monthly synthesis cycle (no user feedback) is unaffected. **Verified**: 0 RED findings in run #31's self-review.
+
+#### 7. FM-objection ZigZag — per-objection FM↔analyst dialogue (`7efb0c9`)
+
+Per FM objection, the user clicks "Discuss with [analyst]" → fires a 3-turn dialogue between the FM and the specific analyst the FM is concerned about. Total cost ~$0.20-0.50/dialogue vs. ~$3-4 / 70 min for a full re-synthesis.
+
+The dialogue:
+1. (no LLM) reformat the FM's objection text as a question.
+2. `AnalystResponderAgent` (Opus per fleet migration) — `CONCEDE` / `REBUT` / `CLARIFY`.
+3. `FundManagerDialogueVerdictAgent` (Opus) — `FM_ACCEPTS_ANALYST` / `FM_MAINTAINS_OBJECTION` / `FM_REVISES_OBJECTION` / `ESCALATE_TO_USER`.
+
+Identifying the analyst per objection: the FM's detail text often references prior agent_reports via the `agent_report:XAgent` source-id convention. A canonical map `ANALYST_AGENT_NAME_TO_ROLE` lives in `analyst_responder.py` and is parsed both in Python and in TypeScript (`parseAnalystRefsFromObjection`). Multiple-analyst objections show a select dropdown; zero-match objections disable the button with an explanatory tooltip.
+
+New `decision_kind="fm_objection_dialogue"`.
+
+#### 8. Wealth Dashboard at top of `/portfolio` (`e4fc3b7` + `7ddd523`)
+
+A top-of-`/portfolio` aggregator: financial-independence card + 25-year wealth-trajectory line chart (bear / conservative / typical real-return scenarios + FIRE-target reference line + per-scenario target retirement age) + 6 visual stat tiles + asset-class + sector composition donuts. Each block tolerates missing data — surfaces "—" with a `?`-tooltip drawn from per-block `missing_reasons` rather than breaking the dashboard.
+
+Backend (**pure-Python, no agent calls, deterministic**):
+- `argosy/services/wealth_dashboard.py::compute_wealth_dashboard` pulls the latest `portfolio_snapshots` row + the latest `household_budget` agent_report + `user_context` YAML blobs + the latest `plan_version` with a horizon_medium target. Solves years-to-target via binary search on the FV(t) annuity formula; caps at 60 years; returns `None` for unreachable scenarios. Resolves USD/NIS in (snapshot → identity.fx_rate.usd_nis → default 3.10) order. `current_age` sourced from `identity.user_date_of_birth` first, then legacy `date_of_birth`, then `user_age_current`, then default 45.
+- `argosy/api/routes/wealth_dashboard.py` — `GET /api/portfolio/wealth-dashboard?user_id=` mounted in `api/main.py`.
+
+UI (Recharts, matches existing patterns):
+- `components/portfolio/wealth-trajectory-chart.tsx` — 3-line LineChart + horizontal FIRE-target ReferenceLine.
+- `components/portfolio/retirement-card.tsx` — headline numbers + chart + 3 scenario tiles + assumptions footer citing SWR / FX source / `current_age` inference / plan target source verbatim.
+- `components/portfolio/stat-card.tsx` — reusable tile primitive with missing-data tooltip.
+- `components/portfolio/wealth-dashboard.tsx` — orchestrator. **Row 2** = 4 small cards (gauge / marker bar / donut / stacked bar). **Row 3** = 2 rich cards (quarterly RSU vest bar chart + US-situs estate exposure with $60k NRA exemption marker + 40% liability headline). **Row 4** = asset-class + sector composition donuts; classification driven by `asset_type` + a static per-ticker fallback (asset-class) + a hand-curated per-ticker map (sector). Israeli ETFs detected by Hebrew-character pattern. Unknown tickers fall into "Other".
+- Mounted above `PerPositionThesisSection` on `/portfolio`.
+
+**Live numbers for ariel** (sanity-check on the math): 11.17M NIS net worth · FIRE target 7.91M (already at target across all 3 scenarios) · NVDA 60.5% of portfolio (15.5 pp over the 45% plan target) · ~$916K potential US-situs estate liability (40% rate above the $60k NRA exemption).
+
+#### 9. Live target-progress strip on `/plan` (`c8cb5ce`)
+
+Each TARGET row on the plan now shows live current value + gap + status icon next to the planned value. New endpoint: `GET /api/plan/draft/target-progress`.
+
+#### 10. Action items widget on home (`905d6de`)
+
+`GET /api/plan/action-items` returns dated short/medium-horizon actions; UI renders as a TODO list with overdue / today / due-soon / upcoming color bands.
+
+#### 11. Fleet-review list page + 30-day severity trends (`6283011`)
+
+Before this change the only way to view a fleet self-review was a direct URL to `/fleet-review/{id}`. The new `/fleet-review` list page renders:
+- A stacked RED/AMBER/YELLOW area chart over the last 30 days.
+- A most-persistent-findings bullet list (detectors appearing in ≥50% of runs).
+- A newest-first table of recent reports linking into the existing viewer.
+
+Backend extends `GET /api/fleet-self-review/list` to include `findings_total` per row, and adds `GET /api/fleet-self-review/trends` (points sorted ASC + persistent-detector aggregation). Tests in `tests/test_fleet_self_review_list_route.py` cover newest-first ordering, severity_summary, findings_total, trend points over a window, most-persistent threshold logic, tenant isolation, empty case.
+
+#### 12. Codex node in the FM-rooted agent tree (`2df92a5`)
+
+`codex_second_opinion` now appears as the FM's 4th child on `/decisions/{id}` — gpt-5 pill + structured findings expandable inline. Visualizes the Argosy ZigZag verdict alongside the synth / risk / critique nodes already in the tree.
+
+#### 13. Other fixes (one-liners)
+
+- **W4 — portfolio_snapshot DB wiring** (`f979f2c`): `/api/portfolio/snapshot` + the synthesis input assembler now prefer the DB row from `portfolio_snapshots`; filesystem walk via `_find_latest_tsv` is the fallback. Idempotent on `source_path + content_hash`. 13 tests in `test_portfolio_snapshot_db_wiring.py`.
+- **W3 — `recent_fills_summary` real data** (`a8fbad6`): `_assemble_fills_summary` was a one-line stub returning a literal placeholder string that Phase 3's synthesizer read into the "RECENT FILLS + DECISIONS" section. Now queries `fills` (last 90 days, with realized gain on SELLs against `lots`) + `decision_runs` (approved trade_proposal / plan_revision in the same window).
+- **W5 — DecisionAccordion empty-array fallback** (`f525bef`): `useDecisionStream` now falls through to `/api/agent-activity` when `/api/decisions/recent` returns an **empty array**, not only on HTTP error. Fixes intake-only turns showing nothing on home.
+- **W9 — Phase 2 DailyBriefLoop retired** (`4574705`): the four-agent class is deleted. T4.5 single-agent `DailyBrieferAgent` + `generate_daily_brief` in `daily_brief_runner.py` owns the daily-brief path end-to-end. `loops/daily_brief.py` keeps `_default_gather_inputs` + helpers (the production writer for `investor_events` via SEC Form 4 / TipRanks / 13F / CapitolTrades / Finnhub — deleting them would strand the home-page signal bullet).
+- **W11 — vitest scaffold** (`32f987e`): wires `vitest 3.x` + `jsdom 25` + `@testing-library/react` + `jest-dom` into the UI package. Pinned vitest to 3.x (4.x ships a missing rolldown native binding on Windows) + jsdom to ^25 (26+ pulls @exodus/bytes via html-encoding-sniffer breaking under vitest's CJS shim). First test in `ui/src/lib/__tests__/useDecisionStream.test.ts` — minimal "vitest is wired" assertion + static-surface import smoke.
+- **W7 — fundamentals hallucinated-source flagging** (`9b594ba`): tightened citation prompt (boilerplate rule #6 forbids invented/paraphrased source_ids); offending ids flagged on `AgentReport.hallucinated_sources` (logged, NOT stripped) so fleet self-review D4 reads a structured field.
+- **AgentDetailDrawer rules-of-hooks bug** (`0a84601`): reordered `useState`/`useEffect` to run BEFORE the WS-only-row (`row.id === -1`) early-return. Previously the hooks lived after the return, which violates rules-of-hooks and would crash React when the same drawer instance toggled from a WS-only row to a persisted one. Plus suppresses set-state-in-effect across fetch-on-mount sites (pattern is intentional; Suspense/React-Query migration tracked separately).
+- **eslint cleanup pass** (`8a11274`): closes 4 pre-existing set-state-in-effect errors in cascade-strip / reasoning-drawer / sheet / plan/page; the offending lines are prop-driven reset branches — switched to functional form with equality short-circuit so the reset is a no-op on first render.
+- **FM verdict recorder phase_id** (`b5e2f1e`): T0.1 follow-up — synthesis verdict phase row now includes the FM `agent_report` id.
+- **`/positions` integrated into `/portfolio`** (`07e51dc`): per-position thesis cards moved inline; standalone nav tab removed per user request.
+- **DeltaCard no-op deltas + Blocker # linking** (`a3f9565`): no-op deltas render as "rationale updated — value unchanged at X" instead of "suggested 45% before 45%". Null-prior deltas render as "new <kind> — X". `Blocker #N` / `Objection #N` tokens parse into clickable chips that popover the matching prior-round FM objection; defensive when hallucinated.
 
 ### Source-of-truth references
 
