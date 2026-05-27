@@ -1199,6 +1199,18 @@ export const api = {
     ),
 
   // ----------------------------------------------------------------------
+  // Wealth Dashboard — top-of-/portfolio retirement projection + 6 stat
+  // cards (cash runway, NVDA concentration, savings rate, FX exposure,
+  // RSU income, US-situs estate exposure). Pure-Python aggregator;
+  // see argosy/services/wealth_dashboard.py for per-block semantics.
+  // ----------------------------------------------------------------------
+
+  wealthDashboard: (userId: string) =>
+    getJSON<WealthDashboardDTO>(
+      `/api/portfolio/wealth-dashboard?user_id=${encodeURIComponent(userId)}`,
+    ),
+
+  // ----------------------------------------------------------------------
   // Wave 4: plan amendment chat flow
   // ----------------------------------------------------------------------
 
@@ -1847,4 +1859,126 @@ export interface AmendmentEventPayload {
   draft_id?: number;
   eta_seconds?: number;
   error?: string;
+}
+
+// ----------------------------------------------------------------------
+// Wealth Dashboard DTOs — wire-shape mirrors the backend service
+// dataclasses in argosy/services/wealth_dashboard.py. Keep these in sync.
+// ----------------------------------------------------------------------
+
+export interface WealthScenarioCard {
+  name: "bear" | "conservative" | "typical";
+  real_return: number;
+  years_to_target: number | null;
+  target_age: number | null;
+  target_portfolio_nis: number | null;
+}
+
+export interface WealthTrajectoryPoint {
+  year: number;
+  bear: number;
+  conservative: number;
+  typical: number;
+}
+
+export interface WealthRetirementBlock {
+  net_worth_nis: number | null;
+  net_worth_usd: number | null;
+  monthly_burn_nis: number | null;
+  monthly_income_nis: number | null;
+  monthly_surplus_nis: number | null;
+  annual_expenses_nis: number | null;
+  target_portfolio_nis: number | null;
+  swr_rate: number;
+  current_age: number;
+  current_age_inferred: boolean;
+  scenarios: WealthScenarioCard[];
+  trajectory: WealthTrajectoryPoint[];
+  missing_reasons: string[];
+}
+
+export interface WealthCashRunwayBlock {
+  cash_nis: number | null;
+  sgov_nis: number | null;
+  defensive_total_nis: number | null;
+  months_of_runway: number | null;
+  missing_reasons: string[];
+}
+
+export interface WealthConcentrationBlock {
+  symbol: string;
+  current_pct: number | null;
+  target_pct: number | null;
+  target_source: string | null;
+  missing_reasons: string[];
+}
+
+export interface WealthSavingsRateBlock {
+  monthly_income_nis: number | null;
+  monthly_burn_nis: number | null;
+  rate_pct: number | null;
+  missing_reasons: string[];
+}
+
+export interface WealthFxBucket {
+  currency: string;
+  value_nis: number;
+  pct: number;
+}
+
+export interface WealthFxExposureBlock {
+  buckets: WealthFxBucket[];
+  usd_pct: number | null;
+  missing_reasons: string[];
+}
+
+export interface WealthRsuQuarter {
+  period: string;
+  date: string;
+  shares: number;
+  value_nis: number;
+}
+
+export interface WealthRsuIncomeBlock {
+  next_12_months_nis: number | null;
+  quarters: WealthRsuQuarter[];
+  nvda_price_usd: number | null;
+  fx_usd_nis: number | null;
+  missing_reasons: string[];
+}
+
+export interface WealthEstateExposureBlock {
+  us_situs_usd: number | null;
+  us_situs_nis: number | null;
+  nra_exemption_usd: number;
+  above_exemption_usd: number | null;
+  potential_liability_usd: number | null;
+  potential_liability_nis: number | null;
+  missing_reasons: string[];
+}
+
+export interface WealthAssumptions {
+  swr_rate: number;
+  scenario_returns: Record<string, number>;
+  fx_usd_nis: number | null;
+  fx_source: string;
+  current_age: number;
+  current_age_source: string;
+  nvda_target_pct: number | null;
+  nvda_target_source: string | null;
+  snapshot_date: string | null;
+  plan_version_id: number | null;
+}
+
+export interface WealthDashboardDTO {
+  user_id: string;
+  generated_at: string;
+  retirement: WealthRetirementBlock;
+  cash_runway: WealthCashRunwayBlock;
+  concentration: WealthConcentrationBlock;
+  savings_rate: WealthSavingsRateBlock;
+  fx_exposure: WealthFxExposureBlock;
+  rsu_income: WealthRsuIncomeBlock;
+  estate_exposure: WealthEstateExposureBlock;
+  assumptions: WealthAssumptions;
 }

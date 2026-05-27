@@ -54,6 +54,7 @@ from argosy.api.routes.fm_objection_dialogue import (
     router as fm_objection_dialogue_router,
 )
 from argosy.api.routes.portfolio import router as portfolio_router
+from argosy.api.routes.wealth_dashboard import router as wealth_dashboard_router
 from argosy.api.routes.positions import router as positions_router
 from argosy.api.routes.proposals import router as proposals_router
 from argosy.api.routes.security import router as security_router
@@ -100,6 +101,11 @@ def create_app() -> FastAPI:
     # Phase 2 (multi-tenant `user_id` query param on each)
     api_prefix = "/api"
     app.include_router(portfolio_router, prefix=api_prefix)
+    # Wealth Dashboard — top-of-/portfolio retirement projection + 6
+    # visual stat cards (cash runway, concentration, savings rate, FX
+    # exposure, RSU income, estate exposure). Sibling router so it
+    # doesn't have to share portfolio.py's filesystem-walk logic.
+    app.include_router(wealth_dashboard_router, prefix=api_prefix)
     app.include_router(plan_router, prefix=api_prefix)
     # Per-FM-objection agree/disagree + start-new-round endpoints. Sibling
     # router so the agree/disagree work doesn't have to share plan.py with

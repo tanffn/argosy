@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { PerPositionThesisSection } from "@/components/positions/per-position-thesis-section";
+import { WealthDashboard } from "@/components/portfolio/wealth-dashboard";
 import {
   Card,
   CardContent,
@@ -67,6 +68,12 @@ export default function PortfolioPage() {
 
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {error && <p className="text-sm text-error font-mono">{error}</p>}
+
+      {/* Wealth dashboard — top-of-page retirement projection + 6 stat
+         cards. Independent of the portfolio snapshot fetch above; renders
+         on its own loading/error states. See
+         argosy/services/wealth_dashboard.py for the aggregated payload. */}
+      <WealthDashboard userId={USER_ID} />
 
       {snap && (
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
