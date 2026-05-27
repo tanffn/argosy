@@ -279,3 +279,188 @@ class TestExtractHouseholdState:
         assert state.fx_usd_nis == pytest.approx(2.94)
         # 1982-08-28 → 2026-05-27 ≈ 43.74 years
         assert 43.6 < state.current_age_years < 43.9
+
+
+# ---------------------------------------------------------------------------
+# Task 3: project_cashflow orchestrator tests
+# ---------------------------------------------------------------------------
+
+
+class TestProjectCashflow:
+    def test_full_projection_at_seeded_state(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                DEFAULT_INFLATION_ANNUAL,
+                DEFAULT_MEKADEM,
+                DEFAULT_MU_NOMINAL_ANNUAL,
+                DEFAULT_SIGMA_ANNUAL,
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj = project_cashflow(
+            household=hh,
+            pensions=pen,
+            retirement_age=49.0,
+            years=30,
+            mu_nominal_annual=DEFAULT_MU_NOMINAL_ANNUAL,
+            sigma_annual=DEFAULT_SIGMA_ANNUAL,
+            inflation_annual=DEFAULT_INFLATION_ANNUAL,
+            mekadem=DEFAULT_MEKADEM,
+            today=date(2026, 5, 27),
+        )
+        assert len(proj.series) == 30 * 12 + 1
+
+        first = proj.series[0]
+        assert first.months_out == 0
+        # At t=0: portfolio_income_base = 4.41M * 0.055 / 12 ≈ 20,212 NIS
+        assert first.portfolio_income_base_monthly_nis == pytest.approx(
+            4_410_000.0 * 0.055 / 12.0, rel=1e-3
+        )
+        assert first.pension_annuity_monthly_nis == 0
+        assert first.pension_lump_available_nis == 0
+        assert first.expenses_monthly_nis == pytest.approx(23_084.0, rel=1e-6)
+
+    def test_lump_unlocks_at_age_60(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj = project_cashflow(
+            household=hh, pensions=pen,
+            retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0,
+            today=date(2026, 5, 27),
+        )
+        lump_idx = next(
+            i for i, p in enumerate(proj.series) if p.age_years >= 60.0
+        )
+        assert proj.series[lump_idx - 1].pension_lump_available_nis == 0
+        assert proj.series[lump_idx].pension_lump_available_nis > 0
+        # Original 459,000 NIS (384k + 75k) grown ~16 years should be >> 459k.
+        assert proj.series[lump_idx].pension_lump_available_nis >= 459_000
+
+    def test_annuity_kicks_in_at_age_67(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj = project_cashflow(
+            household=hh, pensions=pen,
+            retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0,
+            today=date(2026, 5, 27),
+        )
+        annuity_idx = next(
+            i for i, p in enumerate(proj.series) if p.age_years >= 67.0
+        )
+        assert proj.series[annuity_idx - 1].pension_annuity_monthly_nis == 0
+        assert proj.series[annuity_idx].pension_annuity_monthly_nis > 0
+        # Original 1,556,054 NIS combined; should be >> at lock time.
+        assert proj.series[annuity_idx].pension_annuity_monthly_nis >= 1_556_054 / 200
+
+    def test_contributions_stop_at_retirement_age(self, client_with_db):
+        """retirement_age=60 vs 49 → larger annuity at 67 (more contributions)."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj_retire_49 = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0,
+            today=date(2026, 5, 27),
+        )
+        proj_retire_60 = project_cashflow(
+            household=hh, pensions=pen, retirement_age=60.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0,
+            today=date(2026, 5, 27),
+        )
+        idx_49 = next(i for i, p in enumerate(proj_retire_49.series) if p.age_years >= 67)
+        idx_60 = next(i for i, p in enumerate(proj_retire_60.series) if p.age_years >= 67)
+        assert (
+            proj_retire_60.series[idx_60].pension_annuity_monthly_nis
+            > proj_retire_49.series[idx_49].pension_annuity_monthly_nis
+        )
+
+    def test_retire_ready_detected_when_crossing_exists(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0,
+            today=date(2026, 5, 27),
+        )
+        assert proj.retire_ready_months_out is not None
+        assert proj.retire_ready_age is not None
+        assert proj.retire_ready_age >= hh.current_age_years
+
+    def test_portfolio_keeps_compounding_after_lump_unlock(self, client_with_db):
+        """KEY INVARIANT: After the lump bump at age 60, the portfolio base
+        should continue compounding at mu_nominal/12 per month — i.e.,
+        value 12 months post-unlock must equal value-at-unlock × (1 + mu/12)^12.
+        Guards against a regression where the lump-bump path desyncs the
+        portfolio's compound state."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0,
+            today=date(2026, 5, 27),
+        )
+        unlock_idx = next(
+            i for i, p in enumerate(proj.series) if p.pension_lump_available_nis > 0
+        )
+        v_at_unlock = proj.series[unlock_idx].portfolio_value_base_nis
+        v_plus_12 = proj.series[unlock_idx + 12].portfolio_value_base_nis
+        expected = v_at_unlock * ((1.0 + 0.08 / 12.0) ** 12)
+        assert v_plus_12 == pytest.approx(expected, rel=1e-6)

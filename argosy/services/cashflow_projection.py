@@ -14,6 +14,7 @@ layer in ``argosy.api.routes.plan`` wraps this in a FastAPI endpoint.
 
 from __future__ import annotations
 
+import calendar
 import json
 import math
 from dataclasses import dataclass
@@ -278,4 +279,180 @@ def extract_household_state(
         portfolio_value_nis=portfolio_value_nis,
         fx_usd_nis=fx_usd_nis,
         current_age_years=age,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Calendar helper
+# ---------------------------------------------------------------------------
+
+def _add_months(today: date, n: int) -> date:
+    """Add n calendar months to ``today``. Day clamps to end-of-month."""
+    y = today.year + (today.month - 1 + n) // 12
+    m = (today.month - 1 + n) % 12 + 1
+    d = min(today.day, calendar.monthrange(y, m)[1])
+    return date(y, m, d)
+
+
+# ---------------------------------------------------------------------------
+# Core orchestrator — iterative monthly state machine
+# ---------------------------------------------------------------------------
+
+def project_cashflow(
+    *,
+    household: HouseholdState,
+    pensions: PensionState,
+    retirement_age: float,
+    years: int,
+    mu_nominal_annual: float = DEFAULT_MU_NOMINAL_ANNUAL,
+    sigma_annual: float = DEFAULT_SIGMA_ANNUAL,
+    inflation_annual: float = DEFAULT_INFLATION_ANNUAL,
+    mekadem: float = DEFAULT_MEKADEM,
+    today: date | None = None,
+) -> CashflowProjection:
+    """Project ``years * 12 + 1`` monthly cashflow points and detect
+    retire-ready age. See module docstring for the math model.
+
+    Portfolio path: iterative monthly compounding at ``mu_nominal/12``;
+    bull/bear = base × exp(±sigma × sqrt(t/12)) re-derived from the
+    running base at each tick so the lump-bump at age 60 composes
+    correctly.
+
+    Pension buckets: per-month accumulate-and-grow. Lump unlock at age
+    60 transfers (keren_hishtalmut + kupat_gemel) into
+    ``portfolio_base_nis``. Annuity lock at age 67:
+    ``(pensia + exec_ins) / mekadem``; thereafter pensia + exec_ins are
+    treated as consumed (frozen, not compounded)."""
+    today = today or date.today()
+    months = max(1, min(years, 50)) * 12
+    real_return = mu_nominal_annual - inflation_annual
+    monthly_growth = 1.0 + mu_nominal_annual / 12.0
+
+    portfolio_base_nis = household.portfolio_value_nis
+    pensia_balance = pensions.kupat_pensia_balance_nis
+    exec_ins_balance = pensions.executive_insurance_balance_nis
+    hishtalmut_balance = pensions.keren_hishtalmut_balance_nis
+    kupat_gemel_balance = pensions.kupat_gemel_balance_nis
+
+    lump_unlocked = False
+    lump_amount_nis = 0.0
+    annuity_monthly_nis = 0.0
+    annuity_locked = False
+
+    out: list[CashflowPoint] = []
+
+    for t in range(months + 1):
+        age_t = household.current_age_years + t / 12.0
+        t_years = t / 12.0
+
+        # Step 1: advance portfolio_base by one month of nominal growth.
+        # Skipped at t=0 so we emit today's actual state first.
+        if t > 0:
+            portfolio_base_nis *= monthly_growth
+
+        # Step 2: advance pension bucket balances by one month.
+        if t > 0:
+            real_monthly = 1.0 + real_return / 12.0
+            if not annuity_locked:
+                contrib_pensia = (
+                    pensions.kupat_pensia_contribution_monthly_nis
+                    if age_t < retirement_age else 0.0
+                )
+                pensia_balance = pensia_balance * real_monthly + contrib_pensia
+                exec_ins_balance = exec_ins_balance * real_monthly  # frozen
+            if not lump_unlocked:
+                contrib_hisht = (
+                    pensions.keren_hishtalmut_contribution_monthly_nis
+                    if age_t < retirement_age else 0.0
+                )
+                hishtalmut_balance = (
+                    hishtalmut_balance * real_monthly + contrib_hisht
+                )
+                kupat_gemel_balance = kupat_gemel_balance * real_monthly
+
+        # Step 3: lump unlock at age 60 — add combined balance to
+        # portfolio, zero the sources. Subsequent ticks will compound
+        # the lump along with the rest of the portfolio.
+        if age_t >= LUMP_PENSION_AGE and not lump_unlocked:
+            lump_amount_nis = hishtalmut_balance + kupat_gemel_balance
+            portfolio_base_nis += lump_amount_nis
+            hishtalmut_balance = 0.0
+            kupat_gemel_balance = 0.0
+            lump_unlocked = True
+
+        # Step 4: annuity lock at age 67.
+        if age_t >= ANNUITY_AGE and not annuity_locked:
+            annuity_monthly_nis = compute_pension_annuity(
+                kupat_pensia_balance_nis=pensia_balance,
+                executive_insurance_balance_nis=exec_ins_balance,
+                mekadem=mekadem,
+            )
+            annuity_locked = True
+
+        # Step 5: derive bull/bear from base via lognormal ±1σ band.
+        # At t=0 the band collapses to base (no uncertainty yet).
+        log_std = sigma_annual * math.sqrt(t_years)
+        portfolio_bull_nis = portfolio_base_nis * math.exp(log_std)
+        portfolio_bear_nis = portfolio_base_nis * math.exp(-log_std)
+
+        # Step 6: derived series.
+        portfolio_income_base = portfolio_real_return_monthly(
+            portfolio_value_nis=portfolio_base_nis, real_return_annual=real_return
+        )
+        portfolio_income_bull = portfolio_real_return_monthly(
+            portfolio_value_nis=portfolio_bull_nis, real_return_annual=real_return
+        )
+        portfolio_income_bear = portfolio_real_return_monthly(
+            portfolio_value_nis=portfolio_bear_nis, real_return_annual=real_return
+        )
+        expenses_t = inflate_expenses(
+            household.monthly_expenses_nis, inflation_annual, t
+        )
+        surplus_base = portfolio_income_base + annuity_monthly_nis - expenses_t
+
+        d = _add_months(today, t)
+        out.append(CashflowPoint(
+            months_out=t,
+            age_years=age_t,
+            date_yyyy_mm=d.strftime("%Y-%m"),
+            portfolio_value_base_nis=portfolio_base_nis,
+            portfolio_value_bear_nis=portfolio_bear_nis,
+            portfolio_value_bull_nis=portfolio_bull_nis,
+            portfolio_income_base_monthly_nis=portfolio_income_base,
+            portfolio_income_bear_monthly_nis=portfolio_income_bear,
+            portfolio_income_bull_monthly_nis=portfolio_income_bull,
+            pension_annuity_monthly_nis=annuity_monthly_nis,
+            pension_lump_available_nis=lump_amount_nis if lump_unlocked else 0.0,
+            expenses_monthly_nis=expenses_t,
+            surplus_base_monthly_nis=surplus_base,
+        ))
+
+    retire_ready = detect_retire_ready(out)
+    return CashflowProjection(
+        series=out,
+        retire_ready_months_out=retire_ready[0] if retire_ready else None,
+        retire_ready_age=retire_ready[1] if retire_ready else None,
+        pension_state_at_start=pensions,
+        household_state_at_start=household,
+        retirement_age_assumed=retirement_age,
+        assumptions={
+            "mu_nominal_annual": mu_nominal_annual,
+            "sigma_annual": sigma_annual,
+            "real_return_annual": real_return,
+            "inflation_annual": inflation_annual,
+            "mekadem": mekadem,
+            "lump_pension_age": LUMP_PENSION_AGE,
+            "annuity_age": ANNUITY_AGE,
+            "model_notes": (
+                "Iterative monthly compounding at mu_nominal/12 for the "
+                "portfolio base; bull/bear = base × exp(±sigma × sqrt(t/12)). "
+                "Real-return drawdown income = portfolio × (mu - inflation) / 12. "
+                "Lump (keren_hishtalmut + kupat_gemel) unlocks at age 60, added "
+                "to portfolio. Annuity (kupat_pensia + executive_insurance) "
+                "locked at age 67 via balance / mekadem; balances frozen "
+                "thereafter. Executive insurance modelled as frozen (no "
+                "contributions). Severance (8.33%) modelled as kupat_pensia "
+                "contribution — flagged for codex-tandem review."
+            ),
+        },
     )
