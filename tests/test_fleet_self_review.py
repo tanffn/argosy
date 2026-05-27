@@ -194,6 +194,52 @@ def test_d2_negative_distinct_topics(sync_session):
     assert findings == []
 
 
+def test_d2_negative_distinct_topics_under_severity_bracket_prefix(sync_session):
+    """Regression guard: post-f8faaca FM emits ``[SEVERITY — TOPIC] detail``.
+
+    Before the parser fix, _normalise_topic took everything before the
+    first em-dash, which was just ``[BLOCKER ``, normalising to the bare
+    severity word. EVERY BLOCKER then matched every other BLOCKER →
+    false-positive RED on D2 even when concerns were completely
+    different (which is the actual #26→#30→#32 pattern). This test
+    seeds 3 rejections with bracket-prefixed but topically-distinct
+    reasons and asserts D2 does NOT fire.
+    """
+    distinct = [
+        ["[BLOCKER — Cash buffer below floor] detail one"],
+        ["[BLOCKER — NVDA share-count arithmetic] detail two"],
+        ["[BLOCKER — Tax-loss harvesting deferred] detail three"],
+    ]
+    for n in (1, 2, 3):
+        _make_run(sync_session, id_=n, started_offset_min=10 * n)
+        _make_fm_report(sync_session, n, distinct[n - 1])
+    scope = ReviewScope(user_id=USER)
+    findings = detect_consecutive_fm_rejections_same_theme(sync_session, scope)
+    assert findings == [], (
+        f"D2 false-positive: bracket-prefixed but distinct topics "
+        f"should not collide. Got {len(findings)} findings: "
+        f"{[f.title for f in findings]}"
+    )
+
+
+def test_d2_positive_severity_bracket_prefix_same_topic(sync_session):
+    """The mirror of the negative test: SAME inner topic across runs
+    (just severity changing) → D2 SHOULD still fire because the
+    semantic concern is unchanged."""
+    same_topic_runs = [
+        ["[BLOCKER — Portfolio denominator integrity] long detail v1"],
+        ["[AMBER — Portfolio denominator integrity] long detail v2"],
+        ["[BLOCKER — Portfolio denominator integrity] long detail v3"],
+    ]
+    for n in (1, 2, 3):
+        _make_run(sync_session, id_=n, started_offset_min=10 * n)
+        _make_fm_report(sync_session, n, same_topic_runs[n - 1])
+    scope = ReviewScope(user_id=USER)
+    findings = detect_consecutive_fm_rejections_same_theme(sync_session, scope)
+    assert len(findings) == 1, f"expected RED finding, got {findings}"
+    assert findings[0].severity == "RED"
+
+
 # ----------------------------------------------------------------------
 # D3 — adapter_outcome_failure_swallowed
 # ----------------------------------------------------------------------

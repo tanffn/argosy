@@ -229,6 +229,18 @@ def detect_guidance_pipeline_no_op(
 # ----------------------------------------------------------------------
 
 _FM_REASON_TOPIC_SPLIT = re.compile(r"[:.\-—–]")
+# Strip leading severity prefix from FM reasons. Post-f8faaca the FM
+# emits `[BLOCKER — TOPIC] long detail` style. Without this strip,
+# `_normalise_topic` took everything before the first em-dash, which
+# was just `[BLOCKER ` → normalised to `"blocker"`. Every BLOCKER from
+# every run then "matched" every other BLOCKER → 100% false positive
+# on the D2 overlap heuristic. Strip the bracket prefix first so the
+# topic comparison runs on the real semantic content.
+_FM_SEVERITY_PREFIX = re.compile(
+    r"^\s*\[(?:BLOCKER|AMBER|YELLOW|RED|NOTE|HIGH|MEDIUM|LOW)"
+    r"\s*[—–-]+\s*([^\]]+)\]\s*",
+    re.IGNORECASE,
+)
 
 
 def _normalise_topic(text: str) -> str:
@@ -241,10 +253,25 @@ def _normalise_topic(text: str) -> str:
     Keeping the first dozen words preserves enough signal to detect
     recurrence across runs without being so loose that unrelated
     reasons collide.
+
+    Post-f8faaca the FM also emits `[SEVERITY — TOPIC] long detail`
+    bracket-prefixed form. We rewrite that to `TOPIC. long detail`
+    first so the bracket contents (the real topic) drive the
+    comparison instead of the bare severity word.
     """
     if not text:
         return ""
-    # Trim to first sentence-y chunk, then first 12 words.
+    # Path A — bracket-prefixed form `[SEVERITY — TOPIC] detail`.
+    # Use TOPIC directly (it's already a clean noun phrase), don't
+    # split at internal punctuation like "Portfolio-total" or "Rule-1"
+    # which would shrink the comparable token to just "portfolio".
+    m = _FM_SEVERITY_PREFIX.match(text)
+    if m:
+        topic_inside = m.group(1).strip()
+        words = re.sub(r"[^a-zA-Z0-9\s]", " ", topic_inside).lower().split()
+        return " ".join(words[:12]).strip()
+    # Path B — legacy un-prefixed FM reason. Original heuristic: take
+    # the first sentence-y chunk, lowercase, first 12 words.
     head = _FM_REASON_TOPIC_SPLIT.split(text, maxsplit=1)[0]
     words = re.sub(r"[^a-zA-Z0-9\s]", " ", head).lower().split()
     return " ".join(words[:12]).strip()
