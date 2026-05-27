@@ -1451,3 +1451,21 @@ def test_cashflow_projection_retirement_age_param(client_with_db):
     p60 = first_at_67(r2.json())
     assert p49 is not None and p60 is not None
     assert p60["pension_annuity_monthly_usd"] > p49["pension_annuity_monthly_usd"]
+
+
+def test_cashflow_projection_tax_rate_param(client_with_db):
+    """tax_rate=0 should yield higher portfolio income than tax_rate=0.5."""
+    from tests.test_cashflow_projection import _seed_full_state
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        _seed_full_state(s)
+    r0 = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&tax_rate=0.0"
+    )
+    r50 = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&tax_rate=0.5"
+    )
+    assert r0.status_code == 200 and r50.status_code == 200
+    inc_0 = r0.json()["series"][0]["portfolio_income_base_monthly_usd"]
+    inc_50 = r50.json()["series"][0]["portfolio_income_base_monthly_usd"]
+    assert inc_50 == pytest.approx(inc_0 * 0.5, rel=1e-3)

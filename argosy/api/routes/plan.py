@@ -1213,6 +1213,8 @@ class CashflowPointDTO(BaseModel):
     pension_lump_available_usd: float
     expenses_monthly_usd: float
     surplus_base_monthly_usd: float
+    surplus_bear_monthly_usd: float
+    surplus_bull_monthly_usd: float
 
 
 class CashflowProjectionResponse(BaseModel):
@@ -1220,8 +1222,12 @@ class CashflowProjectionResponse(BaseModel):
     today_age_years: float
     fx_usd_nis: float
     retirement_age_assumed: float
-    retire_ready_age: float | None
-    retire_ready_months_out: int | None
+    retire_ready_age_base: float | None
+    retire_ready_age_bear: float | None
+    retire_ready_age_bull: float | None
+    retire_ready_months_out_base: int | None
+    retire_ready_months_out_bear: int | None
+    retire_ready_months_out_bull: int | None
     series: list[CashflowPointDTO]
     assumptions: dict
 
@@ -1233,6 +1239,7 @@ def get_draft_cashflow_projection(
     user_id: str = Query("ariel"),
     years: int = Query(30, ge=1, le=50),
     retirement_age: float = Query(49.0, ge=30.0, le=80.0),
+    tax_rate: float = Query(0.25, ge=0.0, le=0.5),
     db: Session = Depends(get_db),
 ) -> CashflowProjectionResponse:
     """Return a per-month cashflow projection for the /plan retirement view.
@@ -1252,6 +1259,7 @@ def get_draft_cashflow_projection(
         pensions=pen,
         retirement_age=retirement_age,
         years=years,
+        tax_rate=tax_rate,
     )
 
     fx = hh.fx_usd_nis if hh.fx_usd_nis > 0 else 1.0
@@ -1274,6 +1282,8 @@ def get_draft_cashflow_projection(
             pension_lump_available_usd=to_usd(p.pension_lump_available_nis),
             expenses_monthly_usd=to_usd(p.expenses_monthly_nis),
             surplus_base_monthly_usd=to_usd(p.surplus_base_monthly_nis),
+            surplus_bear_monthly_usd=to_usd(p.surplus_bear_monthly_nis),
+            surplus_bull_monthly_usd=to_usd(p.surplus_bull_monthly_nis),
         )
         for p in proj.series
     ]
@@ -1282,11 +1292,21 @@ def get_draft_cashflow_projection(
         today_age_years=round(hh.current_age_years, 3),
         fx_usd_nis=fx,
         retirement_age_assumed=round(proj.retirement_age_assumed, 1),
-        retire_ready_age=(
-            round(proj.retire_ready_age, 2)
-            if proj.retire_ready_age is not None else None
+        retire_ready_age_base=(
+            round(proj.retire_ready_age_base, 2)
+            if proj.retire_ready_age_base is not None else None
         ),
-        retire_ready_months_out=proj.retire_ready_months_out,
+        retire_ready_age_bear=(
+            round(proj.retire_ready_age_bear, 2)
+            if proj.retire_ready_age_bear is not None else None
+        ),
+        retire_ready_age_bull=(
+            round(proj.retire_ready_age_bull, 2)
+            if proj.retire_ready_age_bull is not None else None
+        ),
+        retire_ready_months_out_base=proj.retire_ready_months_out_base,
+        retire_ready_months_out_bear=proj.retire_ready_months_out_bear,
+        retire_ready_months_out_bull=proj.retire_ready_months_out_bull,
         series=series_dto,
         assumptions=proj.assumptions,
     )

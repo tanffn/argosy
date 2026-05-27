@@ -124,11 +124,13 @@ class TestDetectRetireReady:
                 pension_lump_available_nis=0,
                 expenses_monthly_nis=20_000,
                 surplus_base_monthly_nis=(15_000 + i*100) - 20_000,
+                surplus_bear_monthly_nis=-20_000,
+                surplus_bull_monthly_nis=(15_000 + i*100) - 20_000,
             )
             for i in range(120)
         ]
         # 15000 + i*100 = 20000 at i=50
-        out = detect_retire_ready(series)
+        out = detect_retire_ready(series, scenario="base")
         assert out is not None
         assert out[0] == 50  # months_out
         # age_years at i=50 = 43 + 50/12 ≈ 47.17
@@ -146,10 +148,12 @@ class TestDetectRetireReady:
                 pension_annuity_monthly_nis=0, pension_lump_available_nis=0,
                 expenses_monthly_nis=20_000,
                 surplus_base_monthly_nis=-10_000,
+                surplus_bear_monthly_nis=-10_000,
+                surplus_bull_monthly_nis=-10_000,
             )
             for i in range(60)
         ]
-        assert detect_retire_ready(series) is None
+        assert detect_retire_ready(series, scenario="base") is None
 
 
 # ---------------------------------------------------------------------------
@@ -312,13 +316,14 @@ class TestProjectCashflow:
             sigma_annual=DEFAULT_SIGMA_ANNUAL,
             inflation_annual=DEFAULT_INFLATION_ANNUAL,
             mekadem=DEFAULT_MEKADEM,
+            tax_rate=0.0,  # gross income to verify the raw formula
             today=date(2026, 5, 27),
         )
         assert len(proj.series) == 30 * 12 + 1
 
         first = proj.series[0]
         assert first.months_out == 0
-        # At t=0: portfolio_income_base = 4.41M * 0.055 / 12 ≈ 20,212 NIS
+        # At t=0: portfolio_income_base = 4.41M * 0.055 / 12 ≈ 20,212 NIS (gross, tax_rate=0)
         assert first.portfolio_income_base_monthly_nis == pytest.approx(
             4_410_000.0 * 0.055 / 12.0, rel=1e-3
         )
@@ -495,3 +500,124 @@ class TestProjectCashflow:
         v_plus_12 = proj.series[lock_idx + 12].pension_annuity_monthly_nis
         expected = v_at_lock * 1.025
         assert v_plus_12 == pytest.approx(expected, rel=1e-6)
+
+
+class TestTaxRate:
+    def test_default_tax_25_reduces_portfolio_income(self, client_with_db):
+        """tax_rate=0.25 should reduce base portfolio income by 25%
+        vs tax_rate=0.0."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj_no_tax = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=5,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.0,
+            today=date(2026, 5, 27),
+        )
+        proj_tax = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=5,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.25,
+            today=date(2026, 5, 27),
+        )
+        # Tax should reduce portfolio income by exactly 25%
+        assert proj_tax.series[0].portfolio_income_base_monthly_nis == pytest.approx(
+            proj_no_tax.series[0].portfolio_income_base_monthly_nis * 0.75,
+            rel=1e-9,
+        )
+
+    def test_tax_does_not_affect_pension_annuity(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj_no_tax = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.0,
+            today=date(2026, 5, 27),
+        )
+        proj_tax = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.25,
+            today=date(2026, 5, 27),
+        )
+        # Find first annuity-active point in both
+        ann_idx = next(i for i, p in enumerate(proj_no_tax.series) if p.pension_annuity_monthly_nis > 0)
+        assert proj_tax.series[ann_idx].pension_annuity_monthly_nis == pytest.approx(
+            proj_no_tax.series[ann_idx].pension_annuity_monthly_nis, rel=1e-9
+        )
+
+
+class TestScenarioRetireReady:
+    def test_bull_retires_at_or_before_base(self, client_with_db):
+        """Bull (higher income) should retire-ready earlier than or
+        at the same time as base; bear later than or never."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.0,
+            today=date(2026, 5, 27),
+        )
+        # When all three cross, bull <= base <= bear (months_out).
+        if (
+            proj.retire_ready_months_out_bull is not None
+            and proj.retire_ready_months_out_base is not None
+        ):
+            assert proj.retire_ready_months_out_bull <= proj.retire_ready_months_out_base
+        if (
+            proj.retire_ready_months_out_base is not None
+            and proj.retire_ready_months_out_bear is not None
+        ):
+            assert proj.retire_ready_months_out_base <= proj.retire_ready_months_out_bear
+
+    def test_legacy_retire_ready_equals_base(self, client_with_db):
+        """Backward compat: ``retire_ready_age`` (deprecated) equals
+        ``retire_ready_age_base`` exactly."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+                project_cashflow,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+
+        proj = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0, tax_rate=0.0,
+            today=date(2026, 5, 27),
+        )
+        assert proj.retire_ready_age == proj.retire_ready_age_base
+        assert proj.retire_ready_months_out == proj.retire_ready_months_out_base

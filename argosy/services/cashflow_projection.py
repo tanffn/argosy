@@ -35,6 +35,7 @@ DEFAULT_MU_NOMINAL_ANNUAL = 0.08
 DEFAULT_SIGMA_ANNUAL = 0.18
 DEFAULT_INFLATION_ANNUAL = 0.025
 DEFAULT_MEKADEM = 200.0
+DEFAULT_TAX_RATE = 0.25
 LUMP_PENSION_AGE = 60
 ANNUITY_AGE = 67
 
@@ -89,14 +90,24 @@ class CashflowPoint:
     pension_lump_available_nis: float
     expenses_monthly_nis: float
     surplus_base_monthly_nis: float
+    surplus_bear_monthly_nis: float
+    surplus_bull_monthly_nis: float
 
 
 @dataclass(frozen=True)
 class CashflowProjection:
     """Top-level result returned to the route."""
     series: list[CashflowPoint]
+    # Legacy fields — aliased to base for backward compatibility.
     retire_ready_age: float | None
     retire_ready_months_out: int | None
+    # Per-scenario retire-ready fields.
+    retire_ready_age_base: float | None
+    retire_ready_age_bear: float | None
+    retire_ready_age_bull: float | None
+    retire_ready_months_out_base: int | None
+    retire_ready_months_out_bear: int | None
+    retire_ready_months_out_bull: int | None
     pension_state_at_start: PensionState
     household_state_at_start: HouseholdState
     retirement_age_assumed: float
@@ -161,12 +172,19 @@ def inflate_expenses(
 
 def detect_retire_ready(
     series: Sequence[CashflowPoint],
+    scenario: str = "base",
 ) -> tuple[int, float] | None:
-    """Return ``(months_out, age_years)`` of the first row where
-    ``portfolio_income_base + pension_annuity >= expenses``. ``None``
-    if no such row in the supplied window."""
+    """Return (months_out, age_years) of the first row where portfolio
+    income (scenario) + annuity >= expenses. ``scenario`` selects which
+    income line drives the crossing detection."""
+    field_map = {
+        "base": "portfolio_income_base_monthly_nis",
+        "bear": "portfolio_income_bear_monthly_nis",
+        "bull": "portfolio_income_bull_monthly_nis",
+    }
+    income_field = field_map[scenario]
     for p in series:
-        total = p.portfolio_income_base_monthly_nis + p.pension_annuity_monthly_nis
+        total = getattr(p, income_field) + p.pension_annuity_monthly_nis
         if total >= p.expenses_monthly_nis:
             return p.months_out, p.age_years
     return None
@@ -321,6 +339,7 @@ def project_cashflow(
     sigma_annual: float = DEFAULT_SIGMA_ANNUAL,
     inflation_annual: float = DEFAULT_INFLATION_ANNUAL,
     mekadem: float = DEFAULT_MEKADEM,
+    tax_rate: float = DEFAULT_TAX_RATE,
     today: date | None = None,
 ) -> CashflowProjection:
     """Project ``years * 12 + 1`` monthly cashflow points and detect
@@ -418,15 +437,16 @@ def project_cashflow(
         portfolio_bear_nis = portfolio_base_nis * math.exp(-log_std)
 
         # Step 6: derived series.
+        net_factor = 1.0 - tax_rate
         portfolio_income_base = portfolio_real_return_monthly(
             portfolio_value_nis=portfolio_base_nis, real_return_annual=real_return
-        )
+        ) * net_factor
         portfolio_income_bull = portfolio_real_return_monthly(
             portfolio_value_nis=portfolio_bull_nis, real_return_annual=real_return
-        )
+        ) * net_factor
         portfolio_income_bear = portfolio_real_return_monthly(
             portfolio_value_nis=portfolio_bear_nis, real_return_annual=real_return
-        )
+        ) * net_factor
         expenses_t = inflate_expenses(
             household.monthly_expenses_nis, inflation_annual, t
         )
@@ -439,6 +459,8 @@ def project_cashflow(
         else:
             annuity_nominal_t = 0.0
         surplus_base = portfolio_income_base + annuity_nominal_t - expenses_t
+        surplus_bear = portfolio_income_bear + annuity_nominal_t - expenses_t
+        surplus_bull = portfolio_income_bull + annuity_nominal_t - expenses_t
 
         d = _add_months(today, t)
         out.append(CashflowPoint(
@@ -455,13 +477,25 @@ def project_cashflow(
             pension_lump_available_nis=lump_amount_nis if lump_unlocked else 0.0,  # CUMULATIVE-once-unlocked, not per-month — see field docstring
             expenses_monthly_nis=expenses_t,
             surplus_base_monthly_nis=surplus_base,
+            surplus_bear_monthly_nis=surplus_bear,
+            surplus_bull_monthly_nis=surplus_bull,
         ))
 
-    retire_ready = detect_retire_ready(out)
+    retire_ready_base = detect_retire_ready(out, "base")
+    retire_ready_bear = detect_retire_ready(out, "bear")
+    retire_ready_bull = detect_retire_ready(out, "bull")
     return CashflowProjection(
         series=out,
-        retire_ready_months_out=retire_ready[0] if retire_ready else None,
-        retire_ready_age=retire_ready[1] if retire_ready else None,
+        # Legacy fields aliased to base for backward compatibility.
+        retire_ready_months_out=retire_ready_base[0] if retire_ready_base else None,
+        retire_ready_age=retire_ready_base[1] if retire_ready_base else None,
+        # Per-scenario fields.
+        retire_ready_age_base=retire_ready_base[1] if retire_ready_base else None,
+        retire_ready_age_bear=retire_ready_bear[1] if retire_ready_bear else None,
+        retire_ready_age_bull=retire_ready_bull[1] if retire_ready_bull else None,
+        retire_ready_months_out_base=retire_ready_base[0] if retire_ready_base else None,
+        retire_ready_months_out_bear=retire_ready_bear[0] if retire_ready_bear else None,
+        retire_ready_months_out_bull=retire_ready_bull[0] if retire_ready_bull else None,
         pension_state_at_start=pensions,
         household_state_at_start=household,
         retirement_age_assumed=retirement_age,
@@ -471,6 +505,7 @@ def project_cashflow(
             "real_return_annual": real_return,
             "inflation_annual": inflation_annual,
             "mekadem": mekadem,
+            "tax_rate": tax_rate,
             "lump_pension_age": LUMP_PENSION_AGE,
             "annuity_age": ANNUITY_AGE,
             "model_notes": (
@@ -490,6 +525,11 @@ def project_cashflow(
                 "NIS, then inflated at ``inflation_annual`` so the emitted "
                 "``pension_annuity_monthly_nis`` is nominal NIS at time t "
                 "(comparable with expenses)."
+                " Portfolio income shown is NET of ``tax_rate`` (Israeli capital"
+                " gains; default 25%); pension annuity is NOT tax-adjusted in"
+                " this model (Israeli pension annuities have different tax"
+                " treatment — partial exemption + brackets — captured in a"
+                " future revision)."
             ),
         },
     )
