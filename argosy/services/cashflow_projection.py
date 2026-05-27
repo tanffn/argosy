@@ -76,6 +76,12 @@ class CashflowPoint:
     portfolio_income_bear_monthly_nis: float
     portfolio_income_bull_monthly_nis: float
     pension_annuity_monthly_nis: float
+    # ``pension_lump_available_nis`` is CUMULATIVE-once-unlocked: 0 until
+    # age 60, then equal to the total NIS that became available at unlock
+    # (and stays at that value for all subsequent ticks). It is NOT a
+    # per-month income figure — the unlocked amount is added to the
+    # portfolio at unlock, so the recurring effect shows up in
+    # ``portfolio_income_*_monthly_nis`` going forward.
     pension_lump_available_nis: float
     expenses_monthly_nis: float
     surplus_base_monthly_nis: float
@@ -353,6 +359,13 @@ def project_cashflow(
         # Step 2: advance pension bucket balances by one month.
         if t > 0:
             real_monthly = 1.0 + real_return / 12.0
+            # Contribution-timing convention: at tick t, grow last month's
+            # balance by real_monthly, THEN add the new month's contribution
+            # (matches accumulate_pension_balance — contribution earns from
+            # t+1 onward). Cutoff is age_t < retirement_age strict, so the
+            # tick where age_t == retirement_age is the first no-contribution
+            # month. This is the natural "stop contributing when you retire"
+            # semantics; no fence-post is intended.
             if not annuity_locked:
                 contrib_pensia = (
                     pensions.kupat_pensia_contribution_monthly_nis
@@ -422,7 +435,7 @@ def project_cashflow(
             portfolio_income_bear_monthly_nis=portfolio_income_bear,
             portfolio_income_bull_monthly_nis=portfolio_income_bull,
             pension_annuity_monthly_nis=annuity_monthly_nis,
-            pension_lump_available_nis=lump_amount_nis if lump_unlocked else 0.0,
+            pension_lump_available_nis=lump_amount_nis if lump_unlocked else 0.0,  # CUMULATIVE-once-unlocked, not per-month — see field docstring
             expenses_monthly_nis=expenses_t,
             surplus_base_monthly_nis=surplus_base,
         ))
