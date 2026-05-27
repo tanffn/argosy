@@ -23,9 +23,11 @@ import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
 from argosy.services.agent_tree_builder import (
+    COST_PHASE_KEYS,
     AdapterNode,
     AgentNode,
     AgentTreeResponse,
+    CostBreakdown,
     build_agent_tree,
 )
 from argosy.state.models import (
@@ -633,3 +635,233 @@ def test_codex_second_opinion_node_unparseable_falls_back_gracefully(
     assert "I cannot return JSON today" in codex.response_excerpt
     assert codex.failure_reason is not None
     assert "unparseable" in codex.failure_reason
+
+
+# ---------------------------------------------------------------------------
+# Cost breakdown — per-run aggregation surfaced under the agent tree.
+# ---------------------------------------------------------------------------
+
+
+def _seed_cost_run(
+    sess,
+    *,
+    user_id: str = "ariel",
+    rows: list[tuple[str, str, float | None]],
+) -> int:
+    """Create a synthesis decision_run with one row per ``(role, phase_kind, cost)``.
+
+    The phase_kind drives which DecisionPhase the row's ``phase_id``
+    points at. Empty/None phase_kind means "no phase_id" — the
+    aggregator must fall back to the role heuristic.
+    """
+    now = datetime.now(timezone.utc)
+    run = DecisionRun(
+        user_id=user_id,
+        ticker="(plan)",
+        tier=None,
+        decision_kind="plan_revision",
+        status="completed",
+        started_at=now,
+        finished_at=now,
+    )
+    sess.add(run)
+    sess.commit()
+    sess.refresh(run)
+    rid = run.id
+
+    # Materialise the distinct phase kinds the seed needs.
+    phase_kinds_used = sorted({pk for _, pk, _ in rows if pk})
+    phase_ids: dict[str, int] = {}
+    for i, pk in enumerate(phase_kinds_used, start=1):
+        ph = DecisionPhase(
+            decision_run_id=rid,
+            user_id=user_id,
+            seq=i,
+            kind=pk,
+            started_at=now,
+            finished_at=now,
+            participants_json="[]",
+            phase_output_json=json.dumps({"phase": i}),
+        )
+        sess.add(ph)
+    sess.commit()
+    for pk in phase_kinds_used:
+        ph = (
+            sess.query(DecisionPhase)
+            .filter_by(decision_run_id=rid, kind=pk)
+            .first()
+        )
+        phase_ids[pk] = ph.id
+
+    decision_id_str = f"plan-synth-{rid}"
+    for role, pk, cost in rows:
+        ar = AgentReport(
+            user_id=user_id,
+            agent_role=role,
+            decision_id=decision_id_str,
+            response_text="ok",
+            confidence="MEDIUM",
+            model="claude-sonnet-4-6",
+            tokens_in=10,
+            tokens_out=20,
+            cost_usd=cost if cost is not None else 0,
+            phase_id=phase_ids.get(pk) if pk else None,
+        )
+        sess.add(ar)
+    sess.commit()
+    return rid
+
+
+def test_cost_breakdown_aggregates_correctly(inmem_session) -> None:
+    """Seed 5 agent_reports with known costs across 3 phases (+ codex
+    half-step) and assert ``by_phase`` + ``by_role`` + ``top_3_agents``
+    + ``cost_per_phase_table`` come back right.
+
+    Costs (USD):
+      news                phase_1                $0.10
+      bull_researcher     phase_2                $0.20
+      bear_researcher     phase_2                $0.30
+      plan_synthesizer    phase_3                $1.50  <- top
+      codex_second_opinion phase_4_5_codex       $0.40
+    """
+    rid = _seed_cost_run(
+        inmem_session,
+        rows=[
+            ("news", "synthesis.phase_1", 0.10),
+            ("bull_researcher", "synthesis.phase_2", 0.20),
+            ("bear_researcher", "synthesis.phase_2", 0.30),
+            ("plan_synthesizer", "synthesis.phase_3", 1.50),
+            ("codex_second_opinion", "synthesis.phase_45", 0.40),
+        ],
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    cb = tree.cost_breakdown
+    assert isinstance(cb, CostBreakdown)
+
+    # Total
+    assert cb.total_usd == pytest.approx(2.50)
+    assert cb.agent_count == 5
+
+    # By phase — only the slots we populated have non-zero cost; the
+    # untouched slots (phase_4, phase_5) come back as 0.0 (fixed-key
+    # vocabulary).
+    assert set(cb.by_phase.keys()) == set(COST_PHASE_KEYS)
+    assert cb.by_phase["phase_1"] == pytest.approx(0.10)
+    assert cb.by_phase["phase_2"] == pytest.approx(0.50)
+    assert cb.by_phase["phase_3"] == pytest.approx(1.50)
+    assert cb.by_phase["phase_4_5_codex"] == pytest.approx(0.40)
+    assert cb.by_phase["phase_4"] == 0.0
+    assert cb.by_phase["phase_5"] == 0.0
+
+    # By role — every role in the seed appears with its exact spend.
+    assert cb.by_role["news"] == pytest.approx(0.10)
+    assert cb.by_role["bull_researcher"] == pytest.approx(0.20)
+    assert cb.by_role["bear_researcher"] == pytest.approx(0.30)
+    assert cb.by_role["plan_synthesizer"] == pytest.approx(1.50)
+    assert cb.by_role["codex_second_opinion"] == pytest.approx(0.40)
+
+    # Top 3 — synth (1.50), codex (0.40), bear (0.30).
+    roles_in_top = [r for r, _ in cb.top_3_agents]
+    assert roles_in_top == ["plan_synthesizer", "codex_second_opinion", "bear_researcher"]
+    # Costs match the per-role sums.
+    assert dict(cb.top_3_agents)["plan_synthesizer"] == pytest.approx(1.50)
+
+    # cost_per_phase_table mirrors by_phase + adds agent counts.
+    table_by_phase = {r["phase"]: r for r in cb.cost_per_phase_table}
+    assert table_by_phase["phase_1"]["agent_count"] == 1
+    assert table_by_phase["phase_2"]["agent_count"] == 2
+    assert table_by_phase["phase_3"]["agent_count"] == 1
+    assert table_by_phase["phase_4_5_codex"]["agent_count"] == 1
+    assert table_by_phase["phase_4"]["agent_count"] == 0
+    assert table_by_phase["phase_5"]["agent_count"] == 0
+    # Stable phase order in the table (UI rendering depends on it).
+    assert [r["phase"] for r in cb.cost_per_phase_table] == list(COST_PHASE_KEYS)
+
+
+def test_cost_breakdown_role_fallback_when_phase_id_missing(
+    inmem_session,
+) -> None:
+    """Rows without a phase_id linkage still land in the right phase
+    bucket via the role-based fallback. Mirrors pre-0020 legacy runs."""
+    rid = _seed_cost_run(
+        inmem_session,
+        rows=[
+            ("fund_manager", "", 0.50),       # no phase_id -> role fallback -> phase_5
+            ("plan_synthesizer", "", 1.00),   # no phase_id -> role fallback -> phase_3
+            ("news", "", 0.05),               # no phase_id -> role fallback -> phase_1
+        ],
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    cb = tree.cost_breakdown
+    assert cb.total_usd == pytest.approx(1.55)
+    assert cb.by_phase["phase_1"] == pytest.approx(0.05)
+    assert cb.by_phase["phase_3"] == pytest.approx(1.00)
+    assert cb.by_phase["phase_5"] == pytest.approx(0.50)
+
+
+def test_cost_breakdown_null_cost_treated_as_zero(inmem_session) -> None:
+    """Legacy rows with NULL ``cost_usd`` (pre-cost-capture, or a future
+    migration that relaxes the NOT NULL constraint) must sum as 0
+    rather than crash. We exercise the branch by calling the private
+    aggregator directly with a synthetic AgentReport whose ``cost_usd``
+    is set to None — the production column is currently NOT NULL so we
+    can't insert one via the ORM, but the float-coercion path needs to
+    stay defensive for the SQLAlchemy edge case (e.g. when the row was
+    materialised from a JOIN that returned None)."""
+    from argosy.services.agent_tree_builder import _compute_cost_breakdown
+
+    fake_rows = [
+        AgentReport(
+            user_id="ariel",
+            agent_role="news",
+            decision_id="plan-synth-1",
+            response_text="",
+            cost_usd=None,  # type: ignore[arg-type]
+            phase_id=None,
+        ),
+        AgentReport(
+            user_id="ariel",
+            agent_role="plan_synthesizer",
+            decision_id="plan-synth-1",
+            response_text="",
+            cost_usd=1.00,
+            phase_id=None,
+        ),
+    ]
+    cb = _compute_cost_breakdown(reports=fake_rows, phases=[])
+    assert cb.total_usd == pytest.approx(1.00)
+    assert cb.agent_count == 2
+    # The NULL row falls under phase_1 (role fallback) with 0 cost; the
+    # synth row falls under phase_3 with $1.
+    assert cb.by_phase["phase_1"] == 0.0
+    assert cb.by_phase["phase_3"] == pytest.approx(1.00)
+    # The NULL-cost row still surfaces in by_role with $0 so the user
+    # can see that the agent ran.
+    assert cb.by_role["news"] == 0.0
+    assert cb.by_role["plan_synthesizer"] == pytest.approx(1.00)
+
+
+def test_cost_breakdown_empty_when_no_reports(inmem_session) -> None:
+    """A run with zero agent_reports still produces a valid CostBreakdown
+    DTO — empty histogram, zero total. The UI hides the card via the
+    ``agent_count > 0`` guard, but the field must be present."""
+    now = datetime.now(timezone.utc)
+    run = DecisionRun(
+        user_id="ariel",
+        ticker="(plan)",
+        tier=None,
+        decision_kind="plan_revision",
+        status="completed",
+        started_at=now,
+        finished_at=now,
+    )
+    inmem_session.add(run)
+    inmem_session.commit()
+    inmem_session.refresh(run)
+
+    tree = build_agent_tree(inmem_session, decision_run_id=run.id)
+    cb = tree.cost_breakdown
+    assert cb.total_usd == 0.0
+    assert cb.agent_count == 0
+    assert cb.top_3_agents == []
+    assert all(v == 0.0 for v in cb.by_phase.values())

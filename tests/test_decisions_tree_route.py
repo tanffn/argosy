@@ -269,6 +269,52 @@ def test_agent_tree_200_for_daily_brief_kind(
 # ---------------------------------------------------------------------------
 
 
+def test_agent_tree_response_includes_cost_breakdown(
+    client_with_db, _seed_users,
+) -> None:
+    """The /agent-tree endpoint surfaces ``cost_breakdown`` on every
+    response (synthesis kinds) so the /decisions/[id] page can render
+    the per-run cost dashboard without a follow-up fetch.
+
+    Validates the field's shape (total + by-phase keys + by-role + top-3
+    + cost_per_phase_table) and that the numbers reflect the seeded
+    agent_reports.
+    """
+    rid = _seed_synthesis_run(client_with_db, user_id="ariel")
+    r = client_with_db.get(
+        f"/api/decisions/{rid}/agent-tree?user_id=ariel"
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "cost_breakdown" in body, body.keys()
+    cb = body["cost_breakdown"]
+    # Total + agent_count present.
+    assert isinstance(cb["total_usd"], float)
+    assert isinstance(cb["agent_count"], int)
+    assert cb["agent_count"] == 4  # fund_manager + plan_synth + risk_fac + news
+    # Each seeded role costs 0.001 -> total is 0.004.
+    assert cb["total_usd"] == pytest.approx(0.004)
+    # All six phase keys present even though only a subset were exercised.
+    assert set(cb["by_phase"].keys()) == {
+        "phase_1", "phase_2", "phase_3", "phase_4", "phase_4_5_codex", "phase_5",
+    }
+    # by_phase reflects role fallback mapping.
+    assert cb["by_phase"]["phase_1"] == pytest.approx(0.001)  # news
+    assert cb["by_phase"]["phase_3"] == pytest.approx(0.001)  # plan_synth
+    assert cb["by_phase"]["phase_4"] == pytest.approx(0.001)  # risk_fac
+    assert cb["by_phase"]["phase_5"] == pytest.approx(0.001)  # fund_manager
+    # by_role surfaces every role.
+    assert set(cb["by_role"].keys()) == {
+        "fund_manager", "plan_synthesizer", "risk_facilitator", "news",
+    }
+    # cost_per_phase_table is a list of {phase, cost, agent_count}.
+    table = cb["cost_per_phase_table"]
+    assert isinstance(table, list)
+    assert len(table) == 6
+    for row in table:
+        assert {"phase", "cost", "agent_count"} <= set(row.keys())
+
+
 def test_replay_response_includes_agent_tree_url(
     client_with_db, _seed_users,
 ) -> None:

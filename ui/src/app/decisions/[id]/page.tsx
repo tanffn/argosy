@@ -13,7 +13,13 @@ import {
 } from "@/components/ui/card";
 import { AgentTree } from "@/components/decisions/agent-tree";
 import { VerdictCard } from "@/components/verdict-card";
-import { api, type AgentTreeResponse, type ReplayResponse } from "@/lib/api";
+import {
+  api,
+  type AgentTreeResponse,
+  type CostBreakdown,
+  type CostPhaseKey,
+  type ReplayResponse,
+} from "@/lib/api";
 
 // Mermaid touches `document` directly; lazy import disables SSR.
 const MermaidDiagram = dynamic(
@@ -39,6 +45,94 @@ function formatTimestamp(iso: string | null): string {
 function parseAsUTC(iso: string): number {
   const hasTz = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(iso);
   return Date.parse(hasTz ? iso : iso + "Z");
+}
+
+// Human-readable phase label rendered in the cost breakdown card. Keeps
+// the layout compact ("Phase 1 analysts" rather than "phase_1") so the
+// user can map a $-spend to the part of the synthesis pipeline it came
+// from without staring at JSON keys.
+const PHASE_LABELS: Record<CostPhaseKey, string> = {
+  phase_1: "Phase 1 analysts",
+  phase_2: "Phase 2 debates",
+  phase_3: "Phase 3 synth",
+  phase_4: "Phase 4 risk",
+  phase_4_5_codex: "Phase 4.5 codex",
+  phase_5: "Phase 5 FM",
+};
+
+function fmtUsd(n: number): string {
+  // 4-decimal precision so per-agent rows under $0.01 don't show as $0.00,
+  // matching the precision used in the per-phase participants table below.
+  return `$${n.toFixed(2)}`;
+}
+
+function CostBreakdownCard({
+  decisionRunId,
+  breakdown,
+}: {
+  decisionRunId: number;
+  breakdown: CostBreakdown;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">
+          Cost breakdown — Synthesis #{decisionRunId}
+        </CardTitle>
+        <CardDescription>
+          Total: <span className="font-mono">{fmtUsd(breakdown.total_usd)}</span>{" "}
+          · {breakdown.agent_count} agents called
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs">
+        <div>
+          <p className="text-xs uppercase text-muted-foreground mb-2">
+            By phase
+          </p>
+          <table className="w-full font-mono">
+            <tbody>
+              {breakdown.cost_per_phase_table.map((row) => (
+                <tr
+                  key={row.phase}
+                  className="border-b border-border/40 last:border-b-0"
+                >
+                  <td className="py-1">{PHASE_LABELS[row.phase]}</td>
+                  <td className="py-1 text-right">{fmtUsd(row.cost)}</td>
+                  <td className="py-1 text-right text-muted-foreground pl-2">
+                    {row.agent_count}×
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <p className="text-xs uppercase text-muted-foreground mb-2">
+            By top role
+          </p>
+          {breakdown.top_3_agents.length === 0 ? (
+            <p className="text-xs italic text-muted-foreground">
+              No agent costs recorded.
+            </p>
+          ) : (
+            <table className="w-full font-mono">
+              <tbody>
+                {breakdown.top_3_agents.map(([role, cost]) => (
+                  <tr
+                    key={role}
+                    className="border-b border-border/40 last:border-b-0"
+                  >
+                    <td className="py-1">{role}</td>
+                    <td className="py-1 text-right">{fmtUsd(cost)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 function formatDuration(start: string, end: string | null): string {
@@ -228,6 +322,20 @@ export default function DecisionReplayPage(props: {
             </ul>
           </CardContent>
         </Card>
+      )}
+
+      {/* Cost breakdown — per-run observability. Surfaces the total
+          spend + by-phase + top-role split so the user can see "this
+          synthesis cost $X — $Y was the synthesizer, $Z was codex"
+          without diving into agent_reports. Rendered ABOVE the agent
+          tree because it answers the most common question ("how
+          expensive was this run?") at a glance. Hidden when the run
+          had no agent_reports at all (agent_count === 0). */}
+      {agentTree && agentTree.cost_breakdown.agent_count > 0 && (
+        <CostBreakdownCard
+          decisionRunId={agentTree.decision_run_id}
+          breakdown={agentTree.cost_breakdown}
+        />
       )}
 
       {/* T0.6 — FM-rooted agent tree. Replaces the old top-level

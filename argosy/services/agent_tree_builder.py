@@ -162,6 +162,83 @@ NON_SYNTHESIS_KINDS: frozenset[str] = frozenset({
 })
 
 
+# ---------------------------------------------------------------------------
+# Cost breakdown (per-run observability — sums agent_reports.cost_usd by
+# phase + role so the /decisions/[id] page can show "this synthesis cost
+# $X total — $Y was the synthesizer, $Z was codex"). Computed AFTER the
+# tree is built so it covers every row the run produced, even those the
+# tree dedups for topology rendering.
+# ---------------------------------------------------------------------------
+
+# Stable phase keys for the breakdown dict. Mirrors the synthesis flow's
+# orchestrator phases (1..5 + the 4.5 codex half-step). Kept as a fixed
+# vocabulary so the UI can render a deterministic table; phases the run
+# didn't enter simply show $0 / 0× rather than being absent.
+COST_PHASE_KEYS: tuple[str, ...] = (
+    "phase_1",
+    "phase_2",
+    "phase_3",
+    "phase_4",
+    "phase_4_5_codex",
+    "phase_5",
+)
+
+# Role -> phase fallback used when an agent_reports row has no phase_id
+# (legacy rows from before migration 0020 / runs that hit the recorder's
+# fail-soft path). Mirrors the synthesis topology in
+# ``argosy/orchestrator/flows/plan_synthesis/orchestrator.py``.
+_ROLE_TO_PHASE_FALLBACK: dict[str, str] = {
+    # Phase 1 analysts
+    "concentration": "phase_1",
+    "fx": "phase_1",
+    "fundamentals": "phase_1",
+    "news": "phase_1",
+    "sentiment": "phase_1",
+    "technical": "phase_1",
+    "macro": "phase_1",
+    "tax": "phase_1",
+    "household_budget": "phase_1",
+    "plan_critique": "phase_1",
+    # Phase 2 debate
+    "bull_researcher": "phase_2",
+    "bear_researcher": "phase_2",
+    "researcher_facilitator": "phase_2",
+    # Phase 3 synthesis
+    "plan_synthesizer": "phase_3",
+    # Phase 4 risk
+    "risk_officer": "phase_4",
+    "risk_facilitator": "phase_4",
+    # Phase 4.5 codex half-step
+    "codex_second_opinion": "phase_4_5_codex",
+    # Phase 5 FM
+    "fund_manager": "phase_5",
+}
+
+
+@dataclass(frozen=True)
+class CostBreakdown:
+    """Aggregated cost view of one decision_run.
+
+    Computed by walking the ``agent_reports`` rows for the run and
+    grouping by phase (via ``phase_id`` -> ``decision_phases.kind`` when
+    present, role-based fallback otherwise) and role. NULL ``cost_usd``
+    is treated as 0 (some legacy rows have it).
+
+    All cost values are USD floats. ``top_3_agents`` is the three most
+    expensive roles in the run sorted descending — when ties occur the
+    role name breaks alphabetically (stable for snapshots).
+    ``cost_per_phase_table`` is a UI-friendly projection of ``by_phase``
+    + per-phase agent counts so the React side doesn't have to recompute.
+    """
+
+    total_usd: float
+    by_phase: dict[str, float]
+    by_role: dict[str, float]
+    top_3_agents: list[tuple[str, float]]
+    agent_count: int
+    cost_per_phase_table: list[dict]
+
+
 @dataclass
 class AgentTreeResponse:
     decision_run_id: int
@@ -179,6 +256,23 @@ class AgentTreeResponse:
     # decision_kind isn't a synthesis kind). The UI surfaces this string
     # in the "no tree available" placeholder. None for synthesis runs.
     unsupported_reason: str | None = None
+    # Per-run cost aggregation (total + by-phase + by-role + top-3). Added
+    # so /decisions/[id] can render a "this synthesis cost $X" card
+    # without re-querying agent_reports from the UI. Always populated —
+    # empty rollup ($0 / 0 agents) when the run has no agent_reports yet.
+    cost_breakdown: CostBreakdown = field(
+        default_factory=lambda: CostBreakdown(
+            total_usd=0.0,
+            by_phase={k: 0.0 for k in COST_PHASE_KEYS},
+            by_role={},
+            top_3_agents=[],
+            agent_count=0,
+            cost_per_phase_table=[
+                {"phase": k, "cost": 0.0, "agent_count": 0}
+                for k in COST_PHASE_KEYS
+            ],
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +350,9 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
                 f"agent-tree DAG is only built for synthesis runs; "
                 f"decision_kind={run.decision_kind!r} is rendered as a "
                 f"flat row in /decisions instead"
+            ),
+            cost_breakdown=_compute_cost_breakdown(
+                reports=non_synth_reports, phases=[],
             ),
         )
 
@@ -401,6 +498,9 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
         decision_kind=run.decision_kind,
         status_summary=_summarize(fm_node, adapter_outcomes_p1),
         root=fm_node,
+        cost_breakdown=_compute_cost_breakdown(
+            reports=reports, phases=phases,
+        ),
     )
 
 
@@ -682,6 +782,105 @@ def _to_node(
         failure_reason=None if r else "agent did not run",
         children=children or [],
         adapters=adapters or [],
+    )
+
+
+def _phase_kind_to_cost_key(kind: str | None) -> str | None:
+    """Map a ``decision_phases.kind`` string to a ``COST_PHASE_KEYS`` slot.
+
+    Returns ``None`` for unrecognised kinds (e.g. ``plan_synthesis.verdict``
+    — a metadata-only row that doesn't host agent_reports, and the legacy
+    monolithic ``plan_synthesis`` kind). The codex half-step uses
+    ``phase_n=45`` -> ``synthesis.phase_45`` so we map that to
+    ``phase_4_5_codex`` explicitly.
+    """
+    if not kind:
+        return None
+    if kind == "synthesis.phase_45":
+        return "phase_4_5_codex"
+    m = re.match(r"^synthesis\.phase_(\d+)$", kind)
+    if not m:
+        return None
+    n = int(m.group(1))
+    if 1 <= n <= 5:
+        return f"phase_{n}"
+    return None
+
+
+def _compute_cost_breakdown(
+    *,
+    reports: list[AgentReport],
+    phases: list[DecisionPhase],
+) -> CostBreakdown:
+    """Aggregate ``agent_reports.cost_usd`` for one decision_run.
+
+    Phase resolution order per row:
+      1. ``r.phase_id`` -> ``decision_phases.kind`` -> ``COST_PHASE_KEYS``
+         slot (via ``_phase_kind_to_cost_key``). This is the canonical
+         source; runs on/after migration 0020 stamp ``phase_id`` for
+         every agent_reports row.
+      2. Role-based fallback (``_ROLE_TO_PHASE_FALLBACK``) — covers
+         pre-0020 rows, runs where the recorder's fail-soft path skipped
+         the back-link, and unrecognised phase kinds.
+      3. Drop the row from the by_phase histogram (the by_role + total
+         still count it) when neither resolves. Should be rare; the UI
+         surfaces by_role anyway so the spend is visible.
+
+    NULL ``cost_usd`` is treated as 0 (legacy rows from before cost
+    capture or rows where the LLM call failed before the recorder could
+    stamp a price). Same for the row count semantics — every row in
+    ``reports`` contributes to ``agent_count`` regardless of whether
+    cost is known.
+    """
+    # Index phase_id -> cost_key for O(1) lookup.
+    phase_id_to_cost_key: dict[int, str] = {}
+    for p in phases:
+        key = _phase_kind_to_cost_key(p.kind)
+        if key is not None:
+            phase_id_to_cost_key[p.id] = key
+
+    by_phase: dict[str, float] = {k: 0.0 for k in COST_PHASE_KEYS}
+    phase_agent_counts: dict[str, int] = {k: 0 for k in COST_PHASE_KEYS}
+    by_role: dict[str, float] = {}
+    total = 0.0
+    for r in reports:
+        cost = float(r.cost_usd) if r.cost_usd is not None else 0.0
+        total += cost
+        by_role[r.agent_role] = by_role.get(r.agent_role, 0.0) + cost
+
+        # Resolve phase: phase_id linkage first, role fallback second.
+        cost_key: str | None = None
+        if r.phase_id is not None:
+            cost_key = phase_id_to_cost_key.get(r.phase_id)
+        if cost_key is None:
+            cost_key = _ROLE_TO_PHASE_FALLBACK.get(r.agent_role)
+        if cost_key is not None and cost_key in by_phase:
+            by_phase[cost_key] += cost
+            phase_agent_counts[cost_key] += 1
+
+    # Top 3 roles by spend, descending. Stable secondary sort on role
+    # name so snapshots don't shuffle when two roles tie (e.g. legacy
+    # zero-cost rows).
+    sorted_roles = sorted(
+        by_role.items(), key=lambda kv: (-kv[1], kv[0]),
+    )
+    top_3 = [(role, cost) for role, cost in sorted_roles[:3]]
+
+    table = [
+        {
+            "phase": k,
+            "cost": by_phase[k],
+            "agent_count": phase_agent_counts[k],
+        }
+        for k in COST_PHASE_KEYS
+    ]
+    return CostBreakdown(
+        total_usd=total,
+        by_phase=by_phase,
+        by_role=by_role,
+        top_3_agents=top_3,
+        agent_count=len(reports),
+        cost_per_phase_table=table,
     )
 
 

@@ -404,6 +404,11 @@ export interface AgentNode {
   // Empty array on every other node so consumers can iterate without a
   // presence check.
   codex_findings: CodexFinding[];
+  // Adaptive-thinking telemetry — actual `thinking_tokens` used by the
+  // model on this agent call. `null` when the agent didn't run or when
+  // the row predates adaptive-thinking telemetry. The UI hides the
+  // field when 0 or null to avoid clutter on agents that don't think.
+  thinking_tokens: number | null;
 }
 
 export interface AgentTreeStatusSummary {
@@ -411,6 +416,36 @@ export interface AgentTreeStatusSummary {
   agents_failed: number;
   adapters_ok: number;
   adapters_failed: number;
+}
+
+// Per-run cost rollup surfaced under the agent tree. Mirrors the
+// backend `CostBreakdown` dataclass in
+// `argosy/services/agent_tree_builder.py`. ``by_phase`` keys are stable
+// (`phase_1` .. `phase_5` + `phase_4_5_codex`); ``by_role`` keys are the
+// raw `agent_reports.agent_role` strings. `top_3_agents` is already
+// sorted desc by spend; `cost_per_phase_table` mirrors `by_phase` with
+// agent counts for direct UI rendering.
+export type CostPhaseKey =
+  | "phase_1"
+  | "phase_2"
+  | "phase_3"
+  | "phase_4"
+  | "phase_4_5_codex"
+  | "phase_5";
+
+export interface CostPerPhaseRow {
+  phase: CostPhaseKey;
+  cost: number;
+  agent_count: number;
+}
+
+export interface CostBreakdown {
+  total_usd: number;
+  by_phase: Record<CostPhaseKey, number>;
+  by_role: Record<string, number>;
+  top_3_agents: Array<[string, number]>;
+  agent_count: number;
+  cost_per_phase_table: CostPerPhaseRow[];
 }
 
 export interface AgentTreeResponse {
@@ -424,6 +459,9 @@ export interface AgentTreeResponse {
   // T4.4 — populated when `root === null`. Human-readable explanation of
   // why no DAG was built; safe to render verbatim.
   unsupported_reason?: string | null;
+  // Per-run cost rollup (total + by-phase + by-role + top-3). Always
+  // present — empty rollup for runs with no agent_reports.
+  cost_breakdown: CostBreakdown;
 }
 
 // ----------------------------------------------------------------------
@@ -566,6 +604,22 @@ export const api = {
     getJSON<PlanCurrentDTO>(
       `/api/plan/current?user_id=${encodeURIComponent(userId)}`,
     ),
+  // Markdown export — fetch as text, browser-trigger save via Blob.
+  // Returns the raw markdown body; the caller wires the download.
+  planExportMarkdown: async (userId: string): Promise<string> => {
+    const res = await fetch(
+      apiUrl(
+        `/api/plan/export?user_id=${encodeURIComponent(userId)}&format=markdown`,
+      ),
+      { cache: "no-store" },
+    );
+    if (!res.ok) {
+      throw new Error(
+        `HTTP ${res.status} for /api/plan/export?user_id=${userId}`,
+      );
+    }
+    return res.text();
+  },
   recritique: (userId: string) =>
     postJSON<{ status: string; critique_id: number | null; detail: string }>(
       "/api/plan/critique",
