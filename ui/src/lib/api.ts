@@ -1252,6 +1252,16 @@ export const api = {
       `/api/fleet-self-review/${id}?user_id=${encodeURIComponent(userId)}`,
     ),
 
+  fleetSelfReviewList: (userId: string, limit: number = 50) =>
+    getJSON<FleetSelfReviewListItemDTO[]>(
+      `/api/fleet-self-review/list?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
+    ),
+
+  fleetSelfReviewTrends: (userId: string, days: number = 30) =>
+    getJSON<FleetSelfReviewTrendsDTO>(
+      `/api/fleet-self-review/trends?user_id=${encodeURIComponent(userId)}&days=${days}`,
+    ),
+
   fleetSelfReviewRun: (userId: string) =>
     postJSON<FleetSelfReviewDTO>(
       `/api/fleet-self-review/run?user_id=${encodeURIComponent(userId)}`,
@@ -1299,6 +1309,34 @@ export interface FleetSelfReviewDTO {
   content_md: string;
   findings: FleetSelfReviewFinding[];
   severity_summary: { RED?: number; AMBER?: number; YELLOW?: number };
+}
+
+/** Row shape returned by /api/fleet-self-review/list — lightweight
+ *  summary (no markdown body) used by the list page. */
+export interface FleetSelfReviewListItemDTO {
+  id: number;
+  generated_at: string;
+  scope_kind: "post_synthesis" | "daily" | "manual";
+  decision_run_id: number | null;
+  severity_summary: { RED?: number; AMBER?: number; YELLOW?: number };
+  findings_total: number;
+}
+
+/** One point on the severity-over-time chart. */
+export interface FleetSelfReviewTrendPointDTO {
+  id: number;
+  generated_at: string;
+  red: number;
+  amber: number;
+  yellow: number;
+}
+
+/** Response shape of /api/fleet-self-review/trends. */
+export interface FleetSelfReviewTrendsDTO {
+  points: FleetSelfReviewTrendPointDTO[];
+  days: number;
+  report_count: number;
+  most_persistent_findings: string[];
 }
 
 // ----------------------------------------------------------------------

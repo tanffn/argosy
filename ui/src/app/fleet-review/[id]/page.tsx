@@ -92,6 +92,14 @@ export default function FleetReviewPage(props: {
   const sev = data.severity_summary;
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
+      <div>
+        <Link
+          href="/fleet-review"
+          className="text-xs font-mono text-info hover:underline"
+        >
+          &larr; all reports &amp; trends
+        </Link>
+      </div>
       <section className="rounded-lg border border-border bg-card/80 px-5 py-4 flex flex-col gap-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
