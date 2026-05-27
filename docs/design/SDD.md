@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-27 (afternoon) — second overnight wave: Argosy ZigZag (codex/gpt-5 second-opinion between Phase 4 risk + Phase 5 FM), all 30 agent roles on Opus 4.7 with adaptive thinking (effort=low/medium/high/max), max_tokens corrected to 128K Opus-4.7 ceiling, EX2 anomaly detection wired event-driven + daily, wealth dashboard at top of `/portfolio` (retirement projection + asset-class/sector donuts + 6 stat cards), live target-progress strip on `/plan`, action items widget on home, fleet-review list + 30-day severity trends, Wave 1 guidance threaded into Phase 1/2/4 (closes D1 RED), FM-objection ZigZag dialogue. 25+ commits since synth #30. Migration head at 0038. See handover for wave summaries + open items. |
+| **Last updated** | 2026-05-27 (late afternoon) — Wave 3 observability polish + Opus 4.7 stack calibrated: G1 cost breakdown on `/decisions/[id]` (per-phase + per-role), G2 stale-test fixes + agents_skipped/agents_failed split, G3 D11 codex-disagreed-with-synthesizer detector, G4 adaptive-thinking telemetry (actual `thinking_tokens` per agent), G5 codex cost wired into `agent_report` rows, G6 markdown export from `/plan` + `/portfolio`, plus D2 detector false-positive fix (was matching on bare severity word, 100% false-positive RED). Synth #32 was the first successful end-to-end on the full new stack (Opus 4.7 + 128K + adaptive thinking + Argosy ZigZag + Wave 1 guidance) — FM rejected with substantively new concerns + explicit acknowledgement of resolved prior BLOCKERs. Draft #12 pending; 6 FM objections (4 BLOCKER + 2 AMBER) resolved via per-objection AGREE/DISAGREE/DEFER + "Start new round with my decisions". 1,616 tests passing, 0 failed. Migration head at 0038. See handover + Wave 3 subsection for details. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-27 (afternoon) by Claude — second overnight wave shipped: Argosy ZigZag (codex second-opinion), Opus 4.7 fleet-wide with adaptive thinking + 128K max_tokens ceiling, EX2 anomaly detection live, wealth dashboard + live target-progress + action items + fleet-review trends. Build ON TOP of the earlier handover; the "Synthesizer empty-output bug" + "Overnight cycle" sections below remain current — see the new "Second overnight wave" section beneath them for what's new.
+**Last edit:** 2026-05-27 (late afternoon) by Claude — Wave 3 observability polish + Opus 4.7 stack calibration: 6 G-tasks shipped (G1 cost breakdown · G2 agents_skipped/failed split + stale-test fixes · G3 D11 codex-disagreed detector · G4 thinking telemetry · G5 codex cost telemetry · G6 markdown export) + D2 false-positive fix. Synth #32 was the first successful end-to-end on the full new stack (Opus 4.7 + 128K + adaptive + ZigZag + Wave 1 guidance). Build ON TOP of the earlier handover; the "Synthesizer empty-output bug" + "Overnight cycle" + "Second overnight wave" sections below all remain current — see the new "Wave 3" subsection at the end of the second overnight wave for what's new.
 
 ### Synthesizer empty-output bug (discovered overnight, hypothesis-fixed in `a5d317c`)
 
@@ -29,22 +29,18 @@ Sequence of events:
 7. **Fix shipped** in `f4b2dce`: added a defense-in-depth string-match fallback to the `is_transient_flake` guard. Word-boundary regex `\bexit code 1\b` + literal `(exit code: 1)` so the retry path fires even when the SDK wraps ProcessError in a different class. The existing isinstance check is preserved as the primary; `no_retry_when_exit_code_not_1` test still passes (137 doesn't match the word boundary).
 8. **Synthesis #30 COMPLETED end-to-end** with both fixes loaded. All 6 phases ran. FM rejected the draft but with **4 NEW BLOCKERs** (NVDA price discrepancy across analysts, risk-facilitator ESCALATE not APPROVE, accelerator/re-anchor spec gap, emergency-fund-floor contradiction) **+ explicit acknowledgement that prior round's BLOCKERs were resolved** (tax-rate band 30.7%→50% marginal, 9,059→8,428 ending-share path adjusted). **The loop is fully unblocked and iterating meaningfully** — each round closes some objections and surfaces new ones rather than regurgitating the same themes. New pending draft `synth-2026-05-26-2334-fm-rejected` = plan_versions.id=11. Self-review report #5: 1 RED · 7 AMBER · 9 YELLOW.
 
-### Wake-up state summary (refreshed after the second overnight wave)
+### Wake-up state summary (refreshed after Wave 3)
 
-- **All 30 agent roles are on Opus 4.7 with adaptive thinking** (`b9b360c` + `c3733a3`). No Sonnet defaults remain. `thinking={"type":"adaptive"}` + `effort="max"|"high"|"medium"|"low"` per role; the legacy fixed-budget path remains for users who pin `thinking_budget` in YAML.
-- **`max_tokens` ceiling corrected to 128K** (`4cceb7a`) per Anthropic docs — Opus 4.7's real ceiling (the prior 32K was the stale Opus 4 limit). Heavy 128K (synth / FM / plan_critique) · medium 64K · light 16K.
-- **Argosy ZigZag wired** (`0bedd9b`) — codex (gpt-5) acts as an independent second-opinion reviewer between Phase 4 (risk verdict) and Phase 5 (FM). Env-gated, fail-soft, idempotent on resume. `decision_phases.kind="synthesis.phase_4_5"`. Visible inline on `/decisions/{id}` as a 4th child of the FM node (`2df92a5`).
-- **EX2 anomaly detection live** (`30730a5` + `3fd8dc5`) — event-driven on Discount Bank statement ingest + daily backstop in the daily-brief background loop. Home banner above the fleet-self-review banner whenever a RED anomaly fires. Card 2923 fee-waiver entry seeded in the watchlist.
-- **`/portfolio` has a wealth dashboard at the top** (`e4fc3b7` + `7ddd523`) — retirement projection (3 scenarios × 25-year trajectory + per-scenario target age), 6 stat tiles (cash runway, concentration, savings rate, FX exposure, RSU income, estate exposure), plus asset-class + sector donut composition cards. Pure-Python, deterministic, no LLM. Live for ariel: 11.17M NIS net worth, FIRE target 7.91M, already at target across all scenarios; NVDA 60.5% (15.5pp over 45% plan target); ~$916K potential US-situs estate liability.
-- **`/plan` has a live target-progress strip** (`c8cb5ce`) — each TARGET row shows current value + gap + status icon next to the planned value. Endpoint: `/api/plan/draft/target-progress`.
-- **Home page has an action items widget** (`905d6de`) — `/api/plan/action-items` returns dated short/medium-horizon actions; UI renders overdue/today/due-soon/upcoming TODO bands.
-- **`/fleet-review` list page** (`6283011`) — newest-first list + stacked RED/AMBER/YELLOW area chart over the last 30 days + most-persistent-findings (detectors appearing in ≥50% of runs). Endpoints: `GET /api/fleet-self-review/{list,trends}`.
-- **FM-objection ZigZag** (`7efb0c9`) — per FM objection, "Discuss with [analyst]" fires a 3-turn FM↔analyst dialogue (~$0.20-0.50/run) without re-running the whole synthesis. New `decision_kind="fm_objection_dialogue"`.
-- **Wave 1 guidance pipeline fully closed** (`a41d408`) — `user_directive` now threads through Phase 1 (plan_critique) + Phase 2 (bull/bear/facilitator) + Phase 4 (risk_officer×3 + risk_facilitator) on top of the earlier Phase 3 + 5 wiring. Verified: 0 RED in run #31's self-review.
-- **Synthesis loop is healthy and iterating meaningfully.** Six fixes deep into the empty-output saga (f8faaca → a5d317c → f4b2dce → b9b360c → 4cceb7a → c3733a3); each round of FM rejection now closes prior concerns and surfaces fresh ones. Runs #26 / #29 / #30 / #31 / #32 demonstrate this.
-- **Fleet self-review** auto-fires on every synthesis completion. Reports 1–N persisted; the list page + trends chart make trajectory visible.
+- **Tests: 1,616 passing · 0 failed** under `pytest -m "not llm_eval"`. All known opens from W4-W11 + the D2 false-positive that surfaced after them are closed.
+- **Agent fleet stack — fully calibrated**: all 30 roles on **Opus 4.7** (`b9b360c`) · **adaptive thinking** with `effort=max/high/medium/low` per role (`c3733a3`) · **128K max_tokens** ceiling on heavy roles (`4cceb7a`) · **Argosy ZigZag** between Phase 4 + Phase 5 (`0bedd9b` + `2df92a5`) · **Wave 1 guidance** threaded through Phases 1/2/3/4/5 (`f8faaca` + `a5d317c` + `a41d408`) · **EX2 anomaly detection** event-driven + daily (`30730a5` + `3fd8dc5`) · **wealth dashboard** + **action items widget** + **target-progress strip** + **fleet-review trends** + **cost breakdown** + **markdown export** (Wave 3 G1 + G6).
+- **Synth #32 was the first successful end-to-end run of the canonical configuration** — all 30 agents on Opus 4.7, adaptive thinking, 128K ceiling, Argosy ZigZag (codex APPROVE_WITH_CONDITIONS with 4 findings), Wave 1 guidance threaded everywhere. FM rejected with 4 BLOCKER + 2 AMBER + 2 NOTES — **NOTES explicitly acknowledge that prior round's BLOCKERs were resolved** (NVDA price layer corrected $200.14 → $214.86; share-path direction validated). New draft #12 = `synth-2026-05-27-1020-fm-rejected`. Wall-clock + cost roughly comparable to #30 (~70 min, ~$3-4).
+- **The synthesis loop is the system working correctly** — each round closes prior concerns and surfaces fresh substantive ones; severity profile is trending down. Runs #26 → #29 → #30 → #31 → #32 demonstrate the trajectory.
+- **Observability stack now end-to-end visible**: G1 cost breakdown (per-phase + per-role aggregation above the agent tree on `/decisions/[id]`), G4 adaptive-thinking telemetry (actual `thinking_tokens` per agent — was hard-zero on claude_code backend), G5 codex cost wired into `agent_report` rows (was hardcoded 0), G3 D11 detector flags codex-disagreed-with-synthesizer (BLOCK / user_directive_respected=False / novel_concerns_argosy_missed), G2 `synthesis_health` splits `agents_skipped` from `agents_failed` (codex_second_opinion absence on older runs no longer inflates "failed" count).
+- **D2 detector false-positive fixed** (`c10ce99`) — was matching on the bare severity word ("BLOCKER") when FM uses `[SEVERITY — TOPIC]` shape, producing 100% false-positive RED. Now strips the bracket prefix before comparing topics. Two regression tests added.
+- **G6 markdown export** (`8f7e370`) — one-pager snapshot of plan + wealth dashboard + action items + objections, downloadable from `/plan` and `/portfolio` headers.
 - **Home page surfaces** anomaly banner (when RED) → fleet-self-review banner → in-flight synthesis banner → NVDA YTD = 1,600 / 10,000 ON PACE → action items widget → DecisionAccordion.
 - **Cost envelope unchanged** — `ARGOSY_SYNTHESIS_COST_CAP_USD=$10` per run; per-zigzag adds ~$0.30-0.50 codex; per FM-objection dialogue ~$0.20-0.50. Within the accuracy-over-cost binding preference.
+- **Open user-driven decisions**: 6 FM objections on draft #12 (4 BLOCKER + 2 AMBER) are resolved via the per-objection AGREE / DISAGREE / DEFER toolkit on `/plan` + the "Start new round with my decisions" CTA. The next move is user-driven, not engineering — the system is built and waiting.
 
 ### Overnight cycle (2026-05-26 evening → night) — 12 additional commits
 
@@ -75,8 +71,8 @@ After the T3+T4+observability wave shipped (`14245e3`), the user smoke-tested li
 | #28 | killed | Reproducibility test of #27 — killed mid-Phase-1 once #27's failure mode was diagnosed. |
 | #29 | failed | Phase 3 succeeded for the first time with `a5d317c`. Phase 5 FM died on first attempt with `Command failed exit 1`; isinstance(exc, ProcessError) returned False → no retry. Fixed by `f4b2dce` (string-match fallback in `is_transient_flake`). |
 | #30 | rejected | First successful end-to-end on the new stack. FM rejected with 4 NEW BLOCKERs + explicit acknowledgement of resolved prior BLOCKERs. New pending draft `synth-2026-05-26-2334-fm-rejected` = plan_versions.id=11. Self-review report #5: 1 RED · 7 AMBER · 9 YELLOW. The loop is **fully unblocked and iterating meaningfully**. |
-| #31 | failed | Phase 4 codex zigzag SUCCEEDED first time (APPROVE_WITH_CONDITIONS verdict). FM hit empty-output again — `a5d317c`'s pattern still wasn't enough headroom for the bigger user_directive payload after a41d408. Bumped max_tokens to 128K (`4cceb7a`) as one hypothesis-eliminating fix; subsequent adaptive-thinking migration (`c3733a3`) is the structural answer. |
-| #32 | in flight | Full stack loaded: Opus 4.7 + 128K max_tokens + adaptive thinking + Argosy ZigZag + Wave 1 guidance threaded to phases 1/2/4. First run of the canonical configuration. |
+| #31 | failed | Phase 4 codex zigzag SUCCEEDED first time (APPROVE_WITH_CONDITIONS, 1 BLOCKER finding); FM phase 5 hit 4-attempt empty-output budget. Diagnosed as Opus 4.7 + thinking=16K combined with claude.exe SDK quirk on small structured outputs. |
+| #32 | rejected (completed) | **First successful end-to-end with full Opus 4.7 + 128K max_tokens + adaptive thinking + ZigZag stack.** 7 phases done. Codex APPROVE_WITH_CONDITIONS with 4 findings. FM rejected with 4 BLOCKER + 2 AMBER + 2 NOTES — **NOTES explicitly acknowledge prior round's BLOCKERs resolved** (NVDA price layer corrected $200.14→$214.86; share-path direction validated). Severity profile trending down. New draft #12 = `synth-2026-05-27-1020-fm-rejected`. |
 
 ### What the user will see when they wake up
 
@@ -86,12 +82,27 @@ After the T3+T4+observability wave shipped (`14245e3`), the user smoke-tested li
 4. **`/`** (home) — in-flight banner gone; fleet self-review banner showing latest counts; NVDA PACE showing 1,600/10,000 ON PACE.
 5. **`/fleet-review/2`** — markdown report for #27 with detector findings.
 
-### Wave 1 follow-up (mostly closed in the second overnight wave)
+### Wave 1 follow-up tracker (refreshed after Wave 3)
 
+**Closed:**
 - ~~Thread `guidance` into Phase 1 (analysts), Phase 2 (bull/bear/facilitator), Phase 4 (risk officers).~~ **DONE in `a41d408`** — `user_directive` now reaches `plan_critique` (Phase 1, NOT the 9 single-ticker analysts), `bull_researcher` / `bear_researcher` / `researcher_facilitator` (Phase 2), and `risk_officer×3` + `risk_facilitator` (Phase 4). Verified: 0 RED in run #31's self-review.
 - ~~Fix D4 source-id format mismatch in `fx` adapter (`rates/USD/NIS` vs `fx/rates/USD/NIS`).~~ **DONE in `78e5861`** — fx adapter now cites with the `fx/` bucket prefix matching `sources_json` registration.
 - ~~Investigate D4 hallucinated `robotaxi/FSD/Optimus` on fundamentals#221.~~ **DONE in `9b594ba`** — tightened the citation prompt (boilerplate rule #6 forbidding invented/paraphrased source_ids) AND added `hallucinated_sources: list[str]` to `AgentReport` plus a `_detect_hallucinated_sources` helper in `run()` that flags offending ids on the report (logged, NOT stripped) so fleet self-review D4 reads a structured field instead of regex-scanning `response_text`.
-- **STILL OPEN**: Backfill D8 phase-participants-empty for historical runs #24/#25, or accept as historical (T0.1 took only for new runs).
+- ~~D2 detector false-positive (was matching on bare severity word).~~ **DONE in `c10ce99`** — strip `[SEVERITY — TOPIC]` bracket prefix before comparing topics. Two regression tests.
+- ~~D11 codex-disagreed-with-synthesizer detector.~~ **DONE in `ae8681b`** — flags BLOCK + `user_directive_respected=False` + `novel_concerns_argosy_missed`.
+- ~~Codex cost telemetry wired into `agent_report` rows.~~ **DONE in `fddac9e`** — was hardcoded 0; now shows actual gpt-5 cost.
+- ~~Cost breakdown surfaced on `/decisions/[id]`.~~ **DONE in `657d87f`** — per-phase + per-role aggregation visible above the agent tree.
+- ~~Markdown export from `/plan` + `/portfolio`.~~ **DONE in `8f7e370`** — one-pager snapshot of plan + wealth dashboard + action items + objections.
+- ~~Adaptive-thinking telemetry (per-agent actual `thinking_tokens`).~~ **DONE in `85da789`** — was 0 on claude_code backend; surfaced in agent tree.
+- ~~`agents_skipped` vs `agents_failed` split in synthesis_health.~~ **DONE in `ffc2455`** — codex_second_opinion absence on older runs no longer inflates "failed" count; UI banner updated.
+- ~~Stale tests (`household_categorizer` model id + synthesis_health splits).~~ **DONE in `ffc2455`**.
+
+**Still open:**
+- **D8 historical backfill** — phase-participants-empty for runs #24/#25. Accept as historical (T0.1 took only for new runs).
+- **Tier 6** (manual live trading via IBKR) — not started.
+- **Tier 7** (productization, multi-tenant) — not started.
+- **LAST** (autonomous live trading) — not started.
+- **User-driven workflow** — per-objection AGREE / DISAGREE / DEFER + "Start new round with my decisions" CTA on `/plan`. System built; the user hasn't yet driven a round through it end-to-end. Draft #12 with its 6 FM objections is the standing test.
 
 ### Second overnight wave (2026-05-27 morning → afternoon)
 
@@ -258,6 +269,61 @@ Backend extends `GET /api/fleet-self-review/list` to include `findings_total` pe
 - **FM verdict recorder phase_id** (`b5e2f1e`): T0.1 follow-up — synthesis verdict phase row now includes the FM `agent_report` id.
 - **`/positions` integrated into `/portfolio`** (`07e51dc`): per-position thesis cards moved inline; standalone nav tab removed per user request.
 - **DeltaCard no-op deltas + Blocker # linking** (`a3f9565`): no-op deltas render as "rationale updated — value unchanged at X" instead of "suggested 45% before 45%". Null-prior deltas render as "new <kind> — X". `Blocker #N` / `Objection #N` tokens parse into clickable chips that popover the matching prior-round FM objection; defensive when hallucinated.
+
+### Wave 3 — Observability polish, dashboard expansion, and Opus 4.7 calibration (afternoon)
+
+8 commits between synth #31's diagnosis and synth #32's completion. The first overnight wave + second overnight wave above ("Synthesizer empty-output bug" → "Overnight cycle" → "Second overnight wave") remain current — this subsection extends them with observability polish, the calibration that made synth #32 work end-to-end, and the bug found + fixed after the wave's first iteration.
+
+#### Wave 3.1 — Six G-tasks shipped
+
+- **G1 — Cost breakdown on `/decisions/[id]`** (`657d87f`): per-phase + per-role cost aggregation visible above the agent tree. Surfaces the actual run economics inline rather than forcing a JSONL trail dive.
+- **G2 — Stale-test fixes + `agents_skipped` vs `agents_failed` split** (`ffc2455`): two stale tests fixed — `household_categorizer` model id (now Opus 4.7) + `synthesis_health` count semantics. The codex_second_opinion node on older runs (where the agent wasn't present) was inflating the **failed** count; now the synthesis_health computation splits **skipped** ("didn't run, e.g. codex_second_opinion absent for older runs") from **failed** ("ran but errored"). UI banner updated to reflect the split.
+- **G3 — D11 `codex_disagreed_with_synthesizer` detector** (`ae8681b`): new fleet-self-review detector. Flags runs where the codex second-opinion returned `BLOCK` or `user_directive_respected=False` or `novel_concerns_argosy_missed`. Surfaces cross-engine disagreement as a structured signal in the fleet-review report.
+- **G4 — Adaptive-thinking telemetry** (`85da789`): per-agent actual `thinking_tokens` used was hard-zero on the claude_code backend (the adaptive path didn't bubble the figure back). Now captured and surfaced in the agent tree node detail. Gives an after-the-fact read on how much thinking each role actually drew.
+- **G5 — Codex cost telemetry wired** (`fddac9e`): `codex_second_opinion` `agent_report` rows previously persisted `cost_usd=0` regardless of actual gpt-5 spend. Now writes the real cost from the codex run.
+- **G6 — Markdown export** (`8f7e370`): one-pager snapshot of plan + wealth dashboard + action items + objections, downloadable from `/plan` and `/portfolio` headers. Lets the user copy-paste the current state into an email/chat without UI screenshots.
+
+#### Wave 3.2 — `synthesis_health` semantic fix: skipped vs failed (`ffc2455`)
+
+Older synthesis runs predated `codex_second_opinion`; the agent simply didn't exist in their run graph. The pre-fix `synthesis_health` computation counted every absent-agent-in-the-expected-roster as **failed**, which polluted the banner on `/plan` with a false "1 agent failed" for runs that ran cleanly. The fix splits the field:
+
+- **`agents_skipped`** — agent didn't run at all (most commonly: codex_second_opinion on a pre-ZigZag run, or a phase that was bypassed because env-gated off).
+- **`agents_failed`** — agent ran and errored (the meaningful red signal).
+
+UI banner now reads "N agents OK · K skipped · M failed". The skipped count is informational; the failed count is the surface that drives the "Drill in →" affordance.
+
+#### Wave 3.3 — D2 detector false-positive fixed (`c10ce99`)
+
+The Wave 1 / second-overnight FM-objection parser was upgraded in `138cbef` to handle FM detail text of shape `[SEVERITY — TOPIC] detail`. The D2 fleet-self-review detector — which compares topic strings to spot duplicate findings across rounds — was reading the raw topic field WITHOUT stripping the bracket prefix. Result: when FM emitted `[BLOCKER — NVDA price discrepancy] …`, D2 saw the bare severity word "BLOCKER" as the topic and matched it against every other "BLOCKER"-prefixed objection across the run history. **100% false-positive RED** on every report.
+
+The fix strips the `[SEVERITY — TOPIC]` prefix before comparison so D2 sees the actual topic text. Two regression tests added covering the bracketed-shape input + the legacy unbracketed-shape input (both must compare on topic alone).
+
+#### Wave 3.4 — Synth #32 ran the full new stack end-to-end
+
+The first successful end-to-end run of the canonical configuration:
+
+- **All 30 agents on Opus 4.7** (`b9b360c`).
+- **Adaptive thinking** with `effort=max/high/medium/low` per role (`c3733a3`).
+- **128K `max_tokens`** ceiling on heavy roles (`4cceb7a`).
+- **Argosy ZigZag** dispatched between Phase 4 and Phase 5 (`0bedd9b`) — codex APPROVE_WITH_CONDITIONS with 4 findings.
+- **Wave 1 guidance** threaded through Phases 1/2/4 (`a41d408`) on top of the earlier Phase 3 + 5 wiring.
+- **EX2 anomaly detection**, wealth dashboard, action items, target-progress, fleet-review trends, cost breakdown, markdown export all live.
+
+Wall-clock + cost roughly comparable to #30 (~70 min, ~$3-4 total). The FM rejected the draft with **4 BLOCKER + 2 AMBER + 2 NOTES**, and crucially the NOTES section **explicitly acknowledges that prior round's BLOCKERs were resolved** — the NVDA price layer correction ($200.14 → $214.86) landed and the share-path direction was validated. New BLOCKERs are on substantively different topics. Severity profile is trending down across the #26 → #29 → #30 → #32 series. New draft #12 = `synth-2026-05-27-1020-fm-rejected`, plan_versions.id=12.
+
+**Reading**: FM rejection is now the system working correctly. Each round closes prior concerns and raises new substantive ones rather than regurgitating the same themes. The loop has been "fully unblocked and iterating meaningfully" since #30; #32 confirms the new stack hasn't regressed that property.
+
+#### Wave 3.5 — Current state pre-synth #33
+
+- **Draft #12** pending (`role='draft'`, label `synth-2026-05-27-1020-fm-rejected`).
+- **6 FM objections** (4 BLOCKER + 2 AMBER) on the draft.
+- **The user has the full per-objection toolkit** on `/plan`:
+  - **AGREE** / **DISAGREE** / **DEFER** per objection (`5863c16`).
+  - **Counter-position textarea** when disagreeing (`5863c16`).
+  - **"Discuss with [analyst]"** per objection (FM↔analyst dialogue, `7efb0c9`).
+  - **"Explain in plain English"** (precomputed translation, `4131b69` + `67828b5`).
+  - **"Start new round with my decisions"** CTA — wires the AGREE/DISAGREE/DEFER decisions + counter-positions into `user_directive` and fires synth #33.
+- **The next move is user-driven, not engineering.** The system is built and waiting. Engineering's contribution to this iteration is complete.
 
 ### Source-of-truth references
 
