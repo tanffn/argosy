@@ -33,6 +33,7 @@ from argosy.services.fleet_self_review import (
     detect_adapter_outcome_failure_swallowed,
     detect_agent_response_truncated,
     detect_analyst_cites_unknown_source,
+    detect_codex_disagreed_with_synthesizer,
     detect_consecutive_fm_rejections_same_theme,
     detect_cost_outlier_per_role,
     detect_decision_run_stuck,
@@ -516,6 +517,149 @@ def test_d10_negative_clean_terminator(sync_session):
     sync_session.commit()
     findings = detect_agent_response_truncated(
         sync_session, ReviewScope(user_id=USER),
+    )
+    assert findings == []
+
+
+# ----------------------------------------------------------------------
+# D11 — codex_disagreed_with_synthesizer
+# ----------------------------------------------------------------------
+
+
+def _make_codex_report(
+    db, decision_run_id: int, verdict: dict,
+) -> AgentReport:
+    """Helper: insert a codex_second_opinion agent_report row.
+
+    Mirrors what ``run_codex_second_opinion`` persists — the row's
+    ``response_text`` is the JSON form of a ``CodexSecondOpinion``.
+    """
+    row = AgentReport(
+        user_id=USER,
+        agent_role="codex_second_opinion",
+        decision_id=f"plan-synth-{decision_run_id}",
+        response_text=json.dumps(verdict),
+        tokens_in=0, tokens_out=500, cost_usd=0.0, model="gpt-5-codex",
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_d11_fires_red_when_codex_blocks(sync_session):
+    """Codex assessed BLOCK → RED finding."""
+    _make_run(sync_session, id_=42, started_offset_min=10)
+    _make_codex_report(sync_session, 42, {
+        "overall_assessment": "BLOCK",
+        "findings": [
+            {"severity": "BLOCKER", "topic": "Cash buffer collapse",
+             "detail": "The plan drains the buffer below floor.",
+             "suggested_fix": "Restore the buffer.",
+             "cited_synthesizer_paragraphs": []},
+            {"severity": "BLOCKER", "topic": "Tax sequencing",
+             "detail": "Section 102 sequencing is wrong.",
+             "suggested_fix": "Defer.",
+             "cited_synthesizer_paragraphs": []},
+        ],
+        "agreement_with_argosy": {
+            "agrees_with_risk_verdict": False,
+            "novel_concerns_argosy_missed": [],
+        },
+        "user_directive_respected": True,
+    })
+    findings = detect_codex_disagreed_with_synthesizer(
+        sync_session, ReviewScope(user_id=USER, decision_run_id=42),
+    )
+    red = [f for f in findings if f.severity == "RED"]
+    assert len(red) == 1
+    assert red[0].detector == "D11"
+    assert "BLOCKED" in red[0].title
+    topics = red[0].evidence.get("blocker_topics") or []
+    assert "Cash buffer collapse" in topics
+    assert "Tax sequencing" in topics
+
+
+def test_d11_fires_amber_when_user_directive_ignored(sync_session):
+    """Codex flags user_directive_respected=False → AMBER."""
+    _make_run(sync_session, id_=43, started_offset_min=10)
+    _make_codex_report(sync_session, 43, {
+        "overall_assessment": "APPROVE_WITH_CONDITIONS",
+        "findings": [],
+        "agreement_with_argosy": {
+            "agrees_with_risk_verdict": "partial",
+            "novel_concerns_argosy_missed": [],
+        },
+        "user_directive_respected": False,
+    })
+    findings = detect_codex_disagreed_with_synthesizer(
+        sync_session, ReviewScope(user_id=USER, decision_run_id=43),
+    )
+    amber = [f for f in findings if f.severity == "AMBER"]
+    assert len(amber) == 1
+    assert amber[0].detector == "D11"
+    assert "user directive" in amber[0].title.lower()
+    assert amber[0].evidence.get("user_directive_respected") is False
+
+
+def test_d11_fires_yellow_when_codex_finds_novel_concerns(sync_session):
+    """Codex returns 2 novel concerns → 1 YELLOW with both in detail."""
+    _make_run(sync_session, id_=44, started_offset_min=10)
+    novel = [
+        "Concentration risk in semis sector not addressed by analysts.",
+        "RSU vesting schedule overlaps with tax-loss harvest window.",
+    ]
+    _make_codex_report(sync_session, 44, {
+        "overall_assessment": "APPROVE_WITH_CONDITIONS",
+        "findings": [],
+        "agreement_with_argosy": {
+            "agrees_with_risk_verdict": "partial",
+            "novel_concerns_argosy_missed": novel,
+        },
+        "user_directive_respected": True,
+    })
+    findings = detect_codex_disagreed_with_synthesizer(
+        sync_session, ReviewScope(user_id=USER, decision_run_id=44),
+    )
+    yellow = [f for f in findings if f.severity == "YELLOW"]
+    assert len(yellow) == 1
+    assert yellow[0].detector == "D11"
+    listed = yellow[0].evidence.get("novel_concerns_argosy_missed") or []
+    assert novel[0] in listed
+    assert novel[1] in listed
+
+
+def test_d11_no_finding_when_codex_skipped(sync_session):
+    """No codex row at all → empty list (not an error)."""
+    _make_run(sync_session, id_=45, started_offset_min=10)
+    # Intentionally do NOT insert a codex_second_opinion row.
+    findings = detect_codex_disagreed_with_synthesizer(
+        sync_session, ReviewScope(user_id=USER, decision_run_id=45),
+    )
+    assert findings == []
+
+
+def test_d11_handles_unparseable_codex_response(sync_session):
+    """Codex row has garbage text → graceful empty + log (no crash)."""
+    _make_run(sync_session, id_=46, started_offset_min=10)
+    # Insert a row whose response_text isn't recoverable JSON.
+    sync_session.add(AgentReport(
+        user_id=USER,
+        agent_role="codex_second_opinion",
+        decision_id="plan-synth-46",
+        response_text="completely unparseable garbage with no braces at all",
+        tokens_in=0, tokens_out=100, cost_usd=0.0, model="gpt-5-codex",
+    ))
+    sync_session.commit()
+    findings = detect_codex_disagreed_with_synthesizer(
+        sync_session, ReviewScope(user_id=USER, decision_run_id=46),
+    )
+    assert findings == []
+
+
+def test_d11_no_finding_when_no_run_id_in_scope(sync_session):
+    """Daily sweep (decision_run_id=None) → empty list."""
+    findings = detect_codex_disagreed_with_synthesizer(
+        sync_session, ReviewScope(user_id=USER, decision_run_id=None),
     )
     assert findings == []
 

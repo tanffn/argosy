@@ -1048,6 +1048,218 @@ def detect_agent_response_truncated(
 
 
 # ----------------------------------------------------------------------
+# D11 — codex_disagreed_with_synthesizer
+# ----------------------------------------------------------------------
+
+
+def _parse_codex_verdict_lenient(response_text: str) -> dict | None:
+    """Best-effort parse of a persisted ``codex_second_opinion`` row.
+
+    The codex row's ``response_text`` is normally the JSON form of a
+    ``CodexSecondOpinion``.  We accept either strict JSON OR a payload
+    wrapped in noise / a markdown fence and fall back to a lenient
+    ``raw_decode`` from the first ``{``.  Returns ``None`` on any
+    failure — the caller treats that as "codex row exists but
+    unparseable" and emits no findings for this detector (the
+    unparseable case is already a YELLOW finding inside the codex row
+    itself; we don't double-count it here).
+    """
+    if not response_text:
+        return None
+    txt = response_text.strip()
+    if txt.startswith("```"):
+        # Drop a leading ```json fence (and the closing fence if any).
+        txt = re.sub(r"^```(?:json)?\s*", "", txt)
+        txt = re.sub(r"\s*```\s*$", "", txt)
+    # Strict first.
+    try:
+        parsed = json.loads(txt)
+        if isinstance(parsed, dict):
+            return parsed
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    # Lenient: raw_decode from the first opening brace.
+    first_brace = txt.find("{")
+    if first_brace < 0:
+        return None
+    try:
+        decoder = json.JSONDecoder(strict=False)
+        obj, _ = decoder.raw_decode(txt[first_brace:])
+        if isinstance(obj, dict):
+            return obj
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def detect_codex_disagreed_with_synthesizer(
+    db: Session, scope: ReviewScope,
+) -> list[Finding]:
+    """D11 — surface meaningful divergence between codex (independent
+    gpt-5 second opinion) and the Argosy fleet's own verdict.
+
+    Three triggers (any → fire one finding per trigger that holds):
+
+      1. Codex assessed ``BLOCK`` while the synthesizer produced a
+         normal draft.  The synth doesn't have a built-in BLOCK
+         self-flag, but a codex BLOCK verdict on top of any synth run
+         is itself a serious divergence worth surfacing → RED.
+
+      2. Codex flagged ``user_directive_respected=False`` — the
+         synthesizer ignored a user directive that codex caught
+         independently → AMBER (the synth ignored the user).
+
+      3. Codex's ``agreement_with_argosy.novel_concerns_argosy_missed``
+         list is non-empty — codex independently identified concerns
+         the synth/analysts missed → YELLOW.
+
+    When ``scope.decision_run_id`` is None (daily sweep with no
+    specific run in scope) the detector returns an empty list — codex
+    runs are per-decision so a sweep-wide query would be meaningless.
+
+    When the codex row doesn't exist (codex disabled / skipped /
+    fail-soft path returned no row) the detector also returns no
+    findings — that's not an error, just absence of signal.
+    """
+    if not scope.decision_run_id:
+        return []  # daily sweep — no specific run to compare against
+
+    decision_id_str = f"plan-synth-{scope.decision_run_id}"
+    codex_row = db.execute(
+        select(AgentReport)
+        .where(AgentReport.user_id == scope.user_id)
+        .where(AgentReport.decision_id == decision_id_str)
+        .where(AgentReport.agent_role == "codex_second_opinion")
+        .order_by(desc(AgentReport.id))
+        .limit(1)
+    ).scalar_one_or_none()
+    if codex_row is None:
+        return []  # codex didn't run for this scoped run
+
+    parsed = _parse_codex_verdict_lenient(codex_row.response_text or "")
+    if parsed is None:
+        log.warning(
+            "fleet_self_review.d11_codex_unparseable",
+            decision_run_id=scope.decision_run_id,
+            agent_report_id=codex_row.id,
+        )
+        return []
+
+    out: list[Finding] = []
+
+    # ------------------------------------------------------------------
+    # Trigger 1 — codex BLOCK verdict.
+    # ------------------------------------------------------------------
+    overall = parsed.get("overall_assessment")
+    if isinstance(overall, str) and overall.upper() == "BLOCK":
+        findings_list = parsed.get("findings") or []
+        blocker_topics: list[str] = []
+        if isinstance(findings_list, list):
+            for f in findings_list:
+                if not isinstance(f, dict):
+                    continue
+                sev = (f.get("severity") or "").upper()
+                topic = f.get("topic") or ""
+                if sev == "BLOCKER" and isinstance(topic, str) and topic.strip():
+                    blocker_topics.append(topic.strip())
+        out.append(Finding(
+            id=f"D11:block:{scope.decision_run_id}",
+            detector="D11",
+            severity="RED",
+            category="behavior",
+            title=(
+                f"Codex BLOCKED plan-synth-{scope.decision_run_id} "
+                f"while synthesizer produced a normal draft "
+                f"({len(blocker_topics)} blocker topic(s))"
+            ),
+            evidence={
+                "decision_run_id": scope.decision_run_id,
+                "agent_report_id": codex_row.id,
+                "codex_overall_assessment": overall,
+                "blocker_topics": blocker_topics[:10],
+            },
+            suggested_fix=(
+                "Read the codex_second_opinion agent_report row in "
+                "full.  A BLOCK from an independent gpt-5 reviewer "
+                "against a synthesizer-approved draft is a strong "
+                "signal something material is wrong — either the "
+                "draft truly is broken, or codex saw an input the "
+                "synthesizer didn't.  Don't auto-resolve in favour "
+                "of the synth."
+            ),
+        ))
+
+    # ------------------------------------------------------------------
+    # Trigger 2 — user_directive_respected=False.
+    # ------------------------------------------------------------------
+    user_directive_respected = parsed.get("user_directive_respected")
+    if user_directive_respected is False:
+        out.append(Finding(
+            id=f"D11:user_directive:{scope.decision_run_id}",
+            detector="D11",
+            severity="AMBER",
+            category="behavior",
+            title=(
+                f"Codex says synthesizer ignored a user directive on "
+                f"plan-synth-{scope.decision_run_id}"
+            ),
+            evidence={
+                "decision_run_id": scope.decision_run_id,
+                "agent_report_id": codex_row.id,
+                "user_directive_respected": False,
+                "codex_overall_assessment": overall,
+            },
+            suggested_fix=(
+                "The user gave the synthesizer a directive (AGREED / "
+                "DISAGREED / DEFERRED stance) and codex's independent "
+                "read says the synth violated it.  Check the guidance "
+                "pipeline (D1 also flags shape) and verify the "
+                "directive actually threaded into the Phase 3 + "
+                "Phase 5 prompts."
+            ),
+        ))
+
+    # ------------------------------------------------------------------
+    # Trigger 3 — novel_concerns_argosy_missed non-empty.
+    # ------------------------------------------------------------------
+    agreement = parsed.get("agreement_with_argosy") or {}
+    novel: list[str] = []
+    if isinstance(agreement, dict):
+        raw_novel = agreement.get("novel_concerns_argosy_missed") or []
+        if isinstance(raw_novel, list):
+            for n in raw_novel:
+                if isinstance(n, str) and n.strip():
+                    novel.append(n.strip())
+    if novel:
+        out.append(Finding(
+            id=f"D11:novel_concerns:{scope.decision_run_id}",
+            detector="D11",
+            severity="YELLOW",
+            category="behavior",
+            title=(
+                f"Codex independently flagged {len(novel)} concern(s) "
+                f"the Argosy fleet missed on plan-synth-"
+                f"{scope.decision_run_id}"
+            ),
+            evidence={
+                "decision_run_id": scope.decision_run_id,
+                "agent_report_id": codex_row.id,
+                "novel_concerns_argosy_missed": novel[:10],
+                "codex_overall_assessment": overall,
+            },
+            suggested_fix=(
+                "Codex is the independent eyes — when it surfaces a "
+                "concern the analysts / risk officers didn't, treat "
+                "the gap as analyst-coverage feedback.  Decide per "
+                "concern whether to update the relevant analyst's "
+                "prompt or add a new check."
+            ),
+        ))
+
+    return out
+
+
+# ----------------------------------------------------------------------
 # Shared helpers
 # ----------------------------------------------------------------------
 
@@ -1085,6 +1297,8 @@ ALL_DETECTORS: tuple[tuple[str, str, callable], ...] = (
     ("D8", "phase_participants_empty", detect_phase_participants_empty),
     ("D9", "objection_topic_recurrence", detect_objection_topic_recurrence),
     ("D10", "agent_response_truncated", detect_agent_response_truncated),
+    ("D11", "codex_disagreed_with_synthesizer",
+     detect_codex_disagreed_with_synthesizer),
 )
 
 
@@ -1154,6 +1368,7 @@ __all__ = [
     "detect_adapter_outcome_failure_swallowed",
     "detect_agent_response_truncated",
     "detect_analyst_cites_unknown_source",
+    "detect_codex_disagreed_with_synthesizer",
     "detect_consecutive_fm_rejections_same_theme",
     "detect_cost_outlier_per_role",
     "detect_decision_run_stuck",
