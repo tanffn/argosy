@@ -1469,3 +1469,64 @@ def test_cashflow_projection_tax_rate_param(client_with_db):
     inc_0 = r0.json()["series"][0]["portfolio_income_base_monthly_usd"]
     inc_50 = r50.json()["series"][0]["portfolio_income_base_monthly_usd"]
     assert inc_50 == pytest.approx(inc_0 * 0.5, rel=1e-3)
+
+
+def test_cashflow_projection_portfolio_override(client_with_db):
+    """portfolio_value_usd_override should replace the DB-computed value."""
+    from tests.test_cashflow_projection import _seed_full_state
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        _seed_full_state(s)
+    # Seeded portfolio is $1.5M USD (total_usd_value_k=1500). Override to $1M.
+    r = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&portfolio_value_usd_override=1000000"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # t=0 portfolio income should be ~$1M * 0.055 * 0.75 / 12 = $3,437.50/mo
+    # (mu_nominal=0.08, inflation=0.025, real=0.055, net after 25% tax)
+    p0 = body["series"][0]
+    expected = 1_000_000 * (0.08 - 0.025) * (1 - 0.25) / 12
+    assert p0["portfolio_income_base_monthly_usd"] == pytest.approx(
+        expected, rel=1e-2
+    )
+
+
+def test_cashflow_projection_mu_nominal_param(client_with_db):
+    """mu_nominal=0.04 should give half the real return of mu=0.055.
+
+    real_return = mu - inflation = 0.04 - 0.025 = 0.015 (vs default 0.055).
+    Portfolio income drops accordingly."""
+    from tests.test_cashflow_projection import _seed_full_state
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        _seed_full_state(s)
+    r_default = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel"
+    )
+    r_low = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&mu_nominal_annual=0.04"
+    )
+    assert r_default.status_code == 200 and r_low.status_code == 200
+    inc_default = r_default.json()["series"][0]["portfolio_income_base_monthly_usd"]
+    inc_low = r_low.json()["series"][0]["portfolio_income_base_monthly_usd"]
+    # default real 0.055, low real 0.015 → ratio 0.015/0.055 ≈ 0.273
+    assert inc_low == pytest.approx(inc_default * (0.015 / 0.055), rel=1e-2)
+
+
+def test_cashflow_projection_mu_bounds(client_with_db):
+    """mu_nominal outside [0.02, 0.15] is rejected."""
+    from tests.test_cashflow_projection import _seed_full_state
+    SF = client_with_db.app.state.session_factory
+    with SF() as s:
+        _seed_full_state(s)
+    # Below range
+    r = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&mu_nominal_annual=0.01"
+    )
+    assert r.status_code == 422
+    # Above range
+    r = client_with_db.get(
+        "/api/plan/draft/cashflow-projection?user_id=ariel&mu_nominal_annual=0.20"
+    )
+    assert r.status_code == 422

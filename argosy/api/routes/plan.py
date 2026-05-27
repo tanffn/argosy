@@ -1240,6 +1240,26 @@ def get_draft_cashflow_projection(
     years: int = Query(30, ge=1, le=50),
     retirement_age: float = Query(49.0, ge=30.0, le=80.0),
     tax_rate: float = Query(0.25, ge=0.0, le=0.5),
+    portfolio_value_usd_override: float | None = Query(
+        None,
+        ge=0.0,
+        le=100_000_000.0,
+        description=(
+            "Replace the DB-computed portfolio value with this USD amount. "
+            "Useful for what-if scenarios (e.g. 'what if I sold NVDA and ended "
+            "up with $2.99M'). When omitted, uses the latest portfolio_snapshots row."
+        ),
+    ),
+    mu_nominal_annual: float = Query(
+        0.08,
+        ge=0.02,
+        le=0.15,
+        description=(
+            "Nominal expected portfolio return per year. Default 0.08 = S&P-historical. "
+            "Drop to 0.04-0.05 to stress-test a flat/sideways decade scenario. "
+            "Real return = mu_nominal - inflation_annual (the latter is fixed at 0.025)."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> CashflowProjectionResponse:
     """Return a per-month cashflow projection for the /plan retirement view.
@@ -1254,11 +1274,24 @@ def get_draft_cashflow_projection(
 
     hh = extract_household_state(db, user_id)
     pen = extract_pension_state(db, user_id)
+
+    # Apply the override (if any) BEFORE the projection. We swap the
+    # ``portfolio_value_nis`` field on the immutable dataclass via
+    # ``dataclasses.replace`` so the rest of the household state
+    # (expenses, fx, age) is preserved.
+    if portfolio_value_usd_override is not None:
+        from dataclasses import replace as _dc_replace
+        hh = _dc_replace(
+            hh,
+            portfolio_value_nis=portfolio_value_usd_override * hh.fx_usd_nis,
+        )
+
     proj = project_cashflow(
         household=hh,
         pensions=pen,
         retirement_age=retirement_age,
         years=years,
+        mu_nominal_annual=mu_nominal_annual,
         tax_rate=tax_rate,
     )
 
