@@ -464,13 +464,89 @@ async def run_codex_second_opinion(
     parsed = _parse_codex_verdict(verdict_text)
 
     # ------------------------------------------------------------------
+    # Cost + token telemetry.
+    #
+    # The real ``CodexResult`` dataclass (engine_codex.CodexResult)
+    # exposes a single flat ``tokens: int`` (total -- no in/out split)
+    # and NO ``cost`` field. The kit computes cost externally via
+    # ``engine_stats.estimate_cost_usd(model, tokens)`` against a
+    # ``models.toml`` price table. Until this fix, we hardcoded
+    # ``cost_usd=0.0`` on the AgentReport row, which is why run #31's
+    # codex row shows $0 despite ~53k tokens of real GPT-5 spend.
+    #
+    # Defensive layering -- highest fidelity first:
+    #   1. If the result object carries explicit ``cost`` /
+    #      ``tokens_in`` / ``tokens_out`` attributes (e.g. a future
+    #      kit version, or a test stub), honour them.
+    #   2. Otherwise call ``estimate_cost_usd("codex-gpt-5-5", tokens)``
+    #      using the kit's own price table -- best available estimate
+    #      given that codex only emits a total token count to stderr.
+    #   3. On ANY failure (kit module gone, models.toml missing, weird
+    #      values), log a warning and fall through to cost=0.0 +
+    #      tokens=0 rather than crashing.
+    #
+    # A defensive upper bound ($10) guards against a runaway estimate
+    # surfacing a misleading dollar in the UI -- a single codex review
+    # has never come close to $1 in practice; anything above $10 is
+    # almost certainly a price-table glitch.
+    # ------------------------------------------------------------------
+    _COST_CAP_USD = 10.0
+    total_tokens = int(getattr(result, "tokens", 0) or 0)
+    tokens_in = int(getattr(result, "tokens_in", 0) or 0)
+    tokens_out_attr = getattr(result, "tokens_out", None)
+    if tokens_out_attr is None:
+        # No explicit split available -- mirror the legacy convention of
+        # parking the total under tokens_out (the kit never exposes input
+        # tokens separately).
+        tokens_out = total_tokens
+    else:
+        tokens_out = int(tokens_out_attr or 0)
+
+    explicit_cost = getattr(result, "cost", None)
+    if explicit_cost is not None:
+        try:
+            cost_usd = float(explicit_cost)
+        except (TypeError, ValueError) as exc:
+            log.warning(
+                "codex_second_opinion.cost_attr_unparseable",
+                decision_run_id=decision_run_id,
+                raw=repr(explicit_cost),
+                error=str(exc),
+            )
+            cost_usd = 0.0
+    else:
+        # Fall back to the kit's own cost estimator. The scripts_dir is
+        # already on sys.path from the run_codex import above.
+        try:
+            from engine_stats import estimate_cost_usd  # type: ignore[import-not-found]
+            cost_usd = float(
+                estimate_cost_usd(model="codex-gpt-5-5", tokens=total_tokens)
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "codex_second_opinion.cost_estimate_failed",
+                decision_run_id=decision_run_id,
+                tokens=total_tokens,
+                error=str(exc),
+            )
+            cost_usd = 0.0
+
+    if cost_usd < 0 or cost_usd > _COST_CAP_USD:
+        log.warning(
+            "codex_second_opinion.cost_out_of_range",
+            decision_run_id=decision_run_id,
+            raw_cost_usd=cost_usd,
+            cap_usd=_COST_CAP_USD,
+        )
+        cost_usd = 0.0 if cost_usd < 0 else _COST_CAP_USD
+
+    # ------------------------------------------------------------------
     # Build an AgentReport dataclass so the existing phase-recorder /
     # JSONL forensic-trail path can persist this row alongside Argosy's
     # native agent rows. ``output`` carries the parsed verdict so the
     # downstream replay UI can render it; ``response_text`` carries the
     # raw codex output for manual review.
     # ------------------------------------------------------------------
-    tokens = int(getattr(result, "tokens", 0) or 0)
     row = AgentReport(
         agent_role="codex_second_opinion",
         user_id=user_id,
@@ -479,9 +555,9 @@ async def run_codex_second_opinion(
         # JSON so the FM's prompt builder can re-parse identically off
         # the DB row.
         response_text=parsed.model_dump_json(indent=2),
-        tokens_in=0,  # codex doesn't split in/out tokens in our wrapper
-        tokens_out=tokens,
-        cost_usd=0.0,  # codex wrapper doesn't return cost today
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        cost_usd=cost_usd,
         prompt_hash="",
         confidence=None,
         output=parsed,

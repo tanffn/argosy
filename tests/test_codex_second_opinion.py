@@ -37,17 +37,34 @@ from argosy.orchestrator.flows.plan_synthesis.codex_second_opinion import (
 
 
 class _StubCodexResult:
-    """Minimal stand-in for ``engine_codex.CodexResult``."""
+    """Minimal stand-in for ``engine_codex.CodexResult``.
+
+    Real ``CodexResult`` only exposes ``tokens`` (a flat total int).
+    The ``cost`` / ``tokens_in`` / ``tokens_out`` keyword arguments are
+    forward-looking hooks the cost-telemetry wiring honours when present
+    -- tests use them to assert the per-attribute persistence path.
+    """
 
     def __init__(self, *, verdict_text: str = "", tokens: int = 0,
                  exit_code: int = 0, wall_s: float = 1.0,
-                 stderr: str = ""):
+                 stderr: str = "", cost: float | None = None,
+                 tokens_in: int | None = None,
+                 tokens_out: int | None = None):
         self.verdict_text = verdict_text
         self.tokens = tokens
         self.exit_code = exit_code
         self.wall_s = wall_s
         self.stderr = stderr
         self.needs = []
+        # Only attach when explicitly provided so we can also exercise
+        # the "real CodexResult shape" fallback path (no cost/in/out
+        # attrs at all).
+        if cost is not None:
+            self.cost = cost
+        if tokens_in is not None:
+            self.tokens_in = tokens_in
+        if tokens_out is not None:
+            self.tokens_out = tokens_out
 
 
 def _valid_codex_json() -> str:
@@ -288,8 +305,12 @@ def test_codex_returns_unparseable_opinion_on_garbage_output(
     assert row is not None
     assert row.agent_role == "codex_second_opinion"
     assert row.user_id == "ariel"
-    # The codex wrapper doesn't return cost today.
-    assert row.cost_usd == 0.0
+    # Cost is now computed via engine_stats.estimate_cost_usd from the
+    # token count. Tokens=10 yields a sub-cent estimate, but it is no
+    # longer hardcoded to zero -- guard against regression back to the
+    # old hardcoded-0 path.
+    assert row.cost_usd >= 0.0
+    assert row.tokens_out == 10
 
 
 def test_codex_full_path_with_valid_output(monkeypatch, tmp_path):
@@ -433,3 +454,163 @@ def test_codex_opinion_round_trips_via_json():
     assert restored.findings[0].topic == "cash-floor"
     assert restored.agreement_with_argosy.agrees_with_risk_verdict is False
     assert restored.user_directive_respected is False
+
+
+# ---------------------------------------------------------------------------
+# Cost telemetry — wire CodexResult cost/tokens into the AgentReport row
+# ---------------------------------------------------------------------------
+
+
+def test_codex_agent_report_carries_real_cost(monkeypatch, tmp_path):
+    """The codex AgentReport row must surface real cost + token splits,
+    NOT the legacy hardcoded ``cost_usd=0.0`` placeholder.
+
+    Regression guard for the bug where every persisted codex row showed
+    $0 in the audit UI despite ~50k tokens of real GPT-5 spend per run.
+    The stub supplies explicit ``cost`` / ``tokens_in`` / ``tokens_out``
+    attributes which the wiring should honour verbatim (capped only on
+    out-of-range values).
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+    reload_settings()
+
+    import sys
+    import types
+    fake_mod = types.ModuleType("engine_codex")
+
+    def _stub_run_codex(**kw):
+        return _StubCodexResult(
+            verdict_text=_valid_codex_json(),
+            tokens=9200,
+            cost=0.42,
+            tokens_in=8000,
+            tokens_out=1200,
+        )
+
+    fake_mod.run_codex = _stub_run_codex
+    sys.modules["engine_codex"] = fake_mod
+
+    import argosy.orchestrator.flows.plan_synthesis.codex_second_opinion as cso
+
+    async def _run():
+        return await cso.run_codex_second_opinion(
+            synth_draft_json='{}',
+            analyst_reports_text="reports",
+            debate_outcomes_text="debates",
+            risk_verdict_text="risk",
+            user_directive="",
+            decision_run_id=42,
+            user_id="ariel",
+        )
+
+    try:
+        parsed, row = asyncio.run(_run())
+    finally:
+        sys.modules.pop("engine_codex", None)
+
+    assert parsed is not None
+    assert row is not None
+    assert row.cost_usd == 0.42
+    assert row.tokens_in == 8000
+    assert row.tokens_out == 1200
+
+
+def test_codex_agent_report_cost_capped_when_out_of_range(monkeypatch, tmp_path):
+    """A wildly-large cost from a future kit version or a price-table
+    glitch must be capped rather than surfaced verbatim. The cap exists
+    so the audit UI never shows a misleading three-digit dollar figure.
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+    reload_settings()
+
+    import sys
+    import types
+    fake_mod = types.ModuleType("engine_codex")
+
+    def _stub_run_codex(**kw):
+        # 9999 dollars is the "something is very wrong" signal.
+        return _StubCodexResult(
+            verdict_text=_valid_codex_json(),
+            tokens=1000,
+            cost=9999.0,
+        )
+
+    fake_mod.run_codex = _stub_run_codex
+    sys.modules["engine_codex"] = fake_mod
+
+    import argosy.orchestrator.flows.plan_synthesis.codex_second_opinion as cso
+
+    async def _run():
+        return await cso.run_codex_second_opinion(
+            synth_draft_json='{}',
+            analyst_reports_text="r", debate_outcomes_text="d",
+            risk_verdict_text="r2", user_directive="",
+            decision_run_id=43, user_id="ariel",
+        )
+
+    try:
+        _, row = asyncio.run(_run())
+    finally:
+        sys.modules.pop("engine_codex", None)
+
+    assert row is not None
+    # Capped at the defensive upper bound (10.0). The exact cap value is
+    # an implementation detail -- the load-bearing property is that we
+    # don't surface $9999.
+    assert 0.0 < row.cost_usd <= 10.0
+
+
+def test_codex_agent_report_cost_estimated_when_attr_missing(
+    monkeypatch, tmp_path,
+):
+    """When the result has no ``cost`` attribute (the current real
+    CodexResult shape), the wiring must FALL BACK to the kit's
+    ``estimate_cost_usd("codex-gpt-5-5", tokens)`` rather than parking
+    cost at zero. This is the path that actually fires in production
+    today since the live kit only emits a total token count.
+    """
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+    reload_settings()
+
+    import sys
+    import types
+    fake_mod = types.ModuleType("engine_codex")
+
+    def _stub_run_codex(**kw):
+        # No cost / tokens_in / tokens_out attrs -- mirrors real kit.
+        return _StubCodexResult(verdict_text=_valid_codex_json(), tokens=50_000)
+
+    fake_mod.run_codex = _stub_run_codex
+    sys.modules["engine_codex"] = fake_mod
+
+    import argosy.orchestrator.flows.plan_synthesis.codex_second_opinion as cso
+
+    async def _run():
+        return await cso.run_codex_second_opinion(
+            synth_draft_json='{}',
+            analyst_reports_text="r", debate_outcomes_text="d",
+            risk_verdict_text="r2", user_directive="",
+            decision_run_id=44, user_id="ariel",
+        )
+
+    try:
+        _, row = asyncio.run(_run())
+    finally:
+        sys.modules.pop("engine_codex", None)
+
+    assert row is not None
+    # 50k tokens at codex-gpt-5-5 rates ($5/M in, $15/M out, 50/50 split)
+    # is $0.50 -- well within the sane bound, comfortably > 0.
+    assert 0.10 < row.cost_usd < 5.0
+    # Legacy convention: total parks under tokens_out when no split.
+    assert row.tokens_out == 50_000
+    assert row.tokens_in == 0
