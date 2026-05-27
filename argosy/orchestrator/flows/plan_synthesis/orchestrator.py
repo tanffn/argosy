@@ -665,12 +665,46 @@ def run_synthesis(
     # were already persisted by _record_phase_completion during the
     # flow; this row carries the FundManagerPlanRevisionDecision DTO so
     # the replay UI's VerdictCard renders the approval call.
+    #
+    # T0.1 follow-up — thread the FM's agent_report id so this final
+    # plan_synthesis.verdict phase row's participants_json points at the
+    # FM run that produced the call. Prior to this fix the recorder
+    # received agent_report_ids=[] (the FM's id wasn't surfaced from
+    # phase 5 to here), leaving the verdict row's participants_json as
+    # '[]' and the replay UI's sequence diagram empty for the final
+    # row. The FM agent_report row was already persisted in DB by
+    # phase 5's _record_phase_completion → _persist_phase_agent_reports_async
+    # path before we reach this line, so a fresh query against
+    # (user_id, decision_id=decision_audit_token, agent_role='fund_manager')
+    # will find it. We pick the LATEST row (ORDER BY id DESC LIMIT 1)
+    # — when phase 5's FM retry budget consumed more than one attempt,
+    # the most-recently-written row is the one that produced the
+    # verdict we're recording here.
     try:
         import asyncio
+        from sqlalchemy import select as _select, update as _update
         from argosy.agents.fund_manager import FundManagerPlanRevisionDecision
         from argosy.services.negotiation_recorder import (
             record_negotiation_phase,
         )
+        from argosy.state.models import AgentReport as _AgentReportRow
+
+        fm_row = session.execute(
+            _select(_AgentReportRow.id, _AgentReportRow.phase_id)
+            .where(_AgentReportRow.user_id == user_id)
+            .where(_AgentReportRow.decision_id == decision_audit_token)
+            .where(_AgentReportRow.agent_role == "fund_manager")
+            .order_by(_AgentReportRow.id.desc())
+            .limit(1)
+        ).first()
+        fm_report_id: int | None = fm_row[0] if fm_row is not None else None
+        # Preserve the existing phase_id back-link (set by phase 5's
+        # recorder call). Without this, the recorder below would
+        # OVERWRITE the FM's phase_id to point at the verdict row,
+        # severing the synthesis.phase_5 → fund_manager back-link that
+        # the replay UI relies on.
+        prior_fm_phase_id: int | None = fm_row[1] if fm_row is not None else None
+        fm_ids: list[int] = [fm_report_id] if fm_report_id is not None else []
 
         verdict = FundManagerPlanRevisionDecision(
             approved=approved,
@@ -686,9 +720,32 @@ def run_synthesis(
             decision_run_id=decision_run_id,
             kind="plan_synthesis.verdict",
             started_at=decision_run.started_at,
-            agent_report_ids=[],
+            agent_report_ids=fm_ids,
             verdict=verdict,
         ))
+
+        # Restore the FM's original phase_id back-link if the recorder
+        # clobbered it. The verdict row references the FM via its
+        # participants_json (the columnar back-link is now duplicated in
+        # the JSON), but the FM's authoritative phase_id stays at
+        # synthesis.phase_5 — the actual debate phase it participated
+        # in. Best-effort: any failure logs and continues so synthesis
+        # itself never aborts because of audit-trail hygiene.
+        if fm_report_id is not None and prior_fm_phase_id is not None:
+            try:
+                session.execute(
+                    _update(_AgentReportRow)
+                    .where(_AgentReportRow.id == fm_report_id)
+                    .values(phase_id=prior_fm_phase_id)
+                )
+                session.commit()
+            except Exception as restore_exc:  # noqa: BLE001
+                log.warning(
+                    "plan_synthesis.fm_phase_id_restore_failed",
+                    user_id=user_id,
+                    decision_run_id=decision_run_id,
+                    error=str(restore_exc),
+                )
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.warning(
             "plan_synthesis.record_phase_failed",
@@ -1627,6 +1684,18 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
 
     common_kwargs: dict = _asdict(inputs)
     common_kwargs["decision_id"] = decision_run_id
+    # Wave 1 follow-up — thread the user's free-text guidance into the
+    # kwargs bag as ``user_directive`` so ``_safe_run_agent``'s
+    # per-agent signature narrowing delivers it ONLY to analysts that
+    # declare a ``user_directive`` parameter on their build_prompt.
+    # Today that is exclusively ``PlanCritiqueAgent``; the 9 other
+    # single-ticker analysts (concentration, fx, fundamentals, news,
+    # sentiment, technical, macro, tax, household_budget) are pure
+    # data-gatherers and their build_prompt signatures don't declare
+    # ``user_directive``, so the narrowing filter drops it for them.
+    # Empty (no guidance) is also fine: PlanCritique's default value
+    # is "" which produces a byte-identical prompt to the no-kwarg call.
+    common_kwargs["user_directive"] = guidance or ""
 
     reports: list[str] = []
     collected: list[AgentReport] = []
@@ -1755,7 +1824,8 @@ def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
 
 
 def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
-                         baseline, prior_current, decision_run_id, trigger
+                         baseline, prior_current, decision_run_id, trigger,
+                         guidance: str = "",
                          ) -> tuple[str, list[AgentReport]]:
     """Run bull/bear/facilitator across all three horizons in parallel.
 
@@ -1766,6 +1836,15 @@ def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
     function collects all reports across the three horizons and
     bulk-persists once at phase end (single sync writer, no aiosqlite
     contention).
+
+    ``guidance``: free-text user directive carried forward from
+    ``run_synthesis``. When non-empty, it is forwarded as
+    ``user_directive`` to the bull/bear/facilitator build_prompt calls
+    so per-horizon debaters can otherwise re-raise the same concern the
+    user has already AGREED with. Without this thread the bull, bear,
+    and facilitator agents would feed the synthesizer their unchanged
+    reasoning and force the synthesizer to overrule them with extra
+    tokens.
     """
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
@@ -1785,6 +1864,7 @@ def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
                 prior_current=prior_current,
                 decision_run_id=decision_run_id,
                 trigger=trigger,
+                guidance=guidance,
             ): h for h in ("long", "medium", "short")
         }
         for fut in as_completed(futures):
@@ -1821,7 +1901,9 @@ def _run_phase_2_debates(*, session, user_id, analyst_reports_text,
 def _run_one_horizon_debate(*, horizon: str, user_id: str,
                              analyst_reports_text: str,
                              baseline, prior_current, decision_run_id: str,
-                             trigger: str) -> tuple[str, list[AgentReport]]:
+                             trigger: str,
+                             guidance: str = "",
+                             ) -> tuple[str, list[AgentReport]]:
     """Run bull/bear/facilitator for one horizon.
 
     Reuses the existing argosy.agents.researcher and researcher_facilitator
@@ -1890,6 +1972,7 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
         round_index=1,
         n_max=2,
         ticker=ticker,
+        user_directive=guidance,
         decision_id=decision_run_id,
     )
     bull_turn = bull_report.output if hasattr(bull_report, "output") else None
@@ -1915,6 +1998,7 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
                 round_index=1,
                 n_max=2,
                 ticker=ticker,
+                user_directive=guidance,
                 decision_id=decision_run_id,
             )
             break
@@ -1957,6 +2041,7 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
         bear_turns=[bear_turn_dict] if bear_turn_dict else [],
         rounds_run=1,
         ticker=ticker,
+        user_directive=guidance,
         decision_id=decision_run_id,
     )
     out = fac_report.output if hasattr(fac_report, "output") else fac_report
@@ -2098,7 +2183,8 @@ def _enforce_speculation_cap(
 
 
 def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,
-                      analyst_reports_text: str, decision_run_id: str
+                      analyst_reports_text: str, decision_run_id: str,
+                      guidance: str = "",
                       ) -> tuple[str, list[AgentReport]]:
     """Plan-level risk verdict from three perspectives + facilitator merge.
 

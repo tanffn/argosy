@@ -762,6 +762,157 @@ def test_phase_completion_threads_agent_report_ids(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# T0.1 follow-up — final plan_synthesis.verdict phase row carries FM agent
+# ---------------------------------------------------------------------------
+
+
+def test_synthesis_verdict_phase_has_fm_id(tmp_path, monkeypatch):
+    """T0.1 follow-up — the FINAL ``plan_synthesis.verdict`` row that
+    ``run_synthesis`` writes at end-of-flow must have a non-empty
+    ``participants_json`` referencing the FM's ``agent_reports.id``.
+
+    Pre-fix: the recorder call near the end of ``run_synthesis`` passed
+    ``agent_report_ids=[]`` because the FM's id wasn't surfaced from
+    phase 5 to the final call site. Phase 5's
+    ``_record_phase_completion`` already persists the FM agent_report
+    row to the DB, so the fix queries it by
+    ``(user_id, decision_id=decision_audit_token, agent_role='fund_manager')``
+    and picks the latest id.
+
+    This test stubs every phase including phase 5 to return an
+    ``AgentReport`` for ``fund_manager``, drives synthesis to
+    completion, then asserts the final ``plan_synthesis.verdict`` row's
+    ``participants_json`` contains that FM's id.
+    """
+    import sqlalchemy as sa
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings, get_settings
+    reload_settings()
+    settings = get_settings()
+    settings.db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    sync_url = f"sqlite:///{settings.db_file}"
+    async_url = f"sqlite+aiosqlite:///{settings.db_file}"
+
+    sync_engine = sa.create_engine(
+        sync_url, connect_args={"check_same_thread": False},
+    )
+
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    command.upgrade(cfg, "head")
+
+    from argosy.state import db as db_mod
+    db_mod.init_engine(async_url)
+
+    SessionLocal = sessionmaker(bind=sync_engine, expire_on_commit=False)
+    session = SessionLocal()
+    try:
+        session.add(User(id="ariel", plan="free"))
+        session.add(PlanVersion(
+            user_id="ariel",
+            role="baseline",
+            version_label="Jacobs v2.0",
+            raw_markdown="# Plan",
+            distillate_rendered="# Plan distillate\n\nUCITS-first.\n",
+        ))
+        session.commit()
+
+        from argosy.orchestrator.flows import plan_synthesis as flow
+
+        def _stub_phase_1(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            return "(analyst reports)", [
+                _make_stub_agent_report("fundamentals_analyst", decision_id, "p1"),
+            ]
+
+        def _stub_phase_2(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            return "(debate outcomes)", [
+                _make_stub_agent_report("bull_researcher", decision_id, "p2"),
+            ]
+
+        def _stub_phase_3(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            return _stub_synthesis_output(), [
+                _make_stub_agent_report("plan_synthesizer", decision_id, "p3"),
+            ]
+
+        def _stub_phase_4(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            return "(risk verdict)", [
+                _make_stub_agent_report("risk_neutral", decision_id, "p4"),
+            ]
+
+        def _stub_phase_5(**kw):
+            decision_id = kw.get("decision_run_id", "")
+            return True, [
+                _make_stub_agent_report("fund_manager", decision_id, "p5"),
+            ]
+
+        monkeypatch.setattr(flow, "_run_phase_1_analysts", _stub_phase_1)
+        monkeypatch.setattr(flow, "_run_phase_2_debates", _stub_phase_2)
+        monkeypatch.setattr(flow, "_run_phase_3_synthesizer", _stub_phase_3)
+        monkeypatch.setattr(flow, "_run_phase_4_risk", _stub_phase_4)
+        monkeypatch.setattr(flow, "_run_phase_5_fund_manager", _stub_phase_5)
+        monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+        monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+        result = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+        assert result.draft_id is not None
+
+        # The final 'plan_synthesis.verdict' row must exist and carry the
+        # FM's agent_report id (not the empty list bug).
+        verdict_row = session.execute(
+            select(DecisionPhase)
+            .where(DecisionPhase.decision_run_id == result.decision_run_id)
+            .where(DecisionPhase.kind == "plan_synthesis.verdict")
+        ).scalar_one_or_none()
+        assert verdict_row is not None, (
+            "expected a plan_synthesis.verdict row to be persisted at end of flow"
+        )
+
+        participants = json.loads(verdict_row.participants_json or "[]")
+        assert isinstance(participants, list) and len(participants) > 0, (
+            f"plan_synthesis.verdict participants_json is empty — T0.1 follow-up "
+            f"regressed; participants_json={verdict_row.participants_json!r}"
+        )
+
+        # The participant must be the FM run produced by phase 5.
+        from argosy.state.models import AgentReport as AgentReportRow
+
+        fm_role_seen = False
+        for part in participants:
+            ar_id = part.get("agent_report_id")
+            assert ar_id is not None, (
+                f"verdict participant entry missing agent_report_id: {part}"
+            )
+            ar = session.get(AgentReportRow, ar_id)
+            assert ar is not None, (
+                f"agent_report_id={ar_id} from verdict row does not resolve"
+            )
+            if ar.agent_role == "fund_manager":
+                fm_role_seen = True
+        assert fm_role_seen, (
+            f"verdict row's participants must include the fund_manager run; "
+            f"got roles {[p.get('agent_role') for p in participants]}"
+        )
+    finally:
+        import asyncio
+        session.close()
+        sync_engine.dispose()
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(db_mod.dispose_engine())
+        finally:
+            loop.close()
+
+
+# ---------------------------------------------------------------------------
 # T0.3 — phase 1 phase_output_json carries adapter_outcomes
 # ---------------------------------------------------------------------------
 
