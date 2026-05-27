@@ -67,7 +67,7 @@ class ObjectionTranslatorAgent(BaseAgent[ObjectionTranslation]):
     agent_role = "objection_translator"
     output_model = ObjectionTranslation
     require_citations = False
-    max_tokens = 1500
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

@@ -44,7 +44,7 @@ class PlanDistillerAgent(BaseAgent[PlanDistillate]):
     # external authority. Each extracted item still carries
     # ``source_section`` so the UI can click-through to the heading.
     require_citations = False
-    max_tokens = 8192
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8192).
 
     def build_prompt(
         self,

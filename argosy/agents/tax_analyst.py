@@ -77,7 +77,7 @@ class TaxAnalystAgent(BaseAgent[TaxReport]):
     agent_role = "tax"
     output_model = TaxReport
     require_citations = True
-    max_tokens = 4096
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

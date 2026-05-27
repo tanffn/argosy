@@ -28,7 +28,7 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
     agent_role = "plan_synthesizer"
     output_model = PlanSynthesisOutput
     require_citations = True
-    max_tokens = 16384
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (32000).
 
     def build_prompt(
         self,

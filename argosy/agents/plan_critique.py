@@ -83,7 +83,7 @@ class PlanCritiqueAgent(BaseAgent[PlanCritiqueReport]):
     agent_role = "plan_critique"
     output_model = PlanCritiqueReport
     require_citations = True
-    max_tokens = 8192
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (32000).
 
     def build_prompt(
         self,

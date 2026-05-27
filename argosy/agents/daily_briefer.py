@@ -75,7 +75,7 @@ class DailyBrieferAgent(BaseAgent[DailyBriefMarkdown]):
     agent_role = "daily_briefer"
     output_model = DailyBriefMarkdown
     require_citations = False  # graceful degradation: empty inputs → empty cites
-    max_tokens = 4096
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

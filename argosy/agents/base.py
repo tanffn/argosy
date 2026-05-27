@@ -47,80 +47,53 @@ from argosy.secrets import get_secret
 # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2;
 # the per-role default below is the fallback when the file is absent.
 DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
-    # Intake conducts a conversational interview. Initially defaulted to
-    # Haiku for speed, but Haiku proved unreliable at: (a) following the
-    # "DO NOT re-ask answered fields" rule even with an explicit checklist,
-    # (b) emitting yaml_patch entries that match the canonical key shape,
-    # (c) batched-question structure consistency. Sonnet follows the
-    # structured-checklist prompt reliably enough to halve the number of
-    # turns despite each turn being ~2-3x slower. Net: shorter interviews.
-    # Override via agent_settings.yaml if Haiku is preferred for cost.
-    "intake": "claude-sonnet-4-6",
-    # AdvisorAgent subclasses IntakeAgent but registers its own
-    # `agent_role = "advisor"` (see argosy/agents/advisor.py). Without an
-    # explicit entry here, advisor instantiations fall through to
-    # FALLBACK_MODEL rather than the documented intake-family default.
-    # The SDD §3.6 row + Appendix A.2 model-defaults block document
-    # advisor=Sonnet; this entry makes that explicit at the code level.
-    "advisor": "claude-sonnet-4-6",
-    # Plan-markdown extractor: light reasoning over a single user-provided
-    # document. Citations not required (the source IS the user's plan);
-    # fabrication is prevented by an explicit prompt rule.
-    "intake_extractor": "claude-sonnet-4-6",
-    "plan_critique": "claude-sonnet-4-6",
-    # Plan-distiller: extracts durable principles + targets from a
-    # baseline plan markdown. Single-pass; structured output. Sonnet.
-    "plan_distiller": "claude-sonnet-4-6",
+    # Fleet-wide Opus 4.7 posture (2026-05-27). Per SDD binding preferences
+    # ("accuracy over LLM cost"), every role defaults to Opus 4.7. Per-tenant
+    # cost-sensitivity overrides remain available via
+    # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` (Wave A — see
+    # `BaseAgent.__init__` override loader). The earlier mixed Opus/Sonnet
+    # fleet predates this preference and is preserved in git history if a
+    # downgrade is ever needed for a specific role.
+    "intake": "claude-opus-4-7",
+    "advisor": "claude-opus-4-7",
+    "intake_extractor": "claude-opus-4-7",
+    "plan_critique": "claude-opus-4-7",
+    "plan_distiller": "claude-opus-4-7",
     # Phase 2 analyst team:
-    "news": "claude-sonnet-4-6",
-    "macro": "claude-sonnet-4-6",
-    "concentration": "claude-sonnet-4-6",
+    "news": "claude-opus-4-7",
+    "macro": "claude-opus-4-7",
+    "concentration": "claude-opus-4-7",
     # Phase 3 decision team:
     "bull_researcher": "claude-opus-4-7",
     "bear_researcher": "claude-opus-4-7",
-    "researcher_facilitator": "claude-sonnet-4-6",
+    "researcher_facilitator": "claude-opus-4-7",
     "trader": "claude-opus-4-7",
-    "risk_officer": "claude-sonnet-4-6",
-    "risk_facilitator": "claude-sonnet-4-6",
+    "risk_officer": "claude-opus-4-7",
+    "risk_facilitator": "claude-opus-4-7",
     "fund_manager": "claude-opus-4-7",
     # Phase 7 analysts (SDD §3.1, §3.8):
-    "fundamentals": "claude-sonnet-4-6",
-    "technical": "claude-sonnet-4-6",
-    "sentiment": "claude-sonnet-4-6",
-    "tax": "claude-sonnet-4-6",
-    "fx": "claude-sonnet-4-6",
+    "fundamentals": "claude-opus-4-7",
+    "technical": "claude-opus-4-7",
+    "sentiment": "claude-opus-4-7",
+    "tax": "claude-opus-4-7",
+    "fx": "claude-opus-4-7",
     # Phase 7 cross-cutting (SDD §3.6):
-    "domain_refresh": "claude-sonnet-4-6",
+    "domain_refresh": "claude-opus-4-7",
     "audit": "claude-opus-4-7",
-    "watchlist": "claude-sonnet-4-6",
-    # Plan synthesizer (Phase 3 of plan_synthesis_flow): produces the
-    # three HorizonSection drafts. Opus default — accuracy over cost
-    # per user preference (the synthesizer is the firm's intellectual
-    # output; its quality dominates the overall flow's value).
+    "watchlist": "claude-opus-4-7",
+    # Plan synthesizer (Phase 3 of plan_synthesis_flow).
     "plan_synthesizer": "claude-opus-4-7",
-    # Objection translator (T4.6): renders FM objections in plain English
-    # for the /plan FMObjectionsCard "Explain" button. Single-purpose
-    # paraphrasing — Sonnet is plenty.
-    "objection_translator": "claude-sonnet-4-6",
-    # FM-objection ZigZag (T4.9): slim dialogue between the FM and one
-    # analyst about a single objection. ``analyst_responder`` is the
-    # generic analyst-perspective responder (Sonnet — cheap, target
-    # ~$0.10-0.20 per call). ``fund_manager_dialogue_verdict`` is the
-    # FM's final-verdict pass; Opus per the standard FM default since
-    # the verdict adjudicates the dialogue.
-    "analyst_responder": "claude-sonnet-4-6",
+    # Objection translator (T4.6).
+    "objection_translator": "claude-opus-4-7",
+    # FM-objection ZigZag (T4.9).
+    "analyst_responder": "claude-opus-4-7",
     "fund_manager_dialogue_verdict": "claude-opus-4-7",
-    # Household-budget analyst (synth Phase 1 #10): assess cash-flow
-    # runway + safe-withdrawal headroom. Sonnet — text-only, no
-    # debate / multi-round reasoning.
-    "household_budget": "claude-sonnet-4-6",
-    # Household-expenses categorizer: batched LLM categorization with
-    # confidence threshold >= 0.85. Sonnet is accurate enough and far
-    # cheaper than Opus for high-volume transaction labeling.
-    "household_categorizer": "claude-sonnet-4-6",
-    # Daily-briefer (T4.5): single-pass one-pager composer. Sonnet —
-    # daily-summary doesn't justify Opus, and cost cap is ~$1/brief.
-    "daily_briefer": "claude-sonnet-4-6",
+    # Household-budget analyst (synth Phase 1 #10).
+    "household_budget": "claude-opus-4-7",
+    # Household-expenses categorizer.
+    "household_categorizer": "claude-opus-4-7",
+    # Daily-briefer (T4.5).
+    "daily_briefer": "claude-opus-4-7",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -129,18 +102,93 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # to Haiku is still possible per-role via agent_settings.yaml for
     # cost-sensitive tenants.
 }
-FALLBACK_MODEL = "claude-sonnet-4-6"
+FALLBACK_MODEL = "claude-opus-4-7"
 
 # Per-role extended-thinking budget. Roles not listed default to 0 (no thinking).
-# Tuned for high-stakes agents where reasoning quality dominates flow value.
+# Anthropic constraint: `thinking_budget_tokens` MUST be >= 1024 AND
+# strictly LESS THAN `max_tokens` (thinking tokens count toward
+# max_tokens, not separately). `BaseAgent.__init__` enforces the
+# `thinking_budget < max_tokens` half of the invariant at construction
+# time; the 1024 floor is the model's own minimum.
+#
+# Tuned 2026-05-27 — fleet-wide Opus 4.7 bump (see CLAUDE.md / SDD
+# binding preference "accuracy over LLM cost"). Heavy reasoners get
+# 16K thinking; debaters / risk reviewers 8K; analysts + helpers 2K.
 DEFAULT_THINKING_BUDGET_BY_ROLE: dict[str, int] = {
-    "bull_researcher":  4000,
-    "bear_researcher":  4000,
-    "trader":           8000,
-    "fund_manager":     8000,
-    "plan_synthesizer": 8000,
-    "audit":            4000,
+    # Heavy-reasoning agents — large thinking, large output cap
+    "plan_synthesizer": 16000,
+    "fund_manager":     16000,
+    "plan_critique":    16000,
+    "audit":             8000,
+    "trader":            8000,
+    # Debaters + risk reviewers — meaningful thinking
+    "bull_researcher":        8000,
+    "bear_researcher":        8000,
+    "researcher_facilitator": 8000,
+    "risk_officer":           8000,
+    "risk_facilitator":       8000,
+    # FM-objection ZigZag verdict
+    "fund_manager_dialogue_verdict": 8000,
+    # Single-ticker analysts + helpers — small but non-zero
+    "concentration":        2000,
+    "fx":                   2000,
+    "fundamentals":         2000,
+    "news":                 2000,
+    "sentiment":            2000,
+    "technical":            2000,
+    "macro":                2000,
+    "tax":                  2000,
+    "household_budget":     2000,
+    "objection_translator": 2000,
+    "daily_briefer":        2000,
+    "analyst_responder":    2000,
+    "plan_distiller":       2000,
+    "intake_extractor":     2000,
+    "advisor":              2000,
 }
+
+# Per-role max_tokens for the Anthropic Messages API call. Drives the
+# `max_tokens` field passed to `client.messages.create(...)` (and the
+# claude_code backend's equivalent). Roles not in this table fall back
+# to the subclass's `max_tokens` ClassVar if it's overridden, else to
+# `DEFAULT_MAX_TOKENS_FALLBACK`.
+#
+# Anthropic constraint reminder: thinking tokens count TOWARD max_tokens,
+# so each value here MUST be strictly greater than the role's thinking
+# budget. The invariant in `BaseAgent.__init__` enforces this.
+DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
+    # Heavy: 32K cap (Opus 4.7 supports up to 32K output)
+    "plan_synthesizer": 32000,
+    "fund_manager":     32000,
+    "plan_critique":    32000,
+    # Medium: 16K
+    "audit":                  16000,
+    "trader":                 16000,
+    "bull_researcher":        16000,
+    "bear_researcher":        16000,
+    "researcher_facilitator": 16000,
+    "risk_officer":           16000,
+    "risk_facilitator":       16000,
+    "fund_manager_dialogue_verdict": 16000,
+    # Light: 8K (more than enough for an analyst's structured output)
+    "concentration": 8000, "fx": 8000, "fundamentals": 8000,
+    "news": 8000, "sentiment": 8000, "technical": 8000,
+    "macro": 8000, "tax": 8000, "household_budget": 8000,
+    "objection_translator": 8000, "daily_briefer": 8000,
+    "analyst_responder": 8000, "intake_extractor": 8000,
+    "advisor": 8000,
+    # plan_distiller — kept at 8192 to avoid shrinking the prior class
+    # attr; bumping the table value rather than retaining a class attr
+    # keeps the resolution table-driven for every role.
+    "plan_distiller": 8192,
+    # domain_refresh — kept at 8192 for the same reason (prior class attr).
+    "domain_refresh": 8192,
+    # Conversational / categorical roles — no thinking, fallback-sized.
+    "intake": 8000,
+    "household_categorizer": 8000,
+    "watchlist": 8000,
+}
+DEFAULT_MAX_TOKENS_FALLBACK: int = 8000
 
 # Per-role SDK call timeout (seconds). The default (FALLBACK_SDK_TIMEOUT)
 # is conservative; agents that emit long outputs need more. Override via
@@ -553,6 +601,25 @@ class BaseAgent(Generic[T]):
             self.agent_role, FALLBACK_SDK_TIMEOUT_SECONDS,
         )
 
+        # Resolve max_tokens. Priority: per-role table > subclass class attr
+        # (when the subclass actually overrode the BaseAgent default) >
+        # DEFAULT_MAX_TOKENS_FALLBACK. We detect a subclass override by
+        # comparing against BaseAgent's own class attribute so a vanilla
+        # subclass that did NOT override max_tokens still picks up the
+        # fallback rather than the stale 4096 default.
+        if self.agent_role in DEFAULT_MAX_TOKENS_BY_ROLE:
+            resolved_max_tokens = DEFAULT_MAX_TOKENS_BY_ROLE[self.agent_role]
+        else:
+            cls_max_tokens = type(self).max_tokens
+            base_max_tokens = BaseAgent.max_tokens
+            if cls_max_tokens != base_max_tokens:
+                resolved_max_tokens = cls_max_tokens
+            else:
+                resolved_max_tokens = DEFAULT_MAX_TOKENS_FALLBACK
+        # Assign as an instance attribute so subclass ClassVar reads still
+        # work for any code path that reads `type(agent).max_tokens`.
+        self.max_tokens = resolved_max_tokens
+
         # Wave A — apply per-user YAML overrides on top of per-role defaults.
         # Best-effort: any failure (missing file, malformed YAML, schema
         # mismatch) must not block agent construction. The agent simply
@@ -575,6 +642,17 @@ class BaseAgent(Generic[T]):
             # Override loading is best-effort; failure must not block agent creation.
             self._log.warning(
                 "agent_settings.yaml override load failed: %s", exc,
+            )
+
+        # Anthropic API constraint: `thinking_budget_tokens` MUST be
+        # strictly less than `max_tokens` (thinking tokens count toward
+        # max_tokens, not separately). Catch misconfiguration at startup
+        # instead of failing live.
+        if self.thinking_budget > 0 and self.thinking_budget >= self.max_tokens:
+            raise ValueError(
+                f"{self.agent_role}: thinking_budget ({self.thinking_budget}) "
+                f"must be less than max_tokens ({self.max_tokens}) — Anthropic "
+                f"API constraint."
             )
 
     # ------------------------------------------------------------------
@@ -2067,7 +2145,10 @@ __all__ = [
     "AgentReport",
     "BaseAgent",
     "ConfidenceBand",
+    "DEFAULT_MAX_TOKENS_BY_ROLE",
+    "DEFAULT_MAX_TOKENS_FALLBACK",
     "DEFAULT_MODEL_BY_ROLE",
+    "DEFAULT_THINKING_BUDGET_BY_ROLE",
     "ModelCall",
     "_llm_backend_available",
 ]

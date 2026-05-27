@@ -64,7 +64,8 @@ class _ResearcherAgent(BaseAgent[ResearcherTurn]):
 
     output_model = ResearcherTurn
     require_citations = True
-    max_tokens = 3072
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (16000 for both
+    # bull_researcher and bear_researcher).
 
     _side: ClassVar[Literal["bull", "bear"]] = "bull"
 

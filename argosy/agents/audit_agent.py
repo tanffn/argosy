@@ -57,7 +57,7 @@ class AuditAgent(BaseAgent[AuditReport]):
     agent_role = "audit"
     output_model = AuditReport
     require_citations = True
-    max_tokens = 4096
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (16000).
 
     def build_prompt(
         self,

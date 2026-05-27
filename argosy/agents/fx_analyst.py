@@ -49,7 +49,7 @@ class FXAnalystAgent(BaseAgent[FXReport]):
     agent_role = "fx"
     output_model = FXReport
     require_citations = True
-    max_tokens = 2048
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

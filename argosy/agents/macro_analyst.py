@@ -70,7 +70,7 @@ class MacroAnalystAgent(BaseAgent[MacroReport]):
     agent_role = "macro"
     output_model = MacroReport
     require_citations = True
-    max_tokens = 2048
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

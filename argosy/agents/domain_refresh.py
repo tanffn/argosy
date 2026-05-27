@@ -72,7 +72,7 @@ class DomainRefreshAgent(BaseAgent[DomainRefreshReport]):
     agent_role = "domain_refresh"
     output_model = DomainRefreshReport
     require_citations = True
-    max_tokens = 8192
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8192).
 
     def build_prompt(
         self,

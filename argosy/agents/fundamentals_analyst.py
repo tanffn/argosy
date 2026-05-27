@@ -70,7 +70,7 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
     agent_role = "fundamentals"
     output_model = FundamentalsReport
     require_citations = True
-    max_tokens = 4096
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

@@ -53,7 +53,7 @@ class SentimentAnalystAgent(BaseAgent[SentimentReport]):
     agent_role = "sentiment"
     output_model = SentimentReport
     require_citations = True
-    max_tokens = 2048
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

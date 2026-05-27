@@ -55,7 +55,7 @@ class ConcentrationAnalystAgent(BaseAgent[ConcentrationReport]):
     agent_role = "concentration"
     output_model = ConcentrationReport
     require_citations = True
-    max_tokens = 2048
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

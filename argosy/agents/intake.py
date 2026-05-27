@@ -218,7 +218,7 @@ class IntakeAgent(BaseAgent[IntakeTurnOutput]):
     # Citations not strictly required on every turn (most turns are pure
     # questions). When the agent does cite, it should still cite Tier-1.
     require_citations = False
-    max_tokens = 2048
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

@@ -86,7 +86,7 @@ class FundManagerDialogueVerdictAgent(BaseAgent[FMObjectionDialogueVerdict]):
     agent_role = "fund_manager_dialogue_verdict"
     output_model = FMObjectionDialogueVerdict
     require_citations = True
-    max_tokens = 2048
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (16000).
 
     def build_prompt(
         self,

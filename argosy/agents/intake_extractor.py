@@ -126,7 +126,7 @@ class IntakeExtractorAgent(BaseAgent[IntakeExtraction]):
     # the user can audit the agent's reasoning, but the base citation
     # gate is disabled.
     require_citations = False
-    max_tokens = 4096
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

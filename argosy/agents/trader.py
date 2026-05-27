@@ -71,7 +71,7 @@ class TraderAgent(BaseAgent[TraderProposal]):
     agent_role = "trader"
     output_model = TraderProposal
     require_citations = True
-    max_tokens = 3072
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (16000).
 
     def __init__(
         self,

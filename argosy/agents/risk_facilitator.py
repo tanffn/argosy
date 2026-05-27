@@ -47,7 +47,7 @@ class RiskFacilitatorAgent(BaseAgent[RiskOutcome]):
     agent_role = "risk_facilitator"
     output_model = RiskOutcome
     require_citations = True
-    max_tokens = 2048
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (16000).
 
     def build_prompt(
         self,

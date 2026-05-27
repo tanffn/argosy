@@ -48,7 +48,7 @@ class TechnicalAnalystAgent(BaseAgent[TechnicalReport]):
     agent_role = "technical"
     output_model = TechnicalReport
     require_citations = True
-    max_tokens = 2048
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,

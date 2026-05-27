@@ -53,7 +53,7 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
     agent_role = "news"
     output_model = NewsDigest
     require_citations = True
-    max_tokens = 4096
+    # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).
 
     def build_prompt(
         self,
