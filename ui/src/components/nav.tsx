@@ -20,6 +20,7 @@ const TABS: NavTab[] = [
   { href: "/", label: "Home" },
   { href: "/advisor", label: "Advisor", Icon: MessageCircle },
   { href: "/portfolio", label: "Portfolio" },
+  { href: "/positions", label: "Positions" },
   { href: "/expenses", label: "Expenses" },
   { href: "/plan", label: "Plan" },
   { href: "/decide", label: "Decide", Icon: Target },
