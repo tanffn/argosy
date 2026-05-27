@@ -72,6 +72,57 @@ _ANTHROPIC_SDK_VERSION, _ANTHROPIC_SUPPORTS_ADAPTIVE_THINKING = (
     _probe_anthropic_adaptive_thinking_support()
 )
 
+
+def _probe_claude_code_sdk_thinking_field() -> str | None:
+    """Detect which key the agent-sdk's ``ResultMessage.usage`` dict uses for
+    extended-thinking-output tokens.
+
+    Anthropic's adaptive-thinking GA + the bundled claude.exe surface
+    thinking-output tokens on the usage payload, but the field name has
+    drifted across SDK versions (``thinking_tokens`` today; potential
+    future renames to ``reasoning_tokens`` etc.). Rather than hard-coding
+    one name we check the bundled binary's symbol table (cheap — one
+    string scan at import time) for the candidates we know about and
+    return the first one present. Falls back to ``"thinking_tokens"`` so
+    the existing code path keeps working when probing isn't possible
+    (e.g. claude.exe missing in non-bundled installs).
+
+    Returns the detected field name (e.g. ``"thinking_tokens"``) or
+    ``None`` when no candidate is present in the bundled binary — in
+    which case the extractor short-circuits to 0 instead of probing the
+    usage dict with a ghost key.
+
+    Adding a new candidate name is a one-line change to the
+    ``_CANDIDATES`` tuple below; the extractor in
+    ``_call_via_claude_code_inner`` reads whatever this function
+    returns.
+    """
+    _CANDIDATES = ("thinking_tokens", "reasoning_tokens")
+    try:
+        import claude_agent_sdk
+        sdk_root = os.path.dirname(claude_agent_sdk.__file__)
+        cli_path = os.path.join(sdk_root, "_bundled", "claude.exe")
+        if not os.path.exists(cli_path):
+            # Non-Windows / non-bundled distribution. Trust the current
+            # default — the live SDK already emits ``thinking_tokens`` on
+            # MacOS / Linux too per the upstream changelog (Opus 4.6+
+            # adaptive-thinking release notes, 2026-04).
+            return "thinking_tokens"
+        with open(cli_path, "rb") as f:
+            data = f.read()
+        for name in _CANDIDATES:
+            if name.encode("ascii") in data:
+                return name
+        return None
+    except Exception:  # noqa: BLE001
+        # Any probe failure should not block import. Default to the
+        # historically-known field name; the extractor's `_usage_get`
+        # already returns 0 for missing keys.
+        return "thinking_tokens"
+
+
+_CLAUDE_CODE_SDK_THINKING_FIELD = _probe_claude_code_sdk_thinking_field()
+
 # Phase 1+2 model defaults. Phase 2 reads overrides from
 # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2;
 # the per-role default below is the fallback when the file is absent.
@@ -1624,13 +1675,23 @@ class BaseAgent(Generic[T]):
                                 cache_creation_tokens += _usage_get(
                                     usage, "cache_creation_input_tokens",
                                 )
-                                # Thinking tokens: Anthropic exposes these as
-                                # `thinking_tokens` on the extra fields of
-                                # Usage (model_config={"extra": "allow"} in
-                                # the SDK). On the agent-sdk's usage dict the
-                                # same key flows through; if a future SDK rev
-                                # renames it we fall back to 0 silently.
-                                thinking_tokens += _usage_get(usage, "thinking_tokens")
+                                # Thinking tokens: Anthropic exposes these
+                                # under a key whose name has drifted across
+                                # SDK versions (``thinking_tokens`` today;
+                                # the import-time probe at
+                                # ``_probe_claude_code_sdk_thinking_field``
+                                # scans the bundled claude.exe for known
+                                # candidates and resolves the correct name
+                                # once per process). If the probe returned
+                                # ``None`` (no candidate matched) we skip
+                                # extraction so the field stays 0 instead of
+                                # silently double-counting via a ghost key.
+                                # The ``_usage_get`` helper itself already
+                                # returns 0 for missing keys.
+                                if _CLAUDE_CODE_SDK_THINKING_FIELD is not None:
+                                    thinking_tokens += _usage_get(
+                                        usage, _CLAUDE_CODE_SDK_THINKING_FIELD,
+                                    )
                             # Open a new buffer for the next turn (stays empty
                             # if this was the last; harmless — we use the
                             # last non-empty buffer below).

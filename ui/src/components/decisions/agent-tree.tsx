@@ -142,6 +142,20 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
             {node.model}
           </span>
         )}
+        {node.thinking_tokens !== null && node.thinking_tokens > 0 && (
+          // Adaptive-thinking telemetry: how many tokens the model
+          // actually spent thinking on this call. Hidden when 0 / null
+          // to avoid clutter on agents that don't think (effort="low"
+          // / categorizer / etc.). FM at effort="max" is the most
+          // useful surface — surfaces "verdict cost N thinking tokens"
+          // for effort-level tuning.
+          <span
+            className="text-[10px] text-muted-foreground"
+            title="Adaptive thinking tokens used on this call"
+          >
+            {node.thinking_tokens.toLocaleString()} thinking
+          </span>
+        )}
         {node.cost_usd !== null && (
           <span className="ml-auto text-muted-foreground">
             ${node.cost_usd.toFixed(4)}

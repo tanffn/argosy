@@ -143,6 +143,15 @@ class AgentNode:
     # in the UI. Empty list for every other node so the field is always
     # present (consistent JSON shape).
     codex_findings: list[CodexFindingNode] = field(default_factory=list)
+    # Adaptive-thinking telemetry — actual thinking_tokens used by the
+    # model on this agent call. ``None`` when the agent didn't run (the
+    # node is skipped) or when the row predates adaptive-thinking
+    # telemetry (pre-Wave A schema). The UI hides the field when 0 or
+    # None to avoid clutter on agents that don't think (e.g. household_
+    # categorizer at effort="low"). FM at effort="max" is the most
+    # useful surface for this — it surfaces how much thinking the model
+    # actually allocated to the final verdict.
+    thinking_tokens: int | None = None
 
 
 # T4.4 — recognised non-synthesis kinds that the decisions-replay surface
@@ -609,6 +618,7 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
             children=[],
             adapters=[],
             codex_findings=[],
+            thinking_tokens=None,
         )
 
     raw_text = r.response_text or ""
@@ -637,6 +647,7 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
             children=[],
             adapters=[],
             codex_findings=[],
+            thinking_tokens=_safe_thinking_tokens(r),
         )
 
     # Happy path — parsed verdict. Derive the confidence band from the
@@ -696,6 +707,7 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
         children=[],
         adapters=[],
         codex_findings=findings,
+        thinking_tokens=_safe_thinking_tokens(r),
     )
 
 
@@ -736,6 +748,27 @@ def _parse_codex_response_text(text: str) -> dict | None:
         except (TypeError, ValueError):
             pass
     return None
+
+
+def _safe_thinking_tokens(r: AgentReport | None) -> int | None:
+    """Read ``r.thinking_tokens`` defensively.
+
+    Pre-Wave A rows (migration 0026 was the first to add the column) and
+    rows hydrated through ORM versions that pre-date the field on
+    ``AgentReport`` lack the attribute entirely. ``getattr`` with a
+    default keeps the builder safe on legacy DBs. Returns ``None`` when
+    the agent didn't run (caller passes ``None``) so the UI hides the
+    field instead of rendering "0 thinking tokens" on a skipped node.
+    """
+    if r is None:
+        return None
+    val = getattr(r, "thinking_tokens", None)
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
 
 
 def _to_node(
@@ -782,6 +815,7 @@ def _to_node(
         failure_reason=None if r else "agent did not run",
         children=children or [],
         adapters=adapters or [],
+        thinking_tokens=_safe_thinking_tokens(r),
     )
 
 
