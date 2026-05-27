@@ -4,6 +4,7 @@ import { Anchor, Shield, ShieldOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AdvisorBriefCard } from "@/components/advisor-brief-card";
+import { ActionItemsWidget } from "@/components/home/action-items-widget";
 import { LiveClock } from "@/components/live-clock";
 import {
   Card,
@@ -658,6 +659,13 @@ export default function Home() {
           primary surface, not buried in nav. Composed server-side from
           gap-tracker + daily-brief + watchlist signals (no LLM call). */}
       <AdvisorBriefCard userId={USER_ID} />
+
+      {/* Action items — dated short/medium-horizon TODOs surfaced from
+          the user's pending draft (or current accepted plan). Sits
+          between the advisor brief and the OVERVIEW row so OVERDUE /
+          TODAY items grab attention before the user scans portfolio
+          aggregates. Read-only: accept/reject still happens on /plan. */}
+      <ActionItemsWidget userId={USER_ID} />
 
       {/* Compact metric row — now with sparklines. */}
       <section>
