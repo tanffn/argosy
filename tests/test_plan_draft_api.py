@@ -272,6 +272,134 @@ def test_get_draft_objections_parses_fm_response(app_with_draft):
     assert body["decision_run_id"] == 1
 
 
+def test_get_draft_objections_includes_prior_round_when_superseded_predecessor(
+    app_with_draft,
+):
+    """When the draft has a ``role='superseded'`` predecessor that itself
+    carries a fund_manager agent_report, the objections endpoint returns
+    those objections under ``prior_round_objections`` so the UI can map
+    "Blocker #N" tokens in delta rationales to the prior-round objection
+    by index.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from argosy.state.models import AgentReport, PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        # Find the current draft (the fixture's pending draft).
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        # Wire it to a synth run + give it its own FM verdict so the
+        # endpoint executes the full happy path.
+        draft.decision_run_id = 200
+        sess.add(AgentReport(
+            user_id="ariel",
+            agent_role="fund_manager",
+            decision_id="plan-synth-200",
+            response_text=json.dumps({
+                "approved": False,
+                "reasons": [
+                    "NEW BLOCKER — fresh problem in this draft",
+                ],
+                "cited_sources": [],
+            }),
+            model="claude-opus-4-7",
+        ))
+
+        # Insert a superseded predecessor for this user with an EARLIER
+        # imported_at and its own FM verdict carrying 3 objections.
+        # The route picks "most recent superseded with imported_at < draft.imported_at".
+        earlier = (draft.imported_at or datetime.now(timezone.utc)) - timedelta(hours=1)
+        prior_draft = PlanVersion(
+            user_id="ariel",
+            role="superseded",
+            version_label="synth-2026-04-prior",
+            raw_markdown="",
+            decision_run_id=199,
+            imported_at=earlier,
+        )
+        sess.add(prior_draft)
+        sess.flush()  # populate prior_draft.id
+
+        sess.add(AgentReport(
+            user_id="ariel",
+            agent_role="fund_manager",
+            decision_id="plan-synth-199",
+            response_text=json.dumps({
+                "approved": False,
+                "reasons": [
+                    "[BLOCKER — tax-rate citation] NVDA tranche tax estimate uses 30.7%; the audit confirms 32.5%.",
+                    "[BLOCKER — UCITS coherence] SGOV → XEON migration sequenced behind the wrong gate.",
+                    "[BLOCKER — cross-horizon coherence] 45% medium-horizon NVDA gate price-anchor is inconsistent.",
+                ],
+                "cited_sources": [],
+            }),
+            model="claude-opus-4-7",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft/objections?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    # Current draft still has its own one objection.
+    assert len(body["objections"]) == 1
+    assert "fresh problem" in body["objections"][0]["detail"]
+
+    # Prior round objections — 3 entries, ordered by reasons[] index so
+    # "Blocker #3" in the new delta rationale maps to entries[2].
+    assert "prior_round_objections" in body
+    prior = body["prior_round_objections"]
+    assert len(prior) == 3
+    assert "tax-rate citation" in prior[0]["topic"].lower() \
+        or "tax-rate citation" in prior[0]["detail"].lower()
+    assert "UCITS" in prior[1]["topic"] or "UCITS" in prior[1]["detail"]
+    assert "cross-horizon" in prior[2]["topic"].lower() \
+        or "cross-horizon" in prior[2]["detail"].lower()
+    # Severity inferred from the BLOCKER keyword.
+    for obj in prior:
+        assert obj["severity"] in ("RED", "AMBER", "YELLOW")
+
+
+def test_get_draft_objections_prior_round_empty_when_no_predecessor(
+    app_with_draft,
+):
+    """No superseded predecessor -> ``prior_round_objections`` is an empty
+    list, never null.  The current draft's own objections are unaffected.
+    """
+    from argosy.state.models import AgentReport, PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.decision_run_id = 300
+        sess.add(AgentReport(
+            user_id="ariel",
+            agent_role="fund_manager",
+            decision_id="plan-synth-300",
+            response_text=json.dumps({
+                "approved": False,
+                "reasons": ["MISSING — something"],
+                "cited_sources": [],
+            }),
+            model="claude-opus-4-7",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft/objections?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["prior_round_objections"] == []
+
+
 def test_post_delta_reject_stamps_user_edit_note(app_with_draft):
     """Per-delta reject writes REJECTED prefix + flips user_edited."""
     from argosy.state.models import PlanVersion

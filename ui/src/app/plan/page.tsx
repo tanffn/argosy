@@ -30,6 +30,7 @@ import {
   api,
   type DeltaItem,
   type DraftResponse,
+  type FMObjection,
   type FMObjectionsResponse,
   type HorizonView,
   type InFlightSynthesisDTO,
@@ -685,6 +686,7 @@ export default function PlanPage() {
                   onSourceClick={openDrawerForLabel}
                   disabled={working}
                   pushbackRuns={pushbackRuns}
+                  priorRoundObjections={objections?.prior_round_objections}
                 />
               </TabsContent>
               <TabsContent value="medium" className="mt-3">
@@ -697,6 +699,7 @@ export default function PlanPage() {
                   onSourceClick={openDrawerForLabel}
                   disabled={working}
                   pushbackRuns={pushbackRuns}
+                  priorRoundObjections={objections?.prior_round_objections}
                 />
               </TabsContent>
               <TabsContent value="short" className="mt-3">
@@ -709,6 +712,7 @@ export default function PlanPage() {
                   onSourceClick={openDrawerForLabel}
                   disabled={working}
                   pushbackRuns={pushbackRuns}
+                  priorRoundObjections={objections?.prior_round_objections}
                 />
               </TabsContent>
             </Tabs>
@@ -827,6 +831,10 @@ interface HorizonDeltaListProps {
     string,
     { decisionRunId: number; status: "running" | "completed" | "failed" }
   >;
+  // Prior-round FM objections (from FMObjectionsResponse). Passed
+  // through to each DeltaCard so "Blocker #N" / "Objection #N" tokens
+  // in the rationale link to the matching prior objection.
+  priorRoundObjections?: FMObjection[];
 }
 
 function HorizonDeltaList({
@@ -838,6 +846,7 @@ function HorizonDeltaList({
   onSourceClick,
   disabled,
   pushbackRuns,
+  priorRoundObjections,
 }: HorizonDeltaListProps) {
   if (!h || h.deltas_from_prior.length === 0) {
     return (
@@ -859,6 +868,7 @@ function HorizonDeltaList({
             onPushBack={onPushBack}
             onSourceClick={onSourceClick}
             pushbackRun={pushbackRuns?.[d.item_id] ?? null}
+            priorRoundObjections={priorRoundObjections}
           />
         </li>
       ))}

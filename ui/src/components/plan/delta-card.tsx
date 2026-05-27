@@ -5,7 +5,7 @@ import { Check, History, MessageSquareWarning, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { api, type DeltaItem } from "@/lib/api";
+import { api, type DeltaItem, type FMObjection } from "@/lib/api";
 
 interface DeltaCardProps {
   delta: DeltaItem;
@@ -23,6 +23,13 @@ interface DeltaCardProps {
     decisionRunId: number;
     status: "running" | "completed" | "failed";
   } | null;
+  // Prior-round FM objections (from
+  // /api/plan/draft/objections::prior_round_objections). When the
+  // delta's rationale references "Blocker #N" / "BLOCKER N" /
+  // "Objection #N", we look up entry [N-1] here so the user can hover
+  // over the chip and see the actual prior-round objection text
+  // instead of staring at a bare number.
+  priorRoundObjections?: FMObjection[];
 }
 
 interface HistoryEntry {
@@ -84,6 +91,92 @@ function proposedLabel(p: Record<string, unknown> | null): string | null {
   return typeof lbl === "string" && lbl ? lbl : null;
 }
 
+// Bug 1: detect whether a delta's prior + proposed describe IDENTICAL
+// scalar values so the card can label it as "Rationale updated — value
+// unchanged at X" instead of the misleading "suggested 45% before 45%".
+//
+// Compares the four primitive value-bearing keys the synthesizer uses
+// across {target, action, theme} delta shapes: ``value``, ``side``,
+// ``qty``, ``ticker``, ``when``, ``rule``, ``trigger``.  Equality is
+// JSON-stable: ``45 === 45`` true; ``"45" === 45`` false; objects/arrays
+// compared via stringify so structural equality is exact.
+//
+// Returns true only when BOTH payloads exist AND every comparable scalar
+// matches — null/missing on one side counts as "not unchanged" so the
+// "New target — X" branch (Bug 1 sub-case) gets to render its banner.
+function isValueUnchanged(
+  prior: Record<string, unknown> | null,
+  proposed: Record<string, unknown> | null,
+): boolean {
+  if (!prior || !proposed) return false;
+  const comparable = ["value", "side", "qty", "ticker", "when", "rule", "trigger"];
+  let anyComparableKeyPresent = false;
+  for (const k of comparable) {
+    const a = prior[k];
+    const b = proposed[k];
+    if (a === undefined && b === undefined) continue;
+    anyComparableKeyPresent = true;
+    if (typeof a !== typeof b) return false;
+    if (a === null || b === null) {
+      if (a !== b) return false;
+      continue;
+    }
+    if (typeof a === "object" || typeof b === "object") {
+      if (JSON.stringify(a) !== JSON.stringify(b)) return false;
+      continue;
+    }
+    if (a !== b) return false;
+  }
+  return anyComparableKeyPresent;
+}
+
+// Bug 2: parse a delta rationale for "Blocker #N" / "BLOCKER N" /
+// "Objection #N" tokens and return the matched ranges so the caller can
+// splice in <button> chips that surface the prior-round objection text.
+//
+// Pattern is intentionally generous: case-insensitive, optional '#',
+// hyphenated alternates supported ("blocker-3" / "objection 3"). The
+// returned segments alternate text/match in source order — a renderer
+// can map() over them and emit a span or a chip per segment.
+interface RationaleSegment {
+  kind: "text" | "ref";
+  text: string;
+  refNumber?: number; // 1-based; only set when kind === "ref"
+}
+
+function parseRationaleReferences(rationale: string): RationaleSegment[] {
+  if (!rationale) return [{ kind: "text", text: "" }];
+  // \bBlocker\b or \bObjection\b followed by optional space/hyphen/'#'
+  // and a 1-2 digit number. We capture the digits so we can resolve to
+  // prior_round_objections[N-1].
+  const pattern = /\b(blocker|objection)[\s#-]*(\d{1,2})\b/gi;
+  const out: RationaleSegment[] = [];
+  let lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(rationale)) !== null) {
+    if (m.index > lastIndex) {
+      out.push({
+        kind: "text",
+        text: rationale.slice(lastIndex, m.index),
+      });
+    }
+    const n = parseInt(m[2], 10);
+    out.push({
+      kind: "ref",
+      text: m[0],
+      refNumber: Number.isFinite(n) ? n : undefined,
+    });
+    lastIndex = m.index + m[0].length;
+  }
+  if (lastIndex < rationale.length) {
+    out.push({ kind: "text", text: rationale.slice(lastIndex) });
+  }
+  if (out.length === 0) {
+    out.push({ kind: "text", text: rationale });
+  }
+  return out;
+}
+
 export function DeltaCard(props: DeltaCardProps) {
   const {
     delta,
@@ -94,8 +187,12 @@ export function DeltaCard(props: DeltaCardProps) {
     onPushBack,
     onSourceClick,
     pushbackRun,
+    priorRoundObjections,
   } = props;
   const [rejectedLocally, setRejectedLocally] = useState(false);
+  // Bug 2: chip popovers — keyed by "<segmentIndex>" so each rendered
+  // chip toggles independently. Click toggles, blur closes.
+  const [openRefIdx, setOpenRefIdx] = useState<number | null>(null);
   const [history, setHistory] = useState<
     HistoryEntry[] | "loading" | "error" | null
   >(null);
@@ -123,6 +220,23 @@ export function DeltaCard(props: DeltaCardProps) {
   const propLabel = proposedLabel(delta.proposed);
   const priorValue = formatTargetValue(delta.prior);
   const labels = delta.provenance_agent_labels ?? [];
+  // Bug 1 — compute the two no-op cases up front so the JSX block below
+  // can branch cleanly. ``valueUnchanged`` is the "synthesizer flagged
+  // this as modified but the scalar didn't move" case (e.g. only
+  // rationale changed); ``isNewTarget`` is the "prior is null, proposed
+  // is the first value for this item" case so we don't render
+  // "suggested X before null" / "suggested X before —".
+  const valueUnchanged = isValueUnchanged(delta.prior, delta.proposed);
+  const isNewTarget = delta.prior === null && propValue !== null;
+
+  // Bug 2 — segment the rationale on "Blocker #N" / "Objection #N"
+  // tokens so we can substitute clickable chips. priorRoundObjections is
+  // the list returned by /api/plan/draft/objections — N maps to entry
+  // [N-1]. When the synthesizer hallucinated a number with no matching
+  // prior objection, we still render the chip but its hover text says
+  // "no matching prior objection found" (defensive, never crashes).
+  const rationaleSegments = parseRationaleReferences(delta.rationale || "");
+  const priorObj = priorRoundObjections ?? [];
 
   // Backend stores REJECTED / PUSHBACK in user_edit_note with a prefix. Parse
   // those so the card surfaces persistent state after a refresh, not just the
@@ -175,7 +289,18 @@ export function DeltaCard(props: DeltaCardProps) {
       <p className="text-sm font-medium leading-snug">{delta.summary}</p>
 
       {/* The structured proposed value, rendered explicitly so the
-          "currently it sits on … / I suggest …" comparison is obvious. */}
+          "currently it sits on … / I suggest …" comparison is obvious.
+          Three rendering modes, in priority order:
+            1. value unchanged (prior === proposed)
+                 → "Rationale updated — value unchanged at X"
+            2. new (prior == null && proposed has value)
+                 → "New target — X"
+            3. modified (prior !== proposed)
+                 → "suggested X / before Y" (the original two-line view)
+          Mode 1 fixes Bug 1: the synthesizer sometimes emits a delta with
+          change_kind="modified" but identical before/after — the rationale
+          changed, not the value. Showing "suggested 45% before 45%" was
+          misleading; this banner is the correct label. */}
       {(propValue || propLabel || priorValue) && (
         <div className="mt-3 rounded-md bg-muted/30 px-3 py-2">
           {propLabel && (
@@ -183,37 +308,138 @@ export function DeltaCard(props: DeltaCardProps) {
               {propLabel}
             </div>
           )}
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mt-0.5 text-sm">
-            {propValue && (
-              <span>
-                <span className="text-[10px] font-mono uppercase mr-1 text-muted-foreground">
-                  suggested
-                </span>
-                <span className="font-mono font-semibold">{propValue}</span>
+          {valueUnchanged ? (
+            <div className="mt-0.5 text-sm">
+              <span className="text-[10px] font-mono uppercase mr-1 text-muted-foreground">
+                rationale updated
               </span>
-            )}
-            {priorValue && (
-              <span>
-                <span className="text-[10px] font-mono uppercase mr-1 text-muted-foreground">
-                  before
-                </span>
-                <span className="font-mono">{priorValue}</span>
+              <span className="text-muted-foreground">— value unchanged at </span>
+              <span className="font-mono font-semibold">{propValue}</span>
+            </div>
+          ) : isNewTarget ? (
+            <div className="mt-0.5 text-sm">
+              <span className="text-[10px] font-mono uppercase mr-1 text-muted-foreground">
+                new {delta.item_kind.replace("_", " ")}
               </span>
-            )}
-          </div>
+              <span className="text-muted-foreground">— </span>
+              <span className="font-mono font-semibold">{propValue}</span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mt-0.5 text-sm">
+              {propValue && (
+                <span>
+                  <span className="text-[10px] font-mono uppercase mr-1 text-muted-foreground">
+                    suggested
+                  </span>
+                  <span className="font-mono font-semibold">{propValue}</span>
+                </span>
+              )}
+              {priorValue && (
+                <span>
+                  <span className="text-[10px] font-mono uppercase mr-1 text-muted-foreground">
+                    before
+                  </span>
+                  <span className="font-mono">{priorValue}</span>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 
       {/* Rationale always visible (was collapsible) so the user doesn't
           have to expand 10 cards to read the reasoning. The synthesizer
-          writes 1-2 sentence rationales; they're short. */}
+          writes 1-2 sentence rationales; they're short.
+
+          Bug 2: "Blocker #N" / "Objection #N" tokens are surfaced as
+          clickable chips that reveal the matching prior-round FM
+          objection in a popover. When no prior objection matches the
+          number, the chip still renders but says "no matching prior
+          objection found" — never crashes. */}
       {delta.rationale && (
         <div className="mt-3">
           <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-1">
             Reasoning
           </div>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            {delta.rationale}
+            {rationaleSegments.map((seg, i) => {
+              if (seg.kind === "text") {
+                return <span key={i}>{seg.text}</span>;
+              }
+              const n = seg.refNumber;
+              const obj = typeof n === "number" ? priorObj[n - 1] : undefined;
+              const isOpen = openRefIdx === i;
+              const tooltipText = obj
+                ? `${obj.severity} — ${obj.topic}: ${obj.detail}`
+                : `${seg.text} (no matching prior objection found)`;
+              return (
+                <span key={i} className="relative inline-block align-baseline">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenRefIdx((curr) => (curr === i ? null : i))
+                    }
+                    onBlur={() =>
+                      setOpenRefIdx((curr) => (curr === i ? null : curr))
+                    }
+                    title={tooltipText}
+                    className={
+                      "rounded-md px-1.5 py-0.5 mx-0.5 font-mono text-[11px] transition-colors " +
+                      (obj
+                        ? "bg-warning/10 hover:bg-warning/20 text-warning border border-warning/40"
+                        : "bg-muted/40 hover:bg-muted/60 text-muted-foreground border border-border")
+                    }
+                    aria-expanded={isOpen}
+                    aria-label={
+                      obj
+                        ? `${seg.text} — view prior objection`
+                        : `${seg.text} — no matching prior objection`
+                    }
+                  >
+                    {seg.text}
+                  </button>
+                  {isOpen && (
+                    <span
+                      role="tooltip"
+                      className="absolute z-20 left-0 top-full mt-1 w-80 max-w-[24rem] rounded-md border border-border bg-background p-3 text-xs shadow-md text-left"
+                    >
+                      {obj ? (
+                        <>
+                          <div className="flex items-center gap-2 mb-1">
+                            <Badge
+                              variant={
+                                obj.severity === "RED"
+                                  ? "error"
+                                  : obj.severity === "AMBER"
+                                  ? "warning"
+                                  : "outline"
+                              }
+                              className="text-[10px]"
+                            >
+                              {obj.severity}
+                            </Badge>
+                            <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                              prior {seg.text}
+                            </span>
+                          </div>
+                          <div className="text-foreground font-medium mb-1">
+                            {obj.topic}
+                          </div>
+                          <div className="text-muted-foreground leading-relaxed">
+                            {obj.detail}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="text-muted-foreground">
+                          <span className="font-mono">{seg.text}</span> —
+                          no matching prior objection found.
+                        </div>
+                      )}
+                    </span>
+                  )}
+                </span>
+              );
+            })}
           </p>
         </div>
       )}

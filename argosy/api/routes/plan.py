@@ -862,6 +862,14 @@ class FMObjectionsResponse(BaseModel):
     cited_sources: list[str]
     decision_run_id: int | None
     raw_response_excerpt: str
+    # Prior-round FM objections — populated when the current draft has a
+    # ``derived_from_id`` predecessor with role='superseded' AND that
+    # predecessor has a Fund Manager agent_report.  Order is the same as
+    # in the prior verdict's ``reasons`` array so the UI can map
+    # "Blocker #N" / "BLOCKER N" / "Objection #N" tokens in the new
+    # rationale text directly to ``prior_round_objections[N-1]``.
+    # Empty list when there's no prior draft / no FM verdict to fetch.
+    prior_round_objections: list[FMObjection] = []
 
 
 _RED_KEYWORDS = (
@@ -1598,12 +1606,51 @@ def get_draft_objections(
                 recommended_actions=list(dto.recommended_actions or []),
             )
 
+    # Prior-round objections — when this draft was synthesized to address
+    # an earlier (now-superseded) draft's FM objections, surface those so
+    # the UI can link "Blocker #N" / "Objection #N" tokens in the new
+    # rationale text back to the exact prior-round objection by index.
+    # We pick the most recent ``role='superseded'`` plan_version for this
+    # user whose ``imported_at`` precedes the current draft — that's the
+    # draft this synthesis run was redrafting.  ``derived_from_id`` can't
+    # be used here because every draft in the chain points back to the
+    # baseline, not to its immediate predecessor.
+    prior_round_objections: list[FMObjection] = []
+    prior_pv = db.execute(
+        select(PlanVersion).where(
+            PlanVersion.user_id == user_id,
+            PlanVersion.role == "superseded",
+            PlanVersion.imported_at < pv.imported_at,
+        ).order_by(desc(PlanVersion.imported_at)).limit(1)
+    ).scalar_one_or_none()
+    if prior_pv is not None and prior_pv.decision_run_id is not None:
+        prior_decision_id_str = f"plan-synth-{prior_pv.decision_run_id}"
+        prior_fm_row = db.execute(
+            select(AgentReport).where(
+                AgentReport.user_id == user_id,
+                AgentReport.decision_id == prior_decision_id_str,
+                AgentReport.agent_role == "fund_manager",
+            ).order_by(desc(AgentReport.created_at)).limit(1)
+        ).scalar_one_or_none()
+        if prior_fm_row is not None and prior_fm_row.response_text:
+            prior_parsed = _parse_fm_response(prior_fm_row.response_text)
+            prior_reasons = prior_parsed.get("reasons") or []
+            for r in prior_reasons:
+                if not isinstance(r, str) or not r.strip():
+                    continue
+                p_topic, p_detail = _split_reason(r)
+                p_sev = _classify_severity(p_topic, p_detail)
+                prior_round_objections.append(
+                    FMObjection(severity=p_sev, topic=p_topic, detail=p_detail)
+                )
+
     return FMObjectionsResponse(
         approved=approved,
         objections=objections,
         cited_sources=cited,
         decision_run_id=pv.decision_run_id,
         raw_response_excerpt=fm_row.response_text[:500],
+        prior_round_objections=prior_round_objections,
     )
 
 

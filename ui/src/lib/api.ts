@@ -1481,6 +1481,13 @@ export interface FMObjectionsResponse {
   cited_sources: string[];
   decision_run_id: number | null;
   raw_response_excerpt: string;
+  // Prior-round FM objections — present when the current draft has a
+  // ``role='superseded'`` predecessor with its own FM verdict. Empty
+  // list when there's no predecessor / no FM row to fetch. The order
+  // matches the prior verdict's ``reasons`` array so the UI can map
+  // "Blocker #N" / "Objection #N" tokens in the new delta rationales
+  // directly to ``prior_round_objections[N-1]``.
+  prior_round_objections?: FMObjection[];
 }
 
 // Per-FM-objection stance map returned by GET
