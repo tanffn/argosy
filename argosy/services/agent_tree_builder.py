@@ -106,6 +106,23 @@ class AdapterNode:
 
 
 @dataclass
+class CodexFindingNode:
+    """One CodexFinding rendered as a sub-row under the codex_second_opinion node.
+
+    Mirrors ``argosy.orchestrator.flows.plan_synthesis.codex_second_opinion.CodexFinding``
+    but lives here as a plain dataclass so ``dataclasses.asdict`` can walk
+    the whole tree without dragging pydantic into the route serializer.
+    Populated only for the ``codex_second_opinion`` node — every other
+    AgentNode keeps an empty list (see ``AgentNode.codex_findings``).
+    """
+
+    severity: str  # "BLOCKER" / "AMBER" / "YELLOW"
+    topic: str
+    detail: str
+    suggested_fix: str = ""
+
+
+@dataclass
 class AgentNode:
     agent_role: str  # e.g. "fund_manager"
     agent_report_id: int | None
@@ -121,6 +138,11 @@ class AgentNode:
     failure_reason: str | None  # set when status == failed or skipped
     children: list["AgentNode"] = field(default_factory=list)
     adapters: list[AdapterNode] = field(default_factory=list)
+    # Populated only for the codex_second_opinion node — the parsed
+    # CodexSecondOpinion.findings list rendered as expandable sub-rows
+    # in the UI. Empty list for every other node so the field is always
+    # present (consistent JSON shape).
+    codex_findings: list[CodexFindingNode] = field(default_factory=list)
 
 
 # T4.4 — recognised non-synthesis kinds that the decisions-replay surface
@@ -350,8 +372,19 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
         ],
     )
 
+    # Phase 4.5: codex_second_opinion — independent cross-engine reviewer
+    # (gpt-5 via the codex-tandem kit) that runs between risk and FM. The
+    # FM reads its verdict, so it's a sibling under FM alongside synth,
+    # risk_facilitator, and plan_critique. If no codex row exists (older
+    # runs predating commit 0bedd9b, or codex was disabled via the env
+    # var kill switch), the node renders as "skipped" with a directed
+    # failure_reason.
+    codex_row = pop_one("codex_second_opinion")
+    codex_node = _build_codex_node(codex_row)
+
     # Phase 5: Fund Manager — root of the DAG. Reads synth + risk
-    # facilitator + (separately) the plan_critique analyst.
+    # facilitator + (separately) the plan_critique analyst + codex's
+    # second-opinion verdict.
     fm_node = _to_node(
         pop_one("fund_manager"),
         role="fund_manager",
@@ -359,6 +392,7 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
             synth_node,
             risk_facilitator_node,
             analyst_nodes["plan_critique"],
+            codex_node,
         ],
     )
 
@@ -429,6 +463,181 @@ def _adapter_feeds_role(adapter_name: str, role: str) -> bool:
     return adapter_name in _ROLE_TO_ADAPTERS.get(role, frozenset())
 
 
+# Mapping from CodexSecondOpinion.overall_assessment to a confidence-band
+# string the UI already styles. Mirrors the (HIGH/MEDIUM/LOW) bands the
+# other analyst nodes use so the codex pill looks at-home.
+_CODEX_ASSESSMENT_TO_CONFIDENCE: dict[str, str] = {
+    "APPROVE": "HIGH",
+    "APPROVE_WITH_CONDITIONS": "MEDIUM",
+    "BLOCK": "LOW",
+}
+
+
+def _build_codex_node(r: AgentReport | None) -> AgentNode:
+    """Render the codex_second_opinion row as an AgentNode under FM.
+
+    Strategy:
+      * No row: render as ``skipped`` with a direct failure_reason so the
+        UI shows the slot but doesn't pretend codex ran. This happens for
+        older synth runs (pre-commit 0bedd9b) and for runs where codex
+        was disabled by the env-var kill switch.
+      * Row present + ``response_text`` parses as a CodexSecondOpinion:
+        confidence-band derived from ``overall_assessment``; findings
+        attached to ``codex_findings``; a single-line summary in
+        ``response_excerpt`` covering finding count + agreement-with-risk.
+      * Row present but ``response_text`` is unparseable JSON: node status
+        flips to ``degraded``, ``response_excerpt`` carries the raw text
+        (first 500 chars) so the UI still surfaces something useful.
+
+    No exception escapes this helper — the FM-rooted tree must render
+    even when codex emits garbage.
+    """
+    if r is None:
+        return AgentNode(
+            agent_role="codex_second_opinion",
+            agent_report_id=None,
+            status="skipped",
+            confidence=None,
+            model=None,
+            tokens_in=None,
+            tokens_out=None,
+            cost_usd=None,
+            side=None,
+            perspective=None,
+            response_excerpt="",
+            failure_reason="codex zigzag not run for this synthesis",
+            children=[],
+            adapters=[],
+            codex_findings=[],
+        )
+
+    raw_text = r.response_text or ""
+    parsed = _parse_codex_response_text(raw_text)
+    if parsed is None:
+        # Row exists but the verdict body is unparseable. Surface as
+        # "degraded" so the UI flags it visually, and carry the raw text
+        # so the operator can manually review.
+        return AgentNode(
+            agent_role="codex_second_opinion",
+            agent_report_id=r.id,
+            status="degraded",
+            confidence=r.confidence,
+            model=r.model,
+            tokens_in=r.tokens_in,
+            tokens_out=r.tokens_out,
+            cost_usd=(
+                float(r.cost_usd) if r.cost_usd is not None else None
+            ),
+            side=None,
+            perspective=None,
+            response_excerpt=raw_text[:500],
+            failure_reason=(
+                "codex verdict JSON unparseable — raw response preserved"
+            ),
+            children=[],
+            adapters=[],
+            codex_findings=[],
+        )
+
+    # Happy path — parsed verdict. Derive the confidence band from the
+    # overall_assessment, build a one-line excerpt that surfaces the
+    # finding count + agreement-with-risk + novel-concerns count.
+    overall = str(parsed.get("overall_assessment") or "")
+    confidence = _CODEX_ASSESSMENT_TO_CONFIDENCE.get(overall)
+    findings_raw = parsed.get("findings") or []
+    findings: list[CodexFindingNode] = []
+    if isinstance(findings_raw, list):
+        for f in findings_raw:
+            if not isinstance(f, dict):
+                continue
+            findings.append(
+                CodexFindingNode(
+                    severity=str(f.get("severity") or ""),
+                    topic=str(f.get("topic") or ""),
+                    detail=str(f.get("detail") or ""),
+                    suggested_fix=str(f.get("suggested_fix") or ""),
+                )
+            )
+    agreement = parsed.get("agreement_with_argosy") or {}
+    if not isinstance(agreement, dict):
+        agreement = {}
+    agrees = agreement.get("agrees_with_risk_verdict")
+    novel = agreement.get("novel_concerns_argosy_missed") or []
+    novel_count = len(novel) if isinstance(novel, list) else 0
+    excerpt_parts: list[str] = []
+    if overall:
+        excerpt_parts.append(overall)
+    excerpt_parts.append(f"{len(findings)} findings")
+    if agrees is not None:
+        excerpt_parts.append(f"agrees_with_risk={agrees}")
+    if novel_count:
+        excerpt_parts.append(f"{novel_count} novel concerns")
+    if findings:
+        topics_preview = ", ".join(
+            f.topic for f in findings[:3] if f.topic
+        )
+        if topics_preview:
+            excerpt_parts.append(f"topics: {topics_preview}")
+    excerpt = " · ".join(excerpt_parts)[:500]
+
+    return AgentNode(
+        agent_role="codex_second_opinion",
+        agent_report_id=r.id,
+        status="ok",
+        confidence=confidence,
+        model=r.model,
+        tokens_in=r.tokens_in,
+        tokens_out=r.tokens_out,
+        cost_usd=float(r.cost_usd) if r.cost_usd is not None else None,
+        side=None,
+        perspective=None,
+        response_excerpt=excerpt,
+        failure_reason=None,
+        children=[],
+        adapters=[],
+        codex_findings=findings,
+    )
+
+
+def _parse_codex_response_text(text: str) -> dict | None:
+    """Strict-then-lenient JSON parse of a codex_second_opinion row.
+
+    Mirrors the parser in
+    ``argosy.orchestrator.flows.plan_synthesis.codex_second_opinion._parse_codex_verdict``
+    but returns a raw dict (not a pydantic model) so this module avoids a
+    dependency on pydantic / on the codex_second_opinion module's import
+    graph. Returns ``None`` on any parse failure so the caller can fall
+    back to the "degraded" rendering path.
+    """
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
+    try:
+        obj = json.loads(cleaned)
+        if isinstance(obj, dict):
+            return obj
+    except (TypeError, ValueError):
+        pass
+    # Lenient: locate first '{' and try raw_decode.
+    first_brace = cleaned.find("{")
+    if first_brace >= 0:
+        try:
+            decoder = json.JSONDecoder(strict=False)
+            obj, _ = decoder.raw_decode(cleaned[first_brace:])
+            if isinstance(obj, dict):
+                return obj
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def _to_node(
     r: AgentReport | None,
     *,
@@ -488,13 +697,29 @@ def _summarize(
     agents_ok = 0
     agents_failed = 0
     seen: set[int] = set()
+    # Defensive: the codex_second_opinion row is built once per run and
+    # only mounted under FM, so identity dedup (above) is sufficient in
+    # the steady state. But if a future refactor accidentally references
+    # the codex node under more than one parent without sharing the same
+    # Python object, the id()-keyed walker would double-count it. Track
+    # the role explicitly so we count codex at most once even across
+    # distinct AgentNode instances with the same role.
+    codex_role_counted = False
 
     def walk(n: AgentNode) -> None:
-        nonlocal agents_ok, agents_failed
+        nonlocal agents_ok, agents_failed, codex_role_counted
         key = id(n)
         if key in seen:
             return
         seen.add(key)
+        if n.agent_role == "codex_second_opinion":
+            if codex_role_counted:
+                # Already counted via a sibling reference; still recurse
+                # into children so any unique descendants get counted.
+                for c in n.children:
+                    walk(c)
+                return
+            codex_role_counted = True
         if n.status in ("skipped", "failed"):
             agents_failed += 1
         else:

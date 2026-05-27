@@ -371,6 +371,19 @@ export interface AdapterNode {
   error_text: string | null;
 }
 
+// One finding emitted by the codex_second_opinion (cross-engine gpt-5)
+// reviewer. Populated by the backend only on the codex_second_opinion
+// node; every other AgentNode keeps `codex_findings` as an empty array.
+// Mirrors `argosy.services.agent_tree_builder.CodexFindingNode`.
+export type CodexFindingSeverity = "BLOCKER" | "AMBER" | "YELLOW";
+
+export interface CodexFinding {
+  severity: CodexFindingSeverity;
+  topic: string;
+  detail: string;
+  suggested_fix: string;
+}
+
 export interface AgentNode {
   agent_role: string;
   agent_report_id: number | null;
@@ -386,6 +399,11 @@ export interface AgentNode {
   failure_reason: string | null;
   children: AgentNode[];
   adapters: AdapterNode[];
+  // Populated only on the `codex_second_opinion` node — the structured
+  // findings parsed from `CodexSecondOpinion.findings` by the backend.
+  // Empty array on every other node so consumers can iterate without a
+  // presence check.
+  codex_findings: CodexFinding[];
 }
 
 export interface AgentTreeStatusSummary {

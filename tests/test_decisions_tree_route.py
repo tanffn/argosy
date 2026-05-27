@@ -163,10 +163,15 @@ def test_agent_tree_returns_fm_at_root_for_synthesis_run(
     assert body["root"]["agent_role"] == "fund_manager"
 
     # FM's children include synth + risk_facilitator + plan_critique
-    # (the last one is "skipped" since we didn't seed it).
+    # (the last two are "skipped" since we didn't seed them) + the
+    # codex_second_opinion second-opinion node (skipped here — codex was
+    # added in commit 0bedd9b and not seeded in this minimal fixture).
     child_roles = [c["agent_role"] for c in body["root"]["children"]]
     assert child_roles == [
-        "plan_synthesizer", "risk_facilitator", "plan_critique",
+        "plan_synthesizer",
+        "risk_facilitator",
+        "plan_critique",
+        "codex_second_opinion",
     ]
 
     # Status summary should be present and have integer counts.

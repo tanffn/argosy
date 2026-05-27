@@ -187,9 +187,16 @@ def test_build_agent_tree_for_existing_run_23() -> None:
     assert tree.decision_kind == "plan_revision"
     assert tree.decision_run_id == 23
 
-    # FM's three children: synth, risk_facilitator, plan_critique (legacy).
+    # FM's children: synth, risk_facilitator, plan_critique (legacy),
+    # plus codex_second_opinion (rendered as "skipped" for runs predating
+    # the codex ZigZag in 0bedd9b).
     child_roles = {c.agent_role for c in tree.root.children}
-    assert {"plan_synthesizer", "risk_facilitator", "plan_critique"} <= child_roles
+    assert {
+        "plan_synthesizer",
+        "risk_facilitator",
+        "plan_critique",
+        "codex_second_opinion",
+    } <= child_roles
 
     # The synth has the three researcher facilitators + 10 analysts as children.
     synth = next(c for c in tree.root.children if c.agent_role == "plan_synthesizer")
@@ -249,7 +256,10 @@ def test_build_agent_tree_happy_path_with_adapters(inmem_session) -> None:
     assert tree.decision_kind == "plan_revision"
     fm_children_roles = [c.agent_role for c in tree.root.children]
     assert fm_children_roles == [
-        "plan_synthesizer", "risk_facilitator", "plan_critique",
+        "plan_synthesizer",
+        "risk_facilitator",
+        "plan_critique",
+        "codex_second_opinion",
     ]
 
     # Three researcher_facilitator subtrees under the synth.
@@ -306,11 +316,13 @@ def test_build_agent_tree_happy_path_with_adapters(inmem_session) -> None:
     # Status summary: dedup count must equal the count of unique node
     # identities. Topology = FM (1) + synth (1) + risk_fac (1) + 3 risk
     # officers (3) + 3 researcher_facilitators (3) + 3 bulls (3) + 3 bears
-    # (3) + 10 analyst leaves (10, shared) = 25 unique. Two of those 25
-    # are degraded/ok (synth + plan_synthesizer's None confidence) — both
-    # count as "ok" in the summary.
+    # (3) + 10 analyst leaves (10, shared) + codex_second_opinion (1,
+    # skipped since not seeded) = 26 unique. Two of those 26 are
+    # degraded/ok (synth + plan_synthesizer's None confidence) — both
+    # count as "ok" in the summary; codex's "skipped" counts as
+    # "agents_failed".
     summary = tree.status_summary
-    assert summary["agents_ok"] + summary["agents_failed"] == 25
+    assert summary["agents_ok"] + summary["agents_failed"] == 26
     # Two adapters reported ok, one http_error.
     assert summary["adapters_ok"] == 2
     assert summary["adapters_failed"] == 1
@@ -334,6 +346,14 @@ def test_build_agent_tree_skipped_nodes_for_old_run(inmem_session) -> None:
     assert plan_critique.status == "skipped"
     assert plan_critique.failure_reason == "agent did not run"
     assert plan_critique.agent_report_id is None
+
+    # codex_second_opinion was not seeded -> FM's fourth child is the
+    # codex placeholder with its directed failure_reason.
+    codex_node = tree.root.children[3]
+    assert codex_node.agent_role == "codex_second_opinion"
+    assert codex_node.status == "skipped"
+    assert codex_node.failure_reason == "codex zigzag not run for this synthesis"
+    assert codex_node.agent_report_id is None
 
     # All three risk officers were skipped, but their perspectives still
     # render so the UI can show empty slots.
@@ -455,8 +475,161 @@ def test_build_agent_tree_dag_dedup_is_correct(inmem_session) -> None:
     assert counts[id(plan_critique)] == 8
 
     # ...but the deduped summary count includes plan_critique just once.
-    # Unique node identities = 25 (see happy path test).
+    # Unique node identities = 26 (see happy path test) — 25 plus the
+    # codex_second_opinion node (skipped since the seed doesn't include
+    # a codex agent_reports row).
     assert (
         tree.status_summary["agents_ok"] + tree.status_summary["agents_failed"]
-        == 25
+        == 26
     )
+
+
+# ---------------------------------------------------------------------------
+# Codex ZigZag — second-opinion node under FM (shipped after commit 0bedd9b).
+# ---------------------------------------------------------------------------
+
+
+def _seed_codex_row(
+    sess,
+    *,
+    decision_run_id: int,
+    user_id: str = "ariel",
+    response_text: str | None = None,
+) -> AgentReport:
+    """Append a codex_second_opinion agent_reports row to an existing run."""
+    decision_id_str = f"plan-synth-{decision_run_id}"
+    if response_text is None:
+        response_text = json.dumps({
+            "overall_assessment": "APPROVE_WITH_CONDITIONS",
+            "findings": [
+                {
+                    "severity": "AMBER",
+                    "topic": "Concentration drift",
+                    "detail": "NVDA exceeds 30% of portfolio NAV.",
+                    "suggested_fix": "Trim 5% over the next 30 days.",
+                    "cited_synthesizer_paragraphs": ["..."],
+                },
+                {
+                    "severity": "YELLOW",
+                    "topic": "Tax treatment ambiguity",
+                    "detail": "Schwab RSU vest cost basis is unconfirmed.",
+                    "suggested_fix": "Reconcile against last 1099-B.",
+                    "cited_synthesizer_paragraphs": [],
+                },
+            ],
+            "agreement_with_argosy": {
+                "agrees_with_risk_verdict": "partial",
+                "novel_concerns_argosy_missed": [
+                    "FX-hedged class is undersized vs declared target.",
+                ],
+            },
+            "user_directive_respected": True,
+        })
+    ar = AgentReport(
+        user_id=user_id,
+        agent_role="codex_second_opinion",
+        decision_id=decision_id_str,
+        response_text=response_text,
+        confidence=None,
+        model="gpt-5-codex",
+        tokens_in=0,
+        tokens_out=4321,
+        cost_usd=0.0,
+    )
+    sess.add(ar)
+    sess.commit()
+    sess.refresh(ar)
+    return ar
+
+
+def test_codex_second_opinion_node_present_when_row_exists(
+    inmem_session,
+) -> None:
+    """When a codex_second_opinion agent_reports row exists for a synth
+    run, the FM-rooted tree carries a fourth child node whose parsed
+    findings + assessment are surfaced for the UI to render."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_codex_row(inmem_session, decision_run_id=rid)
+
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+
+    fm_children_roles = [c.agent_role for c in tree.root.children]
+    assert fm_children_roles == [
+        "plan_synthesizer",
+        "risk_facilitator",
+        "plan_critique",
+        "codex_second_opinion",
+    ]
+    codex = tree.root.children[3]
+    assert codex.status == "ok"
+    # APPROVE_WITH_CONDITIONS -> MEDIUM band.
+    assert codex.confidence == "MEDIUM"
+    assert codex.model == "gpt-5-codex"
+    assert codex.agent_report_id is not None
+    # Parsed findings are surfaced as a typed list on the node.
+    assert len(codex.codex_findings) == 2
+    severities = [f.severity for f in codex.codex_findings]
+    assert severities == ["AMBER", "YELLOW"]
+    topics = [f.topic for f in codex.codex_findings]
+    assert "Concentration drift" in topics
+    # The excerpt summarises the verdict for the always-visible row.
+    assert "APPROVE_WITH_CONDITIONS" in codex.response_excerpt
+    assert "2 findings" in codex.response_excerpt
+    assert "agrees_with_risk=partial" in codex.response_excerpt
+    assert "1 novel concerns" in codex.response_excerpt
+    # Codex must NOT have any children/adapters of its own — it's a
+    # cross-engine leaf.
+    assert codex.children == []
+    assert codex.adapters == []
+
+
+def test_codex_second_opinion_node_skipped_when_no_row(inmem_session) -> None:
+    """Older synth runs (pre-commit 0bedd9b) have no codex_second_opinion
+    agent_reports row. The tree must still render the codex slot with a
+    ``skipped`` status and a directed failure_reason (not the generic
+    ``agent did not run`` message used by other roles) so the UI can
+    explain why the codex panel is empty."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+
+    codex = tree.root.children[3]
+    assert codex.agent_role == "codex_second_opinion"
+    assert codex.status == "skipped"
+    assert codex.failure_reason == "codex zigzag not run for this synthesis"
+    assert codex.agent_report_id is None
+    assert codex.codex_findings == []
+    # Confidence/model are None for a skipped codex (no row to read from).
+    assert codex.confidence is None
+    assert codex.model is None
+
+
+def test_codex_second_opinion_node_unparseable_falls_back_gracefully(
+    inmem_session,
+) -> None:
+    """A codex row whose response_text isn't valid JSON should NOT crash
+    the builder. The node renders with ``status='degraded'`` and the raw
+    text surfaces in ``response_excerpt`` so the operator can manually
+    review."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_codex_row(
+        inmem_session,
+        decision_run_id=rid,
+        response_text=(
+            "I cannot return JSON today. The market is closed and "
+            "compliance flagged my prompt as ambiguous."
+        ),
+    )
+
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+
+    codex = tree.root.children[3]
+    assert codex.agent_role == "codex_second_opinion"
+    assert codex.status == "degraded"
+    assert codex.agent_report_id is not None
+    # No findings could be extracted from the garbage payload.
+    assert codex.codex_findings == []
+    # The raw text is preserved verbatim (truncated to 500 chars) so the
+    # operator can read what codex actually said.
+    assert "I cannot return JSON today" in codex.response_excerpt
+    assert codex.failure_reason is not None
+    assert "unparseable" in codex.failure_reason

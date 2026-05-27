@@ -7,9 +7,15 @@ import {
   ChevronDown,
   ChevronRight,
   MinusCircle,
+  ShieldAlert,
 } from "lucide-react";
 
-import type { AgentNode, AgentNodeStatus } from "@/lib/api";
+import type {
+  AgentNode,
+  AgentNodeStatus,
+  CodexFinding,
+  CodexFindingSeverity,
+} from "@/lib/api";
 
 import { AdapterLeaf } from "./adapter-leaf";
 
@@ -40,6 +46,16 @@ const STATUS_COLOR: Record<AgentNodeStatus, string> = {
   skipped: "text-muted-foreground",
 };
 
+// Codex finding severities map to the same Tailwind tokens the adapter
+// leaf + analyst status icons use. BLOCKER ≈ failed (error), AMBER ≈
+// degraded (warning), YELLOW ≈ a softer warning (muted foreground keeps
+// it visually less alarming than AMBER).
+const CODEX_SEVERITY_COLOR: Record<CodexFindingSeverity, string> = {
+  BLOCKER: "text-error",
+  AMBER: "text-warning",
+  YELLOW: "text-muted-foreground",
+};
+
 function siblingKey(child: AgentNode, index: number): string {
   return child.agent_report_id !== null
     ? `r${child.agent_report_id}#${index}`
@@ -60,7 +76,14 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
   // to avoid an overwhelming wall of analyst rows.
   const [open, setOpen] = useState(depth < 1);
   const StatusIcon = STATUS_ICON[node.status];
-  const hasChildren = node.children.length > 0 || node.adapters.length > 0;
+  // codex_second_opinion is a cross-engine leaf — its findings act as
+  // "children" for the disclosure caret even though the codex node has
+  // no AgentNode children.
+  const isCodex = node.agent_role === "codex_second_opinion";
+  const hasChildren =
+    node.children.length > 0 ||
+    node.adapters.length > 0 ||
+    (isCodex && node.codex_findings.length > 0);
   return (
     <div className="border-l border-border ml-2">
       <button
@@ -92,6 +115,17 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
           suppressHydrationWarning
         />
         <span className="font-semibold">{node.agent_role}</span>
+        {isCodex && (
+          // Small badge to make it obvious at a glance that this node
+          // is a CROSS-ENGINE second opinion (codex/gpt-5), not one of
+          // Argosy's native Claude analysts.
+          <span
+            className="text-[9px] px-1.5 py-0.5 rounded-full bg-accent text-accent-foreground font-bold uppercase tracking-wider"
+            title="Cross-engine second opinion via OpenAI gpt-5 (codex-tandem kit)"
+          >
+            gpt-5
+          </span>
+        )}
         {node.side && (
           <span className="text-muted-foreground">({node.side})</span>
         )}
@@ -131,6 +165,13 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
               </pre>
             </details>
           )}
+          {isCodex &&
+            node.codex_findings.map((f, i) => (
+              <CodexFindingRow
+                key={`codex-finding-${i}-${f.severity}-${f.topic}`}
+                finding={f}
+              />
+            ))}
           {node.adapters.map((a, i) => (
             <AdapterLeaf
               key={`${a.adapter_name}-${a.target ?? "_"}-${i}`}
@@ -145,6 +186,41 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
             />
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+// One parsed CodexFinding rendered as an expandable sub-row under the
+// codex_second_opinion node. Severity icon left, topic + detail right,
+// optional suggested-fix in a collapsible <details>.
+function CodexFindingRow({ finding }: { finding: CodexFinding }) {
+  const color = CODEX_SEVERITY_COLOR[finding.severity];
+  return (
+    <div className="border-l border-border ml-2 px-2 py-1 text-[11px]">
+      <div className="flex items-center gap-2">
+        <ShieldAlert
+          className={`h-3 w-3 shrink-0 ${color}`}
+          aria-hidden
+          suppressHydrationWarning
+        />
+        <span className={`font-semibold ${color}`}>{finding.severity}</span>
+        <span className="font-mono">{finding.topic}</span>
+      </div>
+      {finding.detail && (
+        <div className="pl-5 pt-0.5 text-muted-foreground whitespace-pre-wrap">
+          {finding.detail}
+        </div>
+      )}
+      {finding.suggested_fix && (
+        <details className="pl-5 pt-0.5">
+          <summary className="cursor-pointer text-muted-foreground">
+            suggested fix
+          </summary>
+          <div className="pt-0.5 whitespace-pre-wrap">
+            {finding.suggested_fix}
+          </div>
+        </details>
       )}
     </div>
   );
