@@ -178,7 +178,15 @@ export default function PlanPage() {
     return () => window.clearInterval(handle);
   }, [inFlightSynthesis]);
 
+  // W10 — fetch-on-mount: ``refresh`` is a useCallback that fans out
+  // to several setStates after awaiting REST. The eslint rule
+  // ``react-hooks/set-state-in-effect`` flags this because it can't
+  // see inside the closure, but this is the canonical "fetch initial
+  // data on mount" pattern from the React docs (no Suspense data
+  // source available here). Migrating to ``use()`` + a Suspense
+  // boundary is a Plan-page rewrite, not a lint cleanup.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- justified: fetch-on-mount fan-out to setState; see comment above.
     refresh();
   }, [refresh]);
 

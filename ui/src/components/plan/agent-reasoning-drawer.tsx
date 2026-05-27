@@ -29,7 +29,14 @@ export function AgentReasoningDrawer(props: AgentReasoningDrawerProps) {
 
   useEffect(() => {
     if (!open || !decisionId || !agentRole) {
-      setRow(null);
+      // W10 — Option 1: conditional setState so the reset is a no-op
+      // on first render (row is already null). The remaining cases
+      // (a prior fetch had populated row before the drawer closed)
+      // are exactly the "reset stale fetch result on prop change"
+      // pattern the React docs allow. The explicit disable below
+      // documents why this set-state-in-effect is intentional.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- justified: prop-driven reset of stale fetch results (see comment).
+      setRow((prev) => (prev === null ? prev : null));
       return;
     }
     let cancelled = false;

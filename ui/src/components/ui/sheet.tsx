@@ -50,7 +50,11 @@ function Sheet({ open, onOpenChange, children }: SheetProps) {
 // SheetContent — renders as a side-drawer overlay
 // ---------------------------------------------------------------------------
 
-interface SheetContentProps extends React.ComponentProps<"div"> {}
+// W10 — empty interface extending a supertype is forbidden by
+// @typescript-eslint/no-empty-object-type. Type-alias keeps the shape
+// identical (every supertype member is preserved) and is the
+// idiomatic shadcn-style declaration for "no additional props yet".
+type SheetContentProps = React.ComponentProps<"div">;
 
 function SheetContent({
   className,

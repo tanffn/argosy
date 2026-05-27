@@ -62,7 +62,17 @@ export function AgentCascadeStrip(props: AgentCascadeStripProps) {
 
   useEffect(() => {
     if (!decisionId) {
-      setRows([]);
+      // W10 — Option 1 from the cleanup brief: only call setState
+      // when the value actually changes, so the reset is a no-op for
+      // the canonical first-render path (rows is already []). Using
+      // the functional form lets us read the latest committed value
+      // without re-subscribing the effect to ``rows``. This still
+      // exists inside the effect, but it now triggers a render only
+      // when an in-flight fetch had previously populated rows for a
+      // now-stale decisionId — the legitimate "reset on prop change"
+      // use case the React docs explicitly allow.
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- justified: prop-driven reset of stale fetch results (see comment).
+      setRows((prev) => (prev.length === 0 ? prev : []));
       return;
     }
     let cancelled = false;
