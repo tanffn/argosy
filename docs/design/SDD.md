@@ -15,7 +15,62 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-27 (evening) by Claude — Cashflow projection pivot shipped (19 commits): pivoted `/plan` retirement chart from portfolio-value to monthly-cashflow with sliders (retirement_age · mu · sigma · tax · lifestyle_drift · portfolio_value override · n_paths) + bear/typical/bull radio + Monte Carlo view toggle. New service `argosy/services/cashflow_projection.py` + two routes (`/draft/cashflow-projection` deterministic; `/draft/cashflow-monte-carlo` stochastic with numpy-vectorized n_paths sim). Codex-tandem review of the math: AMBER 1+2 (annuity real/nominal mismatch) fixed; severance-folded-into-pensia AMBER documented as "optimistic bias" + accepted. Late-session sweep: `2d1f956` shipped the `get_current_monthly_expenses_usd` helper left uncommitted by `ea7bd76`; the cleanup commit then deleted the legacy `/draft/projection` route + DTOs + helper (no more orphaned legacy code). Earlier the same day: Wave 3 observability polish + Opus 4.7 stack calibration (G1-G6 + D2 fix). Synth #32 still standing as draft #12 awaiting user-driven AGREE/DISAGREE/DEFER. Build ON TOP of the earlier handover; the "Synthesizer empty-output bug" + "Overnight cycle" + "Second overnight wave" + "Wave 3" sections below all remain current — see the new "Cashflow projection pivot" section after Wave 3 for what's new.
+**Last edit:** 2026-05-28 (late evening) by Claude — Windfall UI shipped + nav restructure + user-guide overhaul + concept reframe. See "Wave 2026-05-28" sub-section directly below for what shipped this session; the prior "Cashflow projection pivot" handover (2026-05-27) and everything beneath it remain current as historical context.
+
+### Wave 2026-05-28 — Windfall UI + IA + the "monthly portfolio update" reframe
+
+**Critical concept reframe (user-driven, late in session):** The "Windfall" framing for §5 of the user-guide was wrong as the PRIMARY frame. The actual user mental model is:
+
+- **Monthly cadence (routine):** drop bank-statement PDFs into `/expenses` (transactions) **and** drop the monthly portfolio snapshot XLS (Leumi positions + Schwab positions) into `/portfolio`. Both are routine status reports — they happen every month.
+- **Windfall (derived signal):** when the snapshot upload above produces a cash delta crossing $25K USD / ₪75K NIS vs the previous month, the windfall detector fires as a side effect and the user sees a banner on Home + the full WindfallCard on `/retirement#windfall`.
+
+The `/expenses` upload tile shipped this session covers the bank-statement side. The `/portfolio` upload tile DOES NOT YET EXIST — it's the highest-priority next-session work. Until it ships, the user runs `update_leumi_tsv.py` manually on `D:/Google Drive/Family/Finances/Portfolio/Resources/` to produce the TSV that `windfall_detector` reads.
+
+**Shipped this session (commits 0851abb → 78f7d96, plus 5 more after):**
+
+UI:
+- `<WindfallBanner>` on Home + `<WindfallCard>` on `/retirement#windfall` — full surface, post-ZigZag corrections applied (renders backend `plan.headline.rationale` instead of synthesizing client-side; DESTINATION tone for under-target rows, not "warning"; divide-by-zero guard on the matching-sales drilldown).
+- `<UploadStatementsCard>` on `/expenses` — drag-drop bank statement ingest tile. Closes a Server↔UI orphan (`POST /api/expenses/upload` had no consumer despite the backend shipping the full multi-file `catalog_upload` path).
+- Hishtalmut withdrawal-tax explorer on `HishtalmutTimerCard` — closes another Server↔UI orphan (`GET /api/retirement/hishtalmut/withdrawal-tax`).
+- Nav restructure: Lucide icon on every tab (was 3 of 14); PRIMARY (8 tabs, daily-use, session-flow order) vs INSPECTION (6 tabs, occasional-use) split; INSPECTION collapsed behind a "More" dropdown so the daily nav isn't carrying surfaces you only touch monthly.
+- Help link rightmost in the nav — a `CircleHelp (?)` icon next to the clock that opens the user-guide in a new tab.
+
+User-guide (`ui/public/user-guide/index.html`):
+- Relocated from `docs/user-guide/` to `ui/public/user-guide/` so Next.js serves it at `/user-guide/index.html`. Capture scripts updated.
+- §5 windfall flow rewritten around the auto-detect philosophy.
+- §6 bank-statement flow rewritten around the new `/expenses` upload tile.
+- §14 retirement-table updated for the new Windfall section.
+- §18 added — 5 click-through detail-page walkthroughs (`/decisions/[id]`, `/fleet-review`, `/anomalies/[id]`, `/positions`, `/onboarding`).
+- §19 (Fixes shipped) DELETED entirely — the user pointed out it was a changelog leak. Sections renumbered down. Inline `(UX #N fixed)` / `(Bug #N rationale)` badges removed from §14 walkthroughs.
+- History-lesson phrases scrubbed throughout ("Prior versions of this guide flagged", "Audit caught the staleness", "Old Hole #N closed").
+
+Coverage:
+- Server↔UI correlation: 88/94 → 90/94 endpoints consumed (≈96%). Remaining 2 orphans (`POST /api/retirement/multi-goal/balance`, `GET /api/retirement/behavioral/check`) are explicitly design-first.
+- SDD↔Server correlation: ~100% on shipped scope (0 missing, 2 SDD-acknowledged partial, 4 SDD-self-marked deferred). All 28-agent fleet present.
+
+Codex-tandem zigzag dispatches (2 this session):
+- `tools/codex-tandem/sessions/windfall-ui-review-2026-05-28/` — adversarial review of the windfall UI + guide diff. Both engines converged on 4 of 6 findings (hero ignores `plan.headline`, divide-by-zero risk, doc "8-row" overstatement, fabricated rationale quote). All 6 findings applied.
+- `tools/codex-tandem/sessions/upload-flow-architecture-2026-05-28/` — pre-build review of the `/portfolio` upload tile architecture. Codex flagged 3 substantive design concerns: parser-parity governance, synchronous-detector failure contract, and `windfall_actions` vs `proposals` schema decision. All carried forward into the next-session plan (see "Open work" below).
+
+**Open work — explicit, in priority order:**
+
+1. **`/portfolio` monthly-snapshot upload tile (the big architectural piece the reframe surfaced).** A new tile parallel to `/expenses` upload, accepting Leumi monthly XLS + Schwab CSV. Backend: extend / reuse existing in-repo Leumi code (`argosy/adapters/brokers/leumi_tsv.py` + `services/expense_ingest/parsers/leumi_*.py`) — do NOT port from `D:/Google Drive/.../update_leumi_tsv.py` (user explicitly excluded that). New service writes the `Family Finances Status - YY MMM.tsv` to `$ARGOSY_EXPENSE_SAMPLES_ROOT`, fires the windfall detector synchronously, returns `{tsv_persisted, detect_status, event}` with SHA-of-content idempotency. Codex zigzag flagged: needs parser-parity tests (golden fixtures), explicit failure contract (timeout / partial-success), and idempotency key.
+2. **Windfall Accept/Defer wiring (Hole #2 in user-guide).** New endpoints + persistence. Codex zigzag flagged: schema decision needs proof, not default — sketch `windfall_actions` vs reuse `proposals` before building.
+3. **Advisor focus-mode for "unclear" windfall classifications (Hole #3).** Design sketched in `docs/superpowers/plans/2026-05-28-windfall-flow-resume.md`.
+4. Verdict "last re-computed at" stamp on `RuinProbabilityHero` (Hole #1).
+5. `/expenses` per-source last-sync indicator (Hole #4).
+6. `/files` upload widget OR rename the tab (Hole #5).
+7. Parse-failure visibility on `/files` (Hole #6).
+8. `/argonaut` 404 on `/api/plan/current/structured` (Hole #7).
+9. Site-wide search palette (Hole #8).
+
+Also pending: logo replacement (the 🚢 emoji + a more on-brand tagline next to "Welcome to Argosy" on the brand-hero card). User suggested working with codex on this — text prompts for an image-gen tool if codex can't generate inline.
+
+**What's still in flight / queued from prior waves (unchanged):** synth #32's draft #12 still standing — 6 FM objections await user-driven AGREE/DISAGREE/DEFER on `/plan`. Multi-goal balancer + behavioral check endpoints remain orphaned (design-first per the Server↔UI audit). All else from the prior handover sections (Wave 3 observability polish, Opus 4.7 calibration, cashflow MC pivot, Synthesizer empty-output bug history) remains accurate.
+
+### Cashflow projection pivot — prior handover (2026-05-27 evening)
+
+ (19 commits): pivoted `/plan` retirement chart from portfolio-value to monthly-cashflow with sliders (retirement_age · mu · sigma · tax · lifestyle_drift · portfolio_value override · n_paths) + bear/typical/bull radio + Monte Carlo view toggle. New service `argosy/services/cashflow_projection.py` + two routes (`/draft/cashflow-projection` deterministic; `/draft/cashflow-monte-carlo` stochastic with numpy-vectorized n_paths sim). Codex-tandem review of the math: AMBER 1+2 (annuity real/nominal mismatch) fixed; severance-folded-into-pensia AMBER documented as "optimistic bias" + accepted. Late-session sweep: `2d1f956` shipped the `get_current_monthly_expenses_usd` helper left uncommitted by `ea7bd76`; the cleanup commit then deleted the legacy `/draft/projection` route + DTOs + helper (no more orphaned legacy code). Earlier the same day: Wave 3 observability polish + Opus 4.7 stack calibration (G1-G6 + D2 fix). Synth #32 still standing as draft #12 awaiting user-driven AGREE/DISAGREE/DEFER. Build ON TOP of the earlier handover; the "Synthesizer empty-output bug" + "Overnight cycle" + "Second overnight wave" + "Wave 3" sections below all remain current — see the new "Cashflow projection pivot" section after Wave 3 for what's new.
 
 ### Synthesizer empty-output bug (discovered overnight, hypothesis-fixed in `a5d317c`)
 
