@@ -424,7 +424,7 @@ Plan: LONG $30K→QQQM + $20K→SCHG (Growth) · MED $21K (fleet) · SHORT $13K 
 - ✅ `<WindfallCard>` on `/retirement#windfall` — `ui/src/components/retirement/WindfallCard.tsx`. Hero verdict (driven by backend's canonical `plan.headline.rationale`, NOT synthesized client-side) + plan-vs-current allocation table (DESTINATION/OVER/CASH pills, accent tone for under-target = where the windfall should go) + three horizon proposal columns + matching-sales drilldown. Accept/Defer buttons render but are disabled with tooltips pending action_engine wiring.
 - TypeScript shape: `WindfallDetectResponse` + `WindfallEventDTO` + `WindfallAllocationPlanDTO` etc. in `ui/src/lib/api.ts`. The endpoint is wrapped as `api.retirement.windfallDetect(opts?)`.
 - User-guide §5 fully rewritten around the auto-detect philosophy ("user drops monthly TSV, Argosy notices"); §18 marks Hole #1 closed; §19 carries two new holes for the remaining deferred work below.
-- Live screenshots refreshed (commit `ddf21f1`) — `docs/user-guide/site-tour/home-top.png` shows the banner; `retirement-top.png` shows the card.
+- Live screenshots refreshed (commit `ddf21f1`) — `ui/public/user-guide/site-tour/home-top.png` shows the banner; `retirement-top.png` shows the card. (User guide moved from `docs/` to `ui/public/` so Next.js serves it at `/user-guide/index.html`.)
 
 **UI work still deferred (the next session's job):**
 - Advisor chat focus mode for classification dialogue when `classified_source == "unclear"` — design sketched in the resume note (`docs/superpowers/plans/2026-05-28-windfall-flow-resume.md`); extractor agent + persistence shape TBD.

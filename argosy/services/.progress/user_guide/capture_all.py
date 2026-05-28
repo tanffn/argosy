@@ -16,9 +16,9 @@ from pathlib import Path
 
 from playwright.sync_api import ConsoleMessage, Request, sync_playwright
 
-OUT_DIR = Path("D:/Projects/financial-advisor/docs/user-guide/site-tour")
+OUT_DIR = Path("D:/Projects/financial-advisor/ui/public/user-guide/site-tour")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-AUDIT = Path("D:/Projects/financial-advisor/docs/user-guide/full_site_audit.json")
+AUDIT = Path("D:/Projects/financial-advisor/ui/public/user-guide/full_site_audit.json")
 
 PAGES = [
     ("home", "/"),

@@ -4,6 +4,7 @@ import {
   BookOpen,
   Bot,
   ChevronDown,
+  CircleHelp,
   ClipboardList,
   FileText,
   Flag,
@@ -80,7 +81,17 @@ export function NavBar() {
           ))}
           <MoreMenu tabs={INSPECTION_TABS} pathname={pathname} />
         </ul>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
+          <a
+            href="/user-guide/index.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center h-7 w-7 rounded-md text-muted-foreground hover:bg-secondary/60 hover:text-foreground transition-colors"
+            aria-label="Open user guide in a new tab"
+            title="User guide"
+          >
+            <CircleHelp className="h-4 w-4" aria-hidden suppressHydrationWarning />
+          </a>
           <LiveClock seconds={false} />
         </div>
       </nav>

@@ -62,7 +62,7 @@ argosy/services/retirement/windfall_allocator.py    # WindfallAllocationPlan + p
 argosy/api/routes/retirement.py                      # /api/retirement/windfall/detect
 tests/test_retirement_windfall.py                    # 15 tests
 docs/design/SDD.md                                   # handover note (top of file) + Windfall flow subsection
-docs/user-guide/index.html                           # end-to-end user guide; references Hole #1
+ui/public/user-guide/index.html                      # end-to-end user guide; references Hole #1
 ui/src/lib/api.ts                                    # extend api.retirement.* with windfallDetect()
 ui/src/components/retirement/                        # add WindfallBanner.tsx + WindfallCard.tsx here
 ui/src/app/page.tsx                                  # Home — add the banner near the top
