@@ -1808,20 +1808,23 @@ Pause for user review.
 
 ---
 
-## Wave 2: Safety gates
+## Wave 2: Safety gates (NRA + Liquidity only)
 
-**Goal:** Close gaps #4 (NRA estate tax gate) + #5 (emergency liquidity floor) + #15 (war/conflict scenarios). Surface a `<SafetyGatesPanel>` on both `/retirement` and `/plan` that hard-blocks "approve retirement plan" when any gate is failing.
+**Goal:** Close gaps #4 (NRA estate tax gate) + #5 (emergency liquidity floor). Surface a `<SafetyGatesPanel>` on both `/retirement` and `/plan` that hard-blocks "approve retirement plan" when any gate is failing.
 
-**Gaps closed:** BLOCKER #4, BLOCKER #5, HIGH #15
+> **Sequencing note (resolved 2026-05-28 codex plan review):** Gap #15 (war/conflict scenarios) originally lived in Wave 2 but the conflict-scenario gate's P(ruin) computation depends on the ruin-probability infrastructure built in Wave 3. Moved to **Wave 3.6** (Conflict-scenario gate, after the P-of-ruin gate is built). Wave 2 now ships only the two gates that don't depend on Monte Carlo infrastructure.
+
+**Gaps closed:** BLOCKER #4, BLOCKER #5
+
+(HIGH #15 closed in Wave 3.6.)
 
 **Files:**
-- Create: `argosy/services/retirement/safety_gates.py` — three sub-classes: `NraEstateGate`, `LiquidityGate`, `ConflictScenarioGate`. Each returns `GateVerdict(status, value_with_rationale, suggested_action)`.
+- Create: `argosy/services/retirement/safety_gates.py` — two sub-classes: `NraEstateGate`, `LiquidityGate`. Each returns `GateVerdict(status, value_with_rationale, suggested_action)`. (The third — `ConflictScenarioGate` — moves to Wave 3.6.)
 - Create: `tests/test_retirement_safety_gates.py`
-- Modify: `argosy/api/routes/retirement.py` — add `/safety-gates?user_id=...` returning all gates
-- Create: `ui/src/components/retirement/SafetyGatesPanel.tsx` — render the 3 gates side-by-side
+- Modify: `argosy/api/routes/retirement.py` — add `/safety-gates?user_id=...` returning the two gates
+- Create: `ui/src/components/retirement/SafetyGatesPanel.tsx` — render the gates side-by-side
 - Create: `ui/src/components/retirement/NraEstateAlert.tsx` — dedicated alert when NRA gate fires (estate-tax exposure > $200K)
 - Create: `ui/src/components/retirement/EmergencyLiquidityCard.tsx`
-- Create: `ui/src/components/retirement/ConflictScenarioToggle.tsx` — toggle that re-runs the projection under conflict params
 - Modify: `ui/src/app/retirement/page.tsx` — embed `<SafetyGatesPanel>` near top
 - Modify: `ui/src/app/plan/page.tsx` — embed `<SafetyGatesPanel>` near top of the plan view
 
@@ -1841,9 +1844,10 @@ def compute_safety_gates(*, user_id: str, session: Session) -> list[GateVerdict]
 ```
 
 **Safety-gate math:**
-1. **NRA estate gate**: pulls US-situs assets total (NVDA, US-domiciled ETFs) from `portfolio_snapshots`. If > $200K: FAIL with suggested action "Begin UCITS migration; current US-situs exposure is $X over the $60K NRA exemption". WARN at $60K-$200K. PASS below $60K.
+1. **NRA estate gate**: pulls US-situs assets total (NVDA, US-domiciled ETFs — NOT UCITS-domiciled which are non-US-situs by IRS rules) from `portfolio_snapshots`. If > $200K: FAIL with suggested action "Begin UCITS migration; current US-situs exposure is $X over the $60K NRA exemption". WARN at $60K-$200K. PASS below $60K.
 2. **Emergency liquidity gate**: pulls cash + HYSA balance from snapshot; computes months-of-essential-expenses (essential = burn × 0.6 conservative). FAIL if < 6 months; WARN if 6-12; PASS if ≥ 12. Threshold parametrized by `identity_yaml.retirement_reference_overrides.emergency_liquidity_floor_months` (default 12).
-3. **Conflict scenario gate**: re-runs the cashflow projection under conflict params (`sigma_annual=0.40`, `inflation_annual=0.06`, `fx_nis_devalue_pct=0.30`, `market_closure_months=6`). If `P(ruin at 85) > 30%` under conflict scenario: WARN.
+
+(Conflict-scenario gate moved to Wave 3.6.)
 
 **Visualization design:**
 - Hero: 3 mini-cards in a row, each colored by status. Click any → expands to full detail.
@@ -1893,8 +1897,10 @@ class RuinProbabilityVerdict:
     p_solvent_at_75: ValueWithRationale  # P(solvent at age 75)
     p_solvent_at_85: ValueWithRationale
     p_solvent_at_95: ValueWithRationale
+    p_solvent_at_95_ci_low: ValueWithRationale  # bootstrap 95% CI lower bound
+    p_solvent_at_95_ci_high: ValueWithRationale  # upper bound
     target_p_solvent: ValueWithRationale  # e.g., 0.90
-    verdict: Literal["ON_TRACK", "WARN", "OFF_TRACK"]
+    verdict: Literal["ON_TRACK", "WARN", "OFF_TRACK", "UNCERTAIN"]
     retire_ready_age: ValueWithRationale | None  # earliest age where target is met
     suggested_action: ValueWithRationale
 
@@ -1904,9 +1910,22 @@ def compute_ruin_probability(
     session: Session,
     target_p_solvent: float = 0.90,
     withdrawal_policy: str = "guyton_klinger",
-    n_paths: int = 1000,
+    n_paths: int = 2000,  # raised from 1000 per codex plan review — see CI note
     regime: Literal["calm", "turbulent", "regime_switch"] = "regime_switch",
+    bootstrap_ci_samples: int = 200,
 ) -> RuinProbabilityVerdict: ...
+
+# Uncertainty handling (codex plan review BLOCKER #6):
+# - n_paths raised to 2000 so the empirical proportion's standard error at
+#   ``p ≈ 0.10`` is ≈ 0.007 (sqrt(p*(1-p)/n)); that's tight enough to claim
+#   a 1pp verdict band.
+# - In addition, bootstrap_ci_samples=200 resampled subsets compute a 95%
+#   bootstrap CI on each P(solvent at age) value.
+# - Verdict logic uses the CI, not the point estimate:
+#     CI lower bound >= target → ON_TRACK
+#     CI upper bound < target  → OFF_TRACK
+#     otherwise                → UNCERTAIN (with "more paths needed" hint)
+# - UI displays the CI as a small ±X% next to the headline percentage.
 
 # sigma_calibration.py
 def calibrate_sigma_from_holdings(
@@ -1982,6 +2001,25 @@ def apply_withdrawal_policy(
 - Default chart shows regime-switch MC + auto-calibrated sigma + Guyton-Klinger withdrawal
 - All 5 new modules + tests pass + codex green on each commit
 - /plan and /retirement both show the new hero card
+
+### Wave 3.6: Conflict-scenario gate (HIGH #15) — runs at end of Wave 3
+
+**Why here, not Wave 2:** the conflict-scenario gate uses `compute_ruin_probability(...)` under stressed parameters. Wave 2 ships before that infrastructure exists; placing the gate here keeps the dependency clean (codex plan-review fix).
+
+**Files:**
+- Modify: `argosy/services/retirement/safety_gates.py` — add `ConflictScenarioGate` (consumes the Wave 3 ruin-probability function under stressed params)
+- Modify: `tests/test_retirement_safety_gates.py` — add tests for conflict gate
+- Modify: `argosy/api/routes/retirement.py` — `/safety-gates` now returns 3 gates
+- Create: `ui/src/components/retirement/ConflictScenarioToggle.tsx` — toggle that re-runs the projection under conflict params on user demand
+- Modify: `ui/src/components/retirement/SafetyGatesPanel.tsx` — third tile
+
+**Stressed params for conflict scenario:**
+- `sigma_annual=0.40` (~2008 turbulent regime)
+- `inflation_annual=0.06` (post-conflict spike)
+- `fx_nis_devalue_pct=0.30` (NIS devalues vs USD)
+- `market_closure_months=6` (forced illiquid period during which withdrawals draw 100% from cash buffer)
+
+**Threshold:** if `P(ruin at 85) > 30%` under conflict params: WARN. If > 50%: FAIL.
 
 ### Wave 3 checkpoint
 Pause for user review.
@@ -2064,16 +2102,28 @@ Pause for user review.
 
 ## Wave 5: Account-aware tax engine + decumulation
 
+> **Wave 5 split into three sub-waves (codex plan-review fix BLOCKER #7):** Original estimate "~500 LOC" was unrealistic for Israeli account-aware tax + treaty handling. Subdivided into:
+> - **Wave 5a:** Core engine + pension annuity tax (post-67 partial exemption with rights-fixation mechanics)
+> - **Wave 5b:** Hishtalmut + kupat_gemel + severance (vehicle-specific tax rules; each treated as a distinct case, NOT "similar to hishtalmut")
+> - **Wave 5c:** Lump-vs-annuity decision wizard + decumulation order optimizer
+
 **Goal:** Close BLOCKER #2 (tax engine) + MED #20 (hishtalmut) + LOW #29 (lump-vs-annuity) + LOW #30 (decumulation). The single biggest backend lift in this plan. Replaces the current flat `tax_rate` slider with a proper per-account, per-cashflow-type tax engine.
+
+> **Israeli tax law accuracy (codex plan-review fixes #2-5):** Earlier draft asserted simplifications that are wrong for "policy-grade" use. Corrections:
+> - **Kupat_pensia post-67 partial exemption is NOT a flat 35%.** Per Israel Tax Authority procedure (Jan 2025), the exemption regime moved to a rights-fixation model with rate phasing (~57% in 2025, stepping further by 2027-2030). Source: `israeli_tax_authority_pension_exemption_2025`. Wave 5a MUST consume the rights-fixation table, not a hardcoded 35%.
+> - **Kupat_gemel is NOT "similar to hishtalmut."** They share a class but have different tax treatment per vehicle origin (pre-2008 vs post-2008 contributions), withdrawal rules, and tax-free thresholds. Wave 5b treats each as a distinct case with its own test file.
+> - **Hishtalmut tax-free conditions are NOT universally "after 6yr OR after age 67."** Eligibility depends on deposit purpose, timing, and rule-set context (employee-deposited vs self-employed). Wave 5b handles these conditions explicitly per ITA guidance.
+> - **US dividend withholding uses foreign-tax-credit interaction, NOT "reclaim."** Israeli residents claim a credit for US treaty withholding (15% for US-source dividends to Israeli residents under the US-Israel treaty) against their Israeli tax liability. Wave 5a tax engine implements as: `israeli_tax = max(0, 25% * gross - 15% * us_withholding)` per the credit mechanism.
 
 **Gaps closed:** BLOCKER #2, MED #20, LOW #29, LOW #30
 
 **Files:**
-- Create: `argosy/services/retirement/tax_engine.py` (~500 LOC)
+- Create: `argosy/services/retirement/tax_engine.py` (estimated 700-1000 LOC after corrections above; split into sub-modules if it grows past 800)
 - Create: `argosy/services/retirement/hishtalmut.py`
+- Create: `argosy/services/retirement/kupat_gemel.py` (NEW per codex correction — was implicitly merged with hishtalmut in the draft)
 - Create: `argosy/services/retirement/decumulation.py`
 - Create: `argosy/services/retirement/lump_vs_annuity.py`
-- Tests: 4 new test files
+- Tests: 5 new test files (one per module)
 - UI: `TaxBreakdownTable`, `HishtalmutTimer`, `DecumulationOrderCard`, `LumpVsAnnuityWizard`
 
 **Interfaces (key):**
@@ -2092,15 +2142,29 @@ def compute_tax(cashflow: TaxableCashflow, *, user_id: str, session: Session) ->
     """Returns net amount after Israeli tax (with US treaty withholding where applicable)."""
     ...
 
-# Standard cases:
-# - capital_gain on taxable equity: × (1 - 0.25)
-# - pension_annuity (kupat_pensia post-67): age-banded marginal rate; 35% partial exemption
-# - hishtalmut lump after 6yr from first deposit OR after age 67: tax-free
-# - hishtalmut early withdrawal: 47% marginal
-# - kupat_gemel similar to hishtalmut
-# - executive_insurance: handled per legacy policy contract
-# - US dividends: 25% Israeli + reclaim US treaty withholding
-# - rsu_vest: marginal income tax + bituach leumi
+# Standard cases (corrected per codex plan-review):
+# - capital_gain on taxable Israeli-resident equity: × (1 - 0.25)
+# - pension_annuity (kupat_pensia post-67): age-banded marginal rate against
+#   a partial-exemption envelope. The exemption is a rights-fixation regime
+#   per ITA Jan-2025 procedure: ~57% in 2025, phasing further by 2027+.
+#   NOT a flat 35%. See ``argosy/data/israel_retirement_reference.yaml::
+#   tax.pension_exemption_envelope_by_year`` for the year-by-year table.
+# - hishtalmut tax-free eligibility — three distinct conditions; ALL must
+#   be checked: (a) employee-deposited 6yr from first deposit, (b) self-
+#   employed 6yr from first deposit with different aggregation rules, OR
+#   (c) age 67 lump. Early withdrawal: marginal rate ~47% with bituach-
+#   leumi adjustments. See ``hishtalmut.py`` for the case logic.
+# - kupat_gemel: per-vehicle rules (pre-2008 vs post-2008 contributions
+#   have different treatment). See ``kupat_gemel.py`` — NOT inferred from
+#   hishtalmut logic.
+# - executive_insurance: handled per legacy policy contract (each policy
+#   has its own actuarial table; this is a "see policy document" case)
+# - US dividends (Israeli resident): treaty withholding 15% at source.
+#   Israeli liability is 25% on the gross; the 15% US withholding becomes
+#   a foreign-tax-credit against the Israeli liability. Engine implements:
+#     israeli_tax_due = max(0, 0.25 * gross - 0.15 * gross_us_withheld)
+# - rsu_vest: marginal income tax + bituach-leumi cap-aware (BL caps at
+#   the ceiling table value, currently ~₪50k/mo gross)
 
 # hishtalmut.py
 @dataclass
@@ -2276,13 +2340,34 @@ class ReplanTrigger:
 def get_replan_trigger_log(*, user_id: str, session: Session) -> list[ReplanTrigger]: ...
 
 @dataclass
-class GoalBalance:
+class GoalConstraint:
     goal_id: str  # "retirement" | "kids_education" | "house_upgrade" | "charity"
+    constraint_type: Literal["hard_floor", "soft_target", "no_later_than"]
+    target_nis: ValueWithRationale
+    deadline: str | None  # ISO YYYY-MM-DD for hard deadlines
+    priority: int  # 1-10; used as lexicographic tiebreaker when constraints permit slack
+    rationale: str
+
+@dataclass
+class GoalBalance:
+    goal_id: str
     target_nis: ValueWithRationale
     funded_pct: ValueWithRationale
+    binding_constraints: list[str]  # which other goals constrain this one
     tradeoffs: list[ValueWithRationale]  # "Retire 2y later → fully fund education"
 
-def balance_multi_goals(*, user_id: str, session: Session) -> list[GoalBalance]: ...
+# Per codex plan-review BLOCKER #8: NOT "Lagrangian vs priority order."
+# Approach: constrained optimization with explicit hard/soft constraints
+# + explainable policy outputs. Hard constraints (e.g. kids' tuition due
+# in 18mo) MUST be met; soft constraints (e.g. retirement at 49) are
+# optimized within remaining budget. Explainability requires that every
+# "trade off X for Y" suggestion cite which constraint is binding.
+def balance_multi_goals(
+    *,
+    user_id: str,
+    session: Session,
+    constraints: list[GoalConstraint] | None = None,
+) -> list[GoalBalance]: ...
 ```
 
 **Visualization design:**
