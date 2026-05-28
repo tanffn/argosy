@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-27 (evening) — Cashflow projection pivot landed: `/plan` retirement chart pivoted from portfolio-value-over-time to monthly-cashflow with retirement-age slider + bear/typical/bull radio + sliders for mu/sigma/tax/lifestyle-drift/portfolio-override + Monte Carlo view toggle (P10-P90 bands, failure-prob cards). New service `argosy/services/cashflow_projection.py` + route `/api/plan/draft/cashflow-projection` (deterministic) + `/api/plan/draft/cashflow-monte-carlo` (numpy-vectorized n_paths simulation). Codex-tandem review of the math: AMBER 1+2 (annuity nominal/real mismatch) fixed in `16d7282`; severance-folded-into-pensia AMBER documented + accepted as "optimistic bias". Late-session sweep: `2d1f956` shipped the `get_current_monthly_expenses_usd` helper that `ea7bd76` had left uncommitted (a dormant broken import on the legacy `/draft/projection` route); the cleanup commit then deleted the entire legacy route + DTOs + helper since the only caller was gone. No orphaned legacy code. Earlier the same day: Wave 3 observability polish + Opus 4.7 stack calibration (G1 cost breakdown, G2 agents_skipped/failed split, G3 D11 detector, G4 adaptive-thinking telemetry, G5 codex cost, G6 markdown export, D2 false-positive fix). Synth #32 still standing as draft #12 (`synth-2026-05-27-1020-fm-rejected`) waiting on user-driven AGREE/DISAGREE/DEFER. Migration head at 0038. Tests green across the 3 cashflow/wealth-dashboard files (124/124). See "Cashflow projection pivot" subsection below for details. |
+| **Last updated** | 2026-05-28 (morning) — Retirement-companion overhaul Wave 0 landed: foundation infrastructure for the 7-wave / 30-gap overhaul (plan: `docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md`). Wave 0 ships: `argosy/services/retirement/` package + `ValueWithRationale` citation primitive + canonical sources registry (`argosy/data/sources.yaml`, 17 sources) + hybrid-defaults resolver (`argosy/services/retirement/reference.py` with shipped YAML + per-user override + freshness stamping) + umbrella router (`/api/retirement/sources` + `/api/retirement/sources/{id}` + `/api/retirement/reference/{key}`) + 7 UI primitives (`HeroCard`, `ValueWithTooltip`, `DrilldownSection`, `SourcesPanel`, `MethodologyPanel`, `SensitivityPanel`, `AssumptionsStrip`) + `/retirement` page scaffold + Retirement nav tab. Codex zigzag review of the master plan returned 8 blocker-level findings (Wave 2→Wave 3 sequencing break; ITA pension-exemption rates outdated; kupat_gemel ≠ hishtalmut; hishtalmut conditions overbroad; US dividends framing; P(ruin) CI gap; Wave 5 size; multi-goal optimization model) — all integrated into the plan. **Tests: 29/29 retirement-area passing** + 124/124 cashflow + 1,616 baseline = ~1,769 total. See "Retirement-companion overhaul" subsection in the handover for the 7-wave roadmap. **Previous (2026-05-27 evening):** Cashflow projection pivot landed: `/plan` retirement chart pivoted from portfolio-value-over-time to monthly-cashflow with retirement-age slider + bear/typical/bull radio + sliders for mu/sigma/tax/lifestyle-drift/portfolio-override + Monte Carlo view toggle (P10-P90 bands, failure-prob cards). New service `argosy/services/cashflow_projection.py` + route `/api/plan/draft/cashflow-projection` (deterministic) + `/api/plan/draft/cashflow-monte-carlo` (numpy-vectorized n_paths simulation). Codex-tandem review of the math: AMBER 1+2 (annuity nominal/real mismatch) fixed in `16d7282`; severance-folded-into-pensia AMBER documented + accepted as "optimistic bias". Late-session sweep: `2d1f956` shipped the `get_current_monthly_expenses_usd` helper that `ea7bd76` had left uncommitted (a dormant broken import on the legacy `/draft/projection` route); the cleanup commit then deleted the entire legacy route + DTOs + helper since the only caller was gone. No orphaned legacy code. Earlier the same day: Wave 3 observability polish + Opus 4.7 stack calibration (G1 cost breakdown, G2 agents_skipped/failed split, G3 D11 detector, G4 adaptive-thinking telemetry, G5 codex cost, G6 markdown export, D2 false-positive fix). Synth #32 still standing as draft #12 (`synth-2026-05-27-1020-fm-rejected`) waiting on user-driven AGREE/DISAGREE/DEFER. Migration head at 0038. Tests green across the 3 cashflow/wealth-dashboard files (124/124). See "Cashflow projection pivot" subsection below for details. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -324,6 +324,36 @@ Wall-clock + cost roughly comparable to #30 (~70 min, ~$3-4 total). The FM rejec
   - **"Explain in plain English"** (precomputed translation, `4131b69` + `67828b5`).
   - **"Start new round with my decisions"** CTA — wires the AGREE/DISAGREE/DEFER decisions + counter-positions into `user_directive` and fires synth #33.
 - **The next move is user-driven, not engineering.** The system is built and waiting. Engineering's contribution to this iteration is complete.
+
+### Retirement-companion overhaul (2026-05-28) — 7-wave / 30-gap closure
+
+Plan: `docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md`.
+Open questions log: `docs/superpowers/plans/2026-05-28-retirement-companion-overhaul-questions.md`.
+
+The 2026-05-28 SDD review (Codex + Explore agent + main-agent synthesis) identified 30 gaps blocking Argosy from being a trusted retirement companion: 5 BLOCKERs (single-month "retire-ready" instead of probability-of-ruin gate; flat tax-rate slider instead of account-aware tax engine; fixed mekadem=200 with no variance; NRA estate exposure not gated into plan acceptance; no emergency-liquidity floor), 10 HIGHs (Bituach Leumi stipend missing; manual sigma stress; no withdrawal/glide-path/rebalancing policies; lognormal-only MC; FX as a snapshot; thin lifecycle income; thin phase expenses; war/conflict scenarios missing), 10 MEDIUMs (real estate / mortgage / partner / severance split / hishtalmut / IDF service / healthcare / insurance gaps / action engine / replan triggers / multi-goal), 4 LOWs (duplicate route, behavioral guardrails, lump-vs-annuity tool, decumulation order). Master plan groups them into 7 waves on `main` with explicit checkpoints + codex-reviewer-per-commit + a cross-cutting visualization standard ("hero + chart + drill-down") and citations standard (`ValueWithRationale` → tooltips + Sources panel).
+
+**Wave 0 (foundation) — SHIPPED 2026-05-28:**
+
+| Task | Commits | What |
+|---|---|---|
+| 0.1 | `8714e33` | `ValueWithRationale` dataclass + `as_dict()` serializer (9 tests) |
+| 0.2 | `d86dece` | Sources registry: canonical `sources.yaml` (17 sources spanning Israeli statutory, pension fund tables, FIRE/Bogleheads research, US estate/treaty) + cached loader with optional user override (7 tests) |
+| 0.3 | `2d584df` | Hybrid-defaults resolver: user-override > shipped > 404; freshness stamping at 12mo (shipped) / 18mo (user) with intrinsic-wins-over-auto-stamp (7 tests) |
+| 0.4 | `77a133d` | `/api/retirement/{sources,sources/{id},reference/{key}}` umbrella router (6 integration tests) |
+| 0.5 | `fbadba9` | TS types + `api.retirement` namespace |
+| 0.6-0.9 | `0e4fcd7` | 7 UI primitives (`HeroCard`, `ValueWithTooltip`, `DrilldownSection`, `SourcesPanel`, `MethodologyPanel`, `SensitivityPanel`, `AssumptionsStrip`) + `/retirement` page scaffold + nav tab |
+
+**Plan-review codex zigzag** (`3550870`) returned 8 blocker-level findings that were integrated before any code shipped:
+- Wave 2 → Wave 3 sequencing break: ConflictScenarioGate moved to new Wave 3.6 (it depends on the P(ruin) infrastructure built in Wave 3)
+- Kupat_pensia post-67 partial exemption: was "flat 35%"; corrected to ITA Jan-2025 rights-fixation regime (57% in 2025, phased)
+- Kupat_gemel ≠ hishtalmut: split into a separate Wave 5b module with its own test file
+- Hishtalmut tax-free conditions: corrected to three distinct cases (employee 6yr / self-employed 6yr / age 67 lump)
+- US dividend withholding: corrected from "reclaim" framing to foreign-tax-credit interaction (`israeli_tax_due = max(0, 0.25*gross - 0.15*us_withheld)`)
+- P(ruin) gate: n_paths raised 1000→2000 + added bootstrap CI + 4th verdict status `UNCERTAIN` when CI straddles threshold
+- Wave 5 size understated: split into 5a (core + pension annuity), 5b (hishtalmut + gemel + severance), 5c (lump-vs-annuity + decumulation)
+- Multi-goal: corrected from "Lagrangian or priority order" false binary to explicit hard/soft constraint optimization with explainable outputs
+
+**Wave 1-7 are NOT yet started.** Each wave's just-in-time daughter plan expands the master plan's spec-level detail into full TDD steps at execution time.
 
 ### Cashflow projection pivot (2026-05-27 evening) — `/plan` chart pivot + Monte Carlo
 
