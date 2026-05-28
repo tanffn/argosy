@@ -141,6 +141,52 @@ export interface WindfallDetectResponse {
   plan?: WindfallAllocationPlanDTO;
 }
 
+// Accept / Defer wiring (2026-05-29, closes user-guide Hole #2).
+// Backend: argosy/state/models.py::WindfallAction + the three routes
+// in argosy/api/routes/retirement.py.
+
+export interface WindfallActionRequest {
+  user_id: string;
+  event_detected_at: string;
+  event_source_tsv: string;
+  horizon: WindfallHorizon;
+  asset_class: string;
+  instrument: string;
+  amount_usd: number;
+  rationale: string;
+  closes_delta_usd: number;
+  confidence: "high" | "medium" | "low";
+  /** Only used by /defer -- when the user wants to be re-prompted. */
+  due_date?: string;
+  user_note?: string;
+}
+
+export interface WindfallActionResponse {
+  id: number;
+  decided_status: "accepted" | "deferred" | "executed" | "expired";
+  decided_at: string;
+  due_date: string | null;
+}
+
+export interface WindfallActionListItem {
+  id: number;
+  event_detected_at: string;
+  event_source_tsv: string;
+  horizon: WindfallHorizon;
+  asset_class: string;
+  instrument: string;
+  amount_usd: number;
+  decided_status: "accepted" | "deferred" | "executed" | "expired";
+  decided_at: string;
+  due_date: string | null;
+  user_note: string | null;
+  proposal_id: number | null;
+}
+
+export interface WindfallActionsListResponse {
+  actions: WindfallActionListItem[];
+}
+
 export interface PortfolioPosition {
   location: string;
   currency: string;
@@ -972,6 +1018,28 @@ export const api = {
       const qs = params.toString();
       return getJSON<WindfallDetectResponse>(
         `/api/retirement/windfall/detect${qs ? `?${qs}` : ""}`,
+      );
+    },
+    // Closes user-guide Hole #2 (2026-05-29). The WindfallCard's
+    // Accept/Defer buttons post the proposal verbatim plus the event
+    // provenance fields (detected_at + source_tsv) so the row in
+    // windfall_actions has a stable back-reference to the WindfallEvent
+    // that produced it.
+    windfallAccept: (payload: WindfallActionRequest) =>
+      postJSON<WindfallActionResponse>(
+        "/api/retirement/windfall/accept",
+        payload,
+      ),
+    windfallDefer: (payload: WindfallActionRequest) =>
+      postJSON<WindfallActionResponse>(
+        "/api/retirement/windfall/defer",
+        payload,
+      ),
+    windfallActionsList: (userId: string, eventSourceTsv?: string) => {
+      const params = new URLSearchParams({ user_id: userId });
+      if (eventSourceTsv) params.set("event_source_tsv", eventSourceTsv);
+      return getJSON<WindfallActionsListResponse>(
+        `/api/retirement/windfall/actions?${params.toString()}`,
       );
     },
   },

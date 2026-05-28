@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import {
   api,
+  type WindfallActionListItem,
   type WindfallAllocationLineDTO,
   type WindfallClassifiedSource,
   type WindfallDetectResponse,
@@ -16,6 +17,11 @@ import {
   type WindfallProposalDTO,
 } from "@/lib/api";
 import type { ValueWithRationale } from "@/lib/retirement-types";
+
+// Single-user-mode binding. Matches the USER_ID convention used across
+// the retirement components. When multi-tenant lands, this lifts to a
+// session-derived value via auth context.
+const USER_ID = "ariel";
 
 /**
  * Full-surface windfall card for /retirement.
@@ -76,7 +82,7 @@ export function WindfallCard() {
     <div className="space-y-3">
       <WindfallHero event={event} plan={plan} />
       <AllocationDeltaTable rows={event.allocation_delta_table} />
-      <ProposalsGrid plan={plan} />
+      <ProposalsGrid plan={plan} event={event} />
 
       <DrilldownSection title="Matching equity sales (same month)">
         <SalesTable event={event} />
@@ -268,9 +274,37 @@ function AllocationDeltaTable({ rows }: AllocationDeltaTableProps) {
 
 interface ProposalsGridProps {
   plan: NonNullable<WindfallDetectResponse["plan"]>;
+  event: WindfallEventDTO;
 }
 
-function ProposalsGrid({ plan }: ProposalsGridProps) {
+function ProposalsGrid({ plan, event }: ProposalsGridProps) {
+  // Pre-fetch any existing windfall_actions rows for this event so each
+  // ProposalRow can render its already-decided state inline (Accepted ✓
+  // / Deferred until ...) instead of showing fresh Accept/Defer
+  // buttons. Keyed by event.source_tsv since detected_at can drift
+  // by milliseconds on re-fetches.
+  const [existing, setExisting] = useState<WindfallActionListItem[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.retirement
+      .windfallActionsList(USER_ID, event.source_tsv)
+      .then((r) => {
+        if (!cancelled) setExisting(r.actions);
+      })
+      .catch(() => {
+        // Swallow -- the page renders fine without prior decisions;
+        // we just won't pre-populate the per-proposal status.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [event.source_tsv]);
+
+  const onDecided = (action: WindfallActionListItem) => {
+    setExisting((rows) => [...rows, action]);
+  };
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
       <ProposalColumn
@@ -278,18 +312,27 @@ function ProposalsGrid({ plan }: ProposalsGridProps) {
         budgetFraction="60%"
         proposals={plan.long_term}
         emptyHint="No under-target asset classes — windfall would sit in cash."
+        event={event}
+        existing={existing}
+        onDecided={onDecided}
       />
       <ProposalColumn
         title="Medium term"
         budgetFraction="25%"
         proposals={plan.medium_term}
         emptyHint="Awaiting agent-fleet synthesis."
+        event={event}
+        existing={existing}
+        onDecided={onDecided}
       />
       <ProposalColumn
         title="Short term"
         budgetFraction="15%"
         proposals={plan.short_term}
         emptyHint="Awaiting watchlist + news scan."
+        event={event}
+        existing={existing}
+        onDecided={onDecided}
       />
     </div>
   );
@@ -300,6 +343,9 @@ interface ProposalColumnProps {
   budgetFraction: string;
   proposals: WindfallProposalDTO[];
   emptyHint: string;
+  event: WindfallEventDTO;
+  existing: WindfallActionListItem[];
+  onDecided: (action: WindfallActionListItem) => void;
 }
 
 function ProposalColumn({
@@ -307,6 +353,9 @@ function ProposalColumn({
   budgetFraction,
   proposals,
   emptyHint,
+  event,
+  existing,
+  onDecided,
 }: ProposalColumnProps) {
   return (
     <Card>
@@ -322,18 +371,46 @@ function ProposalColumn({
         {proposals.length === 0 ? (
           <p className="text-xs text-muted-foreground font-mono">{emptyHint}</p>
         ) : (
-          proposals.map((p, i) => (
-            <ProposalRow key={`${p.horizon}-${i}`} proposal={p} />
-          ))
+          proposals.map((p, i) => {
+            // Match a prior decision on the (horizon, asset_class,
+            // instrument, amount_usd) tuple -- this uniquely identifies
+            // a proposal in a plan, and the allocator copies these
+            // verbatim on Accept/Defer so the match is exact.
+            const prior = existing.find(
+              (a) =>
+                a.horizon === p.horizon &&
+                a.asset_class === p.asset_class &&
+                a.instrument === p.instrument &&
+                Math.abs(a.amount_usd - p.amount_usd) < 0.01,
+            );
+            return (
+              <ProposalRow
+                key={`${p.horizon}-${i}`}
+                proposal={p}
+                event={event}
+                prior={prior}
+                onDecided={onDecided}
+              />
+            );
+          })
         )}
       </CardContent>
     </Card>
   );
 }
 
-function ProposalRow({ proposal }: { proposal: WindfallProposalDTO }) {
+interface ProposalRowProps {
+  proposal: WindfallProposalDTO;
+  event: WindfallEventDTO;
+  prior: WindfallActionListItem | undefined;
+  onDecided: (action: WindfallActionListItem) => void;
+}
+
+function ProposalRow({ proposal, event, prior, onDecided }: ProposalRowProps) {
   const isPlaceholder =
     proposal.instrument.startsWith("<") || proposal.instrument.endsWith(">");
+  const [busy, setBusy] = useState<"accept" | "defer" | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // Tooltip data wraps the dollar amount with the proposal's rationale so
   // the user gets the "why" without having to scroll. source_id is
@@ -345,6 +422,47 @@ function ProposalRow({ proposal }: { proposal: WindfallProposalDTO }) {
     source_id: null,
     rationale: proposal.rationale,
     confidence: proposal.confidence,
+  };
+
+  const submit = async (verb: "accept" | "defer") => {
+    setBusy(verb);
+    setError(null);
+    try {
+      const payload = {
+        user_id: USER_ID,
+        event_detected_at: event.detected_at,
+        event_source_tsv: event.source_tsv,
+        horizon: proposal.horizon,
+        asset_class: proposal.asset_class,
+        instrument: proposal.instrument,
+        amount_usd: proposal.amount_usd,
+        rationale: proposal.rationale,
+        closes_delta_usd: proposal.closes_delta_usd,
+        confidence: proposal.confidence,
+      };
+      const resp =
+        verb === "accept"
+          ? await api.retirement.windfallAccept(payload)
+          : await api.retirement.windfallDefer(payload);
+      onDecided({
+        id: resp.id,
+        event_detected_at: payload.event_detected_at,
+        event_source_tsv: payload.event_source_tsv,
+        horizon: payload.horizon,
+        asset_class: payload.asset_class,
+        instrument: payload.instrument,
+        amount_usd: payload.amount_usd,
+        decided_status: resp.decided_status,
+        decided_at: resp.decided_at,
+        due_date: resp.due_date,
+        user_note: null,
+        proposal_id: null,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
@@ -372,23 +490,48 @@ function ProposalRow({ proposal }: { proposal: WindfallProposalDTO }) {
           {proposal.rationale}
         </div>
       )}
-      <div className="mt-1 flex items-center gap-2">
-        <button
-          type="button"
-          disabled
-          title="Accept/Defer wiring to action_engine is deferred — coming in a follow-up."
-          className="font-mono text-[11px] px-2 py-0.5 rounded border border-border/60 bg-background/40 text-muted-foreground/70 cursor-not-allowed"
-        >
-          Accept
-        </button>
-        <button
-          type="button"
-          disabled
-          title="Accept/Defer wiring to action_engine is deferred — coming in a follow-up."
-          className="font-mono text-[11px] px-2 py-0.5 rounded border border-border/60 bg-background/40 text-muted-foreground/70 cursor-not-allowed"
-        >
-          Defer
-        </button>
+      <div className="mt-1 flex items-center gap-2 flex-wrap">
+        {prior ? (
+          <span
+            className={`font-mono text-[11px] px-2 py-0.5 rounded border ${
+              prior.decided_status === "accepted"
+                ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-400"
+                : "border-amber-400/40 bg-amber-400/10 text-amber-400"
+            }`}
+            title={`Recorded ${prior.decided_at}`}
+          >
+            {prior.decided_status === "accepted" ? "✓ Accepted" : "↻ Deferred"}
+            {prior.due_date ? ` · due ${prior.due_date}` : ""}
+          </span>
+        ) : (
+          <>
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void submit("accept")}
+              className={`font-mono text-[11px] px-2 py-0.5 rounded border border-emerald-400/40 bg-emerald-400/10 text-emerald-400 hover:bg-emerald-400/20 transition-colors ${
+                busy !== null ? "opacity-60 cursor-wait" : "cursor-pointer"
+              }`}
+            >
+              {busy === "accept" ? "…" : "Accept"}
+            </button>
+            <button
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void submit("defer")}
+              className={`font-mono text-[11px] px-2 py-0.5 rounded border border-amber-400/40 bg-amber-400/10 text-amber-400 hover:bg-amber-400/20 transition-colors ${
+                busy !== null ? "opacity-60 cursor-wait" : "cursor-pointer"
+              }`}
+            >
+              {busy === "defer" ? "…" : "Defer"}
+            </button>
+          </>
+        )}
+        {error ? (
+          <span className="font-mono text-[11px] text-rose-400">
+            {error}
+          </span>
+        ) : null}
       </div>
     </div>
   );

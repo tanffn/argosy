@@ -6,6 +6,7 @@ without touching the cross-cutting plumbing here.
 
 Plan: ``docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md``.
 """
+from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -885,6 +886,190 @@ def get_windfall_detect(
         },
         "plan": plan.to_dict(),
     }
+
+
+# Windfall Accept / Defer (closes user-guide Hole #2, 2026-05-29)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class WindfallActionRequest(BaseModel):
+    """Payload for POST /windfall/accept and POST /windfall/defer.
+
+    The proposal fields (horizon / asset_class / instrument / amount_usd
+    / rationale / closes_delta_usd / confidence) are copied verbatim
+    from the AllocationProposal the user clicked on. We accept them
+    from the client (vs re-deriving server-side) because the allocator
+    is non-deterministic w.r.t. medium/short placeholders + the user
+    might be looking at a slightly stale plan -- the client's view is
+    the source of truth for the decision.
+
+    The event provenance fields (event_detected_at, event_source_tsv)
+    come from the WindfallEventDTO the same plan was attached to.
+    """
+
+    user_id: str
+    event_detected_at: datetime
+    event_source_tsv: str
+    horizon: str
+    asset_class: str
+    instrument: str
+    amount_usd: float
+    rationale: str
+    closes_delta_usd: float
+    confidence: str
+    # /defer-only: when does the user want to be re-prompted?
+    due_date: date | None = None
+    user_note: str | None = None
+
+
+class WindfallActionResponse(BaseModel):
+    id: int
+    decided_status: str
+    decided_at: datetime
+    due_date: date | None
+
+
+@router.post("/windfall/accept", response_model=WindfallActionResponse)
+def post_windfall_accept(
+    payload: WindfallActionRequest,
+    db: Session = Depends(get_db),
+) -> WindfallActionResponse:
+    """Record an Accept on a windfall allocation proposal.
+
+    Persistence-only for now: a row lands in windfall_actions with
+    decided_status='accepted'. Promotion into an action_engine
+    PrioritizedAction (with severity HIGH + due_date on the home-page
+    action-items widget) ships in a follow-up commit.
+    """
+    from argosy.state.models import WindfallAction
+
+    row = WindfallAction(
+        user_id=payload.user_id,
+        event_detected_at=payload.event_detected_at,
+        event_source_tsv=payload.event_source_tsv,
+        horizon=payload.horizon,
+        asset_class=payload.asset_class,
+        instrument=payload.instrument,
+        amount_usd=payload.amount_usd,
+        rationale=payload.rationale,
+        closes_delta_usd=payload.closes_delta_usd,
+        confidence=payload.confidence,
+        decided_status="accepted",
+        due_date=payload.due_date,
+        user_note=payload.user_note,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return WindfallActionResponse(
+        id=row.id,
+        decided_status=row.decided_status,
+        decided_at=row.decided_at,
+        due_date=row.due_date,
+    )
+
+
+@router.post("/windfall/defer", response_model=WindfallActionResponse)
+def post_windfall_defer(
+    payload: WindfallActionRequest,
+    db: Session = Depends(get_db),
+) -> WindfallActionResponse:
+    """Record a Defer on a windfall allocation proposal.
+
+    Same row shape as /accept; decided_status='deferred'. Optional
+    due_date stamps when the user wants to be re-prompted. Without a
+    due_date, the row sits as an open deferral until either Accept
+    or expiration.
+    """
+    from argosy.state.models import WindfallAction
+
+    row = WindfallAction(
+        user_id=payload.user_id,
+        event_detected_at=payload.event_detected_at,
+        event_source_tsv=payload.event_source_tsv,
+        horizon=payload.horizon,
+        asset_class=payload.asset_class,
+        instrument=payload.instrument,
+        amount_usd=payload.amount_usd,
+        rationale=payload.rationale,
+        closes_delta_usd=payload.closes_delta_usd,
+        confidence=payload.confidence,
+        decided_status="deferred",
+        due_date=payload.due_date,
+        user_note=payload.user_note,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return WindfallActionResponse(
+        id=row.id,
+        decided_status=row.decided_status,
+        decided_at=row.decided_at,
+        due_date=row.due_date,
+    )
+
+
+class WindfallActionListItem(BaseModel):
+    id: int
+    event_detected_at: datetime
+    event_source_tsv: str
+    horizon: str
+    asset_class: str
+    instrument: str
+    amount_usd: float
+    decided_status: str
+    decided_at: datetime
+    due_date: date | None
+    user_note: str | None
+    proposal_id: int | None
+
+
+class WindfallActionsListResponse(BaseModel):
+    actions: list[WindfallActionListItem]
+
+
+@router.get("/windfall/actions", response_model=WindfallActionsListResponse)
+def list_windfall_actions(
+    user_id: str,
+    event_detected_at: datetime | None = None,
+    event_source_tsv: str | None = None,
+    db: Session = Depends(get_db),
+) -> WindfallActionsListResponse:
+    """List recorded windfall actions for a user.
+
+    Optional filters by event (detected_at + source_tsv) let the UI
+    fetch only the actions belonging to the currently-displayed event,
+    so the WindfallCard can render per-proposal "Accepted ✓ at 14:32"
+    / "Deferred (due 2026-06-15)" feedback inline without scanning
+    the whole history.
+    """
+    from argosy.state.models import WindfallAction
+
+    q = db.query(WindfallAction).filter(WindfallAction.user_id == user_id)
+    if event_detected_at is not None:
+        q = q.filter(WindfallAction.event_detected_at == event_detected_at)
+    if event_source_tsv is not None:
+        q = q.filter(WindfallAction.event_source_tsv == event_source_tsv)
+    rows = q.order_by(WindfallAction.decided_at.desc()).all()
+    return WindfallActionsListResponse(
+        actions=[
+            WindfallActionListItem(
+                id=r.id,
+                event_detected_at=r.event_detected_at,
+                event_source_tsv=r.event_source_tsv,
+                horizon=r.horizon,
+                asset_class=r.asset_class,
+                instrument=r.instrument,
+                amount_usd=float(r.amount_usd),
+                decided_status=r.decided_status,
+                decided_at=r.decided_at,
+                due_date=r.due_date,
+                user_note=r.user_note,
+                proposal_id=r.proposal_id,
+            )
+            for r in rows
+        ],
+    )
 
 
 # Wave 2 — safety gates

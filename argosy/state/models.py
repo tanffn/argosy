@@ -1646,3 +1646,101 @@ class AnomalyReport(Base):
             "source_statement_id",
         ),
     )
+
+
+class WindfallAction(Base):
+    """One row per user decision on a windfall allocation proposal.
+
+    Closes user-guide Hole #2 ("Windfall Accept/Defer is read-only").
+    When the user clicks Accept or Defer on a row of the WindfallCard,
+    a row lands here. Persistence is separate from the proposals table
+    because the shape diverges enough that mashing it in would lose
+    information (codex-tandem zigzag finding, 2026-05-28):
+
+      proposals (existing /proposals queue):
+        ticker, action, size_shares_or_currency, size_units, order_type,
+        tier, account_class, status, rationale_summary, confidence,
+        cooling_off_until, conviction, cited_sources.
+
+      windfall_actions (this table):
+        horizon (long/medium/short), asset_class (Growth/Defensive/...),
+        instrument, amount_usd, rationale, closes_delta_usd, confidence,
+        decided_status (accepted/deferred/executed/expired).
+
+    The two columns the schemas share (instrument <-> ticker;
+    confidence) keep their semantic meaning. The overlap isn't enough
+    to fold the tables together: a windfall acceptance has no order
+    type, no tier, no cooling_off; a trade proposal has no horizon,
+    no asset_class, no closes_delta_usd. Forcing one shape on the
+    other would either lose fields (current path) or pollute the
+    /proposals UI with rows of an inconvenient shape.
+
+    Lifecycle: row created on Accept (decided_status='accepted') or
+    Defer (decided_status='deferred' + optional due_date). When the
+    action_engine later promotes the acceptance into a real trade
+    proposal, the proposal_id FK is filled and decided_status moves
+    to 'executed'. 'expired' is for actions stale enough that the
+    market context has shifted (e.g. accepted 6mo ago, never acted on).
+    """
+
+    __tablename__ = "windfall_actions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Provenance back to the windfall event that produced this proposal.
+    # detected_at + source_tsv together uniquely identify the event row
+    # the WindfallEvent dataclass exposed (the dataclass isn't itself
+    # persisted -- events are derived from TSV diff -- so we pin the
+    # two identifying fields on every action row).
+    event_detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    event_source_tsv: Mapped[str] = mapped_column(String(256), nullable=False)
+
+    # Proposal shape, copied verbatim from AllocationProposal at the
+    # moment of acceptance. Frozen at decision time so a later allocator
+    # tweak doesn't retroactively change what the user signed off on.
+    horizon: Mapped[str] = mapped_column(String(8), nullable=False)
+    asset_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    instrument: Mapped[str] = mapped_column(String(64), nullable=False)
+    amount_usd: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    closes_delta_usd: Mapped[float] = mapped_column(
+        Numeric(12, 2), nullable=False
+    )
+    confidence: Mapped[str] = mapped_column(String(8), nullable=False)
+
+    # User decision
+    decided_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="accepted"
+    )
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    user_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # FK out to the eventual trade proposal when this gets promoted
+    # through action_engine. Null until the promotion step runs.
+    proposal_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("proposals.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_windfall_actions_user_decided",
+            "user_id",
+            "decided_at",
+        ),
+        Index(
+            "ix_windfall_actions_event",
+            "event_detected_at",
+            "event_source_tsv",
+        ),
+    )
