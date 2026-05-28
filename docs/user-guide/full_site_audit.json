@@ -86,7 +86,7 @@
     "console_warnings": [
       {
         "text": "WebSocket connection to 'ws://localhost:8000/ws' failed: WebSocket is closed before the connection is established.",
-        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0sizk_x._.js', 'lineNumber': 775, 'columnNumber': 0}"
+        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0sizk_x._.js', 'lineNumber': 780, 'columnNumber': 0}"
       }
     ],
     "failed_requests": []
@@ -115,9 +115,9 @@
   "expenses": {
     "path": "/expenses",
     "loaded": true,
-    "input_count": 0,
+    "input_count": 1,
     "textarea_count": 0,
-    "file_input_count": 0,
+    "file_input_count": 1,
     "button_count": 6,
     "select_count": 0,
     "form_count": 0,
@@ -200,7 +200,7 @@
     "console_warnings": [
       {
         "text": "WebSocket connection to 'ws://localhost:8000/ws' failed: WebSocket is closed before the connection is established.",
-        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0w6j0n2._.js', 'lineNumber': 775, 'columnNumber': 0}"
+        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0w6j0n2._.js', 'lineNumber': 780, 'columnNumber': 0}"
       }
     ],
     "failed_requests": []
@@ -208,7 +208,7 @@
   "retirement": {
     "path": "/retirement",
     "loaded": true,
-    "input_count": 5,
+    "input_count": 6,
     "textarea_count": 0,
     "file_input_count": 0,
     "button_count": 30,
