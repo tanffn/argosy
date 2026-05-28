@@ -149,6 +149,7 @@
     <li><a href="#tab-files">Files</a></li>
     <li><a href="#tab-proposals">Proposals · Argonaut · Decide</a></li>
     <li><a href="#tab-others">Agents · Audit · Domain KB · Settings</a></li>
+    <li><a href="#tab-details">Detail pages (click-through)</a></li>
   </ol>
 
   <h2>Audit</h2>
@@ -671,8 +672,100 @@
 </section>
 
 <!-- ============================================================ -->
+<section id="tab-details">
+<h2>18. Detail pages reached by click-through</h2>
+
+<p>These surfaces aren't in the top nav — you land on them by clicking a link from Home, /portfolio, /plan, /retirement, or one of the banners. They're documented here so the next time a banner says "Read report →" or a synthesis row says "Drill in →" you know what you're getting.</p>
+
+<h3 id="detail-decisions"><span class="nav-card">/decisions/&lt;id&gt;</span> — Synthesis replay (primary debug surface)</h3>
+
+<figure>
+  <img src="site-tour/decisions-detail-top.png" alt="Decision replay top">
+  <figcaption><strong>Decision replay #32</strong> — header (plan_revision · tier T3 · completed) → run metadata (34m 52s, FM rejected) → cost breakdown ($3.61 total, 24 agents) split by phase + by top role → start of the FM-rooted agent tree (24 OK · 0 failed · 2 skipped · 65 adapters OK).</figcaption>
+</figure>
+
+<p>The deepest view in the app. Lands here from the Home page's <strong>DecisionAccordion</strong> "Drill in →" links and from the in-flight-synthesis banner. One page per <code>decision_runs.id</code>.</p>
+
+<p>Top: a <strong>VerdictCard</strong> showing the FM's final verdict (APPROVE / APPROVE_WITH_CONDITIONS / REJECT) + the decision_kind (plan_revision, trade_proposal, delta_pushback, daily_brief) + duration in human terms (e.g. "38 min" — and yes, the page corrects for the SQLite-naive-timestamp UTC-offset bug so the duration is accurate regardless of your local timezone).</p>
+
+<p>Middle: the <strong>FM-rooted Agent Tree</strong>. Every agent that ran is a node; parent→child edges reflect orchestration (FM at root, sub-agents below). Each node renders agent role + status (ok / degraded / failed / skipped) + confidence + a one-line excerpt. Click to drill into the full prompt/response/citations for that one run. The <strong>codex_second_opinion</strong> node is special: it carries structured cross-engine findings (BLOCKER / AMBER / YELLOW) that are surfaced inline instead of buried in the transcript.</p>
+
+<p>Bottom: <strong>Cost breakdown</strong>. Total $-spend for the run, split two ways — by phase (Phase 1 analysts / Phase 2 debates / Phase 3 synth / Phase 4 risk / Phase 4.5 codex / Phase 5 FM) and by top role. Useful when a synthesis runs hot and you want to know where the budget went. Below: a <strong>Mermaid sequence diagram</strong> of the whole flow if you want the alternative view.</p>
+
+<div class="callout">
+  <div class="callout-title">When to come here</div>
+  Three real reasons: (1) "why did the FM reject?" — the verdict card + tree tell you in one screen. (2) "what did codex flag in round 4.5?" — drill into the codex_second_opinion node. (3) "where did this synthesis spend its money?" — the cost breakdown at the bottom.
+</div>
+
+<h3 id="detail-fleet-review-list"><span class="nav-card">/fleet-review</span> — Self-review trends (the list view)</h3>
+
+<figure>
+  <img src="site-tour/fleet-review-list-top.png" alt="Fleet self-review list page">
+  <figcaption><strong>Fleet self-review list</strong> — 30-day stacked-area chart of RED / AMBER / YELLOW finding counts (X-axis MM-DD HH:mm), persistent-findings call-out below the chart, then the 50 most-recent reports as clickable rows.</figcaption>
+</figure>
+
+<p>The Home banner links to a specific report at <span class="nav-card">/fleet-review/&lt;id&gt;</span>. The <em>list-index</em> at <span class="nav-card">/fleet-review</span> (no id) shows the 30-day trend across all reports — useful for "is the AMBER count going up over time?" without having to open each report.</p>
+
+<p>Top: a <strong>stacked-area chart</strong> over the last 30 days. RED layered on top of AMBER on top of YELLOW so a single RED spike doesn't get hidden inside a tall YELLOW band. X-axis is "MM-DD HH:mm" (post-synthesis reports cluster around plan revisions, so time-of-day matters).</p>
+
+<p>Below the chart: <strong>persistent findings</strong> — the specific detectors that keep tripping across recent runs, named explicitly so the fix priority is obvious without opening each report.</p>
+
+<p>Bottom: the most-recent 50 reports as clickable rows, each linking to its <span class="nav-card">/fleet-review/&lt;id&gt;</span> viewer.</p>
+
+<div class="callout">
+  <div class="callout-title">When to come here</div>
+  When the Home banner says "21 findings — 1 RED · 9 AMBER · 11 YELLOW" but you want trend context. Or when you suspect a detector is over-firing and want to see if it's the same finding repeated 12 times.
+</div>
+
+<h3 id="detail-anomalies"><span class="nav-card">/anomalies/&lt;id&gt;</span> — Full anomaly viewer</h3>
+
+<p>The Home banner surfaces the first RED anomaly from the most-recent report; <span class="nav-card">/anomalies/&lt;id&gt;</span> is where the rest live. Lands here from the banner's "view details →" link.</p>
+
+<p>Each report row shows: severity pill (RED / AMBER / YELLOW), the watchlist entry name (e.g. "card-2923-fee-waiver"), the observation in plain English, suggested action, "last seen" timestamp, and the agent's confidence.</p>
+
+<p>Below the anomaly list: a <strong>watchlist-status snapshot</strong> — per-entry state (NORMAL / ALERT / RESOLVED / UNKNOWN) so you can see what the agent was monitoring at the moment this report fired.</p>
+
+<div class="callout">
+  <div class="callout-title">When to come here</div>
+  The motivating use case: Card 2923's fee-waiver promotion expires. The anomaly_detection agent notices the discount line disappeared from your Discount Bank statement, fires a RED report, the Home banner links here. You see "card-2923-fee-waiver · ALERT · last seen 2026-04-30." That's the moment of truth.
+</div>
+
+<h3 id="detail-positions"><span class="nav-card">/positions</span> — Per-holding thesis cards</h3>
+
+<figure>
+  <img src="site-tour/positions-top.png" alt="Positions page">
+  <figcaption><strong>Positions</strong> — one card per holding, derived from the pending plan draft (or the accepted plan when no draft is in flight). Same component the /portfolio page renders as a section; this route is the permalink.</figcaption>
+</figure>
+
+<p>One card per holding: ticker · current shares · current weight % · USD value. Each card carries the agent fleet's verdict (HOLD / BUY / TRIM / SELL / ADD) + conviction (HIGH / MEDIUM / LOW) + a paragraph of reasoning + cited sources. Pulled from the pending plan draft (or the accepted plan when no draft is in flight).</p>
+
+<p>Same component is also rendered inside <span class="nav-card">/portfolio</span> — <span class="nav-card">/positions</span> is the permalink so older bookmarks keep working. Easier to land on directly if all you want is "what does the fleet think about NVDA right now?"</p>
+
+<div class="callout">
+  <div class="callout-title">When to come here</div>
+  Tactical decisions about one holding. "Should I trim NVDA before earnings?" lands on this card, reads the thesis + cited sources, decides. (The actual sell still goes through <span class="nav-card">/decide</span> + <span class="nav-card">/proposals</span>.)
+</div>
+
+<h3 id="detail-onboarding"><span class="nav-card">/onboarding</span> + <span class="nav-card">/intake</span> — First-login + legacy redirect</h3>
+
+<figure>
+  <img src="site-tour/onboarding-top.png" alt="Onboarding page">
+  <figcaption><strong>Onboarding</strong> — email + setup-token form. Signs the user in via NextAuth, then drops them on the home page where the Advisor's gap-tracker takes over (§4 walkthrough).</figcaption>
+</figure>
+
+<p><span class="nav-card">/onboarding</span> is the new-tenant landing page. Takes an email + a setup token (from the admin or the invite URL's <code>?token=</code> param), signs the user in via NextAuth, and drops them on the home page where the Advisor's gap-tracker takes over (see §4). Off-nav by design — you'd only land here on first-login of a fresh tenant.</p>
+
+<p><span class="nav-card">/intake</span> is a thin redirect to <span class="nav-card">/advisor</span>. The old 6-stage interview was replaced by the persistent advisor relationship (gap-tracker sidebar + free-form Q&amp;A) in the Phase 1 reframe; this stub stays so older bookmarks land on the right surface.</p>
+
+<div class="callout">
+  <div class="callout-title">When to come here</div>
+  Realistically: never, in single-user mode. Worth knowing about if you ever set up a second tenant (e.g. partner account) — the new tenant's first stop is <span class="nav-card">/onboarding</span>.
+</div>
+</section>
+
+<!-- ============================================================ -->
 <section id="fixes">
-<h2>18. Fixes shipped this round</h2>
+<h2>19. Fixes shipped this round</h2>
 
 <div class="callout ok">
   <div class="callout-title">All 6 retirement bugs/UX issues closed</div>
@@ -720,9 +813,9 @@
 
 <!-- ============================================================ -->
 <section id="holes">
-<h2>19. Holes still in the flow (not yet fixed)</h2>
+<h2>20. Holes still in the flow (not yet fixed)</h2>
 
-<p>These are real gaps that the per-tab walkthroughs surfaced. None block usage; all worsen UX. Numbering reflects the post-windfall state — the old Hole #1 ("Add income event isn't discoverable") was closed by the windfall auto-detect flow, see §18.</p>
+<p>These are real gaps that the per-tab walkthroughs surfaced. None block usage; all worsen UX. Numbering reflects the post-windfall state — the old Hole #1 ("Add income event isn't discoverable") was closed by the windfall auto-detect flow, see §19.</p>
 
 <div class="callout warn">
   <div class="callout-title">Hole #1 — No "verdict re-computed" confirmation</div>
@@ -774,7 +867,7 @@
 
 <!-- ============================================================ -->
 <section id="health">
-<h2>20. System health (live audit, 2026-05-28)</h2>
+<h2>21. System health (live audit, 2026-05-28)</h2>
 
 <table>
 <thead><tr><th>Page</th><th>Loaded</th><th>Console errors</th><th>Failed requests</th></tr></thead>
@@ -793,10 +886,15 @@
 <tr><td>/audit</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/domain-kb</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/settings</td><td>✓</td><td>0</td><td>0</td></tr>
+<tr><td>/positions</td><td>✓</td><td>0</td><td>0</td></tr>
+<tr><td>/decisions/32</td><td>✓</td><td>0</td><td>0</td></tr>
+<tr><td>/fleet-review</td><td>✓</td><td>0</td><td>0</td></tr>
+<tr><td>/fleet-review/12</td><td>✓</td><td>0</td><td>0</td></tr>
+<tr><td>/onboarding</td><td>✓</td><td>0</td><td>0</td></tr>
 </tbody>
 </table>
 
-<p>14/14 pages render. 1 page has 1 console error (the /argonaut 404). Backend at <code>:8000</code> with 29 retirement endpoints registered (including <code>/windfall/detect</code>). UI at <code>:1337</code> via Next.js 16.</p>
+<p>19/19 routes render (14 nav tabs + 5 detail surfaces from §18). 1 page has 1 console error (the /argonaut 404). Backend at <code>:8000</code> with 29 retirement endpoints registered (including <code>/windfall/detect</code>). UI at <code>:1337</code> via Next.js 16.</p>
 
 <div class="callout ok">
   <div class="callout-title">Screenshots are current as of 2026-05-28 17:29</div>
