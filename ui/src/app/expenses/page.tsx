@@ -11,6 +11,7 @@ import { SavingsRateTrend } from "@/components/expenses/savings-rate-trend";
 import { SourcesHealthTable } from "@/components/expenses/sources-health-table";
 import { TaxesCard } from "@/components/expenses/taxes-card";
 import { TopMoversCard } from "@/components/expenses/top-movers-card";
+import { UploadStatementsCard } from "@/components/expenses/upload-statements-card";
 import { YearlySummaryCard } from "@/components/expenses/yearly-summary-card";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -72,6 +73,17 @@ function ExpensesOverviewInner() {
 
   return (
     <div className="flex flex-col gap-4">
+      <UploadStatementsCard
+        userId={USER_ID}
+        // On a successful upload refresh the overview so the new
+        // transactions show up without a manual page reload.
+        onUploadComplete={() => {
+          expensesApi
+            .dashboardOverview(USER_ID, 12, fxMode, selectedWindow)
+            .then(setData)
+            .catch((e: unknown) => setError(String(e)));
+        }}
+      />
       <HeroStats mode="yearly" overview={data} />
       <YearlySummaryCard data={data.yearly_summary} onWindowChange={setWindow} />
       <SavingsRateTrend data={data.savings_rate_trend} />

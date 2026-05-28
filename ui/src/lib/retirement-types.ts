@@ -103,6 +103,12 @@ export interface HishtalmutEligibilityResponse {
   early_withdrawal_marginal_rate: ValueWithRationale;
 }
 
+export interface HishtalmutWithdrawalTaxResponse {
+  tax: ValueWithRationale;
+  /** 1 when the withdrawal is fully tax-free under the active path, 0 otherwise. */
+  taxfree_now: number;
+}
+
 export interface DecumulationStep {
   order: number;
   account: string;

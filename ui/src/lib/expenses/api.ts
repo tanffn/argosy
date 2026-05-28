@@ -39,6 +39,43 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function postMultipart<T>(path: string, fd: FormData): Promise<T> {
+  // Multipart bodies — Content-Type is auto-set with the boundary by the
+  // browser; explicitly setting it here would break parsing on the server.
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    body: fd,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status} ${path}`;
+    try {
+      const j = (await res.json()) as { detail?: string };
+      if (j.detail) detail = j.detail;
+    } catch {
+      // non-JSON body — fall back to status
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as T;
+}
+
+export interface UploadFileResult {
+  filename: string;
+  status: "parsed" | "failed";
+  statement_id: number | null;
+  transactions_inserted: number;
+  correlations_made: number;
+  categories_resolved: number;
+  refunds_matched: number;
+  parser_name: string | null;
+  error: string | null;
+}
+
+export interface UploadStatementsResponse {
+  results: UploadFileResult[];
+}
+
 export interface MonthlyTotalEntry {
   month: string;
   totals_by_currency: Record<string, number>;
@@ -325,6 +362,21 @@ export const expensesApi = {
     return getJSON<DashboardOverview>(
       `/api/expenses/dashboard-overview?${qs.toString()}`,
     );
+  },
+  // Multi-file bank-statement ingest. Files flow through catalog_upload
+  // (SDD §17.1 canonical funnel) then ingest_user_file. Per-file outcome
+  // is reported back; UI surfaces results inline so the user sees which
+  // statements parsed and which failed without leaving the page.
+  uploadStatements: (
+    userId: string,
+    files: File[],
+    cardLast4?: string,
+  ): Promise<UploadStatementsResponse> => {
+    const fd = new FormData();
+    fd.append("user_id", userId);
+    if (cardLast4) fd.append("card_last4", cardLast4);
+    for (const f of files) fd.append("files", f, f.name);
+    return postMultipart<UploadStatementsResponse>("/api/expenses/upload", fd);
   },
   dashboardMonthly: (
     userId: string,

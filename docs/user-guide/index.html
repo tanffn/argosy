@@ -362,32 +362,22 @@
   <div class="flow-step">
     <div class="step-num">STEP 1</div>
     <div class="step-title">Get your monthly PDFs</div>
-    <div class="step-body">Leumi NIS checking, Leumi USD, Discount Mastercard, Cal, any credit card statements.</div>
+    <div class="step-body">Leumi NIS checking, Leumi USD, Discount Mastercard, Cal, Schwab, Max — any of the supported issuers.</div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP 2</div>
-    <div class="step-title">Open <span class="nav-card">/advisor</span></div>
-    <div class="step-body">Yes, again — there's no "import statement" button on <span class="nav-card">/expenses</span> or <span class="nav-card">/files</span>.</div>
+    <div class="step-title">Open <span class="nav-card">/expenses</span> and use the upload tile at the top</div>
+    <div class="step-body">The <code>&lt;UploadStatementsCard&gt;</code> at the top of <span class="nav-card">/expenses</span> takes multi-file drag-drop. Drop one or more statements directly on the tile or click to pick. PDF / CSV / XLS / XLSX / TSV all accepted. (The <span class="nav-card">/advisor</span> chat Attach button still works too if you prefer it — same backend path through <code>catalog_upload</code>.)</div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP 3</div>
-    <div class="step-title">Click <strong>Attach</strong> (or drag) — one PDF at a time</div>
-    <div class="step-body">10MB per file, 20MB per turn. Drop the May 2026 Leumi NIS statement. The parser (issuer-aware: Leumi/Discount/Cal/Schwab) recognizes the format and extracts transactions.</div>
+    <div class="step-title">Watch per-file results render inline</div>
+    <div class="step-body">Each file gets a PARSED or FAILED pill plus stats: <em>parser, transactions inserted, categorised, correlated, refunds matched</em>. Failures show the error message. Max statements need the card last 4 — the tile surfaces an input automatically when a Max failure is detected.</div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP 4</div>
-    <div class="step-title">Wait for parse confirmation in chat</div>
-    <div class="step-body">The Advisor responds with "Parsed 47 transactions from Leumi-NIS · May 2026" (or similar). If parsing fails, you'll see "?? UnknownFormatError" — drop a screenshot instead.</div>
-  </div>
-  <div class="flow-step">
-    <div class="step-num">STEP 5</div>
-    <div class="step-title">Repeat for every issuer</div>
-    <div class="step-body">Discount, Cal, second card. Each turn = one statement.</div>
-  </div>
-  <div class="flow-step">
-    <div class="step-num">STEP 6</div>
-    <div class="step-title">Open <span class="nav-card">/expenses</span></div>
-    <div class="step-body">Monthly sub-tab now shows the new month populated. Categories auto-assigned via the household_categorizer agent.</div>
+    <div class="step-title">Dashboard refreshes automatically</div>
+    <div class="step-body">On any successful upload the overview re-fetches in the background — the Monthly sub-tab populates the new month and categories auto-assigned via the <code>household_categorizer</code> agent show up without a page reload.</div>
   </div>
 </div>
 
@@ -398,9 +388,9 @@
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">UX hole #4 — no upload widget on /files</div>
-  <span class="nav-card">/files</span> is read-only. Users expect "Files = where I upload files." Instead it's "Files = catalog of what's already been uploaded." Misleading.<br>
-  <strong>Suggested fix:</strong> add an Upload button on <span class="nav-card">/files</span> that uses the same <code>catalog_upload</code> backend the Advisor chat uses.
+  <div class="callout-title">UX hole #4 — /files is still read-only</div>
+  <span class="nav-card">/files</span> is a catalog viewer with no upload widget of its own. With the new <code>&lt;UploadStatementsCard&gt;</code> on <span class="nav-card">/expenses</span> the bank-statement flow is covered, but uploads of <em>non-statement</em> documents (a payslip, a tax letter, anything destined for the catalog rather than a parser) still have to go through the <span class="nav-card">/advisor</span> chat Attach button. <span class="nav-card">/files</span> still reads as "where I upload files" but is "where I see what I uploaded."<br>
+  <strong>Suggested fix:</strong> add a general Upload button on <span class="nav-card">/files</span> that uses the same <code>catalog_upload</code> backend.
 </div>
 </section>
 
@@ -697,6 +687,16 @@
 <div class="callout ok">
   <div class="callout-title">Old Hole #8 closed — Income sub-tab on /expenses already shipped</div>
   A previous round of this guide listed "Income sub-tab missing" as an open hole. Audit caught the staleness: <code>ui/src/app/expenses/income/page.tsx</code> exists and serves a real per-month income breakdown (fetches <code>expensesApi.incomeBreakdown(user_id, month)</code> with month-shift navigation, error + loading states). Accessible from <span class="nav-card">/expenses/income</span>. The §2 tab-at-a-glance table and the §12 sub-tab list have been updated to reflect the live state.
+</div>
+
+<div class="callout ok">
+  <div class="callout-title">Coverage gap closed — bank-statement upload tile on /expenses</div>
+  Server↔UI audit (2026-05-28) found <code>POST /api/expenses/upload</code> had no UI consumer despite shipping a complete multi-file ingest backend (canonical <code>catalog_upload</code> per SDD §17.1). The <code>&lt;UploadStatementsCard&gt;</code> on <span class="nav-card">/expenses</span> (commit shipped this session) closes it: drag-drop, multi-file, per-file PARSED/FAILED outcomes, auto-detected Max card-last-4 prompt. §6 "Monthly bank statement" flow rewritten to lead with the new tile.
+</div>
+
+<div class="callout ok">
+  <div class="callout-title">Coverage gap closed — hishtalmut withdrawal-tax explorer</div>
+  Server↔UI audit also found <code>GET /api/retirement/hishtalmut/withdrawal-tax</code> orphaned — sibling to the <code>/eligibility</code> call that the <code>HishtalmutTimerCard</code> already consumed. The card now includes a "what if I withdraw ₪X?" input that drives a debounced fetch and renders the tax owed alongside the eligibility countdown. Closes the pair.
 </div>
 
 <h4>Bug #1 — Sigma calibration result fed into the verdict <span class="badge fix">FIXED</span></h4>

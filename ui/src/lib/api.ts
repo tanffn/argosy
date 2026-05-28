@@ -27,6 +27,7 @@ export type {
   FxBandResponse,
   GateStatus,
   GateVerdict,
+  HishtalmutWithdrawalTaxResponse,
   MekademBandResponse,
   RuinProbabilityResponse,
   SafetyGatesResponse,
@@ -41,6 +42,7 @@ export type {
 import type {
   BLStipendResponse,
   FxBandResponse,
+  HishtalmutWithdrawalTaxResponse,
   MekademBandResponse,
   RuinProbabilityResponse,
   SafetyGatesResponse,
@@ -763,6 +765,19 @@ export const api = {
     // Wave 5/6/7
     hishtalmutEligibility: (userId: string, firstDepositDate: string, currentAge: number) =>
       getJSON(`/api/retirement/hishtalmut/eligibility?user_id=${encodeURIComponent(userId)}&first_deposit_date_iso=${firstDepositDate}&user_current_age=${currentAge}`),
+    // Sibling of /hishtalmut/eligibility — given a hypothetical withdrawal
+    // amount in NIS, returns the tax owed (₪0 when an eligibility path is
+    // already satisfied, otherwise gross_nis × marginal rate). Wired up
+    // 2026-05-28 to close the eligibility/tax pair on the timer card.
+    hishtalmutWithdrawalTax: (
+      userId: string,
+      firstDepositDate: string,
+      currentAge: number,
+      grossNis: number,
+    ) =>
+      getJSON<HishtalmutWithdrawalTaxResponse>(
+        `/api/retirement/hishtalmut/withdrawal-tax?user_id=${encodeURIComponent(userId)}&first_deposit_date_iso=${firstDepositDate}&user_current_age=${currentAge}&gross_nis=${grossNis}`,
+      ),
     decumulationOrder: (params: {
       monthlyNeedNis: number; taxableBalanceNis?: number;
       hishtalmutBalanceNis?: number; kupatGemelBalanceNis?: number;
