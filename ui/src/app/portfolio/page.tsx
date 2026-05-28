@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { PerPositionThesisSection } from "@/components/positions/per-position-thesis-section";
+import { PortfolioSnapshotUploadCard } from "@/components/portfolio/snapshot-upload-card";
 import { WealthDashboard } from "@/components/portfolio/wealth-dashboard";
 import {
   Card,
@@ -72,6 +73,22 @@ export default function PortfolioPage() {
 
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {error && <p className="text-sm text-error font-mono">{error}</p>}
+
+      {/* Monthly portfolio-snapshot upload tile (2026-05-29). User
+         drops the monthly Family Finances Status TSV; the route
+         persists under ARGOSY_EXPENSE_SAMPLES_ROOT and fires the
+         windfall detector inline. See
+         argosy/api/routes/portfolio.py::upload_snapshot. */}
+      <PortfolioSnapshotUploadCard
+        userId={USER_ID}
+        onUploadComplete={() => {
+          // Re-fetch the snapshot so the page reflects the just-uploaded data.
+          api
+            .portfolioSnapshot(USER_ID)
+            .then((data) => setSnap(data))
+            .catch((e: unknown) => setError(String(e)));
+        }}
+      />
 
       {/* Wealth dashboard — top-of-page retirement projection + 6 stat
          cards. Independent of the portfolio snapshot fetch above; renders

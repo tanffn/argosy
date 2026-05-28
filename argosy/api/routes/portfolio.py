@@ -10,9 +10,13 @@ requests serve from the DB (idempotent — see
 
 from __future__ import annotations
 
+import hashlib
+import os
+import re
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -193,6 +197,279 @@ def get_portfolio_snapshot(
             user_id=user_id, error=str(exc),
         )
     return _snapshot_to_dto(snap)
+
+
+# ---------------------------------------------------------------------------
+# POST /upload-snapshot — Monthly portfolio snapshot upload (2026-05-29)
+#
+# Closes the "no UI surface for the portfolio XLS" flow gap identified in
+# the 2026-05-28 session. The user's mental model: every month they drop
+# bank statements (transactions) into /expenses AND a portfolio snapshot
+# into /portfolio. The latter had no surface; users ran `update_leumi_tsv.py`
+# manually outside Argosy.
+#
+# Scope of this route: accept the TSV directly (the format
+# `argosy/ingest/tsv.py::parse_portfolio_tsv` already consumes). The raw
+# XLS-to-TSV conversion remains the user's external script for now;
+# porting that step is queued for a follow-up session and gated on
+# either (a) a fresh in-repo Leumi XLS parser with parity tests against
+# the external script, or (b) explicit user consent to ingest the
+# Google Drive script as the canonical implementation.
+# ---------------------------------------------------------------------------
+
+
+class UploadSnapshotResponse(BaseModel):
+    """Per-upload outcome surface.
+
+    Tri-state explicit contract (codex-tandem zigzag finding,
+    2026-05-28): the UI needs to distinguish three independent
+    outcomes -- did the TSV persist, did the windfall detector run,
+    and did the detector find an event. None of these imply the
+    others.
+    """
+
+    tsv_persisted: bool
+    persisted_path: str | None
+    """Where the TSV landed under ARGOSY_EXPENSE_SAMPLES_ROOT (or the
+    project's snapshot dir). Useful for the UI to confirm the file is
+    where the windfall detector will look next."""
+    snapshot_date: str | None
+    """Parsed snapshot date from the TSV (the date in row 1 col B)."""
+    detect_status: str
+    """ok | skipped | failed -- whether the windfall detector ran. Skipped
+    means there's no previous TSV to diff against; failed means it ran
+    but raised (uncommon; logged)."""
+    event: dict | None
+    """When detect_status == 'ok' AND a qualifying event fired, the
+    event payload (same shape as GET /retirement/windfall/detect)."""
+    plan: dict | None
+    """Allocation plan when an event fired (same shape as GET /detect)."""
+    detail: str | None
+    """Free-form note for the UI when the file couldn't be parsed or
+    didn't match the expected portfolio-TSV header marker."""
+    sha256: str
+    """SHA-256 of the upload contents. Idempotency key the caller can
+    use to detect "I just uploaded the same file twice" client-side."""
+
+
+_TSV_FILENAME_RE = re.compile(
+    r"Family Finances Status\s*-\s*(\d{2})\s*([A-Za-z]{3})", re.IGNORECASE,
+)
+
+
+def _normalize_tsv_filename(original_name: str, snap) -> str:
+    """Return the canonical 'Family Finances Status - YY MMM.tsv' name.
+
+    Priority order:
+      1. If the original filename already matches the canonical pattern,
+         keep it verbatim.
+      2. Otherwise, derive from the parsed snapshot_date in the TSV.
+      3. Last resort: use today's date.
+    """
+    m = _TSV_FILENAME_RE.search(original_name)
+    if m:
+        return original_name if original_name.endswith(".tsv") else f"{original_name}.tsv"
+    d = getattr(snap, "snapshot_date", None) or datetime.now().date()
+    yy = f"{d.year % 100:02d}"
+    mmm = d.strftime("%b")
+    return f"Family Finances Status - {yy} {mmm}.tsv"
+
+
+def _resolve_snapshot_root() -> Path:
+    """The directory the windfall detector scans for TSVs.
+
+    Matches the convention in argosy/api/routes/retirement.py::get_windfall_detect:
+    prefers ARGOSY_EXPENSE_SAMPLES_ROOT (the user's Google Drive
+    Resources folder) when set; falls back to a project-local
+    ``snapshots/`` directory under ARGOSY_HOME so dev / CI / tests work.
+    """
+    env_root = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
+    if env_root:
+        return Path(env_root)
+    return get_settings().home / "snapshots"
+
+
+@router.post("/upload-snapshot", response_model=UploadSnapshotResponse)
+def upload_snapshot(
+    file: UploadFile = File(...),
+    user_id: str = Form("ariel"),
+    fire_detector: bool = Form(True),
+    db: Session = Depends(get_db),
+) -> UploadSnapshotResponse:
+    """Upload a monthly Family Finances Status TSV.
+
+    Contract:
+      1. Read the multipart file bytes.
+      2. Hash for idempotency (SHA-256 returned to caller).
+      3. Parse with parse_portfolio_tsv. Reject when the canonical
+         header marker is missing.
+      4. Persist under the windfall-detector scan root with the
+         canonical 'Family Finances Status - YY MMM.tsv' name.
+      5. Optionally fire the windfall detector synchronously (default
+         on; pass fire_detector=false to suppress for tests / dry-run).
+         Detector failures are caught + reported as detect_status=failed;
+         the TSV write succeeds either way.
+      6. Return the tri-state outcome shape.
+    """
+    contents = file.file.read()
+    sha = hashlib.sha256(contents).hexdigest()
+
+    # Write to a temp file so parse_portfolio_tsv can read by path.
+    # The parser is path-based today; refactoring it to accept bytes
+    # would be a larger change.
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        mode="wb", suffix=".tsv", delete=False,
+    ) as tmp:
+        tmp.write(contents)
+        tmp_path = Path(tmp.name)
+
+    try:
+        with tmp_path.open("r", encoding="utf-8", errors="ignore") as f:
+            head = f.read(4096)
+        if _PORTFOLIO_TSV_HEADER_MARKER not in head:
+            return UploadSnapshotResponse(
+                tsv_persisted=False,
+                persisted_path=None,
+                snapshot_date=None,
+                detect_status="skipped",
+                event=None,
+                plan=None,
+                detail=(
+                    f"Header marker '{_PORTFOLIO_TSV_HEADER_MARKER}' not found "
+                    "in upload. Expected the Family Finances Status TSV shape."
+                ),
+                sha256=sha,
+            )
+
+        try:
+            snap = parse_portfolio_tsv(tmp_path)
+        except Exception as exc:  # noqa: BLE001
+            return UploadSnapshotResponse(
+                tsv_persisted=False, persisted_path=None,
+                snapshot_date=None,
+                detect_status="skipped", event=None, plan=None,
+                detail=f"parse_portfolio_tsv raised: {exc}",
+                sha256=sha,
+            )
+
+        target_root = _resolve_snapshot_root()
+        target_root.mkdir(parents=True, exist_ok=True)
+        target_name = _normalize_tsv_filename(file.filename or "", snap)
+        target_path = target_root / target_name
+        target_path.write_bytes(contents)
+        _log.info(
+            "portfolio_snapshot.uploaded",
+            user_id=user_id, path=str(target_path),
+            sha=sha[:8], size=len(contents),
+        )
+
+        # Best-effort write-through into the DB-backed snapshot store so
+        # the next GET /snapshot returns the freshest data without a
+        # filesystem walk.
+        try:
+            write_through_if_changed(db, user_id=user_id, snapshot=snap)
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "portfolio_snapshot.write_through_failed",
+                user_id=user_id, error=str(exc),
+            )
+
+        # Synchronous windfall detection. Codex zigzag flagged the
+        # failure contract: TSV persist succeeds even when the
+        # detector fails; we report the outcome independently.
+        event_payload: dict | None = None
+        plan_payload: dict | None = None
+        detect_status = "skipped"
+        if fire_detector:
+            try:
+                from argosy.services.retirement.windfall_allocator import (
+                    propose_allocations,
+                )
+                from argosy.services.retirement.windfall_detector import (
+                    DEFAULT_THRESHOLD_NIS, DEFAULT_THRESHOLD_USD, detect_windfall,
+                )
+
+                # Find a previous TSV to diff against -- the most-recent
+                # other TSV under the scan root that isn't this one.
+                prev_candidates = sorted(
+                    (p for p in target_root.glob("Family Finances Status*.tsv")
+                     if p.resolve() != target_path.resolve()),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True,
+                )
+                prev = prev_candidates[0] if prev_candidates else None
+                if prev is None:
+                    detect_status = "skipped"
+                else:
+                    event = detect_windfall(
+                        target_path, prev,
+                        threshold_usd=DEFAULT_THRESHOLD_USD,
+                        threshold_nis=DEFAULT_THRESHOLD_NIS,
+                    )
+                    detect_status = "ok"
+                    if event is not None:
+                        plan = propose_allocations(event)
+                        event_payload = {
+                            "detected_at": event.detected_at.isoformat(),
+                            "cash_delta_usd": event.cash_delta_usd,
+                            "cash_delta_nis": event.cash_delta_nis,
+                            "cash_delta_total_usd_equiv": event.cash_delta_total_usd_equiv,
+                            "fx_usd_nis": event.fx_usd_nis,
+                            "classified_source": event.classified_source,
+                            "requires_user_classification": event.requires_user_classification,
+                            "matching_sales": [
+                                {
+                                    "symbol": s.symbol,
+                                    "shares_sold": s.shares_sold,
+                                    "current_price": s.current_price,
+                                    "value_usd": round(s.value_usd, 2),
+                                }
+                                for s in event.matching_sales
+                            ],
+                            "allocation_delta_table": [
+                                {
+                                    "asset_class": l.asset_class,
+                                    "current_pct": l.current_pct,
+                                    "current_k_usd": l.current_k_usd,
+                                    "target_pct": l.target_pct,
+                                    "target_k_usd": l.target_k_usd,
+                                    "delta_k_usd": l.delta_k_usd,
+                                }
+                                for l in event.allocation_delta_table
+                            ],
+                            "source_tsv": Path(event.source_tsv).name,
+                            "previous_tsv": (
+                                Path(event.previous_tsv).name
+                                if event.previous_tsv else None
+                            ),
+                        }
+                        plan_payload = plan.to_dict()
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "portfolio_snapshot.detector_failed",
+                    user_id=user_id, error=str(exc),
+                )
+                detect_status = "failed"
+
+        return UploadSnapshotResponse(
+            tsv_persisted=True,
+            persisted_path=str(target_path),
+            snapshot_date=(
+                snap.snapshot_date.isoformat() if snap.snapshot_date else None
+            ),
+            detect_status=detect_status,
+            event=event_payload,
+            plan=plan_payload,
+            detail=None,
+            sha256=sha,
+        )
+    finally:
+        # Clean up the temp file regardless of success/failure path.
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
 
 
 __all__ = ["router"]

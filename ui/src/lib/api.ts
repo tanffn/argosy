@@ -170,6 +170,25 @@ export interface PortfolioSnapshotDTO {
   parse_warnings: string[];
 }
 
+// Tri-state response from POST /api/portfolio/upload-snapshot. The
+// UI needs to distinguish three independent outcomes:
+//   - tsv_persisted: did the file land where the detector will look?
+//   - detect_status: did the windfall detector run, and what happened?
+//   - event/plan: payload when an event actually fired.
+// None of these imply the others -- in particular, tsv_persisted=true
+// + detect_status=skipped (no previous TSV to diff against) is a
+// completely normal "first month" path.
+export interface PortfolioUploadSnapshotResponse {
+  tsv_persisted: boolean;
+  persisted_path: string | null;
+  snapshot_date: string | null;
+  detect_status: "ok" | "skipped" | "failed";
+  event: WindfallEventDTO | null;
+  plan: WindfallAllocationPlanDTO | null;
+  detail: string | null;
+  sha256: string;
+}
+
 export interface PlanCurrentDTO {
   plan_version_id: number | null;
   version_label: string | null;
@@ -960,6 +979,37 @@ export const api = {
     getJSON<PortfolioSnapshotDTO>(
       `/api/portfolio/snapshot?user_id=${encodeURIComponent(userId)}`,
     ),
+  // Monthly portfolio snapshot upload (2026-05-29). User drops the
+  // Family Finances Status TSV; the route persists under the
+  // windfall-detector scan root and (by default) fires the detector
+  // synchronously. The XLS-to-TSV conversion step is still the user's
+  // external update_leumi_tsv.py script for now -- this just removes
+  // the manual "copy the TSV into Resources" hop.
+  portfolioUploadSnapshot: async (
+    userId: string,
+    file: File,
+    fireDetector: boolean = true,
+  ): Promise<PortfolioUploadSnapshotResponse> => {
+    const fd = new FormData();
+    fd.append("user_id", userId);
+    fd.append("fire_detector", String(fireDetector));
+    fd.append("file", file, file.name);
+    const res = await fetch(apiUrl("/api/portfolio/upload-snapshot"), {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j.detail) detail = j.detail;
+      } catch {
+        // non-JSON body
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as PortfolioUploadSnapshotResponse;
+  },
   planCurrent: (userId: string) =>
     getJSON<PlanCurrentDTO>(
       `/api/plan/current?user_id=${encodeURIComponent(userId)}`,
