@@ -54,7 +54,7 @@ export function LumpVsAnnuityCard(props: Props) {
           <span className="text-xs font-mono">{style.label}</span>
         </CardTitle>
         <CardDescription>
-          {String(data.rationale.value ?? "")}
+          {data.rationale.rationale}
         </CardDescription>
       </CardHeader>
       <CardContent>

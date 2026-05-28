@@ -112,6 +112,29 @@ export function WithdrawalPolicySelector({
           ))}
         </div>
 
+        {selectedPolicy && (selected === "vpw" || selected === "bucket") && (
+          <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+            <span className="font-medium text-amber-400">Caveat:</span>{" "}
+            {selected === "vpw" ? (
+              <>
+                VPW eliminates literal zero-balance ruin by construction
+                (you always have something left to spend), but the hero
+                verdict can still show OFF_TRACK because P(solvent) here
+                means &quot;P(covering essential expenses at age 95)&quot; — VPW's
+                age-banded draws may fall well below your expense need
+                during stressed periods.
+              </>
+            ) : (
+              <>
+                Bucket caps draws to ~5% of remaining portfolio when
+                stressed. Like VPW, this trades hitting zero for under-
+                spending in down years. Hero verdict reflects expense-
+                coverage, not literal ruin.
+              </>
+            )}
+          </div>
+        )}
+
         <DrilldownSection title="Methodology">
           <MethodologyPanel>
             <p>

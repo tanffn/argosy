@@ -194,6 +194,7 @@ def get_ruin_probability(
     withdrawal_policy_id: str = "guyton_klinger",
     engine: str = "regime_switch",
     usd_fraction: float = 0.65,
+    sigma_annual: float | None = None,
     db: Session = Depends(get_db),
 ) -> dict:
     """Probability-of-ruin verdict with bootstrap CI.
@@ -205,7 +206,10 @@ def get_ruin_probability(
     Replaces the prior single-month "retire-ready" verdict that ignored
     sequence-of-returns risk.
     """
-    v = compute_ruin_probability(
+    # When sigma_annual is None, compute_ruin_probability uses its default
+    # (0.18 — diversified). When the UI passes the auto-calibrated value
+    # from SigmaCalibrationCard, the engine uses that instead.
+    kwargs: dict = dict(
         user_id=user_id,
         session=db,
         retirement_age=retirement_age,
@@ -217,6 +221,9 @@ def get_ruin_probability(
         engine=engine,
         usd_fraction=usd_fraction,
     )
+    if sigma_annual is not None:
+        kwargs["sigma_annual"] = sigma_annual
+    v = compute_ruin_probability(**kwargs)
     return {
         "p_solvent_at_75": as_dict(v.p_solvent_at_75),
         "p_solvent_at_85": as_dict(v.p_solvent_at_85),

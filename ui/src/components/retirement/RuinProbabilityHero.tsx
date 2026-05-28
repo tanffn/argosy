@@ -20,6 +20,9 @@ interface Props {
   retirementAge?: number;
   targetPSolvent?: number;
   withdrawalPolicyId?: "bengen_4pct" | "guyton_klinger" | "vpw" | "bucket";
+  /** Auto-calibrated portfolio σ from SigmaCalibrationCard.
+   * When provided, drives the MC instead of the diversified-default 0.18. */
+  sigmaAnnual?: number;
 }
 
 /**
@@ -36,13 +39,17 @@ export function RuinProbabilityHero({
   retirementAge = 49,
   targetPSolvent = 0.90,
   withdrawalPolicyId = "guyton_klinger",
+  sigmaAnnual,
 }: Props) {
   const [data, setData] = useState<RuinProbabilityResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Fix UX #5: keep prior data visible while re-fetching on parameter
+  // changes; show a small spinner badge so the user knows it's working.
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    setData(null);
+    setLoading(true);
     setErr(null);
     api.retirement
       .ruinProbability(userId, {
@@ -50,17 +57,21 @@ export function RuinProbabilityHero({
         targetPSolvent,
         seed: 42,
         withdrawalPolicyId,
+        sigmaAnnual,
       })
       .then((d) => {
         if (!cancelled) setData(d);
       })
       .catch((e) => {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [userId, retirementAge, targetPSolvent, withdrawalPolicyId]);
+  }, [userId, retirementAge, targetPSolvent, withdrawalPolicyId, sigmaAnnual]);
 
   if (err) {
     return (
@@ -72,7 +83,7 @@ export function RuinProbabilityHero({
       </Card>
     );
   }
-  if (!data) {
+  if (!data && loading) {
     return (
       <Card>
         <CardHeader>
@@ -81,6 +92,9 @@ export function RuinProbabilityHero({
         </CardHeader>
       </Card>
     );
+  }
+  if (!data) {
+    return null;
   }
 
   const style = VERDICT_STYLE[data.verdict];
@@ -101,6 +115,11 @@ export function RuinProbabilityHero({
           <span className={`text-xs font-mono font-semibold ${style.text}`}>
             {style.label}
           </span>
+          {loading && (
+            <span className="text-[10px] font-mono text-muted-foreground animate-pulse">
+              re-running…
+            </span>
+          )}
         </CardTitle>
         <CardDescription>
           P(solvent through 95) under {target * 100}% target, retiring at age{" "}
