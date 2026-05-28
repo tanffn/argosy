@@ -419,12 +419,17 @@ Plan: LONG $30K→QQQM + $20K→SCHG (Growth) · MED $21K (fleet) · SHORT $13K 
 1. Allocator's `_under_target` had backwards sign convention — would have suggested adding to OVER-target classes. Live smoke against real TSV caught it because Cash showed up as the top candidate (Cash is over target IRL). Fixed.
 2. Detector parsed price-like floats from real-estate/pension TSV rows as ticker symbols. Added `_is_real_symbol` filter. Fixed.
 
-**UI work NOT yet done (the next session's job):**
-- `<WindfallBanner>` on Home — auto-shows when `/api/retirement/windfall/detect` returns a non-null event
-- `<WindfallCard>` on `/retirement` — full plan display with per-proposal Accept/Defer buttons
-- Advisor chat focus mode for classification dialogue when `classified_source == "unclear"`
-- Wiring accepted proposals into the existing `action_engine` queue
-- Agent-fleet integration for medium-term + short-term proposals (currently placeholders)
+**UI work shipped 2026-05-28 (commits `0851abb` + post-ZigZag fixes in `96524ed`):**
+- ✅ `<WindfallBanner>` on Home — `ui/src/components/retirement/WindfallBanner.tsx`, mounted in `ui/src/app/page.tsx`. Auto-shows when `/api/retirement/windfall/detect` returns a non-null event; suppresses entirely otherwise. Tone splits by classification (info-blue for `rsu_sale`/`stock_sale`, amber for `unclear`).
+- ✅ `<WindfallCard>` on `/retirement#windfall` — `ui/src/components/retirement/WindfallCard.tsx`. Hero verdict (driven by backend's canonical `plan.headline.rationale`, NOT synthesized client-side) + plan-vs-current allocation table (DESTINATION/OVER/CASH pills, accent tone for under-target = where the windfall should go) + three horizon proposal columns + matching-sales drilldown. Accept/Defer buttons render but are disabled with tooltips pending action_engine wiring.
+- TypeScript shape: `WindfallDetectResponse` + `WindfallEventDTO` + `WindfallAllocationPlanDTO` etc. in `ui/src/lib/api.ts`. The endpoint is wrapped as `api.retirement.windfallDetect(opts?)`.
+- User-guide §5 fully rewritten around the auto-detect philosophy ("user drops monthly TSV, Argosy notices"); §18 marks Hole #1 closed; §19 carries two new holes for the remaining deferred work below.
+- Live screenshots refreshed (commit `ddf21f1`) — `docs/user-guide/site-tour/home-top.png` shows the banner; `retirement-top.png` shows the card.
+
+**UI work still deferred (the next session's job):**
+- Advisor chat focus mode for classification dialogue when `classified_source == "unclear"` — design sketched in the resume note (`docs/superpowers/plans/2026-05-28-windfall-flow-resume.md`); extractor agent + persistence shape TBD.
+- Wiring accepted proposals into the existing `action_engine` queue — needs `POST /api/retirement/windfall/accept` + `/defer` endpoints. Buttons render disabled today.
+- Agent-fleet integration for medium-term + short-term proposals (currently placeholders).
 
 
 
