@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-27 (late afternoon) — Wave 3 observability polish + Opus 4.7 stack calibrated: G1 cost breakdown on `/decisions/[id]` (per-phase + per-role), G2 stale-test fixes + agents_skipped/agents_failed split, G3 D11 codex-disagreed-with-synthesizer detector, G4 adaptive-thinking telemetry (actual `thinking_tokens` per agent), G5 codex cost wired into `agent_report` rows, G6 markdown export from `/plan` + `/portfolio`, plus D2 detector false-positive fix (was matching on bare severity word, 100% false-positive RED). Synth #32 was the first successful end-to-end on the full new stack (Opus 4.7 + 128K + adaptive thinking + Argosy ZigZag + Wave 1 guidance) — FM rejected with substantively new concerns + explicit acknowledgement of resolved prior BLOCKERs. Draft #12 pending; 6 FM objections (4 BLOCKER + 2 AMBER) resolved via per-objection AGREE/DISAGREE/DEFER + "Start new round with my decisions". 1,616 tests passing, 0 failed. Migration head at 0038. See handover + Wave 3 subsection for details. |
+| **Last updated** | 2026-05-27 (evening) — Cashflow projection pivot landed: `/plan` retirement chart pivoted from portfolio-value-over-time to monthly-cashflow with retirement-age slider + bear/typical/bull radio + sliders for mu/sigma/tax/lifestyle-drift/portfolio-override + Monte Carlo view toggle (P10-P90 bands, failure-prob cards). New service `argosy/services/cashflow_projection.py` + route `/api/plan/draft/cashflow-projection` (deterministic) + `/api/plan/draft/cashflow-monte-carlo` (numpy-vectorized n_paths simulation). Codex-tandem review of the math: AMBER 1+2 (annuity nominal/real mismatch) fixed in `16d7282`; severance-folded-into-pensia AMBER documented + accepted as "optimistic bias". Late-session fix: `2d1f956` shipped `get_current_monthly_expenses_usd` helper that `ea7bd76` referenced from the legacy `/draft/projection` route but never committed — was a dormant broken import. Earlier the same day: Wave 3 observability polish + Opus 4.7 stack calibration (G1 cost breakdown, G2 agents_skipped/failed split, G3 D11 detector, G4 adaptive-thinking telemetry, G5 codex cost, G6 markdown export, D2 false-positive fix). Synth #32 still standing as draft #12 (`synth-2026-05-27-1020-fm-rejected`) waiting on user-driven AGREE/DISAGREE/DEFER. Migration head at 0038. Tests green across the 3 cashflow/wealth-dashboard files (124/124). See "Cashflow projection pivot" subsection below for details. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-27 (late afternoon) by Claude — Wave 3 observability polish + Opus 4.7 stack calibration: 6 G-tasks shipped (G1 cost breakdown · G2 agents_skipped/failed split + stale-test fixes · G3 D11 codex-disagreed detector · G4 thinking telemetry · G5 codex cost telemetry · G6 markdown export) + D2 false-positive fix. Synth #32 was the first successful end-to-end on the full new stack (Opus 4.7 + 128K + adaptive + ZigZag + Wave 1 guidance). Build ON TOP of the earlier handover; the "Synthesizer empty-output bug" + "Overnight cycle" + "Second overnight wave" sections below all remain current — see the new "Wave 3" subsection at the end of the second overnight wave for what's new.
+**Last edit:** 2026-05-27 (evening) by Claude — Cashflow projection pivot shipped (19 commits): pivoted `/plan` retirement chart from portfolio-value to monthly-cashflow with sliders (retirement_age · mu · sigma · tax · lifestyle_drift · portfolio_value override · n_paths) + bear/typical/bull radio + Monte Carlo view toggle. New service `argosy/services/cashflow_projection.py` + two routes (`/draft/cashflow-projection` deterministic; `/draft/cashflow-monte-carlo` stochastic with numpy-vectorized n_paths sim). Codex-tandem review of the math: AMBER 1+2 (annuity real/nominal mismatch) fixed; severance-folded-into-pensia AMBER documented as "optimistic bias" + accepted. Late-session helper fix `2d1f956` ships `get_current_monthly_expenses_usd` left uncommitted by `ea7bd76`. Earlier the same day: Wave 3 observability polish + Opus 4.7 stack calibration (G1-G6 + D2 fix). Synth #32 still standing as draft #12 awaiting user-driven AGREE/DISAGREE/DEFER. Build ON TOP of the earlier handover; the "Synthesizer empty-output bug" + "Overnight cycle" + "Second overnight wave" + "Wave 3" sections below all remain current — see the new "Cashflow projection pivot" section after Wave 3 for what's new.
 
 ### Synthesizer empty-output bug (discovered overnight, hypothesis-fixed in `a5d317c`)
 
@@ -324,6 +324,67 @@ Wall-clock + cost roughly comparable to #30 (~70 min, ~$3-4 total). The FM rejec
   - **"Explain in plain English"** (precomputed translation, `4131b69` + `67828b5`).
   - **"Start new round with my decisions"** CTA — wires the AGREE/DISAGREE/DEFER decisions + counter-positions into `user_directive` and fires synth #33.
 - **The next move is user-driven, not engineering.** The system is built and waiting. Engineering's contribution to this iteration is complete.
+
+### Cashflow projection pivot (2026-05-27 evening) — `/plan` chart pivot + Monte Carlo
+
+Plan reference: `docs/superpowers/plans/2026-05-27-cashflow-projection-pivot.md`. 19 commits between `4a3181a` and `37cb563` cover Tasks 1-7 of the plan + a Monte Carlo extension beyond the plan's original scope. The pivot answers the user's actual retirement question ("when can I stop working") which the old portfolio-value chart could not.
+
+#### What pivoted
+
+**Before:** `/plan` rendered `<ProjectionChart>` (deleted) — a lognormal bull/base/bear band of *portfolio value in USD over 10 years*. The chart looked good but didn't surface the crossing the user cared about: monthly income ≥ monthly expenses.
+
+**After:** `/plan` renders `<CashflowProjectionChart>` — a 30-year monthly-cashflow chart with:
+- **Y-axis = $/mo** (income vs expenses), not portfolio value
+- **Retirement-age slider** (default 49 from `goals_yaml.retirement_target_year=2031`) that controls when contributions stop
+- **Scenario radio** (bear/typical/bull) — three distinct lines, not just a band
+- **Per-scenario retire-ready age** — vertical reference line at first month where `portfolio_income + pension_annuity ≥ inflated_expenses`
+- **Pension state machine** — `kupat_pensia` + `keren_hishtalmut` accumulate during work years, `keren_hishtalmut` + `kupat_gemel` unlock as a lump at age 60 (added into portfolio), `kupat_pensia` + `executive_insurance` start paying a flat real annuity at age 67 via `mekadem=200`
+- **Stress-test sliders**: `mu_nominal` (0.05-0.12), `sigma_annual` (0.05-0.60 — crank to 0.30-0.40 for NVDA concentration), `inflation_annual` (implicit), `lifestyle_drift_annual` (0.0-0.10, applied to expenses only — pension annuity still tracks CPI per Israeli statute), `tax_rate` (0.0-0.50), `portfolio_value` override
+- **Monte Carlo view toggle** — radio between deterministic + MC modes
+
+#### Backend
+
+New service `argosy/services/cashflow_projection.py`:
+- **Pure-math primitives** (Task 1, `4a3181a` + `3b93409`): lognormal portfolio drift, pension accumulation/freeze/lump/annuity state transitions, expense inflation
+- **State extraction** (Task 2, `afb355e`): `extract_pension_state(session, user_id)` + `extract_household_state(session, user_id)` read `identity_yaml.pensions_*`, `clal_pension_*`, latest `household_budget` agent_report, latest `portfolio_snapshots.fx_usd_nis`
+- **Orchestrator** (Task 3, `b48a2da`): `project_cashflow()` runs the iterative monthly state machine for `horizon_months` × `n_scenarios`, returns list of typed rows (NIS internally, converted to USD at the response boundary)
+- **Monte Carlo** (`eec3703`): `simulate_monte_carlo()` runs `n_paths` (default 1000) random walks with monthly log-returns ~ N(mu/12 - sigma²/24, sigma/√12); withdraws `(inflated_expenses - nominal_pension_annuity) / (1 - tax)` per month from portfolio; failed paths are masked from the lump-unlock cash injection (correct semantics: liquid assets are exhausted, lump becomes inaccessible). Pension buckets grow deterministically (bond-like). Output: per-tick P10/P25/P50/P75/P90 portfolio-value percentiles + per-tick `fraction_solvent` + failure probabilities at ages 75/85/95. ~5× faster than per-path Python loops via numpy vectorization.
+
+New routes in `argosy/api/routes/plan.py`:
+- `GET /api/plan/draft/cashflow-projection` (Task 4, `ea7bd76`) — deterministic. Query params: `years` (default 30), `retirement_age` (default 49), `mu_nominal`, `sigma_annual`, `inflation_annual`, `lifestyle_drift_annual`, `tax_rate`, `portfolio_value` override.
+- `GET /api/plan/draft/cashflow-monte-carlo` (`eec3703`) — stochastic. Same surface plus `n_paths` (100-5000, default 1000) and `seed` (for reproducible tests).
+
+#### Frontend
+
+New component `ui/src/components/plan/cashflow-projection-chart.tsx` (Task 6, `3e9b3f0` + iterations through `37cb563`). The old `ui/src/components/plan/projection-chart.tsx` is deleted. `ui/src/app/plan/page.tsx` swapped the import. In MC mode the chart switches Y-axis to portfolio value (USD), hides the deterministic-only scenario radio + ±1σ band toggle, and surfaces three failure-probability cards (P(broke before 75 / 85 / 95)) colored red above their respective danger thresholds (10% / 20% / 30%).
+
+#### Codex-tandem review (Task 7)
+
+Ran twice — `argosy/services/.progress/cashflow_math_review` + `cashflow_math_review_v2`. Verdict: APPROVE_WITH_CONDITIONS. Findings:
+
+| Severity | Finding | Status |
+|---|---|---|
+| AMBER 1 | Nominal/real mix in surplus check — annuity was real-after-lock but compared against nominal-inflated expenses | **Fixed** in `16d7282` (`annuity_nominal_t = annuity_monthly_nis * (1+inflation)**((t - annuity_lock_t)/12)`) |
+| AMBER 2 | Severance (8.33%) folded into kupat_pensia overstates age-67 annuity by ~67% if severance is in practice withdrawn pre-annuitization | **Documented + accepted as optimistic bias** — user explicitly accepted ("mekadem 200 is ok"). Documented in service docstring + `assumptions` payload. |
+| YELLOW | Contribution timing convention (annuity-immediate vs annuity-due) | **Documented** in `ea4199b` — clarified the "grow then add contribution" convention in module docstring |
+| YELLOW | Edge case semantics (`retirement_age < current_age`, `mekadem<=0`) | Acceptable — returns 0 annuity on invalid mekadem, no crash |
+| YELLOW | Lognormal band ≠ Monte Carlo quantiles | **Resolved by shipping actual Monte Carlo** (`eec3703`) as a separate view |
+| NIT × 2 | Lump composition + numerical stability | Acknowledged, no action |
+
+#### Helper-import dormant-fix
+
+`ea7bd76` added `from argosy.services.wealth_dashboard import get_current_monthly_expenses_usd` (function-scoped) inside the legacy `get_draft_projection` route + a `current_monthly_expenses_usd` field on the legacy `ProjectionResponse` model, but left the helper definition itself uncommitted. HEAD compiled because the import is function-scoped; the broken import was dormant only because the UI no longer renders the legacy chart. Fixed in `2d1f956` (this session) — helper now lives in `argosy/services/wealth_dashboard.py` + 4 tests in `tests/test_wealth_dashboard.py`. Returns `monthly_burn_nis / fx_usd_nis` from latest `household_budget` agent_report; `None` when burn is missing/zero or FX is unresolvable; falls back to `identity_yaml.fx_rate.usd_nis` when no portfolio_snapshots row exists.
+
+#### Dead code (follow-up candidates, not blocking)
+
+- Legacy `/draft/projection` Python route in `argosy/api/routes/plan.py:1130` — no longer called by UI but still in code
+- `planDraftProjection()` in `ui/src/lib/api.ts:1149` — orphaned client function
+
+Both safe to remove in a follow-up cleanup commit.
+
+#### Tests
+
+124 tests pass across `tests/test_wealth_dashboard.py` + `tests/test_cashflow_projection.py` + `tests/test_plan_draft_api.py` (run at HEAD `6e01b82`, ~5 min). New tests added throughout the workstream cover: pure-math primitives (Task 1), state extraction (Task 2), orchestrator monthly state machine (Task 3), route integration tests (Task 4), sigma/lifestyle-drift sensitivity (`a9813a3`), portfolio override + mu sensitivity (`88bc7fb`), tax_rate sensitivity (`316fca6`), Monte Carlo seed reproducibility / percentile ordering / failure-probability monotonicity / `fraction_solvent` monotonicity (`eec3703`), and the `get_current_monthly_expenses_usd` helper (this session).
 
 ### Source-of-truth references
 
