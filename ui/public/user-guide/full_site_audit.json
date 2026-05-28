@@ -59,13 +59,14 @@
     "input_count": 1,
     "textarea_count": 1,
     "file_input_count": 1,
-    "button_count": 83,
+    "button_count": 85,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
       "More",
       "Review now",
       "Re-distill",
+      "collapse",
       "Send",
       "Tax residency",
       "Your citizenship",
@@ -79,15 +80,13 @@
       "Primary residence (country)",
       "Employment status (employed / self-employed / retired)",
       "Your employer",
-      "Your gross annual comp",
-      "Spouse gross annual comp",
-      "Bank accounts (balances)"
+      "Your gross annual comp"
     ],
     "console_errors": [],
     "console_warnings": [
       {
         "text": "WebSocket connection to 'ws://localhost:8000/ws' failed: WebSocket is closed before the connection is established.",
-        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0sizk_x._.js', 'lineNumber': 780, 'columnNumber': 0}"
+        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0sizk_x._.js', 'lineNumber': 848, 'columnNumber': 0}"
       }
     ],
     "failed_requests": []
@@ -95,9 +94,9 @@
   "portfolio": {
     "path": "/portfolio",
     "loaded": true,
-    "input_count": 0,
+    "input_count": 1,
     "textarea_count": 0,
-    "file_input_count": 0,
+    "file_input_count": 1,
     "button_count": 8,
     "select_count": 0,
     "form_count": 0,
@@ -203,7 +202,7 @@
     "console_warnings": [
       {
         "text": "WebSocket connection to 'ws://localhost:8000/ws' failed: WebSocket is closed before the connection is established.",
-        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0w6j0n2._.js', 'lineNumber': 780, 'columnNumber': 0}"
+        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0w6j0n2._.js', 'lineNumber': 848, 'columnNumber': 0}"
       }
     ],
     "failed_requests": []
@@ -239,7 +238,16 @@
       "Methodology",
       "Compute"
     ],
-    "console_errors": [],
+    "console_errors": [
+      {
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+        "loc": "{'url': 'http://localhost:8000/api/retirement/windfall/actions?user_id=ariel&event_source_tsv=Family+Finances+Status+-+26+May.tsv', 'lineNumber': 0, 'columnNumber': 0}"
+      },
+      {
+        "text": "Failed to load resource: the server responded with a status of 404 (Not Found)",
+        "loc": "{'url': 'http://localhost:8000/api/retirement/windfall/actions?user_id=ariel&event_source_tsv=Family+Finances+Status+-+26+May.tsv', 'lineNumber': 0, 'columnNumber': 0}"
+      }
+    ],
     "console_warnings": [],
     "failed_requests": []
   },
@@ -323,11 +331,11 @@
   "files": {
     "path": "/files",
     "loaded": true,
-    "input_count": 1,
+    "input_count": 2,
     "textarea_count": 0,
-    "file_input_count": 0,
+    "file_input_count": 1,
     "button_count": 5,
-    "select_count": 2,
+    "select_count": 3,
     "form_count": 0,
     "buttons_seen": [
       "More",
