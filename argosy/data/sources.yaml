@@ -1,0 +1,143 @@
+# Canonical sources registry for the retirement companion.
+#
+# Each entry is a citable source: official tables, research papers, or
+# explicit "derived" markers. Per-user additions/overrides live in a
+# sibling file ``sources_user.yaml`` (gitignored if present); see
+# ``argosy/services/retirement/sources.py::load_sources``.
+#
+# When adding a source:
+#   - keep ``id`` snake_case
+#   - ``kind`` is one of: official | research | derived | best_effort
+#   - ``as_of`` is YYYY-MM (or YYYY for older citations)
+#   - ``notes`` is optional human-friendly context
+
+sources:
+  # ─── Israeli statutory + official ─────────────────────────────────────
+  bituach_leumi_old_age_2026:
+    title: "Bituach Leumi — Old-age pension rates (קצבת זקנה)"
+    url: "https://www.btl.gov.il/benefits/Old_age/Pages/MisparMeguarot.aspx"
+    as_of: "2026-05"
+    kind: "official"
+    notes: "Single-person base rate; spouse adds ~50%; indexed annually each January"
+
+  israeli_tax_authority_cgt_2026:
+    title: "Israel Tax Authority — Capital Gains 25% rate on equity"
+    url: "https://www.gov.il/he/departments/topics/income-tax"
+    as_of: "2026-01"
+    kind: "official"
+
+  israeli_tax_authority_pension_exemption_2025:
+    title: "Israel Tax Authority — Pension exemption procedure (rights-fixation regime)"
+    url: "https://www.gov.il/BlobFolder/policy/procedures-270125/he/IncomeTax_procedures-270125.pdf"
+    as_of: "2025-01"
+    kind: "official"
+    notes: "Rights-fixation regime replaces flat 35%; 57% in 2025, phased increases by 2027-2030."
+
+  hishtalmut_6yr_rule:
+    title: "Israeli Income Tax Ordinance §3(e) — Hishtalmut tax-free window"
+    url: "https://www.nevo.co.il/law_html/law01/p182_001.htm"
+    as_of: "2024-01"
+    kind: "official"
+    notes: "Withdrawal tax-free after 6 years from first deposit (employee vs self-employed have different aggregation); age 67 lump path is a distinct condition"
+
+  bituach_leumi_ceiling_2026:
+    title: "Bituach Leumi — Insurable salary ceiling (תקרה)"
+    url: "https://www.btl.gov.il/insurance/Pages/InsuranceCeilings.aspx"
+    as_of: "2026-01"
+    kind: "official"
+    notes: "RSU + salary subject to BL up to the ceiling; surplus is not insurable income."
+
+  # ─── Pension fund tables (best-effort; verify per fund + per user) ────
+  clal_published_table_2026:
+    title: "Clal Pension — Published mekadem table"
+    url: "https://www.clal.co.il/pension"
+    as_of: "2026-03"
+    kind: "best_effort"
+    notes: "Verify with fund directly; mekadem varies by age + plan + spouse benefit"
+
+  migdal_published_table_2026:
+    title: "Migdal Pension — Published mekadem table"
+    url: "https://www.migdal.co.il/pension"
+    as_of: "2026-03"
+    kind: "best_effort"
+
+  menorah_published_table_2026:
+    title: "Menorah Pension — Published mekadem table"
+    url: "https://www.menoramivt.co.il/pension"
+    as_of: "2026-03"
+    kind: "best_effort"
+
+  # ─── Research / academia ──────────────────────────────────────────────
+  bengen_1994:
+    title: "Bengen — Determining Withdrawal Rates Using Historical Data (1994)"
+    url: "https://www.retailinvestor.org/pdf/Bengen1.pdf"
+    as_of: "1994"
+    kind: "research"
+    notes: "Original '4% rule'. Updated in Bengen 2020 to ~4.7% with US data through 2019."
+
+  bengen_2020:
+    title: "Bengen 2020 — Updating the 4% rule"
+    url: "https://www.financialplanningassociation.org/article/journal/AUG20-choose-your-floor"
+    as_of: "2020"
+    kind: "research"
+
+  guyton_klinger_2006:
+    title: "Guyton-Klinger decision rules withdrawal policy (2006)"
+    url: "https://www.fpanet.org/journal/articles/2006_Issues/jfp0306-art6.cfm"
+    as_of: "2006"
+    kind: "research"
+    notes: "Guardrails: ratchet up 10% in good years; cut 10% when WR > 120% of initial"
+
+  trinity_study_1998:
+    title: "Cooley/Hubbard/Walz — Retirement Spending: Choosing a Sustainable Withdrawal Rate"
+    url: "https://www.aaii.com/journal/article/retirement-savings-choosing-a-withdrawal-rate-that-is-sustainable.touch"
+    as_of: "1998"
+    kind: "research"
+
+  damodaran_implied_erp_2026:
+    title: "Damodaran — Implied Equity Risk Premium (current)"
+    url: "https://pages.stern.nyu.edu/~adamodar/"
+    as_of: "2026-01"
+    kind: "research"
+    notes: "Monthly-updated ERP page; the mu_nominal default of 8% trails Damodaran's implied ERP + 10y treasury"
+
+  vanguard_capital_markets_model:
+    title: "Vanguard Capital Markets Model — 10y nominal equity return forecast"
+    url: "https://corporate.vanguard.com/content/corporatesite/us/en/corp/articles/capital-markets-model.html"
+    as_of: "2026-01"
+    kind: "research"
+
+  bogleheads_three_fund:
+    title: "Bogleheads — Three-fund portfolio + lazy-portfolio glide paths"
+    url: "https://www.bogleheads.org/wiki/Three-fund_portfolio"
+    as_of: "2025"
+    kind: "research"
+
+  vanguard_target_date_glide:
+    title: "Vanguard Target-Date Funds — Glide path methodology"
+    url: "https://institutional.vanguard.com/investment/strategies/target-date-funds/glide-path"
+    as_of: "2025"
+    kind: "research"
+
+  # ─── US tax / estate ──────────────────────────────────────────────────
+  us_nra_estate_tax:
+    title: "IRS — Non-Resident-Alien estate tax on US-situs assets"
+    url: "https://www.irs.gov/businesses/small-businesses-self-employed/estate-tax-for-nonresidents-not-citizens-of-the-united-states"
+    as_of: "2024"
+    kind: "official"
+    notes: "$60K exemption for non-US-persons. Above that, 18-40% federal estate tax on US-situs assets including US-domiciled stocks/ETFs. UCITS-domiciled funds are non-US-situs."
+
+  us_israel_tax_treaty:
+    title: "US-Israel Income Tax Treaty (1995, in force)"
+    url: "https://www.irs.gov/businesses/international-businesses/israel-tax-treaty-documents"
+    as_of: "1995"
+    kind: "official"
+    notes: "US-source dividend withholding for Israeli residents capped at 15%; reciprocal foreign-tax-credit mechanism applies in Israeli tax."
+
+  # ─── Derived marker (computed values) ─────────────────────────────────
+  argosy_derived:
+    title: "Argosy derived computation"
+    url: ""
+    as_of: ""
+    kind: "derived"
+    notes: "Used when source_id=None marker is rendered explicitly in UI; usually citations use source_id=None directly"
