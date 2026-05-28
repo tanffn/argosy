@@ -16,7 +16,7 @@ interface AgentCascadeStripProps {
 // orchestrator's pipeline. Names match `agent_reports.agent_role` exactly.
 const PHASES: Array<{ label: string; roles: string[] }> = [
   {
-    label: "Analysts (1)",
+    label: "Phase 1: Analysts",
     roles: [
       "fundamentals",
       "technical",
@@ -30,19 +30,19 @@ const PHASES: Array<{ label: string; roles: string[] }> = [
     ],
   },
   {
-    label: "Debate (2)",
+    label: "Phase 2: Debate",
     roles: ["bull_researcher", "bear_researcher", "researcher_facilitator"],
   },
   {
-    label: "Synth (3)",
+    label: "Phase 3: Synth",
     roles: ["plan_synthesizer"],
   },
   {
-    label: "Risk (4)",
+    label: "Phase 4: Risk",
     roles: ["risk_facilitator"],
   },
   {
-    label: "Fund Manager (5)",
+    label: "Phase 5: Fund Manager",
     roles: ["fund_manager"],
   },
 ];

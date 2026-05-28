@@ -66,9 +66,9 @@ export function DeltaMap(props: DeltaMapProps) {
     grid.short.removed.length;
 
   return (
-    <Card>
+    <Card className="lg:col-span-2">
       <CardHeader>
-        <CardTitle className="text-base">Delta map</CardTitle>
+        <CardTitle className="text-base">Change overview</CardTitle>
         <CardDescription>
           {total === 0
             ? "No changes proposed."
