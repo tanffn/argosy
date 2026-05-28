@@ -18,6 +18,7 @@ from argosy.services.retirement.mekadem import (
     monthly_annuity_for_band,
 )
 from argosy.services.retirement.reference import ResolveError, resolve
+from argosy.services.retirement.safety_gates import compute_safety_gates
 from argosy.services.retirement.sources import load_sources
 
 router = APIRouter(prefix="/retirement", tags=["retirement"])
@@ -125,6 +126,36 @@ def get_mekadem_band(
         out["annuity_monthly_nis_typical"] = as_dict(a_typ)
         out["annuity_monthly_nis_high"] = as_dict(a_high)
     return out
+
+
+# Wave 2 — safety gates
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/safety-gates")
+def get_safety_gates(
+    user_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Returns the list of safety-gate verdicts (NRA estate + Liquidity in Wave 2).
+
+    Each verdict is a dict with: gate_id, status (PASS/WARN/FAIL),
+    value, threshold, suggested_action, detail_summary.
+    """
+    verdicts = compute_safety_gates(user_id=user_id, session=db)
+    return {
+        "gates": [
+            {
+                "gate_id": v.gate_id,
+                "status": v.status,
+                "value": as_dict(v.value),
+                "threshold": as_dict(v.threshold),
+                "suggested_action": as_dict(v.suggested_action),
+                "detail_summary": v.detail_summary,
+            }
+            for v in verdicts
+        ],
+    }
 
 
 @router.get("/bituach-leumi")

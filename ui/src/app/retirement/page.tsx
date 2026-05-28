@@ -11,6 +11,7 @@ import { DrilldownSection } from "@/components/retirement/DrilldownSection";
 import { HeroCard } from "@/components/retirement/HeroCard";
 import { MekademBand } from "@/components/retirement/MekademBand";
 import { MethodologyPanel } from "@/components/retirement/MethodologyPanel";
+import { SafetyGatesPanel } from "@/components/retirement/SafetyGatesPanel";
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
 
 const USER_ID = "ariel";
@@ -49,6 +50,8 @@ export default function RetirementPage() {
           },
         ]}
       />
+
+      <SafetyGatesPanel userId={USER_ID} />
 
       <BituachLeumiCard
         userId={USER_ID}

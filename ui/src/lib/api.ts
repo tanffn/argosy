@@ -24,7 +24,10 @@ function apiUrl(path: string): string {
 // Re-export retirement primitives so call sites can `import { ValueWithRationale } from "@/lib/api"`.
 export type {
   BLStipendResponse,
+  GateStatus,
+  GateVerdict,
   MekademBandResponse,
+  SafetyGatesResponse,
   Source,
   SourcesResponse,
   ValueWithRationale,
@@ -32,6 +35,7 @@ export type {
 import type {
   BLStipendResponse,
   MekademBandResponse,
+  SafetyGatesResponse,
   Source,
   SourcesResponse,
   ValueWithRationale,
@@ -646,6 +650,10 @@ export const api = {
         `/api/retirement/mekadem/${encodeURIComponent(fundId)}?${params.toString()}`,
       );
     },
+    safetyGates: (userId: string) =>
+      getJSON<SafetyGatesResponse>(
+        `/api/retirement/safety-gates?user_id=${encodeURIComponent(userId)}`,
+      ),
     bituachLeumi: (
       userId: string,
       currentAge: number,

@@ -47,6 +47,21 @@ export interface MekademBandResponse {
   annuity_monthly_nis_high?: ValueWithRationale;
 }
 
+export type GateStatus = "PASS" | "WARN" | "FAIL";
+
+export interface GateVerdict {
+  gate_id: "nra_estate" | "emergency_liquidity" | "conflict_scenario";
+  status: GateStatus;
+  value: ValueWithRationale;
+  threshold: ValueWithRationale;
+  suggested_action: ValueWithRationale;
+  detail_summary: string;
+}
+
+export interface SafetyGatesResponse {
+  gates: GateVerdict[];
+}
+
 export interface BLStipendResponse {
   monthly_nis: ValueWithRationale;
   monthly_nis_low: ValueWithRationale;
