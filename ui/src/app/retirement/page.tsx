@@ -1,5 +1,9 @@
 "use client";
 
+import { useState } from "react";
+
+import type { WithdrawalPolicy } from "@/lib/api";
+
 import {
   Card,
   CardContent,
@@ -39,15 +43,24 @@ const USER_ID = "ariel";
  * Later waves: safety gates · P(ruin) gate · glide path · tax engine · ...
  */
 export default function RetirementPage() {
+  const [policy, setPolicy] = useState<WithdrawalPolicy["id"]>("guyton_klinger");
   return (
     <div className="container mx-auto px-4 py-6 max-w-5xl space-y-4">
-      <RuinProbabilityHero userId={USER_ID} retirementAge={49} targetPSolvent={0.9} />
+      <RuinProbabilityHero
+        userId={USER_ID}
+        retirementAge={49}
+        targetPSolvent={0.9}
+        withdrawalPolicyId={policy}
+      />
 
       <SafetyGatesPanel userId={USER_ID} />
 
       <SigmaCalibrationCard userId={USER_ID} />
 
-      <WithdrawalPolicySelector initialPolicyId="guyton_klinger" />
+      <WithdrawalPolicySelector
+        initialPolicyId="guyton_klinger"
+        onChange={(id) => setPolicy(id)}
+      />
 
       <StochasticFxCard initialFx={3.4} horizonMonths={360} />
 

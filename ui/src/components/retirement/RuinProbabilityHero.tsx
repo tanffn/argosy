@@ -19,6 +19,7 @@ interface Props {
   userId: string;
   retirementAge?: number;
   targetPSolvent?: number;
+  withdrawalPolicyId?: "bengen_4pct" | "guyton_klinger" | "vpw" | "bucket";
 }
 
 /**
@@ -34,6 +35,7 @@ export function RuinProbabilityHero({
   userId,
   retirementAge = 49,
   targetPSolvent = 0.90,
+  withdrawalPolicyId = "guyton_klinger",
 }: Props) {
   const [data, setData] = useState<RuinProbabilityResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -43,7 +45,12 @@ export function RuinProbabilityHero({
     setData(null);
     setErr(null);
     api.retirement
-      .ruinProbability(userId, { retirementAge, targetPSolvent, seed: 42 })
+      .ruinProbability(userId, {
+        retirementAge,
+        targetPSolvent,
+        seed: 42,
+        withdrawalPolicyId,
+      })
       .then((d) => {
         if (!cancelled) setData(d);
       })
@@ -53,7 +60,7 @@ export function RuinProbabilityHero({
     return () => {
       cancelled = true;
     };
-  }, [userId, retirementAge, targetPSolvent]);
+  }, [userId, retirementAge, targetPSolvent, withdrawalPolicyId]);
 
   if (err) {
     return (

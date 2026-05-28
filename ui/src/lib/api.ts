@@ -803,6 +803,7 @@ export const api = {
         targetPSolvent?: number;
         nPaths?: number;
         seed?: number;
+        withdrawalPolicyId?: "bengen_4pct" | "guyton_klinger" | "vpw" | "bucket";
       },
     ) => {
       const params = new URLSearchParams({ user_id: userId });
@@ -811,6 +812,7 @@ export const api = {
       if (opts?.targetPSolvent !== undefined) params.set("target_p_solvent", String(opts.targetPSolvent));
       if (opts?.nPaths !== undefined) params.set("n_paths", String(opts.nPaths));
       if (opts?.seed !== undefined) params.set("seed", String(opts.seed));
+      if (opts?.withdrawalPolicyId !== undefined) params.set("withdrawal_policy_id", opts.withdrawalPolicyId);
       return getJSON<RuinProbabilityResponse>(
         `/api/retirement/projection/ruin-probability?${params.toString()}`,
       );

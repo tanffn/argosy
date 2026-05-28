@@ -191,6 +191,7 @@ def get_ruin_probability(
     target_p_solvent: float = 0.90,
     n_paths: int = 2000,
     seed: int | None = None,
+    withdrawal_policy_id: str = "guyton_klinger",
     db: Session = Depends(get_db),
 ) -> dict:
     """Probability-of-ruin verdict with bootstrap CI.
@@ -210,6 +211,7 @@ def get_ruin_probability(
         target_p_solvent=target_p_solvent,
         n_paths=n_paths,
         seed=seed,
+        withdrawal_policy_id=withdrawal_policy_id,
     )
     return {
         "p_solvent_at_75": as_dict(v.p_solvent_at_75),

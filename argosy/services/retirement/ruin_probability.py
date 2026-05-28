@@ -129,6 +129,7 @@ def compute_ruin_probability(
     lifestyle_drift_annual: float = DEFAULT_LIFESTYLE_DRIFT_ANNUAL,
     seed: int | None = None,
     today: date | None = None,
+    withdrawal_policy_id: str = "guyton_klinger",
 ) -> RuinProbabilityVerdict:
     """Probability-of-ruin verdict at the given retirement age.
 
@@ -152,6 +153,7 @@ def compute_ruin_probability(
         n_paths=n_paths,
         seed=seed,
         today=today,
+        withdrawal_policy_id=withdrawal_policy_id,
     )
 
     # P(solvent) = 1 - p_failure_before_age — point estimates already in the MC.

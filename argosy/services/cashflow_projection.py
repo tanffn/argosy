@@ -592,6 +592,7 @@ def project_monte_carlo(
     n_paths: int = DEFAULT_N_PATHS,
     seed: int | None = None,
     today: date | None = None,
+    withdrawal_policy_id: str = "bengen_4pct",
 ) -> MonteCarloProjection:
     """Random-walk Monte Carlo of consumption-tracking retirement paths.
 
@@ -692,12 +693,55 @@ def project_monte_carlo(
             (1.0 + expense_growth) ** (t / 12.0)
         )
 
-        # Consumption: withdraw (expenses - annuity) pretax — apply tax_rate.
-        # withdraw_pretax * (1 - tax_rate) = expenses_shortfall
+        # Consumption: withdraw based on the selected policy.
+        # Default 'bengen_4pct': fixed-real spending — shortfall = (expenses -
+        # annuity) inflated by CPI (already baked into expenses_t/annuity_nominal_t).
+        # 'guyton_klinger': apply a 10% cut to the shortfall on paths where
+        # portfolio has dropped > 20% from initial (capital-preservation rule).
+        # 'vpw': spend a fixed % of CURRENT balance per age band (age-banded
+        # rates ~3.5% pre-50 → 7-9% post-80). Replaces the expense-shortfall
+        # withdrawal entirely.
+        # 'bucket': behave like Bengen but cap draw at 5% of remaining
+        # portfolio (cash-bucket equivalent).
+        # See argosy/services/retirement/withdrawal_policy.py for full rules.
         shortfall = max(0.0, expenses_t - annuity_nominal_t)
         denom = max(1.0 - tax_rate, 0.01)
-        withdraw_pretax = shortfall / denom
-        portfolio[~failed] = portfolio[~failed] - withdraw_pretax
+
+        if withdrawal_policy_id == "vpw":
+            # Age-banded VPW: spend a % of current balance.
+            age_now = household.current_age_years + t / 12.0
+            if age_now < 50:
+                vpw_rate = 0.035
+            elif age_now < 60:
+                vpw_rate = 0.040
+            elif age_now < 70:
+                vpw_rate = 0.045
+            elif age_now < 80:
+                vpw_rate = 0.055
+            elif age_now < 90:
+                vpw_rate = 0.070
+            else:
+                vpw_rate = 0.090
+            # Per-path withdraw (vectorized) — never exceeds the path's balance
+            withdraw_pretax_per_path = portfolio * (vpw_rate / 12.0)
+            portfolio[~failed] = portfolio[~failed] - withdraw_pretax_per_path[~failed]
+        elif withdrawal_policy_id == "guyton_klinger":
+            withdraw_base = shortfall / denom
+            initial_portfolio_val = household.portfolio_value_nis
+            # Per-path: cut 10% when portfolio drops > 20% from initial
+            stressed_mask = portfolio < (initial_portfolio_val * 0.80)
+            cut_factor = np.where(stressed_mask, 0.90, 1.0)
+            withdraw_pretax_per_path = withdraw_base * cut_factor
+            portfolio[~failed] = portfolio[~failed] - withdraw_pretax_per_path[~failed]
+        elif withdrawal_policy_id == "bucket":
+            withdraw_base = shortfall / denom
+            cash_bucket_cap = portfolio * (0.05 / 12.0)
+            withdraw_pretax_per_path = np.minimum(withdraw_base, cash_bucket_cap)
+            portfolio[~failed] = portfolio[~failed] - withdraw_pretax_per_path[~failed]
+        else:  # bengen_4pct or any unknown → legacy fixed-real behavior
+            withdraw_pretax = shortfall / denom
+            portfolio[~failed] = portfolio[~failed] - withdraw_pretax
+
         # Clip and mark newly-depleted paths as permanently failed.
         newly_failed = (~failed) & (portfolio <= 0.0)
         portfolio = np.maximum(portfolio, 0.0)
