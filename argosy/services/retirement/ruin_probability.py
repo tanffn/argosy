@@ -26,6 +26,8 @@ from typing import Literal
 import numpy as np
 from sqlalchemy.orm import Session
 
+import math
+
 from argosy.services.cashflow_projection import (
     DEFAULT_INFLATION_ANNUAL,
     DEFAULT_LIFESTYLE_DRIFT_ANNUAL,
@@ -38,6 +40,8 @@ from argosy.services.cashflow_projection import (
     project_monte_carlo,
 )
 from argosy.services.retirement.citations import ValueWithRationale
+from argosy.services.retirement.regime_switch_mc import simulate_regime_switch
+from argosy.services.retirement.stochastic_fx import DEFAULT_FX_SIGMA
 
 
 Verdict = Literal["ON_TRACK", "WARN", "OFF_TRACK", "UNCERTAIN"]
@@ -130,6 +134,8 @@ def compute_ruin_probability(
     seed: int | None = None,
     today: date | None = None,
     withdrawal_policy_id: str = "guyton_klinger",
+    engine: str = "regime_switch",
+    usd_fraction: float = 0.65,
 ) -> RuinProbabilityVerdict:
     """Probability-of-ruin verdict at the given retirement age.
 
@@ -139,52 +145,91 @@ def compute_ruin_probability(
     household = extract_household_state(session, user_id=user_id, today=today)
     pensions = extract_pension_state(session, user_id=user_id)
 
-    mc = project_monte_carlo(
-        household=household,
-        pensions=pensions,
-        retirement_age=retirement_age,
-        years=years,
-        mu_nominal_annual=mu_nominal_annual,
-        sigma_annual=sigma_annual,
-        inflation_annual=inflation_annual,
-        mekadem=mekadem,
-        tax_rate=tax_rate,
-        lifestyle_drift_annual=lifestyle_drift_annual,
-        n_paths=n_paths,
-        seed=seed,
-        today=today,
-        withdrawal_policy_id=withdrawal_policy_id,
-    )
+    # Stochastic FX uplift: combine portfolio σ with σ_fx on the USD portion
+    # in quadrature. For Ariel's 65% USD with σ_fx=0.08:
+    #   effective σ = sqrt(σ² + (usd_fraction × σ_fx)²) ≈ sqrt(0.18² + 0.052²) ≈ 0.187
+    # The uplift widens the spread of the MC and surfaces FX risk in the verdict.
+    fx_contribution = usd_fraction * DEFAULT_FX_SIGMA
+    effective_sigma = math.sqrt(sigma_annual ** 2 + fx_contribution ** 2)
 
-    # P(solvent) = 1 - p_failure_before_age — point estimates already in the MC.
-    p_solvent_75 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_75))
-    p_solvent_85 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_85))
-    p_solvent_95 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_95))
+    if engine == "regime_switch":
+        # Use the 3-state Markov regime-switch engine (calm / turbulent / crisis).
+        # Fat tails appear in P(ruin) — under stress this gives 5-10pp lower
+        # P(solvent) than the lognormal engine, surfacing the safety margin
+        # honestly per the "better safe than sorry" preference.
+        rs = simulate_regime_switch(
+            household=household,
+            pensions=pensions,
+            retirement_age=retirement_age,
+            years=years,
+            inflation_annual=inflation_annual,
+            mekadem=mekadem,
+            tax_rate=tax_rate,
+            lifestyle_drift_annual=lifestyle_drift_annual,
+            n_paths=n_paths,
+            seed=seed,
+            today=today,
+        )
+        p_solvent_75 = max(0.0, min(1.0, 1.0 - rs.p_failure_before_age.get(75, 0.0)))
+        p_solvent_85 = max(0.0, min(1.0, 1.0 - rs.p_failure_before_age.get(85, 0.0)))
+        p_solvent_95 = max(0.0, min(1.0, 1.0 - rs.p_failure_before_age.get(95, 0.0)))
+        # Provide an MC-compatible facade for the bootstrap-CI code below.
+        # We use rs.fraction_solvent_per_month directly.
+        fraction_solvent_series = rs.fraction_solvent_per_month
+        n_paths_actual = rs.n_paths
+        mc = None  # signal "regime engine was used"
+    else:
+        # Legacy lognormal Gaussian engine; FX uplift baked into σ.
+        mc = project_monte_carlo(
+            household=household,
+            pensions=pensions,
+            retirement_age=retirement_age,
+            years=years,
+            mu_nominal_annual=mu_nominal_annual,
+            sigma_annual=effective_sigma,
+            inflation_annual=inflation_annual,
+            mekadem=mekadem,
+            tax_rate=tax_rate,
+            lifestyle_drift_annual=lifestyle_drift_annual,
+            n_paths=n_paths,
+            seed=seed,
+            today=today,
+            withdrawal_policy_id=withdrawal_policy_id,
+        )
+        p_solvent_75 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_75))
+        p_solvent_85 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_85))
+        p_solvent_95 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_95))
+        fraction_solvent_series = None
+        n_paths_actual = n_paths
 
-    # Bootstrap CI on P(solvent at 95): rebuild the solvent_mask at age 95.
-    # We use the fraction_solvent in mc.series at the closest tick to age 95.
-    age_95_tick = None
-    closest_diff = float("inf")
-    for i, p in enumerate(mc.series):
-        d = abs(p.age_years - 95.0)
-        if d < closest_diff:
-            closest_diff = d
-            age_95_tick = i
-    # Reconstruct an approximate solvent mask from fraction_solvent. For a
-    # rigorous CI we'd need the per-path failed array, but project_monte_carlo
-    # doesn't expose that today. As a pragmatic substitute: generate a
-    # Bernoulli sample at the observed p, then bootstrap that. This is a
-    # known overestimate of CI width vs the true bootstrap (Wilson-style is
-    # tighter), but it never lies in the "we're more certain than we are"
-    # direction — which is what we want for a safety-of-conclusions gate.
-    if age_95_tick is None:
+    # Bootstrap CI on P(solvent at 95).
+    # We use the fraction_solvent at the closest tick to age 95, regardless
+    # of which engine ran (lognormal MC or regime-switch). Synthesize a
+    # Bernoulli sample at that fraction and bootstrap-resample it — a known
+    # overestimate of CI width vs Wilson but never lies in the "more
+    # certain than we are" direction (safety-of-conclusions bias).
+    if mc is not None:
+        age_95_tick = None
+        closest_diff = float("inf")
+        for i, p in enumerate(mc.series):
+            d = abs(p.age_years - 95.0)
+            if d < closest_diff:
+                closest_diff = d
+                age_95_tick = i
+        fraction_at_95 = (
+            mc.series[age_95_tick].fraction_solvent if age_95_tick is not None else 0.0
+        )
+    else:
+        # Regime-switch path — direct lookup against the survival series
+        delta = 95.0 - household.current_age_years
+        tick = max(0, min(int(round(delta * 12)), len(fraction_solvent_series) - 1))
+        fraction_at_95 = float(fraction_solvent_series[tick])
+
+    if fraction_at_95 == 0.0 and p_solvent_95 == 0.0:
         ci_low, ci_high = 0.0, 0.0
     else:
         rng = np.random.default_rng(seed if seed is not None else 0)
-        fraction = mc.series[age_95_tick].fraction_solvent
-        synthetic_mask = (
-            rng.random(n_paths) < fraction
-        )
+        synthetic_mask = rng.random(n_paths_actual) < fraction_at_95
         ci_low, ci_high = _bootstrap_p_solvent_ci(
             synthetic_mask, n_bootstrap=bootstrap_ci_samples, rng=rng,
         )

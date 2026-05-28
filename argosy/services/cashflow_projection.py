@@ -593,6 +593,7 @@ def project_monte_carlo(
     seed: int | None = None,
     today: date | None = None,
     withdrawal_policy_id: str = "bengen_4pct",
+    apply_age_aware_tax: bool = True,
 ) -> MonteCarloProjection:
     """Random-walk Monte Carlo of consumption-tracking retirement paths.
 
@@ -705,7 +706,28 @@ def project_monte_carlo(
         # portfolio (cash-bucket equivalent).
         # See argosy/services/retirement/withdrawal_policy.py for full rules.
         shortfall = max(0.0, expenses_t - annuity_nominal_t)
-        denom = max(1.0 - tax_rate, 0.01)
+
+        # Tax engine integration: age-aware effective rate captures the
+        # life-stage mix of taxable / hishtalmut / annuity sources without
+        # requiring a multi-account portfolio refactor. Calibrated to
+        # Israeli rules per `argosy/services/retirement/tax_engine.py`.
+        #   Pre-60:  25% (all from taxable equity; Israeli CGT)
+        #   60-67:   15% (taxable + hishtalmut 6yr tax-free lump available)
+        #   67+:     12% (pension annuity ~20% effective on post-67 rights-
+        #                 fixation + hishtalmut tax-free)
+        # Setting `apply_age_aware_tax=False` falls back to the legacy flat
+        # `tax_rate` slider for back-compat.
+        if apply_age_aware_tax:
+            age_now = household.current_age_years + t / 12.0
+            if age_now < LUMP_PENSION_AGE:
+                effective_tax = 0.25
+            elif age_now < ANNUITY_AGE:
+                effective_tax = 0.15
+            else:
+                effective_tax = 0.12
+            denom = max(1.0 - effective_tax, 0.01)
+        else:
+            denom = max(1.0 - tax_rate, 0.01)
 
         if withdrawal_policy_id == "vpw":
             # Age-banded VPW: spend a % of current balance.
