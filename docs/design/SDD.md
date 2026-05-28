@@ -365,26 +365,28 @@ The 2026-05-28 SDD review (Codex + Explore agent + main-agent synthesis) identif
 |---|---|---|
 | 2.1-2.5 | `f7b0dd5` | GateVerdict dataclass + NraEstateGate (US-situs assets vs $60K IRS exemption; PASS/WARN/FAIL at $60K/$200K thresholds; UCITS + cash excluded per IRS NRA rules) + LiquidityGate (cash buffer in months of essential expenses; essential=burn×60%; default 12mo floor; USD-FX-converted to NIS) + `/api/retirement/safety-gates` route + `<SafetyGatesPanel>` 3-tile grid UI on `/retirement` (3rd tile reserved for ConflictScenarioGate in Wave 3.6). 10 new tests; full retirement suite 62/62. |
 
-**Wave 3 partial (P-of-ruin gate) — SHIPPED 2026-05-28:**
+**Wave 3 (Projection trust layer) + Wave 3.6 (Conflict gate) — SHIPPED 2026-05-28:**
 
 | Task | Commits | What |
 |---|---|---|
-| 3.1 (subset) | `b2a9c66` | **Single biggest narrative-changing deliverable.** Replaces prior "retire-ready age" verdict (single-month income≥expenses; ignored sequence-of-returns) with `compute_ruin_probability()` returning P(solvent at 75/85/95) + bootstrap 95% CI on age-95 estimate + verdict (ON_TRACK / OFF_TRACK / UNCERTAIN) using CI-based logic (per codex review BLOCKER #6: ON_TRACK requires CI lower ≥ target; OFF_TRACK requires CI upper < target; otherwise UNCERTAIN — noisy MC doesn't flip the gate). `<RuinProbabilityHero>` replaces the Wave-0 placeholder hero on /retirement; Methodology drilldown explains the bootstrap CI + sequence-of-returns semantics. 8 new tests; full retirement suite 70/70. |
-
-**Wave 3 remaining (deferred — next session due to context budget):**
-- HIGH #7 Sigma auto-calibration from holdings concentration
-- HIGH #11 Regime-switch / fat-tail Monte Carlo
-- HIGH #12 Stochastic FX
-- HIGH #8 Withdrawal-policy framework (Bengen 4% / Guyton-Klinger / VPW / Bucket)
-- Wave 3.6 ConflictScenarioGate (consumes the P(ruin) infrastructure shipped above)
+| 3.1 | `b2a9c66` | P-of-ruin gate (`compute_ruin_probability`) — P(solvent at 75/85/95) + bootstrap 95% CI on age-95 + verdict (ON_TRACK/OFF_TRACK/UNCERTAIN) using CI-based logic per codex review BLOCKER #6. `<RuinProbabilityHero>` replaces the Wave-0 placeholder hero. |
+| 3.2-3.6 | `6e75e5b` | Sigma auto-calibration (`calibrate_sigma_from_holdings`; NVDA-heavy → σ≈0.30-0.40 not 0.18) + Withdrawal policy framework (Bengen 4% / Guyton-Klinger / VPW / Bucket; default Guyton-Klinger) + Regime-switch MC (3-state Markov: calm/turbulent/crisis; fat tails) + Stochastic FX (lognormal random walk USD/NIS, σ=0.08) + Conflict scenario gate (stress at σ=0.40 + inflation=6% + lifestyle_drift=2%; thresholds at P(ruin@85) > 30% WARN / > 50% FAIL). Routes: `/projection/sigma-calibrated`, `/projection/withdrawal-policies`, `/projection/stochastic-fx`. UI cards: `<SigmaCalibrationCard>`, `<WithdrawalPolicySelector>`, `<StochasticFxCard>`, conflict tile in SafetyGatesPanel. 32 new tests; full retirement suite **102/102**. |
 
 **Waves 4-7 are NOT yet started.**
 
-**Total session output:** 16 commits, ~4200 LOC, 70/70 retirement tests passing.
-Closed 4/5 BLOCKERs + 3/10 HIGHs (NRA estate + Liquidity + Mekadem + BL + P-of-ruin
-gate + 1/3 of safety-gate set). Remaining work documented in
-`docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md` + per-wave
-progress in `docs/superpowers/plans/2026-05-28-retirement-companion-overhaul-questions.md`. Each wave's just-in-time daughter plan expands the master plan's spec-level detail into full TDD steps at execution time.
+**Session total: 9/30 gaps closed.** 4/5 BLOCKERs + 5/10 HIGHs:
+- BLOCKER #1 P(ruin) gate (Wave 3.1)
+- BLOCKER #3 Mekadem variance (Wave 1)
+- BLOCKER #4 NRA estate gate (Wave 2)
+- BLOCKER #5 Emergency liquidity floor (Wave 2)
+- HIGH #6 Bituach Leumi stipend (Wave 1)
+- HIGH #7 Sigma auto-calibration (Wave 3.2)
+- HIGH #8 Withdrawal policy framework (Wave 3.3)
+- HIGH #11 Regime-switch / fat-tail MC (Wave 3.4)
+- HIGH #12 Stochastic FX (Wave 3.5)
+- HIGH #15 War/conflict scenario gate (Wave 3.6)
+
+**Remaining:** BLOCKER #2 (account-aware tax engine — Wave 5), HIGHs #9/#10/#13/#14 (glide path / rebalancing / lifecycle income / phase expenses — Wave 4), 10 MEDIUMs, 4 LOWs. Each wave's just-in-time daughter plan expands the master plan's spec-level detail into full TDD steps at execution time.
 
 ### Cashflow projection pivot (2026-05-27 evening) — `/plan` chart pivot + Monte Carlo
 
