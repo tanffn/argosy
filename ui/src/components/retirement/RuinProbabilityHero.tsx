@@ -46,6 +46,11 @@ export function RuinProbabilityHero({
   // Fix UX #5: keep prior data visible while re-fetching on parameter
   // changes; show a small spinner badge so the user knows it's working.
   const [loading, setLoading] = useState(false);
+  // Last successful MC completion -- drives the "Last computed HH:MM:SS"
+  // stamp so the user can tell whether the verdict reflects the current
+  // portfolio or a stale one. Set on every .then() success; left null
+  // until the first run completes.
+  const [lastComputedAt, setLastComputedAt] = useState<Date | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +65,10 @@ export function RuinProbabilityHero({
         sigmaAnnual,
       })
       .then((d) => {
-        if (!cancelled) setData(d);
+        if (!cancelled) {
+          setData(d);
+          setLastComputedAt(new Date());
+        }
       })
       .catch((e) => {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
@@ -124,6 +132,11 @@ export function RuinProbabilityHero({
         <CardDescription>
           P(solvent through 95) under {target * 100}% target, retiring at age{" "}
           {retirementAge}, with sequence-of-returns risk modeled.
+          {lastComputedAt ? (
+            <span className="ml-2 font-mono text-[11px] text-muted-foreground/80 tabular-nums">
+              · Last computed {formatHM(lastComputedAt)}
+            </span>
+          ) : null}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -209,3 +222,10 @@ export function RuinProbabilityHero({
     </Card>
   );
 }
+
+function formatHM(d: Date): string {
+  const h = String(d.getHours()).padStart(2, "0");
+  const m = String(d.getMinutes()).padStart(2, "0");
+  return `${h}:${m}`;
+}
+
