@@ -48,6 +48,10 @@ export function WindfallBanner() {
   const isUnclear = e.classified_source === "unclear";
   const borderClass = isUnclear ? "border-l-warning/80" : "border-l-info/80";
   const dotClass = isUnclear ? "text-warning" : "text-info";
+  // Glyph mirrors the tone — ⚠ only when the user actually needs to
+  // weigh in. A confidently-classified RSU/stock sale gets a $-mark
+  // so a green-path event isn't visually flagged as a warning.
+  const glyph = isUnclear ? "⚠" : "$";
 
   return (
     <section
@@ -57,7 +61,7 @@ export function WindfallBanner() {
       <div className="flex flex-col gap-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span aria-hidden className={`font-mono text-sm ${dotClass}`}>
-            ⚠
+            {glyph}
           </span>
           <span className="font-mono text-sm font-semibold">
             {formatUsd(e.cash_delta_total_usd_equiv)} windfall detected in{" "}

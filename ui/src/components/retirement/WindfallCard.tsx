@@ -110,9 +110,17 @@ interface WindfallHeroProps {
 
 function WindfallHero({ event, plan }: WindfallHeroProps) {
   const status = event.requires_user_classification ? "WARN" : "UNCERTAIN";
-  const verdict = event.requires_user_classification
-    ? "Source unclear — likely cash was redeployed in-month. Confirm classification before allocating."
-    : `Classified as ${classificationLabel(event.classified_source)}. Review the proposed allocation below.`;
+
+  // Use the backend allocator's canonical headline rationale as the
+  // verdict — it already reasons over classification + plan-gap
+  // priorities + allocator confidence. Synthesizing a verdict on the
+  // client would drift from the backend's intent and leave the
+  // canonical rationale orphaned.
+  const verdict =
+    plan?.headline?.rationale ??
+    (event.requires_user_classification
+      ? "Source unclear — likely cash was redeployed in-month. Confirm classification before allocating."
+      : `Classified as ${classificationLabel(event.classified_source)}. Review the proposed allocation below.`);
 
   const longTotal = (plan?.long_term ?? []).reduce(
     (acc, p) => acc + p.amount_usd,
@@ -201,17 +209,21 @@ function AllocationDeltaTable({ rows }: AllocationDeltaTableProps) {
                 const isCash = row.asset_class.trim().toLowerCase() === "cash";
                 const under = row.delta_k_usd > 0;
                 const over = row.delta_k_usd < 0;
-                const tone: "warning" | "success" | "neutral" = isCash
+                // Tone semantics: a windfall is cash looking for a
+                // destination, so "under target" rows are the positive
+                // signal (where the money should flow) — render as
+                // accent/info, not warning. "Over target" rows aren't
+                // a success either; a windfall doesn't trim, it adds.
+                // Neutral keeps the focus on the under-target rows.
+                const tone: "accent" | "neutral" = isCash
                   ? "neutral"
                   : under
-                    ? "warning"
-                    : over
-                      ? "success"
-                      : "neutral";
+                    ? "accent"
+                    : "neutral";
                 const label = isCash
                   ? "CASH"
                   : under
-                    ? "UNDER"
+                    ? "DESTINATION"
                     : over
                       ? "OVER"
                       : "ON";
@@ -243,9 +255,11 @@ function AllocationDeltaTable({ rows }: AllocationDeltaTableProps) {
           </table>
         </div>
         <p className="mt-2 text-[11px] text-muted-foreground">
-          Positive Δ = under target (room to buy). Negative Δ = over target
-          (room to trim). Cash is excluded from windfall destinations —
-          allocating a cash windfall to cash is a no-op.
+          DESTINATION rows are under target — the natural home for new
+          money. OVER rows are above target (trimming, not adding) and
+          aren&apos;t windfall destinations. Cash is excluded by
+          construction — a windfall is cash, allocating cash to cash is
+          a no-op.
         </p>
       </CardContent>
     </Card>
@@ -396,7 +410,7 @@ function SalesTable({ event }: { event: WindfallEventDTO }) {
     0,
   );
   const matchRatio =
-    event.cash_delta_total_usd_equiv === 0
+    event.cash_delta_total_usd_equiv === 0 || totalSalesValue === 0
       ? 0
       : (event.cash_delta_total_usd_equiv / totalSalesValue) * 100;
   return (

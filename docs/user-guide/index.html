@@ -132,7 +132,7 @@
   <h2>End-to-end flows</h2>
   <ol>
     <li><a href="#flow-firstrun">First-time setup</a></li>
-    <li><a href="#flow-bonus">"I got a 50K bonus"</a></li>
+    <li><a href="#flow-windfall">Windfall (auto-detected)</a></li>
     <li><a href="#flow-statement">Monthly bank statement</a></li>
     <li><a href="#flow-cc">Credit card / labels</a></li>
     <li><a href="#flow-decision">Plan → Retirement loop</a></li>
@@ -168,7 +168,7 @@
     <span><strong>Audience:</strong> Ariel (single-user mode)</span>
     <span><strong>Live capture:</strong> 2026-05-28 via Playwright + Chromium</span>
     <span><strong>Pages audited:</strong> all 14 nav tabs</span>
-    <span><strong>Bug fixes shipped:</strong> 6 retirement + 1 logged for /argonaut</span>
+    <span><strong>Shipped this round:</strong> 6 retirement bug fixes · Windfall auto-detect flow · 1 /argonaut bug logged</span>
   </div>
 </header>
 
@@ -296,45 +296,56 @@
 </section>
 
 <!-- ============================================================ -->
-<section id="flow-bonus">
-<h2>5. End-to-end flow: "I just got a 50K USD bonus"</h2>
+<section id="flow-windfall">
+<h2>5. End-to-end flow: Windfall (auto-detected — no buttons, no typing)</h2>
 
-<div class="callout warn">
-  <div class="callout-title">UX hole #1</div>
-  There is no "+ Add income event" button anywhere in the UI. The user has to know that the Advisor chat is the universal entry point. A user might look for a button on <span class="nav-card">/portfolio</span> or <span class="nav-card">/expenses</span> and not find one.
+<div class="callout ok">
+  <div class="callout-title">By design — Argosy notices, you don't push</div>
+  Prior versions of this guide flagged "no '+ Add income event' button" as a UX hole. That framing is wrong. The current design treats the absence of an upload affordance as a feature: you maintain your existing TSV workflow (<code>update_leumi_tsv.py</code> + monthly drops into <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code>), and Argosy diffs consecutive snapshots to detect windfalls automatically. No buttons to find. No forms to fill.
 </div>
 
 <div class="flow">
   <div class="flow-step">
     <div class="step-num">STEP 1</div>
-    <div class="step-title">Open <span class="nav-card">/advisor</span></div>
-    <div class="step-body">Don't click a gap-tracker row — just go to the chat textarea.</div>
+    <div class="step-title">Drop the latest <code>Family Finances Status - YY MMM.tsv</code> in your Portfolio/Resources folder</div>
+    <div class="step-body">Same place you've always dropped them. Path resolves from <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code> (default <code>D:/Google Drive/Family/Finances/Portfolio/Resources</code>). You don't open the UI yet.</div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP 2</div>
-    <div class="step-title">Type: "I just got a $50K bonus paid 2026-05-28."</div>
-    <div class="step-body">Click <strong>Send</strong>. The agent classifies this as an income event, updates the rsu_grants block in identity_yaml if it's RSU, or creates a one-shot income event otherwise. Confirmation appears in the chat.</div>
+    <div class="step-title">Backend detector fires automatically</div>
+    <div class="step-body"><code>argosy/services/retirement/windfall_detector.py</code> diffs the two most-recent TSVs. Fires when the cash delta crosses <strong>$25K USD</strong> or <strong>₪75K NIS</strong>. The classifier then matches equity sales within the same month to the cash delta (5% tolerance) and tags the source as <span class="nav-card">rsu_sale</span>, <span class="nav-card">stock_sale</span>, or <span class="nav-card">unclear</span>.</div>
   </div>
   <div class="flow-step">
-    <div class="step-num">STEP 3 (optional)</div>
-    <div class="step-title">Attach the payslip / wire confirmation PDF</div>
-    <div class="step-body">If you have a document, drop it for audit-trail. Lands in <span class="nav-card">/files</span> with a link back to this turn.</div>
+    <div class="step-num">STEP 3</div>
+    <div class="step-title">Open <span class="nav-card">/</span> — banner is already there</div>
+    <div class="step-body">Home renders a windfall banner near the top with the cash delta, classification badge, and matching-sales summary (e.g. "NVDA -1040 + SGOV -350"). Tone is amber when classification is <code>unclear</code> (needs your input), neutral when Argosy resolved it.</div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP 4</div>
-    <div class="step-title">Re-open <span class="nav-card">/portfolio</span></div>
-    <div class="step-body">The net worth + monthly income figures update once the wire credit hits the next portfolio snapshot. (If you want it reflected immediately, drop the latest Schwab balance.)</div>
+    <div class="step-title">Click <strong>See allocation plan →</strong></div>
+    <div class="step-body">Deep-links to <span class="nav-card">/retirement#windfall</span>. The full <code>WindfallCard</code> sits at the top of the page: hero verdict + the <em>current vs plan target</em> allocation table (one row per asset class in your TSV — typically 7-9) + three horizon columns (long / medium / short) with proposed instruments and dollar amounts.</div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP 5</div>
-    <div class="step-title">Trigger fires — check <span class="nav-card">/</span></div>
-    <div class="step-body">A large income event qualifies as a replan-trigger ("job_change" or "income_shock"). Home shows a banner; the verdict on <span class="nav-card">/retirement</span> re-runs automatically.</div>
+    <div class="step-title">Review the proposed split (60% long / 25% medium / 15% short)</div>
+    <div class="step-body">Long-term proposals are deterministic: the allocator picks tickers you already hold to close the largest under-target plan gaps. The rendered rationale per proposal reads: <em>"Closes the &lt;asset class&gt; plan-target gap ($&lt;N&gt;K under target). Preferred instrument: &lt;ticker&gt; (already in your portfolio)."</em> Medium and short horizons render placeholder rows pending the agent-fleet synthesis hookup.</div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">STEP 6</div>
+    <div class="step-title">Accept / Defer per proposal</div>
+    <div class="step-body">Buttons render on every proposal in every horizon column (long / medium / short). <strong>They're disabled right now</strong> — wiring through the <code>action_engine</code> (so an accepted proposal becomes a <code>PrioritizedAction</code> with a due date) is the next chunk of work. The card and the banner are read-only this round.</div>
   </div>
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">UX hole #2</div>
-  Argosy doesn't tell the user explicitly that the projection re-ran. The Home banner shows the trigger fired but the user has no visible confirmation that the <span class="nav-card">/retirement</span> verdict has updated to reflect the bonus. Suggested fix: add a "Last re-computed at" stamp on the hero card.
+  <div class="callout-title">Still open — Advisor focus mode for "unclear" classifications</div>
+  When the classifier tags a windfall as <code>unclear</code> (most-likely cause: a chunk of proceeds was redeployed inside the same month, so equity-sales total doesn't match cash delta within 5%), the banner currently just links to the retirement card. The plan calls for a deep-link into <code>/advisor?focus=windfall_&lt;id&gt;</code> that opens the chat with the event context pre-rendered and uses <code>intake_extractor</code> to classify your reply. That part hasn't shipped yet — see the resume note at <code>docs/superpowers/plans/2026-05-28-windfall-flow-resume.md</code>.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">Open — No "verdict re-computed" confirmation</div>
+  When a windfall is detected, Home banner appears and <span class="nav-card">/retirement</span> shows the card, but the <code>RuinProbabilityHero</code> at the top of <span class="nav-card">/retirement</span> doesn't show "Last re-computed at 14:32 (triggered by: windfall_detect)". Without that stamp the user can't tell whether the verdict reflects the new cash or the snapshot before it.<br>
+  <strong>Suggested fix:</strong> stamp the hero with last-compute timestamp + trigger cause.
 </div>
 </section>
 
@@ -586,11 +597,12 @@
   <figcaption><strong>Hero</strong> — OFF TRACK · P(solvent at 75/85/95) = 69% / 57% / 57% · 95% CI [55%–59%] · "OFF TRACK — P(solvent at 95) is 57%, below target 90% by 33pp..."</figcaption>
 </figure>
 
-<p>17 cards in 11 named sections. The left sidebar TOC (<span class="badge fix">UX #6 fixed</span>) lets you jump between them.</p>
+<p>18 cards in 12 named sections. The left sidebar TOC (<span class="badge fix">UX #6 fixed</span>) lets you jump between them.</p>
 
 <table>
 <thead><tr><th>Section</th><th>What's there</th></tr></thead>
 <tbody>
+<tr><td>Windfall</td><td>WindfallCard — only renders when the detector found a qualifying cash delta in the latest TSV. Hero + allocation delta table + 3-horizon proposals + matching-sales drilldown.</td></tr>
 <tr><td>Verdict</td><td>RuinProbabilityHero (the OFF_TRACK card above)</td></tr>
 <tr><td>Safety</td><td>SafetyGatesPanel — NRA estate · Emergency liquidity · Conflict scenario</td></tr>
 <tr><td>Predictions</td><td>Sigma calibration · Withdrawal policy selector (with the new <span class="badge fix">UX #4 caveat</span>) · Stochastic FX</td></tr>
@@ -678,6 +690,11 @@
   Live A/B verifies the sigma pipe now works: <strong>σ=0.18 (default) → 92% UNCERTAIN</strong>; <strong>σ=0.344 (auto-calibrated NVDA-aware) → 48% OFF_TRACK</strong>. A 44pp swing the page was hiding.
 </div>
 
+<div class="callout ok">
+  <div class="callout-title">Hole #1 closed — windfall auto-detect flow shipped</div>
+  Prior round listed "Add income event isn't discoverable" as the top UX hole and proposed a <code>/advisor?focus=income_event</code> deep-link. The actually-shipped fix takes the opposite philosophy: there's no button, by design. Backend detector + plan-aware allocator + <code>GET /api/retirement/windfall/detect</code> shipped in <code>6c5247e</code>; the <code>&lt;WindfallBanner&gt;</code> on Home + <code>&lt;WindfallCard&gt;</code> on <span class="nav-card">/retirement</span> shipped in <code>0851abb</code>. See §5 for the end-to-end walkthrough.
+</div>
+
 <h4>Bug #1 — Sigma calibration result fed into the verdict <span class="badge fix">FIXED</span></h4>
 <p>Route accepts <code>sigma_annual</code> query param. <code>api.retirement.ruinProbability</code> opts include <code>sigmaAnnual</code>. <code>RuinProbabilityHero</code> accepts <code>sigmaAnnual</code> prop. <code>page.tsx</code> fetches sigma calibration once on mount and threads the value to the hero. Net effect: changes to your portfolio composition now actually change the verdict number.</p>
 
@@ -701,51 +718,57 @@
 <section id="holes">
 <h2>19. Holes still in the flow (not yet fixed)</h2>
 
-<p>These are real gaps that the per-tab walkthroughs surfaced. None block usage; all worsen UX:</p>
+<p>These are real gaps that the per-tab walkthroughs surfaced. None block usage; all worsen UX. Numbering reflects the post-windfall state — the old Hole #1 ("Add income event isn't discoverable") was closed by the windfall auto-detect flow, see §18.</p>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #1 — "Add income event" isn't discoverable</div>
-  Bonus / job change / income shock all go through Advisor chat. No button labeled "Add income event" exists anywhere.<br>
-  <strong>Suggested fix:</strong> a "+ Add event" affordance on Home and/or Portfolio that deeplinks to <code>/advisor?focus=income_event</code>.
-</div>
-
-<div class="callout warn">
-  <div class="callout-title">Hole #2 — No "verdict re-computed" confirmation</div>
-  When a trigger fires, the verdict re-runs server-side but no visible "Last re-computed at 14:32 (3 min ago, triggered by: income_event)" stamp.<br>
+  <div class="callout-title">Hole #1 — No "verdict re-computed" confirmation</div>
+  When a trigger fires (including the new windfall detector), the verdict re-runs server-side but no visible "Last re-computed at 14:32 (3 min ago, triggered by: windfall_detect)" stamp on the <code>RuinProbabilityHero</code>.<br>
   <strong>Suggested fix:</strong> stamp the hero with last-compute timestamp + trigger cause.
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #3 — /expenses has no "last sync" per source</div>
+  <div class="callout-title">Hole #2 — Windfall Accept/Defer is read-only</div>
+  The <code>WindfallCard</code> on <span class="nav-card">/retirement</span> renders Accept/Defer buttons on every proposal (long / medium / short horizons), but they're disabled with a tooltip. Wiring through the existing <code>action_engine</code> (so an accepted proposal becomes a <code>PrioritizedAction</code> with severity HIGH and a due date, surfaced in the home-page action-items widget) is the next chunk.<br>
+  <strong>Suggested fix:</strong> add <code>POST /api/retirement/windfall/accept</code> + <code>/defer</code> endpoints + persistence; light up the buttons.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">Hole #3 — Windfall classification dialogue not wired</div>
+  When the detector tags a windfall as <code>unclear</code>, the banner currently just deep-links to <span class="nav-card">/retirement#windfall</span>. The resume note (<code>docs/superpowers/plans/2026-05-28-windfall-flow-resume.md</code>) sketches a focus-mode dialogue on <span class="nav-card">/advisor</span> that opens with the event context as the first message and extracts the user's clarification (bonus, gift, in-month redeployment) into structured state. Concrete details — extractor agent, persistence schema, advisor route shape — are TBD and will be locked when that chunk is built.<br>
+  <strong>Suggested fix:</strong> design + ship the focus-mode flow per the resume note.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">Hole #4 — /expenses has no "last sync" per source</div>
   If you forgot to upload May 2026's Cal statement, /expenses silently shows incomplete data.<br>
   <strong>Suggested fix:</strong> per-source freshness badge in the Sources sub-tab.
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #4 — /files is read-only despite the name</div>
+  <div class="callout-title">Hole #5 — /files is read-only despite the name</div>
   Files = catalog, not upload portal. Users naturally try to upload here.<br>
   <strong>Suggested fix:</strong> add an Upload button on /files that calls the same <code>catalog_upload</code> backend the Advisor chat uses, OR rename the tab to "Catalog."
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #5 — Parsing failures are silent</div>
+  <div class="callout-title">Hole #6 — Parsing failures are silent</div>
   If a PDF is in an unsupported format (older SpreadsheetML Leumi files), the parser logs "?? UnknownFormatError" but the Advisor chat shows a generic message. No visible error in /files.<br>
   <strong>Suggested fix:</strong> per-file parse-status column on /files with a "Re-try" button.
 </div>
 
 <div class="callout bug">
-  <div class="callout-title">Hole #6 — /argonaut 404 on /api/plan/current/structured</div>
+  <div class="callout-title">Hole #7 — /argonaut 404 on /api/plan/current/structured</div>
   Already logged. Pre-existing endpoint gap, separate from retirement work.
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #7 — /expenses lacks an Income sub-tab</div>
+  <div class="callout-title">Hole #8 — /expenses lacks an Income sub-tab</div>
   RSU has its own sub-tab but salary / dividends / bonus / side-income roll up into "Income" on Overview only. No drill-down. Asymmetry with how detailed the expense side is.<br>
   <strong>Suggested fix:</strong> add an Income sub-tab parallel to RSU.
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #8 — No site-wide search</div>
+  <div class="callout-title">Hole #9 — No site-wide search</div>
   If you're hunting for a specific past decision ("the day we trimmed NVDA in March"), you have to know to go to /audit. No site-wide search box.<br>
   <strong>Suggested fix:</strong> ⌘K / Ctrl-K palette searching audit_log + transactions + plans.
 </div>
@@ -775,12 +798,17 @@
 </tbody>
 </table>
 
-<p>14/14 pages render. 1 page has 1 console error (the /argonaut 404). Backend at <code>:8000</code> with 28 retirement endpoints registered. UI at <code>:1337</code> via Next.js 16.</p>
+<p>14/14 pages render. 1 page has 1 console error (the /argonaut 404). Backend at <code>:8000</code> with 28 retirement endpoints registered (29 including the new <code>/windfall/detect</code>). UI at <code>:1337</code> via Next.js 16.</p>
+
+<div class="callout warn">
+  <div class="callout-title">Caveat — screenshots predate the windfall UI</div>
+  The Playwright capture above ran <em>before</em> the windfall surfaces (<code>&lt;WindfallBanner&gt;</code> on Home, <code>&lt;WindfallCard&gt;</code> on <span class="nav-card">/retirement</span>) shipped in commit <code>0851abb</code>. The new surfaces were verified via TypeScript <code>tsc --noEmit</code>, ESLint, and HTTP 200 on both pages from the dev server — not via fresh screenshots. Next round of the user-guide live-capture script will re-shoot Home + Retirement.
+</div>
 
 <hr>
 
 <p style="color: var(--muted); font-size: 13px;">
-  Generated 2026-05-28. Live screenshots via Playwright + Chromium 1.59.0 at viewport 1400×900.
+  Generated 2026-05-28. Live screenshots via Playwright + Chromium 1.59.0 at viewport 1400×900 (pre-windfall capture).
   Capture scripts: <code>argosy/services/.progress/user_guide/</code> (gitignored).
   Per-page audit: <code>docs/user-guide/full_site_audit.json</code>.
 </p>
