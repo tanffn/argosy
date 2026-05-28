@@ -203,7 +203,7 @@
 <tr><td><span class="nav-card">/</span></td><td>Read where you stand · catch fired triggers</td><td>Daily</td></tr>
 <tr><td><span class="nav-card">/advisor</span></td><td><strong>The data-entry portal.</strong> Chat + attach files + gap-tracker rows on the right.</td><td>Daily-to-weekly</td></tr>
 <tr><td><span class="nav-card">/portfolio</span></td><td>Current FIRE position + financial-independence chart</td><td>Weekly</td></tr>
-<tr><td><span class="nav-card">/expenses</span></td><td>Spending dashboard with sub-tabs (Overview/Monthly/Transactions/Sources/Merchants/Trips/RSU)</td><td>Weekly + monthly drill</td></tr>
+<tr><td><span class="nav-card">/expenses</span></td><td>Spending dashboard with sub-tabs (Overview/Monthly/Transactions/Sources/Merchants/Trips/RSU/Income)</td><td>Weekly + monthly drill</td></tr>
 <tr><td><span class="nav-card">/plan</span></td><td>Current draft plan from the agent fleet. Per-objection AGREE/DISAGREE/DEFER.</td><td>When synthesis lands</td></tr>
 <tr><td><span class="nav-card">/retirement</span></td><td>Long-term truth-teller — fat-tail-aware P(ruin) verdict + safety gates</td><td>Monthly + on-trigger</td></tr>
 <tr><td><span class="nav-card">/decide</span></td><td>Open ticker-decision flows</td><td>When the system surfaces one</td></tr>
@@ -563,9 +563,8 @@
   <li><strong>Merchants</strong> — merchant-level rollup. Bulk relabel from here.</li>
   <li><strong>Trips</strong> — auto-detected travel periods (hotel + restaurant + transport cluster).</li>
   <li><strong>RSU</strong> — Schwab disbursements vs Leumi USD wire credits cross-validation.</li>
+  <li><strong>Income</strong> — per-month income breakdown (salary + dividends + bonus + side-income + RSU rollup), with month-shift navigation. The asymmetry with the expense side that a previous round of this guide flagged is closed: <code>ui/src/app/expenses/income/page.tsx</code>.</li>
 </ul>
-
-<p>What's missing: an <strong>Income</strong> sub-tab. RSU is there, but salary + dividends + bonus + side-income don't have a dedicated drill-down. Asymmetry with how detailed the expense side is.</p>
 </section>
 
 <!-- ============================================================ -->
@@ -695,6 +694,11 @@
   Prior round listed "Add income event isn't discoverable" as the top UX hole and proposed a <code>/advisor?focus=income_event</code> deep-link. The actually-shipped fix takes the opposite philosophy: there's no button, by design. Backend detector + plan-aware allocator + <code>GET /api/retirement/windfall/detect</code> shipped in <code>6c5247e</code>; the <code>&lt;WindfallBanner&gt;</code> on Home + <code>&lt;WindfallCard&gt;</code> on <span class="nav-card">/retirement</span> shipped in <code>0851abb</code>. See §5 for the end-to-end walkthrough.
 </div>
 
+<div class="callout ok">
+  <div class="callout-title">Old Hole #8 closed — Income sub-tab on /expenses already shipped</div>
+  A previous round of this guide listed "Income sub-tab missing" as an open hole. Audit caught the staleness: <code>ui/src/app/expenses/income/page.tsx</code> exists and serves a real per-month income breakdown (fetches <code>expensesApi.incomeBreakdown(user_id, month)</code> with month-shift navigation, error + loading states). Accessible from <span class="nav-card">/expenses/income</span>. The §2 tab-at-a-glance table and the §12 sub-tab list have been updated to reflect the live state.
+</div>
+
 <h4>Bug #1 — Sigma calibration result fed into the verdict <span class="badge fix">FIXED</span></h4>
 <p>Route accepts <code>sigma_annual</code> query param. <code>api.retirement.ruinProbability</code> opts include <code>sigmaAnnual</code>. <code>RuinProbabilityHero</code> accepts <code>sigmaAnnual</code> prop. <code>page.tsx</code> fetches sigma calibration once on mount and threads the value to the hero. Net effect: changes to your portfolio composition now actually change the verdict number.</p>
 
@@ -762,13 +766,7 @@
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #8 — /expenses lacks an Income sub-tab</div>
-  RSU has its own sub-tab but salary / dividends / bonus / side-income roll up into "Income" on Overview only. No drill-down. Asymmetry with how detailed the expense side is.<br>
-  <strong>Suggested fix:</strong> add an Income sub-tab parallel to RSU.
-</div>
-
-<div class="callout warn">
-  <div class="callout-title">Hole #9 — No site-wide search</div>
+  <div class="callout-title">Hole #8 — No site-wide search</div>
   If you're hunting for a specific past decision ("the day we trimmed NVDA in March"), you have to know to go to /audit. No site-wide search box.<br>
   <strong>Suggested fix:</strong> ⌘K / Ctrl-K palette searching audit_log + transactions + plans.
 </div>
