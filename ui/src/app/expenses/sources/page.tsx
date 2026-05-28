@@ -8,6 +8,7 @@ import {
   expensesApi,
   type SourceDetailResponse,
   type SourceOut,
+  type StatementSummary,
 } from "@/lib/expenses/api";
 import { formatNIS } from "@/lib/expenses/format";
 import { cn } from "@/lib/utils";
@@ -20,6 +21,41 @@ const STATUS_DOT = {
   red: "bg-error",
   unknown: "bg-muted-foreground/40",
 } as const;
+
+// Hole #4 — per-source last-sync indicator. Compute the most recent
+// statement's period_end so a stale source is visible without scanning
+// the per-statement table. Returns null when the source has no
+// statements ingested yet.
+function computeLastSync(
+  statements: StatementSummary[],
+): { dateISO: string; daysAgo: number } | null {
+  if (statements.length === 0) return null;
+  let maxIso = "";
+  for (const st of statements) {
+    if (!st.period_end) continue;
+    if (st.period_end > maxIso) maxIso = st.period_end;
+  }
+  if (!maxIso) return null;
+  const ms = Date.parse(maxIso);
+  if (Number.isNaN(ms)) return null;
+  const daysAgo = Math.floor((Date.now() - ms) / (1000 * 60 * 60 * 24));
+  return { dateISO: maxIso, daysAgo };
+}
+
+// Tone bands picked for monthly-cadence sources (Leumi statements
+// land within ~5 days of month-end). 30 days = on cadence; 31-60 =
+// one month behind; >60 = a real gap worth flagging.
+function lastSyncTone(daysAgo: number): "success" | "warning" | "error" {
+  if (daysAgo <= 30) return "success";
+  if (daysAgo <= 60) return "warning";
+  return "error";
+}
+
+function lastSyncToneClass(tone: "success" | "warning" | "error"): string {
+  if (tone === "success") return "text-emerald-400 border-emerald-400/30 bg-emerald-400/10";
+  if (tone === "warning") return "text-amber-400 border-amber-400/30 bg-amber-400/10";
+  return "text-rose-400 border-rose-400/30 bg-rose-400/10";
+}
 
 export default function SourcesPage() {
   const [sources, setSources] = useState<SourceOut[]>([]);
@@ -68,15 +104,37 @@ export default function SourcesPage() {
     <div className="flex flex-col gap-4">
       {sources.map((s) => {
         const d = details[s.id];
+        const lastSync = d ? computeLastSync(d.statements) : null;
         return (
           <Card key={s.id} id={`source-${s.id}`} className="scroll-mt-24">
             <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
+              <CardTitle className="text-base flex items-center gap-2 flex-wrap">
                 <span>{s.display_name}</span>
                 <span className="text-xs text-muted-foreground font-normal">
                   {s.issuer} {s.external_id}
                   {s.cardholder_name ? ` · ${s.cardholder_name}` : ""}
                 </span>
+                {lastSync ? (
+                  <span
+                    className={cn(
+                      "ml-auto text-[10px] font-mono font-medium px-2 py-0.5 rounded-full border tabular-nums",
+                      lastSyncToneClass(lastSyncTone(lastSync.daysAgo)),
+                    )}
+                    title={`Most recent statement ends ${lastSync.dateISO}`}
+                  >
+                    last statement: {lastSync.dateISO} (
+                    {lastSync.daysAgo === 0
+                      ? "today"
+                      : lastSync.daysAgo === 1
+                        ? "1 day ago"
+                        : `${lastSync.daysAgo} days ago`}
+                    )
+                  </span>
+                ) : d ? (
+                  <span className="ml-auto text-[10px] font-mono font-medium px-2 py-0.5 rounded-full border border-muted-foreground/30 bg-muted-foreground/10 text-muted-foreground">
+                    no statements ingested
+                  </span>
+                ) : null}
               </CardTitle>
             </CardHeader>
             <CardContent>
