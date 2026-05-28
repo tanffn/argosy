@@ -5,7 +5,7 @@
 | **System name** | Argosy |
 | **Version** | 0.1 (draft for implementation) |
 | **Date** | 2026-05-02 |
-| **Last updated** | 2026-05-28 (morning) — Retirement-companion overhaul Wave 0 landed: foundation infrastructure for the 7-wave / 30-gap overhaul (plan: `docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md`). Wave 0 ships: `argosy/services/retirement/` package + `ValueWithRationale` citation primitive + canonical sources registry (`argosy/data/sources.yaml`, 17 sources) + hybrid-defaults resolver (`argosy/services/retirement/reference.py` with shipped YAML + per-user override + freshness stamping) + umbrella router (`/api/retirement/sources` + `/api/retirement/sources/{id}` + `/api/retirement/reference/{key}`) + 7 UI primitives (`HeroCard`, `ValueWithTooltip`, `DrilldownSection`, `SourcesPanel`, `MethodologyPanel`, `SensitivityPanel`, `AssumptionsStrip`) + `/retirement` page scaffold + Retirement nav tab. Codex zigzag review of the master plan returned 8 blocker-level findings (Wave 2→Wave 3 sequencing break; ITA pension-exemption rates outdated; kupat_gemel ≠ hishtalmut; hishtalmut conditions overbroad; US dividends framing; P(ruin) CI gap; Wave 5 size; multi-goal optimization model) — all integrated into the plan. **Tests: 29/29 retirement-area passing** + 124/124 cashflow + 1,616 baseline = ~1,769 total. See "Retirement-companion overhaul" subsection in the handover for the 7-wave roadmap. **Previous (2026-05-27 evening):** Cashflow projection pivot landed: `/plan` retirement chart pivoted from portfolio-value-over-time to monthly-cashflow with retirement-age slider + bear/typical/bull radio + sliders for mu/sigma/tax/lifestyle-drift/portfolio-override + Monte Carlo view toggle (P10-P90 bands, failure-prob cards). New service `argosy/services/cashflow_projection.py` + route `/api/plan/draft/cashflow-projection` (deterministic) + `/api/plan/draft/cashflow-monte-carlo` (numpy-vectorized n_paths simulation). Codex-tandem review of the math: AMBER 1+2 (annuity nominal/real mismatch) fixed in `16d7282`; severance-folded-into-pensia AMBER documented + accepted as "optimistic bias". Late-session sweep: `2d1f956` shipped the `get_current_monthly_expenses_usd` helper that `ea7bd76` had left uncommitted (a dormant broken import on the legacy `/draft/projection` route); the cleanup commit then deleted the entire legacy route + DTOs + helper since the only caller was gone. No orphaned legacy code. Earlier the same day: Wave 3 observability polish + Opus 4.7 stack calibration (G1 cost breakdown, G2 agents_skipped/failed split, G3 D11 detector, G4 adaptive-thinking telemetry, G5 codex cost, G6 markdown export, D2 false-positive fix). Synth #32 still standing as draft #12 (`synth-2026-05-27-1020-fm-rejected`) waiting on user-driven AGREE/DISAGREE/DEFER. Migration head at 0038. Tests green across the 3 cashflow/wealth-dashboard files (124/124). See "Cashflow projection pivot" subsection below for details. |
+| **Last updated** | 2026-05-28 (evening) — Retirement-companion overhaul: all 30 design gaps closed across Waves 0-7 + Wave 5 wired into the verdict engine + 6 retirement-page bugs fixed via Playwright live audit + end-to-end user guide written + **windfall detector + plan-aware allocator shipped (backend only — UI is the next piece)**. The windfall flow: when the user drops their monthly Leumi TSV, a detector diffs cash + share counts vs the previous TSV; if cash > $25K USD OR > ₪75K NIS appears AND a matching equity sale isn't found within 5%, it's flagged as "unclear" needing user-classification. Otherwise auto-classifies as `rsu_sale` / `stock_sale`. A plan-aware allocator reads the user's existing Current Allocation table (bottom of the TSV) and proposes 60/25/15 long/medium/short horizon splits, filling biggest under-target asset-class gaps with the user's existing-portfolio tickers. Live smoke against the user's actual Mar→May 2026 TSVs detected $84,400 from NVDA-1040 + SGOV-350 sales (classified "unclear" because $243K of sales vs $84K cash delta = most was redeployed into AMD/CSPX/CNDX in-month), 8 allocation rows parsed correctly, long-term split QQQM/SCHG closing the biggest +$132K Growth gap. 15 new tests; total retirement suite 220/220 passing. **UI work pending**: <WindfallBanner> on Home + <WindfallCard> on /retirement + classification-dialogue surface in Advisor chat. **Previous (morning):** Retirement-companion overhaul Wave 0 landed: foundation infrastructure for the 7-wave / 30-gap overhaul (plan: `docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md`). Wave 0 ships: `argosy/services/retirement/` package + `ValueWithRationale` citation primitive + canonical sources registry (`argosy/data/sources.yaml`, 17 sources) + hybrid-defaults resolver (`argosy/services/retirement/reference.py` with shipped YAML + per-user override + freshness stamping) + umbrella router (`/api/retirement/sources` + `/api/retirement/sources/{id}` + `/api/retirement/reference/{key}`) + 7 UI primitives (`HeroCard`, `ValueWithTooltip`, `DrilldownSection`, `SourcesPanel`, `MethodologyPanel`, `SensitivityPanel`, `AssumptionsStrip`) + `/retirement` page scaffold + Retirement nav tab. Codex zigzag review of the master plan returned 8 blocker-level findings (Wave 2→Wave 3 sequencing break; ITA pension-exemption rates outdated; kupat_gemel ≠ hishtalmut; hishtalmut conditions overbroad; US dividends framing; P(ruin) CI gap; Wave 5 size; multi-goal optimization model) — all integrated into the plan. **Tests: 29/29 retirement-area passing** + 124/124 cashflow + 1,616 baseline = ~1,769 total. See "Retirement-companion overhaul" subsection in the handover for the 7-wave roadmap. **Previous (2026-05-27 evening):** Cashflow projection pivot landed: `/plan` retirement chart pivoted from portfolio-value-over-time to monthly-cashflow with retirement-age slider + bear/typical/bull radio + sliders for mu/sigma/tax/lifestyle-drift/portfolio-override + Monte Carlo view toggle (P10-P90 bands, failure-prob cards). New service `argosy/services/cashflow_projection.py` + route `/api/plan/draft/cashflow-projection` (deterministic) + `/api/plan/draft/cashflow-monte-carlo` (numpy-vectorized n_paths simulation). Codex-tandem review of the math: AMBER 1+2 (annuity nominal/real mismatch) fixed in `16d7282`; severance-folded-into-pensia AMBER documented + accepted as "optimistic bias". Late-session sweep: `2d1f956` shipped the `get_current_monthly_expenses_usd` helper that `ea7bd76` had left uncommitted (a dormant broken import on the legacy `/draft/projection` route); the cleanup commit then deleted the entire legacy route + DTOs + helper since the only caller was gone. No orphaned legacy code. Earlier the same day: Wave 3 observability polish + Opus 4.7 stack calibration (G1 cost breakdown, G2 agents_skipped/failed split, G3 D11 detector, G4 adaptive-thinking telemetry, G5 codex cost, G6 markdown export, D2 false-positive fix). Synth #32 still standing as draft #12 (`synth-2026-05-27-1020-fm-rejected`) waiting on user-driven AGREE/DISAGREE/DEFER. Migration head at 0038. Tests green across the 3 cashflow/wealth-dashboard files (124/124). See "Cashflow projection pivot" subsection below for details. |
 | **Status** | Approved for implementation; open questions marked **OPEN** are deferred to resolution during build |
 | **Authors** | Ariel + Claude (collaborative brainstorm) |
 | **Repo location** | `D:\Projects\financial-advisor\` (= `ARGOSY_HOME`) |
@@ -379,6 +379,54 @@ The 2026-05-28 SDD review (Codex + Explore agent + main-agent synthesis) identif
 **Waves 6 + 7 (Balance sheet + Companion UX + LOW #27 cleanup) — SHIPPED 2026-05-28:** `2b552a3` · real estate (equity + 3.5%/yr historical appreciation) + mortgage amortization + partner state + severance split (closes documented "optimistic bias") + insurance gap calculators (life/disability/LTC/Mashlim) + action engine (severity + consequence_score sorting) + replan triggers registry + multi-goal balancer (hard/soft constraints per codex fix) + behavioral guardrails (panic-sell + FOMO checkpoints). Plus LOW #27: deleted 218 lines of duplicate /action-items code in argosy/api/routes/plan.py.
 
 **🎯 ALL 30/30 GAPS CLOSED — 5 BLOCKERs · 10 HIGHs · 10 MEDIUMs · 4 LOWs**
+
+### Windfall flow (added 2026-05-28 evening) — closes User Guide Hole #1
+
+User-flow surfaced during the end-to-end audit: "How do I tell Argosy about a 50K bonus?" The right answer isn't "add an Add Income Event button" — it's "drop your monthly TSV, Argosy notices."
+
+**Trigger:** `update_leumi_tsv.py` produces a new `Family Finances Status - YY MMM.tsv`. Argosy compares to the previous month's TSV.
+
+**Detection rules (per user spec):**
+- Fires when cash delta > $25K USD OR > ₪75K NIS (otherwise ignored as noise)
+- Diffs ALL share counts (Leumi + Schwab + Aborad) to detect sales
+- Auto-classifies as `rsu_sale` (matching NVDA sale) / `stock_sale` (matching non-NVDA sale) when sales total within 5% of cash delta
+- Otherwise marks `unclear` — surfaces a question to the user via the Advisor chat
+- Filters out price-like floats parsed as symbols (e.g. `35.6`, `237.6` from real-estate/pension rows)
+
+**Allocation engine (plan-aware):**
+- Reads the user's existing **Current Allocation** table from the bottom of the TSV (this is the user's plan, already maintained outside Argosy)
+- TSV convention: `delta = target - current`. Positive delta = UNDER target = candidate for new money.
+- Cash is excluded from candidates (windfall is cash; allocating cash to cash is a no-op)
+- Budget split per user spec: 60% long-term / 25% medium-term / 15% short-term
+- Long-term fills biggest under-target gap first; splits >$30K allocations across 2 preferred instruments from the user's existing portfolio (e.g. Growth → QQQM 60% + SCHG 40%)
+- Medium-term + Short-term: placeholders pointing to the agent-fleet integration that ships next (analysts → bull/bear → trader → risk → FM for 3-12mo thesis trades + opportunistic entries from watchlist)
+
+**Backend modules shipped (~1030 LOC across 4 files):**
+- `argosy/services/retirement/windfall_detector.py` — TSV diff + classification
+- `argosy/services/retirement/windfall_allocator.py` — plan-aware ranked proposals
+- `argosy/api/routes/retirement.py` — new `GET /api/retirement/windfall/detect` endpoint
+- `tests/test_retirement_windfall.py` — 15 tests (threshold gate, classification, sign convention, allocation, parsing, end-to-end)
+
+**Live verification** against user's actual `Family Finances Status - 26 Mar.tsv` → `26 May.tsv`:
+```
+WINDFALL: $84,400 (= $81K USD + ₪10K NIS) — classified UNCLEAR
+Sales: NVDA -1040 @ $200 = $208K · SGOV -350 @ $100 = $35K
+Allocation gaps (under target, candidates): Growth +132K · International +67K · Alternative +44K · Dividend +25K
+Plan: LONG $30K→QQQM + $20K→SCHG (Growth) · MED $21K (fleet) · SHORT $13K (opportunistic)
+```
+
+**Two real bugs caught during live smoke:**
+1. Allocator's `_under_target` had backwards sign convention — would have suggested adding to OVER-target classes. Live smoke against real TSV caught it because Cash showed up as the top candidate (Cash is over target IRL). Fixed.
+2. Detector parsed price-like floats from real-estate/pension TSV rows as ticker symbols. Added `_is_real_symbol` filter. Fixed.
+
+**UI work NOT yet done (the next session's job):**
+- `<WindfallBanner>` on Home — auto-shows when `/api/retirement/windfall/detect` returns a non-null event
+- `<WindfallCard>` on `/retirement` — full plan display with per-proposal Accept/Defer buttons
+- Advisor chat focus mode for classification dialogue when `classified_source == "unclear"`
+- Wiring accepted proposals into the existing `action_engine` queue
+- Agent-fleet integration for medium-term + short-term proposals (currently placeholders)
+
+
 
 **Test suite: 175/175 retirement tests passing.**
 
