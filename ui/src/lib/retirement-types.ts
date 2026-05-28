@@ -35,3 +35,28 @@ export interface Source {
 export interface SourcesResponse {
   sources: Record<string, Source>;
 }
+
+export interface MekademBandResponse {
+  fund_id: string;
+  typical: ValueWithRationale;
+  low: ValueWithRationale;
+  high: ValueWithRationale;
+  /** Present when balance_nis query param is supplied. */
+  annuity_monthly_nis_typical?: ValueWithRationale;
+  annuity_monthly_nis_low?: ValueWithRationale;
+  annuity_monthly_nis_high?: ValueWithRationale;
+}
+
+export interface BLStipendResponse {
+  monthly_nis: ValueWithRationale;
+  monthly_nis_low: ValueWithRationale;
+  monthly_nis_high: ValueWithRationale;
+  eligibility_age: ValueWithRationale;
+  contribution_history_factor: ValueWithRationale;
+  spouse_supplement_applied: ValueWithRationale;
+  sensitivity_levers: Array<{
+    name: string;
+    delta_nis_per_mo: number;
+    source_id: string;
+  }>;
+}

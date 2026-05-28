@@ -1,59 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { BituachLeumiCard } from "@/components/retirement/BituachLeumiCard";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
 import { HeroCard } from "@/components/retirement/HeroCard";
+import { MekademBand } from "@/components/retirement/MekademBand";
 import { MethodologyPanel } from "@/components/retirement/MethodologyPanel";
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
-import { ValueWithTooltip } from "@/components/retirement/ValueWithTooltip";
-import { api, type ValueWithRationale } from "@/lib/api";
 
 const USER_ID = "ariel";
 
 /**
- * Retirement companion page — scaffold for the 7-wave overhaul.
- *
- * Wave 0 (current): hero placeholder + drilldown skeleton + sources panel.
- * Later waves populate the real verdict + chart + safety gates + glide path
- * etc.
+ * Retirement companion page — built incrementally across 7 waves.
  *
  * Plan: docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md
+ *
+ * Wave 0: hero scaffold + UI primitives + sources panel
+ * Wave 1 (current): BL stipend card + mekadem variance band
+ * Later waves: safety gates · P(ruin) gate · glide path · tax engine · ...
  */
 export default function RetirementPage() {
-  const [mekadem, setMekadem] = useState<ValueWithRationale | null>(null);
-  const [bl, setBl] = useState<ValueWithRationale | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void api.retirement
-      .reference("mekadem.clal_pensia", USER_ID)
-      .then((d) => {
-        if (!cancelled) setMekadem(d);
-      })
-      .catch(() => {
-        /* placeholder — Wave 0 scaffold tolerates missing data */
-      });
-    void api.retirement
-      .reference("bituach_leumi.single_age_67_base_2026", USER_ID)
-      .then((d) => {
-        if (!cancelled) setBl(d);
-      })
-      .catch(() => {
-        /* placeholder */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   return (
     <div className="container mx-auto px-4 py-6 max-w-5xl space-y-4">
       <HeroCard
@@ -79,37 +50,18 @@ export default function RetirementPage() {
         ]}
       />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            Foundational reference values (Wave 0 smoke test)
-          </CardTitle>
-          <CardDescription>
-            These come from the new hybrid-defaults resolver. Hover over the
-            values to see the source + rationale.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          <div>
-            <span className="text-muted-foreground">Clal mekadem:</span>{" "}
-            {mekadem ? (
-              <ValueWithTooltip data={mekadem} />
-            ) : (
-              <span className="text-muted-foreground">loading…</span>
-            )}
-          </div>
-          <div>
-            <span className="text-muted-foreground">
-              Bituach Leumi old-age stipend (single, age 67):
-            </span>{" "}
-            {bl ? (
-              <ValueWithTooltip data={bl} />
-            ) : (
-              <span className="text-muted-foreground">loading…</span>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      <BituachLeumiCard
+        userId={USER_ID}
+        currentAge={43}
+        contributionHistoryYears={21}
+        spouseEligible={false}
+      />
+
+      <MekademBand
+        userId={USER_ID}
+        fundId="clal_pensia"
+        balanceNis={1_500_000}
+      />
 
       <Card>
         <CardHeader>

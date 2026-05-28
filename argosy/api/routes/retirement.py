@@ -11,7 +11,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from argosy.api.routes.plan import get_db
+from argosy.services.retirement.bituach_leumi import estimate_bl_stipend
 from argosy.services.retirement.citations import as_dict
+from argosy.services.retirement.mekadem import (
+    get_mekadem_for_fund,
+    monthly_annuity_for_band,
+)
 from argosy.services.retirement.reference import ResolveError, resolve
 from argosy.services.retirement.sources import load_sources
 
@@ -76,3 +81,74 @@ def get_reference(
     except ResolveError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return as_dict(v)
+
+
+# Wave 1 — mekadem band + Bituach Leumi stipend
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/mekadem/{fund_id}")
+def get_mekadem_band(
+    fund_id: str,
+    user_id: str,
+    balance_nis: float | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Mekadem variance band for the given Israeli pension fund.
+
+    Returns ``{fund_id, typical, low, high}`` as serialized
+    ValueWithRationale dicts. If ``balance_nis`` is supplied, also returns
+    the corresponding ``annuity_monthly_nis_low/typical/high`` band so the
+    UI can render the band directly on the cashflow chart's annuity line
+    without re-computing.
+    """
+    try:
+        band = get_mekadem_for_fund(
+            fund_id,  # type: ignore[arg-type]
+            user_id=user_id,
+            session=db,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    out: dict = {
+        "fund_id": band.fund_id,
+        "typical": as_dict(band.typical),
+        "low": as_dict(band.low),
+        "high": as_dict(band.high),
+    }
+    if balance_nis is not None and balance_nis > 0:
+        a_low, a_typ, a_high = monthly_annuity_for_band(
+            band, balance_nis=balance_nis,
+        )
+        out["annuity_monthly_nis_low"] = as_dict(a_low)
+        out["annuity_monthly_nis_typical"] = as_dict(a_typ)
+        out["annuity_monthly_nis_high"] = as_dict(a_high)
+    return out
+
+
+@router.get("/bituach-leumi")
+def get_bituach_leumi(
+    user_id: str,
+    current_age: int,
+    contribution_history_years: int,
+    spouse_eligible: bool = False,
+    db: Session = Depends(get_db),
+) -> dict:
+    """BL old-age stipend estimate with low/typical/high bands + sensitivity levers."""
+    est = estimate_bl_stipend(
+        current_age=current_age,
+        contribution_history_years=contribution_history_years,
+        spouse_eligible=spouse_eligible,
+        user_id=user_id,
+        session=db,
+    )
+    return {
+        "monthly_nis": as_dict(est.monthly_nis),
+        "monthly_nis_low": as_dict(est.monthly_nis_low),
+        "monthly_nis_high": as_dict(est.monthly_nis_high),
+        "eligibility_age": as_dict(est.eligibility_age),
+        "contribution_history_factor": as_dict(est.contribution_history_factor),
+        "spouse_supplement_applied": as_dict(est.spouse_supplement_applied),
+        "sensitivity_levers": est.sensitivity_levers,
+    }

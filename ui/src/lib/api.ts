@@ -23,11 +23,15 @@ function apiUrl(path: string): string {
 
 // Re-export retirement primitives so call sites can `import { ValueWithRationale } from "@/lib/api"`.
 export type {
+  BLStipendResponse,
+  MekademBandResponse,
   Source,
   SourcesResponse,
   ValueWithRationale,
 } from "@/lib/retirement-types";
 import type {
+  BLStipendResponse,
+  MekademBandResponse,
   Source,
   SourcesResponse,
   ValueWithRationale,
@@ -629,6 +633,35 @@ export const api = {
       getJSON<ValueWithRationale>(
         `/api/retirement/reference/${encodeURIComponent(key)}?user_id=${encodeURIComponent(userId)}`,
       ),
+    mekadem: (
+      fundId: string,
+      userId: string,
+      balanceNis?: number,
+    ) => {
+      const params = new URLSearchParams({ user_id: userId });
+      if (balanceNis !== undefined) {
+        params.set("balance_nis", String(balanceNis));
+      }
+      return getJSON<MekademBandResponse>(
+        `/api/retirement/mekadem/${encodeURIComponent(fundId)}?${params.toString()}`,
+      );
+    },
+    bituachLeumi: (
+      userId: string,
+      currentAge: number,
+      contributionHistoryYears: number,
+      spouseEligible: boolean = false,
+    ) => {
+      const params = new URLSearchParams({
+        user_id: userId,
+        current_age: String(currentAge),
+        contribution_history_years: String(contributionHistoryYears),
+        spouse_eligible: String(spouseEligible),
+      });
+      return getJSON<BLStipendResponse>(
+        `/api/retirement/bituach-leumi?${params.toString()}`,
+      );
+    },
   },
   portfolioSnapshot: (userId: string) =>
     getJSON<PortfolioSnapshotDTO>(
