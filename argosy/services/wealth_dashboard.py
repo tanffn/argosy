@@ -1278,36 +1278,6 @@ def wealth_dashboard_to_dict(d: WealthDashboard) -> dict[str, Any]:
     return asdict(d)
 
 
-def get_current_monthly_expenses_usd(
-    session: Session, user_id: str
-) -> float | None:
-    """Return current monthly burn in USD from the latest household_budget
-    agent_report, converted via the freshest FX rate available.
-
-    Used by the projection route to power the per-point surplus/shortfall
-    tooltip without forcing the caller to compute the full wealth
-    dashboard. Returns ``None`` when the household_budget report is
-    absent / unparseable, when ``monthly_burn_nis`` is missing, or when
-    the value is non-positive.
-    """
-    report = _latest_household_budget_report(session, user_id)
-    if not report:
-        return None
-    burn_nis = report.get("monthly_burn_nis")
-    try:
-        burn_f = float(burn_nis) if burn_nis is not None else None
-    except (TypeError, ValueError):
-        burn_f = None
-    if burn_f is None or burn_f <= 0:
-        return None
-    snapshot = _latest_snapshot(session, user_id)
-    user_ctx = _load_user_context_yaml(session, user_id)
-    fx_usd_nis, _ = _resolve_fx_usd_nis(snapshot=snapshot, user_ctx=user_ctx)
-    if fx_usd_nis <= 0:
-        return None
-    return round(burn_f / fx_usd_nis, 2)
-
-
 __all__ = [
     "WealthDashboard",
     "RetirementBlock",
@@ -1325,7 +1295,6 @@ __all__ = [
     "Assumptions",
     "compute_wealth_dashboard",
     "wealth_dashboard_to_dict",
-    "get_current_monthly_expenses_usd",
     "years_to_target",
     "project_wealth_curve",
     "compute_current_age",

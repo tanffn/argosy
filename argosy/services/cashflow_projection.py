@@ -323,10 +323,7 @@ def extract_household_state(
     monthly_expenses_nis = _safe_float(budget, "monthly_burn_nis")
 
     # Portfolio value: read total_usd_value_k from the latest snapshot's
-    # totals_json, convert via FX. Matches the existing
-    # get_draft_projection path so the new chart and the old one show
-    # the same "today's value" baseline (until Task 6 retires the old
-    # chart).
+    # totals_json, convert via FX.
     portfolio_value_nis = 0.0
     if snapshot is not None:
         try:
