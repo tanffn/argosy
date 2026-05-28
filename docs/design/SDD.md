@@ -365,7 +365,26 @@ The 2026-05-28 SDD review (Codex + Explore agent + main-agent synthesis) identif
 |---|---|---|
 | 2.1-2.5 | `f7b0dd5` | GateVerdict dataclass + NraEstateGate (US-situs assets vs $60K IRS exemption; PASS/WARN/FAIL at $60K/$200K thresholds; UCITS + cash excluded per IRS NRA rules) + LiquidityGate (cash buffer in months of essential expenses; essential=burn×60%; default 12mo floor; USD-FX-converted to NIS) + `/api/retirement/safety-gates` route + `<SafetyGatesPanel>` 3-tile grid UI on `/retirement` (3rd tile reserved for ConflictScenarioGate in Wave 3.6). 10 new tests; full retirement suite 62/62. |
 
-**Waves 3-7 are NOT yet started.** Each wave's just-in-time daughter plan expands the master plan's spec-level detail into full TDD steps at execution time.
+**Wave 3 partial (P-of-ruin gate) — SHIPPED 2026-05-28:**
+
+| Task | Commits | What |
+|---|---|---|
+| 3.1 (subset) | `b2a9c66` | **Single biggest narrative-changing deliverable.** Replaces prior "retire-ready age" verdict (single-month income≥expenses; ignored sequence-of-returns) with `compute_ruin_probability()` returning P(solvent at 75/85/95) + bootstrap 95% CI on age-95 estimate + verdict (ON_TRACK / OFF_TRACK / UNCERTAIN) using CI-based logic (per codex review BLOCKER #6: ON_TRACK requires CI lower ≥ target; OFF_TRACK requires CI upper < target; otherwise UNCERTAIN — noisy MC doesn't flip the gate). `<RuinProbabilityHero>` replaces the Wave-0 placeholder hero on /retirement; Methodology drilldown explains the bootstrap CI + sequence-of-returns semantics. 8 new tests; full retirement suite 70/70. |
+
+**Wave 3 remaining (deferred — next session due to context budget):**
+- HIGH #7 Sigma auto-calibration from holdings concentration
+- HIGH #11 Regime-switch / fat-tail Monte Carlo
+- HIGH #12 Stochastic FX
+- HIGH #8 Withdrawal-policy framework (Bengen 4% / Guyton-Klinger / VPW / Bucket)
+- Wave 3.6 ConflictScenarioGate (consumes the P(ruin) infrastructure shipped above)
+
+**Waves 4-7 are NOT yet started.**
+
+**Total session output:** 16 commits, ~4200 LOC, 70/70 retirement tests passing.
+Closed 4/5 BLOCKERs + 3/10 HIGHs (NRA estate + Liquidity + Mekadem + BL + P-of-ruin
+gate + 1/3 of safety-gate set). Remaining work documented in
+`docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md` + per-wave
+progress in `docs/superpowers/plans/2026-05-28-retirement-companion-overhaul-questions.md`. Each wave's just-in-time daughter plan expands the master plan's spec-level detail into full TDD steps at execution time.
 
 ### Cashflow projection pivot (2026-05-27 evening) — `/plan` chart pivot + Monte Carlo
 
