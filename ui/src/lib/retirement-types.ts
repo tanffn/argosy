@@ -47,6 +47,19 @@ export interface MekademBandResponse {
   annuity_monthly_nis_high?: ValueWithRationale;
 }
 
+export type Verdict = "ON_TRACK" | "WARN" | "OFF_TRACK" | "UNCERTAIN";
+
+export interface RuinProbabilityResponse {
+  p_solvent_at_75: ValueWithRationale;
+  p_solvent_at_85: ValueWithRationale;
+  p_solvent_at_95: ValueWithRationale;
+  p_solvent_at_95_ci_low: ValueWithRationale;
+  p_solvent_at_95_ci_high: ValueWithRationale;
+  target_p_solvent: ValueWithRationale;
+  verdict: Verdict;
+  suggested_action: ValueWithRationale;
+}
+
 export type GateStatus = "PASS" | "WARN" | "FAIL";
 
 export interface GateVerdict {

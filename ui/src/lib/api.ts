@@ -27,14 +27,17 @@ export type {
   GateStatus,
   GateVerdict,
   MekademBandResponse,
+  RuinProbabilityResponse,
   SafetyGatesResponse,
   Source,
   SourcesResponse,
   ValueWithRationale,
+  Verdict,
 } from "@/lib/retirement-types";
 import type {
   BLStipendResponse,
   MekademBandResponse,
+  RuinProbabilityResponse,
   SafetyGatesResponse,
   Source,
   SourcesResponse,
@@ -654,6 +657,26 @@ export const api = {
       getJSON<SafetyGatesResponse>(
         `/api/retirement/safety-gates?user_id=${encodeURIComponent(userId)}`,
       ),
+    ruinProbability: (
+      userId: string,
+      opts?: {
+        retirementAge?: number;
+        years?: number;
+        targetPSolvent?: number;
+        nPaths?: number;
+        seed?: number;
+      },
+    ) => {
+      const params = new URLSearchParams({ user_id: userId });
+      if (opts?.retirementAge !== undefined) params.set("retirement_age", String(opts.retirementAge));
+      if (opts?.years !== undefined) params.set("years", String(opts.years));
+      if (opts?.targetPSolvent !== undefined) params.set("target_p_solvent", String(opts.targetPSolvent));
+      if (opts?.nPaths !== undefined) params.set("n_paths", String(opts.nPaths));
+      if (opts?.seed !== undefined) params.set("seed", String(opts.seed));
+      return getJSON<RuinProbabilityResponse>(
+        `/api/retirement/projection/ruin-probability?${params.toString()}`,
+      );
+    },
     bituachLeumi: (
       userId: string,
       currentAge: number,

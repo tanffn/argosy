@@ -18,6 +18,7 @@ from argosy.services.retirement.mekadem import (
     monthly_annuity_for_band,
 )
 from argosy.services.retirement.reference import ResolveError, resolve
+from argosy.services.retirement.ruin_probability import compute_ruin_probability
 from argosy.services.retirement.safety_gates import compute_safety_gates
 from argosy.services.retirement.sources import load_sources
 
@@ -126,6 +127,50 @@ def get_mekadem_band(
         out["annuity_monthly_nis_typical"] = as_dict(a_typ)
         out["annuity_monthly_nis_high"] = as_dict(a_high)
     return out
+
+
+# Wave 3 — projection trust layer
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/projection/ruin-probability")
+def get_ruin_probability(
+    user_id: str,
+    retirement_age: float = 49.0,
+    years: int = 40,
+    target_p_solvent: float = 0.90,
+    n_paths: int = 2000,
+    seed: int | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Probability-of-ruin verdict with bootstrap CI.
+
+    Returns the new "retirement readiness" hero verdict: P(solvent at 75/85/95)
+    + 95% CI on the age-95 estimate + categorical verdict (ON_TRACK / OFF_TRACK
+    / UNCERTAIN) + concrete suggested action.
+
+    Replaces the prior single-month "retire-ready" verdict that ignored
+    sequence-of-returns risk.
+    """
+    v = compute_ruin_probability(
+        user_id=user_id,
+        session=db,
+        retirement_age=retirement_age,
+        years=years,
+        target_p_solvent=target_p_solvent,
+        n_paths=n_paths,
+        seed=seed,
+    )
+    return {
+        "p_solvent_at_75": as_dict(v.p_solvent_at_75),
+        "p_solvent_at_85": as_dict(v.p_solvent_at_85),
+        "p_solvent_at_95": as_dict(v.p_solvent_at_95),
+        "p_solvent_at_95_ci_low": as_dict(v.p_solvent_at_95_ci_low),
+        "p_solvent_at_95_ci_high": as_dict(v.p_solvent_at_95_ci_high),
+        "target_p_solvent": as_dict(v.target_p_solvent),
+        "verdict": v.verdict,
+        "suggested_action": as_dict(v.suggested_action),
+    }
 
 
 # Wave 2 — safety gates

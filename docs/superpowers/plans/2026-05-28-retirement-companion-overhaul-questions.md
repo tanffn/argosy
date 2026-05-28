@@ -2,6 +2,26 @@
 
 Surfaced when you return. None block progress — I've defaulted with reasoning.
 
+## Session progress snapshot (2026-05-28)
+
+**Waves SHIPPED (16 commits, ~3500 LOC, 62/62 retirement tests passing):**
+- **Wave 0** (foundation): `ValueWithRationale` primitive + sources registry (17 sources) + hybrid-defaults resolver + `/api/retirement/{sources,reference}` routes + 7 UI primitives (`HeroCard`, `ValueWithTooltip`, `DrilldownSection`, `SourcesPanel`, `MethodologyPanel`, `SensitivityPanel`, `AssumptionsStrip`) + `/retirement` page scaffold + nav tab
+- **Wave 1** (Israeli reference values): Mekadem variance band per fund (Clal/Migdal/Menorah; ±2.5% envelope) + Bituach Leumi stipend module (history-factor scale, spouse supplement, sensitivity levers) + `<MekademBand>` + `<BituachLeumiCard>` UI cards
+- **Wave 2** (Safety gates): NRA estate gate (US-situs vs $60K exemption; FAIL > $200K) + Emergency liquidity gate (default 12-month floor; USD→NIS converted) + `<SafetyGatesPanel>` 3-tile grid
+
+**Wave 3 (Projection trust layer) — IN PROGRESS** at session end. Plan calls for: P(ruin) gate + sigma auto-calibration + regime-switch MC + stochastic FX + withdrawal policy + Wave 3.6 conflict-scenario gate.
+
+**Codex plan review BLOCKERS integrated before any code shipped:**
+- Wave 2→Wave 3 sequencing fix (ConflictScenarioGate → Wave 3.6)
+- ITA pension exemption corrected from "flat 35%" to "rights-fixation 57% in 2025"
+- Kupat_gemel ≠ hishtalmut (split into separate module in Wave 5b)
+- US dividend withholding corrected to foreign-tax-credit interaction
+- P(ruin) n_paths raised 1000→2000 + bootstrap CI + UNCERTAIN status
+- Wave 5 split into 5a/5b/5c
+- Multi-goal optimization spec corrected
+
+---
+
 ## Wave 1 (Israeli reference values)
 - **Q1.1**: Which Israeli pension funds get full mekadem coverage in the shipped YAML?
   - **Default chosen**: Clal + Migdal + Menorah (the three largest; user is at Clal per `clal_pension_*` keys in identity_yaml).

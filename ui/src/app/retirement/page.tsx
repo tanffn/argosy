@@ -8,9 +8,9 @@ import {
 } from "@/components/ui/card";
 import { BituachLeumiCard } from "@/components/retirement/BituachLeumiCard";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
-import { HeroCard } from "@/components/retirement/HeroCard";
 import { MekademBand } from "@/components/retirement/MekademBand";
 import { MethodologyPanel } from "@/components/retirement/MethodologyPanel";
+import { RuinProbabilityHero } from "@/components/retirement/RuinProbabilityHero";
 import { SafetyGatesPanel } from "@/components/retirement/SafetyGatesPanel";
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
 
@@ -28,28 +28,7 @@ const USER_ID = "ariel";
 export default function RetirementPage() {
   return (
     <div className="container mx-auto px-4 py-6 max-w-5xl space-y-4">
-      <HeroCard
-        title="Retirement readiness"
-        status="UNCERTAIN"
-        verdict="Wave 0 scaffold — full verdict ships in Wave 3 (probability-of-ruin gate)."
-        numbers={[
-          {
-            label: "P(solvent at 95)",
-            display: "—",
-            secondary: "Wave 3",
-          },
-          {
-            label: "Retire-ready age",
-            display: "—",
-            secondary: "Wave 3",
-          },
-          {
-            label: "Safety gates",
-            display: "—",
-            secondary: "Wave 2",
-          },
-        ]}
-      />
+      <RuinProbabilityHero userId={USER_ID} retirementAge={49} targetPSolvent={0.9} />
 
       <SafetyGatesPanel userId={USER_ID} />
 
