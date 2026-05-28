@@ -3,6 +3,7 @@
 import {
   BookOpen,
   Bot,
+  ChevronDown,
   ClipboardList,
   FileText,
   Flag,
@@ -18,7 +19,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import type { ComponentType, SVGProps } from "react";
+import { useEffect, useRef, useState, type ComponentType, type SVGProps } from "react";
 
 import { LiveClock } from "@/components/live-clock";
 import { cn } from "@/lib/utils";
@@ -29,13 +30,10 @@ interface NavTab {
   Icon: ComponentType<SVGProps<SVGSVGElement>>;
 }
 
-// Two logical groups, separated visually so the nav reads as
-// "here's what I touch daily | here's what I check when I need to."
-// URLs stay flat under / -- the grouping is purely visual. Tab order
-// inside PRIMARY mirrors the typical session flow (Home glance ->
-// Advisor for data entry -> Portfolio/Expenses to read state -> Plan
-// for the draft -> Retirement for the verdict -> Decide -> Proposals
-// to approve). INSPECTION is occasional-use surfaces.
+// PRIMARY tabs are visible at all times -- daily-to-monthly use,
+// ordered by typical session flow (Home glance -> Advisor for data
+// entry -> Portfolio/Expenses to read state -> Plan for the draft
+// -> Retirement for the verdict -> Decide -> Proposals to approve).
 const PRIMARY_TABS: NavTab[] = [
   { href: "/", label: "Home", Icon: Home },
   { href: "/advisor", label: "Advisor", Icon: MessageCircle },
@@ -47,6 +45,9 @@ const PRIMARY_TABS: NavTab[] = [
   { href: "/proposals", label: "Proposals", Icon: Inbox },
 ];
 
+// INSPECTION tabs live behind a "More" dropdown -- occasional use
+// (monthly check-in / debugging / reference / setup-only) so cluttering
+// the top row with them costs more than it saves.
 const INSPECTION_TABS: NavTab[] = [
   { href: "/argonaut", label: "Argonaut", Icon: Bot },
   { href: "/agents", label: "Agents", Icon: Users },
@@ -77,14 +78,7 @@ export function NavBar() {
           {PRIMARY_TABS.map((t) => (
             <NavLink key={t.href} tab={t} active={pathname === t.href} />
           ))}
-          <li
-            role="separator"
-            aria-hidden
-            className="h-5 w-px bg-muted-foreground/40 mx-3 self-center"
-          />
-          {INSPECTION_TABS.map((t) => (
-            <NavLink key={t.href} tab={t} active={pathname === t.href} />
-          ))}
+          <MoreMenu tabs={INSPECTION_TABS} pathname={pathname} />
         </ul>
         <div className="ml-auto">
           <LiveClock seconds={false} />
@@ -114,6 +108,99 @@ function NavLink({ tab, active }: { tab: NavTab; active: boolean }) {
         />
         {tab.label}
       </Link>
+    </li>
+  );
+}
+
+interface MoreMenuProps {
+  tabs: NavTab[];
+  pathname: string;
+}
+
+function MoreMenu({ tabs, pathname }: MoreMenuProps) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLLIElement | null>(null);
+
+  // One of the inspection tabs is currently routed -- pulse the More
+  // button as "active" so the user knows where they are without
+  // having to open the menu.
+  const childActive = tabs.some((t) => t.href === pathname);
+
+  // Close on outside-click. Mousedown (not click) so a click on a menu
+  // item still routes correctly before the close fires.
+  useEffect(() => {
+    if (!open) return;
+    function handleMouseDown(ev: MouseEvent) {
+      if (!wrapperRef.current) return;
+      if (!wrapperRef.current.contains(ev.target as Node)) setOpen(false);
+    }
+    function handleKey(ev: KeyboardEvent) {
+      if (ev.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", handleMouseDown);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [open]);
+
+  return (
+    <li ref={wrapperRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={cn(
+          "px-3 py-1.5 rounded-md text-sm transition-colors relative inline-flex items-center gap-1.5",
+          childActive
+            ? "bg-secondary text-foreground border-b-2 border-primary -mb-[2px]"
+            : "hover:bg-secondary/60 text-muted-foreground",
+        )}
+      >
+        <Settings className="h-3.5 w-3.5" aria-hidden suppressHydrationWarning />
+        More
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 transition-transform",
+            open ? "rotate-180" : "",
+          )}
+          aria-hidden
+        />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute left-0 top-full mt-1 min-w-[180px] rounded-md border border-border bg-background/95 backdrop-blur shadow-md py-1 z-20"
+        >
+          {tabs.map((t) => {
+            const Icon = t.Icon;
+            const active = pathname === t.href;
+            return (
+              <Link
+                key={t.href}
+                href={t.href}
+                role="menuitem"
+                onClick={() => setOpen(false)}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 text-sm transition-colors",
+                  active
+                    ? "bg-secondary text-foreground"
+                    : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground",
+                )}
+              >
+                <Icon
+                  className="h-3.5 w-3.5"
+                  aria-hidden
+                  suppressHydrationWarning
+                />
+                {t.label}
+              </Link>
+            );
+          })}
+        </div>
+      ) : null}
     </li>
   );
 }

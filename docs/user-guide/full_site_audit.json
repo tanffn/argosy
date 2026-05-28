@@ -5,10 +5,11 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 22,
+    "button_count": 23,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "May 27, 09:54:54 AM\ndone\n24 agents\n$3.6106\n\u2014\nsynth-32",
       "May 27, 06:59:02 AM\ndone\n20 agents\n$3.6133\n\u2014\nsynth-31",
       "May 26, 11:12:04 PM\ndone\n22 agents\n$3.5922\n\u2014\nsynth-30",
@@ -21,8 +22,7 @@
       "May 25, 10:15:51 PM\ndone\n22 agents\n$2.7420\n\u2014\nsynth-19",
       "May 25, 09:36:57 PM\ndone\n16 agents\n$1.4369\n\u2014\nsynth-18",
       "May 25, 08:46:42 PM\ndone\n23 agents\n$3.2580\n\u2014\nsynth-16",
-      "May 25, 08:04:32 PM\ndone\n7 agents\n$0.9968\n\u2014\nsynth-15",
-      "May 25, 05:48:53 PM\ndone\n17 agents\n$1.8198\n\u2014\nsynth-13"
+      "May 25, 08:04:32 PM\ndone\n7 agents\n$0.9968\n\u2014\nsynth-15"
     ],
     "console_errors": [],
     "console_warnings": [
@@ -59,10 +59,11 @@
     "input_count": 1,
     "textarea_count": 1,
     "file_input_count": 1,
-    "button_count": 84,
+    "button_count": 85,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Review now",
       "Re-distill",
       "collapse",
@@ -79,8 +80,7 @@
       "Primary residence (country)",
       "Employment status (employed / self-employed / retired)",
       "Your employer",
-      "Your gross annual comp",
-      "Spouse gross annual comp"
+      "Your gross annual comp"
     ],
     "console_errors": [],
     "console_warnings": [
@@ -97,10 +97,11 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 7,
+    "button_count": 8,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Export plan as markdown",
       "ALL (78)",
       "SELL (5)",
@@ -118,10 +119,11 @@
     "input_count": 1,
     "textarea_count": 0,
     "file_input_count": 1,
-    "button_count": 6,
+    "button_count": 7,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Per currency",
       "NIS-converted",
       "Trailing 12",
@@ -171,10 +173,11 @@
     "input_count": 16,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 80,
+    "button_count": 81,
     "select_count": 2,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Export plan as markdown",
       "Run synthesis",
       "Re-critique now",
@@ -193,8 +196,7 @@
       "Defer",
       "Disagree",
       "Show original Fund Manager wording",
-      "Discuss with advisor",
-      "Discuss with Macro"
+      "Discuss with advisor"
     ],
     "console_errors": [],
     "console_warnings": [
@@ -211,10 +213,11 @@
     "input_count": 6,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 30,
+    "button_count": 31,
     "select_count": 1,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Accept",
       "Defer",
       "Accept",
@@ -233,8 +236,7 @@
       "Methodology",
       "Methodology",
       "Methodology",
-      "Compute",
-      "Methodology"
+      "Compute"
     ],
     "console_errors": [],
     "console_warnings": [],
@@ -246,10 +248,11 @@
     "input_count": 1,
     "textarea_count": 1,
     "file_input_count": 0,
-    "button_count": 4,
+    "button_count": 5,
     "select_count": 2,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Add ticker",
       "Run decisions (1)"
     ],
@@ -263,10 +266,12 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 1,
+    "button_count": 2,
     "select_count": 1,
     "form_count": 0,
-    "buttons_seen": [],
+    "buttons_seen": [
+      "More"
+    ],
     "console_errors": [],
     "console_warnings": [],
     "failed_requests": []
@@ -277,10 +282,11 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 6,
+    "button_count": 7,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Force snapshot",
       "Refresh",
       "paper",
@@ -302,10 +308,11 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 2,
+    "button_count": 3,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Refresh"
     ],
     "console_errors": [],
@@ -318,10 +325,11 @@
     "input_count": 1,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 4,
+    "button_count": 5,
     "select_count": 2,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Refresh",
       "Prev",
       "Next"
@@ -336,10 +344,11 @@
     "input_count": 4,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 2,
+    "button_count": 3,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Refresh"
     ],
     "console_errors": [],
@@ -352,10 +361,12 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 1,
+    "button_count": 2,
     "select_count": 0,
     "form_count": 0,
-    "buttons_seen": [],
+    "buttons_seen": [
+      "More"
+    ],
     "console_errors": [],
     "console_warnings": [],
     "failed_requests": []
@@ -366,10 +377,11 @@
     "input_count": 0,
     "textarea_count": 1,
     "file_input_count": 0,
-    "button_count": 3,
+    "button_count": 4,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "Reload",
       "Save"
     ],
@@ -383,10 +395,11 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 6,
+    "button_count": 7,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "ALL (78)",
       "SELL (5)",
       "TRIM (1)",
@@ -403,10 +416,11 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 13,
+    "button_count": 14,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
+      "More",
       "fund_manager\nclaude-opus-4-7\n$0.2909",
       "plan_synthesizer\nclaude-opus-4-7\n$1.1580",
       "risk_facilitator\nMEDIUM\nclaude-opus-4-7\n$0.0797",
@@ -429,10 +443,12 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 1,
+    "button_count": 2,
     "select_count": 0,
     "form_count": 0,
-    "buttons_seen": [],
+    "buttons_seen": [
+      "More"
+    ],
     "console_errors": [],
     "console_warnings": [],
     "failed_requests": []
@@ -443,10 +459,12 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 22,
+    "button_count": 23,
     "select_count": 0,
     "form_count": 0,
-    "buttons_seen": [],
+    "buttons_seen": [
+      "More"
+    ],
     "console_errors": [],
     "console_warnings": [],
     "failed_requests": []
@@ -457,10 +475,11 @@
     "input_count": 2,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 2,
+    "button_count": 3,
     "select_count": 0,
     "form_count": 1,
     "buttons_seen": [
+      "More",
       "Continue"
     ],
     "console_errors": [],
