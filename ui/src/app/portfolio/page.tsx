@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
@@ -17,9 +18,23 @@ import {
   api,
   type PortfolioPosition,
   type PortfolioSnapshotDTO,
+  type PositionThesisDTO,
 } from "@/lib/api";
 
 const USER_ID = "ariel";
+
+// Hold/Buy/Sell column on per-account tables (2026-05-29). Verdict
+// comes from the per-position thesis on the current accepted plan
+// draft. Tones picked so the most-frequent verdicts (HOLD on most
+// positions) read as neutral; only BUY/ADD (green) and TRIM/SELL
+// (rose) draw the eye.
+const VERDICT_CLASS: Record<PositionThesisDTO["verdict"], string> = {
+  HOLD: "text-muted-foreground border-border/40 bg-secondary/40",
+  BUY: "text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
+  ADD: "text-emerald-400 border-emerald-400/40 bg-emerald-400/10",
+  TRIM: "text-amber-400 border-amber-400/40 bg-amber-400/10",
+  SELL: "text-rose-400 border-rose-400/40 bg-rose-400/10",
+};
 
 interface AccountGroup {
   location: string;
@@ -46,6 +61,12 @@ export default function PortfolioPage() {
   const [snap, setSnap] = useState<PortfolioSnapshotDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Per-position thesis cache for the Verdict column on per-account
+  // tables. Fetched once on mount; null when the plan-draft endpoint
+  // has nothing for the user (fresh install / 404 from upstream).
+  const [thesisByTicker, setThesisByTicker] = useState<
+    Record<string, PositionThesisDTO>
+  >({});
 
   useEffect(() => {
     api
@@ -53,6 +74,21 @@ export default function PortfolioPage() {
       .then((data) => setSnap(data))
       .catch((e: unknown) => setError(String(e)))
       .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    // Fail soft: a 404 (no current accepted plan) just means the
+    // Verdict column shows "—" for every row; not an error state.
+    api
+      .positionTheses(USER_ID)
+      .then((rows) => {
+        const map: Record<string, PositionThesisDTO> = {};
+        for (const r of rows) map[r.ticker] = r;
+        setThesisByTicker(map);
+      })
+      .catch(() => {
+        // swallow
+      });
   }, []);
 
   const groups = useMemo(() => groupByAccount(snap), [snap]);
@@ -144,27 +180,47 @@ export default function PortfolioPage() {
                   <th className="py-2 text-right">Shares</th>
                   <th className="py-2 text-right">Price</th>
                   <th className="py-2 text-right">Value (K USD)</th>
+                  <th className="py-2 text-right">Verdict</th>
                 </tr>
               </thead>
               <tbody>
-                {g.positions.map((p, i) => (
-                  <tr
-                    key={`${p.location}-${p.symbol || p.details}-${i}`}
-                    className="border-b border-border/40"
-                  >
-                    <td className="py-1.5">{p.symbol || p.details || "—"}</td>
-                    <td className="py-1.5 text-muted-foreground">{p.asset_type}</td>
-                    <td className="py-1.5 text-right">
-                      {p.shares !== null ? p.shares.toLocaleString() : "—"}
-                    </td>
-                    <td className="py-1.5 text-right">
-                      {p.current_price !== null ? p.current_price.toFixed(2) : "—"}
-                    </td>
-                    <td className="py-1.5 text-right">
-                      {p.usd_value_k !== null ? p.usd_value_k.toLocaleString() : "—"}
-                    </td>
-                  </tr>
-                ))}
+                {g.positions.map((p, i) => {
+                  const t = (p.symbol || "").toUpperCase();
+                  const thesis = t ? thesisByTicker[t] : undefined;
+                  return (
+                    <tr
+                      key={`${p.location}-${p.symbol || p.details}-${i}`}
+                      className="border-b border-border/40"
+                    >
+                      <td className="py-1.5">{p.symbol || p.details || "—"}</td>
+                      <td className="py-1.5 text-muted-foreground">{p.asset_type}</td>
+                      <td className="py-1.5 text-right">
+                        {p.shares !== null ? p.shares.toLocaleString() : "—"}
+                      </td>
+                      <td className="py-1.5 text-right">
+                        {p.current_price !== null ? p.current_price.toFixed(2) : "—"}
+                      </td>
+                      <td className="py-1.5 text-right">
+                        {p.usd_value_k !== null ? p.usd_value_k.toLocaleString() : "—"}
+                      </td>
+                      <td className="py-1.5 text-right">
+                        {thesis ? (
+                          <Link
+                            href="/positions"
+                            title={
+                              `Conviction: ${thesis.conviction} — ${thesis.reasoning_md.slice(0, 200)}`
+                            }
+                            className={`inline-block px-2 py-0.5 rounded border text-[10px] font-medium tabular-nums hover:opacity-80 transition-opacity ${VERDICT_CLASS[thesis.verdict]}`}
+                          >
+                            {thesis.verdict}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground/60">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </CardContent>
