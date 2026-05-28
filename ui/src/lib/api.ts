@@ -1116,6 +1116,37 @@ export const api = {
     apiUrl(
       `/api/files/${id}/content?user_id=${encodeURIComponent(userId)}`,
     ),
+  // Generic catalog upload from the /files tile. Closes user-guide
+  // Hole #6 ("/files is read-only despite the name"). Routes through
+  // the canonical catalog_upload funnel (SDD section 17.1) -- same
+  // backend path the Advisor Attach button + /expenses upload tile
+  // use, just stamped source=manual_upload so the catalog row reflects
+  // the entry point.
+  uploadFile: async (
+    userId: string,
+    file: File,
+    kind: string = "other",
+  ): Promise<UserFileItem> => {
+    const fd = new FormData();
+    fd.append("user_id", userId);
+    fd.append("kind", kind);
+    fd.append("file", file, file.name);
+    const res = await fetch(apiUrl("/api/files/upload"), {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j.detail) detail = j.detail;
+      } catch {
+        // non-JSON body
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as UserFileItem;
+  },
   getDecisionReplay: (decisionRunId: number, userId: string) =>
     getJSON<ReplayResponse>(
       `/api/decisions/${decisionRunId}/replay?user_id=${encodeURIComponent(userId)}`,

@@ -7,13 +7,14 @@
  * will dissolve this — see SDD "fetch-on-mount" note.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FileText,
   Image as ImageIcon,
   FileSpreadsheet,
   FileCode2,
   File as FileIcon,
+  Upload,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,16 @@ const SOURCE_OPTIONS = [
   { value: "intake_upload", label: "Intake plan upload" },
   { value: "intake_file_to_text", label: "Intake file conversion" },
   { value: "cost_basis_import", label: "Cost-basis CSV" },
+  { value: "manual_upload", label: "Manual upload (Files tile)" },
+  { value: "expense_statement", label: "Expense statement" },
+];
+
+const UPLOAD_KINDS = [
+  { value: "other", label: "Other (default)" },
+  { value: "text", label: "Text" },
+  { value: "image", label: "Image" },
+  { value: "plan_markdown", label: "Plan markdown" },
+  { value: "broker_csv", label: "Broker CSV" },
 ];
 
 function KindIcon({ kind }: { kind: string }) {
@@ -126,6 +137,8 @@ export default function FilesPage() {
           back to the decision or plan that consumed it.
         </p>
       </header>
+
+      <UploadTile onUploaded={refresh} />
 
       <Card>
         <CardHeader>
@@ -300,5 +313,142 @@ export default function FilesPage() {
         </div>
       )}
     </main>
+  );
+}
+
+interface UploadTileProps {
+  onUploaded: () => void;
+}
+
+function UploadTile({ onUploaded }: UploadTileProps) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [kind, setKind] = useState<string>("other");
+  const [lastUploaded, setLastUploaded] = useState<UserFileItem | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const uploadFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      setBusy(true);
+      setUploadError(null);
+      try {
+        // One-at-a-time so each catalog row gets a clean per-file
+        // record. Multi-file batch wasn't worth the API surface for
+        // the manual-upload use case.
+        let last: UserFileItem | null = null;
+        for (const f of files) {
+          last = await api.uploadFile("ariel", f, kind);
+        }
+        setLastUploaded(last);
+        onUploaded();
+      } catch (e) {
+        setUploadError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [kind, onUploaded],
+  );
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Upload className="h-4 w-4" aria-hidden suppressHydrationWarning />
+            Upload to catalog
+          </CardTitle>
+          <label className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">kind:</span>
+            <select
+              className="bg-background border border-border rounded-md px-2 py-1 text-xs font-mono"
+              value={kind}
+              onChange={(e) => setKind(e.target.value)}
+              disabled={busy}
+            >
+              {UPLOAD_KINDS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <CardDescription>
+          Drop a file or click to pick. Routes through{" "}
+          <code className="font-mono">catalog_upload</code> (SDD &sect;17.1) —
+          same backend as the Advisor chat Attach button. Cataloged here,
+          downstream agents (intake / plan-distill / categorizer) can pick
+          it up depending on kind.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={() => inputRef.current?.click()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
+          }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragActive(true);
+          }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragActive(false);
+            void uploadFiles(Array.from(e.dataTransfer.files));
+          }}
+          className={`rounded-md border-2 border-dashed px-4 py-5 text-center cursor-pointer transition-colors ${
+            dragActive
+              ? "border-info bg-info/5"
+              : "border-border bg-secondary/30 hover:border-muted-foreground/50"
+          }`}
+          aria-label="Drop file here, or click to pick"
+        >
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []);
+              if (e.target.value) e.target.value = "";
+              void uploadFiles(files);
+            }}
+            disabled={busy}
+          />
+          <div className="font-mono text-sm">
+            {busy ? (
+              <>Uploading&hellip;</>
+            ) : dragActive ? (
+              <>Drop to upload</>
+            ) : (
+              <>
+                Drop a file, or{" "}
+                <span className="text-info underline-offset-2 hover:underline">
+                  click to pick
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+        {uploadError ? (
+          <div className="mt-3 text-sm text-rose-400 font-mono">
+            Upload failed: {uploadError}
+          </div>
+        ) : null}
+        {lastUploaded ? (
+          <div className="mt-3 text-[11px] font-mono text-emerald-400">
+            ✓ Uploaded <span className="font-semibold">{lastUploaded.original_name}</span>
+            {" "}({lastUploaded.kind}, {formatSize(lastUploaded.size_bytes)})
+            — catalog row #{lastUploaded.id}.
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }

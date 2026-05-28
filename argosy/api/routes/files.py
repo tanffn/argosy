@@ -3,8 +3,9 @@
 Endpoints:
   - GET  /api/files               — list catalog rows for a user, with filters
   - GET  /api/files/{id}/content  — stream the bytes of a single file
+  - POST /api/files/upload        — generic catalog upload (NEW, 2026-05-29)
 
-Both endpoints respect the ``user_id`` ACL: a file is only visible to the
+All endpoints respect the ``user_id`` ACL: a file is only visible to the
 user who owns it. Soft-deleted rows are excluded by default; pass
 ``?include_deleted=true`` to opt in.
 """
@@ -14,12 +15,13 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import desc, func, select
 
 from argosy.logging import get_logger
+from argosy.services.file_catalog import catalog_upload
 from argosy.state import db as db_mod
 from argosy.state.models import UserFile
 
@@ -118,6 +120,46 @@ async def list_files(
         limit=limit,
         offset=offset,
     )
+
+
+@router.post("/upload", response_model=UserFileItem)
+async def upload_file(
+    file: UploadFile = File(...),
+    user_id: str = Form("ariel"),
+    kind: str = Form("other"),
+) -> UserFileItem:
+    """Generic catalog upload from the /files UI tile.
+
+    Closes user-guide Hole #6 ("/files is read-only despite the name").
+    Routes through the canonical ``catalog_upload`` funnel (SDD §17.1),
+    same backend path the Advisor chat Attach button + the /expenses
+    upload tile use. Source is stamped ``manual_upload`` so the row's
+    provenance shows it came from the /files surface (not chat, not a
+    statement-ingest pipeline).
+
+    Allowed ``kind`` values: text | image | plan_markdown | broker_csv
+    | other. UI defaults to "other" -- the user can pick a more
+    specific kind via the UI, otherwise everything lands under "other".
+    """
+    contents = await file.read()
+    user_file = await catalog_upload(
+        user_id=user_id,
+        raw_bytes=contents,
+        original_name=file.filename or "unnamed",
+        mime_type=file.content_type or "application/octet-stream",
+        kind=kind,
+        source="manual_upload",
+    )
+    # catalog_upload returns a UserFileDTO -- reshape into the catalog
+    # row item the GET list endpoint already serves so the UI gets a
+    # consistent shape across list + upload paths.
+    async with db_mod.get_session() as session:
+        row = (
+            await session.execute(
+                select(UserFile).where(UserFile.id == user_file.id)
+            )
+        ).scalar_one()
+    return _to_item(row)
 
 
 @router.get("/{file_id}/content")
