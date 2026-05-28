@@ -132,8 +132,7 @@
   <h2>End-to-end flows</h2>
   <ol>
     <li><a href="#flow-firstrun">First-time setup</a></li>
-    <li><a href="#flow-windfall">Windfall (auto-detected)</a></li>
-    <li><a href="#flow-statement">Monthly bank statement</a></li>
+    <li><a href="#flow-monthly">Monthly cadence (both drops)</a></li>
     <li><a href="#flow-cc">Credit card / labels</a></li>
     <li><a href="#flow-decision">Plan → Retirement loop</a></li>
   </ol>
@@ -232,7 +231,13 @@
 
 <div class="callout">
   <div class="callout-title">Tl;dr</div>
-  <strong><span class="nav-card">/advisor</span> chat is the universal portal</strong> for everything — bank statements, credit-card PDFs, screenshots, news, "I just got a bonus." Free-form text and the Attach button both flow through the same backend funnel (<code>catalog_upload</code>, SDD §17.1). One shortcut: <span class="nav-card">/expenses</span> ships a dedicated drag-drop tile for batch bank-statement ingest (same backend path, more convenient when you have 6 PDFs in a row). <span class="nav-card">/files</span> remains read-only — it's a catalog viewer, not an upload portal.
+  <strong>Three upload tiles + one universal chat</strong>, all flowing through the same backend funnel (<code>catalog_upload</code>, SDD §17.1):
+  <ul>
+    <li><span class="nav-card">/expenses</span> → monthly bank statements (Leumi, Schwab, Discount, Cal, Max — PDF/CSV/XLS).</li>
+    <li><span class="nav-card">/portfolio</span> → monthly portfolio-status snapshot (the Family Finances Status TSV; XLS upload still pending).</li>
+    <li><span class="nav-card">/files</span> → anything else that should land in the catalog (payslip, tax letter, screenshots).</li>
+    <li><span class="nav-card">/advisor</span> chat → free-form text + Attach for the long-tail (a quote, a news story, "I'm switching from Migdal to Clal"). Use this when none of the three structured tiles fit.</li>
+  </ul>
 </div>
 
 <figure>
@@ -304,107 +309,92 @@
 </section>
 
 <!-- ============================================================ -->
-<section id="flow-windfall">
-<h2>5. End-to-end flow: Windfall (detected from the monthly portfolio snapshot)</h2>
+<section id="flow-monthly">
+<h2>5. End-to-end flow: Monthly cadence — drop both halves</h2>
 
-<div class="callout ok">
-  <div class="callout-title">By design — Argosy notices the windfall, you don't classify it</div>
-  Windfall is a <em>derived signal</em>, not a thing you tell Argosy about. The user action is the routine monthly portfolio snapshot upload (§11 walkthrough — drop the <code>Family Finances Status - YY MMM.tsv</code> on <span class="nav-card">/portfolio</span>, same way you drop bank statements on <span class="nav-card">/expenses</span>). The windfall <em>detection</em> fires automatically as a side effect when the cash delta between consecutive snapshots crosses the threshold. So there's no "+ Add income event" or "I had a bonus" button — that classification is what the detector + the (forthcoming) Advisor focus-mode dialogue handle.
-</div>
+<p>The recurring monthly workflow is two drops, in any order. That's it. Everything downstream — categorisation, snapshot persistence, windfall detection, replan triggers — fires automatically.</p>
 
-<div class="flow">
-  <div class="flow-step">
-    <div class="step-num">STEP 1</div>
-    <div class="step-title">Drop the latest <code>Family Finances Status - YY MMM.tsv</code> in your Portfolio/Resources folder</div>
-    <div class="step-body">Same place you've always dropped them. Path resolves from <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code> (default <code>D:/Google Drive/Family/Finances/Portfolio/Resources</code>). You don't open the UI yet.</div>
-  </div>
-  <div class="flow-step">
-    <div class="step-num">STEP 2</div>
-    <div class="step-title">Backend detector fires automatically</div>
-    <div class="step-body"><code>argosy/services/retirement/windfall_detector.py</code> diffs the two most-recent TSVs. Fires when the cash delta crosses <strong>$25K USD</strong> or <strong>₪75K NIS</strong>. The classifier then matches equity sales within the same month to the cash delta (5% tolerance) and tags the source as <span class="nav-card">rsu_sale</span>, <span class="nav-card">stock_sale</span>, or <span class="nav-card">unclear</span>.</div>
-  </div>
-  <div class="flow-step">
-    <div class="step-num">STEP 3</div>
-    <div class="step-title">Open <span class="nav-card">/</span> — banner is already there</div>
-    <div class="step-body">Home renders a windfall banner near the top with the cash delta, classification badge, and matching-sales summary (e.g. "NVDA -1040 + SGOV -350"). Tone is amber when classification is <code>unclear</code> (needs your input), neutral when Argosy resolved it.</div>
-  </div>
-  <div class="flow-step">
-    <div class="step-num">STEP 4</div>
-    <div class="step-title">Click <strong>See allocation plan →</strong></div>
-    <div class="step-body">Deep-links to <span class="nav-card">/retirement#windfall</span>. The full <code>WindfallCard</code> sits at the top of the page: hero verdict + the <em>current vs plan target</em> allocation table (one row per asset class in your TSV — typically 7-9) + three horizon columns (long / medium / short) with proposed instruments and dollar amounts.</div>
-  </div>
-  <div class="flow-step">
-    <div class="step-num">STEP 5</div>
-    <div class="step-title">Review the proposed split (60% long / 25% medium / 15% short)</div>
-    <div class="step-body">Long-term proposals are deterministic: the allocator picks tickers you already hold to close the largest under-target plan gaps. The rendered rationale per proposal reads: <em>"Closes the &lt;asset class&gt; plan-target gap ($&lt;N&gt;K under target). Preferred instrument: &lt;ticker&gt; (already in your portfolio)."</em> Medium and short horizons render placeholder rows pending the agent-fleet synthesis hookup.</div>
-  </div>
-  <div class="flow-step">
-    <div class="step-num">STEP 6</div>
-    <div class="step-title">Accept / Defer per proposal</div>
-    <div class="step-body">Buttons render on every proposal in every horizon column (long / medium / short). <strong>They're disabled right now</strong> — wiring through the <code>action_engine</code> (so an accepted proposal becomes a <code>PrioritizedAction</code> with a due date) is the next chunk of work. The card and the banner are read-only this round.</div>
-  </div>
-</div>
-
-<div class="callout warn">
-  <div class="callout-title">Still open — Advisor focus mode for "unclear" classifications</div>
-  When the classifier tags a windfall as <code>unclear</code> (most-likely cause: a chunk of proceeds was redeployed inside the same month, so equity-sales total doesn't match cash delta within 5%), the banner currently just links to the retirement card. The plan calls for a deep-link into <code>/advisor?focus=windfall_&lt;id&gt;</code> that opens the chat with the event context pre-rendered and uses <code>intake_extractor</code> to classify your reply. That part hasn't shipped yet — see the resume note at <code>docs/superpowers/plans/2026-05-28-windfall-flow-resume.md</code>.
-</div>
-
-<div class="callout warn">
-  <div class="callout-title">Open — No "verdict re-computed" confirmation</div>
-  When a windfall is detected, Home banner appears and <span class="nav-card">/retirement</span> shows the card, but the <code>RuinProbabilityHero</code> at the top of <span class="nav-card">/retirement</span> doesn't show "Last re-computed at 14:32 (triggered by: windfall_detect)". Without that stamp the user can't tell whether the verdict reflects the new cash or the snapshot before it.<br>
-  <strong>Suggested fix:</strong> stamp the hero with last-compute timestamp + trigger cause.
-</div>
-</section>
-
-<!-- ============================================================ -->
-<section id="flow-statement">
-<h2>6. End-to-end flow: Monthly bank statement update</h2>
+<h3>Half A — Bank statements → <span class="nav-card">/expenses</span></h3>
 
 <figure>
-  <img src="site-tour/expenses-top.png" alt="Expenses page">
-  <figcaption><strong>Expenses tab</strong> — top of page. Spent ₪277K/year, income ₪624K, refunds ₪10.8K, avg/mo ₪23K. By category: Mortgage 12.8% → Groceries 9.9% → Hotels 9.0% → Vacation 7.5%. <strong>No upload widget on this page.</strong></figcaption>
+  <img src="site-tour/expenses-top.png" alt="Expenses upload tile">
+  <figcaption><strong>/expenses top</strong> — the <code>&lt;UploadStatementsCard&gt;</code> sits above the dashboard. Multi-file drag-drop; per-file PARSED / FAILED outcomes render inline.</figcaption>
 </figure>
 
 <div class="flow">
   <div class="flow-step">
-    <div class="step-num">STEP 1</div>
-    <div class="step-title">Get your monthly PDFs</div>
-    <div class="step-body">Leumi NIS checking, Leumi USD, Discount Mastercard, Cal, Schwab, Max — any of the supported issuers.</div>
+    <div class="step-num">STEP A1</div>
+    <div class="step-title">Get your monthly statement PDFs</div>
+    <div class="step-body">Leumi NIS checking, Leumi USD, Discount Mastercard, Cal, Schwab, Max — any of the supported issuers. PDF, CSV, XLS, XLSX, or TSV all work.</div>
   </div>
   <div class="flow-step">
-    <div class="step-num">STEP 2</div>
-    <div class="step-title">Open <span class="nav-card">/expenses</span> and use the upload tile at the top</div>
-    <div class="step-body">The <code>&lt;UploadStatementsCard&gt;</code> at the top of <span class="nav-card">/expenses</span> takes multi-file drag-drop. Drop one or more statements directly on the tile or click to pick. PDF / CSV / XLS / XLSX / TSV all accepted. (The <span class="nav-card">/advisor</span> chat Attach button still works too if you prefer it — same backend path through <code>catalog_upload</code>.)</div>
+    <div class="step-num">STEP A2</div>
+    <div class="step-title">Drag-drop onto the tile at the top of <span class="nav-card">/expenses</span></div>
+    <div class="step-body">Multi-file in one shot is fine. The route detects the issuer per file and dispatches to the right parser. Max statements need the card last-4 — the tile surfaces an input automatically when a Max failure is detected.</div>
   </div>
   <div class="flow-step">
-    <div class="step-num">STEP 3</div>
-    <div class="step-title">Watch per-file results render inline</div>
-    <div class="step-body">Each file gets a PARSED or FAILED pill plus stats: <em>parser, transactions inserted, categorised, correlated, refunds matched</em>. Failures show the error message. Max statements need the card last 4 — the tile surfaces an input automatically when a Max failure is detected.</div>
-  </div>
-  <div class="flow-step">
-    <div class="step-num">STEP 4</div>
-    <div class="step-title">Dashboard refreshes automatically</div>
-    <div class="step-body">On any successful upload the overview re-fetches in the background — the Monthly sub-tab populates the new month and categories auto-assigned via the <code>household_categorizer</code> agent show up without a page reload.</div>
+    <div class="step-num">STEP A3</div>
+    <div class="step-title">Per-file results render inline</div>
+    <div class="step-body">Each file gets a PARSED or FAILED pill plus stats: <em>parser, transactions inserted, categorised, correlated, refunds matched</em>. Failures show the error message. The dashboard re-fetches automatically; the Monthly sub-tab populates the new month + categories assigned via <code>household_categorizer</code> show up without a page reload.</div>
   </div>
 </div>
 
-<div class="callout warn">
-  <div class="callout-title">UX hole #3 — no "last sync" indicator</div>
-  <span class="nav-card">/expenses</span> shows the trailing-12 view but doesn't tell you when the latest statement was ingested. If you forgot to upload last month's Cal statement, the page silently shows incomplete data.<br>
-  <strong>Suggested fix:</strong> per-source "Last statement: May 2026 (5 days ago)" indicator in the Sources sub-tab.
+<h3>Half B — Portfolio snapshot → <span class="nav-card">/portfolio</span></h3>
+
+<figure>
+  <img src="site-tour/portfolio-top.png" alt="Portfolio upload tile">
+  <figcaption><strong>/portfolio top</strong> — the <code>&lt;PortfolioSnapshotUploadCard&gt;</code> sits above the FIRE-position view. Drop the monthly Family Finances Status TSV; the windfall detector fires inline.</figcaption>
+</figure>
+
+<div class="flow">
+  <div class="flow-step">
+    <div class="step-num">STEP B1</div>
+    <div class="step-title">Produce the monthly <code>Family Finances Status - YY MMM.tsv</code></div>
+    <div class="step-body">Today: your existing <code>update_leumi_tsv.py</code> script converts the raw Leumi monthly XLS into the TSV. The XLS-to-TSV step inside Argosy is on the roadmap (§18 Hole #3); right now the conversion happens outside.</div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">STEP B2</div>
+    <div class="step-title">Drag-drop the TSV onto the tile at the top of <span class="nav-card">/portfolio</span></div>
+    <div class="step-body">The route validates the TSV (checks for the <em>"Bank account / funds allocation"</em> header marker), persists it under <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code> with the canonical name, and runs the windfall detector synchronously against the prior month's snapshot. SHA-256 of the upload is returned so re-uploading the same file is detectable as a no-op.</div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">STEP B3</div>
+    <div class="step-title">Per-upload tri-state outcome renders inline</div>
+    <div class="step-body">Three independent outcomes the UI surfaces separately: <strong>PERSISTED</strong> (always when the file parses); <strong>detector status</strong> (ok / skipped on the first-ever upload / failed on rare internal error); and <strong>event</strong> (when the cash delta crosses threshold, a deep-link to <span class="nav-card">/retirement#windfall</span> appears with the headline number).</div>
+  </div>
 </div>
 
-<div class="callout warn">
-  <div class="callout-title">UX hole #4 — /files is still read-only</div>
-  <span class="nav-card">/files</span> is a catalog viewer with no upload widget of its own. With the new <code>&lt;UploadStatementsCard&gt;</code> on <span class="nav-card">/expenses</span> the bank-statement flow is covered, but uploads of <em>non-statement</em> documents (a payslip, a tax letter, anything destined for the catalog rather than a parser) still have to go through the <span class="nav-card">/advisor</span> chat Attach button. <span class="nav-card">/files</span> still reads as "where I upload files" but is "where I see what I uploaded."<br>
-  <strong>Suggested fix:</strong> add a general Upload button on <span class="nav-card">/files</span> that uses the same <code>catalog_upload</code> backend.
+<h3>What fires automatically off Half B — the windfall side effect</h3>
+
+<p>When Half B reveals a cash delta over <strong>$25K USD</strong> or <strong>₪75K NIS</strong> between consecutive snapshots, the windfall detector tags an event and the allocator produces a ranked plan. <em>You did not push anything;</em> the same B2 drop produced both the snapshot persistence and the windfall surface.</p>
+
+<div class="flow">
+  <div class="flow-step">
+    <div class="step-num">SIDE-EFFECT 1</div>
+    <div class="step-title">Home banner appears at <span class="nav-card">/</span></div>
+    <div class="step-body">Headline number + classification badge (RSU SALE / STOCK SALE / UNCLEAR) + matching-sales summary (e.g. <em>"NVDA -1040 + SGOV -350"</em>). Tone is amber when classification is <code>unclear</code> (the classifier couldn't match equity sales to the cash delta within 5% — likely some proceeds got redeployed in-month).</div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">SIDE-EFFECT 2</div>
+    <div class="step-title">Click "See allocation plan →" to land on <span class="nav-card">/retirement#windfall</span></div>
+    <div class="step-body">The full <code>WindfallCard</code>: hero verdict driven by the backend allocator's canonical rationale + the current vs plan-target allocation table (DESTINATION pills on under-target rows = where the windfall should go) + three horizon columns (long deterministic / medium + short agent-fleet placeholders) + matching-sales drilldown.</div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">SIDE-EFFECT 3</div>
+    <div class="step-title">Accept or Defer per proposal</div>
+    <div class="step-body">Live buttons. Accept persists a row in <code>windfall_actions</code> with <code>decided_status='accepted'</code>; Defer same with optional <code>due_date</code>. Already-decided proposals render as <em>"✓ Accepted"</em> / <em>"↻ Deferred · due 2026-06-15"</em> pills inline on re-fetch. The next step (promotion of an accepted row into an <code>action_engine</code> PrioritizedAction on the home-page action-items widget) is queued — see §18 Hole #2.</div>
+  </div>
+</div>
+
+<div class="callout">
+  <div class="callout-title">Why "no + Add income event button" still holds — even though there are upload buttons</div>
+  The upload tiles on <span class="nav-card">/expenses</span> and <span class="nav-card">/portfolio</span> are buttons. What there's NOT a button for is the <em>classification</em> — "I had a bonus" / "Sold NVDA for tuition" / "Gift from grandparents." That's a derived signal from comparing snapshots, not a primary input. When the classifier can't resolve the source on its own (the <code>unclear</code> case), the planned Advisor focus-mode dialogue picks up the thread; until that ships (§19 Hole #1), you'd answer in free-form chat on <span class="nav-card">/advisor</span>.
 </div>
 </section>
 
 <!-- ============================================================ -->
 <section id="flow-cc">
-<h2>7. End-to-end flow: Credit card categorization</h2>
+<h2>6. End-to-end flow: Credit card categorization</h2>
 
 <p>Argosy auto-categorizes each transaction via the <code>household_categorizer</code> agent (Opus-backed by default, per the accuracy-over-cost binding preference). Most rows are right out of the box; some need manual correction:</p>
 
@@ -429,7 +419,7 @@
 
 <!-- ============================================================ -->
 <section id="flow-decision">
-<h2>8. End-to-end flow: Plan → Retirement loop</h2>
+<h2>7. End-to-end flow: Plan → Retirement loop</h2>
 
 <p>You're right that the natural order is <strong>Plan first, then Retirement</strong>. They answer different questions:</p>
 
@@ -477,7 +467,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-home">
-<h2>9. <span class="nav-card">/</span> Home in detail</h2>
+<h2>8. <span class="nav-card">/</span> Home in detail</h2>
 
 <figure>
   <img src="site-tour/home-top.png" alt="Home page detail">
@@ -497,7 +487,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-advisor">
-<h2>10. <span class="nav-card">/advisor</span> Advisor in detail</h2>
+<h2>9. <span class="nav-card">/advisor</span> Advisor in detail</h2>
 
 <figure>
   <img src="site-tour/advisor-top.png" alt="Advisor page detail">
@@ -522,7 +512,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-portfolio">
-<h2>11. <span class="nav-card">/portfolio</span> Portfolio in detail</h2>
+<h2>10. <span class="nav-card">/portfolio</span> Portfolio in detail</h2>
 
 <figure>
   <img src="site-tour/portfolio-top.png" alt="Portfolio page top">
@@ -533,7 +523,7 @@
 
 <p>Top of <span class="nav-card">/portfolio</span> ships a drag-drop tile that accepts the monthly <code>Family Finances Status - YY MMM.tsv</code> file. Drop it in (or click to pick); the route persists the TSV under <code>ARGOSY_EXPENSE_SAMPLES_ROOT</code> and synchronously runs the windfall detector against the prior month's snapshot. The per-upload result row surfaces tri-state status inline: PERSISTED + windfall-detector outcome (<em>skipped</em> = no prior TSV to diff; <em>ok + no event</em> = below threshold; <em>ok + event</em> = a banner appears with a deep-link to <span class="nav-card">/retirement#windfall</span> for the full plan).</p>
 
-<p><strong>Note:</strong> the raw bank XLS upload isn't supported yet — the tile accepts only the TSV form. See §19 Hole #3 for the XLS-conversion gap.</p>
+<p><strong>Note:</strong> the raw bank XLS upload isn't supported yet — the tile accepts only the TSV form. See §18 Hole #3 for the XLS-conversion gap.</p>
 
 <h3>The FIRE-position view</h3>
 
@@ -552,7 +542,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-expenses">
-<h2>12. <span class="nav-card">/expenses</span> Expenses in detail</h2>
+<h2>11. <span class="nav-card">/expenses</span> Expenses in detail</h2>
 
 <figure>
   <img src="site-tour/expenses-top.png" alt="Expenses overview">
@@ -575,7 +565,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-plan">
-<h2>13. <span class="nav-card">/plan</span> Plan in detail</h2>
+<h2>12. <span class="nav-card">/plan</span> Plan in detail</h2>
 
 <figure>
   <img src="site-tour/plan-top.png" alt="Plan page detail">
@@ -595,7 +585,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-retirement">
-<h2>14. <span class="nav-card">/retirement</span> Retirement in detail</h2>
+<h2>13. <span class="nav-card">/retirement</span> Retirement in detail</h2>
 
 <figure>
   <img src="screenshots/01-retirement-readiness.png" alt="Retirement readiness hero">
@@ -618,7 +608,7 @@
 <tr><td>Predictions</td><td>Sigma calibration · Withdrawal policy selector (VPW/Bucket include a caveat that they avoid literal zero-balance ruin without guaranteeing essential-expense coverage) · Stochastic FX</td></tr>
 <tr><td>Decision policy</td><td>Glide path · Rebalancing alerts</td></tr>
 <tr><td>Expenses</td><td>Phase expenses · Healthcare cost curve</td></tr>
-<tr><td>Tax</td><td>Tax calculator · Hishtalmut timer (with the eligibility check + withdrawal-tax explorer covered in §15.1 below)</td></tr>
+<tr><td>Tax</td><td>Tax calculator · Hishtalmut timer (with the eligibility check + withdrawal-tax explorer covered in §14.1 below)</td></tr>
 <tr><td>Decumulation</td><td>Decumulation order · Lump-vs-annuity (recommendation includes the trade-off rationale: annuity floor vs lump flexibility)</td></tr>
 <tr><td>Balance</td><td>Real estate + mortgage</td></tr>
 <tr><td>Risk transfer</td><td>Insurance gaps (4 types)</td></tr>
@@ -630,26 +620,24 @@
 
 <!-- ============================================================ -->
 <section id="tab-files">
-<h2>15. <span class="nav-card">/files</span> Files in detail</h2>
+<h2>14. <span class="nav-card">/files</span> Files in detail</h2>
 
 <figure>
   <img src="site-tour/files-top.png" alt="Files page">
-  <figcaption><strong>Files</strong> — read-only audit-traceable catalog. Filters by Kind + Source. Currently rows from chat_attachment uploads. <strong>No upload button visible.</strong></figcaption>
+  <figcaption><strong>Files</strong> — audit-traceable catalog with the upload tile at the top (added 2026-05-29). Filters by Kind + Source.</figcaption>
 </figure>
 
-<p>Filters: Kind · Source · Include deleted toggle.</p>
+<p>Two halves:</p>
 
-<p>Each row shows: filename · Kind (pdf / image / ...) · Source bucket (chat_attachment most common) · Size · When · Open link.</p>
-
-<div class="callout warn">
-  <div class="callout-title">UX hole #4 (repeated)</div>
-  No upload widget here. Anything you want catalogued goes through the Advisor chat's Attach button. The Files tab is misleading by name — should probably be renamed "Catalog" or get a real upload button.
-</div>
+<ul>
+  <li><strong>Upload tile (top of page)</strong> — drag-drop or click-to-pick + a Kind dropdown (text / image / plan_markdown / broker_csv / other). Routes through <code>catalog_upload</code> with <code>source="manual_upload"</code>. Use this when the file doesn't fit a parsing pipeline (a payslip, a tax letter, anything destined for the catalog rather than the expense or portfolio tiles).</li>
+  <li><strong>Catalog table (below)</strong> — every row Argosy has on file. Each row shows: filename · Kind · Source bucket · Size · When · Open link. Filters: Kind · Source · Include deleted toggle.</li>
+</ul>
 </section>
 
 <!-- ============================================================ -->
 <section id="tab-proposals">
-<h2>16. <span class="nav-card">/proposals</span> · <span class="nav-card">/argonaut</span> · <span class="nav-card">/decide</span></h2>
+<h2>15. <span class="nav-card">/proposals</span> · <span class="nav-card">/argonaut</span> · <span class="nav-card">/decide</span></h2>
 
 <figure>
   <img src="site-tour/proposals-top.png" alt="Proposals page">
@@ -679,7 +667,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-others">
-<h2>17. <span class="nav-card">/agents</span> · <span class="nav-card">/audit</span> · <span class="nav-card">/domain-kb</span> · <span class="nav-card">/settings</span></h2>
+<h2>16. <span class="nav-card">/agents</span> · <span class="nav-card">/audit</span> · <span class="nav-card">/domain-kb</span> · <span class="nav-card">/settings</span></h2>
 
 <p>Inspection / config tabs. Brief overview:</p>
 
@@ -693,7 +681,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-details">
-<h2>18. Detail pages reached by click-through</h2>
+<h2>17. Detail pages reached by click-through</h2>
 
 <p>These surfaces aren't in the top nav — you land on them by clicking a link from Home, /portfolio, /plan, /retirement, or one of the banners. They're documented here so the next time a banner says "Read report →" or a synthesis row says "Drill in →" you know what you're getting.</p>
 
@@ -785,12 +773,12 @@
 
 <!-- ============================================================ -->
 <section id="holes">
-<h2>19. Known gaps</h2>
+<h2>18. Known gaps</h2>
 
 <p>Things that don't work yet, or that the UI doesn't help with. None block usage; all worsen UX.</p>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #1 — Windfall classification dialogue not wired</div>
+  <div class="callout-title">Hole #1 — Windfall classification dialogue not wired (Advisor focus-mode)</div>
   When the detector tags a windfall as <code>unclear</code>, the banner currently just deep-links to <span class="nav-card">/retirement#windfall</span>. The design sketched in <code>docs/superpowers/plans/2026-05-28-windfall-flow-resume.md</code> calls for a focus-mode dialogue on <span class="nav-card">/advisor</span> that opens with the event context as the first message and extracts the user's clarification (bonus, gift, in-month redeployment) via <code>intake_extractor</code> into a new <code>income_events</code> table. Concrete schema + extractor agent + advisor route shape are TBD.<br>
   <strong>Suggested fix:</strong> design + ship the focus-mode flow per the resume note.
 </div>
@@ -816,7 +804,7 @@
 
 <!-- ============================================================ -->
 <section id="health">
-<h2>20. System health (live audit, 2026-05-28)</h2>
+<h2>19. System health (live audit, 2026-05-28)</h2>
 
 <table>
 <thead><tr><th>Page</th><th>Loaded</th><th>Console errors</th><th>Failed requests</th></tr></thead>
@@ -843,7 +831,7 @@
 </tbody>
 </table>
 
-<p>19/19 routes render (14 nav tabs + 5 detail surfaces from §18). 1 page has 1 console error (the /argonaut 404). Backend at <code>:8000</code> with 29 retirement endpoints registered (including <code>/windfall/detect</code>). UI at <code>:1337</code> via Next.js 16.</p>
+<p>19/19 routes render (14 nav tabs + 5 detail surfaces from §17). 1 page has 1 console error (the /argonaut 404, fixed in commit <code>be34b5b</code>; needs uvicorn restart to take effect). Backend at <code>:8000</code> with 29 retirement endpoints registered (including <code>/windfall/detect</code>). UI at <code>:1337</code> via Next.js 16.</p>
 
 <hr>
 
