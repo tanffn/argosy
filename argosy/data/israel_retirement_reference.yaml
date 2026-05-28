@@ -1,0 +1,167 @@
+# Shipped defaults for Israel-specific retirement values.
+# Per-user overrides live in ``identity_yaml.retirement_reference_overrides``
+# and take precedence. See ``argosy/services/retirement/reference.py::resolve``.
+#
+# Each entry follows the ValueWithRationale shape (argosy/services/retirement/
+# citations.py): value + unit + source_id + as_of_date + rationale +
+# confidence + (optional) freshness_warning + alternatives_considered.
+#
+# Freshness policy:
+#   - Shipped defaults > 12 months past as_of_date auto-stamp a generic
+#     "verify with your fund" warning (resolver-side).
+#   - Intrinsic warnings (e.g. "indexed annually") in this YAML are
+#     preserved and win over auto-stamps.
+#
+# Adding a value: pick a snake_case key with a category prefix (e.g.
+# ``tax.``, ``mekadem.``, ``bituach_leumi.``, ``us_estate.``,
+# ``healthcare.``) so the key namespace stays browsable.
+
+values:
+  # ─── Mekadem (annuity coefficient) — Waves 1, fleshed out further ─────
+  mekadem.clal_pensia:
+    value: 200
+    unit: "ratio"
+    source_id: "clal_published_table_2026"
+    as_of_date: "2026-03"
+    rationale: "Clal kupat_pensia published mekadem for standard retirement age 67 (single life, no spouse benefit)."
+    confidence: "high"
+    alternatives_considered:
+      - "Migdal: 198 (different mortality table)"
+      - "Menorah: 202 (different actuarial assumptions)"
+
+  mekadem.migdal_pensia:
+    value: 198
+    unit: "ratio"
+    source_id: "migdal_published_table_2026"
+    as_of_date: "2026-03"
+    rationale: "Migdal kupat_pensia mekadem at age 67 (single life)."
+    confidence: "high"
+
+  mekadem.menorah_pensia:
+    value: 202
+    unit: "ratio"
+    source_id: "menorah_published_table_2026"
+    as_of_date: "2026-03"
+    rationale: "Menorah kupat_pensia mekadem at age 67 (single life)."
+    confidence: "high"
+
+  # ─── Bituach Leumi (old-age stipend) ──────────────────────────────────
+  bituach_leumi.single_age_67_base_2026:
+    value: 2100
+    unit: "NIS/mo"
+    source_id: "bituach_leumi_old_age_2026"
+    as_of_date: "2026-05"
+    rationale: |
+      Single-person base rate at age 67 with full contribution history
+      (35+ years of insured periods). Spouse stipend adds ~50% if eligible.
+    confidence: "medium"
+    freshness_warning: "Indexed annually each January; verify if reading after Jan 1."
+
+  bituach_leumi.spouse_supplement_pct:
+    value: 0.5
+    unit: "fraction"
+    source_id: "bituach_leumi_old_age_2026"
+    as_of_date: "2026-05"
+    rationale: "Spouse supplement is ~50% of the primary stipend when spouse is eligible."
+    confidence: "medium"
+
+  # ─── Tax brackets / rates ─────────────────────────────────────────────
+  tax.israeli_cgt_equity:
+    value: 0.25
+    unit: "fraction"
+    source_id: "israeli_tax_authority_cgt_2026"
+    as_of_date: "2026-01"
+    rationale: "Israeli flat capital-gains rate on equity sales for resident individuals."
+    confidence: "high"
+
+  tax.pension_exemption_rate_2025:
+    value: 0.57
+    unit: "fraction"
+    source_id: "israeli_tax_authority_pension_exemption_2025"
+    as_of_date: "2025-01"
+    rationale: |
+      Pension qualifying-income exemption rate under the rights-fixation
+      regime (replaced the older flat 35%). Phasing further by 2027+; the
+      Wave 5 tax engine consumes a year-indexed table, not this single
+      value. This shipped value is the 2025 baseline.
+    confidence: "high"
+
+  tax.us_dividend_treaty_withholding:
+    value: 0.15
+    unit: "fraction"
+    source_id: "us_israel_tax_treaty"
+    as_of_date: "1995-01"
+    rationale: |
+      US source dividends to Israeli residents withheld at 15% per treaty.
+      Israeli tax engine applies foreign-tax-credit interaction:
+      israeli_tax_due = max(0, 0.25 * gross - 0.15 * gross_us_withheld).
+    confidence: "high"
+
+  # ─── US NRA estate tax ────────────────────────────────────────────────
+  us_estate.nra_exemption_usd:
+    value: 60000
+    unit: "USD"
+    source_id: "us_nra_estate_tax"
+    as_of_date: "2024-01"
+    rationale: |
+      $60K exemption for non-US-persons holding US-situs assets at death.
+      Federal estate tax rate above the exemption is graduated 18-40%.
+      UCITS-domiciled funds are NOT US-situs and do not count toward this.
+    confidence: "high"
+
+  us_estate.nra_warn_threshold_usd:
+    value: 60000
+    unit: "USD"
+    source_id: "argosy_derived"
+    rationale: "WARN gate fires when US-situs assets exceed the legal exemption."
+    confidence: "high"
+
+  us_estate.nra_fail_threshold_usd:
+    value: 200000
+    unit: "USD"
+    source_id: "argosy_derived"
+    rationale: |
+      FAIL gate fires when US-situs assets > $200K. At this level, the
+      "you should already be acting" threshold is breached; UCITS
+      migration plan is required for plan approval.
+    confidence: "high"
+
+  # ─── Emergency-liquidity floor ────────────────────────────────────────
+  emergency_liquidity.floor_months:
+    value: 12
+    unit: "months"
+    source_id: "bogleheads_three_fund"
+    rationale: |
+      Default emergency-fund floor of 12 months of essential expenses,
+      per Bogleheads consensus for high-volatility-asset households.
+      User can override via identity_yaml.retirement_reference_overrides.
+    confidence: "medium"
+    alternatives_considered:
+      - "6 months (typical for stable-income dual-earner households)"
+      - "24 months (overcautious for most; parks too much cash)"
+
+  emergency_liquidity.essential_fraction:
+    value: 0.6
+    unit: "fraction"
+    source_id: "argosy_derived"
+    rationale: |
+      Essential expenses are ~60% of total burn (heating, food, mortgage,
+      school, healthcare). Discretionary 40% can be cut in a stress scenario.
+    confidence: "medium"
+
+  # ─── Default mu / sigma for projection (will be sigma-calibrated in Wave 3)
+  projection.mu_nominal_annual_default:
+    value: 0.08
+    unit: "fraction"
+    source_id: "damodaran_implied_erp_2026"
+    as_of_date: "2026-01"
+    rationale: "S&P 500-like historical nominal return; can be overridden by user or recalibrated to portfolio composition (Wave 3)."
+    confidence: "medium"
+
+  projection.sigma_annual_diversified_default:
+    value: 0.18
+    unit: "fraction"
+    source_id: "damodaran_implied_erp_2026"
+    as_of_date: "2026-01"
+    rationale: "S&P 500-like volatility for a diversified equity portfolio. Concentrated portfolios will be auto-calibrated higher in Wave 3."
+    confidence: "medium"
