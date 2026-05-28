@@ -1860,6 +1860,11 @@ class StatementSummary(BaseModel):
     parser_version: str
     transaction_count: int
     correlated_count: int
+    # Hole #5 — surface the parse_error column that was previously
+    # dropped at this boundary. Populated when the parser hit an issue
+    # (UnknownFormatError, schema-mismatch, etc.); the UI now renders a
+    # tooltip on the statement row when this is non-null.
+    parse_error: str | None = None
 
 
 class MonthBucket(BaseModel):
@@ -1918,6 +1923,7 @@ def source_detail(
             gap=gap, status=_gap_status(gap),
             parser_name=st.parser_name, parser_version=st.parser_version,
             transaction_count=tx_n, correlated_count=corr_n,
+            parse_error=st.parse_error,
         ))
 
     # Per-month buckets — group all the source's transactions by

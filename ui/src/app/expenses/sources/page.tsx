@@ -180,12 +180,43 @@ export default function SourcesPage() {
                             <span className="inline-flex items-center gap-1.5">
                               <span className={cn("h-2 w-2 rounded-full", STATUS_DOT[st.status])} />
                               <span className="text-xs capitalize">{st.status}</span>
+                              {st.parse_error ? (
+                                <span
+                                  title={st.parse_error}
+                                  aria-label={`parse error: ${st.parse_error}`}
+                                  className="ml-1 cursor-help text-rose-400 font-mono"
+                                >
+                                  ⚠
+                                </span>
+                              ) : null}
                             </span>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                  {d.statements.some((st) => st.parse_error) ? (
+                    <div className="mt-3 rounded border border-rose-400/30 bg-rose-400/5 px-3 py-2 text-xs">
+                      <div className="font-mono font-semibold text-rose-400 mb-1">
+                        Parse errors on this source
+                      </div>
+                      <ul className="space-y-1">
+                        {d.statements
+                          .filter((st) => st.parse_error)
+                          .map((st) => (
+                            <li key={st.id} className="font-mono text-rose-400/90 text-[11px] leading-snug">
+                              <span className="text-rose-400">[{st.period_start} → {st.period_end}]</span>{" "}
+                              {st.parse_error}
+                            </li>
+                          ))}
+                      </ul>
+                      <div className="mt-2 text-[11px] text-muted-foreground">
+                        Re-upload via the <span className="font-mono">/expenses</span> upload tile to retry.
+                        If the format is genuinely new, the parser may need an
+                        extension in <code className="font-mono">argosy/services/expense_ingest/parsers/</code>.
+                      </div>
+                    </div>
+                  ) : null}
                 </>
               ) : (
                 <div className="text-sm text-muted-foreground py-6 text-center">

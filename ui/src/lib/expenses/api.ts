@@ -284,6 +284,10 @@ export interface StatementSummary {
   parser_version: string;
   transaction_count: number;
   correlated_count: number;
+  /** Populated when the parser hit an issue (UnknownFormatError,
+   *  schema-mismatch, etc.). The Sources sub-tab renders a tooltip
+   *  affordance on the statement row when this is non-null. */
+  parse_error: string | null;
 }
 
 export interface MonthBucket {
