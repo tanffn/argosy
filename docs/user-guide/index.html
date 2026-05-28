@@ -224,7 +224,7 @@
 
 <div class="callout">
   <div class="callout-title">Tl;dr</div>
-  Everything — bank statements, credit-card PDFs, screenshots, news, "I just got a bonus" — enters Argosy through <strong><span class="nav-card">/advisor</span> chat</strong>. There is no separate upload form, no /expenses-import button, no Files-upload widget. The Advisor is the universal portal.
+  <strong><span class="nav-card">/advisor</span> chat is the universal portal</strong> for everything — bank statements, credit-card PDFs, screenshots, news, "I just got a bonus." Free-form text and the Attach button both flow through the same backend funnel (<code>catalog_upload</code>, SDD §17.1). One shortcut: <span class="nav-card">/expenses</span> ships a dedicated drag-drop tile for batch bank-statement ingest (same backend path, more convenient when you have 6 PDFs in a row). <span class="nav-card">/files</span> remains read-only — it's a catalog viewer, not an upload portal. Windfalls don't use any of these: they're auto-detected by diffing your monthly TSV (see §5).
 </div>
 
 <figure>
@@ -279,8 +279,8 @@
   </div>
   <div class="flow-step">
     <div class="step-num">STEP 5</div>
-    <div class="step-title">Attach 6-12 months of bank + credit statements</div>
-    <div class="step-body">Drop the PDFs one by one. The expense pipeline parses each and rows populate on <span class="nav-card">/expenses</span>.</div>
+    <div class="step-title">Bulk-upload 6-12 months of bank + credit statements</div>
+    <div class="step-body">Two paths, same backend funnel: (a) drop PDFs in the <code>&lt;UploadStatementsCard&gt;</code> at the top of <span class="nav-card">/expenses</span> — faster for batches, multi-file drag-drop, per-file results render inline; (b) Attach one at a time on <span class="nav-card">/advisor</span> chat — better when you want to narrate context. Either way, the expense pipeline parses each statement and rows populate on <span class="nav-card">/expenses</span>.</div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP 6</div>
