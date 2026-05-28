@@ -1,6 +1,6 @@
 "use client";
 
-import { Anchor, Shield, ShieldOff } from "lucide-react";
+import { Shield, ShieldOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AdvisorBriefCard } from "@/components/advisor-brief-card";
@@ -591,21 +591,21 @@ export default function Home() {
       >
         <div className="relative px-6 py-5 flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-start gap-4 min-w-0">
-            <span
-              className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-success/30 bg-success/10 text-success"
+            {/* eslint-disable-next-line @next/next/no-img-element -- static brand mark */}
+            <img
+              src="/logo.png"
+              alt=""
+              className="h-12 w-12 shrink-0 rounded-md"
               aria-hidden
-              suppressHydrationWarning
-            >
-              <Anchor className="h-5 w-5" />
-            </span>
+            />
             <div className="min-w-0">
               <h1 className="font-mono font-bold text-2xl leading-tight">
                 <span className="text-foreground">Welcome to </span>
                 <span className="text-success">Argosy</span>
               </h1>
               <p className="text-sm text-muted-foreground mt-1">
-                multi-agent financial advisor — paper-mode by default,
-                audit-trail by design
+                A fleet of agents at your helm — paper-mode by default,
+                audit-trail by design.
               </p>
               <div className="flex items-center gap-2 mt-3 flex-wrap">
                 <StatusPill tone="neutral" mono>

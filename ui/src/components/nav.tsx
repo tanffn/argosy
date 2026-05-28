@@ -68,9 +68,16 @@ export function NavBar() {
           className="flex items-center gap-2 shrink-0"
           aria-label="Argosy home"
         >
-          <span className="font-mono text-lg leading-none" aria-hidden>
-            🚢
-          </span>
+          {/* eslint-disable-next-line @next/next/no-img-element -- static brand
+              mark; using a plain <img> avoids the next/image dependency
+              + lets us swap the asset (ui/public/logo.png) without a
+              rebuild. */}
+          <img
+            src="/logo.png"
+            alt=""
+            className="h-7 w-7 rounded-sm"
+            aria-hidden
+          />
           <span className="font-mono font-semibold tracking-tight text-lg text-foreground">
             Argosy
           </span>
