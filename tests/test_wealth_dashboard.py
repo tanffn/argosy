@@ -35,6 +35,7 @@ from argosy.services.wealth_dashboard import (
     US_NRA_ESTATE_RATE,
     compute_current_age,
     compute_wealth_dashboard,
+    get_current_monthly_expenses_usd,
     project_wealth_curve,
     years_to_target,
 )
@@ -739,6 +740,56 @@ class TestAssumptionsAndDefaults:
             dash = compute_wealth_dashboard(s, user_id="ariel")
         assert dash.assumptions.scenario_returns == SCENARIO_RETURNS
         assert dash.assumptions.swr_rate == SWR
+
+
+class TestGetCurrentMonthlyExpensesUsd:
+    """Powers the projection-chart per-point surplus/shortfall tooltip.
+
+    Returns ``monthly_burn_nis / fx_usd_nis`` when both are available;
+    None on any missing/invalid input.
+    """
+
+    def test_returns_usd_value_when_budget_and_snapshot_present(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(s, fx_usd_nis=3.0)
+            _seed_household_budget_report(s, monthly_burn_nis=18_000.0)
+            usd = get_current_monthly_expenses_usd(s, "ariel")
+        # 18000 NIS / 3.0 = 6000 USD/mo
+        assert usd == pytest.approx(6_000.0)
+
+    def test_returns_none_when_no_household_budget_report(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(s, fx_usd_nis=3.0)
+            usd = get_current_monthly_expenses_usd(s, "ariel")
+        assert usd is None
+
+    def test_returns_none_when_monthly_burn_is_zero(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(s, fx_usd_nis=3.0)
+            _seed_household_budget_report(s, monthly_burn_nis=0.0)
+            usd = get_current_monthly_expenses_usd(s, "ariel")
+        assert usd is None
+
+    def test_falls_back_to_user_context_fx_when_no_snapshot(self, client_with_db):
+        """No portfolio_snapshots row → fx comes from identity_yaml.fx_rate.usd_nis
+        (seeded at 2.9 in _seed_user_context)."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_household_budget_report(s, monthly_burn_nis=29_000.0)
+            usd = get_current_monthly_expenses_usd(s, "ariel")
+        # 29000 NIS / 2.9 = 10000 USD/mo
+        assert usd == pytest.approx(10_000.0)
 
 
 class TestCompositionBreakdowns:
