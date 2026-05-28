@@ -37,7 +37,7 @@ from argosy.services.wealth_dashboard import (
 )
 
 
-GateId = Literal["nra_estate", "emergency_liquidity"]
+GateId = Literal["nra_estate", "emergency_liquidity", "conflict_scenario"]
 GateStatus = Literal["PASS", "WARN", "FAIL"]
 
 
@@ -311,12 +311,129 @@ def compute_liquidity_gate(*, user_id: str, session: Session) -> GateVerdict:
     )
 
 
+def compute_conflict_scenario_gate(
+    *,
+    user_id: str,
+    session: Session,
+    retirement_age: float = 49.0,
+    seed: int | None = 42,
+) -> GateVerdict:
+    """Stress-test the projection under an Israel-specific conflict pack.
+
+    Stressed parameters (Wave 3.6):
+      - sigma_annual = 0.40 (turbulent regime baseline)
+      - inflation_annual = 0.06 (post-conflict inflation spike)
+      - lifestyle_drift_annual = 0.02 (security premium on essentials)
+
+    Threshold (per master plan §"Wave 3.6"):
+      - PASS when P(ruin at 85) <= 30%
+      - WARN at 30% < P(ruin at 85) <= 50%
+      - FAIL above 50%
+    """
+    # Local import to avoid the safety_gates → ruin_probability → cashflow
+    # → wealth_dashboard cycle that would form if imported at module top.
+    from argosy.services.retirement.ruin_probability import (
+        compute_ruin_probability,
+    )
+
+    verdict = compute_ruin_probability(
+        user_id=user_id,
+        session=session,
+        retirement_age=retirement_age,
+        years=40,
+        target_p_solvent=0.70,  # under conflict, anything ≥ 70% solvent at 85 is ok
+        n_paths=1000,  # smaller for speed; CI not used for this gate's verdict
+        bootstrap_ci_samples=50,
+        sigma_annual=0.40,
+        inflation_annual=0.06,
+        lifestyle_drift_annual=0.02,
+        seed=seed,
+    )
+
+    p_ruin_at_85 = 1.0 - float(verdict.p_solvent_at_85.value or 0.0)
+
+    if p_ruin_at_85 > 0.50:
+        status: GateStatus = "FAIL"
+        action = (
+            f"FAIL under conflict scenario — P(ruin at 85) = {p_ruin_at_85:.0%}. "
+            "Build cash reserves + diversify into NIS-denominated assets + "
+            "consider sovereign-bond holdings as a hedge."
+        )
+    elif p_ruin_at_85 > 0.30:
+        status = "WARN"
+        action = (
+            f"WARN under conflict scenario — P(ruin at 85) = {p_ruin_at_85:.0%}. "
+            "Stress test passed by a thin margin; review NIS exposure + "
+            "essential-expense cash buffer."
+        )
+    else:
+        status = "PASS"
+        action = (
+            f"Resilient under conflict scenario — P(ruin at 85) = "
+            f"{p_ruin_at_85:.0%} stays under the 30% threshold."
+        )
+
+    return GateVerdict(
+        gate_id="conflict_scenario",
+        status=status,
+        value=ValueWithRationale(
+            value=round(p_ruin_at_85, 4),
+            unit="fraction",
+            source_id=None,
+            rationale=(
+                "P(ruin at 85) under stressed parameters σ=0.40 "
+                "(turbulent regime), inflation=6%, lifestyle_drift=2% "
+                "(security premium on essentials). Israel-specific tail "
+                "events (extended conflict, capital controls, sanctions) "
+                "can break liquidity + FX assumptions simultaneously; "
+                "this gate forces a stress check."
+            ),
+            confidence="medium",
+        ),
+        threshold=ValueWithRationale(
+            value=0.30,
+            unit="fraction",
+            source_id="argosy_derived",
+            rationale=(
+                "WARN threshold for P(ruin at 85) under conflict scenario. "
+                "Calibrated to 'tail event survivable with adjustments'; "
+                "tighten to 0.20 for very-low risk tolerance."
+            ),
+            confidence="medium",
+        ),
+        suggested_action=ValueWithRationale(
+            value=action,
+            unit="action",
+            source_id=None,
+            rationale="Concrete next step derived from the verdict.",
+            confidence="high",
+        ),
+        detail_summary=(
+            f"P(ruin at 85) {p_ruin_at_85:.0%} under conflict pack (σ=0.40, "
+            f"inflation=6%, lifestyle_drift=2%)."
+        ),
+    )
+
+
 def compute_safety_gates(
-    *, user_id: str, session: Session,
+    *,
+    user_id: str,
+    session: Session,
+    include_conflict: bool = True,
 ) -> list[GateVerdict]:
-    """Wave 2 — returns NRA + Liquidity gates. Conflict scenario gate
-    joins this list in Wave 3.6 after the P(ruin) infrastructure ships."""
-    return [
+    """Returns NRA + Liquidity + (optionally) Conflict Scenario gates.
+
+    Conflict scenario shipped in Wave 3.6 — depends on the Wave 3 ruin-
+    probability infrastructure. Default is to include it; pass
+    ``include_conflict=False`` to skip the expensive MC if you only need
+    the cheap NRA + Liquidity checks.
+    """
+    gates = [
         compute_nra_estate_gate(user_id=user_id, session=session),
         compute_liquidity_gate(user_id=user_id, session=session),
     ]
+    if include_conflict:
+        gates.append(compute_conflict_scenario_gate(
+            user_id=user_id, session=session,
+        ))
+    return gates

@@ -20,7 +20,15 @@ from argosy.services.retirement.mekadem import (
 from argosy.services.retirement.reference import ResolveError, resolve
 from argosy.services.retirement.ruin_probability import compute_ruin_probability
 from argosy.services.retirement.safety_gates import compute_safety_gates
+from argosy.services.retirement.sigma_calibration import (
+    calibrate_sigma_from_holdings,
+)
 from argosy.services.retirement.sources import load_sources
+from argosy.services.retirement.stochastic_fx import (
+    fx_band_at_horizon,
+    simulate_stochastic_fx,
+)
+from argosy.services.retirement.withdrawal_policy import list_policies
 
 router = APIRouter(prefix="/retirement", tags=["retirement"])
 
@@ -170,6 +178,49 @@ def get_ruin_probability(
         "target_p_solvent": as_dict(v.target_p_solvent),
         "verdict": v.verdict,
         "suggested_action": as_dict(v.suggested_action),
+    }
+
+
+@router.get("/projection/sigma-calibrated")
+def get_sigma_calibration(
+    user_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Portfolio-weighted sigma + per-class breakdown.
+
+    Replaces the hardcoded σ=0.18 default for users with non-diversified
+    portfolios. For Ariel's NVDA-heavy holdings, returns σ closer to 0.30-0.40.
+    """
+    cal = calibrate_sigma_from_holdings(user_id=user_id, session=db)
+    return {
+        "sigma_annual": as_dict(cal.sigma_annual),
+        "portfolio_total_usd": as_dict(cal.portfolio_total_usd),
+        "breakdown": cal.breakdown,
+    }
+
+
+@router.get("/projection/withdrawal-policies")
+def get_withdrawal_policies() -> dict:
+    """List shipped withdrawal policies (Bengen/Guyton-Klinger/VPW/Bucket)."""
+    return {"policies": list_policies()}
+
+
+@router.get("/projection/stochastic-fx")
+def get_stochastic_fx(
+    initial_fx: float,
+    months: int = 360,
+    n_paths: int = 1000,
+    seed: int | None = 42,
+) -> dict:
+    """Stochastic USD/NIS forecast — percentile bands at the horizon."""
+    sim = simulate_stochastic_fx(
+        initial_fx=initial_fx, months=months, n_paths=n_paths, seed=seed,
+    )
+    bands = fx_band_at_horizon(sim)
+    return {
+        "horizon_months": months,
+        "initial_fx": initial_fx,
+        "bands": {k: as_dict(v) for k, v in bands.items()},
     }
 
 

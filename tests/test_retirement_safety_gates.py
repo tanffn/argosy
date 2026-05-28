@@ -262,7 +262,7 @@ class TestLiquidityGate:
 
 
 class TestComposeSafetyGates:
-    def test_returns_both_gates(self, client_with_db):
+    def test_returns_two_gates_when_conflict_excluded(self, client_with_db):
         SF = client_with_db.app.state.session_factory
         with SF() as s:
             _seed_user(s)
@@ -278,8 +278,57 @@ class TestComposeSafetyGates:
                 },
             ])
             _seed_household_budget(s, monthly_burn_nis=10_000.0)
-            verdicts = compute_safety_gates(user_id="ariel", session=s)
+            verdicts = compute_safety_gates(
+                user_id="ariel", session=s, include_conflict=False,
+            )
         assert len(verdicts) == 2
         ids = [v.gate_id for v in verdicts]
         assert "nra_estate" in ids
         assert "emergency_liquidity" in ids
+        assert "conflict_scenario" not in ids
+
+
+class TestConflictScenarioGate:
+    def test_returns_verdict_under_conflict_pack(self, client_with_db):
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            # Conflict gate needs full pension state for compute_ruin_probability
+            from argosy.state.models import UserContext as UC
+            _seed_user(s)
+            s.add(UC(
+                user_id="ariel",
+                identity_yaml=(
+                    "user_date_of_birth: '1982-08-28'\n"
+                    "fx_rate:\n  usd_nis: 3.0\n"
+                    "pensions:\n"
+                    "  kupat_pensia:\n    balance_nis: 800000\n"
+                    "    contribution_rate_pct: 6.0\n"
+                    "    employer_match_pct: 6.5\n"
+                    "  keren_hishtalmut:\n    balance_nis: 380000\n"
+                    "    contribution_rate_pct: 2.5\n"
+                    "    employer_match_pct: 7.5\n"
+                    "  executive_insurance:\n    balance_nis: 755000\n"
+                    "  kupat_gemel:\n    balance_nis: 75000\n"
+                    "clal_pension_salary_basis_monthly_nis: 27000\n"
+                    "clal_pension_employee_pct: 6.0\n"
+                    "clal_pension_employer_pct: 6.5\n"
+                    "clal_pension_severance_pct: 8.33\n"
+                ),
+                goals_yaml="",
+                constraints_yaml="",
+                current_stage="complete",
+            ))
+            _seed_snapshot(s, positions=[
+                {"location": "schwab", "currency": "USD", "asset_type": "NVIDIA", "usd_value_k": 2400.0, "current_value_local": 2_400_000.0},
+            ])
+            _seed_household_budget(s, monthly_burn_nis=20_000.0)
+            s.commit()
+            from argosy.services.retirement.safety_gates import (
+                compute_conflict_scenario_gate,
+            )
+            v = compute_conflict_scenario_gate(
+                user_id="ariel", session=s, seed=42,
+            )
+        assert v.gate_id == "conflict_scenario"
+        assert v.status in ("PASS", "WARN", "FAIL")
+        assert 0 <= v.value.value <= 1

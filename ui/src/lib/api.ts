@@ -24,24 +24,31 @@ function apiUrl(path: string): string {
 // Re-export retirement primitives so call sites can `import { ValueWithRationale } from "@/lib/api"`.
 export type {
   BLStipendResponse,
+  FxBandResponse,
   GateStatus,
   GateVerdict,
   MekademBandResponse,
   RuinProbabilityResponse,
   SafetyGatesResponse,
+  SigmaCalibrationResponse,
   Source,
   SourcesResponse,
   ValueWithRationale,
   Verdict,
+  WithdrawalPoliciesResponse,
+  WithdrawalPolicy,
 } from "@/lib/retirement-types";
 import type {
   BLStipendResponse,
+  FxBandResponse,
   MekademBandResponse,
   RuinProbabilityResponse,
   SafetyGatesResponse,
+  SigmaCalibrationResponse,
   Source,
   SourcesResponse,
   ValueWithRationale,
+  WithdrawalPoliciesResponse,
 } from "@/lib/retirement-types";
 
 export interface PortfolioPosition {
@@ -656,6 +663,18 @@ export const api = {
     safetyGates: (userId: string) =>
       getJSON<SafetyGatesResponse>(
         `/api/retirement/safety-gates?user_id=${encodeURIComponent(userId)}`,
+      ),
+    sigmaCalibration: (userId: string) =>
+      getJSON<SigmaCalibrationResponse>(
+        `/api/retirement/projection/sigma-calibrated?user_id=${encodeURIComponent(userId)}`,
+      ),
+    withdrawalPolicies: () =>
+      getJSON<WithdrawalPoliciesResponse>(
+        "/api/retirement/projection/withdrawal-policies",
+      ),
+    stochasticFx: (initialFx: number, months: number = 360, nPaths: number = 1000) =>
+      getJSON<FxBandResponse>(
+        `/api/retirement/projection/stochastic-fx?initial_fx=${initialFx}&months=${months}&n_paths=${nPaths}&seed=42`,
       ),
     ruinProbability: (
       userId: string,

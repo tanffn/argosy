@@ -60,6 +60,41 @@ export interface RuinProbabilityResponse {
   suggested_action: ValueWithRationale;
 }
 
+export interface SigmaCalibrationResponse {
+  sigma_annual: ValueWithRationale;
+  portfolio_total_usd: ValueWithRationale;
+  breakdown: Array<{
+    asset_class: string;
+    weight_pct: number;
+    sigma: number;
+    contribution: number;
+    usd_value: number;
+  }>;
+}
+
+export interface WithdrawalPolicy {
+  id: "bengen_4pct" | "guyton_klinger" | "vpw" | "bucket";
+  label: string;
+  rationale: string;
+  source_id: string;
+}
+
+export interface WithdrawalPoliciesResponse {
+  policies: WithdrawalPolicy[];
+}
+
+export interface FxBandResponse {
+  horizon_months: number;
+  initial_fx: number;
+  bands: {
+    p10: ValueWithRationale;
+    p25: ValueWithRationale;
+    p50: ValueWithRationale;
+    p75: ValueWithRationale;
+    p90: ValueWithRationale;
+  };
+}
+
 export type GateStatus = "PASS" | "WARN" | "FAIL";
 
 export interface GateVerdict {

@@ -12,7 +12,10 @@ import { MekademBand } from "@/components/retirement/MekademBand";
 import { MethodologyPanel } from "@/components/retirement/MethodologyPanel";
 import { RuinProbabilityHero } from "@/components/retirement/RuinProbabilityHero";
 import { SafetyGatesPanel } from "@/components/retirement/SafetyGatesPanel";
+import { SigmaCalibrationCard } from "@/components/retirement/SigmaCalibrationCard";
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
+import { StochasticFxCard } from "@/components/retirement/StochasticFxCard";
+import { WithdrawalPolicySelector } from "@/components/retirement/WithdrawalPolicySelector";
 
 const USER_ID = "ariel";
 
@@ -31,6 +34,12 @@ export default function RetirementPage() {
       <RuinProbabilityHero userId={USER_ID} retirementAge={49} targetPSolvent={0.9} />
 
       <SafetyGatesPanel userId={USER_ID} />
+
+      <SigmaCalibrationCard userId={USER_ID} />
+
+      <WithdrawalPolicySelector initialPolicyId="guyton_klinger" />
+
+      <StochasticFxCard initialFx={3.4} horizonMonths={360} />
 
       <BituachLeumiCard
         userId={USER_ID}
