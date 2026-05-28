@@ -8,8 +8,10 @@ import {
 } from "@/components/ui/card";
 import { BituachLeumiCard } from "@/components/retirement/BituachLeumiCard";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
+import { GlidePathCard } from "@/components/retirement/GlidePathCard";
 import { MekademBand } from "@/components/retirement/MekademBand";
 import { MethodologyPanel } from "@/components/retirement/MethodologyPanel";
+import { RebalancingAlertsCard } from "@/components/retirement/RebalancingAlertsCard";
 import { RuinProbabilityHero } from "@/components/retirement/RuinProbabilityHero";
 import { SafetyGatesPanel } from "@/components/retirement/SafetyGatesPanel";
 import { SigmaCalibrationCard } from "@/components/retirement/SigmaCalibrationCard";
@@ -40,6 +42,10 @@ export default function RetirementPage() {
       <WithdrawalPolicySelector initialPolicyId="guyton_klinger" />
 
       <StochasticFxCard initialFx={3.4} horizonMonths={360} />
+
+      <GlidePathCard currentAge={43} policy="vanguard_target_date" />
+
+      <RebalancingAlertsCard userId={USER_ID} currentAge={43} />
 
       <BituachLeumiCard
         userId={USER_ID}
