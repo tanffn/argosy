@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Argosy — Retirement Companion User Guide</title>
+<style>
+  :root {
+    --bg: #0a0a0c;
+    --panel: #16161a;
+    --panel-2: #1c1c22;
+    --text: #e8e8ec;
+    --muted: #9a9aa3;
+    --accent: #6366f1;
+    --emerald: #10b981;
+    --amber: #f59e0b;
+    --rose: #f43f5e;
+    --border: #2a2a32;
+    --code-bg: #1a1a20;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    font-size: 16px;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    min-height: 100vh;
+  }
+  nav.toc {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    padding: 24px 20px;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  nav.toc h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 0 0 14px;
+  }
+  nav.toc ol {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    counter-reset: section;
+    font-size: 14px;
+  }
+  nav.toc li { counter-increment: section; margin: 6px 0; }
+  nav.toc li::before {
+    content: counter(section) ". ";
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  nav.toc a {
+    color: var(--text);
+    text-decoration: none;
+    border-bottom: 1px dotted transparent;
+  }
+  nav.toc a:hover {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  main {
+    padding: 48px 64px 96px;
+    max-width: 1000px;
+  }
+  header.hero {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 32px;
+    margin-bottom: 48px;
+  }
+  header.hero h1 {
+    font-size: 36px;
+    margin: 0 0 8px;
+    letter-spacing: -0.01em;
+  }
+  header.hero .sub {
+    color: var(--muted);
+    font-size: 16px;
+  }
+  header.hero .meta {
+    margin-top: 18px;
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  header.hero .meta span { display: flex; align-items: center; gap: 6px; }
+  header.hero .meta strong { color: var(--text); }
+  h2 {
+    font-size: 24px;
+    margin: 48px 0 16px;
+    letter-spacing: -0.005em;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 12px;
+  }
+  h3 {
+    font-size: 18px;
+    margin: 32px 0 12px;
+  }
+  p { margin: 12px 0; }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 13px;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  pre code { background: none; border: none; padding: 0; }
+  figure {
+    margin: 24px 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  figure img {
+    width: 100%;
+    display: block;
+    border-bottom: 1px solid var(--border);
+  }
+  figcaption {
+    padding: 12px 18px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  figcaption strong { color: var(--text); }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: rgba(99, 102, 241, 0.06);
+    padding: 14px 18px;
+    margin: 20px 0;
+    border-radius: 0 6px 6px 0;
+  }
+  .callout.warn { border-left-color: var(--amber); background: rgba(245, 158, 11, 0.06); }
+  .callout.bug  { border-left-color: var(--rose);  background: rgba(244, 63, 94, 0.06); }
+  .callout.ok   { border-left-color: var(--emerald); background: rgba(16, 185, 129, 0.06); }
+  .callout-title {
+    font-weight: 600;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+  .callout.warn .callout-title { color: var(--amber); }
+  .callout.bug  .callout-title { color: var(--rose); }
+  .callout.ok   .callout-title { color: var(--emerald); }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 20px 0;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  tr:last-child td { border-bottom: none; }
+  .nav-card {
+    display: inline-block;
+    padding: 4px 10px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: "SFMono-Regular", Consolas, monospace;
+    font-size: 13px;
+    color: var(--accent);
+  }
+  ul, ol { padding-left: 24px; }
+  li { margin: 6px 0; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
+  .badge.pass  { background: rgba(16, 185, 129, 0.15); color: var(--emerald); }
+  .badge.warn  { background: rgba(245, 158, 11, 0.15); color: var(--amber); }
+  .badge.fail  { background: rgba(244, 63, 94, 0.15);  color: var(--rose); }
+  .badge.neutral { background: rgba(154, 154, 163, 0.15); color: var(--muted); }
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 32px 0;
+  }
+  .arrow { color: var(--accent); margin: 0 6px; }
+  details { margin: 12px 0; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  details > *:not(summary) { margin-left: 16px; }
+  @media print {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { display: none; }
+    main { padding: 24px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#intro">What Argosy is</a></li>
+    <li><a href="#shape">Site shape</a></li>
+    <li><a href="#first-run">First-time setup</a></li>
+    <li><a href="#daily">Daily / weekly use</a></li>
+    <li><a href="#retirement-page">The Retirement page</a></li>
+    <li><a href="#hero">Hero verdict</a></li>
+    <li><a href="#safety">Safety gates</a></li>
+    <li><a href="#israeli-facts">Israeli structural facts</a></li>
+    <li><a href="#predictions">Prediction trust layer</a></li>
+    <li><a href="#decision-policy">Decision policy</a></li>
+    <li><a href="#expenses">Expense modeling</a></li>
+    <li><a href="#tax">Tax</a></li>
+    <li><a href="#decumulation">Decumulation</a></li>
+    <li><a href="#balance-sheet">Balance sheet</a></li>
+    <li><a href="#risk-transfer">Risk transfer</a></li>
+    <li><a href="#sources">Sources panel</a></li>
+    <li><a href="#tooltip-convention">Tooltip convention</a></li>
+    <li><a href="#decision-loop">Your decision loop</a></li>
+    <li><a href="#triggers">Replan triggers</a></li>
+    <li><a href="#bugs">Bugs + UX issues found</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="hero">
+  <h1>Argosy — Retirement Companion User Guide</h1>
+  <p class="sub">How to actually use the site, with real screenshots of the live page at <code>http://localhost:1337/retirement</code>.</p>
+  <div class="meta">
+    <span><strong>Audience:</strong> Ariel (single-user mode)</span>
+    <span><strong>Pages covered:</strong> Home · Advisor · Plan · Retirement · Files</span>
+    <span><strong>Screenshots:</strong> live capture via Playwright on 2026-05-28</span>
+    <span><strong>Bug log:</strong> <code>docs/user-guide/bug_log.json</code></span>
+  </div>
+</header>
+
+<!-- ============================================================ -->
+<section id="intro">
+<h2>1. What Argosy is</h2>
+
+<p>Argosy is a personal-finance system glued together from two pieces:</p>
+
+<ol>
+  <li>An <strong>always-on Python orchestrator</strong> that watches your portfolio and the wider market continuously — prices, news, macro releases, your plan-adherence — running a few different rhythms (minute loop during market hours, hour loop, daily brief at 09:00, weekly review Sunday evening, monthly cycle on the 1st, annual sweep in January).</li>
+  <li>A <strong>Next.js dashboard</strong> at <code>localhost:1337</code> where you read the state, approve proposals, and negotiate with the agent fleet.</li>
+</ol>
+
+<p>The engine never asks you to act unless something interesting happens; when it does it convenes a fleet of AI specialists (analysts, debate, risk, fund manager) who debate the move before it reaches you.</p>
+
+<div class="callout">
+  <div class="callout-title">What's new (May 2026)</div>
+  The <strong>Retirement page</strong> is a dedicated long-term truth-teller. It's separate from the Plan page (which tracks short-term decisions). 30 gaps from the 2026-05-28 design review are closed; 17 cards on <code>/retirement</code> cover P-of-ruin verdict, safety gates, Israeli pension structure, prediction trust layer, decision policy, expenses, tax, decumulation, balance sheet, and risk transfer.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="shape">
+<h2>2. Site shape</h2>
+
+<p>The top nav has 13 tabs. From left to right:</p>
+
+<table>
+  <thead><tr><th>Tab</th><th>What it's for</th><th>How often you visit</th></tr></thead>
+  <tbody>
+    <tr><td><span class="nav-card">/</span></td><td>Morning glance — banners, action items, anomalies</td><td>Daily</td></tr>
+    <tr><td><span class="nav-card">/advisor</span></td><td>Intake. 11-stage gap tracker covering ~75 fields. Persistent panel — first-run AND every check-in.</td><td>First-run heavy; then monthly</td></tr>
+    <tr><td><span class="nav-card">/portfolio</span></td><td>Today's positions + wealth dashboard (top of page).</td><td>Weekly</td></tr>
+    <tr><td><span class="nav-card">/expenses</span></td><td>Household-budget surface with sub-tabs (Monthly · Transactions · Sources · Merchants · Trips · RSU · Income).</td><td>Weekly</td></tr>
+    <tr><td><span class="nav-card">/plan</span></td><td>The current draft plan from the agent fleet. Per-objection AGREE/DISAGREE/DEFER.</td><td>When synthesis lands</td></tr>
+    <tr><td><span class="nav-card">/retirement</span></td><td><strong>This guide's focus.</strong> Long-term retirement truth-teller.</td><td>Monthly + on-trigger</td></tr>
+    <tr><td><span class="nav-card">/decide</span></td><td>Open decision flows in flight.</td><td>When the system surfaces one</td></tr>
+    <tr><td><span class="nav-card">/proposals</span></td><td>Queue of trade proposals awaiting your approval.</td><td>Daily</td></tr>
+    <tr><td><span class="nav-card">/argonaut</span></td><td>The bounded auto-trading account ($1K cap).</td><td>Monthly check-in</td></tr>
+    <tr><td><span class="nav-card">/agents</span></td><td>Agent fleet activity log.</td><td>When debugging</td></tr>
+    <tr><td><span class="nav-card">/files</span></td><td>Audit-traceable file catalog (every upload).</td><td>When ingesting bank/Schwab CSVs</td></tr>
+    <tr><td><span class="nav-card">/audit</span></td><td>Full decision audit log.</td><td>Rarely (provenance research)</td></tr>
+    <tr><td><span class="nav-card">/domain-kb</span></td><td>Israel-resident knowledge base (tax, UCITS, etc.).</td><td>Reference</td></tr>
+    <tr><td><span class="nav-card">/settings</span></td><td>Per-feature config.</td><td>Setup only</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ============================================================ -->
+<section id="first-run">
+<h2>3. First-time setup (one-time, ~30 minutes)</h2>
+
+<h3>Step 1 — Tell Argosy who you are <span class="arrow">→</span> <span class="nav-card">/advisor</span></h3>
+
+<p>The Advisor tab is the persistent intake panel. Side panel shows every required field as <span class="badge pass">fresh</span> <span class="badge warn">stale</span> <span class="badge fail">missing</span>. The advisor operates in <em>gap_driven mode</em> when you open it cold — it asks for the highest-impact missing fields first. RSU vest schedule, pension balances, mortgage details, kids' birth years (drives IDF service phase + education planning), partner's career, real estate.</p>
+
+<p>You don't fill it all at once. Each answer narrows the projection. When you're done the gap tracker is mostly green.</p>
+
+<h3>Step 2 — Upload your data <span class="arrow">→</span> <span class="nav-card">/files</span></h3>
+
+<p>Bank statements (Leumi, Discount, Cal), Schwab CSVs, portfolio TSV snapshots, identity_yaml. Every upload goes through <code>catalog_upload()</code> so it's audit-traceable forever. Argosy ingests in the background; dashboards populate.</p>
+
+<div class="callout">
+  <div class="callout-title">Convention</div>
+  Every byte-blob you give Argosy passes through one helper (<code>argosy/services/file_catalog.py::catalog_upload</code>). The partial unique index <code>(user_id, sha256)</code> makes the helper idempotent — re-uploading the same file returns the existing row.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="daily">
+<h2>4. Daily / weekly cadence</h2>
+
+<p><strong>Morning:</strong> open <span class="nav-card">/</span>. Banners surface (in-flight synthesis · fleet-self-review · NVDA-PACE-vs-target · action items widget). If a safety gate trips or a recurring expense disappears, you'll see it here first.</p>
+
+<p><strong>When the agent fleet finishes a synthesis:</strong> open <span class="nav-card">/plan</span>. Per-FM-objection AGREE/DISAGREE/DEFER toggles let you push back on any verdict; "Start new round with my decisions" re-runs the fleet with your directive.</p>
+
+<p><strong>When you're thinking long-term:</strong> open <span class="nav-card">/retirement</span>. That's what the rest of this guide covers.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="retirement-page">
+<h2>5. The Retirement page</h2>
+
+<p><span class="nav-card">/retirement</span> is the page that answers <strong>"can I retire? when? at what risk?"</strong> — separate from Plan because the timescales are different. Plan tracks short-term decisions ("trim NVDA by $20K this week"); Retirement tracks the 30-year math.</p>
+
+<p>17 cards in display order. Top-of-page is the verdict; everything below explains the verdict + lets you stress-test it.</p>
+
+<figure>
+  <img src="screenshots/00-full-page.png" alt="Full retirement page">
+  <figcaption><strong>Full page</strong> — top to bottom view. Hero verdict at the top, safety gates, then the supporting cards. Scrolls long because every concept gets its own card with hover-explain + Methodology + Sources drilldowns.</figcaption>
+</figure>
+</section>
+
+<!-- ============================================================ -->
+<section id="hero">
+<h2>6. Hero verdict</h2>
+
+<figure>
+  <img src="screenshots/01-retirement-readiness.png" alt="Retirement readiness hero card">
+  <figcaption><strong>Card 1 — Retirement readiness.</strong> The top-of-page verdict.</figcaption>
+</figure>
+
+<p>The single most important number on the page. Reads top-to-bottom:</p>
+
+<ol>
+  <li><strong>Status dot + label.</strong> Red dot + <span class="badge fail">OFF TRACK</span> in this capture. Green dot would be <span class="badge pass">ON TRACK</span>; amber <span class="badge warn">WARN</span>; gray <span class="badge neutral">UNCERTAIN</span> when the confidence interval straddles the target.</li>
+  <li><strong>Title + retirement age assumption.</strong> "P(solvent through 95) under 90% target, retiring at age 49, with sequence-of-returns risk modeled."</li>
+  <li><strong>Three percentile numbers.</strong> P(solvent at 75 / 85 / 95). At 95 the bootstrap 95% confidence interval is shown below in small type (<code>95% CI: [55% – 59%]</code>). The CI is what drives the verdict — <strong>ON_TRACK</strong> requires the CI lower bound ≥ target; <strong>OFF_TRACK</strong> requires CI upper bound &lt; target; otherwise <strong>UNCERTAIN</strong>.</li>
+  <li><strong>One-sentence action.</strong> "OFF TRACK — P(solvent at 95) is 57%, below target 90% by 33pp. Likely levers: delay retirement, reduce expenses, or build cash buffer; the Sensitivity panel ranks the highest-impact actions."</li>
+  <li><strong>Methodology drilldown</strong> (click to expand).</li>
+</ol>
+
+<div class="callout ok">
+  <div class="callout-title">Why this is the truth-teller</div>
+  Under the regime-switch Monte Carlo engine (3 states: calm / turbulent / crisis with Markov transitions calibrated to post-1970 S&amp;P 500 data) + a USD/NIS volatility uplift on your USD-heavy portfolio, the verdict is dramatically less optimistic than a naive lognormal model would say. The page won't lie to you. If it says 57% solvent at 95, that's the honest fat-tail-aware number.
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="safety">
+<h2>7. Safety gates</h2>
+
+<figure>
+  <img src="screenshots/02-safety-gates.png" alt="Safety gates panel">
+  <figcaption><strong>Card 2 — Safety gates.</strong> Three hard-blocks for plan approval. Even if the hero verdict is green, a failing gate here means "don't approve the plan until this is fixed."</figcaption>
+</figure>
+
+<p>Each gate is a separate tile with a status dot, headline number, threshold, and a concrete action:</p>
+
+<ul>
+  <li><strong>US NRA estate exposure</strong> <span class="badge fail">FAIL</span> — Your US-situs assets (NVDA + US-domiciled ETFs at Schwab; UCITS + cash excluded per IRS rules) vs. the $60K NRA exemption. At ~$2.345M you're $2.285M over. Action: "Begin UCITS migration NOW. Sudden-death scenario triggers federal estate tax up to 40%."</li>
+  <li><strong>Emergency liquidity</strong> <span class="badge pass">PASS</span> — Cash buffer in months of essential expenses (essential = burn × 60%). Healthy at 39.9 months vs. 12-month target.</li>
+  <li><strong>Conflict scenario stress</strong> <span class="badge fail">FAIL</span> — P(ruin at 85) under stressed parameters (σ=0.40, inflation=6%, lifestyle_drift=2%). At 90.7% ruin probability, far over the 30% threshold.</li>
+</ul>
+
+<p>The gates are intentional safeguards <em>independent</em> of the hero verdict — even a green retirement readiness verdict gets blocked from "approved" if any gate is red.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="israeli-facts">
+<h2>8. Israeli structural facts</h2>
+
+<figure>
+  <img src="screenshots/03-bituach-leumi-stipend.png" alt="Bituach Leumi stipend card">
+  <figcaption><strong>Card 3 — Bituach Leumi stipend.</strong> Israeli social-security old-age stipend, payable from age 67. Was missing from prior projections (worth ₪500K-1M+ NPV).</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Central estimate</strong> ₪1,680/mo for your profile (base × history factor of 0.80 since you have ~28 of 35 insured years).</li>
+  <li><strong>Pessimistic band</strong> ₪1,512 — what you get if rate adjustments are unfavorable + history shortfall is worse than assumed.</li>
+  <li><strong>Optimistic band</strong> ₪1,764 — if spouse becomes eligible and shading goes the other way.</li>
+  <li><strong>HISTORY 80%</strong> badge — under-full eligibility. To get a HISTORY 100% badge, contribute 7 more insured years.</li>
+  <li><strong>Sensitivity drilldown</strong> ranks the levers ("complete contribution history to 35y → +X NIS/mo", "spouse eligibility → +50%", "delay claiming past 67 → ~5%/yr boost").</li>
+</ul>
+
+<figure>
+  <img src="screenshots/04-mekadem-clal-kupat-pensia.png" alt="Mekadem band card">
+  <figcaption><strong>Card 4 — Mekadem · Clal kupat pensia.</strong> Annuity coefficient at retirement age 67. Annuity = balance / mekadem, so a lower mekadem means a higher monthly annuity.</figcaption>
+</figure>
+
+<p>Three values shown:</p>
+<ul>
+  <li><strong>Low (favorable):</strong> 195 — annuity ≈ ₪7,692/mo (if mekadem turns out lower than typical)</li>
+  <li><strong>Typical:</strong> 200 — annuity ≈ ₪7,500/mo (published Clal value)</li>
+  <li><strong>High (unfavorable):</strong> 205 — annuity ≈ ₪7,317/mo</li>
+</ul>
+
+<p>The band width (±2.5%) covers spouse-benefit toggle + mortality-table generation envelope. To replace the band with your exact policy mekadem, add it to <code>identity_yaml.retirement_reference_overrides.mekadem.clal_pensia</code>.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="predictions">
+<h2>9. Prediction trust layer</h2>
+
+<figure>
+  <img src="screenshots/05-portfolio-volatility.png" alt="Sigma calibration card">
+  <figcaption><strong>Card 5 — Portfolio volatility (σ).</strong> Auto-calibrated from your actual holdings.</figcaption>
+</figure>
+
+<p>At <strong>34.4%</strong> with a <span class="badge fail">CONCENTRATED</span> badge. Weighted average of asset-class volatilities — the NVDA concentration drives σ way above the diversified-equity default of 0.18. Per-class breakdown is hidden inside the drilldown.</p>
+
+<figure>
+  <img src="screenshots/06-withdrawal-policy.png" alt="Withdrawal policy selector">
+  <figcaption><strong>Card 6 — Withdrawal policy.</strong> Pick the spend-down rule. The hero verdict above re-runs the Monte Carlo through the selected policy.</figcaption>
+</figure>
+
+<ul>
+  <li><strong>Bengen 4% (fixed-real)</strong> — original 1994 safe-withdrawal rate. Simple but vulnerable to early sequence shocks.</li>
+  <li><strong>Guyton-Klinger guardrails</strong> ← default. 5% initial WR with ratchet/cut rules. Best-empirically-tested for concentrated-asset households.</li>
+  <li><strong>Variable Percentage Withdrawal</strong> — % of CURRENT balance per age band. Zero literal-zero ruin risk; income varies.</li>
+  <li><strong>Bucket strategy</strong> — Bengen-like but caps draw at 5% of remaining portfolio in stressed years.</li>
+</ul>
+
+<p>Each radio button has a hover-readable rationale and a <code>source: bengen_1994</code> / <code>guyton_klinger_2006</code> citation that links to the Sources panel at the bottom of the page.</p>
+
+<figure>
+  <img src="screenshots/07-usd-nis-forecast.png" alt="USD/NIS stochastic forecast">
+  <figcaption><strong>Card 7 — USD/NIS forecast · 30y horizon.</strong> Lognormal random walk on USD/NIS spot.</figcaption>
+</figure>
+
+<p>P10/P25/P50/P75/P90 percentile band at the 30-year horizon. The P10–P90 spread tells you how wide your retirement adequacy could swing from FX alone. <strong>For a USD-asset / NIS-liability household this is the #1 silent risk</strong> in projections that use a fixed snapshot FX rate.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="decision-policy">
+<h2>10. Decision policy</h2>
+
+<figure>
+  <img src="screenshots/08-glide-path.png" alt="Glide path chart">
+  <figcaption><strong>Card 8 — Glide path · vanguard target date.</strong> Target equity/bond/cash allocation by age. Vertical yellow dashed line marks today (age 43).</figcaption>
+</figure>
+
+<p>Reads as a stacked-area chart: equity (blue) collapses from ~90% at age 30 to 50% at 65 to 40% at 75+. Bonds (teal) rise inversely. Cash (purple) is a thin sliver throughout.</p>
+
+<figure>
+  <img src="screenshots/09-rebalancing-alerts.png" alt="Rebalancing alerts">
+  <figcaption><strong>Card 9 — Rebalancing alerts.</strong> 5/25 rule + quarterly check. Fires when any asset class is &gt; 5pp off target or &gt; 25% relative drift.</figcaption>
+</figure>
+
+<p>Each alert tile shows actual % vs target % vs signed drift in percentage points + a concrete buy/sell proposal sized in USD ("Trim ~$XXX of equity to reach target 77%"). When all classes are within band, the card shows a single <span class="badge pass">ALIGNED</span> message.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="expenses">
+<h2>11. Expense modeling</h2>
+
+<figure>
+  <img src="screenshots/10-expense-phases-over-life.png" alt="Phase expenses card">
+  <figcaption><strong>Card 10 — Expense phases over life.</strong> Moves beyond flat × inflation.</figcaption>
+</figure>
+
+<p>Four phases:</p>
+<ul>
+  <li><strong>kids_peak</strong> 1.10× (ages 43-55; lessons + college prep)</li>
+  <li><strong>empty_nest</strong> 0.85× (56-64)</li>
+  <li><strong>healthcare_ramp</strong> 1.10× + 1.5%/yr above CPI (65-80)</li>
+  <li><strong>late_life_ltc</strong> 1.15× + 3%/yr (81-95)</li>
+</ul>
+
+<figure>
+  <img src="screenshots/11-healthcare-cost-curve.png" alt="Healthcare cost curve">
+  <figcaption><strong>Card 11 — Healthcare cost curve.</strong> Israeli household healthcare expense by age. Stepped area chart from ₪600/mo &lt;55 to ₪4,000/mo at 85+.</figcaption>
+</figure>
+
+<p>At age 70 healthcare is shown as a fraction of your household burn — surfaced as a tooltip-explainable number above the chart.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="tax">
+<h2>12. Tax</h2>
+
+<figure>
+  <img src="screenshots/12-tax-calculator.png" alt="Tax breakdown calculator">
+  <figcaption><strong>Card 12 — Tax calculator.</strong> Interactive — pick a source + gross amount, get the 6-cell breakdown.</figcaption>
+</figure>
+
+<p>Source selector: Capital gain (Israeli equity) · US-source dividend (FTC) · Israeli dividend · Pension annuity (post-67) · Salary · RSU vest. Output: gross, Israeli tax, US treaty credit, Bituach Leumi, net, effective rate.</p>
+
+<p>For US dividends the engine uses the foreign-tax-credit interaction (Israeli 25% on gross minus 15% US treaty withholding, never negative) per the 1995 US-Israel treaty. For pension annuity post-67, the rights-fixation exemption regime (57% in 2025 stepping to 67% by 2030) applies to the qualifying portion before marginal tax.</p>
+
+<figure>
+  <img src="screenshots/13-hishtalmut-eligibility.png" alt="Hishtalmut timer">
+  <figcaption><strong>Card 13 — Hishtalmut eligibility.</strong> §3(e) two-path tax-free check.</figcaption>
+</figure>
+
+<p>Shows whether you can withdraw hishtalmut tax-free RIGHT NOW (badge: <span class="badge pass">TAX-FREE NOW</span> if either path is met, otherwise <span class="badge warn">WAITING</span> with countdown). The two paths are independent:</p>
+<ul>
+  <li><strong>6-year-from-first-deposit</strong> (employee-deposited)</li>
+  <li><strong>Age-67 lump</strong> (any holding period)</li>
+</ul>
+<p>If neither is met, the card shows "× XX% marginal" — what the early-withdrawal tax would be.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="decumulation">
+<h2>13. Decumulation</h2>
+
+<figure>
+  <img src="screenshots/14-decumulation-order.png" alt="Decumulation order">
+  <figcaption><strong>Card 14 — Decumulation order.</strong> Which account to draw from first.</figcaption>
+</figure>
+
+<p>Numbered list — each step is one account with the monthly draw + rationale. The default order respects Israeli tax efficiency:</p>
+<ol>
+  <li><strong>Pension annuity</strong> (post-67; already-converted, taxed under rights-fixation)</li>
+  <li><strong>Taxable accounts</strong> (only gains taxed at 25%; cost-basis returns tax-free)</li>
+  <li><strong>Kupat gemel</strong> (per-vehicle rules; pre-2008 vs post-2008)</li>
+  <li><strong>Hishtalmut last</strong> (tax-free path; maximize compounding)</li>
+</ol>
+
+<figure>
+  <img src="screenshots/15-lump-vs-annuity-at-age-67.png" alt="Lump vs annuity card">
+  <figcaption><strong>Card 15 — Lump vs annuity at age 67.</strong> Three-path comparison when pension converts.</figcaption>
+</figure>
+
+<p>Three tiles side-by-side (Full annuity / Full lump / 50-50 split). The recommendation badge at the top right says which path the heuristic picks; the matching tile gets a colored outline. Recommendation logic:</p>
+<ul>
+  <li>If monthly annuity covers monthly expense need → <strong>take annuity</strong> (safest; eliminates sequence-of-returns risk on essential expenses)</li>
+  <li>If 4%-rule lump &gt; annuity × 1.5 → <strong>take lump</strong> (worth the upside)</li>
+  <li>Otherwise → <strong>split 50/50</strong> (annuity floor + lump upside)</li>
+</ul>
+</section>
+
+<!-- ============================================================ -->
+<section id="balance-sheet">
+<h2>14. Balance sheet</h2>
+
+<figure>
+  <img src="screenshots/16-real-estate-mortgage.png" alt="Real estate + mortgage card">
+  <figcaption><strong>Card 16 — Real estate + mortgage.</strong> Primary residence equity + amortization schedule.</figcaption>
+</figure>
+
+<p>Top: 3-cell grid showing Value / Mortgage / Equity (in green when positive). Below: amortization line chart of remaining principal over time, dropping smoothly to ₪0 at the end of the term. Total interest paid over the life of the loan is called out above the chart.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="risk-transfer">
+<h2>15. Risk transfer</h2>
+
+<figure>
+  <img src="screenshots/17-insurance-gaps.png" alt="Insurance gaps card">
+  <figcaption><strong>Card 17 — Insurance gaps.</strong> Four insurance types audited against recommended coverage.</figcaption>
+</figure>
+
+<p>Each row shows recommended vs actual + a colored badge (<span class="badge warn">GAP</span> if shortfall, <span class="badge pass">ADEQUATE</span> if covered) + a concrete next action ("Increase life coverage by ₪6,200,000"). Four types: Life · Disability · Long-term care · Bituach Mashlim.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="sources">
+<h2>16. Sources panel</h2>
+
+<figure>
+  <img src="screenshots/99-sources-panel-open.png" alt="Sources panel open">
+  <figcaption><strong>Sources panel</strong> — at the very bottom of the page, expanded. Shows every citation used on the page with kind badge + URL + as-of date.</figcaption>
+</figure>
+
+<p>Every value on the page has a <code>source_id</code> field that points to a registry entry. The Sources panel renders those entries as a numbered bibliography. Kind badges:</p>
+<ul>
+  <li><span class="badge pass">official</span> — Bituach Leumi tables, Israel Tax Authority procedures, IRS publications, US-Israel treaty</li>
+  <li><span class="badge neutral">research</span> — Bengen 1994 + 2020, Guyton-Klinger 2006, Trinity study, Damodaran ERP, Vanguard CMM, Bogleheads</li>
+  <li><span class="badge warn">best_effort</span> — Pension fund tables (Clal, Migdal, Menorah) where exact values may differ per-policy</li>
+  <li><span class="badge neutral">derived</span> — Argosy computations marker</li>
+</ul>
+
+<p>Currently 19 sources in the registry. Add per-user sources via <code>argosy/data/sources_user.yaml</code> (gitignored).</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="tooltip-convention">
+<h2>17. Tooltip convention</h2>
+
+<p>Every number on every retirement page is wrapped in the same hover-explain primitive. Look for the dotted-underline:</p>
+
+<ul>
+  <li><strong>Mouse over (or focus via Tab key)</strong> → popover appears.</li>
+  <li><strong>Popover shows:</strong> value with units, rationale (1-3 sentences), alternatives considered, freshness warning if the source is stale, and a <code>src: source_id · YYYY-MM</code> footer.</li>
+  <li><strong>Click the source link</strong> → page scrolls to the Sources panel and highlights that entry.</li>
+</ul>
+
+<p>The whole page reads like a research paper that happens to be a dashboard. If a number surprises you, hover it; if you don't trust the source, scroll to Sources and read the citation.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="decision-loop">
+<h2>18. Your decision loop</h2>
+
+<ol>
+  <li>Open <span class="nav-card">/retirement</span> Monday morning.</li>
+  <li><strong>Glance at the hero.</strong> Green ON_TRACK? → close the tab, nothing to do. Amber WARN or gray UNCERTAIN? → keep reading. Red OFF_TRACK? → this is your week's priority.</li>
+  <li><strong>Check the Safety Gates row.</strong> Any FAIL? → that's the highest-leverage fix (right now: UCITS migration to address NRA estate exposure).</li>
+  <li><strong>Try the Withdrawal Policy selector.</strong> Switch from Guyton-Klinger to Bengen / VPW / Bucket. Watch the hero re-compute. If nothing moves it materially, the projection is constrained by something structural (income vs expenses, not policy choice).</li>
+  <li><strong>Look for the Sensitivity drilldowns</strong> inside each card. Each one ranks the top 3 levers that move that card's number.</li>
+  <li><strong>If the page is telling you "your plan doesn't work,"</strong> open <span class="nav-card">/plan</span> and use the per-objection AGREE/DISAGREE/DEFER toggles to negotiate with the agent fleet on what assumptions to revise.</li>
+  <li><strong>Acute action items</strong> (this week / this month) live on <span class="nav-card">/</span> Home, in the Action items widget. The Retirement page surfaces the long-term picture; Home surfaces what's due now.</li>
+</ol>
+</section>
+
+<!-- ============================================================ -->
+<section id="triggers">
+<h2>19. Replan triggers</h2>
+
+<p>You don't have to remember to re-check. Argosy fires automatic recomputes on:</p>
+
+<ul>
+  <li>Market drawdown &gt; 15% peak-to-trough</li>
+  <li>Job change (yours or partner's)</li>
+  <li>Tax law change (ITA or Bituach Leumi rule update)</li>
+  <li>Health event (LTC onset, major illness)</li>
+  <li>FX shock &gt; 10% in a month</li>
+  <li>Life event (birth, death, marriage, divorce, kid IDF service start)</li>
+  <li>User request via the page</li>
+</ul>
+
+<p>When a trigger fires the verdict re-runs and the home banner shows what changed.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="bugs">
+<h2>20. Bugs + UX issues found during this capture</h2>
+
+<p>Live Playwright run on 2026-05-28: 17/17 cards rendered, 0 console errors, 0 failed network requests. But the screenshots surface real UX issues worth fixing:</p>
+
+<div class="callout bug">
+  <div class="callout-title">Bug #1 — Sigma calibration result isn't fed into the verdict</div>
+  The Portfolio volatility card auto-calibrates to <strong>34.4%</strong> for the NVDA-heavy portfolio, but the hero verdict's Monte Carlo uses the default <code>sigma_annual</code> from <code>compute_ruin_probability</code> (0.18). The UI's <code>RuinProbabilityHero</code> doesn't pass the calibrated σ as a query param. Net effect: the card's number is right but the verdict isn't actually consuming it.<br><br>
+  <strong>Fix:</strong> Pass <code>sigma_annual</code> from the SigmaCalibrationCard's result through the page state to the hero. Currently both run independently. (Note: the regime-switch engine has its own per-regime σ values that override this anyway, so the impact is most visible when the user toggles to <code>engine=calm</code> for the legacy lognormal path.)
+</div>
+
+<div class="callout bug">
+  <div class="callout-title">Bug #2 — Lump-vs-annuity card has redundant "split" text</div>
+  Card title shows <span class="badge warn">SPLIT 50/50</span> badge — correct. The description line below the title shows just the word <code>split</code> as plain text (the recommendation enum value rendered raw instead of being formatted into a sentence). Should either be removed or expanded into the rationale text.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">UX issue #3 — "Coming up" card on /retirement is stale</div>
+  The page still has a "Coming up" card listing Waves 1-7 as upcoming work, but all 7 waves have shipped. Should be removed or replaced with a "What changed in the last 30 days" card driven by replan triggers.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">UX issue #4 — Both Guyton-Klinger and VPW are OFF_TRACK under regime-switch</div>
+  Under fat-tail regime-switching at Ariel's profile (high burn relative to portfolio), both Guyton-Klinger AND VPW return OFF_TRACK. That's the truth — VPW eliminates literal-zero ruin but doesn't eliminate under-essential-expense risk — but the UX doesn't make this clear. A user toggling between policies sees the verdict stay OFF_TRACK and might think the selector is broken. Consider adding a per-policy verdict caveat: "VPW eliminates literal-zero ruin but you'd be spending below essential expenses in X% of paths."
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">UX issue #5 — No visible link between policy selector and hero</div>
+  Picking a different withdrawal policy DOES re-fetch the hero verdict (verified live), but there's no visual indicator while the new Monte Carlo runs (~1-2 seconds at n_paths=2000 + regime-switch). The hero just sits with its prior numbers, then suddenly updates. A subtle "re-running..." indicator would prevent users from thinking the toggle didn't fire.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">UX issue #6 — Long scroll without section anchors</div>
+  17 cards on one page is a lot. There's no jump-to-section nav inside the page itself. Consider adding either (a) a sticky right-side mini-TOC, or (b) collapsing some cards by default behind a "Show all" toggle.
+</div>
+
+<div class="callout ok">
+  <div class="callout-title">Working well</div>
+  <ul>
+    <li>All 17 cards render without console errors or network failures.</li>
+    <li>Hero verdict updates correctly when policy changes (server roundtrip ~1-2s).</li>
+    <li>The Sources panel opens cleanly and shows all 19 registered sources with kind badges.</li>
+    <li>The §0.1 visualization standard (Hero + Chart + Drilldown) is consistent across every card.</li>
+    <li>All values are dotted-underline tooltip-explainable.</li>
+    <li>Real numbers come from real computations: BL ₪1,680/mo at 80% history, mekadem 195/200/205 band, NRA exposure $2.345M, etc.</li>
+  </ul>
+</div>
+
+<hr>
+
+<p style="color: var(--muted); font-size: 13px;">
+  Generated 2026-05-28. Screenshots via Playwright + Chromium 1.59.0 at viewport 1400×900, device scale 1.
+  Source: <code>argosy/services/.progress/user_guide/capture.py</code>.
+  Bug log: <code>docs/user-guide/bug_log.json</code>.
+</p>
+</section>
+
+</main>
+</div>
+</body>
+</html>
