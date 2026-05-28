@@ -6,6 +6,8 @@ without touching the cross-cutting plumbing here.
 
 Plan: ``docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md``.
 """
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -70,6 +72,12 @@ from argosy.services.retirement.severance import (
     extract_severance_state,
 )
 from argosy.services.retirement.tax_engine import TaxableCashflow, compute_tax
+from argosy.services.retirement.windfall_allocator import propose_allocations
+from argosy.services.retirement.windfall_detector import (
+    DEFAULT_THRESHOLD_NIS,
+    DEFAULT_THRESHOLD_USD,
+    detect_windfall,
+)
 from argosy.services.retirement.withdrawal_policy import list_policies
 
 router = APIRouter(prefix="/retirement", tags=["retirement"])
@@ -781,6 +789,101 @@ def get_stochastic_fx(
         "horizon_months": months,
         "initial_fx": initial_fx,
         "bands": {k: as_dict(v) for k, v in bands.items()},
+    }
+
+
+# Windfall flow — closes user-guide hole #1 (Add income event discoverability)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def _latest_two_tsvs(tsv_root: Path) -> tuple[Path | None, Path | None]:
+    """Return (latest_tsv, previous_tsv) by file-modified time. Filters by
+    the canonical 'Family Finances Status - * .tsv' prefix."""
+    if not tsv_root.exists():
+        return None, None
+    tsvs = sorted(
+        tsv_root.glob("Family Finances Status - *.tsv"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return (
+        tsvs[0] if len(tsvs) >= 1 else None,
+        tsvs[1] if len(tsvs) >= 2 else None,
+    )
+
+
+@router.get("/windfall/detect")
+def get_windfall_detect(
+    threshold_usd: float = DEFAULT_THRESHOLD_USD,
+    threshold_nis: float = DEFAULT_THRESHOLD_NIS,
+) -> dict:
+    """Detect a windfall by diffing the two most recent TSV snapshots.
+
+    Returns the detected event + a ranked allocation plan (long/medium/
+    short horizons). When no event is found, returns ``{"event": None}``.
+
+    User spec (2026-05-28):
+      - Fires only when cash delta > $25K USD OR > ₪75K NIS
+      - Auto-classifies via matching equity sales (5% tolerance)
+      - Long-term proposals close plan-target gaps (deterministic)
+      - Medium + short horizons handed off to the agent fleet (placeholder)
+    """
+    import os
+    samples_root = os.environ.get(
+        "ARGOSY_EXPENSE_SAMPLES_ROOT",
+        "D:/Google Drive/Family/Finances/Portfolio/Resources",
+    )
+    cur, prev = _latest_two_tsvs(Path(samples_root))
+    if cur is None or prev is None:
+        return {"event": None, "reason": "fewer than 2 TSVs found"}
+
+    event = detect_windfall(
+        cur, prev,
+        threshold_usd=threshold_usd,
+        threshold_nis=threshold_nis,
+    )
+    if event is None:
+        return {
+            "event": None,
+            "reason": "no windfall above threshold",
+            "current_tsv": cur.name,
+            "previous_tsv": prev.name,
+        }
+
+    plan = propose_allocations(event)
+    return {
+        "event": {
+            "detected_at": event.detected_at.isoformat(),
+            "cash_delta_usd": event.cash_delta_usd,
+            "cash_delta_nis": event.cash_delta_nis,
+            "cash_delta_total_usd_equiv": event.cash_delta_total_usd_equiv,
+            "fx_usd_nis": event.fx_usd_nis,
+            "classified_source": event.classified_source,
+            "requires_user_classification": event.requires_user_classification,
+            "matching_sales": [
+                {
+                    "symbol": s.symbol,
+                    "shares_sold": s.shares_sold,
+                    "current_price": s.current_price,
+                    "value_usd": round(s.value_usd, 2),
+                }
+                for s in event.matching_sales
+            ],
+            "allocation_delta_table": [
+                {
+                    "asset_class": l.asset_class,
+                    "current_pct": l.current_pct,
+                    "current_k_usd": l.current_k_usd,
+                    "target_pct": l.target_pct,
+                    "target_k_usd": l.target_k_usd,
+                    "delta_k_usd": l.delta_k_usd,
+                }
+                for l in event.allocation_delta_table
+            ],
+            "source_tsv": Path(event.source_tsv).name,
+            "previous_tsv": Path(event.previous_tsv).name if event.previous_tsv else None,
+        },
+        "plan": plan.to_dict(),
     }
 
 
