@@ -359,7 +359,13 @@ The 2026-05-28 SDD review (Codex + Explore agent + main-agent synthesis) identif
 |---|---|---|
 | 1.1-1.5 | `2e9917a` | Mekadem variance band (Clal/Migdal/Menorah; ±2.5% envelope) + Bituach Leumi stipend module (history-factor scale, spouse supplement, sensitivity levers) + `/api/retirement/mekadem/{fund_id}` + `/api/retirement/bituach-leumi` routes + `<MekademBand>` + `<BituachLeumiCard>` UI cards on `/retirement`. 28 new tests; full retirement suite 52/52 passing. |
 
-**Waves 2-7 are NOT yet started.** Each wave's just-in-time daughter plan expands the master plan's spec-level detail into full TDD steps at execution time.
+**Wave 2 (Safety gates — NRA estate + Emergency liquidity) — SHIPPED 2026-05-28:**
+
+| Task | Commits | What |
+|---|---|---|
+| 2.1-2.5 | `f7b0dd5` | GateVerdict dataclass + NraEstateGate (US-situs assets vs $60K IRS exemption; PASS/WARN/FAIL at $60K/$200K thresholds; UCITS + cash excluded per IRS NRA rules) + LiquidityGate (cash buffer in months of essential expenses; essential=burn×60%; default 12mo floor; USD-FX-converted to NIS) + `/api/retirement/safety-gates` route + `<SafetyGatesPanel>` 3-tile grid UI on `/retirement` (3rd tile reserved for ConflictScenarioGate in Wave 3.6). 10 new tests; full retirement suite 62/62. |
+
+**Waves 3-7 are NOT yet started.** Each wave's just-in-time daughter plan expands the master plan's spec-level detail into full TDD steps at execution time.
 
 ### Cashflow projection pivot (2026-05-27 evening) — `/plan` chart pivot + Monte Carlo
 
