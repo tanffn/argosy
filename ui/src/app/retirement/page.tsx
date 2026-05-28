@@ -7,16 +7,24 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { BituachLeumiCard } from "@/components/retirement/BituachLeumiCard";
+import { DecumulationOrderCard } from "@/components/retirement/DecumulationOrderCard";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
 import { GlidePathCard } from "@/components/retirement/GlidePathCard";
+import { HealthcareCurveCard } from "@/components/retirement/HealthcareCurveCard";
+import { HishtalmutTimerCard } from "@/components/retirement/HishtalmutTimerCard";
+import { InsuranceGapsCard } from "@/components/retirement/InsuranceGapsCard";
+import { LumpVsAnnuityCard } from "@/components/retirement/LumpVsAnnuityCard";
 import { MekademBand } from "@/components/retirement/MekademBand";
 import { MethodologyPanel } from "@/components/retirement/MethodologyPanel";
+import { PhaseExpenseCard } from "@/components/retirement/PhaseExpenseCard";
+import { RealEstateMortgageCard } from "@/components/retirement/RealEstateMortgageCard";
 import { RebalancingAlertsCard } from "@/components/retirement/RebalancingAlertsCard";
 import { RuinProbabilityHero } from "@/components/retirement/RuinProbabilityHero";
 import { SafetyGatesPanel } from "@/components/retirement/SafetyGatesPanel";
 import { SigmaCalibrationCard } from "@/components/retirement/SigmaCalibrationCard";
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
 import { StochasticFxCard } from "@/components/retirement/StochasticFxCard";
+import { TaxBreakdownCard } from "@/components/retirement/TaxBreakdownCard";
 import { WithdrawalPolicySelector } from "@/components/retirement/WithdrawalPolicySelector";
 
 const USER_ID = "ariel";
@@ -46,6 +54,46 @@ export default function RetirementPage() {
       <GlidePathCard currentAge={43} policy="vanguard_target_date" />
 
       <RebalancingAlertsCard userId={USER_ID} currentAge={43} />
+
+      <PhaseExpenseCard hasKids={true} />
+
+      <HealthcareCurveCard monthlyBurnNis={23000} />
+
+      <TaxBreakdownCard userId={USER_ID} />
+
+      <HishtalmutTimerCard
+        userId={USER_ID}
+        firstDepositDate="2018-01-01"
+        currentAge={43}
+      />
+
+      <DecumulationOrderCard
+        monthlyNeedNis={25000}
+        taxableBalanceNis={3_000_000}
+        hishtalmutBalanceNis={500_000}
+        kupatGemelBalanceNis={75_000}
+      />
+
+      <LumpVsAnnuityCard
+        pensionBalanceNis={1_500_000}
+        mekademTypical={200}
+        monthlyExpenseNeedNis={25_000}
+      />
+
+      <RealEstateMortgageCard
+        primaryResidenceValueNis={3_500_000}
+        mortgageBalanceNis={1_200_000}
+        annualRate={0.045}
+        termMonths={240}
+      />
+
+      <InsuranceGapsCard
+        monthlyIncomeNis={55_000}
+        monthlyExpensesNis={23_000}
+        dependentsCount={2}
+        hasKidsUnder18={true}
+        assetsNis={3_500_000}
+      />
 
       <BituachLeumiCard
         userId={USER_ID}

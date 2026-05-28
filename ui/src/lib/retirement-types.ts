@@ -83,6 +83,137 @@ export interface WithdrawalPoliciesResponse {
   policies: WithdrawalPolicy[];
 }
 
+// Wave 5/6/7 response shapes ─────────────────────────────────────────────
+
+export interface TaxBreakdownResponse {
+  gross: ValueWithRationale;
+  net: ValueWithRationale;
+  israeli_tax: ValueWithRationale;
+  us_treaty_credit: ValueWithRationale;
+  bituach_leumi_tax: ValueWithRationale;
+  effective_rate: ValueWithRationale;
+}
+
+export interface HishtalmutEligibilityResponse {
+  months_until_taxfree: ValueWithRationale;
+  first_deposit_date: ValueWithRationale;
+  six_yr_eligible: ValueWithRationale;
+  age_67_eligible: ValueWithRationale;
+  taxfree_now: ValueWithRationale;
+  early_withdrawal_marginal_rate: ValueWithRationale;
+}
+
+export interface DecumulationStep {
+  order: number;
+  account: string;
+  monthly_draw_nis: ValueWithRationale;
+  rationale: string;
+}
+
+export interface DecumulationResponse {
+  steps: DecumulationStep[];
+}
+
+export interface LumpVsAnnuityResponse {
+  recommendation: "take_annuity" | "take_lump" | "split";
+  annuity_path: { monthly_annuity_nis: number; lifetime_npv_nis: number };
+  lump_path: {
+    initial_lump_nis: number;
+    lifetime_npv_nis: number;
+    balance_at_end_nis: number;
+  };
+  split_path: { annuity_monthly_nis: number; lifetime_npv_nis: number };
+  rationale: ValueWithRationale;
+}
+
+export interface RealEstateResponse {
+  primary_residence_value_nis: ValueWithRationale;
+  mortgage_balance_nis: ValueWithRationale;
+  equity_nis: ValueWithRationale;
+  appreciation_annual: ValueWithRationale;
+  illiquidity_haircut: ValueWithRationale;
+  monthly_property_tax_nis: ValueWithRationale;
+}
+
+export interface MortgageScheduleRow {
+  month: number;
+  payment_nis: number | null;
+  principal_paid_nis: number | null;
+  interest_paid_nis: number | null;
+  remaining_balance_nis: number | null;
+}
+
+export interface MortgageScheduleResponse {
+  rows: MortgageScheduleRow[];
+  term_months: number;
+  total_interest_nis: number;
+}
+
+export interface PartnerResponse {
+  partner: {
+    age_years: ValueWithRationale;
+    monthly_income_nis: ValueWithRationale;
+    pension_balance_nis: ValueWithRationale;
+    retirement_age: ValueWithRationale;
+    is_eligible_for_bl_supplement: ValueWithRationale;
+  } | null;
+  household_retire_ready_age: ValueWithRationale;
+}
+
+export interface SeveranceResponse {
+  accrued_pizurim_nis: ValueWithRationale;
+  withdrawn_history_nis: ValueWithRationale;
+  annuitization_probability: ValueWithRationale;
+  tax_treatment: ValueWithRationale;
+  effective_pension_for_annuity_nis: ValueWithRationale;
+}
+
+export interface InsuranceGap {
+  insurance_type: "life" | "disability" | "ltc" | "health_supplementary";
+  recommended_coverage: ValueWithRationale;
+  actual_coverage: ValueWithRationale;
+  gap: ValueWithRationale;
+  suggested_action: ValueWithRationale;
+}
+
+export interface InsuranceGapsResponse {
+  gaps: InsuranceGap[];
+}
+
+export interface PhaseExpenseRow {
+  start_age: number;
+  end_age: number;
+  label: string;
+  monthly_multiplier: ValueWithRationale;
+  inflation_premium: ValueWithRationale;
+}
+
+export interface PhaseExpensesResponse {
+  phases: PhaseExpenseRow[];
+}
+
+export interface LifecycleIncomeRow {
+  age: number;
+  event_type: string;
+  monthly_impact_nis: ValueWithRationale;
+  probability: ValueWithRationale;
+  rationale: string;
+}
+
+export interface LifecycleIncomeResponse {
+  events: LifecycleIncomeRow[];
+}
+
+export interface HealthcareCurveRow {
+  age: number;
+  monthly_cost_nis: ValueWithRationale;
+}
+
+export interface HealthcareCurveResponse {
+  curve: HealthcareCurveRow[];
+  share_of_burn_at_70: ValueWithRationale | null;
+}
+
 export interface FxBandResponse {
   horizon_months: number;
   initial_fx: number;

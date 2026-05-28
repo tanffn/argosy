@@ -39,6 +39,37 @@ from argosy.services.retirement.stochastic_fx import (
     fx_band_at_horizon,
     simulate_stochastic_fx,
 )
+from argosy.services.retirement.action_engine import (
+    PrioritizedAction,
+    prioritize_actions,
+)
+from argosy.services.retirement.behavioral import (
+    check_fomo_buy,
+    check_panic_sell,
+)
+from argosy.services.retirement.decumulation import optimize_decumulation_order
+from argosy.services.retirement.hishtalmut import (
+    check_hishtalmut_eligibility,
+    tax_on_hishtalmut_withdrawal,
+)
+from argosy.services.retirement.insurance_gaps import compute_insurance_gaps
+from argosy.services.retirement.lump_vs_annuity import compute_lump_vs_annuity
+from argosy.services.retirement.mortgage import build_mortgage_schedule
+from argosy.services.retirement.multi_goal import (
+    GoalConstraint,
+    balance_multi_goals,
+)
+from argosy.services.retirement.partner_state import (
+    extract_partner_state,
+    household_retire_ready_age,
+)
+from argosy.services.retirement.real_estate import extract_real_estate_state
+from argosy.services.retirement.replan_triggers import list_known_triggers
+from argosy.services.retirement.severance import (
+    effective_pension_for_annuity,
+    extract_severance_state,
+)
+from argosy.services.retirement.tax_engine import TaxableCashflow, compute_tax
 from argosy.services.retirement.withdrawal_policy import list_policies
 
 router = APIRouter(prefix="/retirement", tags=["retirement"])
@@ -318,6 +349,382 @@ def get_healthcare_curve(
             for p in curve
         ],
         "share_of_burn_at_70": as_dict(share_at_70) if share_at_70 else None,
+    }
+
+
+# Wave 5 — tax engine + hishtalmut + decumulation + lump-vs-annuity
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@router.post("/tax/compute")
+def post_tax_compute(
+    payload: dict,
+    user_id: str,
+    year: int = 2026,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Compute tax breakdown for a single cashflow.
+
+    payload schema:
+      {source, gross_amount_nis, account?, holding_years?, user_age?,
+       us_gross_amount_for_treaty?, is_post_67?}
+    """
+    try:
+        cashflow = TaxableCashflow(
+            source=payload["source"],
+            gross_amount_nis=float(payload["gross_amount_nis"]),
+            account=payload.get("account", "taxable"),
+            holding_years=int(payload.get("holding_years", 0)),
+            user_age=int(payload.get("user_age", 40)),
+            us_gross_amount_for_treaty=float(
+                payload.get("us_gross_amount_for_treaty", 0.0),
+            ),
+            is_post_67=bool(payload.get("is_post_67", False)),
+        )
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    tb = compute_tax(cashflow, user_id=user_id, session=db, year=year)
+    return {
+        "gross": as_dict(tb.gross),
+        "net": as_dict(tb.net),
+        "israeli_tax": as_dict(tb.israeli_tax),
+        "us_treaty_credit": as_dict(tb.us_treaty_credit),
+        "bituach_leumi_tax": as_dict(tb.bituach_leumi_tax),
+        "effective_rate": as_dict(tb.effective_rate),
+    }
+
+
+@router.get("/hishtalmut/eligibility")
+def get_hishtalmut_eligibility(
+    user_id: str,
+    first_deposit_date_iso: str,
+    user_current_age: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Hishtalmut tax-free eligibility (6yr OR age-67 paths)."""
+    el = check_hishtalmut_eligibility(
+        user_id=user_id, session=db,
+        first_deposit_date_iso=first_deposit_date_iso,
+        user_current_age=user_current_age,
+    )
+    return {
+        "months_until_taxfree": as_dict(el.months_until_taxfree),
+        "first_deposit_date": as_dict(el.first_deposit_date),
+        "six_yr_eligible": as_dict(el.six_yr_eligible),
+        "age_67_eligible": as_dict(el.age_67_eligible),
+        "taxfree_now": as_dict(el.taxfree_now),
+        "early_withdrawal_marginal_rate": as_dict(el.early_withdrawal_marginal_rate),
+    }
+
+
+@router.get("/hishtalmut/withdrawal-tax")
+def get_hishtalmut_withdrawal_tax(
+    user_id: str,
+    first_deposit_date_iso: str,
+    user_current_age: int,
+    gross_nis: float,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Tax owed on a hypothetical hishtalmut withdrawal."""
+    el = check_hishtalmut_eligibility(
+        user_id=user_id, session=db,
+        first_deposit_date_iso=first_deposit_date_iso,
+        user_current_age=user_current_age,
+    )
+    tax = tax_on_hishtalmut_withdrawal(gross_nis=gross_nis, eligibility=el)
+    return {"tax": as_dict(tax), "taxfree_now": int(el.taxfree_now.value or 0)}
+
+
+@router.get("/decumulation/order")
+def get_decumulation_order(
+    monthly_need_nis: float,
+    taxable_balance_nis: float = 0.0,
+    hishtalmut_balance_nis: float = 0.0,
+    kupat_gemel_balance_nis: float = 0.0,
+    pensia_annuity_monthly_nis: float = 0.0,
+) -> dict:
+    steps = optimize_decumulation_order(
+        monthly_need_nis=monthly_need_nis,
+        taxable_balance_nis=taxable_balance_nis,
+        hishtalmut_balance_nis=hishtalmut_balance_nis,
+        kupat_gemel_balance_nis=kupat_gemel_balance_nis,
+        pensia_annuity_monthly_nis=pensia_annuity_monthly_nis,
+    )
+    return {
+        "steps": [
+            {
+                "order": s.order,
+                "account": s.account,
+                "monthly_draw_nis": as_dict(s.monthly_draw_nis),
+                "rationale": s.rationale,
+            }
+            for s in steps
+        ],
+    }
+
+
+@router.get("/lump-vs-annuity")
+def get_lump_vs_annuity(
+    pension_balance_nis: float,
+    mekadem_typical: float = 200.0,
+    monthly_expense_need_nis: float = 20_000.0,
+    years_remaining: int = 28,
+    real_return_annual: float = 0.03,
+) -> dict:
+    v = compute_lump_vs_annuity(
+        pension_balance_nis=pension_balance_nis,
+        mekadem_typical=mekadem_typical,
+        monthly_expense_need_nis=monthly_expense_need_nis,
+        years_remaining=years_remaining,
+        real_return_annual=real_return_annual,
+    )
+    return {
+        "recommendation": v.recommendation,
+        "annuity_path": v.annuity_path,
+        "lump_path": v.lump_path,
+        "split_path": v.split_path,
+        "rationale": as_dict(v.rationale),
+    }
+
+
+# Wave 6 — balance sheet
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/real-estate")
+def get_real_estate(
+    primary_residence_value_nis: float = 0.0,
+    mortgage_balance_nis: float = 0.0,
+    monthly_property_tax_nis: float = 0.0,
+    appreciation_annual: float = 0.035,
+) -> dict:
+    rs = extract_real_estate_state(
+        primary_residence_value_nis=primary_residence_value_nis,
+        mortgage_balance_nis=mortgage_balance_nis,
+        monthly_property_tax_nis=monthly_property_tax_nis,
+        appreciation_annual=appreciation_annual,
+    )
+    return {
+        "primary_residence_value_nis": as_dict(rs.primary_residence_value_nis),
+        "mortgage_balance_nis": as_dict(rs.mortgage_balance_nis),
+        "equity_nis": as_dict(rs.equity_nis),
+        "appreciation_annual": as_dict(rs.appreciation_annual),
+        "illiquidity_haircut": as_dict(rs.illiquidity_haircut),
+        "monthly_property_tax_nis": as_dict(rs.monthly_property_tax_nis),
+    }
+
+
+@router.get("/mortgage/schedule")
+def get_mortgage_schedule(
+    initial_balance_nis: float,
+    annual_rate: float,
+    term_months: int,
+    sample_every_months: int = 12,
+) -> dict:
+    """Return the amortization schedule (sampled to keep payload small)."""
+    full = build_mortgage_schedule(
+        initial_balance_nis=initial_balance_nis,
+        annual_rate=annual_rate,
+        term_months=term_months,
+    )
+    sampled = [
+        {
+            "month": r.month,
+            "payment_nis": r.payment_nis.value,
+            "principal_paid_nis": r.principal_paid_nis.value,
+            "interest_paid_nis": r.interest_paid_nis.value,
+            "remaining_balance_nis": r.remaining_balance_nis.value,
+        }
+        for i, r in enumerate(full)
+        if i % sample_every_months == 0 or i == len(full) - 1
+    ]
+    total_interest = sum(r.interest_paid_nis.value or 0 for r in full)
+    return {
+        "rows": sampled,
+        "term_months": term_months,
+        "total_interest_nis": round(total_interest, 2),
+    }
+
+
+@router.get("/partner")
+def get_partner(
+    age_years: float = 0.0,
+    monthly_income_nis: float = 0.0,
+    pension_balance_nis: float = 0.0,
+    retirement_age: float = 67.0,
+    is_eligible_for_bl_supplement: bool = False,
+    primary_retire_age: float = 49.0,
+) -> dict:
+    p = extract_partner_state(
+        age_years=age_years,
+        monthly_income_nis=monthly_income_nis,
+        pension_balance_nis=pension_balance_nis,
+        retirement_age=retirement_age,
+        is_eligible_for_bl_supplement=is_eligible_for_bl_supplement,
+    )
+    household = household_retire_ready_age(
+        primary_retire_age=primary_retire_age, partner=p,
+    )
+    if p is None:
+        return {"partner": None, "household_retire_ready_age": as_dict(household)}
+    return {
+        "partner": {
+            "age_years": as_dict(p.age_years),
+            "monthly_income_nis": as_dict(p.monthly_income_nis),
+            "pension_balance_nis": as_dict(p.pension_balance_nis),
+            "retirement_age": as_dict(p.retirement_age),
+            "is_eligible_for_bl_supplement": as_dict(p.is_eligible_for_bl_supplement),
+        },
+        "household_retire_ready_age": as_dict(household),
+    }
+
+
+@router.get("/severance")
+def get_severance(
+    accrued_pizurim_nis: float = 0.0,
+    withdrawn_history_nis: float = 0.0,
+    annuitization_probability: float = 0.50,
+    kupat_pensia_balance_nis: float = 0.0,
+) -> dict:
+    sev = extract_severance_state(
+        accrued_pizurim_nis=accrued_pizurim_nis,
+        withdrawn_history_nis=withdrawn_history_nis,
+        annuitization_probability=annuitization_probability,
+    )
+    effective = effective_pension_for_annuity(
+        kupat_pensia_balance_nis=kupat_pensia_balance_nis,
+        severance=sev,
+    )
+    return {
+        "accrued_pizurim_nis": as_dict(sev.accrued_pizurim_nis),
+        "withdrawn_history_nis": as_dict(sev.withdrawn_history_nis),
+        "annuitization_probability": as_dict(sev.annuitization_probability),
+        "tax_treatment": as_dict(sev.tax_treatment),
+        "effective_pension_for_annuity_nis": as_dict(effective),
+    }
+
+
+# Wave 7 — companion UX
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/insurance-gaps")
+def get_insurance_gaps(
+    monthly_income_nis: float,
+    monthly_expenses_nis: float,
+    dependents_count: int,
+    has_kids_under_18: bool,
+    assets_nis: float,
+    actual_life_coverage_nis: float = 0.0,
+    actual_disability_monthly_nis: float = 0.0,
+    actual_ltc_monthly_nis: float = 0.0,
+    actual_health_supplementary: bool = False,
+) -> dict:
+    gaps = compute_insurance_gaps(
+        monthly_income_nis=monthly_income_nis,
+        monthly_expenses_nis=monthly_expenses_nis,
+        dependents_count=dependents_count,
+        has_kids_under_18=has_kids_under_18,
+        assets_nis=assets_nis,
+        actual_life_coverage_nis=actual_life_coverage_nis,
+        actual_disability_monthly_nis=actual_disability_monthly_nis,
+        actual_ltc_monthly_nis=actual_ltc_monthly_nis,
+        actual_health_supplementary=actual_health_supplementary,
+    )
+    return {
+        "gaps": [
+            {
+                "insurance_type": g.insurance_type,
+                "recommended_coverage": as_dict(g.recommended_coverage_nis),
+                "actual_coverage": as_dict(g.actual_coverage_nis),
+                "gap": as_dict(g.gap_nis),
+                "suggested_action": as_dict(g.suggested_action),
+            }
+            for g in gaps
+        ],
+    }
+
+
+@router.get("/replan-triggers")
+def get_replan_triggers_registry() -> dict:
+    """Known trigger kinds + descriptions."""
+    return {"triggers": list_known_triggers()}
+
+
+@router.post("/multi-goal/balance")
+def post_multi_goal_balance(payload: dict) -> dict:
+    """Balance multi-goal allocation with hard/soft constraints.
+
+    payload: {available_capital_nis, constraints: [{goal_id, constraint_type,
+              target_nis, deadline, priority, rationale}, ...]}
+    """
+    try:
+        constraints = [
+            GoalConstraint(
+                goal_id=c["goal_id"],
+                constraint_type=c["constraint_type"],
+                target_nis=float(c["target_nis"]),
+                deadline=c.get("deadline"),
+                priority=int(c.get("priority", 5)),
+                rationale=c.get("rationale", ""),
+            )
+            for c in payload.get("constraints", [])
+        ]
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    result = balance_multi_goals(
+        available_capital_nis=float(payload["available_capital_nis"]),
+        constraints=constraints,
+    )
+    return {
+        "balances": [
+            {
+                "goal_id": b.goal_id,
+                "target_nis": b.target_nis,
+                "funded_pct": b.funded_pct,
+                "binding_constraints": b.binding_constraints,
+                "tradeoffs": b.tradeoffs,
+            }
+            for b in result
+        ],
+    }
+
+
+@router.get("/behavioral/check")
+def get_behavioral_check(
+    kind: str,
+    proposed_pct: float,
+    secondary_pct: float = 0.0,
+    days_since: int = 0,
+) -> dict:
+    """Run a behavioral checkpoint:
+
+    kind='panic_sell': proposed_pct=sell_pct, secondary_pct=drawdown_pct, days_since=days_since_peak
+    kind='fomo_buy':   proposed_pct=buy_pct, secondary_pct=asset_30d_return_pct,
+                       (concentration via separate query param)
+    """
+    if kind == "panic_sell":
+        cp = check_panic_sell(
+            proposed_sell_pct=proposed_pct,
+            days_since_market_peak=days_since,
+            peak_to_now_drawdown_pct=secondary_pct,
+        )
+    elif kind == "fomo_buy":
+        cp = check_fomo_buy(
+            proposed_buy_pct=proposed_pct,
+            asset_30d_return_pct=secondary_pct,
+            asset_concentration_pct=days_since / 100.0 if days_since > 1 else 0.0,
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"unknown kind: {kind!r}")
+    return {
+        "kind": cp.kind,
+        "triggered": cp.triggered,
+        "rationale": cp.rationale,
+        "cooldown_hours": cp.cooldown_hours,
+        "confirmation_prompt": cp.confirmation_prompt,
     }
 
 

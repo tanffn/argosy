@@ -672,6 +672,125 @@ export const api = {
       getJSON<WithdrawalPoliciesResponse>(
         "/api/retirement/projection/withdrawal-policies",
       ),
+    // Wave 5/6/7
+    hishtalmutEligibility: (userId: string, firstDepositDate: string, currentAge: number) =>
+      getJSON(`/api/retirement/hishtalmut/eligibility?user_id=${encodeURIComponent(userId)}&first_deposit_date_iso=${firstDepositDate}&user_current_age=${currentAge}`),
+    decumulationOrder: (params: {
+      monthlyNeedNis: number; taxableBalanceNis?: number;
+      hishtalmutBalanceNis?: number; kupatGemelBalanceNis?: number;
+      pensiaAnnuityMonthlyNis?: number;
+    }) => {
+      const q = new URLSearchParams({
+        monthly_need_nis: String(params.monthlyNeedNis),
+        taxable_balance_nis: String(params.taxableBalanceNis ?? 0),
+        hishtalmut_balance_nis: String(params.hishtalmutBalanceNis ?? 0),
+        kupat_gemel_balance_nis: String(params.kupatGemelBalanceNis ?? 0),
+        pensia_annuity_monthly_nis: String(params.pensiaAnnuityMonthlyNis ?? 0),
+      });
+      return getJSON(`/api/retirement/decumulation/order?${q.toString()}`);
+    },
+    lumpVsAnnuity: (params: {
+      pensionBalanceNis: number; mekademTypical?: number;
+      monthlyExpenseNeedNis?: number; yearsRemaining?: number;
+    }) => {
+      const q = new URLSearchParams({
+        pension_balance_nis: String(params.pensionBalanceNis),
+        mekadem_typical: String(params.mekademTypical ?? 200),
+        monthly_expense_need_nis: String(params.monthlyExpenseNeedNis ?? 20000),
+        years_remaining: String(params.yearsRemaining ?? 28),
+      });
+      return getJSON(`/api/retirement/lump-vs-annuity?${q.toString()}`);
+    },
+    realEstate: (params: {
+      primaryResidenceValueNis?: number; mortgageBalanceNis?: number;
+      monthlyPropertyTaxNis?: number;
+    }) => {
+      const q = new URLSearchParams({
+        primary_residence_value_nis: String(params.primaryResidenceValueNis ?? 0),
+        mortgage_balance_nis: String(params.mortgageBalanceNis ?? 0),
+        monthly_property_tax_nis: String(params.monthlyPropertyTaxNis ?? 0),
+      });
+      return getJSON(`/api/retirement/real-estate?${q.toString()}`);
+    },
+    mortgageSchedule: (params: {
+      initialBalanceNis: number; annualRate: number; termMonths: number;
+    }) => {
+      const q = new URLSearchParams({
+        initial_balance_nis: String(params.initialBalanceNis),
+        annual_rate: String(params.annualRate),
+        term_months: String(params.termMonths),
+      });
+      return getJSON(`/api/retirement/mortgage/schedule?${q.toString()}`);
+    },
+    partner: (params: {
+      ageYears?: number; monthlyIncomeNis?: number;
+      pensionBalanceNis?: number; retirementAge?: number;
+      primaryRetireAge?: number;
+    }) => {
+      const q = new URLSearchParams({
+        age_years: String(params.ageYears ?? 0),
+        monthly_income_nis: String(params.monthlyIncomeNis ?? 0),
+        pension_balance_nis: String(params.pensionBalanceNis ?? 0),
+        retirement_age: String(params.retirementAge ?? 67),
+        primary_retire_age: String(params.primaryRetireAge ?? 49),
+      });
+      return getJSON(`/api/retirement/partner?${q.toString()}`);
+    },
+    severance: (params: {
+      accruedPizurimNis?: number; annuitizationProbability?: number;
+      kupatPensiaBalanceNis?: number;
+    }) => {
+      const q = new URLSearchParams({
+        accrued_pizurim_nis: String(params.accruedPizurimNis ?? 0),
+        annuitization_probability: String(params.annuitizationProbability ?? 0.5),
+        kupat_pensia_balance_nis: String(params.kupatPensiaBalanceNis ?? 0),
+      });
+      return getJSON(`/api/retirement/severance?${q.toString()}`);
+    },
+    insuranceGaps: (params: {
+      monthlyIncomeNis: number; monthlyExpensesNis: number;
+      dependentsCount: number; hasKidsUnder18: boolean; assetsNis: number;
+      actualLifeCoverageNis?: number; actualDisabilityMonthlyNis?: number;
+      actualLtcMonthlyNis?: number; actualHealthSupplementary?: boolean;
+    }) => {
+      const q = new URLSearchParams({
+        monthly_income_nis: String(params.monthlyIncomeNis),
+        monthly_expenses_nis: String(params.monthlyExpensesNis),
+        dependents_count: String(params.dependentsCount),
+        has_kids_under_18: String(params.hasKidsUnder18),
+        assets_nis: String(params.assetsNis),
+        actual_life_coverage_nis: String(params.actualLifeCoverageNis ?? 0),
+        actual_disability_monthly_nis: String(params.actualDisabilityMonthlyNis ?? 0),
+        actual_ltc_monthly_nis: String(params.actualLtcMonthlyNis ?? 0),
+        actual_health_supplementary: String(params.actualHealthSupplementary ?? false),
+      });
+      return getJSON(`/api/retirement/insurance-gaps?${q.toString()}`);
+    },
+    phaseExpenses: (hasKids: boolean = true) =>
+      getJSON(`/api/retirement/phase-expenses?has_kids=${hasKids}`),
+    lifecycleIncome: (params: {
+      currentAge: number; partnerIncomeMonthlyNis?: number;
+      sideIncomeMonthlyNis?: number; unemploymentAnnualProbability?: number;
+    }) => {
+      const q = new URLSearchParams({
+        current_age: String(params.currentAge),
+        partner_income_monthly_nis: String(params.partnerIncomeMonthlyNis ?? 0),
+        side_income_monthly_nis: String(params.sideIncomeMonthlyNis ?? 0),
+        unemployment_annual_probability: String(params.unemploymentAnnualProbability ?? 0.05),
+      });
+      return getJSON(`/api/retirement/lifecycle-income?${q.toString()}`);
+    },
+    healthcareCurve: (params: {
+      startAge?: number; endAge?: number; monthlyBurnNis?: number;
+    }) => {
+      const q = new URLSearchParams({
+        start_age: String(params.startAge ?? 30),
+        end_age: String(params.endAge ?? 95),
+        monthly_burn_nis: String(params.monthlyBurnNis ?? 0),
+      });
+      return getJSON(`/api/retirement/healthcare-curve?${q.toString()}`);
+    },
+    replanTriggers: () => getJSON(`/api/retirement/replan-triggers`),
     stochasticFx: (initialFx: number, months: number = 360, nPaths: number = 1000) =>
       getJSON<FxBandResponse>(
         `/api/retirement/projection/stochastic-fx?initial_fx=${initialFx}&months=${months}&n_paths=${nPaths}&seed=42`,
