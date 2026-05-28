@@ -198,9 +198,17 @@
   <figcaption><strong>Home</strong> (<span class="nav-card">/</span>) — your morning glance. Anchor banner up top, fleet-self-review banner, daily-brief audio-style card with a "Review monthly plan" CTA, then the Action items widget broken into OVERDUE / TODAY / DUE_SOON / UPCOMING. Bottom (not in the crop): the synthesis-history accordion lets you drill into any prior agent-fleet run.</figcaption>
 </figure>
 
+<p>The top nav splits into two visually-separated groups (Lucide icon on every tab; vertical divider between them):</p>
+
+<ul>
+  <li><strong>PRIMARY</strong> (left of the divider) — daily-to-monthly use surfaces, ordered by the typical session flow: <span class="nav-card">/</span> &middot; <span class="nav-card">/advisor</span> &middot; <span class="nav-card">/portfolio</span> &middot; <span class="nav-card">/expenses</span> &middot; <span class="nav-card">/plan</span> &middot; <span class="nav-card">/retirement</span> &middot; <span class="nav-card">/decide</span> &middot; <span class="nav-card">/proposals</span>.</li>
+  <li><strong>INSPECTION</strong> (right of the divider) — occasional-use surfaces (debugging, references, config): <span class="nav-card">/argonaut</span> &middot; <span class="nav-card">/agents</span> &middot; <span class="nav-card">/files</span> &middot; <span class="nav-card">/audit</span> &middot; <span class="nav-card">/domain-kb</span> &middot; <span class="nav-card">/settings</span>.</li>
+</ul>
+
 <table>
 <thead><tr><th>Tab</th><th>Job in your flow</th><th>How often</th></tr></thead>
 <tbody>
+<tr><td colspan="3" class="text-muted-foreground" style="background:rgba(99,102,241,0.04);font-size:11px;text-transform:uppercase;letter-spacing:0.05em;padding-top:14px">PRIMARY</td></tr>
 <tr><td><span class="nav-card">/</span></td><td>Read where you stand · catch fired triggers</td><td>Daily</td></tr>
 <tr><td><span class="nav-card">/advisor</span></td><td><strong>The data-entry portal.</strong> Chat + attach files + gap-tracker rows on the right.</td><td>Daily-to-weekly</td></tr>
 <tr><td><span class="nav-card">/portfolio</span></td><td>Current FIRE position + financial-independence chart</td><td>Weekly</td></tr>
@@ -209,6 +217,7 @@
 <tr><td><span class="nav-card">/retirement</span></td><td>Long-term truth-teller — fat-tail-aware P(ruin) verdict + safety gates</td><td>Monthly + on-trigger</td></tr>
 <tr><td><span class="nav-card">/decide</span></td><td>Open ticker-decision flows</td><td>When the system surfaces one</td></tr>
 <tr><td><span class="nav-card">/proposals</span></td><td>Queue of trade proposals awaiting approval</td><td>Daily</td></tr>
+<tr><td colspan="3" class="text-muted-foreground" style="background:rgba(99,102,241,0.04);font-size:11px;text-transform:uppercase;letter-spacing:0.05em;padding-top:14px">INSPECTION</td></tr>
 <tr><td><span class="nav-card">/argonaut</span></td><td>$1K bounded auto-trading account</td><td>Monthly check-in</td></tr>
 <tr><td><span class="nav-card">/agents</span></td><td>Agent fleet activity log</td><td>Debugging</td></tr>
 <tr><td><span class="nav-card">/files</span></td><td>Audit-traceable catalog of every uploaded file. <strong>Read-only.</strong></td><td>Reference</td></tr>
