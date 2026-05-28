@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdvisorBriefCard } from "@/components/advisor-brief-card";
 import { ActionItemsWidget } from "@/components/home/action-items-widget";
 import { LiveClock } from "@/components/live-clock";
+import { WindfallBanner } from "@/components/retirement/WindfallBanner";
 import {
   Card,
   CardContent,
@@ -627,6 +628,14 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      {/* Windfall banner — auto-detected from the user's monthly TSV
+          dropped into $ARGOSY_EXPENSE_SAMPLES_ROOT. Renders only when a
+          cash delta crossed the $25K USD / ₪75K NIS threshold; otherwise
+          the component returns null and the home page stays uncluttered.
+          The whole point of this design is "Argosy notices, you don't
+          push" — no upload button anywhere. */}
+      <WindfallBanner />
 
       {/* In-flight synthesis banner — surfaces a "Synthesis #N in
           flight" card at the top of home so the user can SEE that

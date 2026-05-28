@@ -51,6 +51,94 @@ import type {
   WithdrawalPoliciesResponse,
 } from "@/lib/retirement-types";
 
+// ----------------------------------------------------------------------
+// Retirement — windfall flow (2026-05-28)
+//
+// Backend services: argosy/services/retirement/windfall_detector.py +
+// windfall_allocator.py. Endpoint: GET /api/retirement/windfall/detect.
+// Detector compares the two most-recent monthly TSV snapshots in
+// $ARGOSY_EXPENSE_SAMPLES_ROOT; classifier auto-tags as rsu_sale /
+// stock_sale / unclear by matching equity sales within the same month to
+// the cash delta (5% tolerance). The plan splits the windfall 60/25/15
+// across long/medium/short horizons.
+// ----------------------------------------------------------------------
+
+export type WindfallClassifiedSource = "rsu_sale" | "stock_sale" | "unclear";
+
+export interface WindfallMatchingSale {
+  symbol: string;
+  shares_sold: number;
+  current_price: number;
+  value_usd: number;
+}
+
+export interface WindfallAllocationLineDTO {
+  asset_class: string;
+  current_pct: number;
+  current_k_usd: number;
+  target_pct: number;
+  target_k_usd: number;
+  /** TSV convention: positive = under target (room to buy);
+   *  negative = over target (room to trim). Cash is excluded from
+   *  windfall destinations regardless of sign. */
+  delta_k_usd: number;
+}
+
+export interface WindfallEventDTO {
+  detected_at: string;
+  cash_delta_usd: number;
+  cash_delta_nis: number;
+  cash_delta_total_usd_equiv: number;
+  fx_usd_nis: number;
+  classified_source: WindfallClassifiedSource;
+  requires_user_classification: boolean;
+  matching_sales: WindfallMatchingSale[];
+  allocation_delta_table: WindfallAllocationLineDTO[];
+  source_tsv: string;
+  previous_tsv: string | null;
+}
+
+export type WindfallHorizon = "long" | "medium" | "short";
+
+export interface WindfallProposalDTO {
+  horizon: WindfallHorizon;
+  asset_class: string;
+  instrument: string;
+  amount_usd: number;
+  rationale: string;
+  closes_delta_usd: number;
+  confidence: "high" | "medium" | "low";
+  source_id: string;
+}
+
+export interface WindfallPlanHeadlineDTO {
+  value: string | number;
+  unit: string;
+  rationale: string;
+  source_id: string | null;
+}
+
+export interface WindfallAllocationPlanDTO {
+  windfall_usd: number;
+  long_term: WindfallProposalDTO[];
+  medium_term: WindfallProposalDTO[];
+  short_term: WindfallProposalDTO[];
+  remaining_unallocated_usd: number;
+  headline: WindfallPlanHeadlineDTO;
+}
+
+export interface WindfallDetectResponse {
+  /** Null when no windfall crossed the threshold (or fewer than 2 TSVs
+   *  on disk to compare). */
+  event: WindfallEventDTO | null;
+  /** Populated when event is null. */
+  reason?: string;
+  current_tsv?: string;
+  previous_tsv?: string;
+  /** Always present when event is non-null. */
+  plan?: WindfallAllocationPlanDTO;
+}
+
 export interface PortfolioPosition {
   location: string;
   currency: string;
@@ -833,6 +921,23 @@ export const api = {
       });
       return getJSON<BLStipendResponse>(
         `/api/retirement/bituach-leumi?${params.toString()}`,
+      );
+    },
+    // Backend: argosy/services/retirement/windfall_detector.py +
+    // windfall_allocator.py, surfaced via GET /api/retirement/windfall/detect.
+    // The endpoint diffs the two most-recent monthly TSVs in
+    // $ARGOSY_EXPENSE_SAMPLES_ROOT and returns an event + allocation plan
+    // when the cash delta crosses threshold (default $25K USD or ₪75K NIS).
+    // When no event fires, the response carries event=null + a reason string.
+    windfallDetect: (opts?: { thresholdUsd?: number; thresholdNis?: number }) => {
+      const params = new URLSearchParams();
+      if (opts?.thresholdUsd !== undefined)
+        params.set("threshold_usd", String(opts.thresholdUsd));
+      if (opts?.thresholdNis !== undefined)
+        params.set("threshold_nis", String(opts.thresholdNis));
+      const qs = params.toString();
+      return getJSON<WindfallDetectResponse>(
+        `/api/retirement/windfall/detect${qs ? `?${qs}` : ""}`,
       );
     },
   },

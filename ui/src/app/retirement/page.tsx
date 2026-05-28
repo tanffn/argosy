@@ -23,12 +23,14 @@ import { SigmaCalibrationCard } from "@/components/retirement/SigmaCalibrationCa
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
 import { StochasticFxCard } from "@/components/retirement/StochasticFxCard";
 import { TaxBreakdownCard } from "@/components/retirement/TaxBreakdownCard";
+import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { WithdrawalPolicySelector } from "@/components/retirement/WithdrawalPolicySelector";
 
 const USER_ID = "ariel";
 
 // Fix UX #6 — page-internal section anchors with a sticky TOC.
 const SECTIONS: Array<{ id: string; label: string }> = [
+  { id: "windfall",      label: "Windfall" },
   { id: "verdict",       label: "Verdict" },
   { id: "safety",        label: "Safety gates" },
   { id: "predictions",   label: "Prediction trust" },
@@ -96,6 +98,15 @@ export default function RetirementPage() {
       </nav>
 
       <div className="space-y-4 min-w-0">
+        {/* Windfall surface — renders only when the detector found a
+            qualifying cash delta in the user's latest monthly TSV.
+            <WindfallCard> internally returns null when event is missing,
+            so the section anchor just yields an empty scroll target in
+            the common case. Banner on Home links here via #windfall. */}
+        <section id="windfall" className="scroll-mt-6">
+          <WindfallCard />
+        </section>
+
         <section id="verdict" className="scroll-mt-6">
           <RuinProbabilityHero
             userId={USER_ID}
