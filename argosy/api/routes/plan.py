@@ -1890,10 +1890,10 @@ def get_draft_objections(
     )
 
 
-@router.get("/current/structured", response_model=DraftResponse)
+@router.get("/current/structured", response_model=DraftResponse | None)
 def get_current_structured(
     user_id: str, db: Session = Depends(get_db)
-) -> DraftResponse:
+) -> DraftResponse | None:
     """Return the user's currently-accepted plan as the same structured
     DraftResponse shape used by ``GET /api/plan/draft``.
 
@@ -1903,13 +1903,17 @@ def get_current_structured(
     the draft endpoint so the Argonaut page can read structured horizons
     (notably ``horizon_short.speculative_candidates``).
 
-    404 when no current plan exists for the user.
+    Returns 200 + null when no current plan exists -- matches the
+    "absence of data" contract used by /in-flight-synthesis. The
+    Argonaut page expects to render with no plan gracefully; a 404
+    here previously surfaced as a console error on every load even
+    though it was the expected state.
     """
     from argosy.state.queries import get_current_plan
 
     pv = get_current_plan(db, user_id)
     if pv is None:
-        raise HTTPException(status_code=404, detail="no current plan for user")
+        return None
     return DraftResponse(
         plan_version_id=pv.id,
         version_label=pv.version_label or None,

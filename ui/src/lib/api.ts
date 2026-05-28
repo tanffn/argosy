@@ -1687,7 +1687,7 @@ export const api = {
   // latest critique) consumed by the home + /plan pages, so this endpoint
   // lives at `/current/structured` to avoid colliding.
   planCurrentStructured: (userId: string) =>
-    getJSON<DraftResponse>(
+    getJSON<DraftResponse | null>(
       `/api/plan/current/structured?user_id=${encodeURIComponent(userId)}`,
     ),
   planSpeculativeTake: (
