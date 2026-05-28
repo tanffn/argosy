@@ -15,7 +15,41 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-28 (late evening) by Claude — Windfall UI shipped + nav restructure + user-guide overhaul + concept reframe. See "Wave 2026-05-28" sub-section directly below for what shipped this session; the prior "Cashflow projection pivot" handover (2026-05-27) and everything beneath it remain current as historical context.
+**Last edit:** 2026-05-29 (autonomous overnight block) by Claude — user dropped into overnight mode ("I'm going to bed, finish what you can, including the deferred items") after the 2026-05-28 wave. See "Autonomous overnight block (2026-05-29)" directly below for what shipped. The prior 2026-05-28 wave + cashflow handover + everything beneath remain current as historical context.
+
+### Autonomous overnight block (2026-05-29 ~02-05 local)
+
+User-driven autonomous mode authorized after the 2026-05-28 session of incremental approvals. 30-minute CronCreate cron (`*/30 * * * *`-ish; landed on `13,43 * * * *` per the off-the-clock-minute convention) kept the loop alive as a safety net; in practice the work ran synchronously the whole time. **8 commits, 11 new passing tests, 6 of 8 user-guide holes closed, two major architectural pieces shipped.**
+
+**Quick wins (5 holes closed, ~30 min each):**
+- **Hole #1 closed (`1f81ff2`)**: `RuinProbabilityHero` now stamps "Last computed HH:MM" in the CardDescription on every successful MC completion. Derived from a `lastComputedAt: Date | null` state set in the `.then()` callback so React never sees setState in the effect body.
+- **Hole #4 closed (`6bd23dc`)**: `/expenses/sources` per-source last-sync badge in each Card header. Computed from `max(statements.period_end)` with three-band tone (≤30d green / 31-60 amber / >60 red). Pure UI — no backend change.
+- **Hole #5 closed (`a0b4bea`)**: statement `parse_error` was already on the DB row but dropped at the API boundary. Added it to the `StatementSummary` DTO + threaded through to the UI, which now renders an inline ⚠ glyph with the error in the title attribute + a red-bordered summary box at the bottom of the table.
+- **Hole #6 closed (`3e2ef6a`)**: new `POST /api/files/upload` route + a `<UploadTile>` component on `/files`. Routes through `catalog_upload` with `source="manual_upload"`. Generic kind-picker (text / image / plan_markdown / broker_csv / other). The `/files` page is no longer read-only.
+- **Hole #7 closed (`be34b5b`)**: `GET /api/plan/current/structured` now returns 200 + null when no plan exists instead of 404. The `/argonaut` page's expected-absence case stops surfacing as a console error.
+
+**Major architectural pieces shipped:**
+- **Task A (`ab5beb2`, 5 tests pass)**: `POST /api/portfolio/upload-snapshot` + `<PortfolioSnapshotUploadCard>` on `/portfolio`. Multipart form (`file` + `user_id` + `fire_detector=true`); validates with `parse_portfolio_tsv`, persists under `$ARGOSY_EXPENSE_SAMPLES_ROOT` with the canonical `Family Finances Status - YY MMM.tsv` name, fires the windfall detector synchronously. **Tri-state response** per the codex-tandem zigzag finding from 2026-05-28: `{tsv_persisted, persisted_path, snapshot_date, detect_status: ok|skipped|failed, event, plan, detail, sha256}`. SHA-256 of contents returned for client-side idempotency. **Scope reduction noted explicitly**: this accepts the TSV directly. The XLS-to-TSV conversion step is still the user's external `update_leumi_tsv.py` script — porting that requires either a fresh in-repo Leumi XLS parser with parity tests or explicit user consent to read the Google Drive script. Both gated on user input.
+
+- **Task B / Hole #2 closed (`3fe089c`, 6 tests pass)**: `WindfallCard` Accept/Defer buttons are LIVE. New `windfall_actions` table in `argosy/state/models.py` (separate from `proposals` per the codex zigzag schema-decision: divergent shapes — windfall has horizon + asset_class + closes_delta_usd, no ticker/action/order_type/tier). Three new routes: `POST /api/retirement/windfall/{accept,defer}` + `GET /api/retirement/windfall/actions` with optional event filter. UI fetches priors on mount, matches by (horizon, asset_class, instrument, amount_usd) tuple, renders "✓ Accepted at 14:32" or "↻ Deferred · due 2026-06-15" pills inline. **Promotion step (action_engine → PrioritizedAction on the home-page action-items widget) NOT YET BUILT** — see new Hole #2 in user-guide for the follow-up.
+
+**Other:**
+- **Logo + tagline plan (`f4f7e78`)**: per the autonomous-overnight binding ("don't autonomously pick a logo"), wrote `docs/superpowers/plans/2026-05-29-logo-and-tagline.md` with 5 image-gen prompts (stylized fleet / compass-helm hybrid / anchor-sextant / abstract trail / constellation) + 6 tagline candidates ordered by brand-metaphor weight. User-driven decision pending.
+- **User-guide §19 refreshed**: closed Holes are removed; the three remaining gaps are renumbered #1–#4 (the classification-dialogue / Accept-promotion / XLS-upload / site-wide-search items). §11 walkthrough updated to describe the new `/portfolio` upload tile + the XLS-vs-TSV scope nuance.
+
+**Test count delta:** +11 tests this block (5 in `test_portfolio_upload_snapshot.py`, 6 in `test_windfall_actions.py`). Both files all-pass.
+
+**Backend uvicorn needs a restart** — 5 of the 8 commits add new routes that aren't picked up until the FastAPI app reboots: `POST /api/portfolio/upload-snapshot`, `POST /api/files/upload`, `POST /api/retirement/windfall/{accept,defer}`, `GET /api/retirement/windfall/actions`. The widened response on `GET /api/plan/current/structured` (200 + null) also needs the restart.
+
+**Remaining open work (after this block, in priority order):**
+1. **action_engine promotion of accepted windfall_actions** (user-guide §19 Hole #2 follow-up) — background worker walks rows with `decided_status='accepted' AND proposal_id IS NULL`, calls `action_engine.create_from_windfall`, fills the FK + surfaces on home-page action-items widget. ~1-2 hr.
+2. **Windfall classification dialogue on `/advisor`** (user-guide §19 Hole #1) — design-first. Needs `intake_extractor` agent + new `income_events` table + advisor focus-mode route. The 2026-05-28 windfall-flow-resume plan sketches this.
+3. **XLS-to-TSV converter for portfolio snapshots** (user-guide §19 Hole #3) — port `update_leumi_tsv.py` logic into `argosy/services/portfolio_ingest/leumi_snapshot.py` with golden-fixture parity tests against the user's canonical script. Needs user consent on the porting approach.
+4. **Multi-goal balancer + behavioral check UI surfaces** (Server↔UI audit A-grade orphans from 2026-05-28) — design-first.
+5. **Site-wide search palette** (user-guide §19 Hole #4) — ⌘K palette searching audit_log + transactions + plans.
+6. **Logo + tagline final pick** — image-gen prompts queued in `docs/superpowers/plans/2026-05-29-logo-and-tagline.md`.
+
+### Wave 2026-05-28 — Windfall UI + IA + the "monthly portfolio update" reframe
 
 ### Wave 2026-05-28 — Windfall UI + IA + the "monthly portfolio update" reframe
 

@@ -516,7 +516,7 @@
 
 <div class="callout">
   <div class="callout-title">Why this is the data portal</div>
-  Every other dashboard READS from the data Argosy already has. Only the Advisor WRITES to it. Files = catalog (read-only), Expenses = parsed transactions (read-only), Portfolio = latest snapshot (read-only). If you want to change anything, you do it here.
+  The Advisor chat is the universal entry point for unstructured input (free-form text, screenshots, news links). Two surfaces also accept structured uploads via tiles that skip the chat: <span class="nav-card">/expenses</span> takes monthly bank-statement PDFs (Leumi, Schwab, Discount, Cal, Max), and <span class="nav-card">/portfolio</span> takes the monthly portfolio-snapshot TSV — both flow through the same <code>catalog_upload</code> backend the Advisor uses. <span class="nav-card">/files</span> also has a generic upload tile for anything that doesn't fit a parser. Everything else (Plan, Retirement, etc.) is read-only.
 </div>
 </section>
 
@@ -526,10 +526,18 @@
 
 <figure>
   <img src="site-tour/portfolio-top.png" alt="Portfolio page top">
-  <figcaption><strong>Portfolio top</strong> — Snapshot 2026-03-24 · Financial-independence chart with bear/conservative/typical 25-year scenarios · Net worth ₪11.17M / $3.80M · Monthly burn 23.1k NIS · Monthly income 54.8k NIS · Surplus 31.8k NIS (58% of income) · SWR 3.5% · FIRE target ₪7.91M (already at target).</figcaption>
+  <figcaption><strong>Portfolio top</strong> — Monthly snapshot upload tile + Financial-independence chart with bear/conservative/typical 25-year scenarios. Net worth, monthly burn, monthly income, surplus, SWR, FIRE target all rendered as cards below.</figcaption>
 </figure>
 
-<p>This is the <strong>FIRE-position</strong> view. Different from <span class="nav-card">/retirement</span>:</p>
+<h3>The monthly snapshot upload tile (2026-05-29)</h3>
+
+<p>Top of <span class="nav-card">/portfolio</span> ships a drag-drop tile that accepts the monthly <code>Family Finances Status - YY MMM.tsv</code> file. Drop it in (or click to pick); the route persists the TSV under <code>ARGOSY_EXPENSE_SAMPLES_ROOT</code> and synchronously runs the windfall detector against the prior month's snapshot. The per-upload result row surfaces tri-state status inline: PERSISTED + windfall-detector outcome (<em>skipped</em> = no prior TSV to diff; <em>ok + no event</em> = below threshold; <em>ok + event</em> = a banner appears with a deep-link to <span class="nav-card">/retirement#windfall</span> for the full plan).</p>
+
+<p><strong>Note:</strong> the raw bank XLS upload isn't supported yet — the tile accepts only the TSV form. See §19 Hole #3 for the XLS-conversion gap.</p>
+
+<h3>The FIRE-position view</h3>
+
+<p>Below the upload tile: the financial-independence chart + position aggregates. Different from <span class="nav-card">/retirement</span>:</p>
 
 <table>
 <thead><tr><th>This page</th><th>Question answered</th><th>Engine</th></tr></thead>
@@ -782,49 +790,25 @@
 <p>Things that don't work yet, or that the UI doesn't help with. None block usage; all worsen UX.</p>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #1 — No "verdict re-computed" confirmation</div>
-  When a trigger fires (including the new windfall detector), the verdict re-runs server-side but no visible "Last re-computed at 14:32 (3 min ago, triggered by: windfall_detect)" stamp on the <code>RuinProbabilityHero</code>.<br>
-  <strong>Suggested fix:</strong> stamp the hero with last-compute timestamp + trigger cause.
-</div>
-
-<div class="callout warn">
-  <div class="callout-title">Hole #2 — Windfall Accept/Defer is read-only</div>
-  The <code>WindfallCard</code> on <span class="nav-card">/retirement</span> renders Accept/Defer buttons on every proposal (long / medium / short horizons), but they're disabled with a tooltip. Wiring through the existing <code>action_engine</code> (so an accepted proposal becomes a <code>PrioritizedAction</code> with severity HIGH and a due date, surfaced in the home-page action-items widget) is the next chunk.<br>
-  <strong>Suggested fix:</strong> add <code>POST /api/retirement/windfall/accept</code> + <code>/defer</code> endpoints + persistence; light up the buttons.
-</div>
-
-<div class="callout warn">
-  <div class="callout-title">Hole #3 — Windfall classification dialogue not wired</div>
-  When the detector tags a windfall as <code>unclear</code>, the banner currently just deep-links to <span class="nav-card">/retirement#windfall</span>. The resume note (<code>docs/superpowers/plans/2026-05-28-windfall-flow-resume.md</code>) sketches a focus-mode dialogue on <span class="nav-card">/advisor</span> that opens with the event context as the first message and extracts the user's clarification (bonus, gift, in-month redeployment) into structured state. Concrete details — extractor agent, persistence schema, advisor route shape — are TBD and will be locked when that chunk is built.<br>
+  <div class="callout-title">Hole #1 — Windfall classification dialogue not wired</div>
+  When the detector tags a windfall as <code>unclear</code>, the banner currently just deep-links to <span class="nav-card">/retirement#windfall</span>. The design sketched in <code>docs/superpowers/plans/2026-05-28-windfall-flow-resume.md</code> calls for a focus-mode dialogue on <span class="nav-card">/advisor</span> that opens with the event context as the first message and extracts the user's clarification (bonus, gift, in-month redeployment) via <code>intake_extractor</code> into a new <code>income_events</code> table. Concrete schema + extractor agent + advisor route shape are TBD.<br>
   <strong>Suggested fix:</strong> design + ship the focus-mode flow per the resume note.
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #4 — /expenses has no "last sync" per source</div>
-  If you forgot to upload May 2026's Cal statement, /expenses silently shows incomplete data.<br>
-  <strong>Suggested fix:</strong> per-source freshness badge in the Sources sub-tab.
+  <div class="callout-title">Hole #2 — Windfall Accept/Defer persists but doesn't promote into an action</div>
+  The Accept and Defer buttons on the <code>WindfallCard</code> now record a row in the <code>windfall_actions</code> table; you can see "✓ Accepted" or "↻ Deferred · due 2026-06-15" pills appear on each proposal after you click. What's still missing: promotion into the existing <code>action_engine</code> (so an accepted proposal becomes a <code>PrioritizedAction</code> with severity HIGH that surfaces in the home-page action-items widget + tracks until executed).<br>
+  <strong>Suggested fix:</strong> background job that walks <code>windfall_actions</code> rows with <code>decided_status='accepted'</code> + <code>proposal_id IS NULL</code>, calls <code>action_engine.create_from_windfall</code>, fills in the FK.
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #5 — /files is read-only despite the name</div>
-  Files = catalog, not upload portal. Users naturally try to upload here.<br>
-  <strong>Suggested fix:</strong> add an Upload button on /files that calls the same <code>catalog_upload</code> backend the Advisor chat uses, OR rename the tab to "Catalog."
+  <div class="callout-title">Hole #3 — Raw bank XLS upload not wired (only TSV)</div>
+  The new <code>/portfolio</code> upload tile accepts the monthly <code>Family Finances Status - YY MMM.tsv</code> file directly. The XLS-to-TSV conversion step (the user's existing <code>update_leumi_tsv.py</code> script) is still manual. The in-repo Leumi code only reads existing TSVs — no XLS parser ships in-repo yet.<br>
+  <strong>Suggested fix:</strong> spec-driven port of the XLS-to-TSV conversion into <code>argosy/services/portfolio_ingest/leumi_snapshot.py</code> with golden-fixture parity tests against the user's canonical script.
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #6 — Parsing failures are silent</div>
-  If a PDF is in an unsupported format (older SpreadsheetML Leumi files), the parser logs "?? UnknownFormatError" but the Advisor chat shows a generic message. No visible error in /files.<br>
-  <strong>Suggested fix:</strong> per-file parse-status column on /files with a "Re-try" button.
-</div>
-
-<div class="callout bug">
-  <div class="callout-title">Hole #7 — /argonaut 404 on /api/plan/current/structured</div>
-  The Argonaut page tries to fetch a structured plan from <code>GET /api/plan/current/structured</code>, but the backend doesn't expose that shape. The page renders fine (graceful fallback to "no positions") but the network log shows the 404.<br>
-  <strong>Suggested fix:</strong> add the endpoint OR remove the fetch from the Argonaut page.
-</div>
-
-<div class="callout warn">
-  <div class="callout-title">Hole #8 — No site-wide search</div>
+  <div class="callout-title">Hole #4 — No site-wide search</div>
   If you're hunting for a specific past decision ("the day we trimmed NVDA in March"), you have to know to go to /audit. No site-wide search box.<br>
   <strong>Suggested fix:</strong> ⌘K / Ctrl-K palette searching audit_log + transactions + plans.
 </div>
