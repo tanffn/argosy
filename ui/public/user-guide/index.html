@@ -305,11 +305,11 @@
 
 <!-- ============================================================ -->
 <section id="flow-windfall">
-<h2>5. End-to-end flow: Windfall (auto-detected — no buttons, no typing)</h2>
+<h2>5. End-to-end flow: Windfall (detected from the monthly portfolio snapshot)</h2>
 
 <div class="callout ok">
-  <div class="callout-title">By design — Argosy notices, you don't push</div>
-  There's no "+ Add income event" button anywhere. The intent is: you maintain your existing TSV workflow (<code>update_leumi_tsv.py</code> + monthly drops into <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code>), and Argosy diffs consecutive snapshots to detect windfalls automatically. No buttons to find. No forms to fill.
+  <div class="callout-title">By design — Argosy notices the windfall, you don't classify it</div>
+  Windfall is a <em>derived signal</em>, not a thing you tell Argosy about. The user action is the routine monthly portfolio snapshot upload (§11 walkthrough — drop the <code>Family Finances Status - YY MMM.tsv</code> on <span class="nav-card">/portfolio</span>, same way you drop bank statements on <span class="nav-card">/expenses</span>). The windfall <em>detection</em> fires automatically as a side effect when the cash delta between consecutive snapshots crosses the threshold. So there's no "+ Add income event" or "I had a bonus" button — that classification is what the detector + the (forthcoming) Advisor focus-mode dialogue handle.
 </div>
 
 <div class="flow">
