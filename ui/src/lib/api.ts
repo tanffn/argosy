@@ -21,6 +21,18 @@ function apiUrl(path: string): string {
   return path.startsWith("http") ? path : `${base}${path}`;
 }
 
+// Re-export retirement primitives so call sites can `import { ValueWithRationale } from "@/lib/api"`.
+export type {
+  Source,
+  SourcesResponse,
+  ValueWithRationale,
+} from "@/lib/retirement-types";
+import type {
+  Source,
+  SourcesResponse,
+  ValueWithRationale,
+} from "@/lib/retirement-types";
+
 export interface PortfolioPosition {
   location: string;
   currency: string;
@@ -602,6 +614,22 @@ async function putJSON<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const api = {
+  /**
+   * Retirement-companion engine. Plan:
+   * docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md
+   * Wave 0 surfaces sources + reference; later waves add safety/projection/etc.
+   */
+  retirement: {
+    sources: () => getJSON<SourcesResponse>("/api/retirement/sources"),
+    source: (sourceId: string) =>
+      getJSON<Source>(
+        `/api/retirement/sources/${encodeURIComponent(sourceId)}`,
+      ),
+    reference: (key: string, userId: string) =>
+      getJSON<ValueWithRationale>(
+        `/api/retirement/reference/${encodeURIComponent(key)}?user_id=${encodeURIComponent(userId)}`,
+      ),
+  },
   portfolioSnapshot: (userId: string) =>
     getJSON<PortfolioSnapshotDTO>(
       `/api/portfolio/snapshot?user_id=${encodeURIComponent(userId)}`,

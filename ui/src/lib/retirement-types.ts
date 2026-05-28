@@ -1,0 +1,37 @@
+// TS counterparts to ``argosy/services/retirement/citations.py`` +
+// ``argosy/services/retirement/sources.py``. Keep these in lockstep with
+// the backend dataclasses — pydantic v2 + ``as_dict()`` serializes to
+// this shape directly.
+//
+// Conventions:
+//   - Optional fields use `?` (matching how as_dict strips Nones/empty lists).
+//   - ``value`` and ``source_id`` are EXPLICITLY required-with-null because
+//     the backend preserves those semantic Nones in JSON.
+
+export interface ValueWithRationale {
+  /** Null means "not enough data available yet". */
+  value: number | string | null;
+  unit: string;
+  /** Null means derived/computed (no external citation). */
+  source_id: string | null;
+  rationale: string;
+  alternatives_considered?: string[];
+  /** YYYY-MM (or YYYY) when the value was current. */
+  as_of_date?: string;
+  /** Auto-stamped by resolver if as_of is stale, or intrinsic to the YAML. */
+  freshness_warning?: string;
+  confidence?: "high" | "medium" | "low";
+}
+
+export interface Source {
+  id: string;
+  title: string;
+  url: string;
+  as_of: string;
+  kind: "official" | "research" | "derived" | "best_effort";
+  notes?: string;
+}
+
+export interface SourcesResponse {
+  sources: Record<string, Source>;
+}
