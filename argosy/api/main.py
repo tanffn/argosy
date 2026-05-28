@@ -107,6 +107,10 @@ def create_app() -> FastAPI:
     # doesn't have to share portfolio.py's filesystem-walk logic.
     app.include_router(wealth_dashboard_router, prefix=api_prefix)
     app.include_router(plan_router, prefix=api_prefix)
+    # Retirement-companion engine — umbrella router for the 30-gap overhaul.
+    # Plan: docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md
+    from argosy.api.routes.retirement import router as retirement_router
+    app.include_router(retirement_router, prefix=api_prefix)
     # Per-FM-objection agree/disagree + start-new-round endpoints. Sibling
     # router so the agree/disagree work doesn't have to share plan.py with
     # concurrent edits (translation cache, NVDA PACE). Same /plan/draft/
