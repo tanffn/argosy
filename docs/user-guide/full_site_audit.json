@@ -59,12 +59,13 @@
     "input_count": 1,
     "textarea_count": 1,
     "file_input_count": 1,
-    "button_count": 82,
+    "button_count": 84,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
       "Review now",
       "Re-distill",
+      "collapse",
       "Send",
       "Tax residency",
       "Your citizenship",
@@ -79,15 +80,13 @@
       "Employment status (employed / self-employed / retired)",
       "Your employer",
       "Your gross annual comp",
-      "Spouse gross annual comp",
-      "Bank accounts (balances)",
-      "Brokerage accounts (positions)"
+      "Spouse gross annual comp"
     ],
     "console_errors": [],
     "console_warnings": [
       {
         "text": "WebSocket connection to 'ws://localhost:8000/ws' failed: WebSocket is closed before the connection is established.",
-        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0sizk_x._.js', 'lineNumber': 761, 'columnNumber': 0}"
+        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0sizk_x._.js', 'lineNumber': 775, 'columnNumber': 0}"
       }
     ],
     "failed_requests": []
@@ -201,7 +200,7 @@
     "console_warnings": [
       {
         "text": "WebSocket connection to 'ws://localhost:8000/ws' failed: WebSocket is closed before the connection is established.",
-        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0w6j0n2._.js', 'lineNumber': 761, 'columnNumber': 0}"
+        "loc": "{'url': 'http://localhost:1337/_next/static/chunks/src_0w6j0n2._.js', 'lineNumber': 775, 'columnNumber': 0}"
       }
     ],
     "failed_requests": []
@@ -212,10 +211,20 @@
     "input_count": 5,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 20,
+    "button_count": 30,
     "select_count": 1,
     "form_count": 0,
     "buttons_seen": [
+      "Accept",
+      "Defer",
+      "Accept",
+      "Defer",
+      "Accept",
+      "Defer",
+      "Accept",
+      "Defer",
+      "Matching equity sales (same month)",
+      "How this works",
       "Methodology",
       "Methodology",
       "Per-class breakdown",
@@ -225,16 +234,7 @@
       "Methodology",
       "Methodology",
       "Compute",
-      "Methodology",
-      "Methodology",
-      "Methodology",
-      "Methodology",
-      "Methodology",
-      "Sensitivity \u2014 top levers",
-      "Methodology",
-      "Methodology",
-      "Methodology",
-      "Sources\nall"
+      "Methodology"
     ],
     "console_errors": [],
     "console_warnings": [],

@@ -796,18 +796,18 @@
 </tbody>
 </table>
 
-<p>14/14 pages render. 1 page has 1 console error (the /argonaut 404). Backend at <code>:8000</code> with 28 retirement endpoints registered (29 including the new <code>/windfall/detect</code>). UI at <code>:1337</code> via Next.js 16.</p>
+<p>14/14 pages render. 1 page has 1 console error (the /argonaut 404). Backend at <code>:8000</code> with 29 retirement endpoints registered (including <code>/windfall/detect</code>). UI at <code>:1337</code> via Next.js 16.</p>
 
-<div class="callout warn">
-  <div class="callout-title">Caveat — screenshots predate the windfall UI</div>
-  The Playwright capture above ran <em>before</em> the windfall surfaces (<code>&lt;WindfallBanner&gt;</code> on Home, <code>&lt;WindfallCard&gt;</code> on <span class="nav-card">/retirement</span>) shipped in commit <code>0851abb</code>. The new surfaces were verified via TypeScript <code>tsc --noEmit</code>, ESLint, and HTTP 200 on both pages from the dev server — not via fresh screenshots. Next round of the user-guide live-capture script will re-shoot Home + Retirement.
+<div class="callout ok">
+  <div class="callout-title">Screenshots are current as of 2026-05-28 17:29</div>
+  Re-shot after the windfall UI shipped (commit <code>0851abb</code>) and the post-ZigZag corrections landed (commit <code>96524ed</code>). The <span class="nav-card">/</span> screenshot shows the live <code>&lt;WindfallBanner&gt;</code> reading "$84,400 windfall detected in May 2026 — NEEDS REVIEW"; the <span class="nav-card">/retirement</span> screenshot shows the <code>&lt;WindfallCard&gt;</code> at the top with the DESTINATION-labelled allocation table.
 </div>
 
 <hr>
 
 <p style="color: var(--muted); font-size: 13px;">
-  Generated 2026-05-28. Live screenshots via Playwright + Chromium 1.59.0 at viewport 1400×900 (pre-windfall capture).
-  Capture scripts: <code>argosy/services/.progress/user_guide/</code> (gitignored).
+  Generated 2026-05-28. Live screenshots via Playwright + Chromium 1.59.0 at viewport 1400×900, re-shot 17:29 to include the windfall surfaces.
+  Capture scripts: <code>argosy/services/.progress/user_guide/</code>.
   Per-page audit: <code>docs/user-guide/full_site_audit.json</code>.
 </p>
 </section>
