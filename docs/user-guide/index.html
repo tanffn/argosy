@@ -169,7 +169,7 @@
     <span><strong>Audience:</strong> Ariel (single-user mode)</span>
     <span><strong>Live capture:</strong> 2026-05-28 via Playwright + Chromium</span>
     <span><strong>Pages audited:</strong> all 14 nav tabs</span>
-    <span><strong>Shipped this round:</strong> 6 retirement bug fixes · Windfall auto-detect flow · 1 /argonaut bug logged</span>
+    <span><strong>Recent shipments documented here:</strong> Windfall auto-detect flow (banner + card) · /expenses bank-statement upload tile · /retirement hishtalmut withdrawal-tax explorer · 5 detail-page walkthroughs · prior round of 6 retirement bug fixes · /argonaut 404 logged</span>
   </div>
 </header>
 
@@ -580,7 +580,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-retirement">
-<h2>14. <span class="nav-card">/retirement</span> Retirement in detail (with the 6 fixes shipped)</h2>
+<h2>14. <span class="nav-card">/retirement</span> Retirement in detail</h2>
 
 <figure>
   <img src="screenshots/01-retirement-readiness.png" alt="Retirement readiness hero">
@@ -767,10 +767,9 @@
 <section id="fixes">
 <h2>19. Fixes shipped this round</h2>
 
-<div class="callout ok">
-  <div class="callout-title">All 6 retirement bugs/UX issues closed</div>
-  Live A/B verifies the sigma pipe now works: <strong>σ=0.18 (default) → 92% UNCERTAIN</strong>; <strong>σ=0.344 (auto-calibrated NVDA-aware) → 48% OFF_TRACK</strong>. A 44pp swing the page was hiding.
-</div>
+<p>The "rounds" stack: each round delivers a chunk of work, this section documents what landed and what closed. Most-recent rounds first.</p>
+
+<h3>This session — coverage push + windfall flow + IA reconciliation</h3>
 
 <div class="callout ok">
   <div class="callout-title">Hole #1 closed — windfall auto-detect flow shipped</div>
@@ -790,6 +789,18 @@
 <div class="callout ok">
   <div class="callout-title">Coverage gap closed — hishtalmut withdrawal-tax explorer</div>
   Server↔UI audit also found <code>GET /api/retirement/hishtalmut/withdrawal-tax</code> orphaned — sibling to the <code>/eligibility</code> call that the <code>HishtalmutTimerCard</code> already consumed. The card now includes a "what if I withdraw ₪X?" input that drives a debounced fetch and renders the tax owed alongside the eligibility countdown. Closes the pair.
+</div>
+
+<div class="callout ok">
+  <div class="callout-title">User guide rewrite — full session-driven refresh</div>
+  Beyond code: §5 rewritten around the auto-detect windfall philosophy; §3 + §4 STEP 5 reconciled to acknowledge the new <span class="nav-card">/expenses</span> upload path; §14 retirement-table updated for the new Windfall section; §18 added (5 detail-page walkthroughs for <code>/decisions/&lt;id&gt;</code>, <code>/fleet-review</code>, <code>/anomalies/&lt;id&gt;</code>, <code>/positions</code>, <code>/onboarding</code>); §21 audit re-shot to capture all 19 routes (was 14). 6 ZigZag-converged blockers applied across the windfall UI + guide. SDD handover note updated to reflect the windfall UI as shipped.
+</div>
+
+<h3>Previous round — retirement-companion overhaul (2026-05-28 morning)</h3>
+
+<div class="callout ok">
+  <div class="callout-title">All 6 retirement bugs/UX issues closed</div>
+  Live A/B verifies the sigma pipe now works: <strong>σ=0.18 (default) → 92% UNCERTAIN</strong>; <strong>σ=0.344 (auto-calibrated NVDA-aware) → 48% OFF_TRACK</strong>. A 44pp swing the page was hiding.
 </div>
 
 <h4>Bug #1 — Sigma calibration result fed into the verdict <span class="badge fix">FIXED</span></h4>
