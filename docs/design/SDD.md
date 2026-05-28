@@ -353,7 +353,13 @@ The 2026-05-28 SDD review (Codex + Explore agent + main-agent synthesis) identif
 - Wave 5 size understated: split into 5a (core + pension annuity), 5b (hishtalmut + gemel + severance), 5c (lump-vs-annuity + decumulation)
 - Multi-goal: corrected from "Lagrangian or priority order" false binary to explicit hard/soft constraint optimization with explainable outputs
 
-**Wave 1-7 are NOT yet started.** Each wave's just-in-time daughter plan expands the master plan's spec-level detail into full TDD steps at execution time.
+**Wave 1 (Israeli reference values) — SHIPPED 2026-05-28:**
+
+| Task | Commits | What |
+|---|---|---|
+| 1.1-1.5 | `2e9917a` | Mekadem variance band (Clal/Migdal/Menorah; ±2.5% envelope) + Bituach Leumi stipend module (history-factor scale, spouse supplement, sensitivity levers) + `/api/retirement/mekadem/{fund_id}` + `/api/retirement/bituach-leumi` routes + `<MekademBand>` + `<BituachLeumiCard>` UI cards on `/retirement`. 28 new tests; full retirement suite 52/52 passing. |
+
+**Waves 2-7 are NOT yet started.** Each wave's just-in-time daughter plan expands the master plan's spec-level detail into full TDD steps at execution time.
 
 ### Cashflow projection pivot (2026-05-27 evening) — `/plan` chart pivot + Monte Carlo
 
