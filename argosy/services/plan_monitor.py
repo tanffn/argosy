@@ -57,6 +57,7 @@ from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from typing_extensions import deprecated
 
 from argosy.ingest.tsv import AllocationRow, PortfolioSnapshot
 from argosy.services.portfolio_snapshot_store import (
@@ -1049,6 +1050,19 @@ class MacroShiftCheckResult:
 _MACRO_LOOKBACK_DAYS = 7
 
 
+# DEPRECATED: replaced by argosy.agents.state_observer.StateObserverAgent
+# (Spec B commit #6, §6.1). One wave of coexistence — see @deprecated
+# message below + the function docstring's `.. deprecated::` block.
+@deprecated(
+    "check_macro_shift is deprecated in favor of "
+    "argosy.agents.state_observer.StateObserverAgent (Spec B commit #6, "
+    "§6.1). The state-observer reads the same news pipeline signals via "
+    "the snapshot's macro section and emergently fires monitor_flags. "
+    "Scheduled removal: a future spec, once the observer's empirical "
+    "coverage of macro events is confirmed by the §5 backfill (a wave "
+    "of coexistence is intentional — old macro_shift flags age out "
+    "naturally while the observer accumulates a track record)."
+)
 def check_macro_shift(
     session: Session,
     user_id: str,
@@ -1058,6 +1072,17 @@ def check_macro_shift(
 ) -> MacroShiftCheckResult:
     """Fire macro_shift monitor_flags for any new high-materiality news
     signals with recommended_flag='macro_shift'.
+
+    .. deprecated::
+        Spec B commit #6, §6.1 — superseded by
+        :class:`argosy.agents.state_observer.StateObserverAgent`.
+        The observer reads the same ``news_signals`` rows (via the
+        snapshot's ``macro.recent_high_materiality_news`` section) and
+        emergently classifies materiality; the macro-shift cron stays
+        in v1 (one wave of coexistence) so old ``macro_shift`` flags
+        continue to age out naturally. A future spec removes this
+        function entirely once the observer's empirical coverage is
+        confirmed by the §5 backfill verification.
 
     Reads news_signals where:
       - analyzed_at IS NOT NULL (Stage 2 has classified it)
