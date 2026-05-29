@@ -376,8 +376,8 @@
   </div>
   <div class="flow-step">
     <div class="step-num">SIDE-EFFECT 2</div>
-    <div class="step-title">Click "See allocation plan →" to land on <span class="nav-card">/retirement#windfall</span></div>
-    <div class="step-body">The full <code>WindfallCard</code>: hero verdict driven by the backend allocator's canonical rationale + the current vs plan-target allocation table (DESTINATION pills on under-target rows = where the windfall should go) + three horizon columns (long deterministic / medium + short agent-fleet placeholders) + matching-sales drilldown.</div>
+    <div class="step-title">Click "See allocation plan →" to land on <span class="nav-card">/proposals#allocation</span></div>
+    <div class="step-body">The full allocation queue: hero verdict driven by the backend allocator's canonical rationale + the current vs plan-target allocation table (DESTINATION pills on under-target rows = where the windfall should go) + three horizon columns (long deterministic / medium + short agent-fleet placeholders) + matching-sales drilldown.</div>
   </div>
   <div class="flow-step">
     <div class="step-num">SIDE-EFFECT 3</div>
@@ -386,10 +386,7 @@
   </div>
 </div>
 
-<div class="callout">
-  <div class="callout-title">Why "no + Add income event button" still holds — even though there are upload buttons</div>
-  The upload tiles on <span class="nav-card">/expenses</span> and <span class="nav-card">/portfolio</span> are buttons. What there's NOT a button for is the <em>classification</em> — "I had a bonus" / "Sold NVDA for tuition" / "Gift from grandparents." That's a derived signal from comparing snapshots, not a primary input. When the classifier can't resolve the source on its own (the <code>unclear</code> case), the planned Advisor focus-mode dialogue picks up the thread; until that ships (§19 Hole #1), you'd answer in free-form chat on <span class="nav-card">/advisor</span>.
-</div>
+<p>Argosy doesn't have a "+ Add income event" button — classification is derived from snapshot diffs, not entered by hand. The upload tiles on <span class="nav-card">/expenses</span> and <span class="nav-card">/portfolio</span> are the only data-entry points; everything else (windfall classification, allocation suggestions) is computed downstream. If the classifier can't resolve the source automatically (the <code>unclear</code> case), answer in free-form chat on <span class="nav-card">/advisor</span>.</p>
 
 <h3>Unallocated cash — the continuous side of the windfall flow</h3>
 
@@ -443,7 +440,7 @@
 <section id="flow-decision">
 <h2>7. End-to-end flow: Plan → Retirement loop</h2>
 
-<p>You're right that the natural order is <strong>Plan first, then Retirement</strong>. They answer different questions:</p>
+<p>The natural order is <strong>Plan first, then Retirement</strong>. They answer different questions:</p>
 
 <table>
 <thead><tr><th>Page</th><th>Answers</th><th>Timescale</th></tr></thead>
@@ -482,7 +479,7 @@
   <div class="flow-step">
     <div class="step-num">STEP 5</div>
     <div class="step-title">If /retirement says OFF_TRACK, go back to <span class="nav-card">/plan</span></div>
-    <div class="step-body">Re-negotiate. Disagree with the FM objection that's now load-bearing (e.g. "delay retirement to 52"). The two pages bounce against each other until they agree.</div>
+    <div class="step-body">Re-negotiate. Disagree with the FM objection that's now load-bearing (e.g. "delay retirement to 52"). Run another synthesis round until /retirement clears.</div>
   </div>
 </div>
 </section>
@@ -527,7 +524,7 @@
 </ul>
 
 <div class="callout">
-  <div class="callout-title">Why this is the data portal</div>
+  <div class="callout-title">Data portal</div>
   The Advisor chat is the universal entry point for unstructured input (free-form text, screenshots, news links). Two surfaces also accept structured uploads via tiles that skip the chat: <span class="nav-card">/expenses</span> takes monthly bank-statement PDFs (Leumi, Schwab, Discount, Cal, Max), and <span class="nav-card">/portfolio</span> takes the monthly portfolio-snapshot TSV — both flow through the same <code>catalog_upload</code> backend the Advisor uses. <span class="nav-card">/files</span> also has a generic upload tile for anything that doesn't fit a parser. Everything else (Plan, Retirement, etc.) is read-only.
 </div>
 </section>
@@ -545,7 +542,7 @@
 
 <p>Top of <span class="nav-card">/portfolio</span> ships a drag-drop tile that accepts the monthly <code>Family Finances Status - YY MMM.tsv</code> file. Drop it in (or click to pick); the route persists the TSV under <code>ARGOSY_EXPENSE_SAMPLES_ROOT</code> and synchronously runs the windfall detector against the prior month's snapshot. The per-upload result row surfaces tri-state status inline: PERSISTED + windfall-detector outcome (<em>skipped</em> = no prior TSV to diff; <em>ok + no event</em> = below threshold; <em>ok + event</em> = a banner appears with a deep-link to <span class="nav-card">/retirement#windfall</span> for the full plan).</p>
 
-<p><strong>Status of raw bank XLS upload:</strong> the Leumi portfolio XLS parser (<code>argosy/services/portfolio_ingest/parsers/leumi_xls.py</code>) ships as of 2026-05-29 with 23 passing tests + a codex-tandem zigzag review on the parser. It is NOT yet wired into this upload tile -- the route currently accepts only the TSV form. Wiring is blocked on a cash-source design call (the XLS has positions only; cash needs to come from the Leumi Osh statement). See §18 Hole #3.</p>
+<p>The upload tile accepts both TSV files and Leumi monthly portfolio XLS exports. XLS uploads pair with the matching Leumi Osh current-account statement for the cash row (±15-day match window, bidirectional); until the pair lands the XLS upload renders as <code>AWAITING OSH</code>. Once both halves are present, Argosy synthesizes the canonical TSV and runs the windfall detector synchronously.</p>
 
 <h3>Verdict column on per-account tables (2026-05-29)</h3>
 
@@ -622,13 +619,13 @@
 
 <div class="callout">
   <div class="callout-title">The two headline questions this page answers</div>
-  <strong>"When can I retire?"</strong> (the new top card, 2026-05-29): earliest feasible age under three scenarios (bear / base / bull) sourced from the cashflow projection on your current plan draft. Surfaces base = age N.N in ~M years, with bear and bull as guard-rails.<br><br>
-  <strong>"Will the money last if I retire then?"</strong> (the older verdict card): P(solvent at 75/85/95) under fat-tail-aware regime-switch Monte Carlo. The two cards are complementary — the first answers WHEN, the second answers HOW SAFE.
+  <strong>"When can I retire?"</strong> — ExpectedRetirementAgeCard at top of page: earliest feasible age under three scenarios (bear / base / bull) sourced from the cashflow projection on your current plan draft. Surfaces base = age N.N in ~M years, with bear and bull as guard-rails.<br><br>
+  <strong>"Will the money last if I retire then?"</strong> — RuinProbabilityHero below: P(solvent at 75/85/95) under fat-tail-aware regime-switch Monte Carlo. The two cards are complementary — the first answers WHEN, the second answers HOW SAFE.
 </div>
 
 <div class="callout">
-  <div class="callout-title">Why the verdict swings so much</div>
-  The σ (volatility) input dominates the result. On Ariel's portfolio: <strong>σ=0.18 (diversified default) → 92% UNCERTAIN</strong>; <strong>σ=0.344 (auto-calibrated for NVDA concentration) → 48% OFF_TRACK</strong>. A 44pp swing in P(solvent at 95) just from getting σ right. The Sigma calibration card under "Predictions" computes σ from your actual holdings; the Verdict card consumes that value.
+  <div class="callout-title">Verdict ranges</div>
+  The σ (volatility) input dominates the result. On Ariel's portfolio: <strong>σ=0.18 (diversified default) → 92% UNCERTAIN</strong>; <strong>σ=0.344 (auto-calibrated for NVDA concentration) → 48% OFF_TRACK</strong>. A 44pp swing in P(solvent at 95) just from σ. The Sigma calibration card under "Predictions" computes σ from your actual holdings; the Verdict card consumes that value.
 </div>
 
 <table>
@@ -794,9 +791,9 @@
   <figcaption><strong>Onboarding</strong> — email + setup-token form. Signs the user in via NextAuth, then drops them on the home page where the Advisor's gap-tracker takes over (§4 walkthrough).</figcaption>
 </figure>
 
-<p><span class="nav-card">/onboarding</span> is the new-tenant landing page. Takes an email + a setup token (from the admin or the invite URL's <code>?token=</code> param), signs the user in via NextAuth, and drops them on the home page where the Advisor's gap-tracker takes over (see §4). Off-nav by design — you'd only land here on first-login of a fresh tenant.</p>
+<p><span class="nav-card">/onboarding</span> is the new-tenant landing page. Takes an email + a setup token (from the admin or the invite URL's <code>?token=</code> param), signs the user in via NextAuth, and drops them on the home page where the Advisor's gap-tracker takes over (see §4). Not in the main nav — first-login of a fresh tenant only.</p>
 
-<p><span class="nav-card">/intake</span> is a thin redirect to <span class="nav-card">/advisor</span>. The old 6-stage interview was replaced by the persistent advisor relationship (gap-tracker sidebar + free-form Q&amp;A) in the Phase 1 reframe; this stub stays so older bookmarks land on the right surface.</p>
+<p><span class="nav-card">/intake</span> is a thin redirect to <span class="nav-card">/advisor</span>. Intake happens inside the persistent Advisor relationship (gap-tracker sidebar + free-form Q&amp;A); this stub stays so older bookmarks land on the right surface.</p>
 
 <div class="callout">
   <div class="callout-title">When to come here</div>
@@ -817,14 +814,9 @@
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #2 — Windfall Accept/Defer persists but doesn't promote into an action</div>
-  The Accept and Defer buttons on the <code>WindfallCard</code> now record a row in the <code>windfall_actions</code> table; you can see "✓ Accepted" or "↻ Deferred · due 2026-06-15" pills appear on each proposal after you click. What's still missing: promotion into the existing <code>action_engine</code> (so an accepted proposal becomes a <code>PrioritizedAction</code> with severity HIGH that surfaces in the home-page action-items widget + tracks until executed).<br>
+  <div class="callout-title">Hole #2 — Windfall Accept/Defer doesn't yet promote into an action</div>
+  The Accept and Defer buttons on the <code>WindfallCard</code> record a row in the <code>windfall_actions</code> table; "✓ Accepted" or "↻ Deferred · due 2026-06-15" pills appear after you click. Accepted proposals do not yet become <code>PrioritizedAction</code> rows on the home-page action-items widget.<br>
   <strong>Suggested fix:</strong> background job that walks <code>windfall_actions</code> rows with <code>decided_status='accepted'</code> + <code>proposal_id IS NULL</code>, calls <code>action_engine.create_from_windfall</code>, fills in the FK.
-</div>
-
-<div class="callout">
-  <div class="callout-title">Hole #3 — CLOSED 2026-05-29: raw Leumi XLS upload now wired with bidirectional Osh pair</div>
-  The <code>/portfolio</code> upload tile accepts both shapes now (TSV <em>or</em> raw Leumi monthly XLS). The XLS auto-pairs with the most recent Leumi Osh statement via DB lookup (±15d window); pairs resolve in either direction (XLS-first queues as <strong>AWAITING OSH</strong>; Osh-first auto-completes when the matching XLS lands). See §5 STEP B1 for the user flow. Codex zigzag review caught 6 BLOCKERs on the architecture (symbol stability across months, currency inference, snapshot-effective FX, dual idempotency, response contract, deterministic balance selection) — all addressed.
 </div>
 
 <div class="callout warn">

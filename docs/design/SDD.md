@@ -15,7 +15,27 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-29 (TSV generator block) by Claude — user clarified ([[feedback_argosy_generates_tsv]]) that Argosy generates the canonical Family Finances Status TSV itself; the external `update_leumi_tsv.py` script is no longer a documented path going forward. See "Wave 2026-05-29 (TSV generator block)" immediately below. Prior waves stay as historical context.
+**Last edit:** 2026-05-29 (plan/execute/monitor sprint kickoff) by Claude — Ariel reframed the /plan↔/retirement bounce-loop as wrong: plan is made once (rare, on big life event); agents track monthly; red flags surface on home page. Two specs landed (commit `cbf6a07`) decomposing the UI into three concerns (creation / execution / monitoring) plus a separate Flow-2 spec for anomaly detection + RSU pre-vest planning. Both codex-reviewed APPROVE_WITH_CONDITIONS. Sprint commit #1 (user-guide audit rewrite) shipped alongside this entry. See "Wave 2026-05-29 (plan/execute/monitor reorg)" immediately below. Prior waves stay as historical context.
+
+### Wave 2026-05-29 (plan/execute/monitor reorg) — sprint kickoff + user-guide audit
+
+User invoked autonomous mode ("auto mode, use codex, I am going out") after authorizing the composite design. Two specs committed in `cbf6a07`:
+
+- **`docs/superpowers/specs/2026-05-29-plan-execute-monitor-reorg-design.md`** — 18 commits. The three-concern split: `/plan` = plan creation (unchanged); `/portfolio` + `/proposals` = execution; `/home` Red-Flag Strip + `/retirement` Holistic Timeline = monitoring. New: `/life-events` structured intake (Pydantic enum + 422 loud-error mirroring `household_categorizer.py:0.85-confidence`); monitor agent (drift hysteresis + monthly MC + macro-shift); two-stage daily-automation pipeline (deterministic extractor → analyst on normalized records, raw text never reaches LLM prompt per codex BLOCKER); canonical `effective_retire_ready_age()` clamped by RSU vest + life events; rename `windfall_actions` → `allocation_actions` + `action_source` discriminator.
+
+- **`docs/superpowers/specs/2026-05-29-anomaly-detection-rsu-prevest-design.md`** — 12 commits. Four anomaly buckets (median+MAD outliers per codex IMPORTANT, 4-state watchlist machine for Card 2923, novel-merchant + category-drift, cross-card duplicates) writing to extended `expense_review_queue` with per-bucket dedup_key formulas. RSU pre-vest planning with three-scenario tax estimate (nominal/effective/conservative). Inline transaction-row badges + existing `AnomalyHighlights` (no new tab per Ariel's surface preference).
+
+Codex tandem zigzag verdicts:
+- Spec #1: APPROVE_WITH_CONDITIONS. 3 BLOCKERs integrated: keep allocation_actions separate from generic proposals; two-stage news pipeline; canonical retire-ready-age. IMPORTANTs integrated: drift hysteresis, anchor migration, /decide rename cross-link scope, action_source enum extensibility, uniqueness strategy. Session at `tools/codex-tandem/sessions/2026-05-29-plan-execute-monitor-reorg-design/`.
+- Spec #2: APPROVE_WITH_CONDITIONS. 1 BLOCKER integrated: explicit 4-state watchlist transition rules. IMPORTANTs integrated: robust stats (median+MAD), per-bucket dedup_key formulas, three-scenario tax estimate, migration-per-commit split. Session at `tools/codex-tandem/sessions/2026-05-29-anomaly-detection-rsu-prevest-design/`.
+
+**Sprint #1 commit landed alongside this SDD update:** user-guide audit rewrite — 13 chat-tone / history-narration hits fixed. Surgical edits only; full IA rewrite happens at sprint-end commit #18 once the IA reorg has shipped. New binding [[feedback_user_guide_is_manual]]: user-guide is a TV-manual, not a history doc — no "you're right", no "still holds", no design-rationale defensive callouts.
+
+**Open dependencies for Ariel (mid-sprint, neither blocks start):**
+- Discord bot creds (channel ID + bot token + invite) for spec #1 commit #16 — bot scaffolding ships dormant until creds arrive.
+- Real Schwab Equity Awards CSV fixture for spec #1 commit #7 — needed to verify the unvested-grants `Deposit` row shape codex flagged as IMPORTANT-to-verify.
+
+**What ships next this session (autonomous mode):** continue executing sprint commits in order. Next: spec #1 commit #2 (migration 0041 — allocation_actions rename) with codex zigzag review.
 
 ### Wave 2026-05-29 (TSV generator block) — Argosy is now the TSV producer
 
