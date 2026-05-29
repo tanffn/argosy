@@ -125,7 +125,7 @@
   <h2>Quick links</h2>
   <ol>
     <li><a href="#what-it-is">What Argosy is</a></li>
-    <li><a href="#tour">Site tour (14 tabs)</a></li>
+    <li><a href="#tour">Site tour (15 tabs)</a></li>
     <li><a href="#data-flow">How data gets in</a></li>
   </ol>
 
@@ -143,12 +143,19 @@
     <li><a href="#tab-advisor">Advisor</a></li>
     <li><a href="#tab-portfolio">Portfolio</a></li>
     <li><a href="#tab-expenses">Expenses</a></li>
+    <li><a href="#tab-life-events">Life Events</a></li>
     <li><a href="#tab-plan">Plan</a></li>
     <li><a href="#tab-retirement">Retirement</a></li>
     <li><a href="#tab-files">Files</a></li>
     <li><a href="#tab-proposals">Proposals · Argonaut · Consult</a></li>
     <li><a href="#tab-others">Agents · Audit · Domain KB · Settings</a></li>
     <li><a href="#tab-details">Detail pages (click-through)</a></li>
+  </ol>
+
+  <h2>Daily automation</h2>
+  <ol>
+    <li><a href="#monitor">Monitor agent</a></li>
+    <li><a href="#news">News pipeline</a></li>
   </ol>
 
   <h2>Audit</h2>
@@ -166,7 +173,7 @@
   <div class="meta">
     <span><strong>Audience:</strong> Ariel (single-user mode)</span>
     <span><strong>Screenshots:</strong> Playwright + Chromium @ 1400&times;900</span>
-    <span><strong>Covers:</strong> 14 top-nav tabs + 5 click-through detail pages</span>
+    <span><strong>Covers:</strong> 15 top-nav tabs + 5 click-through detail pages</span>
   </div>
 </header>
 
@@ -183,12 +190,12 @@
 
 <p>The engine convenes a fleet of AI specialists (analysts, debate, risk officers, fund manager) to debate any non-trivial move. Each rationale is persisted, so months later you can ask <em>why</em> something happened and get a real answer.</p>
 
-<p>The user-visible surface is split into 14 tabs, but the working flow only routes through 5-6 of them regularly. The rest are inspection / debugging tools.</p>
+<p>The user-visible surface is split into 15 tabs, but the working flow only routes through 5-6 of them regularly. The rest are inspection / debugging tools.</p>
 </section>
 
 <!-- ============================================================ -->
 <section id="tour">
-<h2>2. The 14 tabs at a glance</h2>
+<h2>2. The top nav at a glance</h2>
 
 <figure>
   <img src="site-tour/home-top.png" alt="Home page top">
@@ -198,7 +205,7 @@
 <p>The top nav shows the 8 PRIMARY tabs always; the 6 INSPECTION tabs collapse behind a <strong>"More" dropdown</strong> so the daily nav doesn't carry surfaces you only touch monthly or for debugging.</p>
 
 <ul>
-  <li><strong>PRIMARY</strong> (always visible, in session-flow order) — <span class="nav-card">/</span> &middot; <span class="nav-card">/advisor</span> &middot; <span class="nav-card">/portfolio</span> &middot; <span class="nav-card">/expenses</span> &middot; <span class="nav-card">/plan</span> &middot; <span class="nav-card">/retirement</span> &middot; <span class="nav-card">/consult</span> &middot; <span class="nav-card">/proposals</span>. Each tab has a Lucide icon.</li>
+  <li><strong>PRIMARY</strong> (always visible, in session-flow order) — <span class="nav-card">/</span> &middot; <span class="nav-card">/advisor</span> &middot; <span class="nav-card">/portfolio</span> &middot; <span class="nav-card">/expenses</span> &middot; <span class="nav-card">/life-events</span> &middot; <span class="nav-card">/plan</span> &middot; <span class="nav-card">/retirement</span> &middot; <span class="nav-card">/consult</span> &middot; <span class="nav-card">/proposals</span>. Each tab has a Lucide icon.</li>
   <li><strong>INSPECTION (under "More")</strong> — click "More" to reveal: <span class="nav-card">/argonaut</span> &middot; <span class="nav-card">/agents</span> &middot; <span class="nav-card">/files</span> &middot; <span class="nav-card">/audit</span> &middot; <span class="nav-card">/domain-kb</span> &middot; <span class="nav-card">/settings</span>. The "More" button pulses active when you're currently on one of these pages, so you can tell from the nav alone that you're inside the inspection group. Click outside or press Escape to close.</li>
 </ul>
 
@@ -210,9 +217,10 @@
 <tr><td><span class="nav-card">/advisor</span></td><td><strong>The data-entry portal.</strong> Chat + attach files + gap-tracker rows on the right.</td><td>Daily-to-weekly</td></tr>
 <tr><td><span class="nav-card">/portfolio</span></td><td>Current FIRE position + financial-independence chart</td><td>Weekly</td></tr>
 <tr><td><span class="nav-card">/expenses</span></td><td>Spending dashboard with sub-tabs (Overview/Monthly/Transactions/Sources/Merchants/Trips/RSU/Income)</td><td>Weekly + monthly drill</td></tr>
+<tr><td><span class="nav-card">/life-events</span></td><td>Structured intake for career / family / asset / expense / recurring / retirement-milestone events</td><td>On change</td></tr>
 <tr><td><span class="nav-card">/plan</span></td><td>Current draft plan from the agent fleet. Per-objection AGREE/DISAGREE/DEFER.</td><td>When synthesis lands</td></tr>
-<tr><td><span class="nav-card">/retirement</span></td><td>Long-term truth-teller — fat-tail-aware P(ruin) verdict + safety gates</td><td>Monthly + on-trigger</td></tr>
-<tr><td><span class="nav-card">/consult</span></td><td>Open ticker-decision flows</td><td>When the system surfaces one</td></tr>
+<tr><td><span class="nav-card">/retirement</span></td><td>Read-only long-term view — Holistic Timeline + fat-tail-aware P(ruin) verdict + safety gates</td><td>Monthly + on-trigger</td></tr>
+<tr><td><span class="nav-card">/consult</span></td><td>Ticker-decision intake — submit symbol + rationale, fleet returns Buy/Sell/Hold</td><td>When you want a fleet opinion</td></tr>
 <tr><td><span class="nav-card">/proposals</span></td><td>Queue of trade proposals awaiting approval</td><td>Daily</td></tr>
 <tr><td colspan="3" class="text-muted-foreground" style="background:rgba(99,102,241,0.04);font-size:11px;text-transform:uppercase;letter-spacing:0.05em;padding-top:14px">INSPECTION</td></tr>
 <tr><td><span class="nav-card">/argonaut</span></td><td>$1K bounded auto-trading account</td><td>Monthly check-in</td></tr>
@@ -382,7 +390,7 @@
   <div class="flow-step">
     <div class="step-num">SIDE-EFFECT 3</div>
     <div class="step-title">Accept or Defer per proposal</div>
-    <div class="step-body">Live buttons. Accept persists a row in <code>windfall_actions</code> with <code>decided_status='accepted'</code>; Defer same with optional <code>due_date</code>. Already-decided proposals render as <em>"✓ Accepted"</em> / <em>"↻ Deferred · due 2026-06-15"</em> pills inline on re-fetch. The next step (promotion of an accepted row into an <code>action_engine</code> PrioritizedAction on the home-page action-items widget) is queued — see §18 Hole #2.</div>
+    <div class="step-body">Live buttons. Accept persists a row in <code>windfall_actions</code> with <code>decided_status='accepted'</code>; Defer same with optional <code>due_date</code>. Already-decided proposals render as <em>"✓ Accepted"</em> / <em>"↻ Deferred · due 2026-06-15"</em> pills inline on re-fetch. The next step (promotion of an accepted row into an <code>action_engine</code> PrioritizedAction on the home-page action-items widget) is queued — see §21 Hole #2.</div>
   </div>
 </div>
 
@@ -405,8 +413,8 @@
   </div>
   <div class="flow-step">
     <div class="step-num">DECISION</div>
-    <div class="step-title">Accept/Defer wiring pending</div>
-    <div class="step-body">The buy suggestions render but don't yet have Accept/Defer buttons (queued — they will reuse the existing <code>windfall_actions</code> table since the proposal shape is identical). For now, treat the tile as a "here's what Argosy thinks" advisory; execute manually in your broker.</div>
+    <div class="step-title">Accept or Defer per suggested buy</div>
+    <div class="step-body">Each row in the list carries live Accept and Defer buttons. Accept persists a row in <code>allocation_actions</code> with <code>action_source='unallocated_cash'</code> and renders a <em>"✓ Accepted"</em> pill inline. Defer records the deferral with an optional due date and renders <em>"↻ Deferred"</em>. Promotion of an accepted row into a home-page action item is still pending — see §21 Hole #2.</div>
   </div>
 </div>
 </section>
@@ -440,13 +448,13 @@
 <section id="flow-decision">
 <h2>7. End-to-end flow: Plan → Retirement loop</h2>
 
-<p>The natural order is <strong>Plan first, then Retirement</strong>. They answer different questions:</p>
+<p>The natural order is <strong>Plan first, then Retirement</strong>. Plan is where decisions are made and re-runs are kicked off; Retirement is read-only visualization on top of the plan's accepted assumptions. They answer different questions:</p>
 
 <table>
 <thead><tr><th>Page</th><th>Answers</th><th>Timescale</th></tr></thead>
 <tbody>
 <tr><td><span class="nav-card">/plan</span></td><td>"What should I DO this month/quarter?"</td><td>Tactical · short + medium horizon</td></tr>
-<tr><td><span class="nav-card">/retirement</span></td><td>"Can I retire? When? At what risk?"</td><td>Strategic · 30+ year horizon</td></tr>
+<tr><td><span class="nav-card">/retirement</span></td><td>"Can I retire? When? At what risk?" (read-only)</td><td>Strategic · 30+ year horizon</td></tr>
 </tbody>
 </table>
 
@@ -497,6 +505,7 @@
 
 <ul>
   <li><strong>Anchor banner</strong> — version + agent count + cadence count + mode badges. Mode is paper / live / queue_only.</li>
+  <li><strong>Red-Flag Strip</strong> — sits at the very top of the page (above the anchor banner) when there are active <code>monitor_flags</code> rows. Each flag renders as a single line: severity dot (red = critical, amber = warning, yellow = informational), short text describing what was detected, dismiss button (×). Click × and the flag is marked dismissed; the strip re-renders without it. With zero active flags the strip occupies zero vertical space — Home looks identical to the pre-strip layout.</li>
   <li><strong>Fleet self-review</strong> — automatic post-synthesis audit of the agent fleet's own output (10 deterministic detectors). Link goes to <span class="nav-card">/fleet-review/[id]</span>.</li>
   <li><strong>Daily-brief card</strong> — stitched from the day's gap deltas + investor-event signal + watchlist anomalies. "Review monthly plan" CTA → <span class="nav-card">/plan</span>.</li>
   <li><strong>Action items widget</strong> — pulled from the active plan's short + medium horizon. Bucketed OVERDUE / TODAY / DUE_SOON / UPCOMING.</li>
@@ -544,6 +553,10 @@
 
 <p>The upload tile accepts both TSV files and Leumi monthly portfolio XLS exports. XLS uploads pair with the matching Leumi Osh current-account statement for the cash row (±15-day match window, bidirectional); until the pair lands the XLS upload renders as <code>AWAITING OSH</code>. Once both halves are present, Argosy synthesizes the canonical TSV and runs the windfall detector synchronously.</p>
 
+<h3>Unallocated-cash tile</h3>
+
+<p>Below the upload tile sits the <code>&lt;UnallocatedCashCard&gt;</code>. It renders only when current cash exceeds your plan-target cash by 1.5x or more (self-tuning ratio, no fixed dollar threshold). When fired, it shows the excess + a ranked list of suggested buys, each with live <strong>Accept</strong> and <strong>Defer</strong> buttons. Click Accept and a row in <code>allocation_actions</code> is persisted with <code>action_source='unallocated_cash'</code>; the row re-renders as a <em>"✓ Accepted"</em> pill inline on next fetch. Defer takes an optional due date and renders <em>"↻ Deferred"</em>. See §5 "Unallocated cash" for the trigger detail.</p>
+
 <h3>Verdict column on per-account tables (2026-05-29)</h3>
 
 <p>Each per-account positions table (one per Leumi / Schwab / Aborad account) gets a Verdict column on the right: a HOLD / BUY / TRIM / SELL / ADD pill sourced from the per-position thesis on the current accepted plan draft. Tones are picked so HOLD (the most-common verdict) reads as background; BUY/ADD shine emerald, TRIM amber, SELL rose. Hover for the conviction + first 200 chars of reasoning; click jumps to the full per-position thesis at <span class="nav-card">/positions</span>.</p>
@@ -581,14 +594,41 @@
   <li><strong>Sources</strong> — per-issuer health (Leumi-NIS · Leumi-USD · Discount · Cal · Schwab). Currently 6 sources.</li>
   <li><strong>Merchants</strong> — merchant-level rollup. Bulk relabel from here.</li>
   <li><strong>Trips</strong> — auto-detected travel periods (hotel + restaurant + transport cluster).</li>
-  <li><strong>RSU</strong> — Schwab disbursements vs Leumi USD wire credits cross-validation.</li>
+  <li><strong>RSU</strong> — Schwab disbursements vs Leumi USD wire credits cross-validation. Drop a Schwab Equity Awards CSV anywhere under <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code> and the ingestor parses historical vest events into <code>rsu_vest_events</code>; the parsed vests surface on the Holistic Timeline at <span class="nav-card">/retirement</span> and feed the latest-vest clamp on <code>effective_retire_ready_age()</code>.</li>
   <li><strong>Income</strong> — per-month income breakdown (salary + dividends + bonus + side-income + RSU rollup), with month-shift navigation. Parallel to the expense-side detail.</li>
 </ul>
 </section>
 
 <!-- ============================================================ -->
+<section id="tab-life-events">
+<h2>12. <span class="nav-card">/life-events</span> Life Events in detail</h2>
+
+<p>The page where structured life-event data lives. Anything that changes the cashflow projection or the retirement-readiness math — new job, parental leave, asset purchase, recurring expense, retirement milestone — gets entered here so the plan engine can see it.</p>
+
+<h3>Adding an event</h3>
+
+<p>The form is a top-down wizard:</p>
+
+<ol>
+  <li><strong>Category</strong> — pick one of six: <em>career</em>, <em>family</em>, <em>asset</em>, <em>expense</em>, <em>recurring</em>, <em>retirement-milestone</em>.</li>
+  <li><strong>Kind</strong> — the category narrows the options (e.g. career → <em>new_job</em> / <em>raise</em> / <em>bonus</em> / <em>job_loss</em>; family → <em>marriage</em> / <em>child_born</em> / <em>divorce</em>; asset → <em>property_purchase</em> / <em>vehicle</em>; retirement-milestone → <em>target_age</em> / <em>partial_retirement</em>).</li>
+  <li><strong>Detail fields</strong> — the kind drives the field set. Dates, amounts, currency, counterparty when relevant.</li>
+  <li><strong>Save</strong> — the event lands in the <code>life_events</code> table and the projection refreshes on next plan synthesis.</li>
+</ol>
+
+<h3>The loud-error 422 banner</h3>
+
+<p>If the form payload doesn't validate against the kind's schema (missing required field, invalid enum, malformed date), the page renders a structured error banner at the top of the form. The banner names the field that failed and lists the <em>valid alternatives</em> the backend accepts. No generic "invalid input" message — the banner tells you exactly what to change.</p>
+
+<div class="callout">
+  <div class="callout-title">Where the data lands downstream</div>
+  Life events feed two surfaces directly: the Holistic Timeline on <span class="nav-card">/retirement</span> (the event appears as a marker at its date) and the <code>effective_retire_ready_age()</code> calculation (events with a retirement-relevant kind can clamp the projected ready-age in any of the three scenarios).
+</div>
+</section>
+
+<!-- ============================================================ -->
 <section id="tab-plan">
-<h2>12. <span class="nav-card">/plan</span> Plan in detail</h2>
+<h2>13. <span class="nav-card">/plan</span> Plan in detail</h2>
 
 <figure>
   <img src="site-tour/plan-top.png" alt="Plan page detail">
@@ -608,12 +648,36 @@
 
 <!-- ============================================================ -->
 <section id="tab-retirement">
-<h2>13. <span class="nav-card">/retirement</span> Retirement in detail</h2>
+<h2>14. <span class="nav-card">/retirement</span> Retirement in detail</h2>
 
 <figure>
   <img src="screenshots/01-retirement-readiness.png" alt="Retirement readiness hero">
   <figcaption><strong>Hero</strong> — OFF TRACK · P(solvent at 75/85/95) = 69% / 57% / 57% · 95% CI [55%–59%] · "OFF TRACK — P(solvent at 95) is 57%, below target 90% by 33pp..."</figcaption>
 </figure>
+
+<p>Read-only visualization on top of the plan's accepted assumptions. Cards render verdicts and projections; nothing on this page kicks off a new synthesis or accepts a proposal — that happens on <span class="nav-card">/plan</span> and <span class="nav-card">/proposals</span>. The sticky left-sidebar TOC navigates 13 named sections.</p>
+
+<h3>Holistic Timeline</h3>
+
+<figure>
+  <img src="site-tour/retirement-top.png" alt="Holistic Timeline card at top of /retirement">
+  <figcaption><strong>HolisticTimelineCard</strong> — horizontal timeline rendering past RSU vests, projected future vests, life events, and the bear / base / bull retire-ready zones on the same axis.</figcaption>
+</figure>
+
+<p>A single horizontal axis carries four layers at once:</p>
+
+<ul>
+  <li><strong>Past vests</strong> — historical RSU vest events from <code>rsu_vest_events</code> (populated by the Schwab CSV ingest).</li>
+  <li><strong>Projected vests</strong> — future scheduled vests out to the horizon, with a 90-day projection past the latest known vest.</li>
+  <li><strong>Life events</strong> — markers for each row in <code>life_events</code> at its dated position.</li>
+  <li><strong>Retire-ready zones</strong> — three bands (bear / base / bull) sourced from the canonical <code>effective_retire_ready_age()</code>. The base band is the headline projection; bear and bull frame the uncertainty.</li>
+</ul>
+
+<p>Controls: a <strong>horizon selector</strong> (10y / 30y) at the top of the card, a <strong>Today indicator</strong> as a vertical reference, and hover tooltips on every marker showing event/vest detail.</p>
+
+<h3>Expected retirement age</h3>
+
+<p>The ExpectedRetirementAgeCard surfaces the three scenarios from <code>effective_retire_ready_age()</code> — bear / base / bull — sourced from the cashflow projection on the current plan draft, then clamped by (1) the latest known RSU vest plus a 90-day projection and (2) any retirement-milestone events on <span class="nav-card">/life-events</span>. Every retire-ready-age value across the UI (Holistic Timeline bands, the hero card, the safety gates) flows through this single function — they will not disagree.</p>
 
 <p>19 cards in 13 named sections, navigable via the sticky left-sidebar TOC.</p>
 
@@ -631,7 +695,7 @@
 <table>
 <thead><tr><th>Section</th><th>What's there</th></tr></thead>
 <tbody>
-<tr><td>Windfall</td><td>WindfallCard — only renders when the detector found a qualifying cash delta in the latest TSV. Hero + allocation delta table + 3-horizon proposals + matching-sales drilldown.</td></tr>
+<tr><td>Windfall</td><td>(moved) WindfallCard now lives at <span class="nav-card">/proposals#allocation</span>. <span class="nav-card">/retirement</span> is read-only — windfall decisions belong on the proposals queue.</td></tr>
 <tr><td>When can I retire?</td><td>ExpectedRetirementAgeCard (2026-05-29) — three age blocks (base prominent, bear and bull as guard-rails), with a footer cross-referencing the plan's target age.</td></tr>
 <tr><td>Verdict</td><td>RuinProbabilityHero (the OFF_TRACK card above)</td></tr>
 <tr><td>Safety</td><td>SafetyGatesPanel — NRA estate · Emergency liquidity · Conflict scenario</td></tr>
@@ -650,7 +714,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-files">
-<h2>14. <span class="nav-card">/files</span> Files in detail</h2>
+<h2>15. <span class="nav-card">/files</span> Files in detail</h2>
 
 <figure>
   <img src="site-tour/files-top.png" alt="Files page">
@@ -667,7 +731,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-proposals">
-<h2>15. <span class="nav-card">/proposals</span> · <span class="nav-card">/argonaut</span> · <span class="nav-card">/consult</span></h2>
+<h2>16. <span class="nav-card">/proposals</span> · <span class="nav-card">/argonaut</span> · <span class="nav-card">/consult</span></h2>
 
 <figure>
   <img src="site-tour/proposals-top.png" alt="Proposals page">
@@ -682,11 +746,20 @@
 <p>The trade-decision flow:</p>
 
 <ol>
-  <li>Submit a ticker via <span class="nav-card">/consult</span> — enter symbol + rationale → agent fleet generates Buy/Sell/Hold proposal.</li>
-  <li>Proposal lands in <span class="nav-card">/proposals</span>.</li>
-  <li>Approve / Reject / Escalate. For T0/T1 in Argonaut on live mode, the engine auto-executes.</li>
+  <li>Submit a ticker via <span class="nav-card">/consult</span> — enter symbol + rationale, the agent fleet returns a Buy/Sell/Hold recommendation. The page itself returns the fleet's opinion; it does not execute or queue anything on its own.</li>
+  <li>The accept-or-reject decision lives on <span class="nav-card">/proposals</span>. The trade proposal lands there for your approval.</li>
+  <li>Approve / Reject / Escalate on <span class="nav-card">/proposals</span>. For T0/T1 in Argonaut on live mode, the engine auto-executes.</li>
   <li>Filled orders surface in <span class="nav-card">/argonaut</span> (Recent trades) and <span class="nav-card">/audit</span>.</li>
 </ol>
+
+<h3>/proposals#allocation — the windfall allocation queue</h3>
+
+<p>The Proposals page has a dedicated <code>#allocation</code> section reached by the windfall banner's "See allocation plan →" deep-link or by scrolling. Contents:</p>
+
+<ul>
+  <li><strong>WindfallCard</strong> — only renders when the windfall detector found a qualifying cash delta in the latest snapshot. Hero verdict + allocation-delta table (current vs plan-target, DESTINATION pills on under-target rows) + three horizon columns (long deterministic / medium + short agent-fleet placeholders) + matching-sales drilldown.</li>
+  <li><strong>Accept / Defer per proposal</strong> — live buttons. Accept persists a row in <code>windfall_actions</code> with <code>decided_status='accepted'</code>; Defer takes an optional <code>due_date</code>. Already-decided proposals render as <em>"✓ Accepted"</em> / <em>"↻ Deferred · due YYYY-MM-DD"</em> pills inline.</li>
+</ul>
 
 <div class="callout bug">
   <div class="callout-title">Bug found on /argonaut (logged separately)</div>
@@ -697,7 +770,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-others">
-<h2>16. <span class="nav-card">/agents</span> · <span class="nav-card">/audit</span> · <span class="nav-card">/domain-kb</span> · <span class="nav-card">/settings</span></h2>
+<h2>17. <span class="nav-card">/agents</span> · <span class="nav-card">/audit</span> · <span class="nav-card">/domain-kb</span> · <span class="nav-card">/settings</span></h2>
 
 <p>Inspection / config tabs. Brief overview:</p>
 
@@ -711,7 +784,7 @@
 
 <!-- ============================================================ -->
 <section id="tab-details">
-<h2>17. Detail pages reached by click-through</h2>
+<h2>18. Detail pages reached by click-through</h2>
 
 <p>These surfaces aren't in the top nav — you land on them by clicking a link from Home, /portfolio, /plan, /retirement, or one of the banners. They're documented here so the next time a banner says "Read report →" or a synthesis row says "Drill in →" you know what you're getting.</p>
 
@@ -802,8 +875,59 @@
 </section>
 
 <!-- ============================================================ -->
+<section id="monitor">
+<h2>19. Monitor agent</h2>
+
+<p>The monitor agent runs nightly via cron and on-demand whenever a new snapshot persists. It writes rows to the <code>monitor_flags</code> table; those rows feed the Red-Flag Strip on Home (§8). Three trigger families:</p>
+
+<h3>Agent drift</h3>
+
+<p>Drift fires when an agent's per-position confidence or numeric output diverges from the prior-snapshot value. Hysteresis:</p>
+
+<ul>
+  <li>Relative delta ≥ <strong>10%</strong> sustained for <strong>2 consecutive snapshots</strong>, AND absolute delta ≥ <strong>$5K</strong>, OR</li>
+  <li>Relative delta ≥ <strong>20%</strong> in a single snapshot, AND absolute delta ≥ <strong>$5K</strong>.</li>
+</ul>
+
+<p>The dual threshold avoids both noise (single-shot fluctuations) and silence (slow drift across many snapshots).</p>
+
+<h3>Monte Carlo regression</h3>
+
+<p>The monthly retirement MC compares the latest P(solvent at 95) against the prior month's value. A drop of <strong>5 percentage points or more</strong> fires a flag. Recovery (the next month's MC bouncing back) does not auto-dismiss the historical flag.</p>
+
+<h3>Macro</h3>
+
+<p>Macro signals from the news pipeline (§20) can fire a flag when the materiality classifier returns a high-severity verdict against a watchlist item.</p>
+
+<div class="callout">
+  <div class="callout-title">Dismissal</div>
+  The × button on the Red-Flag Strip marks a flag dismissed in the DB. Dismissed flags don't re-fire unless the underlying condition retriggers (e.g. drift hysteresis resets and crosses again, or a fresh macro event lands).
+</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="news">
+<h2>20. News pipeline</h2>
+
+<p>Daily automation that brings external signal into the system. Two stages, with a hard contract between them.</p>
+
+<h3>Stage 1 — Deterministic extractor</h3>
+
+<p>Pulls from RSS feeds + macro data feeds on the configured cadence. No LLM at this stage. The extractor parses each item, dedupes against prior fetches, and writes raw entries to the news cache. Sources include the major financial wires and macro indicator endpoints.</p>
+
+<h3>Stage 2 — Materiality classifier</h3>
+
+<p>An Opus-backed agent reads <em>structured metadata</em> from Stage 1 (title, summary, source, tickers extracted by Stage 1, dates, headline numbers) and classifies materiality: HIGH (likely fires a monitor flag), MEDIUM (logged), LOW (discarded). On HIGH the classifier recommends a flag and the monitor agent (§19) writes the row.</p>
+
+<div class="callout warn">
+  <div class="callout-title">Contract: raw text never reaches the LLM</div>
+  Stage 2 sees the Stage-1 structured fields only. Raw article body, raw page HTML, and raw RSS XML are never injected into the classifier prompt. This is enforced at the pipeline boundary so untrusted upstream text cannot drive agent behavior.
+</div>
+</section>
+
+<!-- ============================================================ -->
 <section id="holes">
-<h2>18. Known gaps</h2>
+<h2>21. Known gaps</h2>
 
 <p>Things that don't work yet, or that the UI doesn't help with. None block usage; all worsen UX.</p>
 
@@ -814,9 +938,9 @@
 </div>
 
 <div class="callout warn">
-  <div class="callout-title">Hole #2 — Windfall Accept/Defer doesn't yet promote into an action</div>
-  The Accept and Defer buttons on the <code>WindfallCard</code> record a row in the <code>windfall_actions</code> table; "✓ Accepted" or "↻ Deferred · due 2026-06-15" pills appear after you click. Accepted proposals do not yet become <code>PrioritizedAction</code> rows on the home-page action-items widget.<br>
-  <strong>Suggested fix:</strong> background job that walks <code>windfall_actions</code> rows with <code>decided_status='accepted'</code> + <code>proposal_id IS NULL</code>, calls <code>action_engine.create_from_windfall</code>, fills in the FK.
+  <div class="callout-title">Hole #2 — Accept/Defer doesn't yet promote into a home-page action</div>
+  Accept and Defer on the <code>WindfallCard</code> (<span class="nav-card">/proposals#allocation</span>) persist rows in <code>windfall_actions</code>; Accept and Defer on the <code>UnallocatedCashCard</code> (<span class="nav-card">/portfolio</span>) persist rows in <code>allocation_actions</code> with <code>action_source='unallocated_cash'</code>. Pills (<em>"✓ Accepted"</em> / <em>"↻ Deferred"</em>) render inline on both. Neither path yet promotes an accepted row into a <code>PrioritizedAction</code> on the home-page action-items widget.<br>
+  <strong>Suggested fix:</strong> background job that walks both tables for <code>decided_status='accepted'</code> + <code>proposal_id IS NULL</code>, calls the matching <code>action_engine.create_from_*</code>, fills the FK.
 </div>
 
 <div class="callout warn">
@@ -828,7 +952,7 @@
 
 <!-- ============================================================ -->
 <section id="health">
-<h2>19. System health (live audit, 2026-05-28)</h2>
+<h2>22. System health (live audit, 2026-05-28)</h2>
 
 <table>
 <thead><tr><th>Page</th><th>Loaded</th><th>Console errors</th><th>Failed requests</th></tr></thead>
@@ -837,6 +961,7 @@
 <tr><td>/advisor</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/portfolio</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/expenses</td><td>✓</td><td>0</td><td>0</td></tr>
+<tr><td>/life-events</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/plan</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/retirement</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/consult</td><td>✓</td><td>0</td><td>0</td></tr>
@@ -855,7 +980,7 @@
 </tbody>
 </table>
 
-<p>19/19 routes render (14 nav tabs + 5 detail surfaces from §17). 1 page has 1 console error (the /argonaut 404, fixed in commit <code>be34b5b</code>; needs uvicorn restart to take effect). Backend at <code>:8000</code> with 29 retirement endpoints registered (including <code>/windfall/detect</code>). UI at <code>:1337</code> via Next.js 16.</p>
+<p>20/20 routes render (15 nav tabs + 5 detail surfaces from §18). 1 page has 1 console error (the /argonaut 404; backend fix landed but needs uvicorn restart to take effect). Backend at <code>:8000</code> with 29 retirement endpoints registered (including <code>/windfall/detect</code>). UI at <code>:1337</code> via Next.js 16.</p>
 
 <hr>
 
