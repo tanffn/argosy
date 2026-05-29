@@ -338,6 +338,51 @@ export interface UnallocatedCashProposalDTO {
 }
 
 // ----------------------------------------------------------------------
+// Holistic timeline (sprint commit #10, 2026-05-29).
+//
+// Backend: argosy/services/retirement_timeline.py + the /timeline route
+// in argosy/api/routes/retirement.py. Returns a composite payload of
+// past/future RSU vests, life events, and bear/base/bull retire-ready
+// zones — driven into <HolisticTimelineCard> as a single horizontal
+// timeline with five overlay layers. Empty arrays mean "user has no
+// vests / events / projection crossing" — the card shows an onboarding
+// nudge in that case rather than an error.
+// ----------------------------------------------------------------------
+
+export interface VestMarkerDTO {
+  kind: "past_vest" | "future_vest";
+  date: string; // ISO YYYY-MM-DD
+  symbol: string;
+  grant_id: string;
+  shares: number;
+  fmv_per_share_usd: number | null;
+  estimated_gross_usd: number | null;
+}
+
+export interface LifeEventMarkerDTO {
+  date: string; // ISO YYYY-MM-DD
+  category: string;
+  kind: string;
+  amount_usd: number | null;
+  description: string | null;
+}
+
+export interface RetireZoneDTO {
+  scenario: "bear" | "base" | "bull";
+  age_years: number;
+  expected_date: string; // ISO YYYY-MM-DD
+  clamp_reason: string; // 'no_clamp_needed' | 'rsu_unvested' | 'life_event' | 'no_crossing'
+}
+
+export interface HolisticTimelineDTO {
+  today: string; // ISO YYYY-MM-DD
+  past_vests: VestMarkerDTO[];
+  future_vests: VestMarkerDTO[];
+  life_events: LifeEventMarkerDTO[];
+  retire_ready_zones: RetireZoneDTO[];
+}
+
+// ----------------------------------------------------------------------
 // Life events (sprint commit #8, 2026-05-29).
 //
 // Backend: argosy/api/routes/life_events.py + argosy/services/life_events.py.
@@ -1217,6 +1262,21 @@ export const api = {
       if (eventSourceTsv) params.set("event_source_tsv", eventSourceTsv);
       return getJSON<WindfallActionsListResponse>(
         `/api/retirement/windfall/actions?${params.toString()}`,
+      );
+    },
+    // Sprint commit #10 — composite timeline payload powering
+    // <HolisticTimelineCard>. Default horizon is 30y (matching the
+    // backend default of 365*30 days); pass `horizonDays` to switch to
+    // a shorter window (e.g. 365*10 for the "10y" view).
+    holisticTimeline: (
+      userId: string,
+      horizonDays?: number,
+    ): Promise<HolisticTimelineDTO> => {
+      const params = new URLSearchParams({ user_id: userId });
+      if (horizonDays !== undefined)
+        params.set("horizon_days", String(horizonDays));
+      return getJSON<HolisticTimelineDTO>(
+        `/api/retirement/timeline?${params.toString()}`,
       );
     },
   },

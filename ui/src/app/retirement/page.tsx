@@ -11,6 +11,7 @@ import { ExpectedRetirementAgeCard } from "@/components/retirement/ExpectedRetir
 import { GlidePathCard } from "@/components/retirement/GlidePathCard";
 import { HealthcareCurveCard } from "@/components/retirement/HealthcareCurveCard";
 import { HishtalmutTimerCard } from "@/components/retirement/HishtalmutTimerCard";
+import { HolisticTimelineCard } from "@/components/retirement/HolisticTimelineCard";
 import { InsuranceGapsCard } from "@/components/retirement/InsuranceGapsCard";
 import { LumpVsAnnuityCard } from "@/components/retirement/LumpVsAnnuityCard";
 import { MekademBand } from "@/components/retirement/MekademBand";
@@ -34,6 +35,7 @@ const USER_ID = "ariel";
 // read-only visualization surface.
 const SECTIONS: Array<{ id: string; label: string }> = [
   { id: "when-can-i-retire", label: "When can I retire?" },
+  { id: "timeline",          label: "Holistic Timeline" },
   { id: "verdict",           label: "Verdict" },
   { id: "safety",        label: "Safety gates" },
   { id: "predictions",   label: "Prediction trust" },
@@ -107,6 +109,10 @@ export default function RetirementPage() {
             projection on the current plan draft. */}
         <section id="when-can-i-retire" className="scroll-mt-6">
           <ExpectedRetirementAgeCard userId={USER_ID} />
+        </section>
+
+        <section id="timeline" className="scroll-mt-6">
+          <HolisticTimelineCard userId={USER_ID} />
         </section>
 
         <section id="verdict" className="scroll-mt-6">

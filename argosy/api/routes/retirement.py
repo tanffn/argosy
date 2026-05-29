@@ -80,6 +80,11 @@ from argosy.services.retirement.windfall_detector import (
     detect_windfall,
 )
 from argosy.services.retirement.withdrawal_policy import list_policies
+from argosy.services.retirement_timeline import build_holistic_timeline
+from argosy.services.plan_monitor import (
+    check_allocation_drift,
+    get_active_drift_flags,
+)
 
 router = APIRouter(prefix="/retirement", tags=["retirement"])
 
@@ -1134,3 +1139,142 @@ def get_bituach_leumi(
         "spouse_supplement_applied": as_dict(est.spouse_supplement_applied),
         "sensitivity_levers": est.sensitivity_levers,
     }
+
+
+# Sprint commit #10 — Holistic Timeline data source
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class VestMarkerDTO(BaseModel):
+    """ISO-date wire format mirroring services.retirement_timeline.VestMarker."""
+
+    kind: str
+    date: str
+    symbol: str
+    grant_id: str
+    shares: float
+    fmv_per_share_usd: float | None = None
+    estimated_gross_usd: float | None = None
+
+
+class LifeEventMarkerDTO(BaseModel):
+    """ISO-date wire format mirroring services.retirement_timeline.LifeEventMarker."""
+
+    date: str
+    category: str
+    kind: str
+    amount_usd: float | None = None
+    description: str | None = None
+
+
+class RetireZoneDTO(BaseModel):
+    """ISO-date wire format mirroring services.retirement_timeline.RetireZone."""
+
+    scenario: str
+    age_years: float
+    expected_date: str
+    clamp_reason: str
+
+
+class HolisticTimelineDTO(BaseModel):
+    """Composite payload for the <HolisticTimelineCard> consumer."""
+
+    today: str
+    past_vests: list[VestMarkerDTO]
+    future_vests: list[VestMarkerDTO]
+    life_events: list[LifeEventMarkerDTO]
+    retire_ready_zones: list[RetireZoneDTO]
+
+
+@router.get("/timeline", response_model=HolisticTimelineDTO)
+def get_holistic_timeline(
+    user_id: str,
+    horizon_days: int = 365 * 30,
+    db: Session = Depends(get_db),
+) -> HolisticTimelineDTO:
+    """Composite timeline payload for the <HolisticTimelineCard>.
+
+    Returns 200 with empty arrays when the user has no vests / life
+    events / projection crossing -- the UI shows an onboarding nudge
+    rather than an error in that case.
+    """
+    payload = build_holistic_timeline(
+        session=db,
+        user_id=user_id,
+        horizon_days=horizon_days,
+    )
+    return HolisticTimelineDTO(
+        today=payload.today.isoformat(),
+        past_vests=[
+            VestMarkerDTO(
+                kind=v.kind,
+                date=v.date.isoformat(),
+                symbol=v.symbol,
+                grant_id=v.grant_id,
+                shares=v.shares,
+                fmv_per_share_usd=v.fmv_per_share_usd,
+                estimated_gross_usd=v.estimated_gross_usd,
+            )
+            for v in payload.past_vests
+        ],
+        future_vests=[
+            VestMarkerDTO(
+                kind=v.kind,
+                date=v.date.isoformat(),
+                symbol=v.symbol,
+                grant_id=v.grant_id,
+                shares=v.shares,
+                fmv_per_share_usd=v.fmv_per_share_usd,
+                estimated_gross_usd=v.estimated_gross_usd,
+            )
+            for v in payload.future_vests
+        ],
+        life_events=[
+            LifeEventMarkerDTO(
+                date=e.date.isoformat(),
+                category=e.category,
+                kind=e.kind,
+                amount_usd=e.amount_usd,
+                description=e.description,
+            )
+            for e in payload.life_events
+        ],
+        retire_ready_zones=[
+            RetireZoneDTO(
+                scenario=z.scenario,
+                age_years=z.age_years,
+                expected_date=z.expected_date.isoformat(),
+                clamp_reason=z.clamp_reason,
+            )
+            for z in payload.retire_ready_zones
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Monitor agent endpoints (sprint commit #11) -- allocation-drift trigger.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/monitor/run")
+def post_run_drift_check(user_id: str, db: Session = Depends(get_db)) -> dict:
+    """Manually trigger an allocation-drift check (spec §5.1.1).
+
+    In production this runs nightly via cron; the route lets the UI
+    surface a "check now" button and lets tests drive the detector
+    deterministically. Returns the ``DriftCheckResult`` payload (flags
+    fired this run + the snapshot that was scored).
+    """
+    result = check_allocation_drift(db, user_id)
+    return result.to_dict()
+
+
+@router.get("/monitor/flags")
+def list_monitor_flags(user_id: str, db: Session = Depends(get_db)) -> list[dict]:
+    """List active monitor flags for ``user_id`` (Home Red-Flag Strip).
+
+    Active = unacknowledged AND unexpired. Sprint commit #17 will consume
+    this from the UI.
+    """
+    flags = get_active_drift_flags(db, user_id)
+    return [f.to_dict() for f in flags]
