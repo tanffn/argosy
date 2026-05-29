@@ -234,7 +234,7 @@
   <strong>Three upload tiles + one universal chat</strong>, all flowing through the same backend funnel (<code>catalog_upload</code>, SDD §17.1):
   <ul>
     <li><span class="nav-card">/expenses</span> → monthly bank statements (Leumi, Schwab, Discount, Cal, Max — PDF/CSV/XLS).</li>
-    <li><span class="nav-card">/portfolio</span> → monthly portfolio-status snapshot (the Family Finances Status TSV; XLS upload still pending).</li>
+    <li><span class="nav-card">/portfolio</span> → monthly portfolio-status snapshot (the Family Finances Status TSV <em>or</em> a raw Leumi monthly XLS — the XLS auto-pairs with your Osh statement via DB lookup).</li>
     <li><span class="nav-card">/files</span> → anything else that should land in the catalog (payslip, tax letter, screenshots).</li>
     <li><span class="nav-card">/advisor</span> chat → free-form text + Attach for the long-tail (a quote, a news story, "I'm switching from Migdal to Clal"). Use this when none of the three structured tiles fit.</li>
   </ul>
@@ -349,18 +349,21 @@
 <div class="flow">
   <div class="flow-step">
     <div class="step-num">STEP B1</div>
-    <div class="step-title">Produce the monthly <code>Family Finances Status - YY MMM.tsv</code></div>
-    <div class="step-body">Today: your existing <code>update_leumi_tsv.py</code> script converts the raw Leumi monthly XLS into the TSV. The XLS-to-TSV step inside Argosy is on the roadmap (§18 Hole #3); right now the conversion happens outside.</div>
+    <div class="step-title">Pick either upload shape</div>
+    <div class="step-body">
+      <strong>Option A — combined TSV.</strong> Your existing <code>update_leumi_tsv.py</code> script produces <code>Family Finances Status - YY MMM.tsv</code>. Drop it; the windfall detector fires immediately against the prior month.<br>
+      <strong>Option B — raw Leumi XLS.</strong> Drop the monthly portfolio export straight from Leumi web banking (<code>Leumi_YY_MMM_DD.xls</code>). The route format-sniffs the upload. The XLS carries positions only — Argosy auto-pairs it with the matching Leumi Osh (current-account) statement from your <span class="nav-card">/expenses</span> uploads via DB lookup (±15d window). Bidirectional: if the XLS lands before the Osh, the upload queues as <strong>AWAITING OSH</strong>; the pair completes when the matching Osh statement subsequently ingests.
+    </div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP B2</div>
-    <div class="step-title">Drag-drop the TSV onto the tile at the top of <span class="nav-card">/portfolio</span></div>
-    <div class="step-body">The route validates the TSV (checks for the <em>"Bank account / funds allocation"</em> header marker), persists it under <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code> with the canonical name, and runs the windfall detector synchronously against the prior month's snapshot. SHA-256 of the upload is returned so re-uploading the same file is detectable as a no-op.</div>
+    <div class="step-title">Drag-drop onto the tile at the top of <span class="nav-card">/portfolio</span></div>
+    <div class="step-body">TSV uploads validate against the <em>"Bank account / funds allocation"</em> header marker. XLS uploads validate against the SpreadsheetML envelope + the Hebrew "Personal View" title. Both persist under <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code> with the canonical name. SHA-256 of the upload is returned so re-uploading the same file is a no-op; the XLS path also dedups on <code>(snapshot_date, portfolio_number)</code> so re-export with different byte layout still resolves to the same row.</div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP B3</div>
-    <div class="step-title">Per-upload tri-state outcome renders inline</div>
-    <div class="step-body">Three independent outcomes the UI surfaces separately: <strong>PERSISTED</strong> (always when the file parses); <strong>detector status</strong> (ok / skipped on the first-ever upload / failed on rare internal error); and <strong>event</strong> (when the cash delta crosses threshold, a deep-link to <span class="nav-card">/retirement#windfall</span> appears with the headline number).</div>
+    <div class="step-title">Per-upload outcome renders inline (now four states, not three)</div>
+    <div class="step-body">Four independent outcomes the UI surfaces separately: <strong>PERSISTED</strong> (file is durably on disk + DB); <strong>detector status</strong> (ok / skipped on first-ever upload / failed on internal error / <em>pending_pair</em> when the XLS is queued); <strong>event</strong> (cash-delta over threshold ⇒ deep-link to <span class="nav-card">/retirement#windfall</span>); and <strong>AWAITING OSH</strong> pill (when XLS is queued — clears on the next page load after the Osh ingests).</div>
   </div>
 </div>
 
@@ -389,6 +392,28 @@
 <div class="callout">
   <div class="callout-title">Why "no + Add income event button" still holds — even though there are upload buttons</div>
   The upload tiles on <span class="nav-card">/expenses</span> and <span class="nav-card">/portfolio</span> are buttons. What there's NOT a button for is the <em>classification</em> — "I had a bonus" / "Sold NVDA for tuition" / "Gift from grandparents." That's a derived signal from comparing snapshots, not a primary input. When the classifier can't resolve the source on its own (the <code>unclear</code> case), the planned Advisor focus-mode dialogue picks up the thread; until that ships (§19 Hole #1), you'd answer in free-form chat on <span class="nav-card">/advisor</span>.
+</div>
+
+<h3>Unallocated cash — the continuous side of the windfall flow</h3>
+
+<p>The windfall detector handles the cliff case (one-off cash spikes over $25K USD / ₪75K NIS — RSU sales, bonuses, gifts). The routine case — your monthly paycheck residue piles up in the bank — is below that threshold but still wants allocation. Argosy surfaces this as a separate tile on <span class="nav-card">/portfolio</span>: the <code>&lt;UnallocatedCashCard&gt;</code>.</p>
+
+<div class="flow">
+  <div class="flow-step">
+    <div class="step-num">TRIGGER</div>
+    <div class="step-title">Self-tuning, no dollar threshold</div>
+    <div class="step-body">The tile fires when current cash exceeds your plan-target cash by a configurable ratio (default <strong>1.5x</strong>). Pulled from the latest snapshot's <em>Current allocation:</em> block — the cash row's <code>current_k_usd</code> vs <code>target_k</code>. If you're within 1.5x of target, the tile renders nothing.</div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">DISPLAY</div>
+    <div class="step-title">Excess + suggested buys</div>
+    <div class="step-body">When fired, the card shows the headline (e.g. <em>"Cash sits 2.3x your plan target ($120K vs $52K). Proposed allocation closes the largest plan-target gaps."</em>) plus three stat cells (current / target / ratio) and a ranked list of suggested buys — same allocator logic as the windfall flow, reusing <code>_allocate_long_term()</code> from the windfall allocator with the excess as input.</div>
+  </div>
+  <div class="flow-step">
+    <div class="step-num">DECISION</div>
+    <div class="step-title">Accept/Defer wiring pending</div>
+    <div class="step-body">The buy suggestions render but don't yet have Accept/Defer buttons (queued — they will reuse the existing <code>windfall_actions</code> table since the proposal shape is identical). For now, treat the tile as a "here's what Argosy thinks" advisory; execute manually in your broker.</div>
+  </div>
 </div>
 </section>
 
@@ -800,10 +825,9 @@
   <strong>Suggested fix:</strong> background job that walks <code>windfall_actions</code> rows with <code>decided_status='accepted'</code> + <code>proposal_id IS NULL</code>, calls <code>action_engine.create_from_windfall</code>, fills in the FK.
 </div>
 
-<div class="callout warn">
-  <div class="callout-title">Hole #3 — Raw bank XLS upload not wired (only TSV)</div>
-  The new <code>/portfolio</code> upload tile accepts the monthly <code>Family Finances Status - YY MMM.tsv</code> file directly. The XLS-to-TSV conversion step (the user's existing <code>update_leumi_tsv.py</code> script) is still manual. The in-repo Leumi code only reads existing TSVs — no XLS parser ships in-repo yet.<br>
-  <strong>Suggested fix:</strong> spec-driven port of the XLS-to-TSV conversion into <code>argosy/services/portfolio_ingest/leumi_snapshot.py</code> with golden-fixture parity tests against the user's canonical script.
+<div class="callout">
+  <div class="callout-title">Hole #3 — CLOSED 2026-05-29: raw Leumi XLS upload now wired with bidirectional Osh pair</div>
+  The <code>/portfolio</code> upload tile accepts both shapes now (TSV <em>or</em> raw Leumi monthly XLS). The XLS auto-pairs with the most recent Leumi Osh statement via DB lookup (±15d window); pairs resolve in either direction (XLS-first queues as <strong>AWAITING OSH</strong>; Osh-first auto-completes when the matching XLS lands). See §5 STEP B1 for the user flow. Codex zigzag review caught 6 BLOCKERs on the architecture (symbol stability across months, currency inference, snapshot-effective FX, dual idempotency, response contract, deterministic balance selection) — all addressed.
 </div>
 
 <div class="callout warn">
