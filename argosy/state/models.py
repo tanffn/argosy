@@ -2012,6 +2012,15 @@ class MonitorFlag(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+    # Spec B (state-observer) commit #1 / migration 0049 — observer flag
+    # idempotency key. NULL for legacy (allocation_drift / mc_regression
+    # / macro_shift) rows; populated by the state-observer flag-writer
+    # with ``v1|state_observer|<user>|<inferred_kind>|<primary_field>|<bucket>``
+    # per spec §4.2. Uniqueness is enforced at the DB level only via the
+    # partial unique index ``ix_monitor_flags_observer_dedup`` — declared
+    # in the migration, NOT here, because it's a partial WHERE-clause
+    # index that SQLAlchemy's column-level ``index=True`` cannot express.
+    dedup_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         Index(
@@ -2020,6 +2029,53 @@ class MonitorFlag(Base):
             "surfaced_at",
             sqlite_where=_sa_text("acknowledged_at IS NULL"),
             postgresql_where=_sa_text("acknowledged_at IS NULL"),
+        ),
+    )
+
+
+class StateSnapshot(Base):
+    """One per-user per-day snapshot of the user's full ``current_state``.
+
+    Spec B (state-observer) §1.2 + Appendix A — written by
+    ``argosy.services.state_snapshot.persist_state_snapshot`` (spec
+    commit #2). Six top-level JSON sections live inside ``state_json``:
+    ``plan_inputs`` / ``portfolio`` / ``macro`` / ``cashflow_recent``
+    / ``tax_assumptions`` / ``metadata``. ``source_versions_json``
+    captures the adapter versions + ``as_of`` timestamps + any
+    ``historical_replay_gaps`` (§1.4) the collector recorded.
+
+    Idempotency: ``(user_id, snapshot_date)`` is UNIQUE at the DB
+    level — the daily cron + on-demand triggers from §7.3 can't double-
+    write the same calendar day. ``json_valid(state_json)`` and
+    ``json_valid(source_versions_json)`` CHECKs (declared in the
+    migration, not the model) fail corrupted writes at write time
+    rather than at observer-input-assembly time.
+
+    Migration: alembic 0049.
+    """
+
+    __tablename__ = "state_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    state_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_versions_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "snapshot_date",
+            name="uq_state_snapshots_user_date",
         ),
     )
 
