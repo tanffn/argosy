@@ -985,10 +985,17 @@ def test_get_current_structured_returns_current_plan(client_with_db):
     assert cands[0]["ticker"] == "HOOD"
 
 
-def test_get_current_structured_404_when_no_current(client_with_db):
-    """T3.5: 404 when the user has no role='current' plan."""
+def test_get_current_structured_200_null_when_no_current(client_with_db):
+    """GET /api/plan/current/structured returns 200 + null body when the
+    user has no role='current' plan. Updated from a prior 404 contract
+    in commit be34b5b (autonomous overnight wave, user-guide Hole #7
+    closure): the /argonaut page treats expected-absence as a normal
+    state, so surfacing it as a 404 was producing console errors on
+    first-login. The route now returns 200 with `null` body.
+    """
     r = client_with_db.get("/api/plan/current/structured?user_id=newcomer")
-    assert r.status_code == 404
+    assert r.status_code == 200
+    assert r.json() is None
 
 
 def test_delta_edit_invalidates_home_brief_cache(app_with_draft, monkeypatch):

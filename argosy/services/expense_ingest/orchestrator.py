@@ -187,7 +187,12 @@ def ingest_user_file(
                 try_resolve_pending_on_osh_arrival,
             )
             import os
-            from pathlib import Path
+            # NB: do NOT re-import Path here. The module-level
+            # `from pathlib import Path` at the top is in scope; a
+            # local `from pathlib import Path` inside this function
+            # shadows it across the entire function body (Python
+            # compiles `Path` as a local for the whole function),
+            # producing UnboundLocalError on line 139's earlier use.
             env_root = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
             if env_root:
                 snapshot_root = Path(env_root)
