@@ -2106,6 +2106,127 @@ def _run_one_horizon_debate(*, horizon: str, user_id: str,
     return text, collected
 
 
+# Spec C commit #6 — sources whose reliability informs the synthesizer's
+# input weighting per §6.1. The banner is prepended to the synth's
+# analyst_reports_text so the LLM can dim signals from sources with
+# poor recent hit-rate. Order matters for readability; we keep internal
+# producers first (they're the most-trusted signal family by
+# construction — Argosy controls their prompts) and external sources
+# after.
+_SYNTH_RELIABILITY_SOURCES: tuple[str, ...] = (
+    "internal_per_position_thesis",
+    "internal_news_signal_analyst",
+    "internal_state_observer",
+    "discord",
+    "news",
+)
+
+
+def _build_source_reliability_preamble(
+    session, user_id: str
+) -> str:
+    """Render the per-source reliability banner per spec §6.1.
+
+    Returns a multi-line string the synthesizer prepends to
+    ``analyst_reports_text``. Empty string when the predictions ledger
+    has no scored data for ANY of the tracked sources (the first
+    fresh-install case — the synth then runs unchanged).
+
+    Best-effort: any failure (FK violation on a half-seeded
+    ``evaluation_method_registry`` in a legacy env, importerror) logs
+    and returns ``""`` so synthesis never breaks because of a missing
+    reliability surface.
+    """
+    try:
+        from argosy.services.predictions.reliability import (
+            get_source_reliability,
+            get_weight_for_source,
+        )
+    except Exception:  # noqa: BLE001 — never break synth
+        log.warning("plan_synthesis.reliability_preamble.import_failed")
+        return ""
+
+    try:
+        # Single bulk query over all sources; the cache + view's GROUP BY
+        # makes this a near-constant-time call. We filter to the
+        # tracked sources in-Python.
+        all_rows = get_source_reliability(session, user_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "plan_synthesis.reliability_preamble.query_failed",
+            error=str(exc),
+        )
+        return ""
+
+    if not all_rows:
+        return ""
+
+    # Pick ONE row per source (prefer fixed_lookahead family — the
+    # default for most internal predictions; spec §6.1 doesn't pin a
+    # family so the most-common one is the right default).
+    rows_by_source: dict[str, object] = {}
+    for r in all_rows:
+        if r.source not in _SYNTH_RELIABILITY_SOURCES:
+            continue
+        # Prefer fixed_lookahead family when multiple families exist
+        # for the same source. First-write-wins for other families.
+        existing = rows_by_source.get(r.source)
+        if existing is None:
+            rows_by_source[r.source] = r
+        elif (
+            getattr(existing, "method_family", "") != "fixed_lookahead"
+            and r.method_family == "fixed_lookahead"
+        ):
+            rows_by_source[r.source] = r
+
+    if not rows_by_source:
+        return ""
+
+    lines: list[str] = ["Source reliability (recent scoring window):"]
+    for source in _SYNTH_RELIABILITY_SOURCES:
+        rel = rows_by_source.get(source)
+        if rel is None:
+            continue
+        # The weight here is FOR-DISPLAY only — the synthesizer prompt
+        # uses it to dim signals in its reasoning, NOT to multiply a
+        # numeric score post-hoc. The predictions written by this
+        # synth's downstream emit_thesis_predictions call carry
+        # provenance_weights_applied=True so the next consumer skips
+        # re-application.
+        #
+        # Codex review IMPORTANT 2 fix (2026-05-29) — query the weight
+        # under the SAME family the displayed stats came from. The
+        # earlier shape hardcoded ``"fixed_lookahead"`` which produced
+        # source/family pairs that disagreed when the source had only
+        # ``target_stop`` / ``multi_basket`` / ``unparseable`` data
+        # (n + hit_rate from family A, weight from family B / 1.0
+        # fallback). Now both numbers come from the same family slot.
+        family = getattr(rel, "method_family", "fixed_lookahead")
+        weight = get_weight_for_source(
+            session, user_id, source, family,
+            provenance_weights_applied=False,
+        )
+        n = rel.scored_predictions  # type: ignore[attr-defined]
+        hr = rel.hit_rate  # type: ignore[attr-defined]
+        if n < 10 or hr is None:
+            lines.append(
+                f"  {source} [{family}]: n={n} — "
+                "insufficient sample, weight=1.00×"
+            )
+        else:
+            lines.append(
+                f"  {source} [{family}]: "
+                f"{hr * 100:.0f}% hit_rate, n={n} → weight {weight:.2f}×"
+            )
+    lines.append(
+        "Weight signals from each source proportionally when forming the plan. "
+        "Per spec §6.6 anti-feedback-loop contract, the synth's own output "
+        "is stamped provenance_weights_applied=1 so downstream consumers do "
+        "NOT re-apply these weights."
+    )
+    return "\n".join(lines) + "\n\n"
+
+
 def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
                              analyst_reports_text, debate_outcomes_text,
                              portfolio_summary, fills_summary,
@@ -2152,10 +2273,23 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
     prior_items_index = _pkg_build_prior_items_index(
         session, user_id=user_id, prior_current=prior_current,
     )
+
+    # Spec C commit #6 — prepend the per-source reliability banner so
+    # the synth can weight input signals per §6.1. Empty string when
+    # the ledger has no scored data yet (fresh-install case); also
+    # empty when the helper fails (best-effort; synthesis never breaks
+    # because of a missing reliability surface).
+    reliability_preamble = _build_source_reliability_preamble(
+        session, user_id
+    )
+    weighted_analyst_reports_text = (
+        reliability_preamble + analyst_reports_text
+    )
+
     result = agent.run_sync(
         baseline_distillate_md=baseline_md,
         prior_current_md=prior_md,
-        analyst_reports_text=analyst_reports_text,
+        analyst_reports_text=weighted_analyst_reports_text,
         debate_outcomes_text=debate_outcomes_text,
         portfolio_snapshot_summary=portfolio_summary,
         recent_fills_summary=fills_summary,

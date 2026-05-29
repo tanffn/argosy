@@ -638,6 +638,16 @@ def _maybe_write_observer_prediction(
                 severity=severity,  # type: ignore[arg-type]
                 deviation_bucket=bucket_in,  # type: ignore[arg-type]
                 event_at=now,
+                # Spec C commit #6 / §6.6 — anti-feedback-loop stamp.
+                # The observer's prompt was fed its own prior self-
+                # reliability factor (loop's _lookup_prior_self_reliability)
+                # so any internal calibration the LLM did already
+                # consumed its own weight. Stamping prevents the next
+                # tick's get_weight_for_source from re-multiplying.
+                # See spec §6.4 + module docstring on the predictions
+                # ledger spec for the observer's writer-AND-consumer
+                # nature.
+                provenance_weights_applied=True,
             )
         session.commit()
     except Exception:  # noqa: BLE001 — never break observer batch

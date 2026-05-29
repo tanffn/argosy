@@ -413,6 +413,7 @@ def _render_user_prompt(
     historical_replay_gaps: list[str],
     diff_truncation_notice: str,
     recent_news_excerpts: list[dict[str, Any]] | str,
+    prior_self_reliability_factor: float | None = None,
 ) -> str:
     """Render the user prompt per Appendix B.2.
 
@@ -478,6 +479,33 @@ def _render_user_prompt(
     # caller plumbs user-input through any of these fields they MUST
     # be scrubbed first — these are the only unscrubbed positions in
     # the user prompt.
+    # Spec C commit #6 / §6.4 — self-reliability hint. The observer is
+    # BOTH a writer AND a consumer of the predictions ledger; reading
+    # its own prior-flag reliability here lets it calibrate the
+    # threshold for emitting new flags.
+    #
+    # Anti-feedback-loop split (codex review IMPORTANT 1 fix,
+    # 2026-05-29) — the READ path here calls
+    # ``get_weight_for_source(..., provenance_weights_applied=False)``
+    # so the observer SEES its real number and can self-calibrate.
+    # The WRITE path (``state_observer_flag_writer``'s
+    # ``_maybe_write_observer_prediction``) passes
+    # ``provenance_weights_applied=True`` on the emitted prediction
+    # row so the NEXT tick's downstream consumer (or the observer
+    # itself) doesn't re-multiply by the observer's own weight. The
+    # 0.10 floor in ``get_weight_for_source`` is the safety net.
+    if prior_self_reliability_factor is None:
+        self_reliability_line = (
+            "  prior_self_reliability_factor: (no data — fresh install or"
+            " ledger unreachable)"
+        )
+    else:
+        self_reliability_line = (
+            f"  prior_self_reliability_factor: {prior_self_reliability_factor:.2f}"
+            " (1.00 = baseline; < 0.7 → raise firing threshold;"
+            " > 1.0 → lower firing threshold)"
+        )
+
     parts = [
         "SNAPSHOT METADATA",
         f"  user_id: {user_id}",
@@ -486,6 +514,7 @@ def _render_user_prompt(
         f"  trigger_reason: {trigger_reason}",
         f"  historical_replay_gaps:{gaps_text}",
         f"  diff_truncation: {diff_truncation_notice or '(no truncation)'}",
+        self_reliability_line,
         "",
         "<plan_summary>",
         plan_summary_safe,
@@ -595,6 +624,7 @@ class StateObserverAgent(BaseAgent[StateObserverOutput]):
         historical_replay_gaps: list[str] | None = None,
         diff_truncation_notice: str = "",
         recent_news_excerpts: list[dict[str, Any]] | str | None = None,
+        prior_self_reliability_factor: float | None = None,
     ) -> tuple[str, str]:
         """Build the (system, user) prompt pair per Appendix B.
 
@@ -619,6 +649,7 @@ class StateObserverAgent(BaseAgent[StateObserverOutput]):
             recent_news_excerpts=(
                 recent_news_excerpts if recent_news_excerpts is not None else []
             ),
+            prior_self_reliability_factor=prior_self_reliability_factor,
         )
 
     # ------------------------------------------------------------------

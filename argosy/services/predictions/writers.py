@@ -104,7 +104,9 @@ DEFAULT_TIMEFRAME_DAYS_MONITOR: int = 30
 # ---------------------------------------------------------------------------
 
 
-def _discord_message_id(*, channel_id: int | str | None, message_id: str) -> str:
+def discord_message_id(
+    *, channel_id: int | str | None, message_id: str
+) -> str:
     """``v1|predictions|discord|<channel_id>.<message_id>``.
 
     Codex review BLOCKER 1 fix: the prior shape switched between
@@ -117,6 +119,19 @@ def _discord_message_id(*, channel_id: int | str | None, message_id: str) -> str
     workspace), so ``0.<message_id>`` is itself unique — there is no
     collision risk vs a real channel_id which is always a 17-19-digit
     Snowflake.
+
+    Public (no leading underscore) per Spec C commit #7 codex review
+    IMPORTANT 2 — the discord_backfill service needs to derive the
+    SAME dedup key the writer would produce in order to classify
+    ``predictions_written`` vs ``predictions_deduped`` in its summary
+    counters. Inlining the formula at the call site was rejected:
+    a future per-source-formula change (a v2 dedup key) would
+    silently drift the summary classification while DB idempotency
+    still held — the writer would dedup correctly but the summary
+    would mis-attribute. Single source of truth lives here. The
+    ``_discord_message_id`` private alias below is preserved for
+    backward compat with any in-tree callers that imported the
+    private name.
     """
     if not message_id:
         raise ValueError("discord prediction needs a non-empty message_id")
@@ -126,6 +141,13 @@ def _discord_message_id(*, channel_id: int | str | None, message_id: str) -> str
     # "999" → "999").
     ch = str(channel_id) if channel_id is not None and str(channel_id) else "0"
     return f"{DEDUP_KEY_VERSION}|predictions|discord|{ch}.{message_id}"
+
+
+# Private alias kept for back-compat with any in-tree imports of the
+# pre-#7 leading-underscore name. New code MUST use the public
+# :func:`discord_message_id` so the dedup-key formula has a single
+# source of truth (Spec C commit #7 codex review IMPORTANT 2).
+_discord_message_id = discord_message_id
 
 
 def _news_signal_message_id(*, news_signal_id: int, ticker: str) -> str:
@@ -289,6 +311,7 @@ def _insert_prediction(
     unparseable_reason: str | None = None,
     multi_ticker_json: str | None = None,
     entry_prices_json: str | None = None,
+    provenance_weights_applied: bool = False,
 ) -> Prediction:
     """INSERT one prediction row with per-source idempotency.
 
@@ -333,6 +356,11 @@ def _insert_prediction(
         event_at=event_at_aware,
         evaluation_due_at=evaluation_due_at,
         evaluation_method=method,
+        # Spec C commit #6 — anti-feedback-loop stamp (spec §6.6 / codex
+        # IMPORTANT 3). Defaults to 0; consumers that have ALREADY
+        # applied a reliability weight upstream pass True so downstream
+        # readers know to skip re-applying the weight.
+        provenance_weights_applied=1 if provenance_weights_applied else 0,
     )
     # PRE-CHECK existing row before INSERT. This avoids needing to
     # rollback the session on dedup hits — which would also unwind any
@@ -568,6 +596,7 @@ def write_per_position_thesis_prediction(
     event_at: datetime,
     target_price: Decimal | float | None = None,
     stop_price: Decimal | float | None = None,
+    provenance_weights_applied: bool = False,
 ) -> Prediction:
     """Write a prediction row sourced from a per-position thesis card.
 
@@ -638,6 +667,7 @@ def write_per_position_thesis_prediction(
         target_price=target_price,
         stop_price=stop_price,
         timeframe_days=DEFAULT_TIMEFRAME_DAYS_THESIS,
+        provenance_weights_applied=provenance_weights_applied,
     )
 
 
@@ -650,6 +680,7 @@ def write_state_observer_prediction(
     severity: Literal["info", "warning", "critical"],
     deviation_bucket: Literal["small", "moderate", "large", "extreme", "categorical"],
     event_at: datetime,
+    provenance_weights_applied: bool = False,
 ) -> Prediction | None:
     """Write a prediction row sourced from a state_observer flag.
 
@@ -705,6 +736,7 @@ def write_state_observer_prediction(
         direction="neutral",
         event_at=event_at,
         timeframe_days=DEFAULT_TIMEFRAME_DAYS_OBSERVER,
+        provenance_weights_applied=provenance_weights_applied,
     )
 
 
@@ -776,6 +808,7 @@ __all__ = [
     "DEFAULT_TIMEFRAME_DAYS_OBSERVER",
     "DEFAULT_TIMEFRAME_DAYS_THESIS",
     "LONG_HORIZON_CAP_DAYS",
+    "discord_message_id",
     "write_discord_prediction",
     "write_monitor_flag_prediction",
     "write_news_signal_prediction",

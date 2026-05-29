@@ -923,6 +923,25 @@ def run_evaluator_batch(
         unparseable=summary.unparseable,
         adapter_errors=summary.adapter_errors,
     )
+
+    # Spec C commit #6 — bust the reliability cache so the NEXT consumer
+    # query re-reads the freshly-evaluated outcomes. The cache TTL is
+    # 5min anyway (process-local) but a daily batch that inserts dozens
+    # of outcomes should not wait the TTL out — the next synth /
+    # news-analyst run within those 5 minutes would otherwise read
+    # stale weights. Best-effort: any failure logs and is swallowed
+    # so the evaluator's primary success path is unaffected.
+    try:
+        from argosy.services.predictions.reliability import (
+            invalidate_reliability_cache,
+        )
+        invalidate_reliability_cache()
+    except Exception:  # noqa: BLE001 — never break evaluator
+        _log.warning(
+            "predictions.evaluator.cache_invalidate_failed",
+            exc_info=True,
+        )
+
     return summary
 
 

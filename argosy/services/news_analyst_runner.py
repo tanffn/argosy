@@ -39,6 +39,7 @@ from argosy.agents.news_signal_analyst import (
     AnalyzedSignalOut,
     NewsSignalAnalystAgent,
 )
+from argosy.services.predictions.reliability import get_weight_for_source
 from argosy.services.predictions.writers import write_news_signal_prediction
 from argosy.state.models import NewsSignal
 
@@ -78,6 +79,7 @@ def run_news_signal_analysis(
     max_rows: int | None = None,
     batch_size: int = MAX_BATCH_SIZE,
     now: datetime | None = None,
+    user_id: str = "ariel",
 ) -> AnalysisRunResult:
     """Run Stage 2 analysis over all (or up to ``max_rows``) unanalyzed rows.
 
@@ -124,12 +126,57 @@ def run_news_signal_analysis(
     skipped_total = 0
     batches = 0
 
+    # Spec C commit #6 / spec §6.2 — per-source reliability multiplier.
+    # Computed ONCE per source per batch (the predictions-ledger view
+    # already caches with 5-min TTL but we further memoise here to
+    # avoid N calls for N news_signals from the same source). Defaults
+    # to 1.0 (no adjustment) when the ledger has no scored data for
+    # the source yet.
+    #
+    # Codex review BLOCKER 2 fix (2026-05-29) — the runtime ``user_id``
+    # is THREADED into the lookup so multi-tenant deployments don't
+    # leak one user's reliability ledger into another's. The default
+    # ``"ariel"`` is the single-user fallback; future multi-tenant
+    # callers MUST pass the actual tenant id from the cron registry
+    # / job dispatcher.
+    #
+    # Best-effort: the lookup itself catches and absorbs upstream
+    # failures so a missing reliability surface NEVER blocks the
+    # news analyst's primary classification path.
+    weight_cache: dict[str, float] = {}
+
+    def _weight_for(source: str) -> float:
+        if source in weight_cache:
+            return weight_cache[source]
+        try:
+            w = get_weight_for_source(
+                session,
+                user_id,
+                source,
+                "fixed_lookahead",
+                provenance_weights_applied=False,
+            )
+        except Exception:  # noqa: BLE001 — never break analyst
+            logger.exception(
+                "news_analyst_runner: get_weight_for_source(%s) failed; "
+                "defaulting to 1.0",
+                source,
+            )
+            w = 1.0
+        weight_cache[source] = w
+        return w
+
     for start in range(0, len(rows), batch_size):
         batch = rows[start : start + batch_size]
         # Hydrate each row into the AnalyzedSignalIn schema. CRITICAL:
         # ``raw_text`` is NOT referenced here — the function's contract
         # is that only normalized fields cross into the prompt.
-        analyst_inputs = [_row_to_analyst_input(r) for r in batch]
+        analyst_inputs = [
+            _row_to_analyst_input(
+                r, source_reliability_factor=_weight_for(r.source)
+            )
+            for r in batch
+        ]
 
         try:
             analyses = asyncio.run(
@@ -171,7 +218,9 @@ def run_news_signal_analysis(
             # {high, medium} per spec §2.4) with at least one extracted
             # ticker + a non-neutral sentiment direction. low-materiality
             # rows are gated out so the ledger isn't dominated by noise.
-            _maybe_write_news_signal_predictions(session, row, out)
+            _maybe_write_news_signal_predictions(
+                session, row, out, user_id=user_id,
+            )
 
         session.flush()
         batches += 1
@@ -193,6 +242,8 @@ def _maybe_write_news_signal_predictions(
     session: Session,
     row: NewsSignal,
     out: AnalyzedSignalOut,
+    *,
+    user_id: str = "ariel",
 ) -> None:
     """Spec C commit #3 — fan-out one prediction per ticker for actionable signals.
 
@@ -226,8 +277,11 @@ def _maybe_write_news_signal_predictions(
     else:
         direction = "neutral"
 
-    # Same user_id convention as discord_listener — single tenant.
-    user_id = "ariel"
+    # Multi-tenant: ``user_id`` is threaded in by the caller; the
+    # single-user default falls back to ``ariel`` for legacy /
+    # discord_listener-style invocations. Codex review BLOCKER 2 fix
+    # (2026-05-29) — removed the hardcoded ``ariel`` assignment that
+    # masked an upstream multi-tenant leak.
     for ticker in tickers:
         # Wrap each write in a SAVEPOINT (nested transaction) so a
         # writer failure (e.g. FK violation against an unseeded
@@ -252,14 +306,40 @@ def _maybe_write_news_signal_predictions(
                 "signal_id=%s ticker=%s",
                 row.id, ticker,
             )
+    # NOTE: write_news_signal_prediction does NOT accept
+    # provenance_weights_applied today — the analyst's output is an
+    # internal_news_signal_analyst row whose own reliability is
+    # measured separately from the upstream Discord/news source it
+    # consumed. The stamp would only matter if the analyst's output
+    # were ITSELF being fed back to another consumer that would re-
+    # multiply by discord's weight. The synth integration above (the
+    # per-source reliability banner) DOES surface
+    # internal_news_signal_analyst as a separately-weighted source,
+    # and the per_position_thesis emit_thesis_predictions(...
+    # provenance_weights_applied=True) call site is what guards the
+    # downstream chain. If a future consumer chains discord →
+    # news_signal_analyst → THIS_NEW_CONSUMER, this writer call should
+    # add provenance_weights_applied=True to that path.
 
 
-def _row_to_analyst_input(row: NewsSignal) -> AnalyzedSignalIn:
+def _row_to_analyst_input(
+    row: NewsSignal,
+    *,
+    source_reliability_factor: float = 1.0,
+) -> AnalyzedSignalIn:
     """Hydrate one ORM row into the agent's input schema.
 
     Reads ONLY the normalized Stage 1 fields + ``evidence_excerpt``. The
     ``raw_text`` column on the row is intentionally not referenced — the
     test ``test_raw_text_canary_not_in_prompt`` pins this contract.
+
+    Args:
+      row: the NewsSignal ORM row.
+      source_reliability_factor: spec C commit #6 / §6.2 — the
+        predictions-ledger-derived weight for this row's source.
+        Caller (the runner) threads in the cached
+        ``get_weight_for_source`` value; tests / standalone callers
+        can pass 1.0 to default to baseline.
     """
     parsed_tickers = _decode_json_list(row.parsed_tickers)
     event_keywords = _decode_json_list(row.event_keywords)
@@ -275,6 +355,7 @@ def _row_to_analyst_input(row: NewsSignal) -> AnalyzedSignalIn:
         event_keywords=event_keywords,
         sentiment=sentiment,
         evidence_excerpt=row.evidence_excerpt,
+        source_reliability_factor=source_reliability_factor,
     )
 
 

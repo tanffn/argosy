@@ -2599,6 +2599,22 @@ class Prediction(Base):
         nullable=False,
         server_default=_sa_text("0"),
     )
+    # Spec C commit #6 — anti-feedback-loop stamp (spec §6.6 / codex
+    # IMPORTANT 3). SQLite-native bool via INTEGER 0/1 (default 0).
+    # Set to 1 by any consumer that derives a NEW prediction row from a
+    # source whose reliability weight it already applied; downstream
+    # consumers see the stamp and skip re-applying the weight (return
+    # 1.0 from ``get_weight_for_source``). Prevents the discord →
+    # news_signal_analyst → plan_synthesizer chain from compounding
+    # attenuation across three hops (0.5 × 0.5 × 0.5 = 0.125). The
+    # 0.10 floor in ``get_weight_for_source`` is the safety net; this
+    # stamp is the primary discipline. CHECK constraint declared in
+    # migration 0053.
+    provenance_weights_applied: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=_sa_text("0"),
+    )
 
 
 class EvaluationMethod(Base):

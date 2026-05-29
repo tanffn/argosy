@@ -72,6 +72,19 @@ class PositionThesis:
     cited_sources: list[str] = field(default_factory=list)
     target_weight_pct: float | None = None
     target_shares: int | None = None
+    # Spec C commit #6 / §6.3 — soft annotation surfaced for each
+    # contributing source (currently just ``internal_news_signal_analyst``
+    # which is the per-position-thesis derivation's primary upstream
+    # sentiment input). Per spec: "if news_signal_analyst's reliability
+    # for the last 30d is < 0.7 effective weight, the per-position
+    # derivation downweights its sentiment input by that factor when
+    # blending with horizon-target data. Conservative tilt: a low-
+    # reliability sentiment doesn't get to FLIP a HOLD to BUY/SELL
+    # alone." Shape: list of dicts produced by
+    # ``argosy.services.predictions.reliability.reliability_annotation``.
+    # Empty when the caller didn't provide a session (the function
+    # signature stays lazy — annotations are best-effort metadata).
+    reliability_annotations: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -455,6 +468,9 @@ def derive_position_theses(
     plan_version: Any,
     portfolio_snapshot: Any,
     agent_reports: list[Any] | list[dict[str, Any]],
+    *,
+    session: Any = None,
+    user_id: str | None = None,
 ) -> list[PositionThesis]:
     """Derive one thesis card per held ticker, plus "should add" cards.
 
@@ -471,6 +487,16 @@ def derive_position_theses(
             Each must expose ``response_text``, ``confidence``,
             ``agent_role``, and ``sources_json`` (string or already-
             parsed list).
+        session: optional SQLAlchemy session. When provided WITH
+            ``user_id``, the function queries the predictions ledger's
+            ``source_reliability`` view once and attaches a per-thesis
+            ``reliability_annotations`` list (spec C commit #6 / §6.3).
+            Best-effort: any failure is logged and the annotations
+            list stays empty so the primary derivation path is
+            unaffected.
+        user_id: tenant id; required when ``session`` is provided
+            (multi-tenant ready per SDD §12.5). Defaults to None
+            → annotations stay empty.
 
     Returns:
         list[PositionThesis] sorted so current holdings come first
@@ -546,6 +572,34 @@ def derive_position_theses(
                 "sources_json": getattr(row, "sources_json", None),
             })
 
+    # ---- Reliability annotations (spec C commit #6 / §6.3) ----------------
+    # Spec §6.3: the per-position derivation surfaces a reliability hint
+    # for ``internal_news_signal_analyst`` (the primary upstream
+    # sentiment source). Same annotation attached to every PositionThesis
+    # in the call — the "global" hint context applies to all tickers.
+    # Computed ONCE here (cheap dict-build + cached view query) and
+    # propagated via the shared list so test assertions on identity
+    # don't fight us.
+    shared_annotations: list[dict[str, Any]] = []
+    if session is not None and user_id:
+        try:
+            from argosy.services.predictions.reliability import (
+                reliability_annotation,
+            )
+            shared_annotations.append(
+                reliability_annotation(
+                    session,
+                    user_id,
+                    "internal_news_signal_analyst",
+                    method_family="fixed_lookahead",
+                )
+            )
+        except Exception:  # noqa: BLE001 — never break derivation
+            logger.exception(
+                "per_position_thesis: reliability_annotation failed; "
+                "falling through with empty annotations list"
+            )
+
     # ---- Held tickers ------------------------------------------------------
     held_cards: list[PositionThesis] = []
     for ticker, rec in held_map.items():
@@ -589,6 +643,7 @@ def derive_position_theses(
             cited_sources=cited,
             target_weight_pct=tgt_w,
             target_shares=tgt_sh,
+            reliability_annotations=list(shared_annotations),
         ))
 
     # Sort held cards by USD value descending so the user sees the
@@ -646,6 +701,7 @@ def derive_position_theses(
             cited_sources=cited,
             target_weight_pct=None,
             target_shares=None,
+            reliability_annotations=list(shared_annotations),
         ))
 
     return held_cards + add_cards
@@ -658,6 +714,7 @@ def emit_thesis_predictions(
     plan_version_id: int | None,
     theses: list[PositionThesis],
     event_at: "datetime | None" = None,
+    provenance_weights_applied: bool = False,
 ) -> None:
     """Spec C commit #3 — fan-out one prediction row per thesis card.
 
@@ -688,6 +745,15 @@ def emit_thesis_predictions(
         wallclock UTC ``now()`` if missing — the call-site SHOULD pass
         the synthesis run's completion timestamp for correct entry-price
         anchoring per spec §2.3.
+      provenance_weights_applied: Spec C commit #6 / spec §6.6. When
+        True, every emitted prediction is stamped with
+        ``provenance_weights_applied = 1`` so downstream consumers know
+        the synth has ALREADY applied upstream-source reliability
+        weights to the signals that produced these theses (the
+        synthesizer's prompt was given the per-source weight banner).
+        Pass True from the synth-completion call site; leave False on
+        the route handler (positions GET) where theses are re-derived
+        on-demand without a fresh synth run.
     """
     if plan_version_id is None:
         return
@@ -735,6 +801,7 @@ def emit_thesis_predictions(
                     event_at=when,
                     target_price=None,
                     stop_price=None,
+                    provenance_weights_applied=provenance_weights_applied,
                 )
             session.commit()
         except Exception:  # noqa: BLE001 — never break the batch

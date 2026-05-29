@@ -537,6 +537,27 @@ class StateObserverLoop(CadenceLoop):
             if isinstance(raw, list):
                 gaps = [str(g) for g in raw]
 
+        # Spec C commit #6 / §6.4 — self-reliability hint for emergent
+        # flagging calibration. The observer's prior flag history is
+        # measured via the predictions ledger; if recent observer
+        # flags didn't predict subsequent state changes, the LLM
+        # should raise its firing threshold.
+        #
+        # CRITICAL anti-feedback-loop reasoning: the observer is BOTH
+        # writer AND consumer of the predictions ledger. We READ the
+        # observer's own reliability here (so it can self-calibrate)
+        # but we WRITE downstream predictions with
+        # ``provenance_weights_applied=True`` (in the write_fn call
+        # site below — the writer needs the flag plumbed). This way
+        # the observer's chain doesn't compound across ticks: tick N
+        # downweights observer's signal to 0.5×, tick N+1 reads "0.5"
+        # but doesn't multiply by 0.5 AGAIN when it writes its own
+        # output. The 0.10 floor in get_weight_for_source is the
+        # safety net (codex IMPORTANT 3 / spec §6.6).
+        prior_self_reliability_factor: float | None = (
+            self._lookup_prior_self_reliability()
+        )
+
         coro = agent.run(
             plan_summary=_render_plan_summary(plan_baseline),
             current_state=state_dict,
@@ -548,8 +569,47 @@ class StateObserverLoop(CadenceLoop):
             snapshot_date=snapshot_date.isoformat(),
             trigger_reason=trigger_reason,
             historical_replay_gaps=gaps,
+            prior_self_reliability_factor=prior_self_reliability_factor,
         )
         return asyncio.run(coro)
+
+    def _lookup_prior_self_reliability(self) -> float | None:
+        """Spec C commit #6 / §6.4 — fetch the observer's own reliability.
+
+        Opens a SHORT-LIVED sync session (the main pipeline session is
+        held by ``_run_pipeline_sync`` and we don't want to thread it
+        five frames deep into ``_run_agent_sync`` just to read a
+        single weight). Best-effort: any failure returns ``None`` so
+        the prompt renders the "no data" line and the observer falls
+        back to its baseline threshold.
+        """
+        try:
+            from argosy.services.predictions.reliability import (
+                get_weight_for_source,
+            )
+
+            factory = (
+                self._session_factory or _build_default_session_factory()
+            )
+            session = factory()
+            try:
+                return float(
+                    get_weight_for_source(
+                        session,
+                        self.user_id,
+                        "internal_state_observer",
+                        "fixed_lookahead",
+                        provenance_weights_applied=False,
+                    )
+                )
+            finally:
+                session.close()
+        except Exception:  # noqa: BLE001 — never break observer
+            _log.warning(
+                "state_observer.prior_self_reliability_lookup_failed",
+                user_id=self.user_id,
+            )
+            return None
 
     # ------------------------------------------------------------------
     # Default function-pointers — kept as methods so subclasses / tests

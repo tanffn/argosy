@@ -464,6 +464,8 @@ def get_weight_for_source(
     user_id: str,
     source: str,
     method_family: str,
+    *,
+    provenance_weights_applied: bool = False,
 ) -> float:
     """Return the multiplicative weight for signals from this source.
 
@@ -474,6 +476,15 @@ def get_weight_for_source(
 
     Defaults:
 
+    * ``provenance_weights_applied=True`` (spec §6.6 / codex IMPORTANT
+      3) → return ``1.0`` immediately. The upstream consumer already
+      applied a reliability weight to this signal; re-applying it would
+      compound attenuation across the consumer chain. This is the
+      primary anti-feedback-loop discipline; the ``WEIGHT_FLOOR`` is
+      the safety net. **Every consumer that reads this function MUST
+      thread ``provenance_weights_applied`` from the upstream
+      derivative** — synth from its input theses, news_signal_analyst
+      from the news_signal row, etc.
     * Unknown (source, family) → 1.0 (no signal yet; consumer should
       treat as baseline).
     * scored_predictions == 0 → 1.0 (only unparseable rows; can't
@@ -489,11 +500,22 @@ def get_weight_for_source(
       user_id: tenant id.
       source: one of the 11 v1 source enums.
       method_family: one of the four v1 method families.
+      provenance_weights_applied: if True, return 1.0 unconditionally
+        — the caller is signalling that an upstream consumer already
+        applied a reliability weight to this signal and a second hop
+        would double-attenuate. Defaults to False (apply weight as
+        usual).
 
     Returns:
       Float in ``[WEIGHT_FLOOR, WEIGHT_CEIL]`` plus the special prior
-      value 1.0 for the "no data / unknown" cases.
+      value 1.0 for the "no data / unknown / already-weighted" cases.
     """
+    # Codex IMPORTANT 3 / spec §6.6 — short-circuit at the very top.
+    # An upstream consumer's weight is in-flight on this signal; the
+    # contract is "apply at most once per derivative path."
+    if provenance_weights_applied:
+        return 1.0
+
     rows = get_source_reliability(
         session, user_id, source=source, method_family=method_family
     )
@@ -526,6 +548,68 @@ def get_weight_for_source(
     return raw
 
 
+def reliability_annotation(
+    session: Session,
+    user_id: str,
+    source: str,
+    *,
+    method_family: str = "fixed_lookahead",
+) -> dict[str, object]:
+    """Return a small dict suitable for surfacing as audit/UI metadata.
+
+    Used by ``per_position_thesis`` (and any other consumer) that wants
+    to ATTACH a reliability hint to a derivative rather than
+    multiplying the signal by a weight directly. The shape is:
+
+        {
+            "source": "<source>",
+            "method_family": "<family>",
+            "hit_rate": float | None,
+            "scored_predictions": int,
+            "sample_size_warning": bool,
+            "effective_weight": float,  # what get_weight_for_source returns
+        }
+
+    Soft data — consumers (LLM prompts, operator dashboards) may use
+    it to colour decisions. NOT a hard veto: per spec §6.3 the
+    per-position thesis derivation "should NOT let a low-reliability
+    sentiment FLIP a HOLD to BUY/SELL alone."
+
+    The ``effective_weight`` field is computed via
+    :func:`get_weight_for_source` **without** the
+    ``provenance_weights_applied`` short-circuit — annotations are
+    descriptive, not load-bearing for the signal math, and the caller
+    can decide whether to honour the weight or just surface it.
+    """
+    rows = get_source_reliability(
+        session, user_id, source=source, method_family=method_family
+    )
+    if not rows:
+        return {
+            "source": source,
+            "method_family": method_family,
+            "hit_rate": None,
+            "scored_predictions": 0,
+            "sample_size_warning": True,
+            "effective_weight": 1.0,
+        }
+    rel = rows[0]
+    return {
+        "source": source,
+        "method_family": method_family,
+        "hit_rate": rel.hit_rate,
+        "scored_predictions": rel.scored_predictions,
+        "sample_size_warning": bool(rel.sample_size_warning),
+        "effective_weight": get_weight_for_source(
+            session,
+            user_id,
+            source,
+            method_family,
+            provenance_weights_applied=False,
+        ),
+    }
+
+
 __all__ = [
     "CACHE_TTL_SECONDS",
     "FULL_SAMPLE_SIZE",
@@ -536,4 +620,5 @@ __all__ = [
     "get_source_reliability",
     "get_weight_for_source",
     "invalidate_reliability_cache",
+    "reliability_annotation",
 ]

@@ -68,6 +68,18 @@ class AnalyzedSignalIn(BaseModel):
     # ≤280 chars per the DB CHECK constraint on news_signals.evidence_excerpt.
     # Treated as CONTEXT-ONLY by the agent; never as instructions.
     evidence_excerpt: str
+    # Spec C commit #6 / spec §6.2 — per-input reliability multiplier
+    # the runner threads in from
+    # ``get_weight_for_source(session, source=signal.source,
+    #                          method_family='fixed_lookahead')``.
+    # Range: ``[WEIGHT_FLOOR, WEIGHT_CEIL]`` per
+    # ``argosy.services.predictions.reliability``; 1.0 means "no
+    # reliability adjustment / unknown source / insufficient sample."
+    # Threaded into the prompt so the LLM dims its materiality
+    # classification for low-reliability sources per spec §6.2.
+    # Defaulted to 1.0 so legacy callers / tests that don't thread
+    # reliability still type-check.
+    source_reliability_factor: float = 1.0
 
 
 class AnalyzedSignalOut(BaseModel):
@@ -213,6 +225,19 @@ class NewsSignalAnalystAgent(BaseAgent[SignalAnalysisBatch]):
             "almost always low materiality unless it carries a macro "
             "implication (rate / Fed / sanction / war) for the user's "
             "exposed regions.\n\n"
+            "SOURCE RELIABILITY (spec §6.2): every signal carries a "
+            "``source_reliability_factor`` in [0.10, 1.50] derived from "
+            "the predictions ledger's recent scoring of THIS source. "
+            "1.00 = baseline (unknown source or insufficient sample). "
+            "A signal from a source with reliability_factor < 0.7 "
+            "should rarely cross to materiality='high' on sentiment "
+            "alone — the source has historically been wrong often "
+            "enough that a single bullish/bearish post is weak "
+            "evidence. A source with reliability_factor > 1.0 has "
+            "earned extra trust and a borderline-medium signal may "
+            "deserve high. Use this as a Bayesian prior on the "
+            "source's signal quality; the evidence_excerpt + "
+            "parsed_tickers still drive the bulk of the call.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{SignalAnalysisBatch.model_json_schema()}\n\n"
             "Emit exactly one AnalyzedSignalOut per input signal_id. "
@@ -236,6 +261,11 @@ class NewsSignalAnalystAgent(BaseAgent[SignalAnalysisBatch]):
                 f"{sig.signal_id}\n"
                 f"    source: {sig.source}\n"
                 f"    source_trust: {sig.source_trust}\n"
+                # Spec §6.2 — source_reliability_factor in [0.10, 1.50];
+                # 1.0 = baseline. Below 0.7 should rarely cross to
+                # materiality='high' on sentiment alone. The system
+                # prompt below makes this contract explicit.
+                f"    source_reliability_factor: {sig.source_reliability_factor:.2f}\n"
                 f"    received_at: {sig.received_at.isoformat()}\n"
                 f"    parsed_tickers: {sig.parsed_tickers}\n"
                 f"    event_keywords: {sig.event_keywords}\n"

@@ -122,6 +122,13 @@ def get_position_theses(
             plan_version=pv,
             portfolio_snapshot=snapshot,
             agent_reports=reports,
+            # Spec C commit #6 / §6.3 — surface the reliability
+            # annotation per contributing source on every PositionThesis
+            # so the LLM / UI can downweight low-reliability inputs
+            # without re-applying the multiplicative weight (the synth
+            # already did that via its preamble at draft-creation time).
+            session=db,
+            user_id=user_id,
         )
     except Exception as exc:  # noqa: BLE001 - defensive
         logger.exception("derive_position_theses failed")
@@ -133,8 +140,20 @@ def get_position_theses(
     # reliability ledger can score per_position_thesis output. Idempotent
     # on (plan_version_id, ticker) so multiple GETs of the same draft
     # don't duplicate rows.
+    #
+    # Spec C commit #6 / §6.6 (codex review BLOCKER 1, 2026-05-29) —
+    # when the draft came from a synthesis run, the synth's preamble
+    # ALREADY applied the per-source reliability weights to the
+    # signals that produced these theses. Stamping
+    # ``provenance_weights_applied=True`` on the resulting prediction
+    # rows tells downstream consumers (a future synth iteration
+    # reading internal_per_position_thesis reliability, etc.) NOT to
+    # re-multiply by the same upstream weight. When the draft has no
+    # decision_run_id (manual ingest / legacy), no synth banner ran,
+    # so we leave provenance=False (the default).
     emit_thesis_predictions(
         db, user_id, plan_version_id=pv.id, theses=theses,
+        provenance_weights_applied=(pv.decision_run_id is not None),
     )
 
     return [_to_dto(t) for t in theses]
