@@ -83,7 +83,9 @@ from argosy.services.retirement.withdrawal_policy import list_policies
 from argosy.services.retirement_timeline import build_holistic_timeline
 from argosy.services.plan_monitor import (
     check_allocation_drift,
+    check_mc_regression,
     get_active_drift_flags,
+    get_active_mc_regression_flags,
 )
 
 router = APIRouter(prefix="/retirement", tags=["retirement"])
@@ -1274,7 +1276,74 @@ def list_monitor_flags(user_id: str, db: Session = Depends(get_db)) -> list[dict
     """List active monitor flags for ``user_id`` (Home Red-Flag Strip).
 
     Active = unacknowledged AND unexpired. Sprint commit #17 will consume
-    this from the UI.
+    this from the UI. Returns both allocation-drift and MC-regression
+    flags interleaved; the UI sorts by severity + surfaced_at.
     """
-    flags = get_active_drift_flags(db, user_id)
-    return [f.to_dict() for f in flags]
+    drift = [f.to_dict() for f in get_active_drift_flags(db, user_id)]
+    mc = [f.to_dict() for f in get_active_mc_regression_flags(db, user_id)]
+    # Tag the kind so the UI can render the right card.
+    for d in drift:
+        d["kind"] = "allocation_drift"
+    for m in mc:
+        m["kind"] = "mc_regression"
+    return drift + mc
+
+
+# Sprint commit #12 — Monte-Carlo regression trigger (spec §5.1.2).
+# ─────────────────────────────────────────────────────────────────────────
+
+
+@router.post("/monitor/mc-check")
+def post_run_mc_check(
+    user_id: str,
+    force: bool = False,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Trigger the monthly MC regression check (spec §5.1.2).
+
+    Production runs this via cron on the 1st of each month. The first
+    call for a user persists a baseline anchor and returns
+    ``flag_fired=None``; subsequent calls compare against the prior
+    persisted ``curr_p_solvent`` and fire a flag when P(solvent at 95)
+    has dropped by >= 5 percentage points.
+
+    Cooldown guard (codex IMPORTANT, commit #11+#12 review): MC
+    projection is expensive (numpy paths × n_paths). The endpoint
+    enforces a per-user monthly cooldown by default — if a prior
+    mc_regression row was written within the last 25 days, return its
+    cached payload instead of re-running. Pass ``force=true`` to
+    override (cron-driven runs do this; UI manual triggers don't).
+    """
+    from argosy.services.plan_monitor import _latest_mc_regression_row
+    from datetime import datetime, timezone, timedelta
+
+    if not force:
+        latest = _latest_mc_regression_row(db, user_id)
+        if latest is not None:
+            now = datetime.now(timezone.utc)
+            latest_at = latest.surfaced_at
+            if latest_at.tzinfo is None:
+                latest_at = latest_at.replace(tzinfo=timezone.utc)
+            if now - latest_at < timedelta(days=25):
+                # Recent run cached — return its payload.
+                import json
+                payload = json.loads(latest.payload)
+                return {
+                    "flag_fired": None if not payload.get("fired") else {
+                        "user_id": user_id,
+                        "snapshot_date": payload.get("snapshot_date"),
+                        "prev_p_solvent": payload.get("prev_p_solvent"),
+                        "curr_p_solvent": payload.get("curr_p_solvent"),
+                        "delta_pp": payload.get("delta_pp"),
+                        "severity": latest.severity,
+                    },
+                    "prev_run_date": payload.get("snapshot_date"),
+                    "curr_p_solvent": payload.get("curr_p_solvent"),
+                    "rows_evaluated": 1,
+                    "cached": True,
+                    "cached_age_days": (now - latest_at).days,
+                }
+
+    result = check_mc_regression(db, user_id).to_dict()
+    result["cached"] = False
+    return result
