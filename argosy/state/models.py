@@ -58,6 +58,16 @@ class User(Base):
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
 
+    # Spec D commit #1 (migration 0054): banner-acknowledgement
+    # timestamp for the /life-events conversion-assistant.  NULL = user
+    # has unacknowledged conversion-log entries (banner visible);
+    # non-NULL = "I've reviewed all conversions" clicked.  Migration
+    # 0054 auto-sets this to the migration timestamp for users with
+    # no legacy life_events rows so the banner never appears for them.
+    life_events_migration_acknowledged_at: Mapped[datetime | None] = (
+        mapped_column(DateTime(timezone=True), nullable=True)
+    )
+
     context: Mapped["UserContext | None"] = relationship(
         back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
@@ -1898,9 +1908,110 @@ class LifeEvent(Base):
         nullable=False,
     )
 
+    # Spec D commit #1 (migration 0054): cashflow-shape extension.
+    # ``delta_kind`` is the new discriminator over the five cashflow
+    # shapes (one_shot / recurring_every_n_years / phase_change_start /
+    # phase_change_end / none).  Existing rows default to ``none`` via
+    # the DB server_default; the data conversion in migration 0054
+    # promotes the documented cases (retirement_milestone with
+    # target_date, expense_event:college, other_asset_acquired with
+    # amount) into their target shapes.  Per-shape value columns are
+    # nullable; the writer (Pydantic discriminator, commit #4) enforces
+    # shape consistency.
+    delta_kind: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="none", default="none"
+    )
+    monthly_delta_usd: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    one_shot_amount_usd: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    recurring_amount_usd: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    recurring_period_years: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    phase_start_date: Mapped[date | None] = mapped_column(
+        Date, nullable=True
+    )
+    phase_end_date: Mapped[date | None] = mapped_column(
+        Date, nullable=True
+    )
+    # FX (USD->NIS) locked at write time per spec §1.4 / IMPORTANT #4.
+    fx_at_event: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     __table_args__ = (
         Index("ix_life_events_user_date", "user_id", "target_date"),
         Index("ix_life_events_user_category", "user_id", "category"),
+    )
+
+
+class LifeEventMigrationLog(Base):
+    """Audit row per ``life_events`` row touched by migration 0054.
+
+    Spec D commit #1.  One row per source life_event that the
+    upgrade saw — even rows that fell through to the
+    ``delta_kind=none`` / ``conversion_outcome='lossy_converted'``
+    bucket — so the user-facing banner on /life-events can correctly
+    surface the conversion count and so the conversion-assistant UI
+    (commit #5) has a per-row record to attach a ``user_decision`` to.
+
+    Fields:
+      * ``original_life_event_id`` — FK to ``life_events.id`` with
+        ``ON DELETE CASCADE``; deleting the underlying event also
+        tombstones its log entry.
+      * ``original_kind`` / ``original_amount_usd`` — captured at
+        upgrade time so a future downgrade / rollback can reconstruct
+        the legacy shape even after commit #4 starts editing the
+        per-shape columns.
+      * ``target_delta_kind`` — one of the five delta_kind values.
+      * ``conversion_outcome`` — one of ``preserved`` /
+        ``lossy_converted`` / ``flagged_review``.
+      * ``user_decision`` — NULL initially; filled by the conversion-
+        assistant UI in commit #5 (e.g. ``upgraded_to_recurring`` /
+        ``kept_one_shot`` / ``edited_manually``).
+      * ``notes`` — one-line human-readable explanation.
+
+    Migration: alembic 0054.
+    """
+
+    __tablename__ = "life_events_migration_log"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    original_life_event_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("life_events.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    original_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    original_amount_usd: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    target_delta_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    conversion_outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    user_decision: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_life_events_migration_log_event",
+            "original_life_event_id",
+        ),
+        # Idempotency floor — codex IMPORTANT (Spec D commit #1 review):
+        # at most one log row per source life_event.id.
+        UniqueConstraint(
+            "original_life_event_id",
+            name="uq_life_events_migration_log_event",
+        ),
     )
 
 
