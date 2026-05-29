@@ -177,6 +177,35 @@ def ingest_user_file(
     resolved = resolve_categories_for_user(session, user_id)
     refunds = match_refunds_for_user(session, user_id)
 
+    # Bidirectional XLS-Osh pair hook (codex zigzag 2026-05-29 #8 -- prefer
+    # explicit Leumi-Osh-only hook over a global SQLAlchemy after_insert
+    # event). If a Leumi-bank statement just landed and there's a pending
+    # Leumi portfolio XLS waiting for cash, resolve the pair now.
+    if parser_name == ParserName.LEUMI_OSH:
+        try:
+            from argosy.services.portfolio_ingest.xls_osh_pair import (
+                try_resolve_pending_on_osh_arrival,
+            )
+            import os
+            from pathlib import Path
+            env_root = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
+            if env_root:
+                snapshot_root = Path(env_root)
+            else:
+                from argosy.config import get_settings
+                snapshot_root = get_settings().home / "snapshots"
+            try_resolve_pending_on_osh_arrival(
+                db=session,
+                statement_id=stmt.id,
+                snapshot_root=snapshot_root,
+            )
+        except Exception as exc:  # noqa: BLE001 -- never fail ingest
+            import logging
+            logging.getLogger(__name__).warning(
+                "xls_osh_pair.osh_hook_failed",
+                extra={"statement_id": stmt.id, "error": str(exc)},
+            )
+
     try:
         from argosy.api.events import publish_event_threadsafe
         publish_event_threadsafe(

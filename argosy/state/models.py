@@ -1744,3 +1744,71 @@ class WindfallAction(Base):
             "event_source_tsv",
         ),
     )
+
+
+class PortfolioSnapshotPart(Base):
+    """Pending half of a Leumi monthly portfolio snapshot.
+
+    A Leumi monthly XLS export carries positions but no cash — cash must
+    come from the user's Leumi Osh (current-account) statement. When the
+    XLS uploads:
+      * If a matching Osh statement is already in expense_statements
+        within the +/-15d match window, assembly fires immediately and
+        the row is created with status='resolved'.
+      * Otherwise the row is created with status='pending'; the Osh-side
+        hook (try_resolve_pending_on_osh_arrival) picks it up when the
+        paired Osh statement subsequently lands.
+
+    Idempotency layers (both enforced by table_args UniqueConstraint):
+      * sha256 of XLS bytes  -- fast-path "same file re-uploaded".
+      * (snapshot_date, portfolio_number) -- semantic dedup. Same data
+        re-exported with different XML byte layout still resolves to
+        the same row. Codex zigzag finding #9 (2026-05-29).
+
+    See ``argosy.services.portfolio_ingest.xls_osh_pair`` for the
+    assembly + TSV splice logic.
+    """
+
+    __tablename__ = "portfolio_snapshot_parts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # v1 has one kind ("xls_positions"); leaving room for future
+    # part kinds (e.g. "schwab_csv_positions") without a migration.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    portfolio_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    paired_osh_statement_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("expense_statements.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    paired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_tsv_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "sha256",
+            name="uq_portfolio_snapshot_parts_user_sha",
+        ),
+        UniqueConstraint(
+            "user_id", "snapshot_date", "portfolio_number",
+            name="uq_portfolio_snapshot_parts_user_date_portfolio",
+        ),
+        Index(
+            "ix_portfolio_snapshot_parts_user_status_date",
+            "user_id", "status", "snapshot_date",
+        ),
+    )

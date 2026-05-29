@@ -228,11 +228,12 @@ export interface PortfolioUploadSnapshotResponse {
   tsv_persisted: boolean;
   persisted_path: string | null;
   snapshot_date: string | null;
-  detect_status: "ok" | "skipped" | "failed";
+  detect_status: "ok" | "skipped" | "failed" | "pending_pair";
   event: WindfallEventDTO | null;
   plan: WindfallAllocationPlanDTO | null;
   detail: string | null;
   sha256: string;
+  pending_pair_id?: number | null;
 }
 
 export interface PlanCurrentDTO {

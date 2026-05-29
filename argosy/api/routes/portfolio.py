@@ -236,9 +236,12 @@ class UploadSnapshotResponse(BaseModel):
     snapshot_date: str | None
     """Parsed snapshot date from the TSV (the date in row 1 col B)."""
     detect_status: str
-    """ok | skipped | failed -- whether the windfall detector ran. Skipped
-    means there's no previous TSV to diff against; failed means it ran
-    but raised (uncommon; logged)."""
+    """ok | skipped | failed | pending_pair -- whether the windfall detector
+    ran. Skipped means no previous TSV to diff against; failed means it ran
+    but raised (uncommon; logged). pending_pair means an XLS landed without
+    a matching Leumi Osh statement; the snapshot is queued in
+    portfolio_snapshot_parts and will auto-resolve when the Osh arrives.
+    (Codex zigzag finding #10, 2026-05-29.)"""
     event: dict | None
     """When detect_status == 'ok' AND a qualifying event fired, the
     event payload (same shape as GET /retirement/windfall/detect)."""
@@ -250,6 +253,10 @@ class UploadSnapshotResponse(BaseModel):
     sha256: str
     """SHA-256 of the upload contents. Idempotency key the caller can
     use to detect "I just uploaded the same file twice" client-side."""
+    pending_pair_id: int | None = None
+    """When detect_status == 'pending_pair', the portfolio_snapshot_parts
+    row id. The UI uses it for status polling / re-render after the Osh
+    statement subsequently lands."""
 
 
 _TSV_FILENAME_RE = re.compile(
@@ -296,23 +303,48 @@ def upload_snapshot(
     fire_detector: bool = Form(True),
     db: Session = Depends(get_db),
 ) -> UploadSnapshotResponse:
-    """Upload a monthly Family Finances Status TSV.
+    """Upload a monthly portfolio snapshot.
 
-    Contract:
-      1. Read the multipart file bytes.
-      2. Hash for idempotency (SHA-256 returned to caller).
-      3. Parse with parse_portfolio_tsv. Reject when the canonical
-         header marker is missing.
-      4. Persist under the windfall-detector scan root with the
-         canonical 'Family Finances Status - YY MMM.tsv' name.
-      5. Optionally fire the windfall detector synchronously (default
-         on; pass fire_detector=false to suppress for tests / dry-run).
-         Detector failures are caught + reported as detect_status=failed;
-         the TSV write succeeds either way.
-      6. Return the tri-state outcome shape.
+    Accepts two upload shapes, selected by content sniffing:
+
+      * **Family Finances Status TSV** -- the long-standing path. Parsed
+        by ``parse_portfolio_tsv``, persisted under the scan root,
+        detector fires.
+      * **Leumi monthly portfolio XLS** (SpreadsheetML 2003 envelope) --
+        positions-only export from Leumi web banking. Routed through
+        ``xls_osh_pair.handle_xls_upload`` which either synthesizes a
+        merged TSV from a paired Leumi Osh statement + the most-recent
+        prior TSV (positions / cash / allocation block recomputed,
+        non-Leumi rows preserved verbatim) and fires the detector, OR
+        queues the snapshot as ``status=pending_pair`` when no Osh
+        statement is in window. The Osh-side hook resolves the pair
+        when a matching Osh subsequently arrives. (Codex zigzag
+        2026-05-29, session xls-osh-pair-design.)
+
+    The route's contract:
+      1. Read the multipart file bytes; SHA-256 returned to caller.
+      2. Sniff content shape.
+      3. Dispatch to the TSV path or XLS path.
+      4. Optionally fire the windfall detector synchronously
+         (default on; pass ``fire_detector=false`` to suppress).
     """
     contents = file.file.read()
     sha = hashlib.sha256(contents).hexdigest()
+
+    # Cheap sniff against the first ~4KB.
+    head_text = contents[:4096].decode("utf-8", errors="ignore")
+
+    # XLS sniff first: SpreadsheetML envelope + Leumi-specific Hebrew
+    # title marker. is_leumi_portfolio_xls handles both.
+    from argosy.services.portfolio_ingest.xls_osh_pair import (
+        handle_xls_upload,
+        is_leumi_portfolio_xls,
+    )
+    if is_leumi_portfolio_xls(contents):
+        return _handle_xls_branch(
+            db=db, user_id=user_id, contents=contents,
+            fire_detector=fire_detector, sha=sha,
+        )
 
     # Write to a temp file so parse_portfolio_tsv can read by path.
     # The parser is path-based today; refactoring it to accept bytes
@@ -336,8 +368,9 @@ def upload_snapshot(
                 event=None,
                 plan=None,
                 detail=(
-                    f"Header marker '{_PORTFOLIO_TSV_HEADER_MARKER}' not found "
-                    "in upload. Expected the Family Finances Status TSV shape."
+                    "Upload did not match a known portfolio shape. Expected "
+                    f"either the TSV header marker '{_PORTFOLIO_TSV_HEADER_MARKER}' "
+                    "or the Leumi portfolio XLS SpreadsheetML envelope."
                 ),
                 sha256=sha,
             )
@@ -470,6 +503,176 @@ def upload_snapshot(
             tmp_path.unlink()
         except OSError:
             pass
+
+
+def _handle_xls_branch(
+    *,
+    db: Session,
+    user_id: str,
+    contents: bytes,
+    fire_detector: bool,
+    sha: str,
+) -> UploadSnapshotResponse:
+    """XLS-shaped upload: hand off to xls_osh_pair, then fire the detector
+    if (and only if) the pair resolved to a synthesized TSV."""
+    from argosy.services.portfolio_ingest.xls_osh_pair import handle_xls_upload
+
+    snapshot_root = _resolve_snapshot_root()
+    try:
+        resolution = handle_xls_upload(
+            db=db,
+            user_id=user_id,
+            contents=contents,
+            snapshot_root=snapshot_root,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "portfolio_snapshot.xls_handler_failed",
+            user_id=user_id, error=str(exc),
+        )
+        return UploadSnapshotResponse(
+            tsv_persisted=False,
+            persisted_path=None,
+            snapshot_date=None,
+            detect_status="failed",
+            event=None,
+            plan=None,
+            detail=f"XLS handler raised: {exc}",
+            sha256=sha,
+        )
+
+    if resolution.status == "pending_pair":
+        return UploadSnapshotResponse(
+            tsv_persisted=False,
+            persisted_path=None,
+            snapshot_date=(
+                resolution.snapshot_date.isoformat()
+                if resolution.snapshot_date else None
+            ),
+            detect_status="pending_pair",
+            event=None,
+            plan=None,
+            detail=resolution.detail,
+            sha256=sha,
+            pending_pair_id=resolution.pending_pair_id,
+        )
+
+    if resolution.status == "duplicate":
+        # Already-resolved row -- return the prior synthesis as if
+        # nothing happened, but report tsv_persisted=true so the UI
+        # knows the file is durably on disk.
+        return UploadSnapshotResponse(
+            tsv_persisted=resolution.resolved_tsv_path is not None,
+            persisted_path=(
+                str(resolution.resolved_tsv_path)
+                if resolution.resolved_tsv_path else None
+            ),
+            snapshot_date=(
+                resolution.snapshot_date.isoformat()
+                if resolution.snapshot_date else None
+            ),
+            detect_status="skipped",
+            event=None,
+            plan=None,
+            detail=resolution.detail,
+            sha256=sha,
+            pending_pair_id=resolution.pending_pair_id,
+        )
+
+    # Resolved -- fire the detector against the freshly synthesized TSV.
+    event_payload: dict | None = None
+    plan_payload: dict | None = None
+    detect_status = "skipped"
+    target_path = resolution.resolved_tsv_path
+
+    if fire_detector and target_path is not None:
+        try:
+            from argosy.services.retirement.windfall_allocator import (
+                propose_allocations,
+            )
+            from argosy.services.retirement.windfall_detector import (
+                DEFAULT_THRESHOLD_NIS, DEFAULT_THRESHOLD_USD, detect_windfall,
+            )
+            prev_candidates = sorted(
+                (p for p in target_path.parent.glob("Family Finances Status*.tsv")
+                 if p.resolve() != target_path.resolve()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            prev = prev_candidates[0] if prev_candidates else None
+            if prev is None:
+                detect_status = "skipped"
+            else:
+                event = detect_windfall(
+                    target_path, prev,
+                    threshold_usd=DEFAULT_THRESHOLD_USD,
+                    threshold_nis=DEFAULT_THRESHOLD_NIS,
+                )
+                detect_status = "ok"
+                if event is not None:
+                    plan = propose_allocations(event)
+                    event_payload = _event_to_dict(event)
+                    plan_payload = plan.to_dict()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "portfolio_snapshot.xls_detector_failed",
+                user_id=user_id, error=str(exc),
+            )
+            detect_status = "failed"
+
+    return UploadSnapshotResponse(
+        tsv_persisted=True,
+        persisted_path=str(target_path) if target_path else None,
+        snapshot_date=(
+            resolution.snapshot_date.isoformat()
+            if resolution.snapshot_date else None
+        ),
+        detect_status=detect_status,
+        event=event_payload,
+        plan=plan_payload,
+        detail=resolution.detail,
+        sha256=sha,
+        pending_pair_id=resolution.pending_pair_id,
+    )
+
+
+def _event_to_dict(event) -> dict:
+    """Project a WindfallEvent into the JSON payload shape used by the
+    response model + the existing /retirement/windfall/detect route."""
+    return {
+        "detected_at": event.detected_at.isoformat(),
+        "cash_delta_usd": event.cash_delta_usd,
+        "cash_delta_nis": event.cash_delta_nis,
+        "cash_delta_total_usd_equiv": event.cash_delta_total_usd_equiv,
+        "fx_usd_nis": event.fx_usd_nis,
+        "classified_source": event.classified_source,
+        "requires_user_classification": event.requires_user_classification,
+        "matching_sales": [
+            {
+                "symbol": s.symbol,
+                "shares_sold": s.shares_sold,
+                "current_price": s.current_price,
+                "value_usd": round(s.value_usd, 2),
+            }
+            for s in event.matching_sales
+        ],
+        "allocation_delta_table": [
+            {
+                "asset_class": l.asset_class,
+                "current_pct": l.current_pct,
+                "current_k_usd": l.current_k_usd,
+                "target_pct": l.target_pct,
+                "target_k_usd": l.target_k_usd,
+                "delta_k_usd": l.delta_k_usd,
+            }
+            for l in event.allocation_delta_table
+        ],
+        "source_tsv": Path(event.source_tsv).name,
+        "previous_tsv": (
+            Path(event.previous_tsv).name
+            if event.previous_tsv else None
+        ),
+    }
 
 
 __all__ = ["router"]

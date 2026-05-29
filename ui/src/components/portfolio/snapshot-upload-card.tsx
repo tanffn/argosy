@@ -18,20 +18,14 @@ interface Props {
 /**
  * Monthly portfolio-snapshot upload tile (2026-05-29).
  *
- * User mental model (per the 2026-05-28 reframe): every month you drop
- * bank statements (transactions) into <span class="nav-card">/expenses</span>
- * AND a portfolio snapshot (positions) into <span class="nav-card">/portfolio</span>.
- * This tile is the latter half — it accepts the
- * "Family Finances Status - YY MMM.tsv" file the user already produces
- * monthly, persists it under the windfall-detector scan root, and fires
- * the detector synchronously so a qualifying cash delta surfaces
- * inline.
- *
- * Scope note: the raw XLS-to-TSV conversion is still the user's
- * external `update_leumi_tsv.py` script. The in-repo Leumi adapter
- * (`argosy/adapters/brokers/leumi_tsv.py`) only reads an existing TSV;
- * no XLS parser ships in-repo yet. Once one does, this tile can extend
- * to accept .xls directly.
+ * Accepts two upload shapes:
+ *   * The combined "Family Finances Status - YY MMM.tsv" the user
+ *     produces today via an external script.
+ *   * A raw Leumi monthly portfolio XLS export. The XLS carries
+ *     positions only -- cash must come from a Leumi Osh (current-account)
+ *     statement uploaded via /expenses. The backend auto-pairs them
+ *     via DB lookup with a +/-15d match window; pairs can resolve in
+ *     either order (XLS first or Osh first).
  */
 export function PortfolioSnapshotUploadCard({ userId, onUploadComplete }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -103,7 +97,7 @@ export function PortfolioSnapshotUploadCard({ userId, onUploadComplete }: Props)
           <input
             ref={inputRef}
             type="file"
-            accept=".tsv,text/tab-separated-values"
+            accept=".tsv,.xls,text/tab-separated-values,application/vnd.ms-excel"
             className="hidden"
             onChange={(e) => {
               const files = Array.from(e.target.files ?? []);
@@ -119,17 +113,17 @@ export function PortfolioSnapshotUploadCard({ userId, onUploadComplete }: Props)
               <>Drop to ingest</>
             ) : (
               <>
-                Drop the monthly &quot;Family Finances Status&quot; TSV here,{" "}
-                or <span className="text-info underline-offset-2 hover:underline">click to pick</span>
+                Drop the monthly TSV or Leumi <code className="font-mono">.xls</code>
+                {" "}export here, or{" "}
+                <span className="text-info underline-offset-2 hover:underline">click to pick</span>
               </>
             )}
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground">
-            The TSV gets persisted under{" "}
-            <code className="font-mono">ARGOSY_EXPENSE_SAMPLES_ROOT</code>;
-            the windfall detector diffs it against the previous month
-            inline. Raw <code className="font-mono">.xls</code> upload is
-            on the roadmap.
+            TSV uploads fire the windfall detector immediately. XLS
+            uploads auto-pair with the most recent Leumi Osh statement
+            via the +/-15d window; if no Osh is in the DB yet, the
+            snapshot is queued and auto-resolves when the Osh arrives.
           </div>
         </div>
 
@@ -146,6 +140,27 @@ export function PortfolioSnapshotUploadCard({ userId, onUploadComplete }: Props)
 }
 
 function UploadResultRow({ result }: { result: PortfolioUploadSnapshotResponse }) {
+  // pending_pair: XLS landed but no matching Osh statement -- queued.
+  // This is an expected state, not an error; surface as info, not red.
+  if (result.detect_status === "pending_pair") {
+    return (
+      <div className="mt-3 rounded-md border border-info/40 bg-info/5 px-3 py-2 font-mono text-xs">
+        <div className="flex items-center gap-2 flex-wrap">
+          <StatusPill tone="neutral" mono>
+            AWAITING OSH
+          </StatusPill>
+          <span>
+            XLS parsed{result.snapshot_date ? ` (${result.snapshot_date})` : ""};
+            queued pending paired Leumi Osh statement.
+          </span>
+        </div>
+        <div className="mt-2 text-[11px] text-muted-foreground">
+          {result.detail ??
+            "Upload a Leumi Osh statement via /expenses (or drop another XLS once the Osh lands)."}
+        </div>
+      </div>
+    );
+  }
   if (!result.tsv_persisted) {
     return (
       <div className="mt-3 rounded-md border border-rose-400/40 bg-rose-400/5 px-3 py-2 font-mono text-xs text-rose-400">
