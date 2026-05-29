@@ -141,17 +141,52 @@ def parse_leumi_portfolio_xls_path(path: Path) -> LeumiPortfolioSnapshot:
 # Internal: row-level parsing
 # ---------------------------------------------------------------------------
 
+# Row + Cell regexes. Cell capture includes the ss:Index attribute when
+# present (codex-tandem zigzag finding #3, 2026-05-29): SpreadsheetML
+# allows sparse rows where a Cell specifies its column position via
+# ss:Index="N", meaning the previous cells should be treated as
+# empty. The pre-fix _row_cells ignored ss:Index and returned the
+# Data values in appearance order, which would silently misalign
+# columns on any export that emitted sparse rows.
 _ROW_RE = re.compile(r"<(?:ss:)?Row[^>]*>(.*?)</(?:ss:)?Row>", re.DOTALL)
-_CELL_RE = re.compile(r"<(?:ss:)?Data[^>]*>(.*?)</(?:ss:)?Data>", re.DOTALL)
+_CELL_BLOCK_RE = re.compile(
+    r"<(?:ss:)?Cell\b([^>]*)>(.*?)</(?:ss:)?Cell>", re.DOTALL,
+)
+_INDEX_ATTR_RE = re.compile(r"""(?:ss:)?Index\s*=\s*["'](\d+)["']""")
+_DATA_RE = re.compile(r"<(?:ss:)?Data[^>]*>(.*?)</(?:ss:)?Data>", re.DOTALL)
 
-# Header cell markers (Hebrew) -- two cells we expect to find in the header row.
-_HEADER_C0 = "מספר נייר"   # מספר נייר
-_HEADER_C1 = "שם הנייר"          # שם הנייר
+# Header-row sentinels (Hebrew). Used to LOCATE the header row, not
+# to validate any specific column ordering -- we build a column-index
+# map from the header below.
+_HEADER_C0 = "מספר נייר"   # security id (Hebrew: מספר נייר)
+_HEADER_C1 = "שם הנייר"   # security name (Hebrew: שם הנייר)
+
+# Column-name -> internal field-name map. Built from the Leumi
+# headers verbatim. Each entry maps a Hebrew header string to the
+# field on LeumiPortfolioPosition we'll fill from that column.
+# Codex-tandem zigzag finding #2 (2026-05-29): the v0.1 parser
+# hard-coded cell indices, which would silently misassign values
+# if Leumi inserted or reordered a column. The header-map approach
+# binds each numeric field to its semantic Hebrew column header so
+# a reorder is tolerated and a rename is loud (warning).
+_HEADER_FIELD_MAP: dict[str, str] = {
+    "מספר נייר":           "security_id",
+    "שם הנייר":            "name_he",
+    "שער קניה ממוצע":      "avg_buy_price",
+    "כמות אחזקה":          "quantity",
+    "שער אחרון":           "last_price",
+    "שווי אחזקה ב $":      "holding_value_usd",
+    # Variants observed across exports -- normalize on parse:
+    "שווי אחזקה ב$":       "holding_value_usd",
+    "רווח ב-%":            "gain_pct",
+    "%  מהתיק":            "pct_of_portfolio",
+    "% מהתיק":             "pct_of_portfolio",
+}
 
 # Meta-row labels we extract values from.
-_META_DATE = "תאריך:"                     # תאריך:
-_META_PORTFOLIO = "תיק:"                            # תיק:
-_META_SEC_COUNT = "מס' ניירות:"  # מס' ניירות:
+_META_DATE = "תאריך:"          # date row label
+_META_PORTFOLIO = "תיק:"       # portfolio number label
+_META_SEC_COUNT = "מס' ניירות:"  # securities count label
 
 # Latin ticker at the end of the Hebrew name, sometimes followed by a
 # venue suffix (e.g. "CNDX LN" for LSE-listed). The ticker can contain
@@ -162,12 +197,34 @@ _LATIN_TICKER_RE = re.compile(
 
 
 def _row_cells(row_xml: str) -> list[str]:
-    """Extract Cell Data text strings, in row order."""
-    return [c.strip() for c in _CELL_RE.findall(row_xml)]
+    """Extract cell Data values in their TRUE column positions.
+
+    Handles SpreadsheetML sparse-cell syntax: `<Cell ss:Index="N">`
+    means "the next Data value is at column N (1-indexed)." The
+    parser pads the returned list with empty strings up to that
+    index so callers can use stable positional indexing. Codex
+    zigzag finding #3 (2026-05-29).
+    """
+    out: list[str] = []
+    cursor = 1  # SpreadsheetML columns are 1-indexed
+    for match in _CELL_BLOCK_RE.finditer(row_xml):
+        attrs, body = match.group(1), match.group(2)
+        idx_match = _INDEX_ATTR_RE.search(attrs)
+        if idx_match:
+            target = int(idx_match.group(1))
+            # Pad out any skipped columns with empty strings.
+            while cursor < target:
+                out.append("")
+                cursor += 1
+        data_match = _DATA_RE.search(body)
+        text = data_match.group(1).strip() if data_match else ""
+        out.append(text)
+        cursor += 1
+    return out
 
 
 def _safe_float(s: str | None) -> float | None:
-    if not s:
+    if s is None or s == "":
         return None
     try:
         return float(s.replace(",", ""))
@@ -179,6 +236,53 @@ def _extract_ticker(name_he: str) -> str | None:
     """Extract the Latin ticker (if any) from a Leumi position name."""
     m = _LATIN_TICKER_RE.search(name_he)
     return m.group(1) if m else None
+
+
+def _build_column_map(
+    header_cells: list[str], warnings: list[str],
+) -> dict[str, int]:
+    """Map field-name -> column index, by matching Hebrew header text.
+
+    Codex zigzag finding #2 (2026-05-29). Unknown headers are
+    skipped silently (they may be new Leumi columns we don't care
+    about); REQUIRED fields missing from the export produce a
+    warning + the parser returns partial positions.
+    """
+    field_to_idx: dict[str, int] = {}
+    for i, header in enumerate(header_cells):
+        normalized = header.strip()
+        field = _HEADER_FIELD_MAP.get(normalized)
+        if field is not None and field not in field_to_idx:
+            field_to_idx[field] = i
+    required = ("security_id", "name_he", "quantity", "last_price",
+                "holding_value_usd")
+    for r in required:
+        if r not in field_to_idx:
+            warnings.append(
+                f"required column {r!r} not found in header row; "
+                "Leumi may have renamed it -- check _HEADER_FIELD_MAP"
+            )
+    return field_to_idx
+
+
+def _maybe_normalize_pct(
+    raw_pct: float | None, warnings: list[str], context: str,
+) -> float | None:
+    """Normalize a "% of portfolio" value to 0..1 if it's actually on a
+    0..100 scale. Codex zigzag finding #4 (2026-05-29): Leumi could
+    emit either; the parser detects > 1.5 as a 100-scaled value
+    (max valid 0..1 fraction is 1.0; max valid percent is 100) and
+    normalizes + warns. None passthrough.
+    """
+    if raw_pct is None:
+        return None
+    if raw_pct > 1.5:
+        warnings.append(
+            f"{context}: pct_of_portfolio looks scaled 0..100 "
+            f"(value={raw_pct!r}); normalizing to 0..1"
+        )
+        return raw_pct / 100.0
+    return raw_pct
 
 
 def _parse(text: str) -> LeumiPortfolioSnapshot:
@@ -213,7 +317,7 @@ def _parse(text: str) -> LeumiPortfolioSnapshot:
         if len(rows[2]) >= 4:
             total_value_usd = _safe_float(rows[2][3])
 
-    # ---- Find the position-table header row ------------------------------
+    # ---- Find the position-table header row + build column map ----------
     header_idx: int | None = None
     for i, cells in enumerate(rows[:20]):
         if len(cells) >= 2 and cells[0] == _HEADER_C0 and cells[1] == _HEADER_C1:
@@ -234,33 +338,67 @@ def _parse(text: str) -> LeumiPortfolioSnapshot:
             parse_warnings=warnings,
         )
 
+    col_idx = _build_column_map(rows[header_idx], warnings)
+
+    def cell(row: list[str], field: str) -> str | None:
+        """Look up a row's cell by field-name (via the header map).
+
+        Returns None when the field isn't present in the header
+        (we warned earlier) or when the row is too short. Empty-
+        string cells return None too so _safe_float treats them as
+        missing instead of as 0.0.
+        """
+        idx = col_idx.get(field)
+        if idx is None or idx >= len(row):
+            return None
+        val = row[idx]
+        return val if val != "" else None
+
     # ---- Position rows ---------------------------------------------------
     positions: list[LeumiPortfolioPosition] = []
     for i in range(header_idx + 1, len(rows)):
-        cells = rows[i]
-        if len(cells) < 7:
-            # Probably a trailing footer / disclaimer row; skip silently.
+        row = rows[i]
+        sec = cell(row, "security_id")
+        if not sec or not sec[0].isdigit():
+            # Trailing footer / disclaimer / empty row; skip silently.
             continue
-        # Sanity: a position row's first cell is a numeric security id.
-        if not cells[0] or not cells[0][0].isdigit():
+
+        # Money + count fields: codex zigzag finding #1 (2026-05-29).
+        # Use None when missing, not 0.0 -- silent zero-coercion would
+        # corrupt a position without surfacing the failure. We then
+        # validate required fields below; a missing required field
+        # gets a warning + the row is skipped.
+        name_he = cell(row, "name_he") or ""
+        avg_buy_price = _safe_float(cell(row, "avg_buy_price"))
+        quantity = _safe_float(cell(row, "quantity"))
+        last_price = _safe_float(cell(row, "last_price"))
+        holding_value_usd = _safe_float(cell(row, "holding_value_usd"))
+        gain_pct = _safe_float(cell(row, "gain_pct"))
+        pct_of_portfolio = _maybe_normalize_pct(
+            _safe_float(cell(row, "pct_of_portfolio")),
+            warnings, context=f"row {i} (security_id={sec})",
+        )
+
+        # Required fields: quantity, last_price, holding_value_usd.
+        if quantity is None or last_price is None or holding_value_usd is None:
+            warnings.append(
+                f"row {i} (security_id={sec}): missing required numeric field "
+                f"(quantity={quantity!r}, last_price={last_price!r}, "
+                f"holding_value_usd={holding_value_usd!r}); row skipped"
+            )
             continue
-        try:
-            positions.append(LeumiPortfolioPosition(
-                security_id=cells[0],
-                name_he=cells[1],
-                ticker=_extract_ticker(cells[1]),
-                avg_buy_price=_safe_float(cells[3]) if len(cells) > 3 else None,
-                quantity=_safe_float(cells[4]) or 0.0,
-                last_price=_safe_float(cells[5]) or 0.0,
-                holding_value_usd=_safe_float(cells[6]) or 0.0,
-                gain_pct=_safe_float(cells[8]) if len(cells) > 8 else None,
-                pct_of_portfolio=(
-                    _safe_float(cells[10]) if len(cells) > 10 else None
-                ),
-            ))
-        except (ValueError, IndexError) as exc:
-            warnings.append(f"row {i}: parse failed -- {exc!r}")
-            continue
+
+        positions.append(LeumiPortfolioPosition(
+            security_id=sec,
+            name_he=name_he,
+            ticker=_extract_ticker(name_he),
+            avg_buy_price=avg_buy_price,
+            quantity=quantity,
+            last_price=last_price,
+            holding_value_usd=holding_value_usd,
+            gain_pct=gain_pct,
+            pct_of_portfolio=pct_of_portfolio,
+        ))
 
     return LeumiPortfolioSnapshot(
         snapshot_date=snapshot_date,
