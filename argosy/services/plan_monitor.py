@@ -291,11 +291,23 @@ def check_allocation_drift(
         flags_fired.append(flag)
 
         # Persist as a monitor_flags row.
-        _write_monitor_flag(
+        flag_row = _write_monitor_flag(
             session,
             flag=flag,
             now=now,
             ttl_days=flag_ttl_days,
+        )
+
+        # Spec C commit #3 — emit a prediction row for this drift fire.
+        # GATE: the surrounding fire-rule has already decided this is
+        # actionable (abs+rel thresholds + hysteresis), so no extra gate.
+        _maybe_write_monitor_flag_prediction(
+            session,
+            user_id=user_id,
+            flag_row=flag_row,
+            kind="allocation_drift",
+            severity=severity,
+            now=now,
         )
 
     if flags_fired:
@@ -524,6 +536,65 @@ def _row_to_line(row: AllocationRow) -> AllocationLine:
         target_k_usd=target_k,
         delta_k_usd=delta_k,
     )
+
+
+# ---------------------------------------------------------------------------
+# Predictions-ledger writer (Spec C commit #3) — shared by drift + mc_regression
+# ---------------------------------------------------------------------------
+
+
+def _maybe_write_monitor_flag_prediction(
+    session: Session,
+    *,
+    user_id: str,
+    flag_row: MonitorFlag,
+    kind: str,
+    severity: str,
+    now: datetime,
+) -> None:
+    """Spec C commit #3 — emit a meta-prediction for a fired MonitorFlag.
+
+    Called from ``check_allocation_drift`` and ``check_mc_regression``
+    after the underlying ``monitor_flags`` row commits. Best-effort: any
+    failure logs + swallows so a writer issue never breaks the monitor's
+    primary flag-writing path. The id-must-be-non-None preflight catches
+    the (rare) case where the caller hasn't yet committed the row.
+
+    Per spec §2.4 / §2.3 the prediction is a meta-prediction (ticker
+    None, direction neutral, ``fixed_lookahead_30d``); evaluator scores
+    against a portfolio-level proxy in commit #4.
+    """
+    if flag_row.id is None:
+        return
+    if severity not in ("info", "warning", "critical"):
+        return
+    try:
+        # Import inline so plan_monitor's tests don't pay the predictions
+        # package import cost (it's only meaningful when the writer is
+        # actually exercised).
+        from argosy.services.predictions.writers import (
+            write_monitor_flag_prediction,
+        )
+        # SAVEPOINT — writer FK / CHECK failure must not roll back the
+        # monitor_flags row the caller just committed.
+        with session.begin_nested():
+            write_monitor_flag_prediction(
+                session,
+                user_id,
+                monitor_flag_id=int(flag_row.id),
+                kind=kind,
+                severity=severity,  # type: ignore[arg-type]
+                event_at=now,
+            )
+        session.commit()
+    except Exception:  # noqa: BLE001 — never break monitor on writer failure
+        import logging
+        logging.getLogger(__name__).warning(
+            "plan_monitor: write_monitor_flag_prediction failed for "
+            "monitor_flag_id=%s kind=%s",
+            flag_row.id, kind,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +833,7 @@ def check_mc_regression(
             delta_pp=delta_pp,
             severity=severity,
         )
-        _write_mc_regression_row(
+        mc_row = _write_mc_regression_row(
             session,
             user_id=user_id,
             curr_p_solvent=curr_p_solvent,
@@ -778,6 +849,17 @@ def check_mc_regression(
             now=now,
         )
         session.commit()
+        # Spec C commit #3 — emit a prediction row for the FIRED mc_regression.
+        # GATE: only fired rows reach this branch; baseline + no-fire anchor
+        # rows are accounting and skip the ledger (spec §2.4).
+        _maybe_write_monitor_flag_prediction(
+            session,
+            user_id=user_id,
+            flag_row=mc_row,
+            kind="mc_regression",
+            severity=severity,
+            now=now,
+        )
         return MCRegressionCheckResult(
             flag_fired=flag,
             prev_run_date=prev_run_date,

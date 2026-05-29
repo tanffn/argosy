@@ -23,6 +23,7 @@ from argosy.api.routes.plan import get_db
 from argosy.services.per_position_thesis import (
     PositionThesis,
     derive_position_theses,
+    emit_thesis_predictions,
 )
 from argosy.state.models import AgentReport, PlanVersion
 from argosy.state.queries import get_current_plan, get_pending_draft
@@ -127,6 +128,14 @@ def get_position_theses(
         raise HTTPException(
             status_code=500, detail=f"thesis derivation failed: {exc}"
         ) from exc
+
+    # Spec C commit #3 — emit one prediction per thesis card so the
+    # reliability ledger can score per_position_thesis output. Idempotent
+    # on (plan_version_id, ticker) so multiple GETs of the same draft
+    # don't duplicate rows.
+    emit_thesis_predictions(
+        db, user_id, plan_version_id=pv.id, theses=theses,
+    )
 
     return [_to_dto(t) for t in theses]
 

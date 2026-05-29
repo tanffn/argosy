@@ -651,4 +651,97 @@ def derive_position_theses(
     return held_cards + add_cards
 
 
-__all__ = ["PositionThesis", "derive_position_theses"]
+def emit_thesis_predictions(
+    session: "Any",
+    user_id: str,
+    *,
+    plan_version_id: int | None,
+    theses: list[PositionThesis],
+    event_at: "datetime | None" = None,
+) -> None:
+    """Spec C commit #3 — fan-out one prediction row per thesis card.
+
+    Per spec §2.4 / codex BLOCKER #3 (anti-hide-behind-HOLD), every
+    thesis card is logged as a prediction including HOLDs (HOLD →
+    direction='neutral', still scored against subsequent price action).
+    Caller passes the session + plan_version_id (used as thesis_id for
+    dedup); ``derive_position_theses`` doesn't take a session today, so
+    the call-site (route handler / synthesis driver) invokes both:
+
+        theses = derive_position_theses(...)
+        emit_thesis_predictions(session, user_id, plan_version_id=pv.id, theses=theses)
+
+    Best-effort: any per-card failure is logged + swallowed so a writer
+    issue never breaks the thesis-derivation primary path.
+
+    Args:
+      session: live SQLAlchemy Session. Caller owns the outer transaction;
+        this function commits inline so per-card failures don't lose
+        prior writes.
+      user_id: tenant id (FK to users.id).
+      plan_version_id: the PlanVersion row's id; used as the stable
+        ``thesis_id`` component of the dedup key
+        ``v1|predictions|thesis|<plan_version_id>.<ticker>``. ``None``
+        skips the emit entirely (no stable id ⇒ no dedup-safe write).
+      theses: the cards returned by ``derive_position_theses``.
+      event_at: when the synthesis run produced these cards. Defaults to
+        wallclock UTC ``now()`` if missing — the call-site SHOULD pass
+        the synthesis run's completion timestamp for correct entry-price
+        anchoring per spec §2.3.
+    """
+    if plan_version_id is None:
+        return
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from argosy.services.predictions.writers import (
+            write_per_position_thesis_prediction,
+        )
+    except Exception:  # pragma: no cover — import-guard
+        logger.exception("emit_thesis_predictions: import failed")
+        return
+
+    when = event_at if event_at is not None else _dt.now(_tz.utc)
+    for card in theses:
+        try:
+            # The thesis-derivation verdict "ADD" maps to BUY at write
+            # time — ADD is the "should-add" variant of BUY and the
+            # writer's action enum doesn't have a separate ADD entry.
+            # Translate at the call-site so the writer's enum stays
+            # closed.
+            action = card.verdict
+            if action == "ADD":
+                action = "BUY"
+            if action not in ("BUY", "TRIM", "SELL", "HOLD"):
+                # Unknown verdict (defensive against future cards) —
+                # skip rather than mis-classify into the ledger.
+                continue
+            # Note: target_weight_pct on a PositionThesis is a
+            # PORTFOLIO ALLOCATION weight (e.g. "NVDA should be 45% of
+            # portfolio"), NOT a ticker price target. The predictions
+            # ledger's target_price column is a price level; the two
+            # don't map directly. We leave target_price=None here so
+            # the writer picks fixed_lookahead_30d (the correct method
+            # for direction-only predictions per spec §3.1).
+            # SAVEPOINT-wrapped so a writer FK / CHECK failure rolls
+            # back ONLY this card, never the outer caller's session.
+            with session.begin_nested():
+                write_per_position_thesis_prediction(
+                    session,
+                    user_id,
+                    thesis_id=plan_version_id,
+                    ticker=card.ticker,
+                    action=action,  # type: ignore[arg-type]
+                    conviction=card.conviction,  # type: ignore[arg-type]
+                    event_at=when,
+                    target_price=None,
+                    stop_price=None,
+                )
+            session.commit()
+        except Exception:  # noqa: BLE001 — never break the batch
+            logger.exception(
+                "emit_thesis_predictions: write failed for ticker=%s",
+                card.ticker,
+            )
+
+
+__all__ = ["PositionThesis", "derive_position_theses", "emit_thesis_predictions"]

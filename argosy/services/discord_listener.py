@@ -80,6 +80,8 @@ from typing import Any, Protocol
 from sqlalchemy.orm import Session
 
 from argosy.services.news_extractor import extract
+from argosy.services.predictions.parsers import extract_alpha_call_from_text
+from argosy.services.predictions.writers import write_discord_prediction
 from argosy.state.models import NewsSignal
 
 logger = logging.getLogger(__name__)
@@ -457,11 +459,77 @@ async def _handle_message(
             event.message_id, signal.parsed_tickers,
             signal.event_keywords, signal.sentiment,
         )
+
+        # Spec C commit #3 — predictions ledger writer wiring. GATE on
+        # actionable: only write a prediction when the message body
+        # parses to a (direction, ticker) pair. Chatter / off-topic
+        # messages stay out of the ledger.
+        _maybe_write_discord_prediction(
+            session=session,
+            news_signal_row=row,
+            event=event,
+            channel_id=channel_id,
+        )
     except Exception:
         session.rollback()
         raise
     finally:
         session.close()
+
+
+def _maybe_write_discord_prediction(
+    *,
+    session: Session,
+    news_signal_row: NewsSignal,
+    event: _MessageEvent,
+    channel_id: int,
+) -> None:
+    """Spec C commit #3 — emit a prediction row for actionable Discord calls.
+
+    Gates on the message body containing a parseable (direction, ticker)
+    pair via ``extract_alpha_call_from_text``. Non-actionable messages
+    (chatter, off-topic) skip silently.
+
+    Per [[feedback_ask_dont_assume]] the writer is best-effort: any
+    failure here logs + swallows so a bad prediction write never blocks
+    a legitimate NewsSignal ingest.
+    """
+    call = extract_alpha_call_from_text(event.content)
+    if call is None:
+        return
+    # User id: discord_listener doesn't carry a per-message user_id
+    # (single-tenant deployment); default to 'ariel' to match the
+    # rest of Argosy's single-tenant convention. Multi-tenant
+    # rollout (SDD §12.5) will plumb the tenant from the listener
+    # supervisor.
+    user_id = "ariel"
+    # Wrap in a SAVEPOINT so a writer failure (FK violations against an
+    # unseeded evaluation_method_registry; CHECK errors) rolls back only
+    # the prediction insert — the NewsSignal commit upstream survives.
+    try:
+        with session.begin_nested():
+            write_discord_prediction(
+                session,
+                user_id,
+                message_id=str(event.message_id),
+                channel_id=channel_id,
+                ticker=call.ticker,
+                direction=call.direction,
+                target_price=call.target_price,
+                stop_price=call.stop_price,
+                event_at=event.timestamp,
+                raw_text_ref=(
+                    f"news_signals.id:{news_signal_row.id}"
+                    if news_signal_row.id is not None
+                    else None
+                ),
+            )
+        session.commit()
+    except Exception:  # noqa: BLE001 — never break ingest on writer failure
+        logger.exception(
+            "discord_listener: write_discord_prediction failed for message %s",
+            event.message_id,
+        )
 
 
 def _already_ingested(session: Session, source_ref: str) -> bool:

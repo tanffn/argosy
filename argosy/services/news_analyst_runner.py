@@ -39,6 +39,7 @@ from argosy.agents.news_signal_analyst import (
     AnalyzedSignalOut,
     NewsSignalAnalystAgent,
 )
+from argosy.services.predictions.writers import write_news_signal_prediction
 from argosy.state.models import NewsSignal
 
 logger = logging.getLogger(__name__)
@@ -165,6 +166,13 @@ def run_news_signal_analysis(
             row.analyzed_at = now
             analyzed_total += 1
 
+            # Spec C commit #3 — predictions ledger writer wiring. Only
+            # write predictions for actionable signals (materiality in
+            # {high, medium} per spec §2.4) with at least one extracted
+            # ticker + a non-neutral sentiment direction. low-materiality
+            # rows are gated out so the ledger isn't dominated by noise.
+            _maybe_write_news_signal_predictions(session, row, out)
+
         session.flush()
         batches += 1
 
@@ -179,6 +187,71 @@ def run_news_signal_analysis(
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+
+def _maybe_write_news_signal_predictions(
+    session: Session,
+    row: NewsSignal,
+    out: AnalyzedSignalOut,
+) -> None:
+    """Spec C commit #3 — fan-out one prediction per ticker for actionable signals.
+
+    Gates:
+      * materiality in {high, medium} — low-materiality output is noise.
+      * at least one ticker in ``row.parsed_tickers`` — multi-ticker
+        signals fan out (one prediction row per ticker, sharing
+        raw_text_ref).
+      * direction inferred from sentiment: positive → long, negative →
+        short, neutral → neutral. Predictions with direction=neutral
+        are still logged (codex anti-hide pattern); the writer does
+        not exclude them.
+
+    Best-effort: any failure logs + swallows so a writer issue never
+    blocks the analyst's primary materiality persistence.
+    """
+    if out.materiality not in ("high", "medium"):
+        return
+    tickers = _decode_json_list(row.parsed_tickers)
+    if not tickers:
+        return
+    # Sentiment → prediction direction. The analyst's own sentiment
+    # field is the most reliable directional cue we have at this
+    # stage; consumers in commit #6 may refine via reliability
+    # weighting.
+    sentiment = (row.sentiment or "neutral").lower()
+    if sentiment == "positive":
+        direction: Literal["long", "short", "neutral"] = "long"
+    elif sentiment == "negative":
+        direction = "short"
+    else:
+        direction = "neutral"
+
+    # Same user_id convention as discord_listener — single tenant.
+    user_id = "ariel"
+    for ticker in tickers:
+        # Wrap each write in a SAVEPOINT (nested transaction) so a
+        # writer failure (e.g. FK violation against an unseeded
+        # evaluation_method_registry in legacy test envs) ROLLS BACK
+        # only that savepoint — the outer transaction's row mutations
+        # (materiality/flag/rationale/analyzed_at) survive intact.
+        try:
+            with session.begin_nested():
+                write_news_signal_prediction(
+                    session,
+                    user_id,
+                    news_signal_id=int(row.id),
+                    ticker=str(ticker),
+                    direction=direction,
+                    materiality_tier=out.materiality,
+                    event_at=row.received_at,
+                    raw_text_ref=f"news_signals.id:{row.id}",
+                )
+        except Exception:  # noqa: BLE001 — never break analyst on writer failure
+            logger.exception(
+                "news_analyst_runner: write_news_signal_prediction failed for "
+                "signal_id=%s ticker=%s",
+                row.id, ticker,
+            )
 
 
 def _row_to_analyst_input(row: NewsSignal) -> AnalyzedSignalIn:

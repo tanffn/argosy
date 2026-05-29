@@ -436,6 +436,19 @@ def write_observer_flags(
             if row.id is not None:
                 written_flag_ids.append(int(row.id))
 
+            # Spec C commit #3 — predictions ledger writer wiring. GATE
+            # on actionable severity (>= warning) per spec §2.4: info-
+            # band observer fires are noise and skipped at the ledger.
+            _maybe_write_observer_prediction(
+                session,
+                user_id=user_id,
+                observer_flag_row=row,
+                primary_field=primary_field,
+                severity=str(cand.severity),
+                deviation_bucket=spec_bucket,
+                now=now,
+            )
+
         except SQLAlchemyError as exc:  # noqa: PERF203 — per-cand guard
             # Catch-all for non-Integrity DB errors (e.g. operational
             # errors, programming errors). Roll back the bad partial
@@ -580,6 +593,62 @@ def _normalize_bucket(bucket: str) -> str:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _maybe_write_observer_prediction(
+    session: "Session",
+    *,
+    user_id: str,
+    observer_flag_row: MonitorFlag,
+    primary_field: str,
+    severity: str,
+    deviation_bucket: str,
+    now: datetime,
+) -> None:
+    """Spec C commit #3 — emit a meta-prediction for actionable observer fires.
+
+    Gates on ``severity in {warning, critical}`` per spec §2.4 — info
+    band fires are noise and excluded from the ledger. The writer's
+    own gate is a defensive second line.
+
+    Idempotent on the observer flag's row id. Best-effort: any failure
+    logs + swallows so a writer issue never breaks the flag-write batch.
+    """
+    if severity not in ("warning", "critical"):
+        return
+    if observer_flag_row.id is None:
+        return
+    try:
+        from argosy.services.predictions.writers import (
+            write_state_observer_prediction,
+        )
+        # Coerce deviation_bucket to the closed-set the writer accepts.
+        bucket_in: str = str(deviation_bucket) if deviation_bucket else "small"
+        if bucket_in not in ("small", "moderate", "large", "extreme", "categorical"):
+            bucket_in = "small"
+        # SAVEPOINT so a writer FK / CHECK failure (e.g. unseeded
+        # evaluation_method_registry in legacy tests) doesn't undo the
+        # observer-flag-writer's just-committed monitor_flags row.
+        with session.begin_nested():
+            write_state_observer_prediction(
+                session,
+                user_id,
+                observer_flag_id=int(observer_flag_row.id),
+                primary_field=primary_field,
+                severity=severity,  # type: ignore[arg-type]
+                deviation_bucket=bucket_in,  # type: ignore[arg-type]
+                event_at=now,
+            )
+        session.commit()
+    except Exception:  # noqa: BLE001 — never break observer batch
+        _log.warning(
+            "state_observer_flag_writer.predictions_write_failed",
+            extra={
+                "observer_flag_id": observer_flag_row.id,
+                "primary_field": primary_field,
+            },
+            exc_info=True,
+        )
 
 
 def _tombstone_expired_peers(
