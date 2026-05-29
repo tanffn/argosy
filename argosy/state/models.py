@@ -21,6 +21,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -1936,6 +1937,73 @@ class MonitorFlag(Base):
             sqlite_where=_sa_text("acknowledged_at IS NULL"),
             postgresql_where=_sa_text("acknowledged_at IS NULL"),
         ),
+    )
+
+
+class RsuVestEvent(Base):
+    """Historical RSU vest event extracted from Schwab Equity Awards CSV.
+
+    One row per restriction-lapse event. Sourced from `Lapse` action rows
+    in the CSV; the paired `Deposit` row (typically T+1) is ignored as
+    redundant (same AwardId + share count + FMV).
+
+    The "upcoming vests" view that pre-vest planning needs is computed by
+    PROJECTING from the historical cadence per `grant_id` (typically
+    quarterly equal-tranche), not persisted to a separate table. The
+    spec was revised from `rsu_unvested_grants` → `rsu_vest_events` once
+    the real CSV showed no future-vest rows.
+
+    Migration: alembic 0044.
+    """
+
+    __tablename__ = "rsu_vest_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    grant_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    vest_date: Mapped[date] = mapped_column(Date, nullable=False)
+    shares_vested: Mapped[float] = mapped_column(Numeric(16, 4), nullable=False)
+    shares_withheld: Mapped[float] = mapped_column(Numeric(16, 4), nullable=False)
+    shares_net: Mapped[float] = mapped_column(Numeric(16, 4), nullable=False)
+    fmv_per_share_usd: Mapped[float] = mapped_column(
+        Numeric(12, 4), nullable=False
+    )
+    award_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source_file: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "grant_id",
+            "vest_date",
+            name="uq_rsu_vest_events_user_grant_date",
+        ),
+        CheckConstraint(
+            "shares_vested >= 0", name="ck_rsu_vest_shares_nonneg"
+        ),
+        CheckConstraint(
+            "shares_withheld >= 0", name="ck_rsu_vest_withheld_nonneg"
+        ),
+        CheckConstraint(
+            "shares_net >= 0", name="ck_rsu_vest_net_nonneg"
+        ),
+        CheckConstraint(
+            "fmv_per_share_usd > 0", name="ck_rsu_vest_fmv_positive"
+        ),
+        CheckConstraint(
+            "shares_withheld <= shares_vested",
+            name="ck_rsu_vest_withheld_le_vested",
+        ),
+        Index("ix_rsu_vest_events_user_date", "user_id", "vest_date"),
+        Index("ix_rsu_vest_events_grant", "user_id", "grant_id"),
     )
 
 

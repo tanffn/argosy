@@ -66,10 +66,29 @@ class SchwabDisbursement:
     action: str                # 'Forced Disbursement' | 'Cash Disbursement'
 
 
+@dataclass(frozen=True)
+class SchwabVestEvent:
+    """An RSU vest event — restriction lapsed on `date`, shares now
+    transferable. Extracted from `Lapse` action rows + their continuation
+    sub-row. The paired `Deposit` row that typically follows on T+1 with
+    the same AwardId + count is treated as redundant (same data, settle
+    date instead of vest date).
+    """
+    date: date                    # the vest date (restriction lapsed)
+    symbol: str                   # 'NVDA'
+    grant_id: str                 # Schwab AwardId, e.g. '289173'
+    shares_vested: int            # gross qty before tax withholding
+    shares_withheld: int          # withheld for taxes
+    shares_net: int               # deposited into account
+    fmv_per_share_usd: float      # FMV at vest
+    award_date: date | None       # original grant date
+
+
 @dataclass
 class SchwabReport:
     sales: list[SchwabSale] = field(default_factory=list)
     disbursements: list[SchwabDisbursement] = field(default_factory=list)
+    vest_events: list[SchwabVestEvent] = field(default_factory=list)
     unparsed_actions: dict[str, int] = field(default_factory=dict)
 
 
@@ -150,6 +169,15 @@ def parse_csv(path: Path) -> SchwabReport:
         with the immediately following ``Type='RS'`` rows folded in as lots.
       * ``Forced Disbursement`` /
         ``Cash Disbursement``   — emits a SchwabDisbursement.
+      * ``Lapse``               — restricted-stock-lapse (vest) event; emits
+        a SchwabVestEvent. The continuation sub-row carries `AwardId`,
+        `AwardDate`, `FairMarketValuePrice`, `SharesSoldWithheldForTaxes`,
+        `NetSharesDeposited`.
+      * ``Deposit`` (Description='RS') — settle-side counterpart to a Lapse
+        row (typically T+1). Counted as `Deposit` in unparsed_actions for
+        visibility but does not emit a separate vest event (would duplicate
+        the Lapse). Deposits with non-RS descriptions (e.g. 'ESPP') are
+        also counted, not modelled.
       * Anything else           — counted into ``unparsed_actions`` for
         operator visibility (so we don't silently drop them).
     """
@@ -161,6 +189,7 @@ def parse_csv(path: Path) -> SchwabReport:
 
     pending_sale: dict | None = None
     pending_lots: list[SchwabSaleLot] = []
+    pending_lapse: dict | None = None
 
     def _flush_sale() -> None:
         """Close out the currently-pending sale (if any) into the report."""
@@ -184,6 +213,21 @@ def parse_csv(path: Path) -> SchwabReport:
         ))
         pending_sale = None
         pending_lots = []
+
+    def _drop_pending_lapse() -> None:
+        """Discard the currently-pending Lapse row if its continuation
+        sub-row never arrived. Defensive — real CSVs always pair the two,
+        but guarding against truncated exports.
+
+        Codex IMPORTANT (commit #7 review): increment an observability
+        counter when this happens so a stuck-pipeline state is visible
+        rather than silent."""
+        nonlocal pending_lapse
+        if pending_lapse is not None:
+            report.unparsed_actions["Lapse_no_continuation"] = (
+                report.unparsed_actions.get("Lapse_no_continuation", 0) + 1
+            )
+        pending_lapse = None
 
     for row in rows:
         action = (row.get("Action") or "").strip()
@@ -216,14 +260,39 @@ def parse_csv(path: Path) -> SchwabReport:
             ))
             continue
 
-        # Continuation rows with no action/type — purely subordinate detail
-        # (e.g. Lapse/Deposit lot detail). Skip; the parent row already drove
-        # the unparsed-action counter.
+        # Continuation rows with no action/type. Two cases now:
+        # 1. Subordinate detail for a pending Lapse → emit the SchwabVestEvent.
+        # 2. Subordinate detail for some other action (Deposit/ESPP/...) —
+        #    skip, the parent row counted in unparsed_actions.
         if not action:
+            if pending_lapse is not None:
+                award_id = (row.get("AwardId") or "").strip()
+                award_date = _date(row.get("AwardDate"))
+                fmv_per_share = _money(row.get("FairMarketValuePrice"))
+                shares_withheld = _int(
+                    row.get("SharesSoldWithheldForTaxes")
+                ) or 0
+                shares_net = _int(row.get("NetSharesDeposited")) or 0
+                if award_id and fmv_per_share is not None:
+                    report.vest_events.append(SchwabVestEvent(
+                        date=pending_lapse["date"],
+                        symbol=pending_lapse["symbol"],
+                        grant_id=award_id,
+                        shares_vested=pending_lapse["quantity"],
+                        shares_withheld=shares_withheld,
+                        shares_net=shares_net,
+                        fmv_per_share_usd=float(fmv_per_share),
+                        award_date=award_date,
+                    ))
+                # Whether or not the sub-row was parseable, the Lapse is
+                # done — clear it so the next event starts fresh.
+                pending_lapse = None
             continue
 
-        # Any new top-level action ends the previous Sale's lot stream.
+        # Any new top-level action ends the previous Sale's lot stream and
+        # discards an unmatched Lapse (continuation never came).
         _flush_sale()
+        _drop_pending_lapse()
 
         if action == "Sale":
             pending_sale = {
@@ -249,12 +318,23 @@ def parse_csv(path: Path) -> SchwabReport:
             ))
             continue
 
-        # Everything else — Lapse, Deposit, Adjustment, Dividend, Tax
-        # Withholding, ESPP, etc. We surface counts so the operator can spot
-        # actions we don't yet model.
+        if action == "Lapse":
+            # Open a pending Lapse; the next continuation row completes it.
+            pending_lapse = {
+                "date": _date(row.get("Date")),
+                "symbol": (row.get("Symbol") or "").strip(),
+                "quantity": _int(row.get("Quantity")) or 0,
+            }
+            continue
+
+        # Everything else — Deposit, Adjustment, Dividend, Tax Withholding,
+        # ESPP, etc. We surface counts so the operator can spot actions we
+        # don't yet model. Deposit-paired-with-Lapse is intentionally
+        # counted here (we don't emit a duplicate vest event from it).
         report.unparsed_actions[action] = report.unparsed_actions.get(action, 0) + 1
 
     # Flush any sale at the end of the file.
     _flush_sale()
+    _drop_pending_lapse()
 
     return report
