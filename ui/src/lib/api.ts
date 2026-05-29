@@ -2456,7 +2456,204 @@ export const api = {
     }
     return (await res.json()) as AnomalyDismissResponse;
   },
+
+  // --------------------------------------------------------------------
+  // Sprint A commit #8 — /admin/jobs registry.
+  //
+  // Wire shape matches argosy/api/routes/jobs.py. Mutating helpers
+  // (runNow / stop / reconnect) attach `X-Argosy-Admin` from
+  // localStorage.argosyAdminToken — Ariel pastes it once via
+  // AdminTokenGate. Open GET routes don't need the header.
+  // --------------------------------------------------------------------
+  jobs: {
+    list: () => getJSON<JobListResponse>("/api/jobs"),
+    get: (name: string) =>
+      getJSON<JobDetailResponse>(`/api/jobs/${encodeURIComponent(name)}`),
+    listRuns: (
+      name: string,
+      opts?: { limit?: number; beforeId?: number },
+    ) => {
+      const params = new URLSearchParams();
+      if (opts?.limit !== undefined) params.set("limit", String(opts.limit));
+      if (opts?.beforeId !== undefined)
+        params.set("before_id", String(opts.beforeId));
+      const qs = params.toString();
+      const suffix = qs ? `?${qs}` : "";
+      return getJSON<JobRunsResponse>(
+        `/api/jobs/${encodeURIComponent(name)}/runs${suffix}`,
+      );
+    },
+    runNow: (name: string) =>
+      adminPost<JobRunNowResponse>(
+        `/api/jobs/${encodeURIComponent(name)}/run-now`,
+      ),
+    stop: (name: string) =>
+      adminPost<JobStopResponse>(
+        `/api/jobs/${encodeURIComponent(name)}/stop`,
+      ),
+    reconnect: (name: string) =>
+      adminPost<JobReconnectResponse>(
+        `/api/jobs/${encodeURIComponent(name)}/reconnect`,
+      ),
+  },
 };
+
+// ----------------------------------------------------------------------
+// Sprint A commit #8 — Jobs DTOs + admin-token POST helper.
+//
+// Mirrors §1.6 (JobMetadata + JobView), §8 (route response shapes), and
+// §1.4 (409 conflict body). All admin POSTs go through `adminPost()`
+// which reads localStorage.argosyAdminToken; if the token is missing
+// the call fails with admin_token_missing BEFORE hitting the network
+// (preserves the 401 round-trip for the wrong-token case only).
+// ----------------------------------------------------------------------
+
+export type JobSourceKind = "ingest" | "monitor" | "maintenance" | "notification";
+export type JobHealth = "green" | "amber" | "red" | "unknown";
+/**
+ * Per spec §1.6: 'ok' | 'error' | 'running' | 'skipped' | 'cancelled' |
+ * 'connected' | 'reconnecting' | 'stopped'. Kept as a string union so
+ * unrecognized server-side values don't crash the UI.
+ */
+export type JobRunStatus =
+  | "ok"
+  | "error"
+  | "running"
+  | "skipped"
+  | "cancelled"
+  | "connected"
+  | "reconnecting"
+  | "stopped"
+  | (string & {});
+
+export interface JobMetadata {
+  name: string;
+  schedule_cron: string | null;
+  schedule_human: string;
+  source_kind: JobSourceKind;
+  description: string;
+  long_running: boolean;
+}
+
+export interface JobView {
+  metadata: JobMetadata;
+  last_run_at: string | null;
+  last_run_status: JobRunStatus | null;
+  last_run_error: string | null;
+  next_run_at: string | null;
+  currently_running_run_id: number | null;
+  health: JobHealth;
+}
+
+export interface JobRunRow {
+  id: number;
+  job_name: string;
+  started_at: string;
+  finished_at: string | null;
+  status: JobRunStatus;
+  duration_ms: number | null;
+  error_message: string | null;
+  output_summary: Record<string, unknown> | null;
+  triggered_by: string | null;
+}
+
+export interface JobListResponse {
+  jobs: JobView[];
+}
+
+export interface JobDetailResponse {
+  metadata: JobMetadata;
+  view: JobView;
+  recent_runs: JobRunRow[];
+}
+
+export interface JobRunsResponse {
+  runs: JobRunRow[];
+  has_more: boolean;
+  next_before_id: number | null;
+}
+
+export interface JobRunNowResponse {
+  job_run_id: number;
+  started_at: string;
+  name: string;
+}
+
+export interface JobStopResponse {
+  name: string;
+  stopped_at: string;
+}
+
+export interface JobReconnectResponse {
+  name: string;
+  new_job_run_id: number;
+}
+
+/** 409 already-running body per §1.4. */
+export interface JobConflictBody {
+  error: "already_running";
+  conflict_reason: string;
+  job_run_id: number | null;
+  lock_holder_state: "running" | "starting" | "unknown" | string;
+  lock_acquired_at: string | null;
+  retry_after_s: number | null;
+}
+
+/** Error subclass so callers can branch on `err instanceof JobApiError`. */
+export class JobApiError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+  constructor(status: number, message: string, body: unknown) {
+    super(message);
+    this.name = "JobApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export const ADMIN_TOKEN_KEY = "argosyAdminToken";
+
+function readAdminToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(ADMIN_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+async function adminPost<T>(path: string): Promise<T> {
+  const token = readAdminToken();
+  if (!token) {
+    throw new JobApiError(
+      401,
+      "admin_token_missing",
+      { error: "admin_token_missing" },
+    );
+  }
+  const res = await fetch(apiUrl(path), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Argosy-Admin": token,
+    },
+    body: "{}",
+  });
+  if (!res.ok) {
+    let body: unknown = null;
+    let detail = `HTTP ${res.status}`;
+    try {
+      body = await res.json();
+      const b = body as { detail?: string; error?: string };
+      if (b?.detail) detail = b.detail;
+      else if (b?.error) detail = b.error;
+    } catch {
+      // non-JSON; fall through to status string
+    }
+    throw new JobApiError(res.status, detail, body);
+  }
+  return (await res.json()) as T;
+}
 
 // ----------------------------------------------------------------------
 // Sprint #2 commits #10–#11 — anomaly DTOs.
