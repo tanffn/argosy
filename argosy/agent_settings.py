@@ -114,6 +114,17 @@ class CadencesBlock(BaseModel):
             enabled=True, cron="0 17 * * *", timezone="Asia/Jerusalem"
         )
     )
+    # Sprint C commit #4 — predictions outcome evaluator + retention pass.
+    # 03:30 Asia/Jerusalem daily, same slot as ``job_runs_retention``
+    # (they touch disjoint rows so the schedule overlap is intentional;
+    # one less cron entry for the operator to track). Batch size,
+    # retention windows, and price-fetcher injection live on the loop
+    # class constructor — the cadence config only owns the schedule.
+    predictions_evaluator: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(
+            enabled=True, cron="30 3 * * *", timezone="Asia/Jerusalem"
+        )
+    )
 
 
 class JobRunsRetentionConfig(BaseModel):

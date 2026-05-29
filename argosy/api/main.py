@@ -465,6 +465,45 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # Sprint C commit #4 — PredictionsEvaluatorLoop. Gated on
+        # ``cadences.predictions_evaluator.enabled`` (default True).
+        # 03:30 IDT daily alongside job_runs_retention — both run
+        # against disjoint rows so the schedule overlap is intentional
+        # (one less cron entry for the operator to reason about).
+        # source_kind='maintenance' so it lives in the same admin-UI
+        # family as the retention / backup loops.
+        try:
+            from argosy.agent_settings import (  # noqa: PLC0415
+                load_agent_settings,
+            )
+            from argosy.orchestrator.loops.base import (  # noqa: PLC0415
+                LoopSchedule,
+            )
+            from argosy.orchestrator.loops.predictions_evaluator import (  # noqa: PLC0415
+                PredictionsEvaluatorLoop,
+                predictions_evaluator_metadata,
+            )
+
+            pe_cfg = load_agent_settings(
+                "ariel"
+            ).cadences.predictions_evaluator
+            if pe_cfg.enabled:
+                evaluator_loop = PredictionsEvaluatorLoop(
+                    schedule=LoopSchedule.from_config(pe_cfg),
+                    enabled=True,
+                )
+                scheduler.register_loop(evaluator_loop)
+                registry.register(
+                    job=evaluator_loop,
+                    metadata=predictions_evaluator_metadata(),
+                )
+                log.info("scheduler.predictions_evaluator_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.predictions_evaluator_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Step 1: start_supervisors BEFORE scheduling so any
         # LongRunningJob supervisor is alive when its first connect
         # cycle opens. (No-op until commit #5 fills it in.)
