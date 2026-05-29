@@ -1819,6 +1819,126 @@ class LifeEvent(Base):
     )
 
 
+class NewsSignal(Base):
+    """Daily-automation pipeline record — one row per ingested item.
+
+    Stage 1 (deterministic extractor — no LLM, regex + keyword) fills:
+      source / source_ref / received_at / parsed_tickers / event_keywords
+      / sentiment / source_trust / evidence_excerpt / raw_text
+
+    Stage 2 (analyst LLM, Opus per accuracy-over-cost) fills:
+      materiality / recommended_flag / rationale / analyzed_at
+
+    Codex BLOCKER #2 isolation contract: raw_text is stored for citation
+    display only. The Stage 2 prompt sees ONLY the normalized fields
+    (parsed_tickers / event_keywords / sentiment / source_trust /
+    evidence_excerpt). raw_text never reaches the LLM context.
+
+    Migration: alembic 0043.
+    """
+
+    __tablename__ = "news_signals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    parsed_tickers: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
+    event_keywords: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
+    sentiment: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_trust: Mapped[str] = mapped_column(String(8), nullable=False)
+    evidence_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    materiality: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    recommended_flag: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    analyzed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_news_signals_source_ref",
+            "source",
+            "source_ref",
+            unique=True,
+        ),
+        Index("ix_news_signals_received", "received_at"),
+        Index(
+            "ix_news_signals_materiality_high",
+            "received_at",
+            sqlite_where=_sa_text("materiality = 'high'"),
+            postgresql_where=_sa_text("materiality = 'high'"),
+        ),
+    )
+
+
+class MonitorFlag(Base):
+    """Active red-flag surface on /home.
+
+    Written by the monitor agent (one of three triggers — allocation
+    drift / mc regression / macro shift). Read by the Red-Flag Strip
+    component on the home page. acknowledged_at tracks user dismissal;
+    expires_at lets the system auto-supersede a flag (e.g. drift that
+    re-fires next snapshot — emit a new row, expire the old).
+
+    payload is JSON-encoded TEXT with kind-specific detail:
+      allocation_drift: {"snapshot_date": "2026-05-29", "row": "Growth",
+                         "rel_drift": 0.14, "abs_drift_usd": 8200}
+      mc_regression:    {"prev_p_solvent": 0.82, "curr_p_solvent": 0.76,
+                         "delta_pp": -6}
+      macro_shift:      {"news_signal_id": 423, "trigger": "rate_cycle",
+                         "classifier_rationale": "..."}
+
+    Migration: alembic 0043.
+    """
+
+    __tablename__ = "monitor_flags"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    surfaced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_monitor_flags_user_active",
+            "user_id",
+            "surfaced_at",
+            sqlite_where=_sa_text("acknowledged_at IS NULL"),
+            postgresql_where=_sa_text("acknowledged_at IS NULL"),
+        ),
+    )
+
+
 class PortfolioSnapshotPart(Base):
     """Pending half of a Leumi monthly portfolio snapshot.
 
