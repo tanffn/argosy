@@ -5,7 +5,7 @@
     "input_count": 0,
     "textarea_count": 0,
     "file_input_count": 0,
-    "button_count": 23,
+    "button_count": 25,
     "select_count": 0,
     "form_count": 0,
     "buttons_seen": [
@@ -20,9 +20,7 @@
       "May 26, 11:17:56 AM\ndone\n21 agents\n$2.7248\n\u2014\nsynth-24",
       "May 26, 08:57:06 AM\ndone\n18 agents\n$2.3152\n\u2014\nsynth-23",
       "May 25, 10:15:51 PM\ndone\n22 agents\n$2.7420\n\u2014\nsynth-19",
-      "May 25, 09:36:57 PM\ndone\n16 agents\n$1.4369\n\u2014\nsynth-18",
-      "May 25, 08:46:42 PM\ndone\n23 agents\n$3.2580\n\u2014\nsynth-16",
-      "May 25, 08:04:32 PM\ndone\n7 agents\n$0.9968\n\u2014\nsynth-15"
+      "May 25, 09:36:57 PM\ndone\n16 agents\n$1.4369\n\u2014\nsynth-18"
     ],
     "console_errors": [],
     "console_warnings": [

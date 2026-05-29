@@ -17,6 +17,47 @@
 
 **Last edit:** 2026-05-29 (autonomous overnight block) by Claude — user dropped into overnight mode ("I'm going to bed, finish what you can, including the deferred items") after the 2026-05-28 wave. See "Autonomous overnight block (2026-05-29)" directly below for what shipped. The prior 2026-05-28 wave + cashflow handover + everything beneath remain current as historical context.
 
+### Wave 2026-05-29 (late) — user-driven follow-on after the overnight block
+
+User came back to the overnight block + iterated on the framing significantly. New conceptual + functional landings (commits 84c8448 → 8e7f34a):
+
+**Brand:**
+- Logo swap: 🚢 emoji → `ui/public/logo.png` (a 1024×1024 green icosahedron the user dropped; cleaned with Pillow — tight crop excluding bottom-right sparkle, resized to 512×512, then made bg transparent via alpha-mask on color-distance from corner samples). Visible on the nav header + brand-hero card.
+- New tagline: "A fleet of agents at your helm — paper-mode by default, audit-trail by design." (Picked option #1 from `docs/superpowers/plans/2026-05-29-logo-and-tagline.md`; the brand-heavy reading.)
+
+**Leumi monthly portfolio XLS parser shipped:**
+- `argosy/services/portfolio_ingest/parsers/leumi_xls.py` parses the Leumi web banking "View > My Holdings" SpreadsheetML export (NOT a real .xls binary; same XML envelope family as the existing `leumi_osh.py` current-account parser, different content shape).
+- 23 passing tests with a real-export fixture at `tests/fixtures/portfolio_ingest_leumi/Leumi_26_May_01.xls`.
+- Codex-tandem zigzag pass converged on 4 blockers (silent zero-coercion, column-order drift, missing `ss:Index` sparse-cell handling, pct-of-portfolio scale variants). All 4 fixed; 7 new tests cover the fixed behaviors.
+- **Critical scope note:** the Leumi portfolio XLS does NOT include cash positions (user confirmed). Cash must come from the Leumi Osh (current-account) statement running balance. The parser has no cash-row logic.
+- **NOT yet wired into the `/portfolio/upload-snapshot` route.** The route currently accepts TSV only. Wiring XLS support requires a design call on where cash comes from (XLS has positions, Osh has cash transactions; current detector expects a unified cash field). See "Open work" below.
+
+**UI surfaces shipped:**
+- `/portfolio` Verdict column on per-account tables: each holding row gets a HOLD / BUY / TRIM / SELL / ADD pill sourced from `api.positionTheses`, hover-tooltip with the conviction + first 200 chars of reasoning, click navigates to `/positions`. Implements item 6 from the user's 2026-05-29 feedback.
+- `/retirement` "When can I retire?" headline card above the existing P(solvent) verdict. Sources `retire_ready_age_{base,bear,bull}` from the cashflow projection on the current plan draft; renders three age blocks + a footer line comparing the base feasibility to the plan's assumed retirement age. Implements item 7b — the missing headline number the user flagged.
+
+**Concept reframes captured as memory (won't drift again):**
+- **Unallocated cash is the primary signal**, not windfall. Paycheck → bank cash isn't a "windfall" (recurring, below threshold) but still needs allocation. The windfall detector is one extreme case ($25K+ spike, with classifier for source) of a continuous unallocated-cash gradient. Memory: `feedback_unallocated_cash_reframe.md`.
+- **`/plan` is the plan generator (all horizons including long), `/retirement` is the visualization + confirmation surface.** Earlier framing split them by horizon; the actual split is direction of authoring. Memory: `feedback_plan_vs_retirement_framing.md`.
+
+**Documentation updates:**
+- User-guide `ui/public/user-guide/index.html`:
+  - §5 merged §5+§6 into a single "Monthly cadence — drop both halves" flow (Half A: bank statements → `/expenses`; Half B: portfolio snapshot → `/portfolio`; windfall detection as a side effect off Half B).
+  - "No '+ Add income event' button" framing narrowed to the windfall-classification scope only — the upload buttons themselves exist.
+  - Renumbered cascade (§7→§6, §8→§7, ..., §20→§19).
+- `docs/superpowers/plans/2026-05-29-logo-and-tagline.md` — 5 image-gen prompts + 6 tagline candidates (now historical: the user dropped a logo, tagline #1 picked).
+
+**Open work — explicit, in priority order (DELTA from prior handover):**
+
+1. **Wire the Leumi XLS parser into `/portfolio/upload-snapshot`.** Format-sniff the upload bytes: if XLS shape → parse positions, write a TSV (without cash) under `$ARGOSY_EXPENSE_SAMPLES_ROOT`, run the existing pipeline. **Blocked on the cash-source architecture call:** the current windfall detector compares cash positions across TSVs, but XLS-derived TSVs would have cash=0. Either (a) compute cash from the Osh running balance when building the merged snapshot, or (b) accept that XLS-only uploads don't drive windfall detection until a corresponding Osh statement also lands. ~2-3 hours after the design call.
+2. **Unallocated-cash allocation proposals.** Continuous version of the windfall flow with a lower threshold (~$5K). Share the allocator. Surfaces as a small "proposed allocations for $X unallocated" tile on `/portfolio` or `/proposals`. ~3-4 hours, needs a UI design pass.
+3. **Plain-English translation layer for plan-change explanations + per-position thesis.** Internal config references (`long.targets.us_situs_taxable_assets_cap`, `(fundamentals) cited_sources: []`) leak into the user-facing copy on `/plan` + `/positions`. Need an LLM-translation step that converts these into "avoid heavy US estate-tax exposure for non-US holdings" form. There's a partial `planDraftObjectionTranslate` endpoint that does this for FM objections; same shape needed for the thesis fields. ~2-3 hours plus prompt design.
+4. **`$ARGOSY_EXPENSE_SAMPLES_ROOT` removal.** Legacy workaround — pointed at the user's Google Drive folder to scan TSVs. With the upload tile, uploads land where Argosy controls them. Replace with `<ARGOSY_HOME>/uploads/<user>/portfolio_snapshots/`. ~30 min refactor, low risk.
+5. **Windfall classification dialogue on `/advisor`** (user-guide §18 Hole #1) — design-first.
+6. **Multi-goal balancer + behavioral check UI** (Server↔UI audit A-grade orphans from 2026-05-28) — design-first.
+7. **Site-wide search palette** — ⌘K palette searching audit_log + transactions + plans.
+8. **action_engine promotion of accepted windfall_actions** (user-guide §18 Hole #2 follow-up).
+
 ### Autonomous overnight block (2026-05-29 ~02-05 local)
 
 User-driven autonomous mode authorized after the 2026-05-28 session of incremental approvals. 30-minute CronCreate cron (`*/30 * * * *`-ish; landed on `13,43 * * * *` per the off-the-clock-minute convention) kept the loop alive as a safety net; in practice the work ran synchronously the whole time. **8 commits, 11 new passing tests, 6 of 8 user-guide holes closed, two major architectural pieces shipped.**

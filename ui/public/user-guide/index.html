@@ -523,7 +523,11 @@
 
 <p>Top of <span class="nav-card">/portfolio</span> ships a drag-drop tile that accepts the monthly <code>Family Finances Status - YY MMM.tsv</code> file. Drop it in (or click to pick); the route persists the TSV under <code>ARGOSY_EXPENSE_SAMPLES_ROOT</code> and synchronously runs the windfall detector against the prior month's snapshot. The per-upload result row surfaces tri-state status inline: PERSISTED + windfall-detector outcome (<em>skipped</em> = no prior TSV to diff; <em>ok + no event</em> = below threshold; <em>ok + event</em> = a banner appears with a deep-link to <span class="nav-card">/retirement#windfall</span> for the full plan).</p>
 
-<p><strong>Note:</strong> the raw bank XLS upload isn't supported yet — the tile accepts only the TSV form. See §18 Hole #3 for the XLS-conversion gap.</p>
+<p><strong>Status of raw bank XLS upload:</strong> the Leumi portfolio XLS parser (<code>argosy/services/portfolio_ingest/parsers/leumi_xls.py</code>) ships as of 2026-05-29 with 23 passing tests + a codex-tandem zigzag review on the parser. It is NOT yet wired into this upload tile -- the route currently accepts only the TSV form. Wiring is blocked on a cash-source design call (the XLS has positions only; cash needs to come from the Leumi Osh statement). See §18 Hole #3.</p>
+
+<h3>Verdict column on per-account tables (2026-05-29)</h3>
+
+<p>Each per-account positions table (one per Leumi / Schwab / Aborad account) gets a Verdict column on the right: a HOLD / BUY / TRIM / SELL / ADD pill sourced from the per-position thesis on the current accepted plan draft. Tones are picked so HOLD (the most-common verdict) reads as background; BUY/ADD shine emerald, TRIM amber, SELL rose. Hover for the conviction + first 200 chars of reasoning; click jumps to the full per-position thesis at <span class="nav-card">/positions</span>.</p>
 
 <h3>The FIRE-position view</h3>
 
@@ -592,7 +596,13 @@
   <figcaption><strong>Hero</strong> — OFF TRACK · P(solvent at 75/85/95) = 69% / 57% / 57% · 95% CI [55%–59%] · "OFF TRACK — P(solvent at 95) is 57%, below target 90% by 33pp..."</figcaption>
 </figure>
 
-<p>18 cards in 12 named sections, navigable via the sticky left-sidebar TOC.</p>
+<p>19 cards in 13 named sections, navigable via the sticky left-sidebar TOC.</p>
+
+<div class="callout">
+  <div class="callout-title">The two headline questions this page answers</div>
+  <strong>"When can I retire?"</strong> (the new top card, 2026-05-29): earliest feasible age under three scenarios (bear / base / bull) sourced from the cashflow projection on your current plan draft. Surfaces base = age N.N in ~M years, with bear and bull as guard-rails.<br><br>
+  <strong>"Will the money last if I retire then?"</strong> (the older verdict card): P(solvent at 75/85/95) under fat-tail-aware regime-switch Monte Carlo. The two cards are complementary — the first answers WHEN, the second answers HOW SAFE.
+</div>
 
 <div class="callout">
   <div class="callout-title">Why the verdict swings so much</div>
@@ -603,6 +613,7 @@
 <thead><tr><th>Section</th><th>What's there</th></tr></thead>
 <tbody>
 <tr><td>Windfall</td><td>WindfallCard — only renders when the detector found a qualifying cash delta in the latest TSV. Hero + allocation delta table + 3-horizon proposals + matching-sales drilldown.</td></tr>
+<tr><td>When can I retire?</td><td>ExpectedRetirementAgeCard (2026-05-29) — three age blocks (base prominent, bear and bull as guard-rails), with a footer cross-referencing the plan's target age.</td></tr>
 <tr><td>Verdict</td><td>RuinProbabilityHero (the OFF_TRACK card above)</td></tr>
 <tr><td>Safety</td><td>SafetyGatesPanel — NRA estate · Emergency liquidity · Conflict scenario</td></tr>
 <tr><td>Predictions</td><td>Sigma calibration · Withdrawal policy selector (VPW/Bucket include a caveat that they avoid literal zero-balance ruin without guaranteeing essential-expense coverage) · Stochastic FX</td></tr>
