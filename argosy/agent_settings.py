@@ -91,6 +91,42 @@ class CadencesBlock(BaseModel):
             enabled=True, cron="0 17 * * *", timezone="Asia/Jerusalem"
         )
     )
+    # Sprint A commit #9 — job_runs retention + orphan reap. 03:30
+    # Asia/Jerusalem daily (30 minutes after the backup loop's 03:00
+    # snapshot so the backup captures the pre-retention state).
+    # Window-tuning fields live on ``JobRunsRetentionConfig`` below
+    # (cron/tz here; days/hours there — matches the pattern in
+    # ``BackupsBlock`` where ``cadences.backup`` is the schedule and
+    # ``backups`` is the retention/copy config).
+    job_runs_retention: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(
+            enabled=True, cron="30 3 * * *", timezone="Asia/Jerusalem"
+        )
+    )
+
+
+class JobRunsRetentionConfig(BaseModel):
+    """Sprint A commit #9 — ``job_runs`` retention/reap tuning.
+
+    Sits alongside ``cadences.job_runs_retention`` (the cron/tz/enabled
+    schedule) — same split as ``cadences.backup`` vs ``BackupsBlock``.
+
+    ``retention_days_ok``: delete ``status='ok'`` rows whose
+    ``finished_at`` is older than this many days. ``status='error'``
+    rows are NEVER deleted by retention (operator needs the historical
+    failure trail).
+
+    ``stale_running_hours``: flip ``status='running' AND started_at < now
+    - this_many_hours`` to ``status='cancelled'``. The 24h default is
+    wide on purpose: a LongRunningJob's connect cycle row genuinely
+    stays in ``running`` for the connection's lifetime; a tighter
+    window would mis-flip healthy long-running rows. See the loop
+    docstring at ``argosy/orchestrator/loops/job_runs_retention.py``
+    for the cooperation contract with the supervisor.
+    """
+
+    retention_days_ok: int = 30
+    stale_running_hours: int = 24
 
 
 class BackupsBlock(BaseModel):
@@ -196,6 +232,10 @@ class AgentSettings(BaseModel):
     backups: BackupsBlock = Field(default_factory=BackupsBlock)
     cost: CostBlock = Field(default_factory=CostBlock)
     alerts: AlertsBlock = Field(default_factory=AlertsBlock)
+    # Sprint A commit #9 — job_runs retention/reap window-tuning.
+    job_runs_retention: JobRunsRetentionConfig = Field(
+        default_factory=JobRunsRetentionConfig
+    )
 
     def model_for_role(self, role: str) -> str | None:
         """Resolve the configured model for an agent role.
@@ -227,15 +267,19 @@ execution:
   default_mode: paper
 
 cadences:
-  minute:        { enabled: true, market_hours_only: true, interval_seconds: 60 }
-  hour:          { enabled: true, interval_minutes: 60 }
-  daily_brief:   { enabled: true, cron: "0 9 * * *", timezone: "Asia/Jerusalem" }
-  weekly_review: { enabled: true, cron: "0 18 * * SUN" }
-  monthly_cycle: { enabled: true, cron: "0 8 1 * *" }
-  quarterly:     { enabled: true }
-  annual:        { enabled: true, cron: "0 8 2 1 *" }
-  backup:        { enabled: true, cron: "0 3 * * *" }
-  audit:         { enabled: true, cron: "0 19 * * SUN" }
+  minute:              { enabled: true, market_hours_only: true, interval_seconds: 60 }
+  hour:                { enabled: true, interval_minutes: 60 }
+  daily_brief:         { enabled: true, cron: "0 9 * * *", timezone: "Asia/Jerusalem" }
+  weekly_review:       { enabled: true, cron: "0 18 * * SUN" }
+  monthly_cycle:       { enabled: true, cron: "0 8 1 * *" }
+  quarterly:           { enabled: true }
+  annual:              { enabled: true, cron: "0 8 2 1 *" }
+  backup:              { enabled: true, cron: "0 3 * * *" }
+  audit:               { enabled: true, cron: "0 19 * * SUN" }
+  # Sprint A commit #9 — daily job_runs retention/reap (03:30 IL-local;
+  # 30 minutes after the backup cron so the backup captures the
+  # pre-retention state).
+  job_runs_retention:  { enabled: true, cron: "30 3 * * *", timezone: "Asia/Jerusalem" }
 
 models:
   defaults:
@@ -289,6 +333,16 @@ alerts:
   email_to: ""
   telegram_enabled: false
   telegram_chat_id: ""
+
+# Sprint A commit #9 — job_runs retention window tuning.
+# ``retention_days_ok``: delete status='ok' rows older than this many
+# days. status='error' rows are kept forever regardless.
+# ``stale_running_hours``: flip status='running' rows older than this
+# to status='cancelled' (orphan reap). LongRunningJob rows are excluded
+# from the reap so a healthy long-lived connect cycle isn't mis-flipped.
+job_runs_retention:
+  retention_days_ok: 30
+  stale_running_hours: 24
 """
 
 
@@ -350,6 +404,7 @@ __all__ = [
     "CadencesBlock",
     "CostBlock",
     "ExecutionBlock",
+    "JobRunsRetentionConfig",
     "LimitedAccountBlock",
     "ModelsBlock",
     "SecurityBlock",

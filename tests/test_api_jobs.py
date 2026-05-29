@@ -922,3 +922,42 @@ def test_get_runs_for_unknown_job_returns_404(
     app, tc = app_with_admin_token
     response = tc.get("/api/jobs/no_such_job/runs")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Sprint A commit #9 extension — skip_reason surfaces in the response body
+# when include_skipped=true so the UI can render "why didn't this fire?"
+# (Spec §8 — JobRunRow shape includes skip_reason; IMPORTANT #4).
+# ---------------------------------------------------------------------------
+
+
+def test_get_runs_include_skipped_surfaces_skip_reason(
+    engine: None, app_with_admin_token
+) -> None:
+    """When ``include_skipped=true`` the response rows MUST carry the
+    ``skip_reason`` so the UI can show "market_closed" / "throttle" /
+    etc. instead of a bare ``status='skipped'``.
+    """
+    app, tc = app_with_admin_token
+    _seed_run_rows("api_ok_loop", n_ok=0, n_skipped=2)
+
+    response = tc.get(
+        "/api/jobs/api_ok_loop/runs?limit=20&include_skipped=true"
+    )
+    assert response.status_code == 200, response.text
+    runs = response.json()["runs"]
+    skipped_runs = [r for r in runs if r["status"] == "skipped"]
+    assert len(skipped_runs) == 2
+    for row in skipped_runs:
+        # Spec §8 / §A.JobRunRow — every skipped row carries a non-null
+        # skip_reason. The seed helper uses ``market_closed``.
+        assert row["skip_reason"] == "market_closed", (
+            f"skipped row missing skip_reason: {row!r}"
+        )
+        # Mirror invariant: non-skipped rows below should have null
+        # skip_reason (sanity that the field round-trips both ways).
+    for row in runs:
+        if row["status"] != "skipped":
+            assert row["skip_reason"] is None, (
+                f"non-skipped row had skip_reason set: {row!r}"
+            )

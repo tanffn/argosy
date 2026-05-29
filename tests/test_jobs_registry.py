@@ -836,3 +836,304 @@ async def test_supervisor_lifecycle_with_no_long_running_jobs(
     # Unknown name raises KeyError, not NotImplementedError.
     with pytest.raises(KeyError):
         await reg.cancel_long_running("nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# Sprint A commit #9 extensions — lock_holder_state coverage, supervisor
+# backoff exponential growth, exit_intent='clean' does NOT auto-restart.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fire_now_409_lock_holder_state_running(engine: None) -> None:
+    """``lock_holder_state='running'`` — the in-memory holder marker has
+    been flipped to ``running`` by ``_open_job_run``'s ``_note_holder``
+    call. The slow loop's tick has started, so by the time the second
+    ``fire_now`` lands the marker is in ``running`` (not ``starting``).
+    """
+    loop = _SlowLoop(hold_s=1.5)
+    registry, _ = _build_registry_and_scheduler(
+        (loop, _meta("slow_loop", lock_acquire_timeout_s=0.2))
+    )
+
+    first = asyncio.create_task(
+        registry.fire_now("slow_loop", triggered_by="user:first")
+    )
+    # The slow loop's tick body has begun → audit row opened →
+    # _note_holder() ran → state='running'.
+    await loop.started.wait()
+
+    with pytest.raises(AlreadyRunning) as exc_info:
+        await registry.fire_now("slow_loop", triggered_by="user:second")
+    assert exc_info.value.lock_holder_state == "running"
+    assert exc_info.value.job_run_id is not None
+    assert exc_info.value.lock_acquired_at is not None
+
+    await first
+
+
+@pytest.mark.asyncio
+async def test_fire_now_409_lock_holder_state_unknown(engine: None) -> None:
+    """``lock_holder_state='unknown'`` — the lock is held (asyncio.Lock
+    is locked) but the in-memory holder map has no entry for this job.
+    Reproduced by manually acquiring the per-job lock outside the
+    registry's fire_now path so no ``_LockHolder`` is staged. The
+    fire_now's wait_for(lock.acquire(), timeout=...) then times out
+    and the route handler sees ``state='unknown'`` + ``job_run_id=None``.
+    """
+    loop = _OkLoop()
+    registry, _ = _build_registry_and_scheduler(
+        (loop, _meta("ok_loop", lock_acquire_timeout_s=0.1))
+    )
+
+    # Acquire the lock directly so no holder marker is staged.
+    lock = registry._lock_for("ok_loop")
+    await lock.acquire()
+    try:
+        with pytest.raises(AlreadyRunning) as exc_info:
+            await registry.fire_now("ok_loop", triggered_by="user:probe")
+        err = exc_info.value
+        assert err.lock_holder_state == "unknown"
+        assert err.job_run_id is None
+        assert err.lock_acquired_at is None
+    finally:
+        lock.release()
+
+
+@pytest.mark.asyncio
+async def test_fire_now_409_lock_holder_state_starting(engine: None) -> None:
+    """``lock_holder_state='starting'`` — the manual path has staged its
+    holder marker (``state='starting'``) but ``_open_job_run`` has NOT
+    yet completed (so the marker hasn't been flipped to ``running`` and
+    has ``job_run_id=None``). Reproduced by manually staging a
+    ``_LockHolder`` in ``starting`` state while holding the lock.
+    """
+    from argosy.services.jobs.registry import _LockHolder
+
+    loop = _OkLoop()
+    registry, _ = _build_registry_and_scheduler(
+        (loop, _meta("ok_loop", lock_acquire_timeout_s=0.1))
+    )
+
+    lock = registry._lock_for("ok_loop")
+    await lock.acquire()
+    try:
+        # Stage a starting-state holder marker, mirroring what fire_now
+        # does between lock-acquire and _open_job_run committing.
+        registry._lock_holders["ok_loop"] = _LockHolder(
+            job_run_id=None,
+            state="starting",
+            acquired_at=datetime(2026, 5, 29, 12, 0, tzinfo=timezone.utc),
+        )
+
+        with pytest.raises(AlreadyRunning) as exc_info:
+            await registry.fire_now("ok_loop", triggered_by="user:second")
+        err = exc_info.value
+        assert err.lock_holder_state == "starting"
+        assert err.job_run_id is None
+        assert err.lock_acquired_at is not None
+    finally:
+        registry._lock_holders.pop("ok_loop", None)
+        lock.release()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_exit_intent_clean_does_not_auto_restart(
+    engine: None,
+) -> None:
+    """Spec §3 IMPORTANT #3 — ``exit_intent='clean'`` does NOT auto-restart
+    in v1. Operator reconnects manually via the Run-now path.
+
+    Verified by counting :meth:`LongRunningJob.run` invocations after
+    a clean exit: it MUST be called exactly once.
+    """
+    from argosy.orchestrator.loops.base import LongRunningJob
+
+    class _CleanExitJob(LongRunningJob):
+        name = "clean_exit_lr"
+
+        def __init__(self) -> None:
+            self._exit_intent = "unset"
+            self._status = "stopped"
+            self.run_calls = 0
+
+        def connection_status(self):  # type: ignore[override]
+            return self._status
+
+        async def run(self) -> None:
+            self.run_calls += 1
+            self._status = "connected"
+            self._exit_intent = "clean"
+            return
+
+    job = _CleanExitJob()
+    reg = JobRegistry()
+    reg.register(
+        job=job, metadata=_meta("clean_exit_lr", long_running=True)
+    )
+    await reg.start_supervisors()
+
+    # Wait for the supervisor task to finish — clean exit means it
+    # returns rather than looping.
+    task = reg._supervisor_tasks.get("clean_exit_lr")
+    if task is not None:
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except asyncio.TimeoutError:  # pragma: no cover - regression guard
+            pytest.fail(
+                "supervisor did not exit after clean run; v1 should NOT "
+                "auto-restart on exit_intent='clean'"
+            )
+
+    # Give the event loop a moment to settle the supervisor's exit path.
+    await asyncio.sleep(0.05)
+    assert job.run_calls == 1, (
+        f"clean exit should not auto-restart; run() was called "
+        f"{job.run_calls} times"
+    )
+    # Supervisor is gone from the tracking dict (it pops itself on
+    # clean exit per registry.py:1093-1096).
+    assert "clean_exit_lr" not in reg._supervisor_tasks
+
+    await reg.stop_supervisors()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_backoff_exponential_growth(engine: None) -> None:
+    """Spec §3 — supervisor backoff doubles per crash, capped at 60s.
+
+    Sequence after consecutive crashes: 1s, 2s, 4s, 8s, ... up to 60s.
+    Verified by overriding ``_sleep`` with a recorder (no wall-time
+    sleep happens) so we can observe the delay sequence the supervisor
+    requests.
+    """
+    from argosy.orchestrator.loops.base import LongRunningJob
+
+    class _CrashingJob(LongRunningJob):
+        name = "crashing_lr"
+
+        def __init__(self, *, max_crashes: int) -> None:
+            self._exit_intent = "unset"
+            self._status = "stopped"
+            self.crash_count = 0
+            self._max_crashes = max_crashes
+
+        def connection_status(self):  # type: ignore[override]
+            return self._status
+
+        async def run(self) -> None:
+            self.crash_count += 1
+            if self.crash_count >= self._max_crashes:
+                # Final cycle: clean exit so the supervisor stops looping.
+                self._exit_intent = "clean"
+                return
+            raise RuntimeError(f"crash #{self.crash_count}")
+
+    job = _CrashingJob(max_crashes=5)
+    reg = JobRegistry()
+    reg.register(job=job, metadata=_meta("crashing_lr", long_running=True))
+
+    # Capture the supervisor's requested backoff delays — no actual
+    # wall-time sleep.
+    delays: list[float] = []
+
+    async def _record_sleep(seconds: float) -> None:
+        delays.append(seconds)
+        return None
+
+    reg._sleep = _record_sleep  # type: ignore[assignment]
+
+    await reg.start_supervisors()
+
+    # Wait until the supervisor exits (final cycle was a clean exit).
+    task = reg._supervisor_tasks.get("crashing_lr")
+    if task is not None:
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except asyncio.TimeoutError:  # pragma: no cover - regression guard
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            pytest.fail("supervisor did not exit; delays so far: %r" % delays)
+
+    # 5 cycles: crashes 1-4 + clean exit on #5. After each of cycles
+    # 1-4 (crash), the supervisor sleeps; the final cycle exits without
+    # sleeping. So we expect 4 delay values: 1s, 2s, 4s, 8s.
+    assert len(delays) == 4, (
+        f"expected 4 backoff sleeps after 4 crashes; got {delays!r}"
+    )
+    assert delays[0] == pytest.approx(1.0)
+    assert delays[1] == pytest.approx(2.0)
+    assert delays[2] == pytest.approx(4.0)
+    assert delays[3] == pytest.approx(8.0)
+    # Each delay is strictly larger than its predecessor (exp growth).
+    for prev, cur in zip(delays, delays[1:]):
+        assert cur > prev
+        assert cur == pytest.approx(prev * 2.0)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_backoff_capped_at_60s(engine: None) -> None:
+    """Once exponential backoff would exceed the 60s cap, every
+    subsequent delay STAYS at 60s. Verifies the spec §3 ceiling that
+    bounds runaway memory growth for a job crashing on every restart.
+    """
+    from argosy.orchestrator.loops.base import LongRunningJob
+
+    class _AlwaysCrashJob(LongRunningJob):
+        name = "always_crash_lr"
+
+        def __init__(self, *, n_cycles_before_stop: int) -> None:
+            self._exit_intent = "unset"
+            self._status = "stopped"
+            self.crash_count = 0
+            self._n = n_cycles_before_stop
+
+        def connection_status(self):  # type: ignore[override]
+            return self._status
+
+        async def run(self) -> None:
+            self.crash_count += 1
+            if self.crash_count >= self._n:
+                # Operator-stop to break out of the test loop cleanly.
+                self._exit_intent = "clean"
+                return
+            raise RuntimeError("always crash")
+
+    # 10 cycles: 9 crashes + clean exit. Backoff sequence:
+    #   1, 2, 4, 8, 16, 32, 60, 60, 60 → 9 entries, last 3 at the cap.
+    job = _AlwaysCrashJob(n_cycles_before_stop=10)
+    reg = JobRegistry()
+    reg.register(
+        job=job, metadata=_meta("always_crash_lr", long_running=True)
+    )
+
+    delays: list[float] = []
+
+    async def _record_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    reg._sleep = _record_sleep  # type: ignore[assignment]
+    await reg.start_supervisors()
+
+    task = reg._supervisor_tasks.get("always_crash_lr")
+    if task is not None:
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except asyncio.TimeoutError:  # pragma: no cover
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    # 9 delays expected (one per crash).
+    assert len(delays) == 9, f"got {delays!r}"
+    # Tail of the sequence is the cap.
+    assert delays[-1] == pytest.approx(60.0)
+    assert delays[-2] == pytest.approx(60.0)
+    assert delays[-3] == pytest.approx(60.0)
+    # Nothing in the sequence ever exceeds the cap.
+    assert all(d <= 60.0 + 1e-9 for d in delays)
