@@ -2446,3 +2446,305 @@ class PortfolioSnapshotPart(Base):
             "user_id", "status", "snapshot_date",
         ),
     )
+
+
+# ----------------------------------------------------------------------
+# Spec C (predictions-ledger) — predictions table (migration 0050)
+# ----------------------------------------------------------------------
+
+
+class Prediction(Base):
+    """One row per signal-source prediction.
+
+    Spec C (predictions-ledger) §1.2 + Appendix A — written by the
+    per-source writer adapters in
+    ``argosy/services/predictions/writers.py`` (commit #3). Every
+    prediction collapses to the same four-field core (ticker, direction,
+    timeframe, optional levels); source-specific extras live in
+    ``source_ref`` (JSON-shaped TEXT, per-source caller-defined).
+
+    Two timestamps with distinct semantics — codex IMPORTANT 2 fix in
+    spec §2.3:
+
+    * ``event_at`` — real-world prediction time (Discord msg ts, filing
+      date, news publish time, internal-agent emit time). The
+      ENTRY-PRICE snapshot anchors at this moment; the EVALUATION
+      WINDOW starts at this moment. Writers MUST pass it explicitly so
+      backfill (14d-old event_at, ``CURRENT_TIMESTAMP`` created_at)
+      keeps reproducing the same outcome.
+    * ``created_at`` — DB insertion timestamp; audit-only. Scoring math
+      never touches it.
+
+    ``evaluation_due_at`` + ``evaluation_method`` are pre-computed at
+    write time per spec §3.1 (codex BLOCKERs 1 + 2 fix). The
+    evaluator's "what's due?" query reads ``evaluation_due_at``
+    directly — no re-derivation from raw ``timeframe_days`` — so the
+    §5.5 30-day cap on long-horizon predictions (e.g. 13F at 90d)
+    fires correctly at 30d. ``evaluation_method`` carries the chosen
+    registry method name; the FK into
+    ``evaluation_method_registry`` is attached by sibling migration
+    0051. CHECK constraints (source / direction enums,
+    ``timeframe_days > 0``, JSON validity, ``archived`` bool) are
+    declared in the migration, not here, to match the precedent set
+    by ``StateSnapshot``.
+
+    Indexes — declared in the migration:
+
+    * ``ix_predictions_source_event`` on ``(source, event_at DESC)``
+      — per-source rollups, newest-first.
+    * ``ix_predictions_ticker_event`` on ``(ticker, event_at DESC)``
+      partial ``WHERE ticker IS NOT NULL`` — per-ticker historical
+      lookup.
+    * ``ix_predictions_source_messageid`` UNIQUE on ``(source,
+      message_id)`` partial ``WHERE message_id IS NOT NULL`` —
+      per-source dedup; writer computes
+      ``v1|predictions|<source>|<entity-id>`` per §2.2.
+    * ``ix_predictions_due_at`` on ``(evaluation_due_at)`` partial
+      ``WHERE archived = 0`` — evaluator hot-path.
+    * ``ix_predictions_event_at`` on ``(event_at)`` — time-ordered
+      scan for backfill cursors and the rolling-window reliability
+      view.
+
+    Migration: alembic 0050.
+    """
+
+    __tablename__ = "predictions"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Spec §1.2 — 11 v1 enum values; CHECK declared in migration.
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON-shaped TEXT; per-source caller-defined shape (Discord:
+    # {"channel_id":..., "message_id":...}; 13F: {"filing_id":...};
+    # etc.). NOT NULL so every row traces back to its origin.
+    source_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL for multi-ticker baskets (read multi_ticker_json) or macro
+    # predictions (no single ticker).
+    ticker: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # CHECK enum: long / short / neutral / multi. neutral covers HOLD
+    # verdicts + qualitative flags (codex BLOCKER 3 fix in §2.4).
+    direction: Mapped[str] = mapped_column(Text, nullable=False)
+    entry_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
+    target_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
+    stop_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
+    # NULL falls back to per-source default in §1.2.
+    timeframe_days: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    # JSON list of basket constituents [{ticker, direction, weight}]
+    # for direction='multi' rows; json_valid CHECK in migration.
+    multi_ticker_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    # JSON map {ticker: entry_price} for the multi-ticker basket case
+    # (spec §5.4); json_valid CHECK in migration.
+    entry_prices_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    # Stable per-source dedup key, e.g.
+    # ``v1|predictions|discord|<channel_id>.<message_id>``. NULL for
+    # rows without a natural key; UNIQUE only when NOT NULL (partial
+    # index in migration).
+    message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Pointer to raw source content (e.g. ``news_signals.id:423`` or a
+    # filing URL). NEVER injected into LLM prompts per §1.2.
+    raw_text_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Writer sets this when the source has no actionable shape;
+    # evaluator marks the row ``unparseable`` and excludes from
+    # reliability stats but counts in coverage.
+    unparseable_reason: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    # Real-world prediction time (codex IMPORTANT 2 fix). Distinct
+    # from created_at on backfill.
+    event_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # Audit-only insertion timestamp. Server default
+    # CURRENT_TIMESTAMP; scoring math never touches it.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    # Pre-computed at write time as event_at + chosen_window_days
+    # (codex BLOCKER 2 fix). Evaluator due-query keys off this.
+    evaluation_due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # Plain TEXT today; sibling migration 0051 attaches the FK into
+    # the ``evaluation_method_registry`` table (codex BLOCKER 1 fix).
+    # No CHECK enum by design — new method versions land via INSERT
+    # into the registry.
+    evaluation_method: Mapped[str] = mapped_column(Text, nullable=False)
+    # Retention compact flag (codex IMPORTANT 4). SQLite-native bool
+    # via INTEGER 0/1 (default 0); set to 1 by the
+    # ``predictions-retention-compact`` job (spec §9.1) once a row is
+    # > 2y old + 90d-inactive. The partial ``ix_predictions_due_at``
+    # index excludes archived rows so the evaluator scan stays bounded.
+    archived: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=_sa_text("0"),
+    )
+
+
+class EvaluationMethod(Base):
+    """Versioned registry of outcome-evaluator scoring methods.
+
+    Spec C (predictions ledger) §3.4 + Appendix A — Codex BLOCKER 1
+    fix. The registry replaces the original CHECK enum on
+    ``predictions.evaluation_method`` and
+    ``prediction_outcomes.evaluation_method`` so that NEW method
+    versions land via an INSERT into this table, not a schema
+    migration. The source-reliability view (commit #5) joins on
+    ``is_active = 1`` and picks the most-recently-evaluated active
+    method per ``family`` so a single prediction never double-counts
+    across method versions during a transition window.
+
+    Seeded by migration 0051 with five v1 rows: ``target_stop``,
+    ``fixed_lookahead_7d``, ``fixed_lookahead_30d``,
+    ``multi_basket_weighted``, and ``unparseable`` (the
+    method-of-record for unparseable predictions).
+
+    Retiring a method = UPDATE ``is_active = 0`` +
+    ``superseded_by = <new_method_name>``. Never DELETE — historical
+    rows in ``prediction_outcomes`` retain the FK pointer and the
+    audit-trail "this prediction was scored by v1 of the rule" stays
+    answerable.
+
+    Migration: alembic 0051.
+    """
+
+    __tablename__ = "evaluation_method_registry"
+
+    method_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    family: Mapped[str] = mapped_column(Text, nullable=False)
+    method_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=_sa_text("1")
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # SQLite-native bool: 0/1. ``is_active = 1`` is the source-of-truth
+    # filter in the source_reliability view.
+    is_active: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=_sa_text("1")
+    )
+    superseded_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "evaluation_method_registry.method_name",
+            name="fk_eval_method_registry_superseded_by",
+        ),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "is_active IN (0, 1)",
+            name="ck_eval_method_registry_is_active_bool",
+        ),
+        CheckConstraint(
+            "method_version >= 1",
+            name="ck_eval_method_registry_version_positive",
+        ),
+    )
+
+
+class PredictionOutcome(Base):
+    """One row per evaluated prediction (per evaluation_method).
+
+    Spec C (predictions ledger) §1.3 + Appendix A. Written by the
+    outcome evaluator (commit #4) using ``INSERT ... ON CONFLICT
+    (prediction_id, evaluation_method) DO NOTHING`` for idempotent
+    re-runs.
+
+    Six ``outcome_kind`` values per §2.4: ``hit_target`` /
+    ``hit_stop`` / ``expired_neutral`` / ``expired_positive`` /
+    ``expired_negative`` / ``unparseable``. CHECK constraint (declared
+    in the migration) enforces.
+
+    ``pnl_pct`` is signed against the prediction's direction — positive
+    means the prediction was right. NULL for ``unparseable`` rows and
+    for rows where price data was missing entirely.
+
+    Replay-safety: ``(prediction_id, evaluation_method)`` is UNIQUE
+    (the natural key). Re-scoring the same prediction under the same
+    method is a no-op; the evaluator switches to a NEW
+    ``evaluation_method`` row when the rule changes, leaving the prior
+    outcome row intact.
+
+    FK ``prediction_id → predictions.id ON DELETE CASCADE`` — retention
+    archival of a prediction takes its outcomes with it.
+
+    Migration: alembic 0051.
+    """
+
+    __tablename__ = "prediction_outcomes"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    prediction_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey(
+            "predictions.id",
+            ondelete="CASCADE",
+            name="fk_prediction_outcomes_prediction_id",
+        ),
+        nullable=False,
+    )
+    outcome_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    pnl_pct: Mapped[Decimal | None] = mapped_column(
+        Numeric(7, 4), nullable=True
+    )
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    evaluation_method: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey(
+            "evaluation_method_registry.method_name",
+            name="fk_prediction_outcomes_evaluation_method",
+        ),
+        nullable=False,
+    )
+    entry_price_used: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
+    exit_price_used: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 4), nullable=True
+    )
+    exit_trigger_date: Mapped[date | None] = mapped_column(
+        Date, nullable=True
+    )
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "prediction_id",
+            "evaluation_method",
+            name="ix_outcomes_pred_method",
+        ),
+        Index("ix_outcomes_evaluated", "evaluated_at"),
+        Index("ix_outcomes_kind", "outcome_kind"),
+    )
