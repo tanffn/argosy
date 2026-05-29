@@ -337,6 +337,81 @@ export interface UnallocatedCashProposalDTO {
   }>;
 }
 
+// ----------------------------------------------------------------------
+// Life events (sprint commit #8, 2026-05-29).
+//
+// Backend: argosy/api/routes/life_events.py + argosy/services/life_events.py.
+// The /life-events page is a structured-intake form: the user picks a
+// category (career/family/asset/expense/recurring/retirement_milestone),
+// then a kind constrained to that category, then optional detail fields.
+// The catalog endpoint drives the dropdowns server-side so the UI never
+// hardcodes the enum values; the create endpoint returns a 422 with a
+// structured `{error, input, valid_*}` detail when the loud-error
+// validator refuses an out-of-category input — the form turns that into
+// an inline red banner instead of bubbling to a global error boundary.
+// ----------------------------------------------------------------------
+
+export type LifeEventCategory =
+  | "career_event"
+  | "family_event"
+  | "asset_event"
+  | "expense_event"
+  | "recurring_expense"
+  | "retirement_milestone";
+
+export interface LifeEventDTO {
+  id: number;
+  user_id: string;
+  category: string;
+  kind: string;
+  target_date: string | null;
+  amount_usd: number | null;
+  recurring_years: number | null;
+  description: string | null;
+  source_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LifeEventsCatalog {
+  categories: string[];
+  kinds_by_category: Record<string, string[]>;
+  /** Per-category field-visibility rules. Server-driven so a new
+   *  category can declare its field needs without a UI change.
+   *  Known flags today: requires_amount, supports_recurring_years.
+   *  Unknown flags are ignored by the UI. */
+  field_rules_by_category: Record<string, Record<string, boolean>>;
+}
+
+export interface LifeEventsCreateRequest {
+  user_id: string;
+  category: LifeEventCategory;
+  kind: string;
+  target_date?: string;
+  amount_usd?: number;
+  recurring_years?: number;
+  description?: string;
+  source_id?: number;
+}
+
+/**
+ * Thrown by `api.lifeEventsCreate` on a 422 with a recognized loud-error
+ * shape. The form pattern-matches on `kind` to render the inline red
+ * banner above itself. Anything else (network failure, unknown 422
+ * shape) surfaces as a plain Error.
+ */
+export type LifeEventsCreateError =
+  | {
+      kind: "category_not_recognized";
+      input: string;
+      validCategories: string[];
+    }
+  | {
+      kind: "kind_not_valid_for_category";
+      input: string;
+      validKinds: string[];
+    };
+
 export interface PlanCurrentDTO {
   plan_version_id: number | null;
   version_label: string | null;
@@ -1235,6 +1310,81 @@ export const api = {
       throw new Error(detail);
     }
     return (await res.json()) as PortfolioUploadSnapshotResponse;
+  },
+
+  // Life events catalog + CRUD (sprint commit #8, spec §4).
+  // Backend: argosy/api/routes/life_events.py +
+  // argosy/services/life_events.py. The catalog endpoint drives the
+  // category/kind dropdowns server-side so the UI never hardcodes enums.
+  // `lifeEventsCreate` throws a structured `LifeEventsCreateError` on
+  // 422 so the form can render the loud-error banner inline rather than
+  // bubbling to a global boundary.
+  lifeEventsCatalog: () =>
+    getJSON<LifeEventsCatalog>("/api/life-events/catalog"),
+  lifeEventsList: async (userId: string): Promise<LifeEventDTO[]> => {
+    const res = await getJSON<{ events: LifeEventDTO[] }>(
+      `/api/life-events?user_id=${encodeURIComponent(userId)}`,
+    );
+    return res.events;
+  },
+  lifeEventsCreate: async (
+    payload: LifeEventsCreateRequest,
+  ): Promise<LifeEventDTO> => {
+    const res = await fetch(apiUrl("/api/life-events"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.status === 201) return (await res.json()) as LifeEventDTO;
+    if (res.status === 422) {
+      // Loud-error contract — surface the structured detail so the form
+      // can render the red banner above itself with the valid options.
+      let body: unknown = null;
+      try {
+        body = await res.json();
+      } catch {
+        // fall through to generic
+      }
+      const detail =
+        (body as { detail?: unknown } | null)?.detail ?? null;
+      if (detail && typeof detail === "object") {
+        const d = detail as {
+          error?: string;
+          input?: string;
+          valid_categories?: string[];
+          valid_kinds?: string[];
+        };
+        if (d.error === "category_not_recognized") {
+          throw {
+            kind: "category_not_recognized",
+            input: d.input ?? "",
+            validCategories: d.valid_categories ?? [],
+          } as LifeEventsCreateError;
+        }
+        if (d.error === "kind_not_valid_for_category") {
+          throw {
+            kind: "kind_not_valid_for_category",
+            input: d.input ?? "",
+            validKinds: d.valid_kinds ?? [],
+          } as LifeEventsCreateError;
+        }
+      }
+      throw new Error(
+        `HTTP 422 for /api/life-events: ${JSON.stringify(detail)}`,
+      );
+    }
+    throw new Error(`HTTP ${res.status} for /api/life-events`);
+  },
+  lifeEventsDelete: async (id: number, userId: string): Promise<void> => {
+    const res = await fetch(
+      apiUrl(
+        `/api/life-events/${id}?user_id=${encodeURIComponent(userId)}`,
+      ),
+      { method: "DELETE" },
+    );
+    if (!res.ok && res.status !== 204) {
+      throw new Error(`HTTP ${res.status} for DELETE /api/life-events/${id}`);
+    }
   },
   planCurrent: (userId: string) =>
     getJSON<PlanCurrentDTO>(

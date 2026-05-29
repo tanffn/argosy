@@ -3,6 +3,7 @@
 import {
   BookOpen,
   Bot,
+  Calendar,
   ChevronDown,
   CircleHelp,
   ClipboardList,
@@ -41,6 +42,7 @@ const PRIMARY_TABS: NavTab[] = [
   { href: "/advisor", label: "Advisor", Icon: MessageCircle },
   { href: "/portfolio", label: "Portfolio", Icon: PieChart },
   { href: "/expenses", label: "Expenses", Icon: Wallet },
+  { href: "/life-events", label: "Life Events", Icon: Calendar },
   { href: "/plan", label: "Plan", Icon: ClipboardList },
   { href: "/retirement", label: "Retirement", Icon: Flag },
   { href: "/consult", label: "Consult", Icon: Target },

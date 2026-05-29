@@ -57,6 +57,7 @@ from argosy.api.routes.portfolio import router as portfolio_router
 from argosy.api.routes.wealth_dashboard import router as wealth_dashboard_router
 from argosy.api.routes.positions import router as positions_router
 from argosy.api.routes.allocation import router as allocation_router
+from argosy.api.routes.life_events import router as life_events_router
 from argosy.api.routes.proposals import router as proposals_router
 from argosy.api.routes.security import router as security_router
 from argosy.api.routes.settings import (
@@ -135,6 +136,11 @@ def create_app() -> FastAPI:
     # accept/defer pattern over the action_source discriminator added
     # in migration 0041.
     app.include_router(allocation_router, prefix=api_prefix)
+    # /life-events page (sprint commit #8) — structured intake for the
+    # life-stage data that feeds effective_retire_ready_age() clamps +
+    # the Holistic Timeline. Pydantic enum validation + loud-error 422
+    # contract per codex BLOCKER on spec #1 §4.1.
+    app.include_router(life_events_router, prefix=api_prefix)
     app.include_router(decisions_router, prefix=api_prefix)
     # T0.5 — FM-rooted agent-tree view, mounted as a sibling router so it
     # doesn't have to share a get_db pattern with the async decisions
