@@ -1,4 +1,5 @@
-"""NextAuth JWT verification (Phase 6, SDD §11.5).
+"""NextAuth JWT verification (Phase 6, SDD §11.5) + admin-token gate
+(Sprint A commit #4 — Spec A §Commit #4, BLOCKER #1).
 
 NextAuth issues HS256 JWTs whose signing secret we share via the
 keychain entry `argosy.nextauth.signing_key`. We verify them with
@@ -18,8 +19,29 @@ Token format (NextAuth default):
   }
 
 This module is intentionally lightweight — it has no FastAPI
-dependencies so it can be imported by the tenancy contextvar resolver
+dependencies (other than the optional ``require_admin_token`` helper
+below) so it can be imported by the tenancy contextvar resolver
 without a circular import.
+
+Admin-token gate
+================
+``require_admin_token`` is a FastAPI ``Depends`` factory that protects
+the mutating ``/api/jobs/*`` routes (Spec A commit #4 — BLOCKER #1).
+
+The gate reads ``settings.admin_token`` (loaded from the
+``ARGOSY_ADMIN_TOKEN`` env var by ``argosy.config.get_settings``) and
+requires the request to carry a matching ``X-Argosy-Admin`` header.
+
+Note on existing admin endpoints: ``argosy/api/routes/internal.py``
+already has a keychain-backed admin check
+(``ADMIN_TOKEN_KEY="argosy.admin.token"`` + ``X-Argosy-Admin-Token``
+header). That older gate uses a DIFFERENT source (OS keychain,
+auto-generated on first request) and a DIFFERENT header name, so we
+do NOT reuse it here — the spec explicitly mandates the env-var path
+for /api/jobs so the operator can rotate the token without touching
+the OS keychain. Codex review focus: keep the two gates distinct;
+they cover different threat models (internal/* is single-tenant
+admin convenience; /api/jobs guards LLM-cost + DB-mutating triggers).
 """
 
 from __future__ import annotations
@@ -31,8 +53,10 @@ import json
 import time
 from typing import Any
 
+from fastapi import Header, HTTPException, status
 from sqlalchemy import select
 
+from argosy.config import get_settings
 from argosy.secrets import get_secret
 
 
@@ -141,9 +165,83 @@ def user_id_for_email(email: str) -> str | None:
         return None
 
 
+class SpecError(Exception):
+    """Spec-§8-shaped error that produces a TOP-LEVEL JSON body.
+
+    FastAPI's default ``HTTPException(detail=<dict>)`` wraps the body
+    in ``{"detail": {...}}`` — this puts Spec A §8 error shapes
+    (``{"error": "admin_token_required"}``, the §1.4 409 conflict
+    object, etc.) one nesting level off the wire from what the spec
+    documents.
+
+    Routes / dependencies that want spec-shaped error bodies raise
+    ``SpecError(status_code, body)``. A FastAPI exception handler
+    registered by :func:`argosy.api.routes.jobs.register_routers`
+    turns it into a ``JSONResponse`` with ``body`` rendered at the
+    top level.
+
+    Distinct from :class:`HTTPException` so this router's handler
+    doesn't accidentally intercept other (unrelated) endpoints'
+    HTTPExceptions, which keep the default ``{"detail": ...}`` shape.
+    """
+
+    def __init__(self, status_code: int, body: dict) -> None:
+        super().__init__(f"{status_code}: {body!r}")
+        self.status_code = status_code
+        self.body = body
+
+
+async def require_admin_token(
+    x_argosy_admin: str | None = Header(default=None, alias="X-Argosy-Admin"),
+) -> None:
+    """FastAPI dependency: 401 unless ``X-Argosy-Admin`` matches the env token.
+
+    Spec A commit #4, BLOCKER #1. Used by the mutating ``/api/jobs/*``
+    routes. Returns ``None`` on success (the request flows through);
+    raises :class:`SpecError` (status 401) with a spec-shaped body
+    otherwise.
+
+    Behaviour:
+
+    * ``settings.admin_token`` is ``None`` — the dependency raises 401
+      ``"admin_token_unconfigured"``. The mutating routes are normally
+      refused-to-mount at startup when the env var is unset (see
+      ``argosy/api/routes/jobs.py::register_routers``), so this branch
+      is a defence-in-depth backstop for the case where the routes
+      DID mount (e.g. token set at startup, then cleared at runtime).
+    * Missing header → 401 ``"admin_token_required"``.
+    * Header present but wrong → 401 ``"admin_token_invalid"``. We use
+      ``hmac.compare_digest`` to dodge timing-side-channel inference on
+      the (admittedly unlikely) attack surface.
+    """
+    settings = get_settings()
+    expected = settings.admin_token
+    if not expected:
+        # Defence-in-depth: mutating routes shouldn't be mounted at all
+        # when env is unset, but if they were (e.g. a stale process),
+        # don't fall through to a no-op gate.
+        raise SpecError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            body={"error": "admin_token_unconfigured"},
+        )
+    if not x_argosy_admin:
+        raise SpecError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            body={"error": "admin_token_required"},
+        )
+    # Constant-time compare to avoid leaking length / prefix via timing.
+    if not hmac.compare_digest(x_argosy_admin, expected):
+        raise SpecError(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            body={"error": "admin_token_invalid"},
+        )
+
+
 __all__ = [
     "SIGNING_KEY_NAME",
+    "SpecError",
     "issue_jwt",
     "verify_jwt",
     "user_id_for_email",
+    "require_admin_token",
 ]

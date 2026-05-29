@@ -98,6 +98,14 @@ class Settings(BaseSettings):
     server: ServerSettings = Field(default_factory=ServerSettings)
     anthropic: AnthropicSettings = Field(default_factory=AnthropicSettings)
 
+    # Sprint A commit #4 (BLOCKER #1) — admin auth gate for /api/jobs
+    # mutating routes (`POST /api/jobs/{name}/run-now` + `/stop` + `/reconnect`).
+    # Loaded from the `ARGOSY_ADMIN_TOKEN` env var. When unset, the FastAPI
+    # mounter REFUSES to register the mutating routes (logs a startup
+    # WARNING) — the read-only `GET /api/jobs` surface stays open for
+    # monitoring. See `argosy/api/auth.py::require_admin_token`.
+    admin_token: str | None = Field(default=None)
+
     @property
     def app_log_file(self) -> Path:
         return self.logs_dir / "app" / "application.log"
@@ -129,6 +137,13 @@ def _build_settings() -> Settings:
     configs = _resolve_path(paths.get("configs", "./configs"), home)
     logs = _resolve_path(paths.get("logs", "./logs"), home)
 
+    # Sprint A commit #4 — admin token loaded directly from env so the
+    # explicit-kwargs Settings(...) constructor below picks it up. The
+    # SettingsConfigDict env_prefix is bypassed here because we hand-roll
+    # the field assignment; routing through os.environ keeps test
+    # monkeypatch.setenv working without a reload dance.
+    admin_token = os.environ.get("ARGOSY_ADMIN_TOKEN") or None
+
     return Settings(
         home=home,
         backups_dir=backups,
@@ -138,6 +153,7 @@ def _build_settings() -> Settings:
         logs_dir=logs,
         server=ServerSettings(**server_cfg),
         anthropic=AnthropicSettings(**anthropic_cfg),
+        admin_token=admin_token,
     )
 
 

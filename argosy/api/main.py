@@ -259,6 +259,16 @@ def create_app() -> FastAPI:
         log.info("daily_brief_runner.scheduled", tz="Asia/Jerusalem", at="07:00")
         asyncio.create_task(background_loop(), name="daily_brief_runner")
 
+    # Sprint A commit #4 — /api/jobs routes + admin auth gate.
+    # ``register_routers`` mounts the open GET routes unconditionally
+    # and ONLY mounts the mutating POST routes when ARGOSY_ADMIN_TOKEN
+    # is set in the environment (BLOCKER #1 — mutating routes refuse to
+    # mount when the env var is absent). The refusal happens HERE, at
+    # app construction time, not on each request — so a misconfigured
+    # token can't be brute-forced.
+    from argosy.api.routes.jobs import register_routers as _register_jobs_routers
+    _register_jobs_routers(app)
+
     # Sprint A commit #3b — JobRegistry + RegisteredScheduler lifecycle.
     # Spec: docs/superpowers/specs/2026-05-29-jobs-registry-design.md
     # §1.2 (lifecycle) + commit #3b. The registry is ALWAYS constructed
