@@ -3,6 +3,21 @@
 Sprint commit #16 of the plan/execute/monitor reorg. Lights up the
 ``discord`` source path that ``news_ingest`` reserved in commit #13.
 
+Sprint A commit #6 update
+-------------------------
+
+Production now drives this listener through
+:class:`argosy.services.jobs.discord_listener_job.DiscordListenerJob`
+(a :class:`~argosy.orchestrator.loops.base.LongRunningJob` registered
+with the :class:`~argosy.services.jobs.registry.JobRegistry`). The
+JobRegistry's supervisor opens an audit row, ``await``-s
+``run_discord_listener``, and applies exponential-backoff restart on
+crashes. The external-cron expectation that earlier shipped with this
+module is retired.
+
+The ``argosy discord-ingest`` CLI in ``argosy/cli/discord_ingest.py``
+is kept as a one-shot smoke test only.
+
 Setup (Ariel's machine)
 -----------------------
 
@@ -15,10 +30,10 @@ The bot reads credentials from ``~/.argosy/discord_creds.json``::
     }
 
 If the file is missing, ``load_creds`` returns ``None`` and the bot
-stays dormant — the cron/supervisor that schedules
-``run_discord_listener`` is expected to call ``load_creds`` first and
-skip the listener if credentials are not present. This keeps fresh
-checkouts / CI green without requiring real Discord tokens.
+stays dormant — the supervisor that schedules
+``run_discord_listener`` calls ``load_creds`` first and skips the
+listener if credentials are not present. This keeps fresh checkouts /
+CI green without requiring real Discord tokens.
 
 Implementation note — discord.py vs raw websockets
 --------------------------------------------------
@@ -254,13 +269,15 @@ async def run_discord_listener(
     max_message_age_minutes: int = 60,
     client_factory: ClientFactory | None = None,
     now: Callable[[], datetime] | None = None,
+    on_connected: Callable[[], None] | None = None,
 ) -> None:
     """Connect to the Discord gateway and persist incoming messages.
 
     Idempotent on ``(source='discord', source_ref='msg-{id}')``. The
-    function does NOT auto-restart on error — the caller (cron / a
-    supervisor) handles restarts. Every connect / disconnect / message
-    event is logged at INFO so an operator can tail the log.
+    function does NOT auto-restart on error — the caller (the
+    JobRegistry supervisor in production; ``argosy discord-ingest`` for
+    one-shot smoke) handles restarts. Every connect / disconnect /
+    message event is logged at INFO so an operator can tail the log.
 
     Args:
         session_factory: Zero-arg callable that returns a SQLAlchemy
@@ -276,6 +293,34 @@ async def run_discord_listener(
             tests). ``None`` uses the raw-websockets default.
         now: Override the wallclock for age comparisons (for tests).
             ``None`` uses ``datetime.now(timezone.utc)``.
+        on_connected: Optional zero-arg callback fired AFTER the gateway
+            transport handshake completes (HELLO opcode received +
+            IDENTIFY sent + heartbeat scheduled) — i.e. immediately
+            after the awaited ``client.connect()`` returns without
+            raising. Used by
+            :class:`~argosy.services.jobs.discord_listener_job.DiscordListenerJob`
+            to flip its ``connection_status()`` from ``"reconnecting"``
+            to ``"connected"``. Default ``None`` is a no-op — existing
+            tests + the CLI smoke path are unaffected (Sprint A
+            commit #6).
+
+            Semantics (codex review BLOCKER on commit #6): the callback
+            fires at the GATEWAY-TRANSPORT-CONNECTED point — i.e. HELLO
+            + heartbeat are in flight, IDENTIFY has been SENT but the
+            gateway's IDENTIFY-ACK / ``READY`` dispatch has NOT yet
+            been received. This is a deliberate trade-off: firing here
+            lights up the admin-UI green dot promptly on a healthy
+            gateway, at the cost of a brief false-positive window if
+            the bot token has been revoked (the gateway will close the
+            connection seconds later when it rejects IDENTIFY; the
+            listener observes that as a clean disconnect + the
+            supervisor opens a fresh cycle). A stricter "fire on first
+            ``READY`` dispatch" semantic would require parsing the
+            ``READY`` opcode in the raw-websockets client — a follow-on
+            if false-positives become a real operator pain. Callback
+            exceptions are caught + logged but do NOT bring the
+            listener down — a flaky status hook should not crash
+            ingestion.
 
     Returns:
         None — the coroutine runs until the client iterator stops, then
@@ -299,6 +344,21 @@ async def run_discord_listener(
     )
     await client.connect()
     logger.info("discord_listener: connected, awaiting messages")
+
+    # Sprint A commit #6 — fire the status hook AFTER client.connect()
+    # returns successfully. For the real client, ``connect()`` returns
+    # once it has received the HELLO opcode and SENT IDENTIFY (see
+    # ``_RawWebsocketsDiscordClient.connect``: HELLO is verified +
+    # IDENTIFY is dispatched + the heartbeat task is started, all
+    # before the function returns). IDENTIFY-ACK / ``READY`` arrive
+    # later inside the messages loop; this hook is therefore a
+    # "transport connected, auth in flight" signal — see the
+    # docstring's BLOCKER note for the deliberate trade-off.
+    if on_connected is not None:
+        try:
+            on_connected()
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("discord_listener: on_connected callback raised")
 
     try:
         async for event in await _ensure_async_iter(client.messages()):

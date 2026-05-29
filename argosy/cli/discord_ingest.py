@@ -1,25 +1,35 @@
-"""`argosy discord-ingest` — daemon entry point for the Discord listener.
+"""`argosy discord-ingest` — one-shot smoke-test entry point.
 
-Sprint commit #16 of the plan/execute/monitor reorg. The cron /
-supervisor that runs the daily-automation pipeline invokes this CLI to
-keep a single long-lived listener attached to the Discord channel. Each
-incoming message is funneled through the Stage 1 deterministic
-extractor and persisted to ``news_signals``.
+DEPRECATED AS A CRON DAEMON. Production now runs the Discord listener
+through :class:`argosy.services.jobs.discord_listener_job.DiscordListenerJob`,
+which is registered with the :class:`argosy.services.jobs.registry.JobRegistry`
+and supervised in-process by the registry's supervisor task (Sprint A
+commit #6). There is no longer any external cron / systemd unit
+expected.
 
-Behavior contract
------------------
+Use ``argosy discord-ingest`` ONLY as a one-shot smoke test for
+verifying creds + gateway reachability + a single end-to-end ingest
+roundtrip. For long-lived production listening, start the Argosy API
+server — ``uvicorn argosy.api.main:create_app --factory`` — and the
+JobRegistry supervisor will keep the listener alive across crashes
+with exponential-backoff restart.
+
+Behavior contract (smoke-test mode)
+-----------------------------------
 
 * If ``~/.argosy/discord_creds.json`` is missing → exit 0 (the listener
-  is "dormant until creds arrive"). The supervisor will retry on the
-  next scheduled tick.
+  is "dormant until creds arrive"). The supervisor will fast-exit on
+  the same condition.
 * If creds are malformed → exit 2 with a clear stderr message; the
   supervisor sees that as a real config error.
 * Otherwise → connect, listen, persist. On any other unhandled
-  exception the process exits non-zero and the supervisor decides
-  whether to restart.
+  exception the process exits non-zero — there is no built-in restart
+  here because this CLI is a one-shot.
 
 See ``argosy/services/discord_listener.py`` for the protocol details
-and credentials format.
+and credentials format, and
+``argosy/services/jobs/discord_listener_job.py`` for the supervised job
+shape.
 """
 from __future__ import annotations
 

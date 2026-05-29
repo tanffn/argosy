@@ -320,18 +320,99 @@ def create_app() -> FastAPI:
         # plan_watcher — gated on agent_settings.yaml cadence flags).
         scheduler.register_default_loops()
 
+        # Sprint A commit #9 — JobRunsRetentionLoop. Gated on
+        # ``cadences.job_runs_retention.enabled`` (default True).
+        # Registered alongside the default cadence loops so it appears
+        # in /api/jobs as a regular maintenance-kind job.
+        #
+        # Codex review IMPORTANT #3 — narrow exception handling.
+        # Imports + agent_settings load can raise ImportError /
+        # ValidationError; loop construction can raise ValueError on
+        # negative windows. We catch those explicitly and log; any
+        # OTHER exception (e.g. a programmer error introduced by a
+        # later refactor) propagates so it fails loudly at startup.
+        try:
+            from argosy.agent_settings import (  # noqa: PLC0415
+                load_agent_settings,
+            )
+            from argosy.orchestrator.loops.base import (  # noqa: PLC0415
+                LoopSchedule,
+            )
+            from argosy.orchestrator.loops.job_runs_retention import (  # noqa: PLC0415
+                JobRunsRetentionLoop,
+                job_runs_retention_metadata,
+            )
+
+            agent_cfg = load_agent_settings("ariel")
+            ret_cad = agent_cfg.cadences.job_runs_retention
+            if ret_cad.enabled:
+                # Codex BLOCKER #1 — thread the current set of
+                # LongRunningJob names so the reap pass can exclude
+                # them. Reads ``registry._jobs`` at TICK TIME (not at
+                # construction) so a LongRunningJob registered after
+                # the retention loop (commits #6 + #7 import-guarded
+                # blocks below) is still seen.
+                def _long_running_names() -> list[str]:
+                    return [
+                        name
+                        for name, rec in registry._jobs.items()
+                        if rec.metadata.long_running
+                    ]
+
+                retention_job = JobRunsRetentionLoop(
+                    schedule=LoopSchedule.from_config(ret_cad),
+                    enabled=True,
+                    retention_days_ok=(
+                        agent_cfg.job_runs_retention.retention_days_ok
+                    ),
+                    stale_running_hours=(
+                        agent_cfg.job_runs_retention.stale_running_hours
+                    ),
+                    long_running_names_fn=_long_running_names,
+                )
+                scheduler.register_loop(retention_job)
+                registry.register(
+                    job=retention_job,
+                    metadata=job_runs_retention_metadata(),
+                )
+                log.info("scheduler.job_runs_retention_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.job_runs_retention_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Commit #6 (DiscordListenerJob) + commit #7 (NewsDailyJob)
         # land later in the sprint. Gate their imports so #3b can land
         # clean before them. When they're available, register them
         # with the registry so the supervisor (commit #5) picks them
         # up on start_supervisors().
-        try:  # pragma: no cover - lands in commit #6
-            from argosy.services.jobs.discord_listener import (  # type: ignore[import-not-found]
+        try:  # pragma: no cover - exercised via FastAPI startup, not unit-tested directly
+            from argosy.services.jobs.discord_listener_job import (
                 DiscordListenerJob,
                 discord_listener_metadata,
             )
+            from argosy.services.discord_listener import load_creds
 
-            discord_job = DiscordListenerJob()
+            # Try-load creds — None when ~/.argosy/discord_creds.json
+            # is missing; raises ValueError when malformed. We log the
+            # malformed case but still register the job with creds=None
+            # so the admin UI shows "creds missing" rather than the row
+            # vanishing entirely.
+            try:
+                _creds = load_creds()
+            except ValueError as exc:
+                log.warning("discord_listener.creds.malformed", error=str(exc))
+                _creds = None
+
+            # Build a sync session factory shared with the listener
+            # body (same shape ``argosy discord-ingest`` uses).
+            from argosy.cli.discord_ingest import _build_session_factory
+            _discord_session_factory = _build_session_factory()
+
+            discord_job = DiscordListenerJob(
+                _creds, _discord_session_factory,
+            )
             registry.register(
                 job=discord_job, metadata=discord_listener_metadata()
             )
