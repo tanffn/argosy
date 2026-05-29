@@ -2294,7 +2294,164 @@ export const api = {
     getJSON<AnomalyReportDTO>(
       `/api/anomalies/${id}?user_id=${encodeURIComponent(userId)}`,
     ),
+
+  // --------------------------------------------------------------------
+  // Sprint commit #17 — Home Red-Flag Strip.
+  //
+  // Backend: GET /api/retirement/monitor/flags (argosy/api/routes/retirement.py)
+  // returns the union of active allocation_drift + mc_regression flags. The
+  // current response is the per-kind ``to_dict()`` payload (AllocationDriftFlag
+  // or MCRegressionFlag) with a ``kind`` discriminator merged in. The strip
+  // needs a single uniform shape, so this client wrapper normalizes each row
+  // into a MonitorFlagDTO with the kind-specific fields nested under
+  // ``payload``. macro_shift rows are tolerated (commit #15 will start writing
+  // them) — until then the union is just drift + mc_regression.
+  //
+  // FOLLOW-ON BACKEND WORK (not in this commit):
+  //   1. /monitor/flags should expose the MonitorFlag row's ``id``,
+  //      ``surfaced_at``, ``expires_at``, ``acknowledged_at`` columns so the
+  //      strip can render timestamps and the X button can call acknowledge.
+  //      Today's adapter falls back to a synthetic ``id`` (negative array
+  //      index) and ``surfaced_at = now`` when the backend doesn't supply
+  //      them. The acknowledge button is disabled when ``id < 0``.
+  //   2. POST /api/retirement/monitor/flags/{id}/acknowledge needs to exist.
+  //      ``monitorFlagAcknowledge`` posts to that path; until the route lands
+  //      the click will 404 and the optimistic-removal in the UI will be the
+  //      only visible effect (refreshing the page brings the flag back).
+  // --------------------------------------------------------------------
+  monitorFlags: async (userId: string): Promise<MonitorFlagDTO[]> => {
+    const raw = await getJSON<MonitorFlagRawRow[]>(
+      `/api/retirement/monitor/flags?user_id=${encodeURIComponent(userId)}`,
+    );
+    return raw.map((r, idx) => normalizeMonitorFlag(r, idx));
+  },
+  acknowledgeMonitorFlag: async (flagId: number): Promise<void> => {
+    // See backend FOLLOW-ON note above — this route does not exist as of
+    // sprint commit #17. Posting will 404 until the backend ships it.
+    const res = await fetch(
+      apiUrl(`/api/retirement/monitor/flags/${flagId}/acknowledge`),
+      { method: "POST" },
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status} for acknowledge`);
+  },
 };
+
+// ----------------------------------------------------------------------
+// Sprint commit #17 — Monitor flag DTOs (Home Red-Flag Strip).
+// ----------------------------------------------------------------------
+
+export type MonitorFlagKind =
+  | "allocation_drift"
+  | "mc_regression"
+  | "macro_shift";
+
+export type MonitorFlagSeverity = "info" | "warning" | "critical";
+
+export interface MonitorFlagDTO {
+  /** Stable row id from monitor_flags.id. Negative when the backend
+   *  hasn't been extended to expose it — acknowledge is disabled in
+   *  that case (see note on ``api.monitorFlags``). */
+  id: number;
+  kind: MonitorFlagKind;
+  severity: MonitorFlagSeverity;
+  /** Kind-specific detail. For allocation_drift: {row_category,
+   *  rel_drift, abs_drift_usd, snapshot_date, suggested_proposals}.
+   *  For mc_regression: {prev_p_solvent, curr_p_solvent, delta_pp,
+   *  snapshot_date}. For macro_shift: {trigger, classifier_rationale,
+   *  news_signal_id} (shape from MonitorFlag docstring; commit #15
+   *  will start writing rows). */
+  payload: Record<string, unknown>;
+  /** ISO-8601 timestamp when the monitor agent surfaced this flag.
+   *  Synthesized to "now" when the backend payload omits it. */
+  surfaced_at: string;
+  expires_at: string | null;
+  acknowledged_at: string | null;
+}
+
+// Raw shape from GET /api/retirement/monitor/flags as of sprint
+// commit #17 — the per-kind ``to_dict()`` fields spread alongside a
+// ``kind`` discriminator. Future backend extensions (id, surfaced_at,
+// etc.) are all marked optional so the adapter keeps working when the
+// route is enriched without a coordinated UI change.
+interface MonitorFlagRawRow {
+  kind: string;
+  severity: string;
+  // Optional once the backend route is extended to expose them:
+  id?: number;
+  surfaced_at?: string;
+  expires_at?: string | null;
+  acknowledged_at?: string | null;
+  // Kind-specific fields from AllocationDriftFlag.to_dict() /
+  // MCRegressionFlag.to_dict(). We forward whatever's on the row into
+  // ``payload`` after stripping the well-known discriminator keys.
+  [extra: string]: unknown;
+}
+
+function normalizeMonitorFlag(
+  raw: MonitorFlagRawRow,
+  idx: number,
+): MonitorFlagDTO {
+  const kind: MonitorFlagKind =
+    raw.kind === "allocation_drift" ||
+    raw.kind === "mc_regression" ||
+    raw.kind === "macro_shift"
+      ? (raw.kind as MonitorFlagKind)
+      : // Defensive: unknown kinds get mapped to macro_shift so the
+        // strip renders a generic row rather than crashing. The summary
+        // renderer falls back to "<kind> flag detected" when the
+        // payload doesn't carry the expected fields.
+        "macro_shift";
+  const severity: MonitorFlagSeverity =
+    raw.severity === "warning" || raw.severity === "critical"
+      ? raw.severity
+      : "info";
+
+  // Split off the discriminator keys; everything else becomes payload.
+  // Two backend shapes are tolerated:
+  //   - Newer (commit #17 update): row has an explicit `payload` object
+  //     alongside id/surfaced_at/expires_at/acknowledged_at.
+  //   - Older: kind-specific fields spread onto the row directly.
+  // The adapter prefers the explicit `payload` when present.
+  const {
+    kind: _k,
+    severity: _s,
+    id: _id,
+    surfaced_at: _sa,
+    expires_at: _ea,
+    acknowledged_at: _aa,
+    payload: explicitPayload,
+    ...rest
+  } = raw;
+  void _k;
+  void _s;
+  void _id;
+  void _sa;
+  void _ea;
+  void _aa;
+
+  const payload: Record<string, unknown> =
+    explicitPayload && typeof explicitPayload === "object"
+      ? (explicitPayload as Record<string, unknown>)
+      : (rest as Record<string, unknown>);
+
+  return {
+    // Negative synthetic id when the backend hasn't been extended yet.
+    // The strip's acknowledge button is disabled when id < 0 because
+    // the POST /acknowledge route can't target a row without a real id.
+    id: typeof raw.id === "number" ? raw.id : -(idx + 1),
+    kind,
+    severity,
+    payload,
+    surfaced_at:
+      typeof raw.surfaced_at === "string"
+        ? raw.surfaced_at
+        : new Date().toISOString(),
+    expires_at:
+      typeof raw.expires_at === "string" ? raw.expires_at : null,
+    acknowledged_at:
+      typeof raw.acknowledged_at === "string" ? raw.acknowledged_at : null,
+  };
+}
 
 // ----------------------------------------------------------------------
 // Fleet self-review DTOs

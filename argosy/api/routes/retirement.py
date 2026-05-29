@@ -6,12 +6,16 @@ without touching the cross-cutting plumbing here.
 
 Plan: ``docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md``.
 """
+import json
 from datetime import date, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from argosy.state.models import MonitorFlag
 
 from argosy.api.routes.plan import get_db
 from argosy.services.retirement.bituach_leumi import estimate_bl_stipend
@@ -1275,18 +1279,86 @@ def post_run_drift_check(user_id: str, db: Session = Depends(get_db)) -> dict:
 def list_monitor_flags(user_id: str, db: Session = Depends(get_db)) -> list[dict]:
     """List active monitor flags for ``user_id`` (Home Red-Flag Strip).
 
-    Active = unacknowledged AND unexpired. Sprint commit #17 will consume
-    this from the UI. Returns both allocation-drift and MC-regression
-    flags interleaved; the UI sorts by severity + surfaced_at.
+    Active = unacknowledged AND unexpired. Sprint commit #17 consumes
+    this from the UI. Returns rows directly from `monitor_flags` so the
+    `id` (needed for acknowledge) + `surfaced_at` + `expires_at` are
+    all present.
+
+    Filters: kind IN drift/mc_regression/macro_shift (whatever's
+    persisted), acknowledged_at IS NULL, expires_at IS NULL OR > now.
+
+    For mc_regression rows the payload may have `fired=False`
+    (baseline + no-fire anchors); those are dropped here — only
+    `fired=True` MC rows surface as active flags.
     """
-    drift = [f.to_dict() for f in get_active_drift_flags(db, user_id)]
-    mc = [f.to_dict() for f in get_active_mc_regression_flags(db, user_id)]
-    # Tag the kind so the UI can render the right card.
-    for d in drift:
-        d["kind"] = "allocation_drift"
-    for m in mc:
-        m["kind"] = "mc_regression"
-    return drift + mc
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    stmt = (
+        select(MonitorFlag)
+        .where(MonitorFlag.user_id == user_id)
+        .where(MonitorFlag.acknowledged_at.is_(None))
+        .order_by(MonitorFlag.surfaced_at.desc())
+    )
+    rows = db.execute(stmt).scalars().all()
+    out = []
+    for r in rows:
+        # Expiry filter (NULL = never expires).
+        if r.expires_at is not None:
+            expires_at = r.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= now:
+                continue
+        # MC baseline/anchor rows are not "fired" flags — skip.
+        try:
+            payload = json.loads(r.payload)
+        except (TypeError, ValueError):
+            payload = {}
+        if r.kind == "mc_regression" and payload.get("fired") is not True:
+            continue
+        surfaced = r.surfaced_at
+        if surfaced.tzinfo is None:
+            surfaced = surfaced.replace(tzinfo=timezone.utc)
+        expires = r.expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        out.append({
+            "id": r.id,
+            "kind": r.kind,
+            "severity": r.severity,
+            "payload": payload,
+            "surfaced_at": surfaced.isoformat(),
+            "expires_at": expires.isoformat() if expires else None,
+            "acknowledged_at": None,  # always None for active rows
+        })
+    return out
+
+
+@router.post("/monitor/flags/{flag_id}/acknowledge")
+def acknowledge_monitor_flag(
+    flag_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Mark a monitor flag as acknowledged (sprint commit #17 — Home
+    Red-Flag Strip dismiss button POSTs here).
+
+    Idempotent: re-acknowledging is a no-op.
+    """
+    from datetime import datetime, timezone
+
+    flag = db.get(MonitorFlag, flag_id)
+    if flag is None:
+        raise HTTPException(status_code=404, detail="monitor flag not found")
+    if flag.acknowledged_at is None:
+        flag.acknowledged_at = datetime.now(timezone.utc)
+        db.commit()
+    # Normalize tz — SQLite drops tzinfo on read so the second
+    # idempotent call would otherwise return a naive datetime.
+    ack = flag.acknowledged_at
+    if ack.tzinfo is None:
+        ack = ack.replace(tzinfo=timezone.utc)
+    return {"id": flag_id, "acknowledged_at": ack.isoformat()}
 
 
 # Sprint commit #12 — Monte-Carlo regression trigger (spec §5.1.2).

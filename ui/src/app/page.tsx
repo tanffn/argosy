@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AdvisorBriefCard } from "@/components/advisor-brief-card";
 import { ActionItemsWidget } from "@/components/home/action-items-widget";
+import { RedFlagStrip } from "@/components/home/RedFlagStrip";
 import { LiveClock } from "@/components/live-clock";
 import { WindfallBanner } from "@/components/retirement/WindfallBanner";
 import {
@@ -575,6 +576,13 @@ export default function Home() {
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
+      {/* Sprint commit #17 — Home Red-Flag Strip. Renders one row per
+          active monitor_flags entry (allocation_drift / mc_regression /
+          macro_shift). Returns null when no flags are active so the
+          strip occupies zero vertical space — the right empty-state UX
+          is silent, not a "no flags" reassurance row. */}
+      <RedFlagStrip userId={USER_ID} />
+
       {/* Brand hero card. Pared-down treatment after the Plan/Codex
           ideation pass: the prior version stacked three gradient
           flourishes (.argosy-hero-ring + top-edge stripe + the body
