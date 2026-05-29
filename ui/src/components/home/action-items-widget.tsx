@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { SectionHeader } from "@/components/ui/section-header";
 import { StatusPill } from "@/components/ui/status-pill";
+import { friendlyItemId, friendlySourceLabel } from "@/lib/plain-english-labels";
 import {
   api,
   type ActionItem,
@@ -203,14 +204,18 @@ function ActionItemRow({ item }: ActionItemRowProps) {
                 <span
                   key={`${item.item_id}-src-${i}`}
                   className="rounded-full border border-border bg-secondary/40 px-2 py-0.5 text-[10px]"
+                  title={src}
                 >
-                  {src}
+                  {friendlySourceLabel(src)}
                 </span>
               ))}
             </div>
           ) : null}
-          <div className="text-[10px] text-muted-foreground/70 tabular-nums">
-            plan #{item.plan_version_id} · item {item.item_id}
+          <div
+            className="text-[10px] text-muted-foreground/70 tabular-nums"
+            title={item.item_id}
+          >
+            plan #{item.plan_version_id} · item {friendlyItemId(item.item_id)}
           </div>
         </div>
       ) : null}

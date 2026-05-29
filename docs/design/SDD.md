@@ -17,7 +17,42 @@
 
 **Last edit:** 2026-05-29 (afternoon sprint) by Claude — user authorized a long unattended sprint across three priorities (XLS upload wiring + bidirectional Osh pair, plain-English translation layer, unallocated-cash allocation tile). See "Wave 2026-05-29 (afternoon sprint)" immediately below for status. Prior waves below remain current as historical context.
 
-### Wave 2026-05-29 (afternoon sprint, in progress) — three-task block
+### Wave 2026-05-29 (zigzag remediation) — codex caught real defects in the afternoon sprint
+
+After the three-task sprint shipped, user invoked the proper `superpowers:requesting-code-review` flow with codex-tandem `devmode_zigzag.run_zigzag` (round-0 codex independent review + rebuttal pass against Claude's pre-computed findings). All three commits were reviewed; codex independently corroborated Claude's blockers AND surfaced additional defects Claude missed. Verdicts: (a)=BLOCK, (b)=APPROVE_WITH_CONDITIONS, (c)=APPROVE_WITH_CONDITIONS.
+
+**Cross-engine corroborated defects fixed in this remediation:**
+
+(a) XLS-Osh pair — the splice was silently broken in production-path code:
+- **BLOCKER 1+2 (both engines)**: `_recompute_allocation_block` read `cells[0]` for category and the empty-cell guard was inverted, so EVERY allocation row was kept verbatim. Combined with off-by-one cell writes, allocation block never recomputed. Tests didn't assert allocation values, so the bug shipped invisible. Fixed: read `cells[1]` per the parser's column layout; write `cells[2..3, 6]` correctly; pre-index prior allocations by category; handle the Grand Total row.
+- **BLOCKER 3 (both engines)**: `_find_matching_osh` and `try_resolve_pending_on_osh_arrival` only checked `source.kind=="bank"` + `source.issuer=="leumi"` — but Leumi USD (פמ"ח) shares both fields with Leumi Osh. An XLS upload with a Leumi USD statement in window would feed a USD balance through the NIS-divide → cash off by ~3.7x. Fixed: discriminate by `ExpenseStatement.parser_name == "leumi_osh"`.
+- **BLOCKER 4 (both engines)**: `_xls_to_tsv_rows` hard-coded `asset_type="Equity"` for every Leumi row. Positions previously labeled Cash/Dividend/Treasuries/Growth would silently flatten to Equity once XLS-driven pipeline takes over; allocation-block Type aggregation drifts. Fixed: `_build_prior_mappings` now also builds `type_map` (security_id → prior row's asset_type); both splice path and full-rewrite fallback use it.
+- **Codex-only #5**: `try_resolve_pending_on_osh_arrival` called `db.commit()` inside a hook the orchestrator caller doesn't own → split commit boundary. Fixed: changed to `db.flush()`.
+- **Codex-only #6**: Filesystem TSV write before DB commit → disk/DB divergence on commit failure. Fixed: refactored into `_synthesize_in_memory` + post-commit write.
+- **Codex-only #7**: Concurrent uploads with same SHA both passed the pre-insert lookup, hitting IntegrityError on commit without recovery. Fixed: new `_add_part_with_race_recovery` helper catches IntegrityError, rolls back, re-queries, returns winner's row.
+- **Codex-only #8**: SQLite UNIQUE on `(user_id, snapshot_date, portfolio_number)` is a no-op when `portfolio_number IS NULL` (NULL semantics in UNIQUE). Migration 0040 drops the broken constraint and replaces it with a partial unique index `WHERE portfolio_number IS NOT NULL`.
+- **Codex-only #9**: No-prior-TSV path raised `RuntimeError` → brand-new user's first upload returned `detect_status="failed"`. Fixed: graceful fallback to `_full_rewrite_from_snapshot` with empty prior + a parse_warning.
+- 6 new splice-math tests now assert: allocation block recomputed (not carried verbatim), Grand Total recomputed, FX preserved from prior, Leumi USD not auto-paired, asset_type preserved per position, no-prior-TSV gracefully bootstraps.
+- Migration 0040 applied; model updated; 12 XLS-Osh tests + 11 portfolio + 23 portfolio_ingest tests green (46 in the touched surface).
+
+(b) Unallocated cash — math correct, operational gaps fixed:
+- **IMPORTANT (both engines)**: No snapshot-staleness guard → detector could fire on months-old snapshots. Fixed: `staleness_days=45` default (injectable for testing); UI card now renders `Based on snapshot dated YYYY-MM-DD`.
+- **IMPORTANT (both engines)**: No API-route test → DTO drift would surface as HTTP 500. Fixed: 3 new tests covering null-when-no-snapshot, route returns proposal when overage, and staleness gating.
+
+(c) Plain-English labels — closing the rest of the leak surfaces:
+- **IMPORTANT (both engines)**: 3 more raw-render UI surfaces found beyond the 4 in the original commit, plus 2 codex-only additions:
+  - `action-items-widget.tsx:202+213` (cited_sources + item_id)
+  - `plan-revision-sheet.tsx:250` (cited_sources)
+  - `proposals/page.tsx:546` (cited_sources)
+  - `AgentDetailDrawer.tsx:241+290` (source_id in both Sources and Citations tabs)
+- **IMPORTANT (both engines)**: `_NIS_RE` colon regex didn't match real producer shapes (analyzers emit slash form `fundamentals/NVDA/2026-05-29`). Fixed: both Python and TS regex accept slash + colon forms.
+- **IMPORTANT (both engines)**: Python/TS drift had no enforcement. Fixed: parity tests in `test_plain_english_labels.py` diff the prefix list + dated-kind labels between the two files. Drift now fails CI.
+
+**Verdict deviation captured (c)**: Codex agreed with Claude that the static-dict approach is technically defensible for these specific bounded namespaces; both flagged the static-vs-precompute deviation from user's AskUserQuestion answer as IMPORTANT. The static path is staying; future surfaces with truly opaque keys (delta item_ids needing 2-paragraph explanations) can opt into the LLM precompute path via `fm_objection_translation_cache.py` pattern.
+
+**Sprint-end test totals after remediation: 78 tests across (a) + (b) + (c) + related, all green. The original sprint had 39 in this surface; remediation added 39 more, all locking in the codex-flagged defects.**
+
+### Wave 2026-05-29 (afternoon sprint) — three-task block
 
 User collected data via AskUserQuestion, set work-style preference (`feedback_work_style_long_sprints.md`: long sprints, Codex is the ZigZag coworker, blockers documented but don't pause the sprint), and authorized "start working" across all three open priorities from the morning wave's "Open work" list.
 

@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import desc, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from argosy.ingest.tsv import (
@@ -178,17 +179,11 @@ def handle_xls_upload(
 
     if osh is None:
         # Queue as pending. The Osh-side hook will pick it up later.
-        part = PortfolioSnapshotPart(
-            user_id=user_id,
-            kind="xls_positions",
-            snapshot_date=xls.snapshot_date,
-            portfolio_number=xls.portfolio_number,
-            payload_json=payload_json,
-            sha256=sha,
-            status="pending",
+        part = _add_part_with_race_recovery(
+            db, user_id=user_id, snapshot_date=xls.snapshot_date,
+            portfolio_number=xls.portfolio_number, payload_json=payload_json,
+            sha=sha, status="pending",
         )
-        db.add(part)
-        db.commit()
         return PairResolution(
             status="pending_pair",
             pending_pair_id=part.id,
@@ -207,17 +202,11 @@ def handle_xls_upload(
     if osh_closing_nis is None:
         # Osh statement has no parsed transactions -> can't extract balance.
         # Treat as pending so the user can re-ingest the Osh.
-        part = PortfolioSnapshotPart(
-            user_id=user_id,
-            kind="xls_positions",
-            snapshot_date=xls.snapshot_date,
-            portfolio_number=xls.portfolio_number,
-            payload_json=payload_json,
-            sha256=sha,
-            status="pending",
+        part = _add_part_with_race_recovery(
+            db, user_id=user_id, snapshot_date=xls.snapshot_date,
+            portfolio_number=xls.portfolio_number, payload_json=payload_json,
+            sha=sha, status="pending",
         )
-        db.add(part)
-        db.commit()
         return PairResolution(
             status="pending_pair",
             pending_pair_id=part.id,
@@ -231,30 +220,44 @@ def handle_xls_upload(
             parse_warnings=xls.parse_warnings,
         )
 
-    tsv_path, synth_warnings = _synthesize_and_persist(
+    # Synthesize TSV in-memory first (no disk write yet), so we can
+    # commit the DB row before persisting bytes. If the commit races
+    # with another upload, we don't leave an orphan TSV on disk.
+    # Codex zigzag (a)#6 (2026-05-29): filesystem-write-before-commit
+    # could leave disk/DB divergence on commit failure.
+    tsv_text, synth_warnings = _synthesize_in_memory(
         xls=xls,
         osh_closing_nis=osh_closing_nis,
         snapshot_root=snapshot_root,
     )
-
-    part = PortfolioSnapshotPart(
-        user_id=user_id,
-        kind="xls_positions",
-        snapshot_date=xls.snapshot_date,
-        portfolio_number=xls.portfolio_number,
-        payload_json=payload_json,
-        sha256=sha,
-        status="resolved",
-        paired_osh_statement_id=osh.id,
-        paired_at=_utcnow(),
-        resolved_tsv_path=str(tsv_path),
+    target_name = _canonical_tsv_filename(
+        xls.snapshot_date,
     )
-    db.add(part)
-    db.commit()
+    target_path = snapshot_root / target_name
+
+    part = _add_part_with_race_recovery(
+        db, user_id=user_id, snapshot_date=xls.snapshot_date,
+        portfolio_number=xls.portfolio_number, payload_json=payload_json,
+        sha=sha, status="resolved",
+        paired_osh_statement_id=osh.id, paired_at=_utcnow(),
+        resolved_tsv_path=str(target_path),
+    )
+
+    # DB commit succeeded -> safe to persist the bytes. If the disk
+    # write fails AFTER the commit, log + raise; the user will see
+    # detect_status=failed but the part row is durably resolved
+    # (idempotent re-upload re-attempts).
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(tsv_text, encoding="utf-8")
+    _log.info(
+        "portfolio_snapshot.xls_synthesized",
+        extra={"path": str(target_path)},
+    )
+
     return PairResolution(
         status="resolved",
         pending_pair_id=part.id,
-        resolved_tsv_path=tsv_path,
+        resolved_tsv_path=target_path,
         snapshot_date=xls.snapshot_date,
         sha256=sha,
         detail=None,
@@ -277,6 +280,11 @@ def try_resolve_pending_on_osh_arrival(
     """
     osh = db.get(ExpenseStatement, statement_id)
     if osh is None:
+        return None
+    if osh.parser_name != _LEUMI_OSH_PARSER_NAME:
+        # Discriminate Osh (NIS current account) from Leumi USD (פמ"ח)
+        # -- both share issuer="leumi" + kind="bank". Codex zigzag
+        # finding 2026-05-29 (a)#3.
         return None
     source = db.get(ExpenseSource, osh.source_id)
     if source is None or source.kind != "bank" or "leumi" not in (
@@ -319,22 +327,37 @@ def try_resolve_pending_on_osh_arrival(
         return None
 
     xls = _deserialize_xls(part.payload_json)
-    tsv_path, synth_warnings = _synthesize_and_persist(
+    tsv_text, synth_warnings = _synthesize_in_memory(
         xls=xls,
         osh_closing_nis=osh_closing_nis,
         snapshot_root=snapshot_root,
     )
+    target_name = _canonical_tsv_filename(part.snapshot_date)
+    target_path = snapshot_root / target_name
 
     part.status = "resolved"
     part.paired_osh_statement_id = osh.id
     part.paired_at = _utcnow()
-    part.resolved_tsv_path = str(tsv_path)
-    db.commit()
+    part.resolved_tsv_path = str(target_path)
+    # Hook is invoked mid-pipeline by the expense-ingest orchestrator;
+    # the caller (route) owns the transaction boundary. Codex zigzag
+    # (a)#5 (2026-05-29) flagged that an internal commit here would
+    # split the ingest's atomic batch. Flush so the orchestrator can
+    # commit (or rollback) the whole pipeline as one unit.
+    db.flush()
+
+    # File write AFTER the flush (so the caller's commit covers both).
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(tsv_text, encoding="utf-8")
+    _log.info(
+        "portfolio_snapshot.osh_arrival_resolved_pair",
+        extra={"path": str(target_path), "osh_id": osh.id},
+    )
 
     return PairResolution(
         status="resolved",
         pending_pair_id=part.id,
-        resolved_tsv_path=tsv_path,
+        resolved_tsv_path=target_path,
         snapshot_date=part.snapshot_date,
         sha256=part.sha256,
         detail=f"Resolved by Osh statement #{osh.id} arriving after XLS.",
@@ -347,12 +370,24 @@ def try_resolve_pending_on_osh_arrival(
 # ---------------------------------------------------------------------------
 
 
+# Parser name on ExpenseStatement that uniquely identifies a Leumi Osh
+# (NIS current account) statement. Codex zigzag review 2026-05-29 (a)#3
+# flagged that ExpenseSource.issuer == "leumi" + kind == "bank" also
+# matches Leumi USD (פמ"ח) statements, which would feed the wrong cash
+# balance into TSV synthesis (NIS interpretation of a USD-denominated
+# running balance is off by ~3.7x). The parser_name discriminator
+# pins the match to leumi_osh specifically.
+_LEUMI_OSH_PARSER_NAME = "leumi_osh"
+
+
 def _find_matching_osh(
     db: Session, *, user_id: str, snapshot_date: date,
 ) -> ExpenseStatement | None:
-    """Return the Osh statement whose period_end is closest to snapshot_date
-    within MATCH_WINDOW_DAYS. Picks the closest period_end; ties broken by
-    higher statement id (newer). Codex zigzag finding #6 (2026-05-29).
+    """Return the Leumi Osh statement whose period_end is closest to
+    snapshot_date within MATCH_WINDOW_DAYS. Picks the closest period_end;
+    ties broken by higher statement id (newer). Discriminates Leumi Osh
+    from Leumi USD via ExpenseStatement.parser_name == "leumi_osh"
+    (codex zigzag findings #6 + 2026-05-29-impl review #3).
     """
     lo = snapshot_date - timedelta(days=MATCH_WINDOW_DAYS)
     hi = snapshot_date + timedelta(days=MATCH_WINDOW_DAYS)
@@ -364,6 +399,7 @@ def _find_matching_osh(
                 ExpenseStatement.user_id == user_id,
                 ExpenseStatement.period_end >= lo,
                 ExpenseStatement.period_end <= hi,
+                ExpenseStatement.parser_name == _LEUMI_OSH_PARSER_NAME,
                 ExpenseSource.kind == "bank",
                 ExpenseSource.issuer == "leumi",
             )
@@ -447,41 +483,125 @@ def _stale_old_pending(
 # ---------------------------------------------------------------------------
 
 
-def _synthesize_and_persist(
+def _synthesize_in_memory(
     *,
     xls: LeumiPortfolioSnapshot,
     osh_closing_nis: float,
     snapshot_root: Path,
-) -> tuple[Path, list[str]]:
-    """Splice the XLS into the most-recent prior TSV at snapshot_root,
-    write the result with the canonical filename, return (path, warnings)."""
-    snapshot_root.mkdir(parents=True, exist_ok=True)
+) -> tuple[str, list[str]]:
+    """Synthesize the new TSV content as a string (no disk write yet).
 
+    Codex zigzag (a)#6 (2026-05-29) split the persist step out of
+    synthesis so the route can commit the DB row BEFORE writing the
+    TSV to disk -- this avoids disk/DB divergence when a DB commit
+    fails after an on-disk write.
+
+    Codex zigzag (a)#9 (2026-05-29) flagged that the old path raised
+    RuntimeError when no prior TSV existed, bricking the brand-new
+    user's first upload. The graceful path is the
+    ``_full_rewrite_from_snapshot`` fallback with an empty prior
+    snapshot.
+    """
+    warnings: list[str] = []
     prior_tsv = _find_most_recent_prior_tsv(snapshot_root)
     if prior_tsv is None:
-        raise RuntimeError(
-            "No prior TSV found at scan root to splice into. The XLS-only "
-            "upload path needs at least one prior 'Family Finances Status' "
-            "TSV as a template. Drop the most recent month's TSV into "
-            f"{snapshot_root} before retrying."
+        warnings.append(
+            "No prior 'Family Finances Status' TSV found at the scan "
+            "root. Synthesizing a minimal TSV from XLS positions + "
+            "Osh cash only (no Schwab / Aborad / NVDA-sales / pensions "
+            "carry-forward). Drop a prior month's TSV into the scan "
+            "root for richer carry-forward."
         )
+        # Build an empty prior_snapshot so _full_rewrite_from_snapshot's
+        # graceful path produces just the positions + cash block.
+        empty_prior = PortfolioSnapshot(source_path="(no-prior-tsv)")
+        symbol_map, currency_map, type_map = _build_prior_mappings(empty_prior, xls)
+        tsv_text = _full_rewrite_from_snapshot(
+            prior_snapshot=empty_prior,
+            xls=xls,
+            osh_closing_nis=osh_closing_nis,
+            fx_usd_nis=3.7,
+            fx_usd_eur=1.05,
+            symbol_map=symbol_map,
+            currency_map=currency_map,
+            type_map=type_map,
+        )
+        return tsv_text, warnings
 
     prior_snapshot = parse_portfolio_tsv(prior_tsv)
-    tsv_text, warnings = _splice_xls_into_tsv(
+    tsv_text, splice_warnings = _splice_xls_into_tsv(
         prior_tsv_path=prior_tsv,
         prior_snapshot=prior_snapshot,
         xls=xls,
         osh_closing_nis=osh_closing_nis,
     )
+    return tsv_text, warnings + splice_warnings
 
-    target_name = _canonical_tsv_filename(xls.snapshot_date or prior_snapshot.snapshot_date)
-    target_path = snapshot_root / target_name
-    target_path.write_text(tsv_text, encoding="utf-8")
-    _log.info(
-        "portfolio_snapshot.xls_synthesized",
-        extra={"path": str(target_path), "prior": str(prior_tsv)},
+
+def _add_part_with_race_recovery(
+    db: Session,
+    *,
+    user_id: str,
+    snapshot_date: date,
+    portfolio_number: str | None,
+    payload_json: str,
+    sha: str,
+    status: str,
+    paired_osh_statement_id: int | None = None,
+    paired_at=None,
+    resolved_tsv_path: str | None = None,
+) -> PortfolioSnapshotPart:
+    """Insert a portfolio_snapshot_parts row, recovering gracefully when
+    a concurrent upload wins the uniqueness race.
+
+    Codex zigzag (a)#7 (2026-05-29) flagged that two concurrent uploads
+    with the same SHA (or the same semantic key) could both pass the
+    pre-insert lookup and race into IntegrityError on commit. We catch
+    the IntegrityError, rollback, re-query, and return the winner's row.
+    """
+    part = PortfolioSnapshotPart(
+        user_id=user_id,
+        kind="xls_positions",
+        snapshot_date=snapshot_date,
+        portfolio_number=portfolio_number,
+        payload_json=payload_json,
+        sha256=sha,
+        status=status,
+        paired_osh_statement_id=paired_osh_statement_id,
+        paired_at=paired_at,
+        resolved_tsv_path=resolved_tsv_path,
     )
-    return target_path, warnings
+    db.add(part)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # Another tx won the race; return its row.
+        existing = (
+            db.execute(
+                select(PortfolioSnapshotPart).where(
+                    PortfolioSnapshotPart.user_id == user_id,
+                    PortfolioSnapshotPart.sha256 == sha,
+                )
+            )
+            .scalar_one_or_none()
+        )
+        if existing is None and portfolio_number is not None:
+            existing = (
+                db.execute(
+                    select(PortfolioSnapshotPart).where(
+                        PortfolioSnapshotPart.user_id == user_id,
+                        PortfolioSnapshotPart.snapshot_date == snapshot_date,
+                        PortfolioSnapshotPart.portfolio_number == portfolio_number,
+                    )
+                )
+                .scalar_one_or_none()
+            )
+        if existing is None:
+            # Shouldn't happen but re-raise so the caller sees the real error.
+            raise
+        return existing
+    return part
 
 
 def _splice_xls_into_tsv(
@@ -513,9 +633,11 @@ def _splice_xls_into_tsv(
             "Cash USD-equivalent may be imprecise."
         )
 
-    # Build security_id -> prior_symbol map so the windfall detector keeps
-    # matching positions across months (codex zigzag #1).
-    symbol_map, currency_map = _build_prior_mappings(prior_snapshot, xls)
+    # Build security_id -> prior_symbol / currency / asset_type maps so
+    # the windfall detector keeps matching positions across months (codex
+    # zigzag #1) and the Type-aggregation in the allocation block stays
+    # consistent with the user's prior categorization (codex zigzag (a)#4).
+    symbol_map, currency_map, type_map = _build_prior_mappings(prior_snapshot, xls)
 
     # Read the prior TSV verbatim so we can preserve all non-Leumi-position
     # rows + section structure + comments.
@@ -539,6 +661,7 @@ def _splice_xls_into_tsv(
             fx_usd_eur=fx_usd_eur,
             symbol_map=symbol_map,
             currency_map=currency_map,
+            type_map=type_map,
         ), warnings
 
     # Split the prior position-block lines:
@@ -556,6 +679,7 @@ def _splice_xls_into_tsv(
         fx_usd_nis=fx_usd_nis,
         symbol_map=symbol_map,
         currency_map=currency_map,
+        type_map=type_map,
     )
 
     # Reassemble: prior header rows + non-Leumi position lines (header + Schwab + Sum)
@@ -668,15 +792,21 @@ def _is_leumi_position_line(line: str) -> bool:
 
 def _build_prior_mappings(
     prior: PortfolioSnapshot, xls: LeumiPortfolioSnapshot,
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Build (security_id -> symbol) + (security_id -> currency) maps from
-    the prior TSV's Leumi rows so the new XLS rows reuse the user's
-    existing convention.
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    """Build (security_id -> symbol), (security_id -> currency), and
+    (security_id -> asset_type) maps from the prior TSV's Leumi rows so
+    the new XLS rows reuse the user's existing convention.
 
     Match strategy:
       1. XLS ticker exactly equals prior TSV symbol -> map.
       2. XLS name_he contains prior TSV symbol as a Latin substring -> map.
-      3. No match -> default to (ticker or security_id, USD).
+      3. No match -> default to (ticker or security_id, USD, "Equity").
+
+    Codex zigzag finding (a)#4 (2026-05-29): hardcoding asset_type="Equity"
+    for every XLS-derived row silently collapses prior Type distinctions
+    (Dividend/Treasuries/Growth/etc.) once the XLS-driven pipeline takes
+    over from the hand-maintained TSV. Asset_type carry-forward fixes the
+    Type-aggregation drift downstream of _recompute_allocation_block.
     """
     prior_leumi = [
         p for p in prior.positions
@@ -685,6 +815,7 @@ def _build_prior_mappings(
     ]
     sym_map: dict[str, str] = {}
     curr_map: dict[str, str] = {}
+    type_map: dict[str, str] = {}
     for xp in xls.positions:
         matched = None
         # Strategy 1: exact ticker match.
@@ -702,10 +833,12 @@ def _build_prior_mappings(
         if matched is not None:
             sym_map[xp.security_id] = matched.symbol
             curr_map[xp.security_id] = matched.currency or "USD"
+            type_map[xp.security_id] = matched.asset_type or "Equity"
         else:
             sym_map[xp.security_id] = xp.ticker or xp.security_id
             curr_map[xp.security_id] = "USD"  # default
-    return sym_map, curr_map
+            type_map[xp.security_id] = "Equity"  # default for new positions
+    return sym_map, curr_map, type_map
 
 
 def _xls_to_tsv_rows(
@@ -715,6 +848,7 @@ def _xls_to_tsv_rows(
     fx_usd_nis: float,
     symbol_map: dict[str, str],
     currency_map: dict[str, str],
+    type_map: dict[str, str],
 ) -> list[str]:
     """Synthesize TSV rows for the new Leumi block: cash row first, then
     one row per XLS position.
@@ -742,6 +876,7 @@ def _xls_to_tsv_rows(
     for p in xls.positions:
         symbol = symbol_map.get(p.security_id, p.ticker or p.security_id)
         currency = currency_map.get(p.security_id, "USD")
+        asset_type = type_map.get(p.security_id, "Equity")
         usd_k = p.holding_value_usd / 1000.0
         if currency == "NIS":
             value_local = p.holding_value_usd * fx_usd_nis
@@ -751,7 +886,7 @@ def _xls_to_tsv_rows(
             "",                                              # 0 Review
             "Leumi",                                         # 1 Location
             currency,                                        # 2 Currency
-            "Equity",                                        # 3 Type (heuristic)
+            asset_type,                                      # 3 Type (carried from prior)
             p.name_he or "",                                 # 4 Details
             symbol,                                          # 5 Symbol
             f"{p.quantity:g}",                               # 6 Shares
@@ -838,29 +973,53 @@ def _recompute_allocation_block(
     if alloc_end is None:
         alloc_end = len(prior_lines)
 
+    # Pre-index prior allocations by category for O(1) lookup.
+    prior_by_cat = {a.category: a for a in prior_allocations}
+    grand_total_new = sum(by_type.values())
+
     out: list[str] = []
     out.append(prior_lines[alloc_start])  # section header verbatim
     for ln in prior_lines[alloc_start + 1:alloc_end]:
-        # Skip empty lines and column-header rows (keep them verbatim).
         cells = ln.split("\t")
-        if len(cells) <= 1 or not (cells[0] or "").strip():
+        # Fully-empty row: keep verbatim (separators between sections).
+        if not any((c or "").strip() for c in cells):
             out.append(ln)
             continue
-        # An allocation row: cells layout per parser is
-        #   category, pct, usd_value_k, target_pct, target_k, delta_k
-        # but indices vary; rely on the parsed AllocationRow list to know
-        # which category each row matches.
-        category = cells[0].strip()
-        # Find matching prior allocation entry.
-        prior_row = next(
-            (a for a in prior_allocations if a.category == category),
-            None,
-        )
+        # Allocation rows start with a leading tab -> cells[0] is empty;
+        # category lives at cells[1] (verified against
+        # argosy.ingest.tsv._parse_allocation_row's index layout).
+        # Codex zigzag (2026-05-29) flagged that the pre-fix code read
+        # cells[0] and the empty-cell guard was inverted, so the whole
+        # block silently fell through verbatim.
+        if len(cells) <= 1:
+            out.append(ln)
+            continue
+        category = cells[1].strip()
+        # Column-header row: skip verbatim.
+        if category.lower() in {"category", "type"} or not category:
+            out.append(ln)
+            continue
+        # Grand-Total row: recompute aggregates against the new total.
+        if "total" in category.lower():
+            new_cells = list(cells)
+            while len(new_cells) < 7:
+                new_cells.append("")
+            new_cells[2] = "100.00%"
+            new_cells[3] = f"{grand_total_new:.2f}"
+            # cells[4] target_pct + cells[5] target_k preserved
+            try:
+                target_k = float((cells[5] or "").replace(",", "").strip())
+                new_cells[6] = f"{target_k - grand_total_new:.2f}"
+            except (ValueError, AttributeError):
+                pass
+            out.append("\t".join(new_cells))
+            continue
+        # Data row: recompute current_pct + current_k from by_type
+        # aggregate; preserve target_pct + target_k verbatim from prior.
+        prior_row = prior_by_cat.get(category)
         if prior_row is None:
             out.append(ln)
             continue
-        # Recompute current_k_usd from by_type aggregate.
-        # Heuristic: category usually matches asset_type 1:1.
         new_current_k = by_type.get(category, prior_row.usd_value_k or 0.0)
         new_current_pct = (
             (new_current_k / new_total_usd_k * 100.0)
@@ -870,17 +1029,16 @@ def _recompute_allocation_block(
             (prior_row.target_k or 0.0) - new_current_k
             if prior_row.target_k is not None else None
         )
-        # Reconstruct the row: keep cell 0 (category) verbatim; replace
-        # numeric cells; keep target cells verbatim.
         new_cells = list(cells)
-        # Pad to 6 cells if needed.
-        while len(new_cells) < 6:
+        while len(new_cells) < 7:
             new_cells.append("")
-        new_cells[1] = f"{new_current_pct:.2f}%"
-        new_cells[2] = f"{new_current_k:.2f}"
-        # cells 3 (target_pct) + 4 (target_k) preserved.
+        # cells[0] (leading tab placeholder) + cells[1] (category)
+        # preserved verbatim. Recompute cells[2..3] + cells[6].
+        new_cells[2] = f"{new_current_pct:.2f}%"
+        new_cells[3] = f"{new_current_k:.2f}"
+        # cells[4] target_pct + cells[5] target_k preserved.
         if new_delta_k is not None:
-            new_cells[5] = f"{new_delta_k:.2f}"
+            new_cells[6] = f"{new_delta_k:.2f}"
         out.append("\t".join(new_cells))
     return out
 
@@ -951,6 +1109,7 @@ def _full_rewrite_from_snapshot(
     fx_usd_eur: float,
     symbol_map: dict[str, str],
     currency_map: dict[str, str],
+    type_map: dict[str, str],
 ) -> str:
     """Fallback path when prior TSV layout can't be located by markers.
     Produces a minimal but valid TSV from the parsed prior snapshot +
@@ -982,12 +1141,19 @@ def _full_rewrite_from_snapshot(
     for p in xls.positions:
         symbol = symbol_map.get(p.security_id, p.ticker or p.security_id)
         currency = currency_map.get(p.security_id, "USD")
+        asset_type = type_map.get(p.security_id, "Equity")
         usd_k = p.holding_value_usd / 1000.0
+        # Mirror main splice path's currency-aware local-value (codex
+        # zigzag (a) impl review #I8: previously hard-coded USD).
+        if currency == "NIS":
+            value_local = p.holding_value_usd * fx_usd_nis
+        else:
+            value_local = p.holding_value_usd
         rows.append([
-            "", "Leumi", currency, "Equity", p.name_he or "", symbol,
+            "", "Leumi", currency, asset_type, p.name_he or "", symbol,
             f"{p.quantity:g}", f"{p.last_price:g}",
             f"{p.avg_buy_price:g}" if p.avg_buy_price else "",
-            f"{p.holding_value_usd:.2f}", f"{usd_k:.2f}",
+            f"{value_local:.2f}", f"{usd_k:.2f}",
             f"{p.gain_pct:.4f}" if p.gain_pct is not None else "", "",
         ])
     # Real estate -- verbatim from prior_snapshot.

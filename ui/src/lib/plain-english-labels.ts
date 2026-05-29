@@ -27,7 +27,10 @@ const SOURCE_PREFIX_LABELS: ReadonlyArray<[string, (rest: string) => string]> = 
   ["synth:", (rest) => `synthesis ${rest}`],
 ];
 
-const DATED_RE = /^([a-z]+):([A-Z]{1,8}):(\d{4}-\d{2}-\d{2})$/;
+// Codex zigzag (c) review #B1 (2026-05-29): real producers emit
+// slash-separated dated IDs; legacy colon form supported defensively.
+const DATED_COLON_RE = /^([a-z_]+):([A-Z]{1,8}):(\d{4}-\d{2}-\d{2})$/;
+const DATED_SLASH_RE = /^([a-z_]+)\/([A-Z]{1,8})\/(\d{4}-\d{2}-\d{2})$/;
 
 const DATED_KIND_LABEL: Record<string, string> = {
   fundamentals: "fundamentals",
@@ -35,15 +38,19 @@ const DATED_KIND_LABEL: Record<string, string> = {
   sentiment: "sentiment",
   technical: "technical",
   indicators: "technical indicators",
+  options: "options data",
+  social: "social signals",
 };
 
 export function friendlySourceLabel(sourceId: string): string {
   if (!sourceId) return "";
-  const m = DATED_RE.exec(sourceId);
-  if (m) {
-    const [, prefix, ticker, dt] = m;
-    const kind = DATED_KIND_LABEL[prefix] ?? prefix;
-    return `${ticker} ${kind} (${dt})`;
+  for (const dated of [DATED_SLASH_RE, DATED_COLON_RE]) {
+    const m = dated.exec(sourceId);
+    if (m) {
+      const [, prefix, ticker, dt] = m;
+      const kind = DATED_KIND_LABEL[prefix] ?? prefix;
+      return `${ticker} ${kind} (${dt})`;
+    }
   }
   for (const [prefix, fn] of SOURCE_PREFIX_LABELS) {
     if (sourceId.startsWith(prefix)) {

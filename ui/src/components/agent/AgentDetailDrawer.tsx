@@ -35,6 +35,7 @@ import {
   TabsTrigger,
 } from "@/components/ui/tabs";
 import { api, type AgentActivityRow, type AgentPrompt } from "@/lib/api";
+import { friendlySourceLabel } from "@/lib/plain-english-labels";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -236,9 +237,12 @@ function SourcesTab({ row }: { row: AgentActivityRow }) {
           key={i}
           className="rounded-md border border-border bg-muted/30 p-3 flex flex-col gap-1"
         >
-          {/* Source ID as title */}
-          <p className="text-sm font-semibold font-mono leading-snug break-all">
-            {src.source_id}
+          {/* Source ID as title -- friendly label, raw on hover. */}
+          <p
+            className="text-sm font-semibold leading-snug break-all"
+            title={src.source_id}
+          >
+            {friendlySourceLabel(src.source_id)}
           </p>
           {/* Body head (truncated content preview) */}
           <p className="text-sm text-muted-foreground whitespace-pre-wrap break-words">
@@ -285,9 +289,12 @@ function CitationsTab({ row }: { row: AgentActivityRow }) {
               {c.cited_quote}
             </blockquote>
           )}
-          {/* Source label */}
-          <span className="text-xs text-muted-foreground">
-            Source: {c.source_id}
+          {/* Source label -- friendly, raw on hover. */}
+          <span
+            className="text-xs text-muted-foreground"
+            title={c.source_id}
+          >
+            Source: {friendlySourceLabel(c.source_id)}
           </span>
         </li>
       ))}

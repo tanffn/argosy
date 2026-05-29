@@ -7,7 +7,7 @@ amount.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 
@@ -143,3 +143,154 @@ class TestCashRowDetection:
     def test_no_match(self):
         rows = [AllocationRow(category="Growth", target_k=10)]
         assert _find_cash_row(rows) is None
+
+
+# ---------------------------------------------------------------------------
+# Staleness guard + API route tests (codex zigzag (b)#I1 + #I2)
+# ---------------------------------------------------------------------------
+
+
+class TestStalenessGuard:
+    """detect_unallocated_cash_overage must not fire on stale snapshots."""
+
+    def test_fresh_snapshot_fires(self, argosy_home_db):
+        """A snapshot dated today produces an event when overage exists."""
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import json as _json
+        from argosy.state.models import PortfolioSnapshotRow
+        from argosy.services.unallocated_cash_detector import (
+            detect_unallocated_cash_overage,
+        )
+        from argosy.config import get_settings
+
+        engine = create_engine(f"sqlite:///{get_settings().db_file}")
+        SessionLocal = sessionmaker(bind=engine)
+        sess = SessionLocal()
+        try:
+            today = date(2026, 5, 29)
+            row = PortfolioSnapshotRow(
+                user_id="ariel",
+                snapshot_date=today,
+                imported_at=datetime.now(timezone.utc),
+                source_path="x",
+                positions_json="[]",
+                allocations_json=_json.dumps([
+                    {"category": "Cash", "pct": 80.0, "usd_value_k": 100,
+                     "target_pct": 30.0, "target_k": 50, "delta_k": -50},
+                    {"category": "Growth", "pct": 20.0, "usd_value_k": 50,
+                     "target_pct": 70.0, "target_k": 100, "delta_k": 50},
+                ]),
+                nvda_sales_json="[]", real_estate_json="[]",
+                pensions_json="[]", totals_json="{}",
+                parse_warnings_json="[]",
+            )
+            sess.add(row)
+            sess.commit()
+            event = detect_unallocated_cash_overage(
+                sess, user_id="ariel", today=today,
+            )
+            assert event is not None
+            assert event.excess_usd == 50_000.0
+        finally:
+            sess.close()
+
+    def test_stale_snapshot_returns_none(self, argosy_home_db):
+        """A snapshot older than DEFAULT_STALENESS_DAYS returns None."""
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        import json as _json
+        from argosy.state.models import PortfolioSnapshotRow
+        from argosy.services.unallocated_cash_detector import (
+            detect_unallocated_cash_overage,
+        )
+        from argosy.config import get_settings
+
+        engine = create_engine(f"sqlite:///{get_settings().db_file}")
+        SessionLocal = sessionmaker(bind=engine)
+        sess = SessionLocal()
+        try:
+            today = date(2026, 5, 29)
+            ancient = date(2026, 1, 15)  # 4+ months old
+            row = PortfolioSnapshotRow(
+                user_id="ariel",
+                snapshot_date=ancient,
+                imported_at=datetime.now(timezone.utc),
+                source_path="x",
+                positions_json="[]",
+                allocations_json=_json.dumps([
+                    {"category": "Cash", "pct": 80.0, "usd_value_k": 100,
+                     "target_pct": 30.0, "target_k": 50, "delta_k": -50},
+                    {"category": "Growth", "pct": 20.0, "usd_value_k": 50,
+                     "target_pct": 70.0, "target_k": 100, "delta_k": 50},
+                ]),
+                nvda_sales_json="[]", real_estate_json="[]",
+                pensions_json="[]", totals_json="{}",
+                parse_warnings_json="[]",
+            )
+            sess.add(row)
+            sess.commit()
+            event = detect_unallocated_cash_overage(
+                sess, user_id="ariel", today=today,
+            )
+            assert event is None, (
+                "Stale snapshot (>45d old) should not fire the detector"
+            )
+        finally:
+            sess.close()
+
+
+class TestAPIRoute:
+    """Route-level integration test for /api/portfolio/unallocated-cash-proposal.
+
+    Codex zigzag (b)#I2: the route does `UnallocatedCashProposalDTO(**payload)`
+    which would raise ValidationError → 500 if event.to_dict() drifts.
+    """
+
+    def test_route_returns_null_when_no_snapshot(self, client_with_db):
+        resp = client_with_db.get(
+            "/api/portfolio/unallocated-cash-proposal?user_id=ariel",
+        )
+        assert resp.status_code == 200
+        assert resp.json() is None
+
+    def test_route_returns_proposal_when_overage(self, client_with_db):
+        import json as _json
+        from argosy.state.models import PortfolioSnapshotRow, User
+        sess = client_with_db.app.state.session_factory()
+        try:
+            if sess.get(User, "ariel") is None:
+                sess.add(User(id="ariel", plan="free"))
+            today = datetime.now(timezone.utc).date()
+            row = PortfolioSnapshotRow(
+                user_id="ariel",
+                snapshot_date=today,
+                imported_at=datetime.now(timezone.utc),
+                source_path="x",
+                positions_json="[]",
+                allocations_json=_json.dumps([
+                    {"category": "Cash", "pct": 80.0, "usd_value_k": 100,
+                     "target_pct": 30.0, "target_k": 50, "delta_k": -50},
+                    {"category": "Growth", "pct": 20.0, "usd_value_k": 50,
+                     "target_pct": 70.0, "target_k": 100, "delta_k": 50},
+                ]),
+                nvda_sales_json="[]", real_estate_json="[]",
+                pensions_json="[]", totals_json="{}",
+                parse_warnings_json="[]",
+            )
+            sess.add(row)
+            sess.commit()
+        finally:
+            sess.close()
+        resp = client_with_db.get(
+            "/api/portfolio/unallocated-cash-proposal?user_id=ariel",
+        )
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert payload is not None
+        # DTO shape contract
+        assert payload["excess_usd"] == 50_000.0
+        assert payload["overage_ratio"] == 2.0
+        assert payload["snapshot_date"] == today.isoformat()
+        assert len(payload["proposals"]) > 0
+        assert "allocation_delta_table" in payload

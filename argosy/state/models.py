@@ -31,6 +31,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text as _sa_text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -1803,9 +1804,18 @@ class PortfolioSnapshotPart(Base):
             "user_id", "sha256",
             name="uq_portfolio_snapshot_parts_user_sha",
         ),
-        UniqueConstraint(
+        # Semantic dedup: partial unique index limited to rows with a
+        # non-NULL portfolio_number. SQLite treats each NULL as distinct
+        # under a full UNIQUE constraint, so the prior table-level
+        # UniqueConstraint didn't actually enforce anything for rows
+        # missing the Leumi portfolio number (codex zigzag (a)#8,
+        # 2026-05-29). Migration 0040 replaces it with the partial index.
+        Index(
+            "ix_portfolio_snapshot_parts_user_date_portfolio_nonnull",
             "user_id", "snapshot_date", "portfolio_number",
-            name="uq_portfolio_snapshot_parts_user_date_portfolio",
+            unique=True,
+            sqlite_where=_sa_text("portfolio_number IS NOT NULL"),
+            postgresql_where=_sa_text("portfolio_number IS NOT NULL"),
         ),
         Index(
             "ix_portfolio_snapshot_parts_user_status_date",

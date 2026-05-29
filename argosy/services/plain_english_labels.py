@@ -104,7 +104,22 @@ _SOURCE_PREFIX_LABELS: list[tuple[str, str]] = [
 ]
 
 
-_NIS_RE = re.compile(r"^[a-z]+:([A-Z]{1,8}):(\d{4}-\d{2}-\d{2})$")
+# Dated patterns the real producers emit. Codex zigzag (c) impl
+# review #B1 (2026-05-29): the colon-only regex from the v1 implementation
+# matched no real source IDs (real producers emit slash form). Both forms
+# accepted defensively.
+_DATED_COLON_RE = re.compile(r"^([a-z_]+):([A-Z]{1,8}):(\d{4}-\d{2}-\d{2})$")
+_DATED_SLASH_RE = re.compile(r"^([a-z_]+)/([A-Z]{1,8})/(\d{4}-\d{2}-\d{2})$")
+
+_DATED_KIND_LABEL: dict[str, str] = {
+    "fundamentals": "fundamentals",
+    "news": "news",
+    "sentiment": "sentiment",
+    "technical": "technical",
+    "indicators": "technical indicators",
+    "options": "options data",
+    "social": "social signals",
+}
 
 
 def friendly_source_label(source_id: str) -> str:
@@ -116,25 +131,21 @@ def friendly_source_label(source_id: str) -> str:
 
     Examples:
       indicators/NVDA              -> "NVDA technical indicators"
+      fundamentals/NVDA/2026-05-29 -> "NVDA fundamentals (2026-05-29)"
       fundamentals:NVDA:2026-05-29 -> "NVDA fundamentals (2026-05-29)"
       fx/USD/NIS                   -> "FX USD/NIS"
       agent_report:12345           -> "agent report #12345"
     """
     if not source_id:
         return ""
-    # Dated patterns like ``fundamentals:NVDA:2026-05-29``.
-    m = _NIS_RE.match(source_id)
-    if m:
-        ticker, dt = m.group(1), m.group(2)
-        prefix = source_id.split(":", 1)[0]
-        kind = {
-            "fundamentals": "fundamentals",
-            "news": "news",
-            "sentiment": "sentiment",
-            "technical": "technical",
-            "indicators": "technical indicators",
-        }.get(prefix, prefix)
-        return f"{ticker} {kind} ({dt})"
+    # Dated patterns -- accept colon-separated (legacy) + slash-separated
+    # (real producer shape). Both forms produce the same output.
+    for dated_re in (_DATED_SLASH_RE, _DATED_COLON_RE):
+        m = dated_re.match(source_id)
+        if m:
+            prefix, ticker, dt = m.group(1), m.group(2), m.group(3)
+            kind = _DATED_KIND_LABEL.get(prefix, prefix)
+            return f"{ticker} {kind} ({dt})"
     for prefix, template in _SOURCE_PREFIX_LABELS:
         if source_id.startswith(prefix):
             rest = source_id[len(prefix):]

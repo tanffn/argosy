@@ -18,6 +18,7 @@ import {
   type DraftResponse,
   type HorizonView,
 } from "@/lib/api";
+import { friendlySourceLabel } from "@/lib/plain-english-labels";
 
 interface PlanRevisionSheetProps {
   open: boolean;
@@ -250,9 +251,10 @@ function DeltasView(props: {
               {d.cited_sources.map((c) => (
                 <span
                   key={c}
-                  className="text-[10px] font-mono bg-accent/40 px-1.5 py-0.5 rounded"
+                  className="text-[10px] bg-accent/40 px-1.5 py-0.5 rounded"
+                  title={c}
                 >
-                  {c}
+                  {friendlySourceLabel(c)}
                 </span>
               ))}
             </div>

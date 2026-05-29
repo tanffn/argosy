@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -47,6 +47,11 @@ from argosy.services.retirement.windfall_detector import AllocationLine
 # noise. Tune via the function parameter; not exposed as an env var to
 # keep the trigger contract explicit at the call site.
 DEFAULT_OVERAGE_RATIO = 1.5
+
+# Snapshots older than this don't fire the detector. Codex zigzag (b)#I1
+# (2026-05-29): acting on a stale snapshot misleads the user about how
+# much unallocated cash they actually have (likely already allocated).
+DEFAULT_STALENESS_DAYS = 45
 
 
 @dataclass
@@ -96,11 +101,14 @@ def detect_unallocated_cash_overage(
     *,
     user_id: str,
     overage_ratio: float = DEFAULT_OVERAGE_RATIO,
+    staleness_days: int = DEFAULT_STALENESS_DAYS,
+    today: date | None = None,
 ) -> UnallocatedCashEvent | None:
     """Return an event if current cash exceeds plan-target cash by the ratio.
 
     Reads the latest portfolio_snapshot from the DB. Returns None when:
       * No snapshot exists for the user.
+      * Snapshot is older than ``staleness_days`` (codex zigzag (b)#I1).
       * No "Current allocation" block in the snapshot.
       * No cash row (or cash row has no target).
       * Current cash <= target cash * overage_ratio.
@@ -111,6 +119,13 @@ def detect_unallocated_cash_overage(
     if row is None:
         return None
     snapshot = row_to_snapshot(row)
+    # Staleness guard: snapshots older than the threshold don't fire.
+    # ``today`` is injectable for testing; production callers omit it.
+    if snapshot.snapshot_date is not None:
+        if today is None:
+            today = datetime.now(timezone.utc).date()
+        if (today - snapshot.snapshot_date).days > staleness_days:
+            return None
     return _detect_from_snapshot(snapshot, overage_ratio=overage_ratio)
 
 

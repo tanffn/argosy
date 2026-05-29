@@ -72,6 +72,11 @@ export function UnallocatedCashCard({ userId, overageRatio = 1.5 }: Props) {
             <CardDescription className="mt-1">
               {proposal.headline}
             </CardDescription>
+            {proposal.snapshot_date ? (
+              <div className="mt-1 text-[11px] text-muted-foreground font-mono">
+                Based on snapshot dated {proposal.snapshot_date}
+              </div>
+            ) : null}
           </div>
           <StatusPill tone="warning" mono>
             ${excessK.toFixed(0)}K excess

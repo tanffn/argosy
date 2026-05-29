@@ -26,6 +26,7 @@ import {
   type ProposalListItem,
   type ReasoningTrailItem,
 } from "@/lib/api";
+import { friendlySourceLabel } from "@/lib/plain-english-labels";
 import { useWSEvents } from "@/lib/ws";
 
 const USER_ID = "ariel";
@@ -544,8 +545,8 @@ export default function ProposalsPage() {
                               Cited sources:
                             </span>
                             {p.cited_sources.map((s, i) => (
-                              <Badge key={i} variant="outline">
-                                {s}
+                              <Badge key={i} variant="outline" title={s}>
+                                {friendlySourceLabel(s)}
                               </Badge>
                             ))}
                           </div>
