@@ -27,6 +27,7 @@ import {
   type ReasoningTrailItem,
 } from "@/lib/api";
 import { friendlySourceLabel } from "@/lib/plain-english-labels";
+import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { useWSEvents } from "@/lib/ws";
 
 const USER_ID = "ariel";
@@ -419,6 +420,14 @@ export default function ProposalsPage() {
           ))}
         </select>
       </header>
+
+      {/* Allocation actions surface — WindfallCard self-suppresses when no
+          event is detected, so the section renders as an empty scroll
+          target most of the time. Banner on Home + the unallocated-cash
+          tile both deep-link here via /proposals#allocation. */}
+      <section id="allocation" className="scroll-mt-6">
+        <WindfallCard />
+      </section>
 
       {error && <p className="text-sm text-error font-mono">{error}</p>}
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}

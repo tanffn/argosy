@@ -24,14 +24,15 @@ import { SigmaCalibrationCard } from "@/components/retirement/SigmaCalibrationCa
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
 import { StochasticFxCard } from "@/components/retirement/StochasticFxCard";
 import { TaxBreakdownCard } from "@/components/retirement/TaxBreakdownCard";
-import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { WithdrawalPolicySelector } from "@/components/retirement/WithdrawalPolicySelector";
 
 const USER_ID = "ariel";
 
 // Fix UX #6 — page-internal section anchors with a sticky TOC.
+// Allocation actions (formerly "Windfall" section here) moved to
+// /proposals#allocation in sprint commit #6 — /retirement is now a
+// read-only visualization surface.
 const SECTIONS: Array<{ id: string; label: string }> = [
-  { id: "windfall",          label: "Windfall" },
   { id: "when-can-i-retire", label: "When can I retire?" },
   { id: "verdict",           label: "Verdict" },
   { id: "safety",        label: "Safety gates" },
@@ -100,15 +101,6 @@ export default function RetirementPage() {
       </nav>
 
       <div className="space-y-4 min-w-0">
-        {/* Windfall surface — renders only when the detector found a
-            qualifying cash delta in the user's latest monthly TSV.
-            <WindfallCard> internally returns null when event is missing,
-            so the section anchor just yields an empty scroll target in
-            the common case. Banner on Home links here via #windfall. */}
-        <section id="windfall" className="scroll-mt-6">
-          <WindfallCard />
-        </section>
-
         {/* Expected retirement age headline (2026-05-29) — the most
             direct answer to "when can I retire?" surfaced as a card
             ABOVE the P(solvent) verdict. Sourced from the cashflow

@@ -360,7 +360,7 @@
   <div class="flow-step">
     <div class="step-num">STEP B3</div>
     <div class="step-title">Per-action outcome renders inline</div>
-    <div class="step-body">Generate-TSV: <strong>GENERATED</strong> pill + the persisted path + refreshed Leumi NIS / USD cash figures + any warnings. Upload: <strong>PERSISTED</strong> + <strong>detector status</strong> (ok / skipped / failed / <em>pending_pair</em>) + <strong>event</strong> (cash-delta over threshold ⇒ deep-link to <span class="nav-card">/retirement#windfall</span>) + <strong>AWAITING OSH</strong> pill when an XLS is queued.</div>
+    <div class="step-body">Generate-TSV: <strong>GENERATED</strong> pill + the persisted path + refreshed Leumi NIS / USD cash figures + any warnings. Upload: <strong>PERSISTED</strong> + <strong>detector status</strong> (ok / skipped / failed / <em>pending_pair</em>) + <strong>event</strong> (cash-delta over threshold ⇒ deep-link to <span class="nav-card">/proposals#allocation</span>) + <strong>AWAITING OSH</strong> pill when an XLS is queued.</div>
   </div>
 </div>
 
@@ -540,7 +540,7 @@
 
 <h3>The monthly snapshot upload tile (2026-05-29)</h3>
 
-<p>Top of <span class="nav-card">/portfolio</span> ships a drag-drop tile that accepts the monthly <code>Family Finances Status - YY MMM.tsv</code> file. Drop it in (or click to pick); the route persists the TSV under <code>ARGOSY_EXPENSE_SAMPLES_ROOT</code> and synchronously runs the windfall detector against the prior month's snapshot. The per-upload result row surfaces tri-state status inline: PERSISTED + windfall-detector outcome (<em>skipped</em> = no prior TSV to diff; <em>ok + no event</em> = below threshold; <em>ok + event</em> = a banner appears with a deep-link to <span class="nav-card">/retirement#windfall</span> for the full plan).</p>
+<p>Top of <span class="nav-card">/portfolio</span> ships a drag-drop tile that accepts the monthly <code>Family Finances Status - YY MMM.tsv</code> file. Drop it in (or click to pick); the route persists the TSV under <code>ARGOSY_EXPENSE_SAMPLES_ROOT</code> and synchronously runs the windfall detector against the prior month's snapshot. The per-upload result row surfaces tri-state status inline: PERSISTED + windfall-detector outcome (<em>skipped</em> = no prior TSV to diff; <em>ok + no event</em> = below threshold; <em>ok + event</em> = a banner appears with a deep-link to <span class="nav-card">/proposals#allocation</span> for the full plan).</p>
 
 <p>The upload tile accepts both TSV files and Leumi monthly portfolio XLS exports. XLS uploads pair with the matching Leumi Osh current-account statement for the cash row (±15-day match window, bidirectional); until the pair lands the XLS upload renders as <code>AWAITING OSH</code>. Once both halves are present, Argosy synthesizes the canonical TSV and runs the windfall detector synchronously.</p>
 
@@ -809,7 +809,7 @@
 
 <div class="callout warn">
   <div class="callout-title">Hole #1 — Windfall classification dialogue not wired (Advisor focus-mode)</div>
-  When the detector tags a windfall as <code>unclear</code>, the banner currently just deep-links to <span class="nav-card">/retirement#windfall</span>. The design sketched in <code>docs/superpowers/plans/2026-05-28-windfall-flow-resume.md</code> calls for a focus-mode dialogue on <span class="nav-card">/advisor</span> that opens with the event context as the first message and extracts the user's clarification (bonus, gift, in-month redeployment) via <code>intake_extractor</code> into a new <code>income_events</code> table. Concrete schema + extractor agent + advisor route shape are TBD.<br>
+  When the detector tags a windfall as <code>unclear</code>, the banner currently just deep-links to <span class="nav-card">/proposals#allocation</span>. The design sketched in <code>docs/superpowers/plans/2026-05-28-windfall-flow-resume.md</code> calls for a focus-mode dialogue on <span class="nav-card">/advisor</span> that opens with the event context as the first message and extracts the user's clarification (bonus, gift, in-month redeployment) via <code>intake_extractor</code> into a new <code>income_events</code> table. Concrete schema + extractor agent + advisor route shape are TBD.<br>
   <strong>Suggested fix:</strong> design + ship the focus-mode flow per the resume note.
 </div>
 

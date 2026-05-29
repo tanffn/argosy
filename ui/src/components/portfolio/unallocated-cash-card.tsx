@@ -127,10 +127,10 @@ export function UnallocatedCashCard({ userId, overageRatio = 1.5 }: Props) {
           {overageRatio.toFixed(1)}. Self-tuning &mdash; no hard-coded dollar
           threshold. See{" "}
           <Link
-            href="/retirement#windfall"
+            href="/proposals#allocation"
             className="text-info hover:underline"
           >
-            /retirement
+            /proposals#allocation
           </Link>{" "}
           for the cross-month windfall flow ($25K+ deltas).
         </div>

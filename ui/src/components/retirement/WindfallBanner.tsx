@@ -86,7 +86,7 @@ export function WindfallBanner() {
       </div>
       <div className="flex items-center gap-3 flex-wrap">
         <Link
-          href="/retirement#windfall"
+          href="/proposals#allocation"
           className="font-mono text-xs text-info hover:underline"
         >
           See allocation plan -&gt;

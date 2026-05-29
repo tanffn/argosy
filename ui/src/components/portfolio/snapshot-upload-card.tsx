@@ -228,7 +228,7 @@ function UploadResultRow({ result }: { result: PortfolioUploadSnapshotResponse }
           </div>
           <div className="mt-2">
             <Link
-              href="/retirement#windfall"
+              href="/proposals#allocation"
               className="text-info hover:underline"
             >
               See allocation plan -&gt;
