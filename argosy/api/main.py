@@ -504,6 +504,35 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # Sprint C commit #7 — PredictionsBackfillDiscordLoop. Manual-
+        # only one-shot job (no cron). Registered with the scheduler
+        # AND the JobRegistry so the admin UI shows it as a Run-Now
+        # target — the loop is constructed with ``enabled=False`` so
+        # the scheduler's auto-tick path skips it; the manual
+        # ``fire_now`` path bypasses ``enabled`` and routes through
+        # the same audit-row machinery as every other tick. See the
+        # loop module's docstring for the design rationale.
+        try:
+            from argosy.orchestrator.loops.predictions_backfill_discord import (  # noqa: PLC0415
+                PredictionsBackfillDiscordLoop,
+                predictions_backfill_discord_metadata,
+            )
+
+            backfill_loop = PredictionsBackfillDiscordLoop()
+            scheduler.register_loop(backfill_loop)
+            registry.register(
+                job=backfill_loop,
+                metadata=predictions_backfill_discord_metadata(),
+            )
+            log.info(
+                "scheduler.predictions_backfill_discord_registered"
+            )
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.predictions_backfill_discord_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Step 1: start_supervisors BEFORE scheduling so any
         # LongRunningJob supervisor is alive when its first connect
         # cycle opens. (No-op until commit #5 fills it in.)
