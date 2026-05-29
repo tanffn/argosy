@@ -21,13 +21,20 @@
 
 User binding: never reference `update_leumi_tsv.py` going forward; if anything's missing Argosy should derive it from internal state. New memory: `feedback_argosy_generates_tsv.md`.
 
-**Shipped:**
+**Shipped (`bc2fcf7`):**
 - New service `argosy/services/portfolio_ingest/tsv_generator.py` (`generate_family_finances_tsv`). Reads most-recent prior TSV at `$ARGOSY_EXPENSE_SAMPLES_ROOT` as carry-forward template; overrides Leumi NIS + USD cash rows from latest `leumi_osh` / `leumi_usd` ExpenseStatement closing balances (per-source `(period_end DESC, id DESC)` tiebreak — matches codex zigzag (a)#3 disambiguation pattern); bumps `snapshot_date` to today; recomputes Current-allocation block currents against new totals.
 - New route `POST /api/portfolio/generate-tsv` + DTO.
 - New UI tile `GenerateTsvCard` mounted ABOVE the upload tile on `/portfolio` — generate is the everyday path; upload is the input flow for fresh Leumi monthly XLS.
-- 6 tests covering happy path, no-prior-TSV graceful detail, no-bank-statements carry-forward + warning, Leumi USD/NIS disambiguation, snapshot_date bump, allocation recompute.
+- 7 tests: happy path, no-prior-TSV graceful detail, no-bank-statements carry-forward + warning, Leumi USD/NIS disambiguation, snapshot_date bump, allocation recompute, **fallback recovery on extraction failure** (codex v2 IMPORTANT — see below).
 - User-guide §5 Half-B rewritten: STEP B1 is now "Click Generate TSV now"; STEP B2 is the upload as an input mechanism. Removed "Option A — combined TSV" framing.
-- Codex zigzag dispatched against the working-tree diff before commit; will integrate findings.
+- **Live-smoked** against the user's real data: route returned Leumi NIS ₪58,503 + Leumi USD $101,509 from actual `expense_statements` and wrote the TSV at the real scan root.
+
+**Codex zigzag v2 (post-implementation review) findings, fixed in the same commit:**
+- **IMPORTANT (codex-only)**: `_latest_closing_balance` returned None on the first extraction failure — if the newest `leumi_osh` statement had a malformed `raw_row_json` or missing `balance` key, cash silently stales even when older valid statements exist. Fixed: lookup scans up to 6 candidates newest-first; surfaces skipped-statement ids in warnings for diagnostic clarity. New test `test_fallback_to_older_statement_on_extraction_failure`.
+- **MINOR (codex-only)**: Warning text didn't distinguish "no statement found" vs "extraction failed on all candidates." Fixed: separate warning paths per outcome.
+- Helper duplication (`_LEUMI_USD_PARSER_NAME`, `_compute_total_usd_k`) acknowledged by codex as acceptable; consolidation deferred.
+
+**Zigzag methodology lesson:** v1 of the dispatch script sent only `git diff HEAD` to codex, which excludes new untracked files. Codex correctly BLOCK'd v1 with "cannot review what isn't there." v2 dispatch staged the new files directly into `codex_ctx/`. Worth fixing in the kit's template so future dispatches always stage NEW files (via `git add -N` + diff, or direct copy).
 
 **Source-of-truth for refresh inputs (today):**
 - Position structure → most recent prior TSV at scan root (which is itself produced by the XLS-Osh pair flow OR by a previous Generate-TSV run).
