@@ -68,7 +68,7 @@ from argosy.services.retirement.windfall_allocator import (
     _allocate_long_term,
 )
 from argosy.services.retirement.windfall_detector import AllocationLine
-from argosy.state.models import MonitorFlag
+from argosy.state.models import MonitorFlag, NewsSignal
 
 
 # --- Defaults ---------------------------------------------------------------
@@ -999,6 +999,245 @@ def _mc_flag_from_payload(
     )
 
 
+# ---------------------------------------------------------------------------
+# Sprint commit #15 — macro-shift trigger (spec §5.1.3)
+# ---------------------------------------------------------------------------
+#
+# Consumes the news pipeline's output. Stage 1 + Stage 2 of the news
+# pipeline (commits #13 + #14) run independently of the monitor; their
+# output is rows in `news_signals` with `materiality='high'` and
+# `recommended_flag='macro_shift'`. This trigger reads those rows and
+# fires monitor_flags(kind='macro_shift') for any not yet flagged.
+#
+# Idempotency: each news_signal_id is fired at most once. Tracked via
+# the payload — monitor_flags rows of kind='macro_shift' carry
+# `payload['news_signal_id']` and this function skips any signal whose
+# id already appears in an active monitor_flags row.
+
+
+@dataclass(frozen=True)
+class MacroShiftFlag:
+    """One macro-shift flag — fires when the news pipeline classifies a
+    signal as high-materiality with recommended_flag='macro_shift'."""
+    user_id: str
+    news_signal_id: int
+    surfaced_at: datetime
+    classifier_rationale: str
+    severity: Literal["info", "warning", "critical"]
+    parsed_tickers: list[str]  # tickers that triggered the analyst
+
+    def to_dict(self) -> dict:
+        return {
+            "user_id": self.user_id,
+            "news_signal_id": self.news_signal_id,
+            "surfaced_at": self.surfaced_at.isoformat(),
+            "classifier_rationale": self.classifier_rationale,
+            "severity": self.severity,
+            "parsed_tickers": list(self.parsed_tickers),
+        }
+
+
+@dataclass(frozen=True)
+class MacroShiftCheckResult:
+    flags_fired: list[MacroShiftFlag]
+    signals_evaluated: int
+
+
+# Lookback for "recent signals worth flagging" — the news pipeline runs
+# daily; one week feels right (gives slack for missed runs while not
+# resurrecting stale geopolitical events).
+_MACRO_LOOKBACK_DAYS = 7
+
+
+def check_macro_shift(
+    session: Session,
+    user_id: str,
+    *,
+    as_of: datetime | None = None,
+    lookback_days: int = _MACRO_LOOKBACK_DAYS,
+) -> MacroShiftCheckResult:
+    """Fire macro_shift monitor_flags for any new high-materiality news
+    signals with recommended_flag='macro_shift'.
+
+    Reads news_signals where:
+      - analyzed_at IS NOT NULL (Stage 2 has classified it)
+      - materiality = 'high'
+      - recommended_flag = 'macro_shift'
+      - received_at >= as_of - lookback_days
+
+    For each, checks whether a monitor_flags row of kind='macro_shift'
+    with payload.news_signal_id == signal.id already exists; if not,
+    creates one. Severity inherits from materiality with a tighter
+    mapping: high materiality = warning by default, escalated to
+    critical when the signal carries any of the high-impact event
+    keywords (war, sanction, geopolitical, Taiwan).
+    """
+    now = as_of or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=lookback_days)
+
+    # Pull candidate news signals.
+    stmt = (
+        select(NewsSignal)
+        .where(NewsSignal.materiality == "high")
+        .where(NewsSignal.recommended_flag == "macro_shift")
+        .where(NewsSignal.analyzed_at.is_not(None))
+        .where(NewsSignal.received_at >= cutoff)
+        .order_by(NewsSignal.received_at.desc())
+    )
+    candidates = list(session.execute(stmt).scalars())
+
+    # Find news_signal_ids already flagged (active OR acknowledged —
+    # idempotency is forever, not just until acknowledge).
+    already_flagged = _already_flagged_news_signal_ids(session, user_id)
+
+    new_flags: list[MacroShiftFlag] = []
+    for sig in candidates:
+        if sig.id in already_flagged:
+            continue
+        try:
+            event_keywords = json.loads(sig.event_keywords or "[]")
+            parsed_tickers = json.loads(sig.parsed_tickers or "[]")
+        except (TypeError, ValueError):
+            event_keywords = []
+            parsed_tickers = []
+        severity = _classify_macro_severity(event_keywords)
+        rationale = (sig.rationale or "").strip() or (
+            f"high-materiality macro signal from {sig.source}"
+        )
+        sig_received = sig.received_at
+        if sig_received.tzinfo is None:
+            sig_received = sig_received.replace(tzinfo=timezone.utc)
+        flag = MacroShiftFlag(
+            user_id=user_id,
+            news_signal_id=sig.id,
+            surfaced_at=now,
+            classifier_rationale=rationale,
+            severity=severity,
+            parsed_tickers=parsed_tickers,
+        )
+        new_flags.append(flag)
+        _write_macro_shift_row(
+            session, flag=flag, now=now, ttl_days=DEFAULT_FLAG_TTL_DAYS,
+        )
+
+    session.commit()
+    return MacroShiftCheckResult(
+        flags_fired=new_flags,
+        signals_evaluated=len(candidates),
+    )
+
+
+_HIGH_IMPACT_KEYWORDS = frozenset({
+    "war", "sanction", "geopolitical", "Taiwan", "FOMC",
+})
+
+
+def _classify_macro_severity(
+    event_keywords: list[str],
+) -> Literal["info", "warning", "critical"]:
+    """Severity = critical when high-impact keywords are present;
+    warning otherwise. High-materiality + recommended_flag=macro_shift
+    by itself doesn't fire 'info' — Stage 2 already filtered to
+    materiality=high."""
+    if not event_keywords:
+        return "warning"
+    overlap = {k.lower() for k in event_keywords} & {
+        k.lower() for k in _HIGH_IMPACT_KEYWORDS
+    }
+    return "critical" if overlap else "warning"
+
+
+def _already_flagged_news_signal_ids(
+    session: Session,
+    user_id: str,
+) -> set[int]:
+    """All news_signal_ids that ever produced a macro_shift flag for
+    this user. Used for idempotency — fire at most once per signal."""
+    stmt = (
+        select(MonitorFlag)
+        .where(MonitorFlag.user_id == user_id)
+        .where(MonitorFlag.kind == "macro_shift")
+    )
+    out: set[int] = set()
+    for r in session.execute(stmt).scalars():
+        try:
+            payload = json.loads(r.payload)
+        except (TypeError, ValueError):
+            continue
+        nsid = payload.get("news_signal_id")
+        if isinstance(nsid, int):
+            out.add(nsid)
+    return out
+
+
+def _write_macro_shift_row(
+    session: Session,
+    *,
+    flag: MacroShiftFlag,
+    now: datetime,
+    ttl_days: int,
+) -> MonitorFlag:
+    payload_dict = {
+        "news_signal_id": flag.news_signal_id,
+        "classifier_rationale": flag.classifier_rationale,
+        "parsed_tickers": flag.parsed_tickers,
+        "trigger": "news_analyst",
+    }
+    row = MonitorFlag(
+        user_id=flag.user_id,
+        kind="macro_shift",
+        severity=flag.severity,
+        payload=json.dumps(payload_dict),
+        surfaced_at=now,
+        expires_at=now + timedelta(days=ttl_days),
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def get_active_macro_shift_flags(
+    session: Session,
+    user_id: str,
+    *,
+    as_of: datetime | None = None,
+) -> list[MacroShiftFlag]:
+    """Active (unacknowledged, unexpired) macro_shift flags. Feeds the
+    Home Red-Flag Strip alongside drift + MC flags."""
+    now = as_of or datetime.now(timezone.utc)
+    stmt = (
+        select(MonitorFlag)
+        .where(MonitorFlag.user_id == user_id)
+        .where(MonitorFlag.kind == "macro_shift")
+        .where(MonitorFlag.acknowledged_at.is_(None))
+        .order_by(MonitorFlag.surfaced_at.desc())
+    )
+    out: list[MacroShiftFlag] = []
+    for r in session.execute(stmt).scalars():
+        if r.expires_at is not None:
+            exp = r.expires_at
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=timezone.utc)
+            if exp <= now:
+                continue
+        try:
+            payload = json.loads(r.payload)
+        except (TypeError, ValueError):
+            continue
+        surfaced = r.surfaced_at
+        if surfaced.tzinfo is None:
+            surfaced = surfaced.replace(tzinfo=timezone.utc)
+        out.append(MacroShiftFlag(
+            user_id=r.user_id,
+            news_signal_id=int(payload.get("news_signal_id") or 0),
+            surfaced_at=surfaced,
+            classifier_rationale=str(payload.get("classifier_rationale") or ""),
+            severity=r.severity,  # type: ignore[arg-type]
+            parsed_tickers=list(payload.get("parsed_tickers") or []),
+        ))
+    return out
+
+
 __all__ = [
     "AllocationDriftFlag",
     "DEFAULT_ABS_DRIFT_MIN_USD",
@@ -1012,8 +1251,12 @@ __all__ = [
     "DriftCheckResult",
     "MCRegressionCheckResult",
     "MCRegressionFlag",
+    "MacroShiftCheckResult",
+    "MacroShiftFlag",
     "check_allocation_drift",
+    "check_macro_shift",
     "check_mc_regression",
     "get_active_drift_flags",
+    "get_active_macro_shift_flags",
     "get_active_mc_regression_flags",
 ]
