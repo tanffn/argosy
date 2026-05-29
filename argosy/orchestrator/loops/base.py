@@ -6,7 +6,7 @@ import abc
 import enum
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Callable, Literal
 
 from argosy.agent_settings import CadenceConfig
 
@@ -118,4 +118,131 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-__all__ = ["CadenceLoop", "LoopSchedule", "TickStatus"]
+# ---------------------------------------------------------------------------
+# LongRunningJob (Spec A commit #5)
+# ---------------------------------------------------------------------------
+
+
+#: Allowed values for ``LongRunningJob.connection_status()``.
+ConnectionStatus = Literal["connected", "reconnecting", "stopped"]
+
+#: Allowed values for ``LongRunningJob.exit_intent``.
+#:
+#: * ``"unset"``       — initial value (before ``run()`` exits). The
+#:                       supervisor disambiguates based on HOW ``run()``
+#:                       exited:
+#:                         - normal return + still ``"unset"`` → coerced
+#:                           to ``"clean"`` (returning without raising IS
+#:                           a clean exit by definition).
+#:                         - raised exception + still ``"unset"`` → coerced
+#:                           to ``"crashed"``.
+#:                       Subclasses SHOULD set the intent explicitly to
+#:                       avoid relying on the supervisor's coercion.
+#: * ``"clean"``       — upstream closed cleanly; no auto-restart in v1
+#:                       (Ariel reconnects via Run-now; spec §3, IMPORTANT #3).
+#: * ``"operator_stop"`` — operator clicked Stop / called
+#:                         :meth:`JobRegistry.cancel_long_running`; no auto-restart.
+#: * ``"crashed"``     — unexpected exception or non-clean exit; supervisor
+#:                       restarts with exponential backoff (1s → 2s → ...
+#:                       capped at 60s).
+ExitIntent = Literal["unset", "operator_stop", "clean", "crashed"]
+
+
+class LongRunningJob(abc.ABC):
+    """A job whose ``run()`` is itself a long-lived coroutine.
+
+    Spec A §3 — sibling class to :class:`CadenceLoop`. DOES NOT extend
+    :class:`CadenceLoop` because the shapes are different:
+
+    * :class:`CadenceLoop` ticks at a cadence; each tick is a short
+      coroutine the scheduler awaits.
+    * :class:`LongRunningJob` runs ONCE per (connect, disconnect)
+      cycle; the supervisor in :class:`JobRegistry` decides whether to
+      restart it based on :attr:`exit_intent`.
+
+    Contract:
+
+    * :meth:`run` — long-lived coroutine; returns only when the job
+      naturally completes (upstream closed, operator stopped, crash).
+      Before returning, the job SHOULD set ``self._exit_intent`` to
+      one of ``{"clean", "operator_stop", "crashed"}`` so the supervisor
+      can decide restart semantics. If left ``"unset"`` the supervisor
+      disambiguates based on HOW ``run()`` exited: normal return → coerced
+      to ``"clean"``; raised exception → coerced to ``"crashed"``. See
+      :attr:`exit_intent` for the full table.
+    * :meth:`connection_status` — fast read returning
+      ``"connected" | "reconnecting" | "stopped"``. The registry polls
+      this for the UI's ``last_run_status`` field rather than waiting
+      for ``run()`` to return.
+    * :meth:`cancel` — async cancel hook. The supervisor calls this
+      from :meth:`JobRegistry.cancel_long_running`. Default behavior is
+      a no-op + reliance on :meth:`asyncio.Task.cancel`; subclasses
+      override if they own resources (websockets, etc) that need
+      explicit closing.
+
+    The supervisor (in :class:`argosy.services.jobs.registry.JobRegistry`)
+    owns the ``asyncio.Task`` that calls :meth:`run`, the exponential
+    backoff state, and the ``job_runs`` audit rows.
+    """
+
+    #: Stable name; matches :class:`JobMetadata.name`.
+    name: str = "base_longrunning"
+
+    def __init__(self) -> None:
+        # ``_exit_intent`` is the source of truth read by the supervisor
+        # via the :attr:`exit_intent` property. Subclasses MAY set it
+        # directly (the cleanest pattern is to set it in a ``finally``
+        # block inside ``run()`` so it's always populated before return).
+        self._exit_intent: ExitIntent = "unset"
+
+    @abc.abstractmethod
+    async def run(self) -> None:
+        """Run the long-lived body. Set ``self._exit_intent`` before
+        returning (or raising) so the supervisor can decide restart
+        semantics. Raising propagates as ``exit_intent='crashed'`` from
+        the supervisor's perspective.
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def connection_status(self) -> ConnectionStatus:
+        """Fast read; called by the registry every ~10s for UI status."""
+        raise NotImplementedError
+
+    async def cancel(self) -> None:
+        """Optional async cancel hook called BEFORE the supervisor
+        cancels the run-task.
+
+        Default: no-op. Subclasses owning resources (e.g. an open
+        websocket) override this to close them so :meth:`run` exits
+        promptly. The supervisor follows up with ``task.cancel()`` if
+        ``run()`` does not return within the supervisor's cancel
+        timeout.
+        """
+        return None
+
+    @property
+    def exit_intent(self) -> ExitIntent:
+        """Restart-decision source. Set by :meth:`run` (or by the
+        supervisor's cancel path) BEFORE the supervisor inspects it.
+
+        * ``"operator_stop"`` → no auto-restart.
+        * ``"clean"``         → no auto-restart in v1 (spec §3,
+                                IMPORTANT #3); operator reconnects manually.
+        * ``"crashed"``       → exponential backoff + restart.
+        * ``"unset"``         → defensive default; supervisor disambiguates
+                                based on how ``run()`` exited (normal return
+                                → coerced to ``"clean"``; raised exception
+                                → coerced to ``"crashed"``).
+        """
+        return getattr(self, "_exit_intent", "unset")
+
+
+__all__ = [
+    "CadenceLoop",
+    "ConnectionStatus",
+    "ExitIntent",
+    "LongRunningJob",
+    "LoopSchedule",
+    "TickStatus",
+]

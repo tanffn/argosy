@@ -820,13 +820,19 @@ def test_fire_once_matches_parent_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_supervisor_placeholders_are_noop_until_commit_5(
+async def test_supervisor_lifecycle_with_no_long_running_jobs(
     engine: None,
 ) -> None:
+    """Commit #5 — start/stop_supervisors are idempotent no-ops when no
+    LongRunningJob is registered. cancel_long_running of an unknown
+    name raises KeyError (NOT NotImplementedError — the placeholder
+    semantics changed when commit #5 landed).
+    """
     reg = JobRegistry()
-    # start/stop are no-ops; cancel raises.
+    # start/stop with no LongRunningJob registered — pure no-ops.
     await reg.start_supervisors()
     await reg.stop_supervisors()
 
-    with pytest.raises(NotImplementedError, match="commit #5"):
+    # Unknown name raises KeyError, not NotImplementedError.
+    with pytest.raises(KeyError):
         await reg.cancel_long_running("nonexistent")
