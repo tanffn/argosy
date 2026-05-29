@@ -15,7 +15,51 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-29 (sprint complete) by Claude — **30/30 sprint commits landed across spec #1 (plan/execute/monitor reorg) + spec #2 (anomaly detection + RSU pre-vest)**. Both specs at `docs/superpowers/specs/2026-05-29-{plan-execute-monitor-reorg,anomaly-detection-rsu-prevest}-design.md`. Sprint kicked off in `cbf6a07`; final commit `550de81` (UpcomingVestCard). Working pattern this block was a long single autonomous session — see "How this sprint was executed" subsection below for the modes that worked.
+**Last edit:** 2026-05-29 (late session) by Claude — **five-spec holistic-upgrade block committed; Sprint A kickoff authorized**. Specs A/B/C/D/E (`docs/superpowers/specs/2026-05-29-{jobs-registry,state-observer-agent,predictions-ledger,life-events-cashflow-redesign,last-mile-delivery}-design.md`) landed in `d24bd52` after a deep re-scoping audit against the user's original three-flow ask. The earlier `30/30 commits` block (kicked off in `cbf6a07`, final commit `550de81`) still holds — see older subsections below. A small build-coherence fix (`14483d6`) staged `ui/src/components/retirement/UpcomingVestCard.tsx` which was untracked despite being shipped per the prior sprint's "final" commit message.
+
+### Wave 2026-05-29 (late session) — five-spec holistic upgrade + Sprint A authorization
+
+**Trigger:** user audit of `30/30` block against the original three-flow ask exposed four architectural mistakes the prior session had baked in (life-events misuse as retire-age clamps, hand-rolled per-symptom anomaly detectors, OS-level cron suggestions, Discord-only backtesting). User pushback re-shaped the work as five coordinated specs covering jobs/observer/ledger/cashflow/last-mile.
+
+**New memory bindings captured this session (all canonical for future agents):**
+- `feedback_emergent_anomaly_detection` — no `check_fx_drift()` style detectors; general LLM state observer instead.
+- `feedback_in_process_scheduler` — server-side jobs registry with manual-trigger + UI visibility; NOT Windows Task Scheduler / cron.
+- `feedback_unified_source_scoring` — predictions ledger + outcome eval + adaptive weights across ALL sources (incl. internal agents); Discord backtest is one instance, not the goal.
+- `feedback_life_events_are_cashflow_phases` — one-shot / recurring / phase-change cashflow modifiers; NOT retire-age clamps. "I retire from work not life."
+- `feedback_think_holistic_goal_aligned` — frame every fix against the project goal; default to systemic solutions; "what's the class of problem?" not "what's the specific fix?"
+- `user_email_personal_vs_work` — `arieljacob@gmail.com` for personal contexts (VAPID, notifications); `arielj@nvidia.com` for NVIDIA-internal only.
+- `project_bidirectional_chat_ambition` — Spec F future scope: Discord/WhatsApp conversational surface; not in A-E sprint block.
+
+**Specs landed in `d24bd52`:**
+| Spec | Lines | Sprint commits | Holistic role |
+|---|---|---|---|
+| A — `2026-05-29-jobs-registry-design.md` | 1030 | 9 | Transparency. `JobRegistry` + `/api/jobs` + `/admin/jobs` UI + `job_runs` audit. Subsumes Discord daemon, news pipeline, observer, evaluator scheduling. |
+| B — `2026-05-29-state-observer-agent-design.md` | 1425 | 5-7 | Continuous awareness. Daily LLM observer diffs current state vs plan baseline vs prior snapshot; emergent flags. Empirically verifies USD/NIS 3.6→2.8 case surfaces without a coded detector. |
+| C — `2026-05-29-predictions-ledger-design.md` | 1281 | 6-8 | Meta-learning. `predictions` + `prediction_outcomes` + `source_reliability` view. Internal agents (per_position_thesis, news_signal_analyst, observer, monitor) are first-class sources alongside Discord/news/13F. |
+| D — `2026-05-29-life-events-cashflow-redesign-design.md` | 1213 | 7 | Honest modeling. Life events as cashflow phase modifiers; removes the wrong retire-age clamp branch in `effective_retire_ready_age()`. |
+| E — `2026-05-29-last-mile-delivery-design.md` | 1404 | 9 | Closes the loop. action_proposer agent + web push + Friday weekly email digest + observer→replan wiring + inferred life-event detector (shadow mode first 30 days) + action ledger UI. |
+
+Plus `2026-05-29-pre-kickoff-locked-decisions.md` (companion) resolving the nine open items each spec sub-agent flagged.
+
+**Codex coverage:** all five specs codex-reviewed; all BLOCKERs and IMPORTANTs integrated before mark-as-done. Mode used: zigzag (A/D), zigzag with single-dispatch fallback (B), single-dispatch after zigzag hang (C/E). Sessions at `tools/codex-tandem/sessions/2026-05-29-*-spec-review/`. Notable codex BLOCKER classes integrated: auth gates on mutating routes (A), prompt-injection isolation extended to all tainted tags (B), evaluation-method registry replacing CHECK enum + due-selection policy (C), conversion-loss notification semantics (D), no-execution invariant + replan dispatch race (E).
+
+**Sprint kickoff direction (user-authorized):** "All five sequentially in one long autonomous session" — A → B → C → D → E, ~37-40 commits total. Auto-mode binding active (`feedback_auto_mode_dont_check_in`); the sprint plan IS the direction. Three-pattern execution per the prior block's lessons: long uninterrupted session, codex tandem zigzag in background on risky commits, parallel sub-agents (worktree-isolated when concurrent file conflicts possible) for independent units.
+
+**Sprint A dependency graph (9 commits):**
+- #1 (migration `job_runs`) ∥ #2 (TZ fix in `LoopSchedule`) — independent files, can parallelize
+- #3a (registry shell) depends on #1
+- #3b (lifecycle) / #4 (routes + auth) / #5 (LongRunningJob) / #7 (NewsDailyJob + tick widening) depend on #3a; mutually parallel where files don't conflict
+- #6 (DiscordListenerJob wrap) depends on #5
+- #8 (admin UI) depends on #4
+- #9 (retention loop + polish) depends on #1 + #7
+
+**Open follow-ons after A-E lands:**
+- Spec F — bidirectional Discord/WhatsApp chat surface. Captured as `project_bidirectional_chat_ambition` memory.
+- Sprint #2 (anomaly + RSU pre-vest) user-guide refresh — text-only follow-on, not started.
+- Bucket A1 weighted-baselines statistical-precision pass — still open from the prior sprint.
+- `.progress/` + `argosy/.stats/` + `argosy/services/.progress/` → `.gitignore` cleanup — agent-scratch noise from prior sessions.
+
+---
 
 ### How this sprint was executed — autonomous-mode + codex + parallel sub-agents
 
