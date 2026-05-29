@@ -1,0 +1,429 @@
+{
+  "fixture_version": "v1",
+  "fixture_kind": "state_observer_backfill_smoke",
+  "doc": [
+    "Five mock snapshots of the USD/NIS 3.6 -> 2.8 deviation across 5 months.",
+    "Each snapshot carries K=5 canned StateObserverOutput candidates (per",
+    "Appendix C K-samples acceptance gate). Snapshot 1 (oldest, T-120d) is",
+    "the no-flag baseline; snapshots 2..5 show progressive FX deviation.",
+    "The dry-run path of state_observer_backfill.py reads this and emits",
+    "matching candidate lists per snapshot+sample so the report logic and",
+    "acceptance gates can be exercised without an Opus call.",
+    "Plan baseline FX = 3.6 throughout (the historical plan we're checking",
+    "against). 'current_value' is what the FX rate was on each snapshot",
+    "date (3.4 -> 3.1 -> 2.95 -> 2.8 over 4 months)."
+  ],
+  "plan_baseline_fx_usd_nis": 3.6,
+  "snapshots": [
+    {
+      "snapshot_date": "2026-01-29",
+      "label": "T-120d_baseline",
+      "fx_usd_nis_current": 3.5,
+      "fx_deviation_pct": -0.0278,
+      "doc": "FX at 3.5 vs plan 3.6 = -2.8%. Below the 2% filter floor on numeric_pct but above the ALWAYS_INCLUDE_ALLOWLIST contract; observer may emit info or nothing. Expected: 0/K FX flags (this is the no-flag baseline before the drift kicks in).",
+      "expected_fx_flag_count": 0,
+      "samples": [
+        {
+          "flag_candidates": [],
+          "overall_assessment": "(no material deviations on this snapshot)",
+          "confidence": "MEDIUM",
+          "cited_sources": []
+        },
+        {
+          "flag_candidates": [],
+          "overall_assessment": "(no material deviations on this snapshot)",
+          "confidence": "MEDIUM",
+          "cited_sources": []
+        },
+        {
+          "flag_candidates": [],
+          "overall_assessment": "(no material deviations on this snapshot)",
+          "confidence": "MEDIUM",
+          "cited_sources": []
+        },
+        {
+          "flag_candidates": [],
+          "overall_assessment": "(no material deviations on this snapshot)",
+          "confidence": "MEDIUM",
+          "cited_sources": []
+        },
+        {
+          "flag_candidates": [],
+          "overall_assessment": "(no material deviations on this snapshot)",
+          "confidence": "MEDIUM",
+          "cited_sources": []
+        }
+      ]
+    },
+    {
+      "snapshot_date": "2026-02-28",
+      "label": "T-90d_minor_drift",
+      "fx_usd_nis_current": 3.4,
+      "fx_deviation_pct": -0.0556,
+      "doc": "FX at 3.4 = -5.6% from plan. Crosses the 5% bucket boundary; observer surfaces info-level FX flag in most samples. Expected: ~3-4/K FX flags at info severity.",
+      "expected_fx_flag_count": 4,
+      "samples": [
+        {
+          "flag_candidates": [
+            {
+              "severity": "info",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "Minor FX drift from plan baseline; within historical range.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "moderate",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "Minor FX drift surfaced; nothing else material.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot", "plan_inputs.assumed_fx_usd_nis"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "info",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "FX has begun drifting below the plan baseline; worth noting but no action needed yet.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "moderate",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "Early-stage FX drift; monitor.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "info",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": [],
+              "rationale_md": "Small FX deviation, sub-warning territory.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "moderate",
+              "confidence": "MEDIUM"
+            }
+          ],
+          "overall_assessment": "FX drift below 6%, info-level.",
+          "confidence": "MEDIUM",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "info",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "Plan FX baseline starting to look stale; revisit if drift persists.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "moderate",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX info flag.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [],
+          "overall_assessment": "(no material deviations on this snapshot)",
+          "confidence": "MEDIUM",
+          "cited_sources": []
+        }
+      ]
+    },
+    {
+      "snapshot_date": "2026-03-30",
+      "label": "T-60d_warning",
+      "fx_usd_nis_current": 3.1,
+      "fx_deviation_pct": -0.1389,
+      "doc": "FX at 3.1 = -13.9% from plan. Solidly in the 'large' bucket; observer should fire warning in nearly all samples. Expected: 5/K FX flags at warning severity.",
+      "expected_fx_flag_count": 5,
+      "samples": [
+        {
+          "flag_candidates": [
+            {
+              "severity": "warning",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "Plan FX baseline now ~14% off current spot; NIS-denominated projections are materially overstated.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "mitigation_hint": "Consider re-opening /plan to refresh fx baseline.",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX baseline materially stale.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot", "plan_inputs.assumed_fx_usd_nis"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "warning",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "USD/NIS has drifted ~14% from the plan's assumed rate; downstream NIS conversions are wrong by the same magnitude.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "Warning-level FX drift.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "warning",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": [],
+              "rationale_md": "FX deviation is now ~14%; cashflow projections in NIS are materially overstated.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX drift escalated.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "warning",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "Plan FX assumption (3.6) is roughly 14% above spot; retire-ready-age estimates are biased optimistic.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "MEDIUM"
+            }
+          ],
+          "overall_assessment": "FX warning.",
+          "confidence": "MEDIUM",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "warning",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "FX has drifted past the 10% band; the plan's NIS baseline needs refresh.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX baseline stale.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        }
+      ]
+    },
+    {
+      "snapshot_date": "2026-04-29",
+      "label": "T-30d_warning_to_critical",
+      "fx_usd_nis_current": 2.95,
+      "fx_deviation_pct": -0.1806,
+      "doc": "FX at 2.95 = -18% from plan. Mixed warning/critical depending on the LLM run. Expected: 5/K FX flags, mix of warning + critical.",
+      "expected_fx_flag_count": 5,
+      "samples": [
+        {
+          "flag_candidates": [
+            {
+              "severity": "critical",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "FX is now 18% below the plan's baseline; every USD-denominated projection is overstated in NIS terms by the same margin. Retire-ready-age conclusions are biased optimistic.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "mitigation_hint": "Re-open /plan to refresh the fx_usd_nis baseline.",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX baseline materially stale; plan outputs require refresh.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot", "plan_inputs.assumed_fx_usd_nis"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "warning",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "FX deviation now nearly 18% from plan; plan-anchored projections are materially off.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX baseline very stale.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "critical",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "Plan FX (3.6) vs spot (~2.95) is an 18% deviation; the plan's NIS-denominated outputs are systematically wrong.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "Critical FX baseline staleness.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "warning",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": [],
+              "rationale_md": "FX has drifted ~18% from plan assumption; warning escalates if it persists.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "MEDIUM"
+            }
+          ],
+          "overall_assessment": "FX warning.",
+          "confidence": "MEDIUM",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "critical",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "FX baseline is 18% off; plan reliability has materially degraded.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX critical.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        }
+      ]
+    },
+    {
+      "snapshot_date": "2026-05-29",
+      "label": "T0_current_critical",
+      "fx_usd_nis_current": 2.8,
+      "fx_deviation_pct": -0.2222,
+      "doc": "FX at 2.8 vs plan 3.6 = -22.2%. THE MERGE GATE. Observer must surface FX flag at warning OR critical severity in M>=4 of K=5 samples on this most-recent snapshot. We design the fixture to surface in all 5 (with one warning + four critical) so the merge gate passes deterministically.",
+      "expected_fx_flag_count": 5,
+      "samples": [
+        {
+          "flag_candidates": [
+            {
+              "severity": "critical",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis", "macro.fx_usd_nis_30d_avg"],
+              "rationale_md": "Plan was built assuming USD/NIS = 3.6 but current spot is 2.8 -- a 22% deviation. Every USD-denominated projection in the cashflow model is overstated in NIS terms by ~22%; retire-ready-age conclusions are biased optimistic.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "mitigation_hint": "Re-open /plan to refresh the fx_usd_nis baseline. The current plan_draft assumptions are stale.",
+              "confidence": "HIGH"
+            },
+            {
+              "severity": "warning",
+              "primary_field": "portfolio.top_concentration_pct",
+              "related_fields": ["portfolio.positions"],
+              "rationale_md": "Top single-position concentration is 34%, well above the 30% structural risk threshold the plan implies.",
+              "inferred_kind": "concentration_observation",
+              "deviation_bucket": "moderate",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "Two distinct issues: FX baseline stale by 22% (critical) + NVDA concentration past 30% (warning). FX is the bigger blocker.",
+          "confidence": "HIGH",
+          "cited_sources": [
+            "macro.fx_usd_nis_spot",
+            "plan_inputs.assumed_fx_usd_nis",
+            "macro.fx_usd_nis_30d_avg",
+            "portfolio.top_concentration_pct",
+            "portfolio.positions"
+          ]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "critical",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "USD/NIS = 2.8 vs plan assumption of 3.6, a 22% deviation. The plan's NIS-denominated cashflow projections are materially wrong.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "mitigation_hint": "Re-open /plan to refresh fx baseline.",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX baseline is materially stale; plan outputs need refresh.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot", "plan_inputs.assumed_fx_usd_nis"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "critical",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "Plan FX baseline 22% above spot; the plan's USD-denominated outputs in NIS are systematically overstated.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX critical.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "critical",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "FX is 22% off plan; this is the largest single-driver bias in the model right now.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "mitigation_hint": "Re-open /plan; fx_usd_nis baseline is stale.",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX critical drift.",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        },
+        {
+          "flag_candidates": [
+            {
+              "severity": "warning",
+              "primary_field": "macro.fx_usd_nis_spot",
+              "related_fields": ["plan_inputs.assumed_fx_usd_nis"],
+              "rationale_md": "USD/NIS spot is ~22% below plan baseline; plan-anchored NIS projections are materially overstated.",
+              "inferred_kind": "fx_observation",
+              "deviation_bucket": "large",
+              "confidence": "HIGH"
+            }
+          ],
+          "overall_assessment": "FX warning (could escalate to critical depending on user's risk posture).",
+          "confidence": "HIGH",
+          "cited_sources": ["macro.fx_usd_nis_spot"]
+        }
+      ]
+    }
+  ]
+}
