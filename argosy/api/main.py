@@ -259,6 +259,142 @@ def create_app() -> FastAPI:
         log.info("daily_brief_runner.scheduled", tz="Asia/Jerusalem", at="07:00")
         asyncio.create_task(background_loop(), name="daily_brief_runner")
 
+    # Sprint A commit #3b — JobRegistry + RegisteredScheduler lifecycle.
+    # Spec: docs/superpowers/specs/2026-05-29-jobs-registry-design.md
+    # §1.2 (lifecycle) + commit #3b. The registry is ALWAYS constructed
+    # (so /api/jobs in commit #4 can serve a stale-but-readable view from
+    # cadence_state even when ARGOSY_RUN_SCHEDULER=0). The scheduler +
+    # run_forever task are only booted when the env gate permits.
+    #
+    # Env precedence (codex NICE #6, spec §Commit #3b):
+    #   ARGOSY_RUN_SCHEDULER unset → boot (default "1")
+    #   ARGOSY_RUN_SCHEDULER=1 → boot
+    #   ARGOSY_RUN_SCHEDULER=0 → skip boot, log WARNING
+    @app.on_event("startup")
+    async def _start_jobs_scheduler() -> None:
+        from argosy.services.jobs import JobRegistry
+        from argosy.services.jobs.registered_scheduler import (
+            RegisteredScheduler,
+        )
+
+        # Registry is constructed unconditionally so /api/jobs (commit
+        # #4) has SOMETHING to read even when the scheduler is off.
+        registry = JobRegistry()
+        app.state.job_registry = registry
+
+        run_flag = os.environ.get("ARGOSY_RUN_SCHEDULER", "1").strip()
+        if run_flag == "0":
+            log.warning(
+                "scheduler.disabled",
+                reason="ARGOSY_RUN_SCHEDULER=0",
+                note="scheduler disabled; jobs will not run automatically",
+            )
+            app.state.scheduler = None
+            app.state.scheduler_task = None
+            return
+
+        # Build the scheduler with the registry bound so every
+        # _fire_once flows through the JobRegistry's audit recorder.
+        # Ordering note (codex review focus): we MUST finish all
+        # registration (register_default_loops + optional long-running
+        # jobs) BEFORE handing the scheduler to run_forever — otherwise
+        # the first tick could race a half-built registry.
+        # Scheduler defaults user_id="ariel" — the single-user
+        # convention. When Argosy goes multi-tenant the scheduler will
+        # be instantiated per-user, not per-process.
+        scheduler = RegisteredScheduler(registry=registry)
+        registry.bind_scheduler(scheduler)
+
+        # Register the cadence loops set (weekly_review, reconcile,
+        # minute/hour/monthly/quarterly/annual/backup/audit/watchlist/
+        # plan_watcher — gated on agent_settings.yaml cadence flags).
+        scheduler.register_default_loops()
+
+        # Commit #6 (DiscordListenerJob) + commit #7 (NewsDailyJob)
+        # land later in the sprint. Gate their imports so #3b can land
+        # clean before them. When they're available, register them
+        # with the registry so the supervisor (commit #5) picks them
+        # up on start_supervisors().
+        try:  # pragma: no cover - lands in commit #6
+            from argosy.services.jobs.discord_listener import (  # type: ignore[import-not-found]
+                DiscordListenerJob,
+                discord_listener_metadata,
+            )
+
+            discord_job = DiscordListenerJob()
+            registry.register(
+                job=discord_job, metadata=discord_listener_metadata()
+            )
+        except ImportError:
+            pass
+
+        try:  # pragma: no cover - lands in commit #7
+            from argosy.services.jobs.news_daily import (  # type: ignore[import-not-found]
+                NewsDailyJob,
+                news_daily_metadata,
+            )
+
+            news_job = NewsDailyJob()
+            scheduler.register_loop(news_job)
+            registry.register(job=news_job, metadata=news_daily_metadata())
+        except ImportError:
+            pass
+
+        # Step 1: start_supervisors BEFORE scheduling so any
+        # LongRunningJob supervisor is alive when its first connect
+        # cycle opens. (No-op until commit #5 fills it in.)
+        await registry.start_supervisors()
+
+        # Step 2: spawn the scheduler's run_forever task. Stashed on
+        # app.state so shutdown can join it.
+        task = asyncio.create_task(
+            scheduler.run_forever(), name="argosy_scheduler"
+        )
+        app.state.scheduler = scheduler
+        app.state.scheduler_task = task
+        log.info(
+            "scheduler.started",
+            registered_loops=list(scheduler._loops.keys()),
+            registered_jobs=registry.names(),
+        )
+
+    @app.on_event("shutdown")
+    async def _stop_jobs_scheduler() -> None:
+        """Drain the scheduler within 5s; suppress TimeoutError with a
+        warning so a stuck Discord listener (commit #6) can't hold up
+        the FastAPI shutdown.
+        """
+        scheduler = getattr(app.state, "scheduler", None)
+        task = getattr(app.state, "scheduler_task", None)
+        registry = getattr(app.state, "job_registry", None)
+
+        if scheduler is not None:
+            # stop() sets the _stop event; run_forever cancels per-loop
+            # tasks and gathers them. The 5s join below bounds how long
+            # we'll wait for that gather to finish.
+            scheduler.stop()
+
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=5.0)
+            except asyncio.TimeoutError:
+                log.warning(
+                    "scheduler.shutdown_join_timeout",
+                    timeout_s=5.0,
+                    note="run_forever did not drain within 5s; abandoning",
+                )
+                task.cancel()
+            except asyncio.CancelledError:  # pragma: no cover - defensive
+                pass
+            except Exception:  # pragma: no cover - defensive
+                log.exception("scheduler.shutdown_join_failed")
+
+        if registry is not None:
+            try:
+                await registry.stop_supervisors()
+            except Exception:  # pragma: no cover - defensive
+                log.exception("scheduler.stop_supervisors_failed")
+
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await websocket.accept()
