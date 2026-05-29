@@ -15,7 +15,21 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-29 (autonomous sprint, late) by Claude — 14 commits this block. Specs #1 + #2 landed, plus 8 of 18 sprint #1 commits (user-guide audit, three schema migrations 0041-0043, /decide → /consult rename, WindfallCard move, UnallocatedCashCard Accept/Defer wiring, Schwab parser extension + rsu_vest_events table, canonical `effective_retire_ready_age()`), plus a follow-up cleanup pass (Path UnboundLocalError fix, stale 404 assertion fix). User closed both blockers mid-session: dropped a real Schwab CSV into `tests/fixtures/portfolio_ingest_schwab/` and provided Discord bot creds (at `~/.argosy/discord_creds.json`, gitignored). Sprint #2 (12 commits — anomaly + RSU pre-vest) is now fully unblocked; commit #16 (Discord bot scaffold) is unblocked. See "Wave 2026-05-29" sections below + "Morning report" — read both for state.
+**Last edit:** 2026-05-29 (sprint complete) by Claude — **30/30 sprint commits landed across spec #1 (plan/execute/monitor reorg) + spec #2 (anomaly detection + RSU pre-vest)**. Both specs at `docs/superpowers/specs/2026-05-29-{plan-execute-monitor-reorg,anomaly-detection-rsu-prevest}-design.md`. Sprint kicked off in `cbf6a07`; final commit `550de81` (UpcomingVestCard). Working pattern this block was a long single autonomous session — see "How this sprint was executed" subsection below for the modes that worked.
+
+### How this sprint was executed — autonomous-mode + codex + parallel sub-agents
+
+Three patterns ran in combination throughout the block. Future sessions should default to the same shape when given an "auto mode" authorization.
+
+1. **Long uninterrupted autonomous sessions** ([[feedback_auto_mode_dont_check_in]] + [[feedback_autonomous_overnight]]). When Ariel says "auto mode" (or equivalent "let me run" / "I am going out"), the agent does NOT pause at clean commit boundaries for direction. The sprint plan IS the direction — take the next sprint commit and start it. Pauses are reserved for genuine blockers that require user input (credentials, real fixtures, scope decisions codex can't break ties on) or sprint completion. The agent stopped exactly once mid-block to write a "morning report" at commit #6 — and Ariel called that out as wrong ("you stopped for me to tell you continue?"). The corrected pattern: keep going, write the morning report at the END of the block. Saved as the binding above.
+
+2. **Codex tandem zigzag on every risky commit** ([[feedback_use_tandem_for_risky_work]]). Kit at `tools/codex-tandem/`. Pattern: stage the diff + relevant files into a per-commit `sessions/<date>-<topic>/` directory, dispatch via the kit's `engine_codex.run_codex` (read-only sandbox, single-shot reviewer role), read the verdict from `research/node_01/result.md`. 10 sessions this block — 1 BLOCK + 9 APPROVE_WITH_CONDITIONS, all conditions integrated before the corresponding commit. Codex caught real defects: dedup_key literals that would have silently suppressed re-fires after a threshold tweak; raw-row hysteresis over-counting on correction-reruns; case-insensitive ticker regex; missing CHECK constraints. Codex review runs in background (`run_in_background: true`) while the next commit is being written in main context — never block on it.
+
+3. **Parallel sub-agents via the `Agent` tool** ([[feedback_parallelize_aggressively]]). When work has multiple independent units (different files, independent commits, separate UI vs backend halves), dispatch sub-agents concurrently in a single message with multiple Agent tool calls. Peak this block was 4 streams (codex review + 3 sub-agents writing different commits' backends/UIs). Each sub-agent gets a detailed brief: file paths, ORM model citations, dedup_key formulas verbatim from the spec, codex constraints to honor, verification commands. Coordination gotcha: never have two sub-agents write to the same file (race + lost work). Sub-agents return committable output that the main context stages + commits.
+
+These three patterns multiplied throughput by ~4× vs serial main-context-only work. The block ran ~30 sprint commits (plus supporting docs) in one autonomous session, including spec authoring, codex review, and verification.
+
+### Sprint final state (30/30 commits done — both spec #1 and spec #2)
 
 ### Wave 2026-05-29 (plan/execute/monitor reorg) — sprint kickoff + user-guide audit
 
