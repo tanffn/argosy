@@ -472,6 +472,49 @@ class CadenceState(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class JobRun(Base):
+    """One execution row for the JobRegistry audit log.
+
+    Spec A (jobs-registry) §2.1. Written by the registry's
+    ``_open_job_run`` / ``_close_job_run`` helpers (commit #3a). Every
+    scheduled tick + every manual ``POST /api/jobs/{name}/run-now``
+    invocation produces exactly one row.
+
+    Distinct from ``CadenceState``: the latter is a per-loop POINTER
+    (last tick, next due) that the scheduler reads each iteration. This
+    is a per-EXECUTION audit trail the registry + UI use for history.
+    Both are written under §1.7's dual-write contract.
+    """
+
+    __tablename__ = "job_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    skip_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manual_trigger: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=_sa_text("0")
+    )
+    triggered_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    output_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(
+        Text, nullable=False, unique=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+
 class DailyBrief(Base):
     """One Daily Brief run record.
 
