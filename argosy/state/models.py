@@ -1346,6 +1346,18 @@ class ExpenseReviewQueue(Base):
     """Anomalies + uncategorized rows pending user review.
     Built by the anomaly detector (EX2) and the orchestrator (EX1, for
     uncategorized rows).
+
+    Migration 0047 added three columns (sprint #2 anomaly detection):
+      * ``materiality`` — info/warning/critical severity ladder.
+      * ``dedup_key``   — deterministic stable key per anomaly type;
+        version-prefixed ``v1|...`` so future rule changes get fresh
+        keys without false suppression. Formulas per pattern documented
+        in spec #2 §4.
+      * ``bucket``      — categorical: amount/recurring/cache/duplicate.
+
+    Partial unique index on ``(user_id, dedup_key)`` where
+    ``dedup_key IS NOT NULL AND status = 'open'`` keeps the detector
+    idempotent across reruns.
     """
 
     __tablename__ = "expense_review_queue"
@@ -1371,6 +1383,35 @@ class ExpenseReviewQueue(Base):
     )
     resolved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # Sprint #2 anomaly extensions (migration 0047).
+    materiality: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    dedup_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bucket: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "materiality IS NULL OR materiality IN ("
+            "'info', 'warning', 'critical')",
+            name="ck_expense_review_queue_materiality",
+        ),
+        CheckConstraint(
+            "bucket IS NULL OR bucket IN ("
+            "'amount', 'recurring', 'cache', 'duplicate')",
+            name="ck_expense_review_queue_bucket",
+        ),
+        Index(
+            "ix_expense_review_queue_dedup",
+            "user_id",
+            "dedup_key",
+            unique=True,
+            sqlite_where=_sa_text(
+                "dedup_key IS NOT NULL AND status = 'open'"
+            ),
+            postgresql_where=_sa_text(
+                "dedup_key IS NOT NULL AND status = 'open'"
+            ),
+        ),
     )
 
 
@@ -2004,6 +2045,230 @@ class RsuVestEvent(Base):
         ),
         Index("ix_rsu_vest_events_user_date", "user_id", "vest_date"),
         Index("ix_rsu_vest_events_grant", "user_id", "grant_id"),
+    )
+
+
+class MerchantRollingStats(Base):
+    """Per-merchant + per-category rolling statistics over a trailing window.
+
+    Backs Bucket A anomaly detection (amount outliers) per spec #2 §1.1.
+    Populated by the nightly recompute service
+    ``argosy/services/anomaly/rolling_stats.py::recompute_merchant_stats``.
+
+    Stats per (user_id, merchant_normalized, category_id) over a trailing
+    window (default 180 days):
+      * median + MAD — robust statistics, insensitive to outliers. Used
+        by Pattern A1 (category robust outlier) for the z-score.
+      * mean + stdev — kept for dashboard backward-compat
+        (``expense_dashboard.py`` already reads them) and for Pattern A2
+        (merchant spike) which compares against the mean.
+      * min/max/first_seen/last_seen — descriptive context.
+
+    ``mad_nis`` and ``stdev_nis`` are NULL when txn_count < 2 — no
+    meaningful spread estimate with a single observation.
+
+    UNIQUE (user_id, merchant_normalized, category_id, window_end) keeps
+    the nightly recompute idempotent (UPSERT-keyed on the window end).
+
+    Migration: alembic 0045.
+    """
+
+    __tablename__ = "merchant_rolling_stats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    merchant_normalized: Mapped[str] = mapped_column(String(512), nullable=False)
+    category_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("expense_categories.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    window_start: Mapped[date] = mapped_column(Date, nullable=False)
+    window_end: Mapped[date] = mapped_column(Date, nullable=False)
+    txn_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    median_nis: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    mad_nis: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    mean_nis: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    stdev_nis: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    min_nis: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    max_nis: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    first_seen_at: Mapped[date] = mapped_column(Date, nullable=False)
+    last_seen_at: Mapped[date] = mapped_column(Date, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "merchant_normalized",
+            "category_id",
+            "window_end",
+            name="uq_merchant_rolling_stats_window",
+        ),
+        CheckConstraint(
+            "txn_count >= 1",
+            name="ck_merchant_rolling_stats_count_positive",
+        ),
+        CheckConstraint(
+            "window_end >= window_start",
+            name="ck_merchant_rolling_stats_window_order",
+        ),
+        CheckConstraint(
+            "max_nis >= min_nis",
+            name="ck_merchant_rolling_stats_max_ge_min",
+        ),
+        Index(
+            "ix_merchant_rolling_stats_user_merchant",
+            "user_id",
+            "merchant_normalized",
+        ),
+    )
+
+
+class WatchlistObservation(Base):
+    """Per-statement observation log for a declared watchlist entry.
+
+    Backs Pattern B1 (fee-waiver / promotion missing) per spec #2 §1.2.
+    Status is a 4-state machine — see ``argosy/services/anomaly/state_tracker.py``
+    for the MATCHED→MISSING transition rule that fires the flag.
+
+    Status semantics:
+      * ``MATCHED``   — statement present, both charge + discount found
+      * ``MISSING``   — statement present, charge found but discount missing
+      * ``PARTIAL``   — statement present, charge missing entirely
+      * ``UNKNOWN``   — statement absent for the observation period
+
+    ``evidence_tx_ids`` is JSON-encoded list of expense_transactions.id
+    rows that contributed to the observation (used for citation display).
+
+    Migration: alembic 0046.
+    """
+
+    __tablename__ = "watchlist_observations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    watchlist_entry_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    observation_period: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence_tx_ids: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "watchlist_entry_id",
+            "observation_period",
+            name="uq_watchlist_observations_period",
+        ),
+        CheckConstraint(
+            "status IN ('MATCHED', 'MISSING', 'PARTIAL', 'UNKNOWN')",
+            name="ck_watchlist_observations_status",
+        ),
+        Index(
+            "ix_watchlist_observations_user_entry",
+            "user_id",
+            "watchlist_entry_id",
+            "observation_period",
+        ),
+    )
+
+
+class RecurringChargePattern(Base):
+    """Learned recurring-charge pattern for a (user, merchant) pair.
+
+    Backs Pattern B2 (recurring-charge missing) per spec #2 §1.2.
+    Learner requires ≥3 occurrences at roughly the same amount (±15%) on
+    roughly monthly cadence before a pattern goes ``active``.
+
+    ``status``:
+      * ``active``         — pattern is being monitored; missing-charge fires
+      * ``dormant``        — pattern hasn't fired in a long time but kept for history
+      * ``user_dismissed`` — user told us to stop monitoring
+
+    Detector fires when ``last_seen + cadence_days + cadence_tolerance_days``
+    has passed with no fresh match.
+
+    Migration: alembic 0046.
+    """
+
+    __tablename__ = "recurring_charge_patterns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    merchant_normalized: Mapped[str] = mapped_column(String(512), nullable=False)
+    expected_amount_nis: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False
+    )
+    amount_tolerance: Mapped[Decimal] = mapped_column(
+        Numeric(4, 3), nullable=False, default=Decimal("0.15")
+    )
+    cadence_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    cadence_tolerance_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=7
+    )
+    first_seen: Mapped[date] = mapped_column(Date, nullable=False)
+    last_seen: Mapped[date] = mapped_column(Date, nullable=False)
+    occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active"
+    )
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "merchant_normalized",
+            "expected_amount_nis",
+            name="uq_recurring_charge_patterns_merchant",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'dormant', 'user_dismissed')",
+            name="ck_recurring_charge_patterns_status",
+        ),
+        CheckConstraint(
+            "expected_amount_nis > 0",
+            name="ck_recurring_charge_patterns_amount_positive",
+        ),
+        CheckConstraint(
+            "cadence_days > 0",
+            name="ck_recurring_charge_patterns_cadence_positive",
+        ),
+        CheckConstraint(
+            "occurrence_count >= 3",
+            name="ck_recurring_charge_patterns_min_occurrences",
+        ),
+        Index(
+            "ix_recurring_charge_patterns_user_merchant",
+            "user_id",
+            "merchant_normalized",
+        ),
+        Index(
+            "ix_recurring_charge_patterns_active",
+            "user_id",
+            "last_seen",
+            sqlite_where=_sa_text("status = 'active'"),
+            postgresql_where=_sa_text("status = 'active'"),
+        ),
     )
 
 

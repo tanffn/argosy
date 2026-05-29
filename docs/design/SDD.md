@@ -98,7 +98,15 @@ Ariel returned + closed both user-side blockers + asked for the two pre-existing
 - Commit #17 (`01d3185`): Home Red-Flag Strip UI + `/monitor/flags` refactor + `/monitor/flags/{id}/acknowledge` route. 8 new tests pass.
 - Commit #15 (`1a744f6`): monitor macro-shift trigger. 11 tests pass.
 - Commit #18 (`12ef401`): final user-guide refresh. 22 sections monotonic. Sanity-grep clean.
-- Commit #16 (pending): Discord bot scaffold for news ingest. Raw-websockets gateway client (no new deps — `discord.py` would add complexity for a passive-read listener). `argosy/services/discord_listener.py` + `argosy/cli/discord_ingest.py`. Loads creds from `~/.argosy/discord_creds.json` (gitignored — outside repo); dormant if file missing. Stage 1 extractor + persist with `(source='discord', source_ref='msg-{id}')` idempotency. MESSAGE_UPDATE intentionally ignored (immutable-ingest semantics — edits don't overwrite the original row's audit trail). Codex APPROVE_WITH_CONDITIONS — 2 IMPORTANTs + 1 NIT fixed before commit: (a) `load_creds` now catches `OSError`/`PermissionError` explicitly and wraps as ValueError so CLI's malformed-creds exit path catches them; (b) bot_token validation tightened — removed the bare "M" prefix (was too permissive) + added minimum-length check (≥50 chars); (c) `max_message_age_minutes < 0` now raises rather than silently dropping every message. 14 tests pass.
+- Commit #16 (`dfbec0c`): Discord bot scaffold. 14 tests pass.
+
+**Sprint #1 of plan/execute/monitor reorg COMPLETE — 18/18 sprint commits landed** (commit #6 split into #6a + #6b; commits #11+#12 bundled; commits #13+#14 bundled; otherwise 1:1 with the spec sprint table).
+
+### Wave 2026-05-29 (sprint #2 kickoff) — anomaly detection + RSU pre-vest
+
+Sprint #2 spec at `docs/superpowers/specs/2026-05-29-anomaly-detection-rsu-prevest-design.md` — 12 commits planned. Migration numbering shifted from spec (0044-0046 → 0045-0047) because sprint #1 used 0044 for `rsu_vest_events`.
+
+- Sprint #2 commits #1-4 (pending, bundled — sub-agent delivery): three migrations (0045 `merchant_rolling_stats`, 0046 `watchlist_observations` + `recurring_charge_patterns`, 0047 `expense_review_queue` extensions) + the `merchant_rolling_stats` nightly recompute service (`argosy/services/anomaly/rolling_stats.py`) using median + MAD robust stats per spec #2 §1.1. Bucket B's 4-state watchlist status enum (MATCHED|MISSING|PARTIAL|UNKNOWN) per codex BLOCKER on spec #2. 18 tests pass (11 migration + 7 service).
 
 **Open dependencies for Ariel (mid-sprint, neither blocks start):**
 - Discord bot creds (channel ID + bot token + invite) for spec #1 commit #16 — bot scaffolding ships dormant until creds arrive.
