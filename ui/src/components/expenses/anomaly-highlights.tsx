@@ -23,6 +23,17 @@ const COLOR_BY_SEVERITY = {
   info: "text-info",
 } as const;
 
+// Sprint #2 commits #10–#11 — kind-specific emoji glyph + color override
+// for the three new detector kinds. The legacy 7 kinds keep using the
+// severity-based lucide icon above; the new kinds get a distinct glyph
+// per spec §2.2 so the user can tell duplicate-detector firings apart
+// from amount outliers at a glance.
+const KIND_GLYPH_OVERRIDE: Partial<Record<AnomalyCard["kind"], { glyph: string; color: string }>> = {
+  recurring_missing: { glyph: "🔁", color: "text-warning" },     // amber
+  category_drift: { glyph: "🔀", color: "text-warning" },        // amber
+  cross_card_duplicate: { glyph: "🚨", color: "text-rose-500" }, // rose
+};
+
 export function AnomalyHighlights({ anomalies }: AnomalyHighlightsProps) {
   return (
     <Card>
@@ -38,6 +49,7 @@ export function AnomalyHighlights({ anomalies }: AnomalyHighlightsProps) {
           <ul className="flex flex-col gap-2">
             {anomalies.map((a, i) => {
               const Icon = ICON_BY_SEVERITY[a.severity];
+              const kindOverride = KIND_GLYPH_OVERRIDE[a.kind];
               const clickable = Boolean(a.link);
               const inner = (
                 <div
@@ -48,7 +60,19 @@ export function AnomalyHighlights({ anomalies }: AnomalyHighlightsProps) {
                       : "hover:bg-secondary/40",
                   )}
                 >
-                  <Icon className={cn("h-4 w-4 mt-0.5 shrink-0", COLOR_BY_SEVERITY[a.severity])} />
+                  {kindOverride ? (
+                    <span
+                      className={cn(
+                        "h-4 w-4 mt-0.5 shrink-0 text-sm leading-none",
+                        kindOverride.color,
+                      )}
+                      aria-hidden="true"
+                    >
+                      {kindOverride.glyph}
+                    </span>
+                  ) : (
+                    <Icon className={cn("h-4 w-4 mt-0.5 shrink-0", COLOR_BY_SEVERITY[a.severity])} />
+                  )}
                   <div className="min-w-0 flex-1">
                     <div className="text-sm font-medium">{a.message}</div>
                     {a.detail && (

@@ -106,7 +106,15 @@ export interface AnomalyCard {
     | "fee_waiver_missed"
     | "conservation_gap"
     | "merchant_spike"
-    | "new_high_value_merchant";
+    | "new_high_value_merchant"
+    // Sprint #2 commits #10–#11 — three new detector kinds. Surfaced
+    // by the new /api/anomaly/highlights endpoint via the
+    // ``AnomalyCardDTO`` adapter in ``@/lib/api``; the legacy
+    // ``/expenses/dashboard-monthly`` payload still only emits the
+    // first seven kinds. Both flow into the same component.
+    | "recurring_missing"
+    | "category_drift"
+    | "cross_card_duplicate";
   severity: "red" | "yellow" | "info";
   message: string;
   detail?: string | null;

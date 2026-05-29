@@ -187,6 +187,15 @@ def create_app() -> FastAPI:
     from argosy.api.routes.anomalies import router as anomalies_router
     app.include_router(anomalies_router, prefix=api_prefix)
 
+    # Sprint #2 commits #10-#11 — anomaly highlights + inline badges.
+    # Distinct from the /anomalies (plural) router above: that one
+    # serves the full anomaly_reports document; this one consumes the
+    # per-row expense_review_queue rows written by the sprint #2
+    # detectors in argosy/services/anomaly/ and formats them as
+    # AnomalyCards for the Home tile + inline transaction badges.
+    from argosy.api.routes.anomaly import router as anomaly_router
+    app.include_router(anomaly_router, prefix=api_prefix)
+
     # T2.2 — startup orphan sweep. Mark any decision_runs that are still
     # status='running' from a prior process that was killed mid-flight as
     # 'failed' with a structured note so the audit trail is honest and

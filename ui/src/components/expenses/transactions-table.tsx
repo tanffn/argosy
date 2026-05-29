@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { AddSubCategoryDialog } from "@/components/expenses/add-subcategory-dialog";
 import { LabelEditor } from "@/components/expenses/label-editor";
@@ -9,6 +9,7 @@ import { TagEditor } from "@/components/expenses/tag-editor";
 import { TransactionDetailsDialog } from "@/components/expenses/transaction-details-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { api, type AnomalyCardDTO } from "@/lib/api";
 import {
   expensesApi,
   transactionsApi,
@@ -39,7 +40,70 @@ export function TransactionsTable({
   const [editingTx, setEditingTx] = useState<{ id: number; slug: string | null; tags: string[]; merchant_normalized: string } | null>(null);
   const [addSubCatOpen, setAddSubCatOpen] = useState(false);
   const [detailsTx, setDetailsTx] = useState<TransactionOut | null>(null);
+  const [detailsInitialTab, setDetailsInitialTab] = useState<"details" | "anomaly">("details");
   const [fxMode] = useFxMode();
+
+  // Sprint #2 commit #11 — batch-fetch the open anomaly rows for every
+  // visible txn so we can render the inline badge column to the right of
+  // the merchant cell. Re-fires whenever the page changes which
+  // transactions it displays. Errors are swallowed (badges optional;
+  // never block the table from rendering).
+  const [anomalyMap, setAnomalyMap] = useState<Record<string, AnomalyCardDTO[]>>({});
+  useEffect(() => {
+    const ids = transactions.map((t) => t.id);
+    let cancelled = false;
+    if (ids.length === 0) {
+      // No fetch needed; clear via the async path so we satisfy
+      // react-hooks/set-state-in-effect (lint blocks sync setState
+      // calls in effect bodies). Promise.resolve() flips us into the
+      // microtask queue identically to the success path below.
+      Promise.resolve({} as Record<string, AnomalyCardDTO[]>).then((m) => {
+        if (!cancelled) setAnomalyMap(m);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    api
+      .anomaliesByTxn(USER_ID, ids)
+      .then((m) => {
+        if (!cancelled) setAnomalyMap(m);
+      })
+      .catch(() => {
+        if (!cancelled) setAnomalyMap({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [transactions]);
+
+  function openAnomalyDialog(t: TransactionOut) {
+    setDetailsInitialTab("anomaly");
+    setDetailsTx(t);
+  }
+  function openDetailsDialog(t: TransactionOut) {
+    setDetailsInitialTab("details");
+    setDetailsTx(t);
+  }
+  function severityRank(s: AnomalyCardDTO["severity"]): number {
+    if (s === "critical") return 3;
+    if (s === "warning") return 2;
+    return 1;
+  }
+  function badgeStyleFor(cards: AnomalyCardDTO[]): { glyph: string; color: string; title: string } {
+    const top = cards.reduce<AnomalyCardDTO | null>(
+      (acc, c) => (acc === null || severityRank(c.severity) > severityRank(acc.severity) ? c : acc),
+      null,
+    );
+    if (top === null) return { glyph: "•", color: "text-slate-400", title: "" };
+    if (top.severity === "critical") {
+      return { glyph: "🚨", color: "text-rose-500", title: top.message };
+    }
+    if (top.severity === "warning") {
+      return { glyph: "⚠", color: "text-warning", title: top.message };
+    }
+    return { glyph: "ℹ", color: "text-info", title: top.message };
+  }
 
   return (
     <>
@@ -102,13 +166,31 @@ export function TransactionsTable({
                   <span className="truncate">{t.merchant_raw}</span>
                   <button
                     type="button"
-                    onClick={() => setDetailsTx(t)}
+                    onClick={() => openDetailsDialog(t)}
                     className="text-muted-foreground hover:text-foreground text-xs shrink-0"
                     aria-label="Show transaction details"
                     title="Show original row + open source file"
                   >
                     ⓘ
                   </button>
+                  {(() => {
+                    const cards = anomalyMap[String(t.id)] ?? [];
+                    if (cards.length === 0) return null;
+                    const { glyph, color, title } = badgeStyleFor(cards);
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => openAnomalyDialog(t)}
+                        className={
+                          "shrink-0 text-xs leading-none hover:opacity-80 " + color
+                        }
+                        aria-label={`Open anomaly details (${cards.length})`}
+                        title={title || `${cards.length} open anomalies`}
+                      >
+                        {glyph}
+                      </button>
+                    );
+                  })()}
                 </div>
               </td>
               <td className="py-2 px-2">
@@ -221,6 +303,19 @@ export function TransactionsTable({
         tx={detailsTx}
         open
         onOpenChange={(o) => { if (!o) setDetailsTx(null); }}
+        initialTab={detailsInitialTab}
+        anomalies={anomalyMap[String(detailsTx.id)] ?? []}
+        onAnomalyDismissed={(id) => {
+          // Optimistically drop the dismissed row from the local map so
+          // the badge updates without a refetch.
+          setAnomalyMap((prev) => {
+            const next = { ...prev };
+            for (const key of Object.keys(next)) {
+              next[key] = next[key]!.filter((c) => c.id !== id);
+            }
+            return next;
+          });
+        }}
       />
     )}
     </>

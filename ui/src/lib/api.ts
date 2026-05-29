@@ -2334,7 +2334,93 @@ export const api = {
     );
     if (!res.ok) throw new Error(`HTTP ${res.status} for acknowledge`);
   },
+
+  // --------------------------------------------------------------------
+  // Sprint #2 commits #10–#11 — anomaly highlights + inline badges.
+  // Backend: argosy/api/routes/anomaly.py. Reads the per-row
+  // expense_review_queue rows written by the sprint #2 detectors in
+  // argosy/services/anomaly/ and formats them as AnomalyCardDTOs.
+  // --------------------------------------------------------------------
+  anomalyHighlights: (
+    userId: string,
+    limit: number = 5,
+  ): Promise<AnomalyCardDTO[]> =>
+    getJSON<AnomalyCardDTO[]>(
+      `/api/anomaly/highlights?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
+    ),
+  anomaliesByTxn: (
+    userId: string,
+    txnIds: number[],
+  ): Promise<Record<string, AnomalyCardDTO[]>> => {
+    if (txnIds.length === 0) return Promise.resolve({});
+    const ids = txnIds.join(",");
+    return getJSON<Record<string, AnomalyCardDTO[]>>(
+      `/api/anomaly/by-txn?user_id=${encodeURIComponent(userId)}&txn_ids=${ids}`,
+    );
+  },
+  anomalyDismiss: async (
+    queueId: number,
+    userId: string,
+  ): Promise<AnomalyDismissResponse> => {
+    const res = await fetch(
+      apiUrl(
+        `/api/anomaly/dismiss/${queueId}?user_id=${encodeURIComponent(userId)}`,
+      ),
+      { method: "POST" },
+    );
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j.detail) detail = j.detail;
+      } catch {
+        // non-JSON
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as AnomalyDismissResponse;
+  },
 };
+
+// ----------------------------------------------------------------------
+// Sprint #2 commits #10–#11 — anomaly DTOs.
+// Wire shape matches argosy/api/routes/anomaly.py::AnomalyCardDTO.
+// ----------------------------------------------------------------------
+
+export type AnomalyCardKind =
+  | "uncategorized"
+  | "novel_merchant"
+  | "large_outlier"
+  | "fee_waiver_missed"
+  | "conservation_gap"
+  | "merchant_spike"
+  | "new_high_value_merchant"
+  | "recurring_missing"
+  | "category_drift"
+  | "cross_card_duplicate";
+
+export type AnomalyCardSeverity = "info" | "warning" | "critical";
+
+export interface AnomalyCardDTO {
+  id: number;
+  kind: AnomalyCardKind;
+  message: string;
+  detail?: string | null;
+  severity: AnomalyCardSeverity;
+  link?: string | null;
+  /** ISO-8601 from the backend ``created_at`` column. */
+  created_at: string;
+  /** Transaction-id anchor — present iff the queue row anchors a
+   *  specific transaction (or, for cross_card_duplicate, the leg that
+   *  matched the caller's txn_ids query). */
+  txn_id?: number | null;
+}
+
+export interface AnomalyDismissResponse {
+  id: number;
+  status: string;
+  resolved_at: string;
+}
 
 // ----------------------------------------------------------------------
 // Sprint commit #17 — Monitor flag DTOs (Home Red-Flag Strip).
