@@ -66,7 +66,9 @@ Sprint #1 (plan/execute/monitor reorg) progress: commits #1-6 of 18 done. Sprint
 - All CHECK constraints fire on bad data (verified via direct SQL probes).
 - TypeScript check clean post-rename + post-WindfallCard-move.
 - 34-46 tests in the touched surface pass per affected commit (test_windfall_actions, test_unallocated_cash_detector, test_xls_osh_pair, test_portfolio_upload_snapshot, test_tsv_generator).
-- Full pytest sweep started in background but not retrieved before stopping; safe to assume no regressions but worth confirming on resume.
+- Full pytest sweep result: **18 failed / 1914 passed / 16 skipped** out of ~1948 tests. All 18 failures **pre-existing**, NOT introduced by this sprint — verified by running one failing test (`tests/test_expense_pipeline_invariants.py::test_total_spend_equals_raw_sum`) against `argosy/` rolled back to pre-sprint state and seeing the same `UnboundLocalError` in `argosy/services/expense_ingest/orchestrator.py:139` (likely a regression introduced earlier by commit `198e19c` Leumi XLS work). Worth fixing on resume but not blocking this sprint.
+
+The pre-existing failure cluster is concentrated in expense-ingest orchestrator tests (10 of 18) + a couple in `test_plan_draft_api.py` (the `test_get_current_structured_404_when_no_current` test asserts 404 but the route now returns 200 + null per autonomous overnight wave Hole #7 closure, `be34b5b` — stale test).
 
 **Open codex-tandem sessions** (sequenced; can be deleted once the corresponding commits are done):
 - `tools/codex-tandem/sessions/2026-05-29-plan-execute-monitor-reorg-design/` — spec #1 review
