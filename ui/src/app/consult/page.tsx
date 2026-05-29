@@ -61,7 +61,7 @@ function newRow(): InputRow {
 function buildConstraintsText(row: InputRow): string {
   const action = row.action.replace("_", " ");
   return (
-    `User submitted an ad-hoc decision request for ticker ${row.ticker.toUpperCase()}. ` +
+    `User submitted an ad-hoc consult request for ticker ${row.ticker.toUpperCase()}. ` +
     `User's stated lean: ${action.toUpperCase()}. ` +
     `User's rationale (verbatim): ${row.rationale.trim() || "(none provided)"}.`
   );
@@ -73,7 +73,7 @@ function actionVariant(action: ActionHint): "success" | "error" | "secondary" {
   return "secondary";
 }
 
-export default function DecidePage() {
+export default function ConsultPage() {
   const [rows, setRows] = useState<InputRow[]>([newRow()]);
   const [tier, setTier] = useState<(typeof TIERS)[number]>("auto");
   const [outcomes, setOutcomes] = useState<OutcomeRow[]>([]);
@@ -143,17 +143,18 @@ export default function DecidePage() {
   return (
     <main className="max-w-5xl mx-auto p-6 flex flex-col gap-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Decide</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Consult</h1>
         <p className="text-sm text-muted-foreground">
           Submit one or more tickers with your conviction and rationale. The
-          agent fleet runs a decision flow per ticker and returns a Buy/Sell/
-          Hold recommendation backed by a full reasoning trail.
+          agent fleet runs a decision flow per ticker and returns a Buy / Sell /
+          Hold recommendation backed by a full reasoning trail. The actual
+          accept/execute happens on <Link href="/proposals" className="text-primary hover:underline">/proposals</Link>.
         </p>
       </header>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Tickers to decide</CardTitle>
+          <CardTitle className="text-base">Tickers to consult on</CardTitle>
           <CardDescription>
             One row per ticker. Your rationale flows into the analyst prompts
             as user-supplied context so the fleet weighs it in their reasoning.
@@ -243,8 +244,8 @@ export default function DecidePage() {
               </select>
               <Button onClick={onSubmit} disabled={!canSubmit}>
                 {submitting
-                  ? `Running ${rows.length} decision${rows.length === 1 ? "" : "s"}…`
-                  : `Run decisions (${rows.length})`}
+                  ? `Running ${rows.length} consult${rows.length === 1 ? "" : "s"}…`
+                  : `Run consult (${rows.length})`}
               </Button>
             </div>
           </div>
