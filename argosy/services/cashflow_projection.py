@@ -377,6 +377,8 @@ def project_cashflow(
     tax_rate: float = DEFAULT_TAX_RATE,
     lifestyle_drift_annual: float = DEFAULT_LIFESTYLE_DRIFT_ANNUAL,
     today: date | None = None,
+    life_events: list | None = None,
+    fx_usd_nis_for_events: float | None = None,
 ) -> CashflowProjection:
     """Project ``years * 12 + 1`` monthly cashflow points and detect
     retire-ready age. See module docstring for the math model.
@@ -390,7 +392,24 @@ def project_cashflow(
     60 transfers (keren_hishtalmut + kupat_gemel) into
     ``portfolio_base_nis``. Annuity lock at age 67:
     ``(pensia + exec_ins) / mekadem``; thereafter pensia + exec_ins are
-    treated as consumed (frozen, not compounded)."""
+    treated as consumed (frozen, not compounded).
+
+    Life events (Spec D commit #3): if ``life_events`` is provided, the
+    inflated monthly_expense_series is pre-built for the full horizon
+    and then modified via ``apply_life_event_deltas`` BEFORE the per-
+    tick loop reads from it.  This is intentional — life events are
+    denominated in today's USD (the user's mental model is "$50k
+    wedding in 2034 = $50k-in-2034 purchasing power", NOT "$50k-in-
+    2026 inflated to 2034") so they are applied AFTER the inflation
+    curve has been laid down.  See spec §2.3 for the worked example
+    rationale.
+
+    ``fx_usd_nis_for_events`` (USD->NIS) is used uniformly across all
+    life-event amount conversions.  Defaults to
+    ``household.fx_usd_nis`` so the projection picks up whatever FX
+    the rest of the engine is using; callers can override with an
+    explicit value (e.g. scenario-keyed FX in a future revision per
+    spec §2.4)."""
     today = today or date.today()
     months = max(1, min(years, 50)) * 12
     real_return = mu_nominal_annual - inflation_annual
@@ -407,6 +426,37 @@ def project_cashflow(
     annuity_monthly_nis = 0.0  # real NIS at lock — inflated to nominal at each emit
     annuity_locked = False
     annuity_lock_t: int | None = None
+
+    # Spec D commit #3 — pre-build the monthly expense series, then apply
+    # any life-event deltas BEFORE the per-tick loop reads it.  The
+    # baseline reflects (a) the household's monthly_expenses_nis,
+    # (b) the effective expense growth (inflation + lifestyle drift),
+    # compounded month-by-month.  Life events are applied on top of that
+    # baseline (see spec §2.3 for the worked example justifying the
+    # "after inflation" order).
+    effective_expense_growth = inflation_annual + lifestyle_drift_annual
+    expense_series: list[float] = [
+        inflate_expenses(
+            household.monthly_expenses_nis, effective_expense_growth, t
+        )
+        for t in range(months + 1)
+    ]
+    if life_events:
+        fx_for_events = (
+            fx_usd_nis_for_events
+            if fx_usd_nis_for_events is not None
+            else household.fx_usd_nis
+        )
+        # apply_life_event_deltas is pure: returns a NEW list, does not
+        # mutate the input.  The per-tick loop below reads from the
+        # returned series.
+        expense_series = apply_life_event_deltas(
+            monthly_expense_series=expense_series,
+            life_events=life_events,
+            projection_start_date=today,
+            horizon_months=months + 1,
+            fx_usd_nis_for_event=fx_for_events,
+        )
 
     out: list[CashflowPoint] = []
 
@@ -483,10 +533,11 @@ def project_cashflow(
         portfolio_income_bear = portfolio_real_return_monthly(
             portfolio_value_nis=portfolio_bear_nis, real_return_annual=real_return
         ) * net_factor
-        effective_expense_growth = inflation_annual + lifestyle_drift_annual
-        expenses_t = inflate_expenses(
-            household.monthly_expenses_nis, effective_expense_growth, t
-        )
+        # Spec D commit #3 — read from the pre-built (and life-event-
+        # adjusted, if any events were passed) expense series rather
+        # than recomputing inflate_expenses() inline.  Identical
+        # arithmetic to the old inline path when life_events is empty.
+        expenses_t = expense_series[t]
         # Inflate the real-at-lock annuity to nominal NIS at time t so it's
         # directly comparable with expenses_t (which is also nominal at t).
         if annuity_locked and annuity_lock_t is not None:
@@ -876,12 +927,21 @@ class EffectiveRetireReadyAge:
     `clamp_reason` is one of:
       - 'no_clamp_needed' — base age survived all clamps
       - 'rsu_unvested'    — clamped by latest projected unvested RSU
-      - 'life_event'      — clamped by an explicit retirement_milestone
-                            life event (target_retire_year_change)
       - 'no_crossing'     — base projection never crossed solvency; age
                             returned is the projection horizon end
 
     `age_years` is None when no crossing is found within the horizon.
+
+    Spec D commit #3 — the 'life_event' clamp reason was REMOVED.
+    Life events now feed the cashflow projection directly (via
+    ``apply_life_event_deltas`` inside ``project_cashflow``); their
+    effect on retire-readiness flows through the projection's solvency
+    crossing, not through a second date-clamp pathway.  See
+    docs/superpowers/specs/2026-05-29-life-events-cashflow-redesign-
+    design.md §2.5 for the removal rationale + per-file blast radius.
+    The ``life_event_clamp_date`` field is also gone from this
+    dataclass — anyone consuming it should now read the (life-event-
+    adjusted) ``base_age_years`` instead.
     """
 
     scenario: Literal["bear", "base", "bull"]
@@ -889,7 +949,6 @@ class EffectiveRetireReadyAge:
     base_age_years: float | None
     clamp_reason: str
     rsu_clamp_date: date | None
-    life_event_clamp_date: date | None
 
 
 # Heuristic for v1: assume RSU vests proceed on the historical quarterly
@@ -917,15 +976,24 @@ def effective_retire_ready_age(
     """Compute retire-ready-age with all clamps applied.
 
     Clamps in order:
-      1. Base computation: project_cashflow + detect_retire_ready
+      1. Base computation: project_cashflow + detect_retire_ready.
+         As of Spec D commit #3, project_cashflow internally applies
+         ``apply_life_event_deltas`` so the base age ALREADY reflects
+         the user's life-event-shaped expense series.  Life events do
+         NOT contribute a separate date clamp here.
       2. RSU clamp: latest historical vest + 90 days projects next
          expected vest. If base age implies retirement BEFORE that
          date, clamp to it. (Commit #10 follow-on replaces this
          heuristic with grant-aware cadence projection.)
-      3. Life-event blocking clamp: NOT YET WIRED — life_events table
-         landed in commit #3 but the service-layer query lands in
-         commit #8 (/life-events page). Documented as a TODO so the
-         hook is in the function from day 1, just returns None today.
+
+    Spec D commit #3 — life-event date clamp REMOVED.  See
+    docs/superpowers/specs/2026-05-29-life-events-cashflow-redesign-
+    design.md §2.5.  Rationale: a life event's effect on retire-
+    readiness flows through the cashflow projection (expense series
+    -> surplus -> solvency crossing).  A second date-clamp pathway
+    would double-count.  RSU clamp survives because RSUs are a real
+    liquidity constraint (you can't sell unvested shares), not a
+    cashflow-shape modifier.
 
     All consumers SHOULD call this function — see Section 3.1 of the
     spec. A unit test asserts no consumer computes retire-ready-age
@@ -935,6 +1003,20 @@ def effective_retire_ready_age(
 
     pension_state = extract_pension_state(session, user_id)
     household_state = extract_household_state(session, user_id)
+
+    # Spec D commit #3 — load the user's life events and pass them
+    # through to project_cashflow so their cashflow-shape effects show
+    # up in the projection's expense series (and therefore in the
+    # solvency crossing that gives us base_age).  Local import to avoid
+    # a module-level circular import (LifeEvent lives in
+    # ``argosy.state.models`` which imports from various services).
+    from argosy.state.models import LifeEvent
+
+    life_events = (
+        session.query(LifeEvent)
+        .filter(LifeEvent.user_id == user_id)
+        .all()
+    )
 
     # Base projection (the same call shape as project_cashflow at its
     # default retirement_age). We project at the household's
@@ -948,6 +1030,7 @@ def effective_retire_ready_age(
         mu_nominal_annual=mu_nominal_annual,
         sigma_annual=sigma_annual,
         today=today,
+        life_events=life_events,
     )
 
     base_age_attr = {
@@ -965,7 +1048,6 @@ def effective_retire_ready_age(
             base_age_years=None,
             clamp_reason="no_crossing",
             rsu_clamp_date=None,
-            life_event_clamp_date=None,
         )
 
     # Translate base_age → a calendar date so we can compare with clamps.
@@ -975,14 +1057,20 @@ def effective_retire_ready_age(
     # Clamp 2: RSU vest.
     rsu_clamp_date = _latest_projected_rsu_vest_date(session, user_id, today)
 
-    # Clamp 3: life event (stub for now).
-    life_clamp_date = None
+    # Life-event clamp REMOVED in Spec D commit #3 (spec
+    # docs/superpowers/specs/2026-05-29-life-events-cashflow-redesign-
+    # design.md §2.5).  Reason: a life event's effect on retire-readiness
+    # flows through the cashflow projection (apply_life_event_deltas
+    # modifies monthly_expense_series, which propagates through surplus
+    # calculation, which determines the solvency crossing).  A second
+    # date-clamp pathway double-counts.  RSU clamp survives because
+    # RSUs are a real liquidity constraint (you can't sell unvested
+    # shares), not a cashflow-shape modifier.
 
-    # Pick the latest among (base, rsu, life).
+    # Pick the latest among (base, rsu).
     candidates = [
         ("base", base_retire_date, "no_clamp_needed"),
         ("rsu", rsu_clamp_date, "rsu_unvested"),
-        ("life", life_clamp_date, "life_event"),
     ]
     best_date = base_retire_date
     clamp_reason = "no_clamp_needed"
@@ -1004,7 +1092,6 @@ def effective_retire_ready_age(
         base_age_years=base_age,
         clamp_reason=clamp_reason,
         rsu_clamp_date=rsu_clamp_date,
-        life_event_clamp_date=life_clamp_date,
     )
 
 

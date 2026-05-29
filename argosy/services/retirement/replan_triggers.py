@@ -48,7 +48,13 @@ def list_known_triggers() -> list[dict]:
         {"kind": "fx_shock_10pct",
          "description": "USD/NIS move > 10% in a single month"},
         {"kind": "life_event",
-         "description": "Birth, death, marriage, divorce, kid IDF service"},
+         "description": (
+             "Life event added/edited — cashflow series shape changed; "
+             "projection should re-compose. Spec D commit #3: trigger "
+             "still fires on create/edit (the user's recorded state "
+             "changed); the semantic shifted from 'retirement-date "
+             "clamp' to 'cashflow shape modifier'."
+         )},
         {"kind": "user_request",
          "description": "User-initiated recompute via /retirement page"},
     ]

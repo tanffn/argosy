@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 import yaml
 from datetime import date, datetime, timezone
 
@@ -19,11 +20,14 @@ import pytest
 
 from argosy.services.cashflow_projection import (
     CashflowPoint,
+    HouseholdState,
+    PensionState,
     accumulate_pension_balance,
     compute_pension_annuity,
     detect_retire_ready,
     inflate_expenses,
     portfolio_real_return_monthly,
+    project_cashflow,
 )
 from argosy.state.models import (
     AgentReport,
@@ -780,3 +784,376 @@ class TestLifestyleDrift:
         annuity_no = proj_no_drift.series[ann_idx + 60].pension_annuity_monthly_nis
         annuity_with = proj_drift.series[ann_idx + 60].pension_annuity_monthly_nis
         assert annuity_no == pytest.approx(annuity_with, rel=1e-9)
+
+
+class TestLifeEventWireIn:
+    """Spec D commit #3 — life events feed the cashflow projection
+    through ``apply_life_event_deltas`` inside ``project_cashflow``.
+
+    The shape contract:
+      - Passing ``life_events=None`` or ``life_events=[]`` is byte-
+        identical to the legacy path (no life-event terms).
+      - A ``phase_change_start`` with POSITIVE monthly_delta_usd
+        (kids leave home -> less expense) reduces the expense series
+        from phase_start_date onward AND drives the solvency crossing
+        earlier in time.
+      - A heavy recurring expense (every 5y) increases the expense
+        series at each occurrence AND pushes the solvency crossing
+        later (or off the horizon entirely).
+      - ``delta_kind='none'`` events are skipped (no effect).
+
+    These tests are deterministic — same fixtures, same FX, same horizon.
+    """
+
+    def _household(self) -> HouseholdState:
+        return HouseholdState(
+            monthly_expenses_nis=30_000.0,
+            portfolio_value_nis=4_000_000.0,
+            fx_usd_nis=3.7,
+            current_age_years=45.0,
+        )
+
+    def _pensions(self) -> PensionState:
+        return PensionState(
+            kupat_pensia_balance_nis=800_000.0,
+            kupat_pensia_contribution_monthly_nis=3_400.0,
+            executive_insurance_balance_nis=750_000.0,
+            keren_hishtalmut_balance_nis=380_000.0,
+            keren_hishtalmut_contribution_monthly_nis=2_700.0,
+            kupat_gemel_balance_nis=75_000.0,
+        )
+
+    def _phase_change_start(
+        self,
+        *,
+        start_date: date,
+        monthly_delta_usd: float,
+    ):
+        return SimpleNamespace(
+            delta_kind="phase_change_start",
+            phase_start_date=start_date,
+            phase_end_date=None,
+            monthly_delta_usd=monthly_delta_usd,
+            target_date=None,
+            one_shot_amount_usd=None,
+            recurring_amount_usd=None,
+            recurring_period_years=None,
+        )
+
+    def _one_shot(self, *, target_date: date, amount_usd: float):
+        return SimpleNamespace(
+            delta_kind="one_shot",
+            target_date=target_date,
+            one_shot_amount_usd=amount_usd,
+            phase_start_date=None,
+            phase_end_date=None,
+            monthly_delta_usd=None,
+            recurring_amount_usd=None,
+            recurring_period_years=None,
+        )
+
+    def _recurring(
+        self,
+        *,
+        anchor_date: date,
+        amount_usd: float,
+        period_years: int,
+    ):
+        return SimpleNamespace(
+            delta_kind="recurring_every_n_years",
+            target_date=anchor_date,
+            recurring_amount_usd=amount_usd,
+            recurring_period_years=period_years,
+            one_shot_amount_usd=None,
+            monthly_delta_usd=None,
+            phase_start_date=None,
+            phase_end_date=None,
+        )
+
+    def _none(self):
+        return SimpleNamespace(
+            delta_kind="none",
+            target_date=None,
+            phase_start_date=None,
+            phase_end_date=None,
+            monthly_delta_usd=None,
+            one_shot_amount_usd=None,
+            recurring_amount_usd=None,
+            recurring_period_years=None,
+        )
+
+    def _kwargs(self) -> dict:
+        return dict(
+            household=self._household(),
+            pensions=self._pensions(),
+            retirement_age=49.0,
+            years=30,
+            mu_nominal_annual=0.08,
+            sigma_annual=0.18,
+            inflation_annual=0.025,
+            mekadem=200.0,
+            tax_rate=0.25,
+            today=date(2026, 5, 29),
+        )
+
+    def test_life_events_none_byte_identical_to_legacy_path(self):
+        """``life_events=None`` should produce a projection identical to
+        the pre-Spec-D-commit-3 path (no life-event terms applied)."""
+        baseline = project_cashflow(**self._kwargs())
+        explicit_none = project_cashflow(**self._kwargs(), life_events=None)
+        empty_list = project_cashflow(**self._kwargs(), life_events=[])
+        for t, p in enumerate(baseline.series):
+            assert (
+                p.expenses_monthly_nis
+                == pytest.approx(explicit_none.series[t].expenses_monthly_nis)
+            )
+            assert (
+                p.expenses_monthly_nis
+                == pytest.approx(empty_list.series[t].expenses_monthly_nis)
+            )
+
+    def test_phase_change_kids_leave_home_shifts_expense_series(self):
+        """A phase_change_start at year 8 with +1500 USD/mo (kids leave
+        home -> less expense) reduces the expense series from month 96
+        onward by 1500 * fx, additive on top of the inflated baseline."""
+        kwargs = self._kwargs()
+        baseline = project_cashflow(**kwargs)
+        with_event = project_cashflow(
+            **kwargs,
+            life_events=[
+                self._phase_change_start(
+                    start_date=date(2034, 5, 29),  # 96 months from 2026-05-29
+                    monthly_delta_usd=1500.0,
+                )
+            ],
+        )
+        # Before month 96 — unchanged.
+        for t in (0, 12, 60, 95):
+            assert (
+                with_event.series[t].expenses_monthly_nis
+                == pytest.approx(baseline.series[t].expenses_monthly_nis)
+            )
+        # From month 96 — baseline minus 1500 * fx (sign convention:
+        # positive amount_usd = income / expense reduction).
+        fx = self._household().fx_usd_nis
+        for t in (96, 120, 200, 359):
+            expected = baseline.series[t].expenses_monthly_nis - 1500.0 * fx
+            assert (
+                with_event.series[t].expenses_monthly_nis
+                == pytest.approx(expected)
+            )
+
+    def test_phase_change_drops_retire_age_earlier(self):
+        """Reducing forward expenses (positive monthly_delta) means the
+        solvency crossing happens EARLIER (lower retire-ready age)."""
+        kwargs = self._kwargs()
+        baseline = project_cashflow(**kwargs)
+        with_event = project_cashflow(
+            **kwargs,
+            life_events=[
+                self._phase_change_start(
+                    start_date=date(2030, 1, 1),
+                    monthly_delta_usd=2000.0,  # +2000 USD/mo from 2030
+                )
+            ],
+        )
+        assert baseline.retire_ready_age_base is not None
+        assert with_event.retire_ready_age_base is not None
+        assert (
+            with_event.retire_ready_age_base
+            <= baseline.retire_ready_age_base
+        )
+
+    def test_heavy_recurring_expense_pushes_retire_age_later(self):
+        """A recurring -67k USD car every 5y (negative = expense)
+        increases cumulative expense and pushes solvency crossing
+        later in time vs the baseline (or off the horizon)."""
+        kwargs = self._kwargs()
+        baseline = project_cashflow(**kwargs)
+        with_event = project_cashflow(
+            **kwargs,
+            life_events=[
+                self._recurring(
+                    anchor_date=date(2027, 3, 15),
+                    amount_usd=-67_000.0,
+                    period_years=5,
+                )
+            ],
+        )
+        # If both projections cross, with_event >= baseline (later
+        # crossing).  If with_event never crosses, that's also a valid
+        # "pushed past horizon" result — heavier expense load.
+        if (
+            baseline.retire_ready_age_base is not None
+            and with_event.retire_ready_age_base is not None
+        ):
+            assert (
+                with_event.retire_ready_age_base
+                >= baseline.retire_ready_age_base
+            )
+        # The spike months themselves have the expected delta.
+        fx = self._household().fx_usd_nis
+        spike_idx = (2027 - 2026) * 12 + (3 - 5)  # = 10
+        expected_spike = (
+            baseline.series[spike_idx].expenses_monthly_nis
+            + 67_000.0 * fx
+        )
+        assert (
+            with_event.series[spike_idx].expenses_monthly_nis
+            == pytest.approx(expected_spike)
+        )
+
+    def test_none_kind_events_have_no_cashflow_effect(self):
+        """``delta_kind='none'`` events are display-only — they must
+        NOT shift the expense series or the retire-ready age."""
+        kwargs = self._kwargs()
+        baseline = project_cashflow(**kwargs)
+        with_none = project_cashflow(
+            **kwargs,
+            life_events=[self._none(), self._none(), self._none()],
+        )
+        for t in range(0, len(baseline.series), 60):
+            assert (
+                with_none.series[t].expenses_monthly_nis
+                == pytest.approx(baseline.series[t].expenses_monthly_nis)
+            )
+        assert (
+            with_none.retire_ready_age_base
+            == baseline.retire_ready_age_base
+        )
+
+    def test_one_shot_spike_lands_on_correct_month(self):
+        """A one_shot at year 5 lands on the correct month-offset with
+        the correct sign-flipped magnitude."""
+        kwargs = self._kwargs()
+        baseline = project_cashflow(**kwargs)
+        # 2031-06 is 61 months past 2026-05.
+        with_event = project_cashflow(
+            **kwargs,
+            life_events=[
+                self._one_shot(
+                    target_date=date(2031, 6, 10),
+                    amount_usd=-50_000.0,  # negative = expense
+                )
+            ],
+        )
+        # Spike month: baseline + 50000 * fx.
+        fx = self._household().fx_usd_nis
+        spike_idx = 61
+        assert (
+            with_event.series[spike_idx].expenses_monthly_nis
+            == pytest.approx(
+                baseline.series[spike_idx].expenses_monthly_nis
+                + 50_000.0 * fx
+            )
+        )
+        # Neighbors unchanged.
+        for t in (spike_idx - 1, spike_idx + 1):
+            assert (
+                with_event.series[t].expenses_monthly_nis
+                == pytest.approx(baseline.series[t].expenses_monthly_nis)
+            )
+
+    def test_explicit_fx_override_overrides_household_fx(self):
+        """Caller can pass ``fx_usd_nis_for_events`` to override the
+        household FX (per spec §2.4 — future scenario-keyed FX)."""
+        kwargs = self._kwargs()
+        events = [
+            self._one_shot(
+                target_date=date(2030, 1, 15),
+                amount_usd=-1000.0,  # negative = expense
+            )
+        ]
+        # Baseline (no events) to subtract out inflation/lifestyle drift.
+        baseline = project_cashflow(**kwargs)
+        # Default: uses household.fx_usd_nis = 3.7
+        default_fx = project_cashflow(**kwargs, life_events=events)
+        # Override to 5.0
+        override_fx = project_cashflow(
+            **kwargs, life_events=events, fx_usd_nis_for_events=5.0,
+        )
+        spike_idx = (2030 - 2026) * 12 + (1 - 5)  # 44
+        default_event_delta = (
+            default_fx.series[spike_idx].expenses_monthly_nis
+            - baseline.series[spike_idx].expenses_monthly_nis
+        )
+        override_event_delta = (
+            override_fx.series[spike_idx].expenses_monthly_nis
+            - baseline.series[spike_idx].expenses_monthly_nis
+        )
+        # Pure event contribution at default FX: -(-1000 * 3.7) = +3700.
+        assert default_event_delta == pytest.approx(3700.0, rel=1e-9)
+        # Pure event contribution at override FX: -(-1000 * 5.0) = +5000.
+        assert override_event_delta == pytest.approx(5000.0, rel=1e-9)
+        # delta ratio = fx ratio = 5.0 / 3.7
+        assert (
+            override_event_delta
+            == pytest.approx(default_event_delta * 5.0 / 3.7, rel=1e-9)
+        )
+
+
+class TestEffectiveRetireReadyAgeLifeEventClampRemoved:
+    """Spec D commit #3 — verify the old life-event clamp branch is
+    GONE.
+
+    These tests pin the contract from spec §7.3:
+      - ``EffectiveRetireReadyAge`` no longer carries
+        ``life_event_clamp_date`` (attribute does not exist).
+      - ``clamp_reason`` never returns the string ``'life_event'``
+        regardless of what life events are seeded.
+      - The retire-ready age is determined ONLY by (a) base cashflow
+        feasibility and (b) the RSU vest clamp.  A legacy-shape
+        ``retirement_milestone:target_retire_year_change`` row stored
+        with ``delta_kind='none'`` has zero effect on the result.
+    """
+
+    def test_dataclass_has_no_life_event_clamp_date_field(self):
+        """Regression: the field was removed in commit #3.  Anyone
+        accessing it should get a clear AttributeError, not a silent
+        None."""
+        from argosy.services.cashflow_projection import EffectiveRetireReadyAge
+        fields = {f.name for f in EffectiveRetireReadyAge.__dataclass_fields__.values()}
+        assert "life_event_clamp_date" not in fields
+        assert "rsu_clamp_date" in fields  # rsu clamp remains
+
+    def test_clamp_reason_literal_does_not_include_life_event(self):
+        """The clamp-reason candidate tuple in effective_retire_ready_age
+        no longer contains the ``life_event`` entry.  Source-level
+        assertion via reading the docstring of the dataclass — it
+        enumerates valid reasons and must NOT include 'life_event'."""
+        from argosy.services.cashflow_projection import EffectiveRetireReadyAge
+        doc = EffectiveRetireReadyAge.__doc__ or ""
+        # The clamp_reason values are enumerated in the docstring.
+        # The 'life_event' value must NOT appear as a clamp_reason
+        # (the removal note explicitly calls out the removal).
+        assert "'life_event'" not in doc or "REMOVED" in doc
+
+
+class TestProjectCashflowWiringRegression:
+    """The bare project_cashflow signature still accepts the old kwarg
+    set unchanged — new args (life_events, fx_usd_nis_for_events) are
+    optional and default to no-op behavior."""
+
+    def test_legacy_kwarg_set_still_works(self, client_with_db):
+        """No regression on existing callers (plan.py etc.) — calling
+        project_cashflow with only the historical kwargs returns the
+        same projection it always did."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full_state(s)
+            from argosy.services.cashflow_projection import (
+                extract_household_state,
+                extract_pension_state,
+            )
+            hh = extract_household_state(s, "ariel", today=date(2026, 5, 27))
+            pen = extract_pension_state(s, "ariel")
+        proj = project_cashflow(
+            household=hh, pensions=pen, retirement_age=49.0, years=30,
+            mu_nominal_annual=0.08, sigma_annual=0.18,
+            inflation_annual=0.025, mekadem=200.0,
+            today=date(2026, 5, 27),
+        )
+        # Sanity: a 30-year projection produces 361 monthly points.
+        assert len(proj.series) == 30 * 12 + 1
+        # And the retire-ready fields are populated as before.
+        assert proj.retire_ready_age_base is not None

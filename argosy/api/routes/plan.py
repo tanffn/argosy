@@ -1167,6 +1167,17 @@ def get_draft_cashflow_projection(
             portfolio_value_nis=portfolio_value_usd_override * hh.fx_usd_nis,
         )
 
+    # Spec D commit #3 — load the user's life events so the projected
+    # expense series reflects their cashflow-shape deltas (one_shot,
+    # recurring, phase_change_*).  apply_life_event_deltas runs inside
+    # project_cashflow when the list is non-empty.
+    from argosy.state.models import LifeEvent as _LifeEvent
+    life_events = (
+        db.query(_LifeEvent)
+        .filter(_LifeEvent.user_id == user_id)
+        .all()
+    )
+
     proj = project_cashflow(
         household=hh,
         pensions=pen,
@@ -1176,6 +1187,7 @@ def get_draft_cashflow_projection(
         sigma_annual=sigma_annual,
         lifestyle_drift_annual=lifestyle_drift_annual,
         tax_rate=tax_rate,
+        life_events=life_events,
     )
 
     fx = hh.fx_usd_nis if hh.fx_usd_nis > 0 else 1.0
