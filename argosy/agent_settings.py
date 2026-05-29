@@ -82,6 +82,15 @@ class CadencesBlock(BaseModel):
             enabled=True, cron="0 7 * * *", timezone="Asia/Jerusalem"
         )
     )
+    # Sprint A commit #7 — news pipeline daily cadence.
+    # 17:00 IL-local: Stage 1 ingest (deterministic extractor) + Stage 2
+    # analyst (Opus). 17:00 IDT = 14:00 UTC (summer) / 15:00 UTC (winter).
+    # Timezone resolution lives in commit #2's croniter fix.
+    news_daily: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(
+            enabled=True, cron="0 17 * * *", timezone="Asia/Jerusalem"
+        )
+    )
 
 
 class BackupsBlock(BaseModel):

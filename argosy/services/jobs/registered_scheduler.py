@@ -80,8 +80,18 @@ class RegisteredScheduler(Scheduler):
         super().__init__(*args, **kwargs)
         self._registry = registry
 
-    async def _fire_once(self, loop: CadenceLoop, *, force: bool = False) -> None:
+    async def _fire_once(
+        self, loop: CadenceLoop, *, force: bool = False
+    ) -> dict | None:
         """Override of :meth:`Scheduler._fire_once` — scheduled-path entry.
+
+        Returns ``None`` — the tick's output_summary is captured
+        internally by :meth:`fire_once_already_locked` and persisted to
+        ``job_runs.output_summary`` via :meth:`_close_safely`. The
+        return-type annotation matches the parent's widened
+        ``dict | None`` (Spec A commit #7) but the subclass intentionally
+        always returns ``None`` because the audit-row writeback is the
+        load-bearing channel, not the function return value.
 
         This is the lock-acquiring entry. The manual path
         (:meth:`JobRegistry.fire_now`) calls
@@ -168,14 +178,21 @@ class RegisteredScheduler(Scheduler):
             return
 
         try:
-            await loop.tick(now=self.clock)
+            tick_result = await loop.tick(now=self.clock)
         except Exception as exc:
             _log.exception("cadence.tick_failed", loop=loop.name)
             # Step 3 (error) — close BEFORE step 4 (ordering invariant).
+            # Spec A commit #7: even on the exception path we capture
+            # `loop.last_output_summary` so multi-stage jobs (e.g.
+            # NewsDailyJob — Stage 1 ingest + Stage 2 analyst) can
+            # surface partial progress when Stage 2 raises. The job's
+            # `tick()` sets this in a `finally` so it's populated before
+            # the exception unwinds past us.
             await self._close_safely(
                 run_id,
                 status="error",
                 error_message=str(exc),
+                output_summary=_safe_output_summary(loop),
             )
             # Step 4 — parent's pointer write happens EVEN IF close
             # failed, so the matrix's "close fails, record_tick ok"
@@ -192,7 +209,15 @@ class RegisteredScheduler(Scheduler):
             return
 
         # Step 3 (ok) — close BEFORE step 4.
-        output_summary = _safe_output_summary(loop)
+        # Spec A commit #7: prefer the tick's explicit return value
+        # when present; fall back to `loop.last_output_summary` for
+        # legacy loops that still use the attribute side-channel.
+        # `_safe_output_summary` handles the None / non-dict coercion.
+        output_summary = (
+            tick_result
+            if isinstance(tick_result, dict)
+            else _safe_output_summary(loop)
+        )
         await self._close_safely(
             run_id,
             status="ok",
@@ -235,11 +260,16 @@ def _safe_output_summary(loop: CadenceLoop):
     """Read ``loop.last_output_summary`` defensively.
 
     Spec §1.7 / commit #7 widens ``CadenceLoop.tick`` to return
-    ``dict | None`` — the registry will eventually capture the return
-    value directly. v1 (commit #3a) ships a belt-and-suspenders fallback
-    on the attribute: any loop that wants to surface counts/refs/notes
-    sets ``self.last_output_summary``; the rest leave it unset and the
-    registry stores ``NULL``.
+    ``dict | None`` — the registry now captures the return value
+    directly on the success path. This attribute is the FALLBACK:
+
+    * On the exception path: ``tick()`` may have set
+      ``self.last_output_summary`` in a ``finally`` block to surface
+      per-stage partial progress (codex NICE #7). The adapter reads it
+      here to capture e.g. "Stage 1 ingested ok, Stage 2 raised" even
+      though no return value made it back.
+    * Legacy loops that never set ``last_output_summary``: the attribute
+      is missing → returns ``None`` → stored as NULL.
     """
     summary = getattr(loop, "last_output_summary", None)
     if summary is None:

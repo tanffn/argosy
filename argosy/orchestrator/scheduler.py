@@ -277,16 +277,31 @@ class Scheduler:
             raise KeyError(f"loop {loop_name!r} not registered")
         await self._fire_once(loop, force=True)
 
-    async def _fire_once(self, loop: CadenceLoop, *, force: bool = False) -> None:
+    async def _fire_once(
+        self, loop: CadenceLoop, *, force: bool = False
+    ) -> dict | None:
+        """Fire a single tick. Returns the tick's ``output_summary`` dict
+        (or ``None``) so subclasses — notably
+        :class:`RegisteredScheduler` (Spec A commit #7) — can capture it
+        and persist as ``job_runs.output_summary``. Plain :class:`Scheduler`
+        ignores the return value; the audit-row writeback lives in the
+        registry subclass.
+
+        Spec A commit #7 widened the contract: tick's return value is
+        now propagated through ``_fire_once`` rather than discarded.
+        Pre-#7 callers passed ``None`` from every loop, so the type
+        widening is backwards-compatible.
+        """
         try:
-            await loop.tick(now=self.clock)
+            result = await loop.tick(now=self.clock)
         except Exception as exc:
             _log.exception("cadence.tick_failed", loop=loop.name)
             await self._record_tick(loop.name, status=TickStatus.ERROR, error=str(exc))
             if force:
                 raise
-            return
+            return None
         await self._record_tick(loop.name, status=TickStatus.OK, error=None)
+        return result
 
     async def _record_tick(
         self,

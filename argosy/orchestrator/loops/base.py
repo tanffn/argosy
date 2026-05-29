@@ -109,8 +109,31 @@ class CadenceLoop(abc.ABC):
         self.enabled = enabled
 
     @abc.abstractmethod
-    async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
-        """Run one tick of work. Raise to signal failure."""
+    async def tick(
+        self, *, now: Callable[[], datetime] | None = None
+    ) -> dict | None:
+        """Run one tick of work. Raise to signal failure.
+
+        Returns ``output_summary`` dict — :class:`JobRegistry` adapter
+        persists it as ``job_runs.output_summary``. ``None`` (the implicit
+        return for subclasses that don't ``return`` a value) is treated as
+        the empty summary (NULL on the DB column).
+
+        Spec A commit #7 widened this contract from ``None`` to
+        ``dict | None`` (codex IMPORTANT #5). All pre-existing loops keep
+        their implicit-``None`` returns — no source change needed, since
+        ``None`` matches ``dict | None``. New loops that want to surface
+        per-tick counts / refs / notes should ``return`` a dict; the
+        :class:`RegisteredScheduler` adapter (in
+        ``argosy/services/jobs/registered_scheduler.py``) captures the
+        return value and forwards it to ``_close_job_run`` on success.
+
+        Failure surface (commit #7, codex NICE #7): a subclass that does
+        multi-stage work AND wants per-stage outcome captured even when
+        the tick re-raises MAY also set ``self.last_output_summary`` in a
+        ``finally`` block — the adapter falls back to that attribute on
+        the exception path so partial progress is recorded.
+        """
         raise NotImplementedError
 
 
