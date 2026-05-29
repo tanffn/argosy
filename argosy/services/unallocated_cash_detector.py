@@ -14,11 +14,12 @@ threshold was "Plan-target gap" via AskUserQuestion on 2026-05-29.
 
 Reuses ``windfall_allocator._allocate_long_term`` directly so the
 proposals carry the same shape + asset-class targeting logic as the
-windfall flow. The Accept/Defer surface piggybacks on the existing
-``windfall_actions`` table -- a "cash overage" decision and a "windfall
-RSU sale allocation" decision have the same shape (horizon, asset_class,
-instrument, amount_usd, rationale, closes_delta_usd) so a separate
-table would be churn for no information gain.
+windfall flow. The Accept/Defer surface piggybacks on the renamed
+``allocation_actions`` table (migration 0041) with
+``action_source='unallocated_cash'`` -- a "cash overage" decision and a
+"windfall RSU sale allocation" decision share the shape (horizon,
+asset_class, instrument, amount_usd, rationale, closes_delta_usd) so a
+separate table would be churn for no information gain.
 """
 from __future__ import annotations
 

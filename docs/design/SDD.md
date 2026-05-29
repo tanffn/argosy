@@ -29,13 +29,15 @@ Codex tandem zigzag verdicts:
 - Spec #1: APPROVE_WITH_CONDITIONS. 3 BLOCKERs integrated: keep allocation_actions separate from generic proposals; two-stage news pipeline; canonical retire-ready-age. IMPORTANTs integrated: drift hysteresis, anchor migration, /decide rename cross-link scope, action_source enum extensibility, uniqueness strategy. Session at `tools/codex-tandem/sessions/2026-05-29-plan-execute-monitor-reorg-design/`.
 - Spec #2: APPROVE_WITH_CONDITIONS. 1 BLOCKER integrated: explicit 4-state watchlist transition rules. IMPORTANTs integrated: robust stats (median+MAD), per-bucket dedup_key formulas, three-scenario tax estimate, migration-per-commit split. Session at `tools/codex-tandem/sessions/2026-05-29-anomaly-detection-rsu-prevest-design/`.
 
-**Sprint #1 commit landed alongside this SDD update:** user-guide audit rewrite — 13 chat-tone / history-narration hits fixed. Surgical edits only; full IA rewrite happens at sprint-end commit #18 once the IA reorg has shipped. New binding [[feedback_user_guide_is_manual]]: user-guide is a TV-manual, not a history doc — no "you're right", no "still holds", no design-rationale defensive callouts.
+**Sprint commits landed alongside this SDD update:**
+- Commit #1 (`40ebea6`): user-guide audit rewrite — 13 chat-tone / history-narration hits fixed. Surgical edits only; full IA rewrite happens at sprint-end commit #18 once the IA reorg has shipped. New binding [[feedback_user_guide_is_manual]]: user-guide is a TV-manual, not a history doc — no "you're right", no "still holds", no design-rationale defensive callouts.
+- Commit #2 (pending): migration 0041 — `windfall_actions` → `allocation_actions` rename with `action_source` discriminator + `source_ref` (replacing `event_source_tsv`) + `source_detected_at` (replacing `event_detected_at`). Codex tandem review APPROVE_WITH_CONDITIONS; 2 IMPORTANTs fixed before commit: (a) split-brain detection — migration now raises explicit error if both `windfall_actions` and `allocation_actions` somehow coexist, not silently returns; (b) unique index tightened to `(user_id, action_source, source_ref)` — `decided_at` dropped because its inclusion allowed duplicate Accepts at different timestamps, contradicting the dedup intent. Existing 6 `test_windfall_actions.py` tests pass via backward-compat payload shim (route still accepts legacy `event_*` field names on the wire, maps internally). The pre-rename `WindfallAction` ORM class shipped in `3fe089c` without its own alembic migration; this is the first time the table is alembic-managed.
 
 **Open dependencies for Ariel (mid-sprint, neither blocks start):**
 - Discord bot creds (channel ID + bot token + invite) for spec #1 commit #16 — bot scaffolding ships dormant until creds arrive.
 - Real Schwab Equity Awards CSV fixture for spec #1 commit #7 — needed to verify the unvested-grants `Deposit` row shape codex flagged as IMPORTANT-to-verify.
 
-**What ships next this session (autonomous mode):** continue executing sprint commits in order. Next: spec #1 commit #2 (migration 0041 — allocation_actions rename) with codex zigzag review.
+**What ships next this session (autonomous mode):** continue executing sprint commits in order. Next: commit #3 (migration 0042 — `life_events` table) with codex zigzag review.
 
 ### Wave 2026-05-29 (TSV generator block) — Argosy is now the TSV producer
 

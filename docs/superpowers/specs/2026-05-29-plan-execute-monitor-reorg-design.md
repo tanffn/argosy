@@ -374,13 +374,25 @@ ALTER TABLE allocation_actions RENAME COLUMN event_detected_at TO source_detecte
 
 -- Drop old index
 DROP INDEX IF EXISTS ix_windfall_actions_event;
--- New uniqueness strategy per codex IMPORTANT
-CREATE UNIQUE INDEX ix_allocation_actions_source 
-  ON allocation_actions (user_id, action_source, source_ref, decided_at)
+-- Uniqueness intent: one decision per (user, source-type, source-ref).
+-- decided_at is NOT in the unique key — codex IMPORTANT review of the
+-- migration (sprint commit #2) flagged that including decided_at would
+-- allow duplicate Accepts at different millisecond timestamps, defeating
+-- the dedup goal. Route returns 409 on duplicate; if the user wants to
+-- change an existing decision, the route does UPDATE not INSERT.
+CREATE UNIQUE INDEX ix_allocation_actions_source_unique
+  ON allocation_actions (user_id, action_source, source_ref)
   WHERE source_ref IS NOT NULL;
 CREATE INDEX ix_allocation_actions_user_decided
   ON allocation_actions (user_id, decided_at);
 ```
+
+The actual migration in `alembic/versions/0041_allocation_actions_rename.py`
+handles two starting states: fresh DB (creates `allocation_actions`
+directly) and legacy DB with `windfall_actions` table (rename + alter).
+The pre-rename `WindfallAction` ORM class shipped in `3fe089c` without
+its own alembic migration, so this is the first time the table lands
+under alembic.
 
 **`action_source` enum** (extended per codex IMPORTANT to avoid migration churn):
 `windfall | unallocated_cash | monitor_drift | rebalance | life_event | manual`
@@ -395,13 +407,13 @@ CREATE INDEX ix_allocation_actions_user_decided
 
 Note: `macro_shift` is NOT an action_source — macro shifts produce a `MacroShiftFlag` that invites `/plan` re-synthesis, never an automatic allocation action. Drift is the only monitor trigger that creates an allocation_actions row directly.
 
-**Code updates** (6 known consumers + new):
-- `argosy/state/models.py` — rename class, update enum
-- `argosy/api/routes/retirement.py` — windfall accept/defer routes use new column names
-- `argosy/services/retirement/windfall_actions.py` — service layer rename
-- `argosy/services/unallocated_cash_detector.py` — write to allocation_actions with `action_source='unallocated_cash'`
-- New routes: `POST /api/proposals/allocation/{accept,defer}` (replaces `/retirement/windfall/{accept,defer}` — old paths kept as 308 redirects for one sprint)
-- `ui/src/components/WindfallCard.tsx` — rename to `AllocationActionCard`; consume from `/api/proposals/allocation/actions`
+**Code updates** (actual consumers per grep on 2026-05-29):
+- `argosy/state/models.py` — rename class `WindfallAction` → `AllocationAction`, add `action_source` + `source_ref` columns, retire `event_source_tsv`. Keep `WindfallAction = AllocationAction` alias temporarily for any imports still referencing the old name; remove in a follow-on commit once all consumers move.
+- `argosy/api/routes/retirement.py` — `/windfall/{accept,defer,actions}` routes wire the payload shim: accept legacy field names (`event_detected_at`, `event_source_tsv`) on the request DTO, internally map to `source_detected_at`/`source_ref` + force `action_source='windfall'`. New `/api/proposals/allocation/{accept,defer,actions}` routes land in sprint commit #6 alongside the WindfallCard mount move.
+- `argosy/services/unallocated_cash_detector.py` — docstring updated to reference `allocation_actions` + `action_source='unallocated_cash'`. The detector itself doesn't write to the table yet (Accept/Defer wiring is sprint commit #6 — until then it surfaces buy suggestions advisory-only).
+- `ui/src/components/retirement/WindfallCard.tsx` + `ui/src/lib/api.ts` — unchanged in commit #2 (still use old paths + payload shape). Rename to `AllocationActionCard` + switch to new routes lands in sprint commit #6.
+
+Note: spec earlier drafts referenced `argosy/services/retirement/windfall_actions.py` as a service-layer consumer; that file does not exist in the codebase. The logic lives directly in the route file.
 
 ### Migration 0042 — `life_events` table
 

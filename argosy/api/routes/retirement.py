@@ -903,16 +903,13 @@ def get_windfall_detect(
 class WindfallActionRequest(BaseModel):
     """Payload for POST /windfall/accept and POST /windfall/defer.
 
-    The proposal fields (horizon / asset_class / instrument / amount_usd
-    / rationale / closes_delta_usd / confidence) are copied verbatim
-    from the AllocationProposal the user clicked on. We accept them
-    from the client (vs re-deriving server-side) because the allocator
-    is non-deterministic w.r.t. medium/short placeholders + the user
-    might be looking at a slightly stale plan -- the client's view is
-    the source of truth for the decision.
-
-    The event provenance fields (event_detected_at, event_source_tsv)
-    come from the WindfallEventDTO the same plan was attached to.
+    Wire-format backward-compatibility shim: the UI (as of 2026-05-29)
+    still POSTs `event_detected_at` + `event_source_tsv` from the
+    WindfallEventDTO. Internally these map to `source_detected_at` +
+    `source_ref` on the renamed `allocation_actions` table with
+    `action_source='windfall'`. The UI rename + new
+    /api/proposals/allocation/{accept,defer} routes land in sprint
+    commit #6 alongside the WindfallCard mount move.
     """
 
     user_id: str
@@ -937,24 +934,26 @@ class WindfallActionResponse(BaseModel):
     due_date: date | None
 
 
-@router.post("/windfall/accept", response_model=WindfallActionResponse)
-def post_windfall_accept(
+def _create_windfall_action(
     payload: WindfallActionRequest,
-    db: Session = Depends(get_db),
-) -> WindfallActionResponse:
-    """Record an Accept on a windfall allocation proposal.
+    decided_status: str,
+    db: Session,
+) -> "AllocationAction":
+    """Shared helper for /accept and /defer.
 
-    Persistence-only for now: a row lands in windfall_actions with
-    decided_status='accepted'. Promotion into an action_engine
-    PrioritizedAction (with severity HIGH + due_date on the home-page
-    action-items widget) ships in a follow-up commit.
+    Constructs an `AllocationAction` row with `action_source='windfall'`,
+    mapping legacy payload fields to the renamed columns:
+
+        payload.event_detected_at → row.source_detected_at
+        payload.event_source_tsv  → row.source_ref
     """
-    from argosy.state.models import WindfallAction
+    from argosy.state.models import AllocationAction
 
-    row = WindfallAction(
+    row = AllocationAction(
         user_id=payload.user_id,
-        event_detected_at=payload.event_detected_at,
-        event_source_tsv=payload.event_source_tsv,
+        action_source="windfall",
+        source_detected_at=payload.event_detected_at,
+        source_ref=payload.event_source_tsv,
         horizon=payload.horizon,
         asset_class=payload.asset_class,
         instrument=payload.instrument,
@@ -962,13 +961,28 @@ def post_windfall_accept(
         rationale=payload.rationale,
         closes_delta_usd=payload.closes_delta_usd,
         confidence=payload.confidence,
-        decided_status="accepted",
+        decided_status=decided_status,
         due_date=payload.due_date,
         user_note=payload.user_note,
     )
     db.add(row)
     db.commit()
     db.refresh(row)
+    return row
+
+
+@router.post("/windfall/accept", response_model=WindfallActionResponse)
+def post_windfall_accept(
+    payload: WindfallActionRequest,
+    db: Session = Depends(get_db),
+) -> WindfallActionResponse:
+    """Record an Accept on a windfall allocation proposal.
+
+    Persistence-only for now: a row lands in `allocation_actions` with
+    `decided_status='accepted'` and `action_source='windfall'`. Promotion
+    into an action_engine PrioritizedAction ships in a follow-up commit.
+    """
+    row = _create_windfall_action(payload, "accepted", db)
     return WindfallActionResponse(
         id=row.id,
         decided_status=row.decided_status,
@@ -984,31 +998,12 @@ def post_windfall_defer(
 ) -> WindfallActionResponse:
     """Record a Defer on a windfall allocation proposal.
 
-    Same row shape as /accept; decided_status='deferred'. Optional
-    due_date stamps when the user wants to be re-prompted. Without a
-    due_date, the row sits as an open deferral until either Accept
+    Same row shape as /accept; `decided_status='deferred'`. Optional
+    `due_date` stamps when the user wants to be re-prompted. Without a
+    `due_date`, the row sits as an open deferral until either Accept
     or expiration.
     """
-    from argosy.state.models import WindfallAction
-
-    row = WindfallAction(
-        user_id=payload.user_id,
-        event_detected_at=payload.event_detected_at,
-        event_source_tsv=payload.event_source_tsv,
-        horizon=payload.horizon,
-        asset_class=payload.asset_class,
-        instrument=payload.instrument,
-        amount_usd=payload.amount_usd,
-        rationale=payload.rationale,
-        closes_delta_usd=payload.closes_delta_usd,
-        confidence=payload.confidence,
-        decided_status="deferred",
-        due_date=payload.due_date,
-        user_note=payload.user_note,
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
+    row = _create_windfall_action(payload, "deferred", db)
     return WindfallActionResponse(
         id=row.id,
         decided_status=row.decided_status,
@@ -1045,26 +1040,30 @@ def list_windfall_actions(
 ) -> WindfallActionsListResponse:
     """List recorded windfall actions for a user.
 
-    Optional filters by event (detected_at + source_tsv) let the UI
-    fetch only the actions belonging to the currently-displayed event,
-    so the WindfallCard can render per-proposal "Accepted ✓ at 14:32"
-    / "Deferred (due 2026-06-15)" feedback inline without scanning
-    the whole history.
+    Optional filters by event (`event_detected_at` + `event_source_tsv`)
+    let the UI fetch only the actions belonging to the currently-
+    displayed event. Filters map to the renamed columns
+    (`source_detected_at` / `source_ref`) and additionally constrain
+    `action_source='windfall'` so other-source rows don't surface here.
     """
-    from argosy.state.models import WindfallAction
+    from argosy.state.models import AllocationAction
 
-    q = db.query(WindfallAction).filter(WindfallAction.user_id == user_id)
+    q = (
+        db.query(AllocationAction)
+        .filter(AllocationAction.user_id == user_id)
+        .filter(AllocationAction.action_source == "windfall")
+    )
     if event_detected_at is not None:
-        q = q.filter(WindfallAction.event_detected_at == event_detected_at)
+        q = q.filter(AllocationAction.source_detected_at == event_detected_at)
     if event_source_tsv is not None:
-        q = q.filter(WindfallAction.event_source_tsv == event_source_tsv)
-    rows = q.order_by(WindfallAction.decided_at.desc()).all()
+        q = q.filter(AllocationAction.source_ref == event_source_tsv)
+    rows = q.order_by(AllocationAction.decided_at.desc()).all()
     return WindfallActionsListResponse(
         actions=[
             WindfallActionListItem(
                 id=r.id,
-                event_detected_at=r.event_detected_at,
-                event_source_tsv=r.event_source_tsv,
+                event_detected_at=r.source_detected_at,
+                event_source_tsv=r.source_ref or "",
                 horizon=r.horizon,
                 asset_class=r.asset_class,
                 instrument=r.instrument,

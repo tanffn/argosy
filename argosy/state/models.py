@@ -1649,32 +1649,21 @@ class AnomalyReport(Base):
     )
 
 
-class WindfallAction(Base):
-    """One row per user decision on a windfall allocation proposal.
+class AllocationAction(Base):
+    """One row per user Accept/Defer on an allocation proposal.
 
-    Closes user-guide Hole #2 ("Windfall Accept/Defer is read-only").
-    When the user clicks Accept or Defer on a row of the WindfallCard,
-    a row lands here. Persistence is separate from the proposals table
-    because the shape diverges enough that mashing it in would lose
-    information (codex-tandem zigzag finding, 2026-05-28):
+    Holds decisions from any allocation flow: the original windfall
+    detector (`action_source='windfall'`), the unallocated-cash tile
+    (`'unallocated_cash'`), the monitor agent's drift trigger
+    (`'monitor_drift'`), or other future allocation producers
+    (`life_event` / `rebalance` / `manual`).
 
-      proposals (existing /proposals queue):
-        ticker, action, size_shares_or_currency, size_units, order_type,
-        tier, account_class, status, rationale_summary, confidence,
-        cooling_off_until, conviction, cited_sources.
-
-      windfall_actions (this table):
-        horizon (long/medium/short), asset_class (Growth/Defensive/...),
-        instrument, amount_usd, rationale, closes_delta_usd, confidence,
-        decided_status (accepted/deferred/executed/expired).
-
-    The two columns the schemas share (instrument <-> ticker;
-    confidence) keep their semantic meaning. The overlap isn't enough
-    to fold the tables together: a windfall acceptance has no order
-    type, no tier, no cooling_off; a trade proposal has no horizon,
-    no asset_class, no closes_delta_usd. Forcing one shape on the
-    other would either lose fields (current path) or pollute the
-    /proposals UI with rows of an inconvenient shape.
+    Kept separate from the trade-order `proposals` table because the
+    shape diverges (proposals carry ticker/action/order_type/tier/
+    cooling_off; allocation actions carry horizon/asset_class/
+    closes_delta_usd). Folding them together would force fake values on
+    one side or lose fields on the other (codex zigzag review of spec
+    `2026-05-29-plan-execute-monitor-reorg-design.md`, BLOCKER #2).
 
     Lifecycle: row created on Accept (decided_status='accepted') or
     Defer (decided_status='deferred' + optional due_date). When the
@@ -1682,9 +1671,13 @@ class WindfallAction(Base):
     proposal, the proposal_id FK is filled and decided_status moves
     to 'executed'. 'expired' is for actions stale enough that the
     market context has shifted (e.g. accepted 6mo ago, never acted on).
+
+    Renamed from `WindfallAction` in migration 0041 — the class name is
+    historically referenced as `WindfallAction` in legacy code paths,
+    where a Python-level alias keeps imports working during transition.
     """
 
-    __tablename__ = "windfall_actions"
+    __tablename__ = "allocation_actions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[str] = mapped_column(
@@ -1692,15 +1685,23 @@ class WindfallAction(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    # Provenance back to the windfall event that produced this proposal.
-    # detected_at + source_tsv together uniquely identify the event row
-    # the WindfallEvent dataclass exposed (the dataclass isn't itself
-    # persisted -- events are derived from TSV diff -- so we pin the
-    # two identifying fields on every action row).
-    event_detected_at: Mapped[datetime] = mapped_column(
+    # Discriminator: which detector / flow produced this action.
+    # CHECK constraint enforced at the DB level (see migration 0041).
+    action_source: Mapped[str] = mapped_column(String(32), nullable=False)
+    # When the source event was detected (windfall detector run time,
+    # unallocated-cash check, monitor drift sample, life-event create
+    # time). Always populated; used by chronological ordering + dedup.
+    source_detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-    event_source_tsv: Mapped[str] = mapped_column(String(256), nullable=False)
+    # Source-specific reference. Nullable for 'manual' entries. Format
+    # per source type (see spec §7):
+    #   windfall / unallocated_cash → TSV path string
+    #   monitor_drift → JSON {"snapshot_date": ..., "row": "Growth"}
+    #   life_event → JSON {"life_event_id": 17}
+    #   rebalance → JSON {"plan_draft_id": 12}
+    #   manual → JSON {"user_note": "..."}
+    source_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Proposal shape, copied verbatim from AllocationProposal at the
     # moment of acceptance. Frozen at decision time so a later allocator
@@ -1735,16 +1736,30 @@ class WindfallAction(Base):
 
     __table_args__ = (
         Index(
-            "ix_windfall_actions_user_decided",
+            "ix_allocation_actions_user_decided",
             "user_id",
             "decided_at",
         ),
+        # Codex IMPORTANT #2: decided_at NOT in the unique key. Otherwise
+        # two Accepts at different millisecond timestamps would not
+        # collide -- the dedup intent (one decision per source row)
+        # would be defeated. Route returns 409 on duplicate; if the user
+        # wants to change a decision, the route does UPDATE not INSERT.
         Index(
-            "ix_windfall_actions_event",
-            "event_detected_at",
-            "event_source_tsv",
+            "ix_allocation_actions_source_unique",
+            "user_id",
+            "action_source",
+            "source_ref",
+            unique=True,
+            sqlite_where=_sa_text("source_ref IS NOT NULL"),
+            postgresql_where=_sa_text("source_ref IS NOT NULL"),
         ),
     )
+
+
+# Legacy alias for import paths that still reference WindfallAction.
+# Remove in a follow-on commit once all consumers move to the new name.
+WindfallAction = AllocationAction
 
 
 class PortfolioSnapshotPart(Base):
