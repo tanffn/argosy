@@ -59,6 +59,24 @@ Plus `2026-05-29-pre-kickoff-locked-decisions.md` (companion) resolving the nine
 - Bucket A1 weighted-baselines statistical-precision pass — still open from the prior sprint.
 - `.progress/` + `argosy/.stats/` + `argosy/services/.progress/` → `.gitignore` cleanup — agent-scratch noise from prior sessions.
 
+### Sprint A landed (10/10 commits) — Jobs registry foundation
+
+All Spec A commits landed in `main`:
+- `589fa54` #1 — Migration 0048 `job_runs` + `JobRun` ORM
+- `83ff08d` #2 — `LoopSchedule.next_due_after` TZ fix (8 cron loops now fire at intended IL-local time)
+- `6385dc7` #3a — `JobRegistry` shell + `RegisteredScheduler` (3-round codex zigzag; single-acquire model; single-writer pin)
+- `233a8eb` #3b — FastAPI lifecycle binding; `ARGOSY_RUN_SCHEDULER` env gate
+- `4a3b83c` #5 — `LongRunningJob` + supervisor (4-round codex zigzag; shield + drain semantics; epoch + cycle uniqueness)
+- `fcebd07` #4 — `/api/jobs` routes + admin auth gate via `X-Argosy-Admin` header (5-round codex zigzag; reconnect race fixed)
+- `9f4836d` #7 — `NewsDailyJob` (17:00 IDT) + `CadenceLoop.tick` return widening to `dict | None` (2-round codex zigzag)
+- `dcd3803` #6 — `DiscordListenerJob` + retention loop wiring in `api/main.py`
+- `ed1178e` #8 — `/admin/jobs` Next.js UI (Next 16 `proxy.ts` + Admin token gate + Run-now / Stop / Reconnect)
+- `b7229fb` #9 — `JobRunsRetentionLoop` (3:00 IDT daily) + observability polish (FINAL)
+
+Test surface: ~118 tests in the jobs-area suite, all green. Codex sessions at `tools/codex-tandem/sessions/2026-05-29-sprint-a-*/`.
+
+**Sprint B kickoff (state observer):** depends on Spec A's `JobRegistry` (now live). Observer will register as a daily 17:00 IDT CadenceLoop alongside `NewsDailyJob`. Empirical FX-emergence verification commit will run against the user's current state (USD/NIS 3.6→2.8) to confirm the architecture surfaces it as an emergent flag.
+
 ---
 
 ### How this sprint was executed — autonomous-mode + codex + parallel sub-agents
