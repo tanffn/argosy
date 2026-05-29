@@ -174,6 +174,11 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "household_categorizer": "claude-opus-4-7",
     # Daily-briefer (T4.5).
     "daily_briefer": "claude-opus-4-7",
+    # Spec B commit #4 — general state-vs-expectation observer.
+    # Opus per binding preference "accuracy over LLM cost"; the observer
+    # is doing emergent flag-classification with high downstream
+    # consequence (replaces hand-rolled detectors). No Haiku fallback.
+    "state_observer": "claude-opus-4-7",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -223,6 +228,10 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     "advisor":                 "high",
     "domain_refresh":          "high",
     "anomaly_detection":       "high",
+    # Spec B commit #4 — state observer matches the audit / trader /
+    # domain_refresh band: emergent classification, high downstream
+    # consequence (flags drive Red-Flag-Strip + /proposals nudges).
+    "state_observer":          "high",
     # Single-ticker analysts + helpers — moderate (data formatting + light reasoning)
     "concentration":        "medium",
     "fx":                   "medium",
@@ -336,6 +345,9 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     "advisor": 16000,
     "plan_distiller": 16000,
     "domain_refresh": 16000,
+    # Spec B commit #4 — observer output is a short JSON list of flag
+    # candidates + a 1-2 sentence assessment. 16K is generous headroom.
+    "state_observer": 16000,
     # Conversational / categorical roles — no thinking, fallback-sized.
     "intake": 16000,
     "household_categorizer": 16000,
@@ -385,6 +397,12 @@ DEFAULT_CITATIONS_BY_ROLE: dict[str, bool] = {
     "advisor": False, "intake": False, "household_categorizer": False,
     "researcher_facilitator": False, "risk_facilitator": False,
     "domain_refresh": False, "watchlist": False,
+    # Spec B commit #4 — observer cites field_paths from its own
+    # structured input (the diff), not external documents. The
+    # citation gate would false-fire on `cited_sources=[]` when the
+    # LLM legitimately had no flags to surface; we disable it. The
+    # post-validator enforces a stricter per-candidate check.
+    "state_observer": False,
     # FM-objection ZigZag (T4.9). Citations on for both — the analyst
     # responder cites its prior agent_report and the FM verdict cites
     # both the original objection and the analyst's response.
