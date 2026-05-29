@@ -7,6 +7,7 @@ import { api, type WithdrawalPolicy } from "@/lib/api";
 import { BituachLeumiCard } from "@/components/retirement/BituachLeumiCard";
 import { DecumulationOrderCard } from "@/components/retirement/DecumulationOrderCard";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
+import { ExpectedRetirementAgeCard } from "@/components/retirement/ExpectedRetirementAgeCard";
 import { GlidePathCard } from "@/components/retirement/GlidePathCard";
 import { HealthcareCurveCard } from "@/components/retirement/HealthcareCurveCard";
 import { HishtalmutTimerCard } from "@/components/retirement/HishtalmutTimerCard";
@@ -30,8 +31,9 @@ const USER_ID = "ariel";
 
 // Fix UX #6 — page-internal section anchors with a sticky TOC.
 const SECTIONS: Array<{ id: string; label: string }> = [
-  { id: "windfall",      label: "Windfall" },
-  { id: "verdict",       label: "Verdict" },
+  { id: "windfall",          label: "Windfall" },
+  { id: "when-can-i-retire", label: "When can I retire?" },
+  { id: "verdict",           label: "Verdict" },
   { id: "safety",        label: "Safety gates" },
   { id: "predictions",   label: "Prediction trust" },
   { id: "decision",      label: "Decision policy" },
@@ -105,6 +107,14 @@ export default function RetirementPage() {
             the common case. Banner on Home links here via #windfall. */}
         <section id="windfall" className="scroll-mt-6">
           <WindfallCard />
+        </section>
+
+        {/* Expected retirement age headline (2026-05-29) — the most
+            direct answer to "when can I retire?" surfaced as a card
+            ABOVE the P(solvent) verdict. Sourced from the cashflow
+            projection on the current plan draft. */}
+        <section id="when-can-i-retire" className="scroll-mt-6">
+          <ExpectedRetirementAgeCard userId={USER_ID} />
         </section>
 
         <section id="verdict" className="scroll-mt-6">
