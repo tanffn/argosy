@@ -168,6 +168,61 @@ export interface WindfallActionResponse {
   due_date: string | null;
 }
 
+// Generic allocation-action types (sprint commit #6b, 2026-05-29).
+// Mirrors argosy/api/routes/allocation.py. Generalizes the windfall
+// pattern over the action_source discriminator from migration 0041.
+export type AllocationActionSource =
+  | "windfall"
+  | "unallocated_cash"
+  | "monitor_drift"
+  | "rebalance"
+  | "life_event"
+  | "manual";
+
+export interface AllocationActionRequest {
+  user_id: string;
+  action_source: AllocationActionSource;
+  source_detected_at: string;  // ISO timestamp
+  source_ref: string | null;
+  horizon: WindfallHorizon;
+  asset_class: string;
+  instrument: string;
+  amount_usd: number;
+  rationale: string;
+  closes_delta_usd: number;
+  confidence: "high" | "medium" | "low";
+  due_date?: string;
+  user_note?: string;
+}
+
+export interface AllocationActionResponse {
+  id: number;
+  decided_status: "accepted" | "deferred" | "executed" | "expired";
+  decided_at: string;
+  due_date: string | null;
+}
+
+export interface AllocationActionListItem {
+  id: number;
+  action_source: AllocationActionSource;
+  source_detected_at: string;
+  source_ref: string | null;
+  horizon: WindfallHorizon;
+  asset_class: string;
+  instrument: string;
+  amount_usd: number;
+  decided_status: AllocationActionResponse["decided_status"];
+  decided_at: string;
+  due_date: string | null;
+  user_note: string | null;
+  proposal_id: number | null;
+}
+
+export interface AllocationActionsListResponse {
+  actions: AllocationActionListItem[];
+}
+
+
 export interface WindfallActionListItem {
   id: number;
   event_detected_at: string;
@@ -1089,6 +1144,31 @@ export const api = {
         `/api/retirement/windfall/actions?${params.toString()}`,
       );
     },
+  },
+  // Generic allocation Accept/Defer (sprint commit #6b, 2026-05-29).
+  // Mounted at /api/proposals/allocation/* — sibling to the trade-order
+  // /api/proposals/* routes. Used by UnallocatedCashCard and any future
+  // allocation surface (monitor_drift, life_event-derived buys).
+  proposalAllocationAccept: (payload: AllocationActionRequest) =>
+    postJSON<AllocationActionResponse>(
+      "/api/proposals/allocation/accept",
+      payload,
+    ),
+  proposalAllocationDefer: (payload: AllocationActionRequest) =>
+    postJSON<AllocationActionResponse>(
+      "/api/proposals/allocation/defer",
+      payload,
+    ),
+  proposalAllocationActionsList: (
+    userId: string,
+    opts?: { actionSource?: AllocationActionSource; sourceRef?: string },
+  ) => {
+    const params = new URLSearchParams({ user_id: userId });
+    if (opts?.actionSource) params.set("action_source", opts.actionSource);
+    if (opts?.sourceRef) params.set("source_ref", opts.sourceRef);
+    return getJSON<AllocationActionsListResponse>(
+      `/api/proposals/allocation/actions?${params.toString()}`,
+    );
   },
   portfolioSnapshot: (userId: string) =>
     getJSON<PortfolioSnapshotDTO>(

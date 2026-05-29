@@ -56,6 +56,7 @@ from argosy.api.routes.fm_objection_dialogue import (
 from argosy.api.routes.portfolio import router as portfolio_router
 from argosy.api.routes.wealth_dashboard import router as wealth_dashboard_router
 from argosy.api.routes.positions import router as positions_router
+from argosy.api.routes.allocation import router as allocation_router
 from argosy.api.routes.proposals import router as proposals_router
 from argosy.api.routes.security import router as security_router
 from argosy.api.routes.settings import (
@@ -128,6 +129,12 @@ def create_app() -> FastAPI:
 
     # Phase 3 — proposals + decisions
     app.include_router(proposals_router, prefix=api_prefix)
+    # Generic Accept/Defer for allocation-action proposals (sprint commit
+    # #6b). Mounts at /api/proposals/allocation/* — sibling to the
+    # /api/proposals/* trade-order routes. Generalizes the windfall
+    # accept/defer pattern over the action_source discriminator added
+    # in migration 0041.
+    app.include_router(allocation_router, prefix=api_prefix)
     app.include_router(decisions_router, prefix=api_prefix)
     # T0.5 — FM-rooted agent-tree view, mounted as a sibling router so it
     # doesn't have to share a get_db pattern with the async decisions
