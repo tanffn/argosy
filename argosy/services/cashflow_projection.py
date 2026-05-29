@@ -1047,3 +1047,374 @@ def _latest_projected_rsu_vest_date(
     while projected <= as_of:
         projected = projected + timedelta(days=_RSU_VEST_PROJECTION_DAYS)
     return projected
+
+
+# ---------------------------------------------------------------------------
+# Life-event deltas — pure cashflow modifier (Spec D commit #2)
+# ---------------------------------------------------------------------------
+#
+# Modifies the projected monthly expense series in-place-style (returns a NEW
+# list — input is never mutated) per a list of LifeEvent rows.  Per spec
+# §2.0 (codex BLOCKER #3 from the design doc) there is exactly ONE site in
+# the codebase that interprets the signed life-event amount as an expense-
+# series delta: ``_apply_signed_delta_to_series``.  Every delta_kind handler
+# routes through that helper; no other call site performs ``-(amount * fx)``
+# arithmetic on a life-event amount.
+#
+# Sign convention (spec §1.2 / §2.0):
+#
+#     INPUT  monthly_expense_series:    positive = expense outflow (NIS)
+#     INPUT  life_event amounts:        signed (negative = expense,
+#                                       positive = income / expense
+#                                       reduction)
+#     OUTPUT modifier:                  series[m] += -(amount × fx)
+#
+#       amount = +1500 USD  (income / expense down)  -> series[m] -= 5550
+#       amount = -1500 USD  (expense / income down)  -> series[m] += 5550
+#
+# The function is PURE: no DB access, no clock reads, no mutation of inputs.
+# All time math is anchored to ``projection_start_date`` so the same call
+# with the same arguments returns the same result on any machine, any day.
+
+
+def _months_between(start: date, target: date) -> int:
+    """Whole-month offset from ``start`` to ``target``.
+
+    Rounds DOWN to the start of the month — matches the per-tick semantics
+    of the projection loop (each ``series[t]`` represents the entire
+    calendar month at offset ``t`` from ``projection_start_date``).
+
+    Examples (start = 2026-05-29):
+      _months_between(2026-05-29, 2026-05-15) =  0   # same month
+      _months_between(2026-05-29, 2026-06-01) =  1
+      _months_between(2026-05-29, 2030-01-15) = 44
+      _months_between(2026-05-29, 2025-05-01) = -12  # past
+    """
+    return (target.year - start.year) * 12 + (target.month - start.month)
+
+
+def _apply_signed_delta_to_series(
+    series: list[float],
+    m_offset: int,
+    amount_usd_signed: float,
+    usd_to_nis: float,
+) -> None:
+    """The ONLY place in the codebase that converts a signed life-event
+    amount into an expense-series contribution (per spec §2.0, codex
+    BLOCKER #3 from the design doc).
+
+    Contract:
+      positive ``amount_usd_signed`` = income (or expense reduction)
+      negative ``amount_usd_signed`` = expense (or income reduction)
+      ``series[m]`` convention      = positive = expense outflow (NIS)
+
+    Math:
+      ``series[m_offset] += -(amount_usd_signed * usd_to_nis)``
+
+      Result:
+        amount_usd_signed = +200  (income)  -> series[m] decreases (expense down)
+        amount_usd_signed = -200  (expense) -> series[m] increases (expense up)
+        amount_usd_signed = 0                -> series[m] unchanged
+        usd_to_nis = 0                       -> series[m] unchanged (degenerate)
+
+    Mutates ``series`` IN PLACE at ``m_offset``.  Caller is responsible
+    for bounds-checking ``m_offset`` (this helper does NOT silently
+    skip out-of-range indices — out-of-range raises IndexError, which
+    surfaces caller bugs loudly).
+
+    No other call site in the codebase may perform ``-(amount * fx)``
+    arithmetic on a life-event amount.  ``apply_life_event_deltas`` and
+    its per-delta_kind handlers, the timeline-card recurring expander,
+    the monitor agent's diff comparator, and the projection feedback
+    loop ALL go through this helper.
+    """
+    series[m_offset] += -(amount_usd_signed * usd_to_nis)
+
+
+def _apply_one_shot(
+    series: list[float],
+    event,  # LifeEvent
+    projection_start: date,
+    horizon_months: int,
+    usd_to_nis: float,
+) -> None:
+    """Apply a ``delta_kind='one_shot'`` event to ``series``.
+
+    Per spec §2.2 — the month containing ``one_shot_date`` is INCLUDED.
+    A spike on 2030-01-15 lands in ``series[m]`` where m corresponds to
+    2030-01.
+
+    Boundary rules:
+      - ``m_offset < 0``                — skipped (event in the past).
+      - ``m_offset == 0``               — applied to ``series[0]``.
+      - ``m_offset == horizon_months``  — skipped (one past the end;
+        matches Python ``range(horizon_months)`` indexing).
+
+    ORM mapping note: Spec D commit #1 reuses ``LifeEvent.target_date``
+    as the one_shot date (no separate ``one_shot_date`` column landed —
+    see migration 0054).  ``one_shot_amount_usd`` is the signed amount.
+    """
+    one_shot_date = event.target_date
+    amount = event.one_shot_amount_usd
+    if one_shot_date is None or amount is None:
+        return
+    m_offset = _months_between(projection_start, one_shot_date)
+    if 0 <= m_offset < horizon_months:
+        _apply_signed_delta_to_series(
+            series, m_offset, float(amount), usd_to_nis
+        )
+
+
+def _apply_recurring(
+    series: list[float],
+    event,  # LifeEvent
+    projection_start: date,
+    horizon_months: int,
+    usd_to_nis: float,
+) -> None:
+    """Apply a ``delta_kind='recurring_every_n_years'`` event to ``series``.
+
+    Per spec §2.2 — recurrences land at
+    ``first_offset + k * period_months`` for k = 0, 1, 2, ...
+    while ``m_offset < horizon_months``.  Anchor-month is preserved
+    (a car bought 2027-Mar with period=5y recurs every March, not
+    every January).
+
+    Anchor-before-projection-start: the loop ``while m_offset < horizon``
+    starts at ``k=0`` with ``m_offset = first_offset < 0`` and skips
+    that occurrence, then increments k.  This handles "car bought 3
+    years ago, next one in 2 years" correctly without special-casing
+    (matches spec §2.2 + §7.1 test #9).
+
+    ORM mapping note: Spec D commit #1 reuses ``LifeEvent.target_date``
+    as the anchor date and does NOT introduce a ``recurring_end_date``
+    column.  Per spec §1.5 codex IMPORTANT #1, the default anchor for
+    migrated legacy rows is "today" (set by the migration); for new
+    rows the writer (commit #4) sets ``target_date`` explicitly.
+    """
+    anchor = event.target_date
+    amount = event.recurring_amount_usd
+    period_years_raw = event.recurring_period_years
+    if anchor is None or amount is None or period_years_raw is None:
+        return
+    # Codex BLOCKER #2 (Spec D commit #2 re-review): the ORM column
+    # is Integer, but tests pass duck-typed fixtures that may carry
+    # fractional values.  Coerce to int FIRST, then require strict
+    # positivity — a fractional 0 < period_years < 1 would round down
+    # to period_months = 0, which would cause division-by-zero in the
+    # ceil-division below or an infinite loop where m_offset never
+    # advances.  Reject these as malformed (per the
+    # "malformed rows silently skipped" contract in apply_life_event_
+    # deltas docstring).
+    try:
+        period_years = int(period_years_raw)
+    except (TypeError, ValueError):
+        return
+    if period_years <= 0:
+        # DB CHECK enforces > 0 when present; defensive guard against
+        # malformed rows that bypassed validation.
+        return
+    period_months = period_years * 12
+    first_offset = _months_between(projection_start, anchor)
+    # Codex BLOCKER (Spec D commit #2 review): jump directly to the
+    # first non-negative k via ceiling division so that anchors which
+    # are MANY periods before projection_start (e.g. a recurring row
+    # migrated with anchor=1990 for some legacy reason) still produce
+    # the correct in-horizon occurrences instead of being silently
+    # dropped by an "iterations budget" safety net.
+    if first_offset >= 0:
+        start_k = 0
+    else:
+        # ceiling division of (-first_offset) / period_months — the
+        # smallest k such that first_offset + k*period_months >= 0.
+        start_k = (-first_offset + period_months - 1) // period_months
+    k = start_k
+    while True:
+        m_offset = first_offset + k * period_months
+        if m_offset >= horizon_months:
+            break
+        # m_offset >= 0 by construction of start_k.
+        _apply_signed_delta_to_series(
+            series, m_offset, float(amount), usd_to_nis
+        )
+        k += 1
+
+
+def _apply_phase_change(
+    series: list[float],
+    event,  # LifeEvent
+    projection_start: date,
+    horizon_months: int,
+    usd_to_nis: float,
+) -> None:
+    """Apply a ``delta_kind='phase_change_start'`` or
+    ``'phase_change_end'`` event to ``series``.
+
+    Per spec §2.2:
+      - Step function.  The month containing ``phase_start_date`` IS
+        INCLUDED (a "kids leave home" phase starting 2034-08-15 means
+        August 2034 already has the new expense level).
+      - ``phase_change_start`` runs from ``start_offset`` to the
+        horizon (open-ended).
+      - ``phase_change_end`` runs from ``start_offset`` (inclusive) to
+        ``end_offset`` (EXCLUSIVE).
+      - Phase before projection_start: clamped to ``start_offset = 0``
+        (already active at projection start).
+      - Phase past horizon: capped at ``horizon_months``.
+
+    ORM mapping note: ``phase_change_end`` is a self-contained row
+    carrying BOTH ``phase_start_date`` and ``phase_end_date`` (see
+    spec §1.1 CHECK constraint).  There is no pair-matching against a
+    separate ``phase_change_start`` row — each phase_change_end row is
+    a complete closed-band event on its own.
+    """
+    start_date = event.phase_start_date
+    monthly_delta = event.monthly_delta_usd
+    if start_date is None or monthly_delta is None:
+        return
+    start_offset = _months_between(projection_start, start_date)
+    # Clamp to projection window: phases that started in the past are
+    # already active at index 0.
+    start_offset = max(0, start_offset)
+
+    if event.delta_kind == "phase_change_end":
+        end_date = event.phase_end_date
+        if end_date is None:
+            # Malformed row — phase_change_end requires end_date.
+            # Per spec §1.1 the DB CHECK forbids this; defensive guard.
+            return
+        end_offset = _months_between(projection_start, end_date)
+    else:
+        # phase_change_start — open-ended, extends to horizon.
+        end_offset = horizon_months
+    end_offset = min(horizon_months, end_offset)
+
+    for m in range(start_offset, end_offset):
+        _apply_signed_delta_to_series(
+            series, m, float(monthly_delta), usd_to_nis
+        )
+
+
+def _apply_none(
+    series: list[float],  # noqa: ARG001 — signature parity with siblings
+    event,  # LifeEvent  # noqa: ARG001
+    projection_start: date,  # noqa: ARG001
+    horizon_months: int,  # noqa: ARG001
+    usd_to_nis: float,  # noqa: ARG001
+) -> None:
+    """No-op handler for ``delta_kind='none'``.
+
+    Per spec §1.3, ``delta_kind='none'`` is a legitimate value (not a
+    hack) for events whose category/kind has no cashflow meaning — e.g.
+    ``retirement_milestone:sigma_calibration`` (a model-parameter
+    change), ``career_event:promotion`` without income detail.  These
+    rows still appear on the timeline + still fire the ``life_event``
+    replan trigger; ``apply_life_event_deltas`` skips them.
+    """
+    return None
+
+
+_DELTA_KIND_HANDLERS = {
+    "one_shot": _apply_one_shot,
+    "recurring_every_n_years": _apply_recurring,
+    "phase_change_start": _apply_phase_change,
+    "phase_change_end": _apply_phase_change,
+    "none": _apply_none,
+}
+
+
+def apply_life_event_deltas(
+    monthly_expense_series: list[float],
+    life_events: list,  # list[LifeEvent] — runtime-duck-typed
+    projection_start_date: date,
+    horizon_months: int,
+    fx_usd_nis_for_event: float = 3.6,
+) -> list[float]:
+    """Modify the projected expense series per a list of life events.
+
+    Spec D commit #2.  See ``docs/superpowers/specs/2026-05-29-life-
+    events-cashflow-redesign-design.md`` §2.1 for the canonical
+    contract.
+
+    Returns a NEW list (length = ``horizon_months``); the input
+    ``monthly_expense_series`` is never mutated.
+
+    Behavior per delta_kind:
+      * ``one_shot``                — single spike at the event's
+                                       ``target_date`` month-offset.
+      * ``recurring_every_n_years`` — spike at every (anchor + k * period)
+                                       within horizon.
+      * ``phase_change_start``      — step function from
+                                       ``phase_start_date`` onward
+                                       (open-ended).
+      * ``phase_change_end``        — step function from
+                                       ``phase_start_date`` (inclusive)
+                                       to ``phase_end_date`` (EXCLUSIVE).
+      * ``none``                    — skipped (display-only).
+
+    Sign convention (per spec §1.2 / §2.0):
+      INPUT  ``monthly_expense_series``: positive = expense outflow (NIS).
+      INPUT  life-event signed amounts:  positive = income / expense
+                                          reduction; negative = expense /
+                                          income reduction.
+      OUTPUT modified series:            positive = expense outflow (NIS).
+
+    All sign-flip arithmetic flows through
+    ``_apply_signed_delta_to_series`` per spec §2.0 / codex BLOCKER #3.
+
+    The function is PURE: no DB access, no session, no clock reads.
+    All time math is anchored to ``projection_start_date``.  Same
+    inputs → same outputs on any machine, any day.
+
+    Args:
+      monthly_expense_series: per-month NIS expense series; len must
+                              equal ``horizon_months``.
+      life_events:            list of ORM LifeEvent rows (duck-typed at
+                              runtime — any object with the documented
+                              attributes works, so tests can pass
+                              namedtuple-like fixtures).
+      projection_start_date:  the calendar date corresponding to
+                              ``monthly_expense_series[0]``.
+      horizon_months:         length of the series; must equal
+                              ``len(monthly_expense_series)``.
+      fx_usd_nis_for_event:   USD→NIS exchange rate, applied uniformly
+                              to all life-event amounts.  Default 3.6
+                              matches the existing engine convention;
+                              callers in ``project_cashflow`` should
+                              pass the real lookup value.
+
+    Returns:
+      A new ``list[float]`` of length ``horizon_months`` with the
+      life-event modifications applied additively.
+
+    Raises:
+      ValueError: if ``len(monthly_expense_series) != horizon_months``.
+      Does NOT raise on events outside the horizon, on malformed rows,
+      or on unknown ``delta_kind`` values — they're silently skipped.
+    """
+    if len(monthly_expense_series) != horizon_months:
+        raise ValueError(
+            f"len(monthly_expense_series)={len(monthly_expense_series)} "
+            f"!= horizon_months={horizon_months}"
+        )
+
+    # Copy first — purity contract requires we never mutate the input.
+    modified = [float(x) for x in monthly_expense_series]
+
+    for event in life_events:
+        delta_kind = getattr(event, "delta_kind", None)
+        handler = _DELTA_KIND_HANDLERS.get(delta_kind)
+        if handler is None:
+            # Unknown delta_kind — skip silently.  The DB CHECK enforces
+            # the enum so this is defensive against future enum drift /
+            # tests passing duck-typed fixtures.
+            continue
+        handler(
+            modified,
+            event,
+            projection_start_date,
+            horizon_months,
+            fx_usd_nis_for_event,
+        )
+
+    return modified
