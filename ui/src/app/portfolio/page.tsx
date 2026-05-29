@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { PerPositionThesisSection } from "@/components/positions/per-position-thesis-section";
+import { GenerateTsvCard } from "@/components/portfolio/generate-tsv-card";
 import { PortfolioSnapshotUploadCard } from "@/components/portfolio/snapshot-upload-card";
 import { UnallocatedCashCard } from "@/components/portfolio/unallocated-cash-card";
 import { WealthDashboard } from "@/components/portfolio/wealth-dashboard";
@@ -116,6 +117,21 @@ export default function PortfolioPage() {
          persists under ARGOSY_EXPENSE_SAMPLES_ROOT and fires the
          windfall detector inline. See
          argosy/api/routes/portfolio.py::upload_snapshot. */}
+      {/* Argosy-generates-the-TSV (2026-05-29): primary path for
+         composing the canonical Family Finances Status TSV from
+         current state. Sits above the upload tile so the user's
+         first instinct is "generate" rather than "upload". The
+         upload tile remains the input flow for fresh Leumi XLS. */}
+      <GenerateTsvCard
+        userId={USER_ID}
+        onGenerated={() => {
+          api
+            .portfolioSnapshot(USER_ID)
+            .then((data) => setSnap(data))
+            .catch((e: unknown) => setError(String(e)));
+        }}
+      />
+
       <PortfolioSnapshotUploadCard
         userId={USER_ID}
         onUploadComplete={() => {

@@ -342,28 +342,25 @@
 <h3>Half B — Portfolio snapshot → <span class="nav-card">/portfolio</span></h3>
 
 <figure>
-  <img src="site-tour/portfolio-top.png" alt="Portfolio upload tile">
-  <figcaption><strong>/portfolio top</strong> — the <code>&lt;PortfolioSnapshotUploadCard&gt;</code> sits above the FIRE-position view. Drop the monthly Family Finances Status TSV; the windfall detector fires inline.</figcaption>
+  <img src="site-tour/portfolio-top.png" alt="Portfolio /portfolio top — generate + upload tiles stacked">
+  <figcaption><strong>/portfolio top</strong> — the <code>&lt;GenerateTsvCard&gt;</code> sits above <code>&lt;PortfolioSnapshotUploadCard&gt;</code>. Generate is the everyday path; upload is the input flow for a fresh Leumi monthly XLS.</figcaption>
 </figure>
 
 <div class="flow">
   <div class="flow-step">
     <div class="step-num">STEP B1</div>
-    <div class="step-title">Pick either upload shape</div>
-    <div class="step-body">
-      <strong>Option A — combined TSV.</strong> Your existing <code>update_leumi_tsv.py</code> script produces <code>Family Finances Status - YY MMM.tsv</code>. Drop it; the windfall detector fires immediately against the prior month.<br>
-      <strong>Option B — raw Leumi XLS.</strong> Drop the monthly portfolio export straight from Leumi web banking (<code>Leumi_YY_MMM_DD.xls</code>). The route format-sniffs the upload. The XLS carries positions only — Argosy auto-pairs it with the matching Leumi Osh (current-account) statement from your <span class="nav-card">/expenses</span> uploads via DB lookup (±15d window). Bidirectional: if the XLS lands before the Osh, the upload queues as <strong>AWAITING OSH</strong>; the pair completes when the matching Osh statement subsequently ingests.
-    </div>
+    <div class="step-title">Click <em>Generate TSV now</em> on <span class="nav-card">/portfolio</span></div>
+    <div class="step-body">Argosy composes a fresh <code>Family Finances Status</code> TSV from current state: position structure from the most recent prior TSV at the scan root; Leumi NIS + USD cash rows refreshed from the latest <code>leumi_osh</code> and <code>leumi_usd</code> bank-statement closing balances in <code>expense_statements</code>; allocation-block currents recomputed; <code>snapshot_date</code> bumped to today. Writes under <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code> with the canonical name. Returns the persisted path, the refreshed cash figures, and any warnings (e.g. if a bank statement is missing the cash row carries forward verbatim).</div>
   </div>
   <div class="flow-step">
-    <div class="step-num">STEP B2</div>
-    <div class="step-title">Drag-drop onto the tile at the top of <span class="nav-card">/portfolio</span></div>
-    <div class="step-body">TSV uploads validate against the <em>"Bank account / funds allocation"</em> header marker. XLS uploads validate against the SpreadsheetML envelope + the Hebrew "Personal View" title. Both persist under <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code> with the canonical name. SHA-256 of the upload is returned so re-uploading the same file is a no-op; the XLS path also dedups on <code>(snapshot_date, portfolio_number)</code> so re-export with different byte layout still resolves to the same row.</div>
+    <div class="step-num">STEP B2 (input)</div>
+    <div class="step-title">When you have a fresh Leumi monthly XLS, drop it onto the upload tile</div>
+    <div class="step-body">The route format-sniffs the upload. The XLS carries positions only; Argosy auto-pairs it with the matching Leumi Osh statement from your <span class="nav-card">/expenses</span> uploads via DB lookup (±15d window). Bidirectional: if the XLS lands before the Osh, the upload queues as <strong>AWAITING OSH</strong>; the pair completes when the matching Osh statement subsequently ingests. The synthesized TSV becomes the new "prior" that subsequent Generate-TSV clicks pull from.</div>
   </div>
   <div class="flow-step">
     <div class="step-num">STEP B3</div>
-    <div class="step-title">Per-upload outcome renders inline (now four states, not three)</div>
-    <div class="step-body">Four independent outcomes the UI surfaces separately: <strong>PERSISTED</strong> (file is durably on disk + DB); <strong>detector status</strong> (ok / skipped on first-ever upload / failed on internal error / <em>pending_pair</em> when the XLS is queued); <strong>event</strong> (cash-delta over threshold ⇒ deep-link to <span class="nav-card">/retirement#windfall</span>); and <strong>AWAITING OSH</strong> pill (when XLS is queued — clears on the next page load after the Osh ingests).</div>
+    <div class="step-title">Per-action outcome renders inline</div>
+    <div class="step-body">Generate-TSV: <strong>GENERATED</strong> pill + the persisted path + refreshed Leumi NIS / USD cash figures + any warnings. Upload: <strong>PERSISTED</strong> + <strong>detector status</strong> (ok / skipped / failed / <em>pending_pair</em>) + <strong>event</strong> (cash-delta over threshold ⇒ deep-link to <span class="nav-card">/retirement#windfall</span>) + <strong>AWAITING OSH</strong> pill when an XLS is queued.</div>
   </div>
 </div>
 

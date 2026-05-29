@@ -675,6 +675,54 @@ def _event_to_dict(event) -> dict:
     }
 
 
+class GenerateTsvResponse(BaseModel):
+    """POST /api/portfolio/generate-tsv response shape."""
+
+    tsv_persisted: bool
+    persisted_path: str | None
+    snapshot_date: str | None
+    leumi_nis_cash: float | None
+    leumi_usd_cash: float | None
+    warnings: list[str]
+    detail: str | None
+
+
+@router.post("/generate-tsv", response_model=GenerateTsvResponse)
+def generate_tsv(
+    user_id: str = Form("ariel"),
+    db: Session = Depends(get_db),
+) -> GenerateTsvResponse:
+    """Refresh the Family Finances Status TSV from Argosy's current state.
+
+    Per the 2026-05-29 ask: Argosy generates the canonical TSV itself.
+    Pulls position structure forward from the most recent prior TSV at
+    the scan root + overrides Leumi NIS / Leumi USD cash rows with the
+    latest closing balances from expense_statements + recomputes the
+    Current-allocation block + bumps snapshot_date to today.
+
+    See ``argosy.services.portfolio_ingest.tsv_generator``.
+    """
+    from argosy.services.portfolio_ingest.tsv_generator import (
+        generate_family_finances_tsv,
+    )
+
+    snapshot_root = _resolve_snapshot_root()
+    result = generate_family_finances_tsv(
+        db, user_id=user_id, snapshot_root=snapshot_root,
+    )
+    return GenerateTsvResponse(
+        tsv_persisted=result.tsv_persisted,
+        persisted_path=str(result.persisted_path) if result.persisted_path else None,
+        snapshot_date=(
+            result.snapshot_date.isoformat() if result.snapshot_date else None
+        ),
+        leumi_nis_cash=result.leumi_nis_cash,
+        leumi_usd_cash=result.leumi_usd_cash,
+        warnings=result.warnings,
+        detail=result.detail,
+    )
+
+
 class UnallocatedCashProposalDTO(BaseModel):
     """Response shape for GET /api/portfolio/unallocated-cash-proposal.
 

@@ -15,7 +15,25 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-29 (afternoon sprint) by Claude — user authorized a long unattended sprint across three priorities (XLS upload wiring + bidirectional Osh pair, plain-English translation layer, unallocated-cash allocation tile). See "Wave 2026-05-29 (afternoon sprint)" immediately below for status. Prior waves below remain current as historical context.
+**Last edit:** 2026-05-29 (TSV generator block) by Claude — user clarified ([[feedback_argosy_generates_tsv]]) that Argosy generates the canonical Family Finances Status TSV itself; the external `update_leumi_tsv.py` script is no longer a documented path going forward. See "Wave 2026-05-29 (TSV generator block)" immediately below. Prior waves stay as historical context.
+
+### Wave 2026-05-29 (TSV generator block) — Argosy is now the TSV producer
+
+User binding: never reference `update_leumi_tsv.py` going forward; if anything's missing Argosy should derive it from internal state. New memory: `feedback_argosy_generates_tsv.md`.
+
+**Shipped:**
+- New service `argosy/services/portfolio_ingest/tsv_generator.py` (`generate_family_finances_tsv`). Reads most-recent prior TSV at `$ARGOSY_EXPENSE_SAMPLES_ROOT` as carry-forward template; overrides Leumi NIS + USD cash rows from latest `leumi_osh` / `leumi_usd` ExpenseStatement closing balances (per-source `(period_end DESC, id DESC)` tiebreak — matches codex zigzag (a)#3 disambiguation pattern); bumps `snapshot_date` to today; recomputes Current-allocation block currents against new totals.
+- New route `POST /api/portfolio/generate-tsv` + DTO.
+- New UI tile `GenerateTsvCard` mounted ABOVE the upload tile on `/portfolio` — generate is the everyday path; upload is the input flow for fresh Leumi monthly XLS.
+- 6 tests covering happy path, no-prior-TSV graceful detail, no-bank-statements carry-forward + warning, Leumi USD/NIS disambiguation, snapshot_date bump, allocation recompute.
+- User-guide §5 Half-B rewritten: STEP B1 is now "Click Generate TSV now"; STEP B2 is the upload as an input mechanism. Removed "Option A — combined TSV" framing.
+- Codex zigzag dispatched against the working-tree diff before commit; will integrate findings.
+
+**Source-of-truth for refresh inputs (today):**
+- Position structure → most recent prior TSV at scan root (which is itself produced by the XLS-Osh pair flow OR by a previous Generate-TSV run).
+- Leumi NIS cash → `expense_statements` where `parser_name='leumi_osh'`, last txn's `raw_row_json['balance']`.
+- Leumi USD cash → `expense_statements` where `parser_name='leumi_usd'`, last txn's `raw_row_json['balance_usd']`.
+- Real estate / NVDA sales / pensions / allocation targets → prior TSV verbatim. These are user-maintained until UI editors land (deliberate follow-up).
 
 ### Wave 2026-05-29 (zigzag remediation) — codex caught real defects in the afternoon sprint
 

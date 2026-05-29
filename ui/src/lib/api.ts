@@ -236,6 +236,21 @@ export interface PortfolioUploadSnapshotResponse {
   pending_pair_id?: number | null;
 }
 
+// Argosy-generated TSV refresh response (2026-05-29). The route pulls
+// position structure forward from the most recent prior TSV at the
+// scan root, overrides Leumi NIS / USD cash rows with the latest
+// closing balances, recomputes the Current-allocation block, and
+// bumps snapshot_date to today.
+export interface GenerateTsvResponse {
+  tsv_persisted: boolean;
+  persisted_path: string | null;
+  snapshot_date: string | null;
+  leumi_nis_cash: number | null;
+  leumi_usd_cash: number | null;
+  warnings: string[];
+  detail: string | null;
+}
+
 // Unallocated-cash overage proposal (2026-05-29). Self-tuning trigger
 // based on the plan's cash target -- not a hard-coded dollar threshold.
 // Null response = no overage detected (current cash within tolerance).
@@ -1082,6 +1097,25 @@ export const api = {
   // Self-tuning unallocated-cash detector (2026-05-29). Fires when
   // current cash > plan-target cash * overageRatio (default 1.5x).
   // Returns null when no overage; the route response is null-able.
+  portfolioGenerateTsv: async (userId: string): Promise<GenerateTsvResponse> => {
+    const fd = new FormData();
+    fd.append("user_id", userId);
+    const res = await fetch(apiUrl("/api/portfolio/generate-tsv"), {
+      method: "POST",
+      body: fd,
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const j = (await res.json()) as { detail?: string };
+        if (j.detail) detail = j.detail;
+      } catch {
+        // non-JSON
+      }
+      throw new Error(detail);
+    }
+    return (await res.json()) as GenerateTsvResponse;
+  },
   portfolioUnallocatedCashProposal: (
     userId: string,
     overageRatio: number = 1.5,
