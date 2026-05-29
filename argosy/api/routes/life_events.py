@@ -1,9 +1,20 @@
 """REST routes for /api/life-events.
 
-Sprint commit #8 of the plan/execute/monitor reorg (spec cbf6a07 §4).
-Wraps the service layer at argosy/services/life_events.py with FastAPI
-+ surfaces the loud-error 422 contract: bad category or bad kind is a
-structured 422 body the UI can render as a red banner inline.
+Sprint commit #8 of the plan/execute/monitor reorg (spec cbf6a07 §4)
+laid down the original loud-error contract.  Spec D commit #4 extends
+the route to translate the new typed validation exceptions
+(``InvalidDeltaShapeError`` / ``InvalidDeltaKindForCategoryError``)
+into structured 422 banners per spec §3.3:
+
+  * ``{"error": "category_not_recognized", ...}``           — preserved
+  * ``{"error": "kind_not_valid_for_category", ...}``       — preserved
+  * ``{"error": "delta_kind_not_valid_for_category", ...}`` — new
+  * ``{"error": "delta_shape_invalid", ...}``               — new
+
+The UI red-banner handler discriminates on the ``error`` string and
+renders one of four message variants; the rest of the payload carries
+the alternatives the form should have offered (valid kinds, allowed
+delta_kinds, missing / forbidden field names).
 """
 from __future__ import annotations
 
@@ -13,6 +24,8 @@ from sqlalchemy.orm import Session
 
 from argosy.api.routes.plan import get_db
 from argosy.services.life_events import (
+    InvalidDeltaKindForCategoryError,
+    InvalidDeltaShapeError,
     InvalidKindForCategoryError,
     LifeEventCategory,
     LifeEventCreateRequest,
@@ -72,10 +85,58 @@ def _raise_kind_error_from_exc(exc: InvalidKindForCategoryError) -> None:
     )
 
 
+def _raise_delta_kind_for_category_error(
+    exc: InvalidDeltaKindForCategoryError,
+) -> None:
+    """The (category, delta_kind) pair violates spec §1.4 matrix.
+
+    Spec D commit #4 / §3.3 — structured 422 carries the allowed
+    alternatives so the UI banner can tell the user which section to
+    move the event into.
+    """
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "error": "delta_kind_not_valid_for_category",
+            "category": exc.category,
+            "delta_kind": exc.delta_kind,
+            "allowed_delta_kinds": exc.allowed_delta_kinds,
+        },
+    )
+
+
+def _raise_delta_shape_error(exc: InvalidDeltaShapeError) -> None:
+    """The per-shape required/forbidden field rule was violated.
+
+    Spec D commit #4 / §3.3 — structured 422 carries the missing /
+    forbidden field names so the UI can highlight the affected inputs
+    inline (in addition to the banner).  The ``reason`` discriminates
+    the two sub-cases (``missing_required`` vs ``forbidden_present``).
+    """
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "error": "delta_shape_invalid",
+            "delta_kind": exc.delta_kind,
+            "reason": exc.reason,
+            "missing_fields": exc.missing_fields,
+            "forbidden_fields": exc.forbidden_fields,
+        },
+    )
+
+
 @router.get("/catalog", response_model=LifeEventsCatalogResponse)
 def get_catalog_route() -> LifeEventsCatalogResponse:
     """Return the full category + per-category-kind dictionary so the
-    UI dropdowns are server-driven (no hardcoded enums client-side)."""
+    UI dropdowns are server-driven (no hardcoded enums client-side).
+
+    Spec D commit #4 — payload now also carries:
+      * ``delta_kind_rules_by_category`` — allowed delta_kinds + default
+        + nudge text per category (spec §1.4 interaction matrix).
+      * ``required_fields_by_delta_kind`` /
+        ``forbidden_fields_by_delta_kind`` — per-shape field rules so
+        the UI can pre-validate before submit.
+    """
     return get_catalog()
 
 
@@ -93,16 +154,23 @@ def create_route(
     payload: dict,
     db: Session = Depends(get_db),
 ) -> LifeEventDTO:
-    """Create a life event. Two-stage validation:
+    """Create a life event.  Validation pipeline:
 
-    1. Category must be one of the 6 enum values (structured 422 if not).
-    2. Kind must be valid for the chosen category (structured 422 if not).
+    1. ``category`` must be one of the 6 enum values (structured 422 if
+       not — ``category_not_recognized``).
+    2. ``kind`` must be valid for the chosen category (structured 422 if
+       not — ``kind_not_valid_for_category``).
+    3. ``delta_kind`` must be in the category's allowed list per the
+       §1.4 interaction matrix (structured 422 if not —
+       ``delta_kind_not_valid_for_category``).
+    4. Per-shape required + forbidden fields must be consistent with
+       ``delta_kind`` (structured 422 if not — ``delta_shape_invalid``).
 
-    Both errors surface as `{error, input, valid_*}` so the UI can
-    render the right red-banner content inline. The kind-validator
-    raises a typed `InvalidKindForCategoryError` so this route's
-    discriminator doesn't string-match on Pydantic's message format
-    (codex IMPORTANT #2 on commit #8 review).
+    All four error variants surface as ``{error, ...}`` so the UI can
+    render the right red-banner content inline.  The validators raise
+    typed exceptions (``InvalidKindForCategoryError`` etc.) so this
+    route's discriminator doesn't string-match on Pydantic's message
+    format (codex IMPORTANT #2 on commit #8 review).
     """
     raw_category = payload.get("category", "")
     if raw_category not in {c.value for c in LifeEventCategory}:
@@ -111,34 +179,42 @@ def create_route(
     try:
         req = LifeEventCreateRequest.model_validate(payload)
     except ValidationError as e:
-        # Walk the underlying causes; if any chained exception is our
-        # typed InvalidKindForCategoryError, render the structured kind
-        # error. Otherwise surface the raw Pydantic 422.
-        kind_err = _find_chained_kind_error(e)
+        # Walk the underlying causes; if any chained exception is one of
+        # our typed validators, surface the structured error.  Order
+        # matters: kind-not-valid-for-category is the most specific.
+        kind_err = _find_chained_error(e, InvalidKindForCategoryError)
         if kind_err is not None:
             _raise_kind_error_from_exc(kind_err)
+        dk_cat_err = _find_chained_error(
+            e, InvalidDeltaKindForCategoryError
+        )
+        if dk_cat_err is not None:
+            _raise_delta_kind_for_category_error(dk_cat_err)
+        shape_err = _find_chained_error(e, InvalidDeltaShapeError)
+        if shape_err is not None:
+            _raise_delta_shape_error(shape_err)
         raise HTTPException(status_code=422, detail=e.errors())
 
     return create_life_event(db, req)
 
 
-def _find_chained_kind_error(
+def _find_chained_error(
     exc: ValidationError,
-) -> InvalidKindForCategoryError | None:
-    """Walk the ValidationError's underlying causes for our typed
-    InvalidKindForCategoryError.
+    cls: type[Exception],
+):
+    """Walk a Pydantic ``ValidationError``'s underlying causes for an
+    exception of class ``cls``.
 
-    Pydantic v2 wraps validator errors in ValidationError; the original
-    exception is reachable via __cause__ on individual error contexts,
-    or via the `ctx` dict in `.errors()`. We try both since the exact
-    surface depends on Pydantic version.
+    Pydantic v2 wraps model_validator errors in ``ValidationError``;
+    the original exception is reachable via the ``ctx`` dict in
+    ``.errors()`` under the ``error`` key.  Returns the typed exception
+    if found, else None.
     """
-    # Check each entry's ctx for the original exception.
     for err in exc.errors():
         ctx = err.get("ctx")
         if isinstance(ctx, dict):
             inner = ctx.get("error")
-            if isinstance(inner, InvalidKindForCategoryError):
+            if isinstance(inner, cls):
                 return inner
     return None
 
@@ -153,7 +229,11 @@ def update_route(
         result = update_life_event(db, event_id, payload)
     except InvalidKindForCategoryError as e:
         _raise_kind_error_from_exc(e)
-    except ValueError as e:  # noqa: F841  — other ValueErrors stay generic 422
+    except InvalidDeltaKindForCategoryError as e:
+        _raise_delta_kind_for_category_error(e)
+    except InvalidDeltaShapeError as e:
+        _raise_delta_shape_error(e)
+    except ValueError as e:  # other ValueErrors stay generic 422
         raise HTTPException(status_code=422, detail=str(e))
 
     if result is None:
