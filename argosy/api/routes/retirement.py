@@ -830,11 +830,19 @@ def get_windfall_detect(
       - Medium + short horizons handed off to the agent fleet (placeholder)
     """
     import os
-    samples_root = os.environ.get(
-        "ARGOSY_EXPENSE_SAMPLES_ROOT",
-        "D:/Google Drive/Family/Finances/Portfolio/Resources",
-    )
-    cur, prev = _latest_two_tsvs(Path(samples_root))
+    # 2026-05-29: the hard-coded Google Drive fallback was a single-user
+    # workaround that broke any other tenant. Default now resolves to a
+    # project-internal directory under ARGOSY_HOME -- this is where the
+    # /portfolio upload tile (POST /portfolio/upload-snapshot) writes
+    # snapshots. The env var remains an opt-in override for users who
+    # still maintain their TSVs in an external folder.
+    env_root = os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT")
+    if env_root:
+        samples_root = Path(env_root)
+    else:
+        from argosy.config import get_settings
+        samples_root = get_settings().home / "snapshots"
+    cur, prev = _latest_two_tsvs(samples_root)
     if cur is None or prev is None:
         return {"event": None, "reason": "fewer than 2 TSVs found"}
 
