@@ -19,6 +19,12 @@ formulas + ``evaluation_due_at`` / ``evaluation_method`` selection rules.
 """
 from __future__ import annotations
 
+from argosy.services.predictions.reliability import (
+    SourceReliability,
+    get_source_reliability,
+    get_weight_for_source,
+    invalidate_reliability_cache,
+)
 from argosy.services.predictions.writers import (
     write_discord_prediction,
     write_monitor_flag_prediction,
@@ -28,6 +34,10 @@ from argosy.services.predictions.writers import (
 )
 
 __all__ = [
+    "SourceReliability",
+    "get_source_reliability",
+    "get_weight_for_source",
+    "invalidate_reliability_cache",
     "write_discord_prediction",
     "write_monitor_flag_prediction",
     "write_news_signal_prediction",
