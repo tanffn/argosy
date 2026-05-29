@@ -13,6 +13,25 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  async redirects() {
+    return [
+      // /decide → /consult rename (2026-05-29). The tab is a ticker
+      // consultation surface (decisions still happen on /proposals);
+      // the old name was misleading. Permanent 308 keeps old bookmarks
+      // and external links working. Remove the redirect after one sprint
+      // cycle once external references catch up.
+      {
+        source: "/decide",
+        destination: "/consult",
+        permanent: true,
+      },
+      {
+        source: "/decide/:path*",
+        destination: "/consult/:path*",
+        permanent: true,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

@@ -34,7 +34,8 @@ interface NavTab {
 // PRIMARY tabs are visible at all times -- daily-to-monthly use,
 // ordered by typical session flow (Home glance -> Advisor for data
 // entry -> Portfolio/Expenses to read state -> Plan for the draft
-// -> Retirement for the verdict -> Decide -> Proposals to approve).
+// -> Retirement for the verdict -> Consult on a ticker -> Proposals
+// to approve).
 const PRIMARY_TABS: NavTab[] = [
   { href: "/", label: "Home", Icon: Home },
   { href: "/advisor", label: "Advisor", Icon: MessageCircle },
@@ -42,7 +43,7 @@ const PRIMARY_TABS: NavTab[] = [
   { href: "/expenses", label: "Expenses", Icon: Wallet },
   { href: "/plan", label: "Plan", Icon: ClipboardList },
   { href: "/retirement", label: "Retirement", Icon: Flag },
-  { href: "/decide", label: "Decide", Icon: Target },
+  { href: "/consult", label: "Consult", Icon: Target },
   { href: "/proposals", label: "Proposals", Icon: Inbox },
 ];
 

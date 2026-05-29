@@ -146,7 +146,7 @@
     <li><a href="#tab-plan">Plan</a></li>
     <li><a href="#tab-retirement">Retirement</a></li>
     <li><a href="#tab-files">Files</a></li>
-    <li><a href="#tab-proposals">Proposals · Argonaut · Decide</a></li>
+    <li><a href="#tab-proposals">Proposals · Argonaut · Consult</a></li>
     <li><a href="#tab-others">Agents · Audit · Domain KB · Settings</a></li>
     <li><a href="#tab-details">Detail pages (click-through)</a></li>
   </ol>
@@ -198,7 +198,7 @@
 <p>The top nav shows the 8 PRIMARY tabs always; the 6 INSPECTION tabs collapse behind a <strong>"More" dropdown</strong> so the daily nav doesn't carry surfaces you only touch monthly or for debugging.</p>
 
 <ul>
-  <li><strong>PRIMARY</strong> (always visible, in session-flow order) — <span class="nav-card">/</span> &middot; <span class="nav-card">/advisor</span> &middot; <span class="nav-card">/portfolio</span> &middot; <span class="nav-card">/expenses</span> &middot; <span class="nav-card">/plan</span> &middot; <span class="nav-card">/retirement</span> &middot; <span class="nav-card">/decide</span> &middot; <span class="nav-card">/proposals</span>. Each tab has a Lucide icon.</li>
+  <li><strong>PRIMARY</strong> (always visible, in session-flow order) — <span class="nav-card">/</span> &middot; <span class="nav-card">/advisor</span> &middot; <span class="nav-card">/portfolio</span> &middot; <span class="nav-card">/expenses</span> &middot; <span class="nav-card">/plan</span> &middot; <span class="nav-card">/retirement</span> &middot; <span class="nav-card">/consult</span> &middot; <span class="nav-card">/proposals</span>. Each tab has a Lucide icon.</li>
   <li><strong>INSPECTION (under "More")</strong> — click "More" to reveal: <span class="nav-card">/argonaut</span> &middot; <span class="nav-card">/agents</span> &middot; <span class="nav-card">/files</span> &middot; <span class="nav-card">/audit</span> &middot; <span class="nav-card">/domain-kb</span> &middot; <span class="nav-card">/settings</span>. The "More" button pulses active when you're currently on one of these pages, so you can tell from the nav alone that you're inside the inspection group. Click outside or press Escape to close.</li>
 </ul>
 
@@ -212,7 +212,7 @@
 <tr><td><span class="nav-card">/expenses</span></td><td>Spending dashboard with sub-tabs (Overview/Monthly/Transactions/Sources/Merchants/Trips/RSU/Income)</td><td>Weekly + monthly drill</td></tr>
 <tr><td><span class="nav-card">/plan</span></td><td>Current draft plan from the agent fleet. Per-objection AGREE/DISAGREE/DEFER.</td><td>When synthesis lands</td></tr>
 <tr><td><span class="nav-card">/retirement</span></td><td>Long-term truth-teller — fat-tail-aware P(ruin) verdict + safety gates</td><td>Monthly + on-trigger</td></tr>
-<tr><td><span class="nav-card">/decide</span></td><td>Open ticker-decision flows</td><td>When the system surfaces one</td></tr>
+<tr><td><span class="nav-card">/consult</span></td><td>Open ticker-decision flows</td><td>When the system surfaces one</td></tr>
 <tr><td><span class="nav-card">/proposals</span></td><td>Queue of trade proposals awaiting approval</td><td>Daily</td></tr>
 <tr><td colspan="3" class="text-muted-foreground" style="background:rgba(99,102,241,0.04);font-size:11px;text-transform:uppercase;letter-spacing:0.05em;padding-top:14px">INSPECTION</td></tr>
 <tr><td><span class="nav-card">/argonaut</span></td><td>$1K bounded auto-trading account</td><td>Monthly check-in</td></tr>
@@ -667,11 +667,11 @@
 
 <!-- ============================================================ -->
 <section id="tab-proposals">
-<h2>15. <span class="nav-card">/proposals</span> · <span class="nav-card">/argonaut</span> · <span class="nav-card">/decide</span></h2>
+<h2>15. <span class="nav-card">/proposals</span> · <span class="nav-card">/argonaut</span> · <span class="nav-card">/consult</span></h2>
 
 <figure>
   <img src="site-tour/proposals-top.png" alt="Proposals page">
-  <figcaption><strong>Proposals tab</strong> — currently empty. "Head to the Decide tab to submit a ticker..."</figcaption>
+  <figcaption><strong>Proposals tab</strong> — currently empty. "Head to the Consult tab to submit a ticker..."</figcaption>
 </figure>
 
 <figure>
@@ -682,7 +682,7 @@
 <p>The trade-decision flow:</p>
 
 <ol>
-  <li>Submit a ticker via <span class="nav-card">/decide</span> — enter symbol + rationale → agent fleet generates Buy/Sell/Hold proposal.</li>
+  <li>Submit a ticker via <span class="nav-card">/consult</span> — enter symbol + rationale → agent fleet generates Buy/Sell/Hold proposal.</li>
   <li>Proposal lands in <span class="nav-card">/proposals</span>.</li>
   <li>Approve / Reject / Escalate. For T0/T1 in Argonaut on live mode, the engine auto-executes.</li>
   <li>Filled orders surface in <span class="nav-card">/argonaut</span> (Recent trades) and <span class="nav-card">/audit</span>.</li>
@@ -781,7 +781,7 @@
 
 <div class="callout">
   <div class="callout-title">When to come here</div>
-  Tactical decisions about one holding. "Should I trim NVDA before earnings?" lands on this card, reads the thesis + cited sources, decides. (The actual sell still goes through <span class="nav-card">/decide</span> + <span class="nav-card">/proposals</span>.)
+  Tactical decisions about one holding. "Should I trim NVDA before earnings?" lands on this card, reads the thesis + cited sources, decides. (The actual sell still goes through <span class="nav-card">/consult</span> + <span class="nav-card">/proposals</span>.)
 </div>
 
 <h3 id="detail-onboarding"><span class="nav-card">/onboarding</span> + <span class="nav-card">/intake</span> — First-login + legacy redirect</h3>
@@ -839,7 +839,7 @@
 <tr><td>/expenses</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/plan</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/retirement</td><td>✓</td><td>0</td><td>0</td></tr>
-<tr><td>/decide</td><td>✓</td><td>0</td><td>0</td></tr>
+<tr><td>/consult</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/proposals</td><td>✓</td><td>0</td><td>0</td></tr>
 <tr><td>/argonaut</td><td>✓</td><td><strong>1</strong> (the 404 above)</td><td>0</td></tr>
 <tr><td>/agents</td><td>✓</td><td>0</td><td>0</td></tr>

@@ -430,10 +430,10 @@ export default function ProposalsPage() {
             <p>
               Proposals are produced by ticker-decision flows. Head to the{" "}
               <Link
-                href="/decide"
+                href="/consult"
                 className="text-primary hover:underline font-medium"
               >
-                Decide
+                Consult
               </Link>{" "}
               tab to submit a ticker with your rationale and have the agent
               fleet generate a structured Buy/Sell/Hold proposal.
