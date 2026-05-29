@@ -209,7 +209,7 @@ class RetirementMilestoneKind(str, Enum):
 
 ### Section 4.3 — Backend
 
-- New table `life_events` (cols: id, user_id, category enum, kind enum, target_date, amount_usd nullable, recurring_years nullable, description text, source_id nullable, created_at). Indexed on `(user_id, target_date)`.
+- New table `life_events`. Columns: id, user_id (FK CASCADE), category (TEXT + CHECK enum 6 values), kind (TEXT — per-category enum enforced by Pydantic at service layer), target_date (nullable), amount_usd (nullable, CHECK > 0 when present), recurring_years (nullable, CHECK > 0 when present), description (nullable), source_id (nullable), created_at, updated_at. Indexes on (user_id, target_date) and (user_id, category). Migration 0042.
 - New service `argosy/services/life_events.py` — CRUD + Pydantic-enum validator.
 - New routes:
   - `GET /api/life-events?user_id=`

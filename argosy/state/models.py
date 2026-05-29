@@ -1762,6 +1762,63 @@ class AllocationAction(Base):
 WindfallAction = AllocationAction
 
 
+class LifeEvent(Base):
+    """One row per user-recorded life event (career / family / asset /
+    expense / recurring / retirement-milestone).
+
+    Feeds:
+      - cashflow_projection.effective_retire_ready_age() clamps for
+        retirement_milestone:target_retire_year_change + blocking
+        expense_event entries.
+      - <HolisticTimelineCard> overlay markers on /retirement.
+      - Monitor agent context (NOT trigger — per Ariel's Q2 answer life
+        events feed interpretation, not direct red flags).
+
+    Category enum enforced at DB layer; per-category kind enum enforced
+    by Pydantic at the service layer (see argosy/services/life_events.py
+    in sprint commit #8). The split is deliberate: kind values vary by
+    category and encoding the relationship in SQL would add complexity
+    without material safety over the Pydantic contract.
+
+    Migration: alembic 0042.
+    """
+
+    __tablename__ = "life_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    amount_usd: Mapped[float | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    recurring_years: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Forward-looking FK candidate; no constraint in v1.
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_utcnow,
+        onupdate=_utcnow,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_life_events_user_date", "user_id", "target_date"),
+        Index("ix_life_events_user_category", "user_id", "category"),
+    )
+
+
 class PortfolioSnapshotPart(Base):
     """Pending half of a Leumi monthly portfolio snapshot.
 
