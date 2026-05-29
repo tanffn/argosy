@@ -841,3 +841,209 @@ def project_monte_carlo(
             ),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Canonical retire-ready-age clamp (sprint commit #9, spec #1 §3.1)
+# ---------------------------------------------------------------------------
+#
+# Codex BLOCKER #3 on the plan/execute/monitor reorg design: if the
+# Holistic Timeline card and the monthly MC monitor compute retire-
+# ready-age independently, they'll contradict (timeline shows
+# "earliest = Sep 2027 RSU-clamped" while monitor shows "P(solvent) is
+# fine retiring at age N today" with N before the vest).
+#
+# Resolution: ONE canonical function `effective_retire_ready_age()`.
+# Every consumer (Holistic Timeline, ExpectedRetirementAgeCard,
+# RuinProbabilityHero, monitor MC regression) calls this function.
+# Asserted via a unit test: same user_id + scenario → same value across
+# call sites.
+
+
+from datetime import timedelta
+from typing import Literal
+
+
+@dataclass(frozen=True)
+class EffectiveRetireReadyAge:
+    """Canonical retire-ready-age result with clamp provenance.
+
+    `age_years` is the final clamped value all consumers display.
+    `base_age_years` is the un-clamped projection (kept for telemetry
+    so we can show "would have been age 49 but clamped to 50.8 because
+    of pending RSU vest").
+
+    `clamp_reason` is one of:
+      - 'no_clamp_needed' — base age survived all clamps
+      - 'rsu_unvested'    — clamped by latest projected unvested RSU
+      - 'life_event'      — clamped by an explicit retirement_milestone
+                            life event (target_retire_year_change)
+      - 'no_crossing'     — base projection never crossed solvency; age
+                            returned is the projection horizon end
+
+    `age_years` is None when no crossing is found within the horizon.
+    """
+
+    scenario: Literal["bear", "base", "bull"]
+    age_years: float | None
+    base_age_years: float | None
+    clamp_reason: str
+    rsu_clamp_date: date | None
+    life_event_clamp_date: date | None
+
+
+# Heuristic for v1: assume RSU vests proceed on the historical quarterly
+# cadence. Take the latest historical vest_date and project the next
+# vest as +90 days. This is conservative for users on quarterly vests
+# (most NVDA employees) and over-conservative for users on annual
+# vests — a follow-on commit (#10) lands a proper grant-aware
+# projection function that reads `rsu_vest_events` per-grant.
+_RSU_VEST_PROJECTION_DAYS = 90
+
+
+def effective_retire_ready_age(
+    scenario: Literal["bear", "base", "bull"],
+    user_id: str,
+    session: Session,
+    *,
+    as_of: date | None = None,  # None = today; explicit date = historical
+                                  # replay (needed by monthly MC refresh
+                                  # to reproduce last-month's value for
+                                  # delta comparison).
+    years: int = 50,
+    mu_nominal_annual: float = DEFAULT_MU_NOMINAL_ANNUAL,
+    sigma_annual: float = DEFAULT_SIGMA_ANNUAL,
+) -> EffectiveRetireReadyAge:
+    """Compute retire-ready-age with all clamps applied.
+
+    Clamps in order:
+      1. Base computation: project_cashflow + detect_retire_ready
+      2. RSU clamp: latest historical vest + 90 days projects next
+         expected vest. If base age implies retirement BEFORE that
+         date, clamp to it. (Commit #10 follow-on replaces this
+         heuristic with grant-aware cadence projection.)
+      3. Life-event blocking clamp: NOT YET WIRED — life_events table
+         landed in commit #3 but the service-layer query lands in
+         commit #8 (/life-events page). Documented as a TODO so the
+         hook is in the function from day 1, just returns None today.
+
+    All consumers SHOULD call this function — see Section 3.1 of the
+    spec. A unit test asserts no consumer computes retire-ready-age
+    independently.
+    """
+    today = as_of or date.today()
+
+    pension_state = extract_pension_state(session, user_id)
+    household_state = extract_household_state(session, user_id)
+
+    # Base projection (the same call shape as project_cashflow at its
+    # default retirement_age). We project at the household's
+    # current_age + reasonable margin so the crossing can land.
+    retirement_age = household_state.current_age_years + 1.0
+    proj = project_cashflow(
+        household=household_state,
+        pensions=pension_state,
+        retirement_age=retirement_age,
+        years=years,
+        mu_nominal_annual=mu_nominal_annual,
+        sigma_annual=sigma_annual,
+        today=today,
+    )
+
+    base_age_attr = {
+        "base": "retire_ready_age_base",
+        "bear": "retire_ready_age_bear",
+        "bull": "retire_ready_age_bull",
+    }[scenario]
+    base_age: float | None = getattr(proj, base_age_attr)
+
+    if base_age is None:
+        # No crossing within projection horizon.
+        return EffectiveRetireReadyAge(
+            scenario=scenario,
+            age_years=None,
+            base_age_years=None,
+            clamp_reason="no_crossing",
+            rsu_clamp_date=None,
+            life_event_clamp_date=None,
+        )
+
+    # Translate base_age → a calendar date so we can compare with clamps.
+    months_to_retire = (base_age - household_state.current_age_years) * 12.0
+    base_retire_date = _add_months(today, int(round(months_to_retire)))
+
+    # Clamp 2: RSU vest.
+    rsu_clamp_date = _latest_projected_rsu_vest_date(session, user_id, today)
+
+    # Clamp 3: life event (stub for now).
+    life_clamp_date = None
+
+    # Pick the latest among (base, rsu, life).
+    candidates = [
+        ("base", base_retire_date, "no_clamp_needed"),
+        ("rsu", rsu_clamp_date, "rsu_unvested"),
+        ("life", life_clamp_date, "life_event"),
+    ]
+    best_date = base_retire_date
+    clamp_reason = "no_clamp_needed"
+    for _, d, reason in candidates:
+        if d is not None and d > best_date:
+            best_date = d
+            clamp_reason = reason
+
+    # Translate back to age.
+    months_diff = (
+        (best_date.year - today.year) * 12
+        + (best_date.month - today.month)
+    )
+    age_years = household_state.current_age_years + months_diff / 12.0
+
+    return EffectiveRetireReadyAge(
+        scenario=scenario,
+        age_years=age_years,
+        base_age_years=base_age,
+        clamp_reason=clamp_reason,
+        rsu_clamp_date=rsu_clamp_date,
+        life_event_clamp_date=life_clamp_date,
+    )
+
+
+def _latest_projected_rsu_vest_date(
+    session: Session,
+    user_id: str,
+    as_of: date,
+) -> date | None:
+    """Heuristic for the next expected RSU vest date.
+
+    Read the user's `rsu_vest_events` rows; if any exist after `as_of`,
+    take the latest. Otherwise project from the most recent historical
+    vest assuming quarterly cadence (latest + 90 days).
+
+    Returns None if the user has no rsu_vest_events at all (e.g. a
+    non-employee account). Calling code must handle None gracefully.
+    """
+    from argosy.state.models import RsuVestEvent
+
+    # All vest events for the user, latest first.
+    latest = (
+        session.query(RsuVestEvent)
+        .filter(RsuVestEvent.user_id == user_id)
+        .order_by(RsuVestEvent.vest_date.desc())
+        .first()
+    )
+    if latest is None:
+        return None
+
+    if latest.vest_date >= as_of:
+        # A future-dated vest already in the table (unusual for the
+        # historical-only schema, but possible if a CSV has been
+        # backfilled with a known upcoming vest). Use as-is.
+        return latest.vest_date
+
+    # Historical: project next vest at +90 days. Iterate forward in 90-
+    # day steps so we land on the first projected date AFTER `as_of`,
+    # not just one quarter past the latest event (which may be old).
+    projected = latest.vest_date
+    while projected <= as_of:
+        projected = projected + timedelta(days=_RSU_VEST_PROJECTION_DAYS)
+    return projected
