@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { UpcomingVestCard } from "@/components/retirement/UpcomingVestCard";
 import {
   expensesApi,
   type RsuDisbursement,
@@ -440,6 +441,12 @@ export default function RsuPage() {
           Refresh from disk
         </Button>
       </div>
+
+      {/* Sprint #2 commit #12 — forward-looking pre-vest planning card.
+          Pairs with the historical reconciliation below: looking
+          backward at what landed AND forward at what's coming. */}
+      <UpcomingVestCard userId={USER_ID} />
+
 
       {/* Warning */}
       {data.warning && (

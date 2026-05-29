@@ -25,6 +25,7 @@ import { SigmaCalibrationCard } from "@/components/retirement/SigmaCalibrationCa
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
 import { StochasticFxCard } from "@/components/retirement/StochasticFxCard";
 import { TaxBreakdownCard } from "@/components/retirement/TaxBreakdownCard";
+import { UpcomingVestCard } from "@/components/retirement/UpcomingVestCard";
 import { WithdrawalPolicySelector } from "@/components/retirement/WithdrawalPolicySelector";
 
 const USER_ID = "ariel";
@@ -36,6 +37,7 @@ const USER_ID = "ariel";
 const SECTIONS: Array<{ id: string; label: string }> = [
   { id: "when-can-i-retire", label: "When can I retire?" },
   { id: "timeline",          label: "Holistic Timeline" },
+  { id: "upcoming-vests",    label: "Upcoming RSU vests" },
   { id: "verdict",           label: "Verdict" },
   { id: "safety",        label: "Safety gates" },
   { id: "predictions",   label: "Prediction trust" },
@@ -113,6 +115,14 @@ export default function RetirementPage() {
 
         <section id="timeline" className="scroll-mt-6">
           <HolisticTimelineCard userId={USER_ID} />
+        </section>
+
+        {/* Sprint #2 commit #12 — three-scenario tax outlook +
+            allocation preview for upcoming RSU vests. Between the
+            holistic timeline ("what's the long-range schedule?") and
+            the safety section. */}
+        <section id="upcoming-vests" className="scroll-mt-6">
+          <UpcomingVestCard userId={USER_ID} />
         </section>
 
         <section id="verdict" className="scroll-mt-6">

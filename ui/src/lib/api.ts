@@ -383,6 +383,54 @@ export interface HolisticTimelineDTO {
 }
 
 // ----------------------------------------------------------------------
+// Upcoming vests outlook (sprint #2 commit #12, 2026-05-29).
+//
+// Backend: argosy/services/rsu_prevest_planner.py + GET
+// /api/retirement/upcoming-vests. Forward-looking, purely advisory —
+// surfaces the next N days of expected per-grant vest events with three
+// tax-rate scenarios (nominal / effective / conservative) plus an
+// allocation preview built off the NOMINAL post-tax amount. Drives the
+// <UpcomingVestCard> on /retirement.
+// ----------------------------------------------------------------------
+
+export interface AllocationProposalDTO {
+  horizon: "long" | "medium" | "short";
+  asset_class: string;
+  instrument: string;
+  amount_usd: number;
+  rationale: string;
+  closes_delta_usd: number;
+  confidence: "high" | "medium" | "low";
+  source_id: string;
+}
+
+export interface UpcomingVestDTO {
+  grant_id: string;
+  expected_vest_date: string; // ISO YYYY-MM-DD
+  days_until: number;
+  shares_projected: number;
+  nvda_price_usd: number;
+  expected_gross_usd: number;
+  rate_nominal: number;
+  rate_effective: number;
+  rate_conservative: number;
+  expected_post_tax_nominal_usd: number;
+  expected_post_tax_effective_usd: number;
+  expected_post_tax_conservative_usd: number;
+  allocation_preview: AllocationProposalDTO[];
+}
+
+export interface UpcomingVestOutlookDTO {
+  user_id: string;
+  as_of: string; // ISO YYYY-MM-DD
+  horizon_days: number;
+  upcoming: UpcomingVestDTO[];
+  rate_nominal: number;
+  rate_effective: number;
+  rate_conservative: number;
+}
+
+// ----------------------------------------------------------------------
 // Life events (sprint commit #8, 2026-05-29).
 //
 // Backend: argosy/api/routes/life_events.py + argosy/services/life_events.py.
@@ -1279,6 +1327,34 @@ export const api = {
         `/api/retirement/timeline?${params.toString()}`,
       );
     },
+    // Sprint #2 commit #12 — RSU pre-vest outlook for <UpcomingVestCard>.
+    // Per-grant projection from the historical cadence (latest vest +
+    // 90d intervals, capped per grant) + three-scenario tax estimates +
+    // allocation preview built off the NOMINAL post-tax amount.
+    upcomingVests: (
+      userId: string,
+      horizonDays?: number,
+    ): Promise<UpcomingVestOutlookDTO> => {
+      const params = new URLSearchParams({ user_id: userId });
+      if (horizonDays !== undefined)
+        params.set("horizon_days", String(horizonDays));
+      return getJSON<UpcomingVestOutlookDTO>(
+        `/api/retirement/upcoming-vests?${params.toString()}`,
+      );
+    },
+  },
+  // Top-level convenience alias for the same endpoint (sprint #2
+  // commit #12) — matches the `api.upcomingVests(...)` spec.
+  upcomingVests: (
+    userId: string,
+    horizonDays?: number,
+  ): Promise<UpcomingVestOutlookDTO> => {
+    const params = new URLSearchParams({ user_id: userId });
+    if (horizonDays !== undefined)
+      params.set("horizon_days", String(horizonDays));
+    return getJSON<UpcomingVestOutlookDTO>(
+      `/api/retirement/upcoming-vests?${params.toString()}`,
+    );
   },
   // Generic allocation Accept/Defer (sprint commit #6b, 2026-05-29).
   // Mounted at /api/proposals/allocation/* — sibling to the trade-order

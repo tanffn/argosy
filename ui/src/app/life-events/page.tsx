@@ -81,13 +81,44 @@ function emptyForm(): FormState {
   };
 }
 
+/**
+ * Sprint #2 commit #12 — read prefill_* query params from
+ * window.location.search and merge into the empty form. Called as the
+ * lazy initializer for ``useState<FormState>`` so the read happens
+ * exactly once at mount, not via a synchronous setState in useEffect
+ * (which lints as a cascading-render hazard).
+ *
+ * Returns the empty form when no prefill params are present, when
+ * running server-side (window === undefined), or when the URL has no
+ * query string.
+ */
+function formFromPrefill(): FormState {
+  if (typeof window === "undefined") return emptyForm();
+  const params = new URLSearchParams(window.location.search);
+  const cat = params.get("prefill_category");
+  const kind = params.get("prefill_kind");
+  const date = params.get("prefill_date");
+  const amount = params.get("prefill_amount");
+  const description = params.get("prefill_description");
+  if (!cat && !kind && !date && !amount && !description) return emptyForm();
+  const base = emptyForm();
+  return {
+    ...base,
+    category: (cat as LifeEventCategory | "") || base.category,
+    kind: kind || base.kind,
+    target_date: date || base.target_date,
+    amount_usd: amount || base.amount_usd,
+    description: description || base.description,
+  };
+}
+
 export default function LifeEventsPage() {
   const [catalog, setCatalog] = useState<LifeEventsCatalog | null>(null);
   const [events, setEvents] = useState<LifeEventDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [form, setForm] = useState<FormState>(emptyForm());
+  const [form, setForm] = useState<FormState>(formFromPrefill);
   const [submitting, setSubmitting] = useState(false);
 
   // Two error surfaces:

@@ -108,7 +108,15 @@ Sprint #2 spec at `docs/superpowers/specs/2026-05-29-anomaly-detection-rsu-preve
 
 - Sprint #2 commits #1-4 (`80698e9`): migrations 0045-0047 + rolling stats. 18 tests pass.
 - Sprint #2 commits #5-9 (`0fa0dab`): 5 anomaly detector buckets (A amount-outlier, B watchlist+recurring, C cache, D cross-card-duplicate). Codex BLOCK → fixed: dedup_keys interpolate live constants; B2 auto-dormancy after 2 missed cycles. 48 tests pass.
-- Sprint #2 commits #10+#11 (pending — anomaly UI bundled): `/api/anomaly/highlights` route + `/by-txn` batch route + `/dismiss/{id}` route in new `argosy/api/routes/anomaly.py`. UI extensions: 3 new AnomalyCard kinds (recurring_missing / category_drift / cross_card_duplicate) with icons + colors; inline transaction-row badge that shows highest-severity glyph (🚨 critical / ⚠ warning / ℹ info) for txns with open anomalies; TransactionDetailsDialog new Anomaly tab with Dismiss buttons. 11 new tests pass. TS clean.
+- Sprint #2 commits #10+#11 (`20582c8`): anomaly UI — /api/anomaly routes + inline transaction-row badges + dismiss flow. 11 tests pass.
+- Sprint #2 commit #12 (pending — FINAL commit of the 30-commit sprint plan): RSU pre-vest planner + `<UpcomingVestCard>`. New `argosy/services/rsu_prevest_planner.py` per-grant projects upcoming vests at +90d cadence (capped at 4 per grant), computes three-scenario tax estimates (nominal/effective/conservative per codex IMPORTANT #4 on spec #2), includes allocation preview via `_allocate_long_term(post_tax_nominal_usd)`. `GET /api/retirement/upcoming-vests` route. UI card mounted on /retirement (between HolisticTimeline and Verdict) + /expenses/rsu (top of page). "Add as life event →" CTA pre-fills the /life-events form via URL query params (lazy useState initializer, no setState-in-effect lint violation). 13 tests pass, TS + lint clean.
+
+### Sprint plan-execute-monitor + anomaly/RSU pre-vest — ALL 30 COMMITS COMPLETE
+
+- Spec #1 (plan/execute/monitor reorg): 18/18 sprint commits + 2 SDD-handover commits + 2 pre-existing-failure-cleanup commits
+- Spec #2 (anomaly + RSU pre-vest): 12/12 sprint commits
+- Total: ~30 sprint commits + supporting docs over the autonomous block.
+- Sprint #2 user-guide refresh (mirroring sprint #1 commit #18) NOT done — left as a follow-on; the user-guide currently documents sprint #1 changes but not the new anomaly surfaces / inline badges / UpcomingVestCard. A short text-only follow-on commit can close this when convenient.
 
 **Open dependencies for Ariel (mid-sprint, neither blocks start):**
 - Discord bot creds (channel ID + bot token + invite) for spec #1 commit #16 — bot scaffolding ships dormant until creds arrive.

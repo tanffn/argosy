@@ -85,6 +85,7 @@ from argosy.services.retirement.windfall_detector import (
 )
 from argosy.services.retirement.withdrawal_policy import list_policies
 from argosy.services.retirement_timeline import build_holistic_timeline
+from argosy.services.rsu_prevest_planner import compute_upcoming_vest_outlook
 from argosy.services.plan_monitor import (
     check_allocation_drift,
     check_mc_regression,
@@ -1255,6 +1256,32 @@ def get_holistic_timeline(
             for z in payload.retire_ready_zones
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# RSU pre-vest planner (sprint #2 commit #12) — three-scenario tax outlook
+# + allocation preview for the next N days of expected vests.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/upcoming-vests")
+def get_upcoming_vests(
+    user_id: str,
+    horizon_days: int = 90,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Forward-looking vest outlook for ``<UpcomingVestCard>``.
+
+    Per spec §3 of
+    ``docs/superpowers/specs/2026-05-29-anomaly-detection-rsu-prevest-design.md``.
+    Projects per-grant vests from the historical cadence, computes three
+    tax-rate scenarios, and previews how the nominal post-tax amount
+    would land against the user's plan-target allocation gaps.
+    """
+    outlook = compute_upcoming_vest_outlook(
+        db, user_id, horizon_days=horizon_days,
+    )
+    return outlook.to_dict()
 
 
 # ---------------------------------------------------------------------------
