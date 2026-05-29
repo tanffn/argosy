@@ -431,6 +431,40 @@ def create_app() -> FastAPI:
         except ImportError:
             pass
 
+        # Sprint B commit #7 — StateObserverLoop. Gated on
+        # ``cadences.state_observer.enabled`` (default True). 17:00 IDT
+        # daily alongside news_daily, source_kind='monitor'.
+        try:
+            from argosy.agent_settings import (  # noqa: PLC0415
+                load_agent_settings,
+            )
+            from argosy.orchestrator.loops.base import (  # noqa: PLC0415
+                LoopSchedule,
+            )
+            from argosy.orchestrator.loops.state_observer import (  # noqa: PLC0415
+                StateObserverLoop,
+                state_observer_metadata,
+            )
+
+            obs_cfg = load_agent_settings("ariel").cadences.state_observer
+            if obs_cfg.enabled:
+                observer_loop = StateObserverLoop(
+                    schedule=LoopSchedule.from_config(obs_cfg),
+                    enabled=True,
+                    user_id="ariel",
+                )
+                scheduler.register_loop(observer_loop)
+                registry.register(
+                    job=observer_loop,
+                    metadata=state_observer_metadata(),
+                )
+                log.info("scheduler.state_observer_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.state_observer_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Step 1: start_supervisors BEFORE scheduling so any
         # LongRunningJob supervisor is alive when its first connect
         # cycle opens. (No-op until commit #5 fills it in.)

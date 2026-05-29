@@ -77,6 +77,19 @@ Test surface: ~118 tests in the jobs-area suite, all green. Codex sessions at `t
 
 **Sprint B kickoff (state observer):** depends on Spec A's `JobRegistry` (now live). Observer will register as a daily 17:00 IDT CadenceLoop alongside `NewsDailyJob`. Empirical FX-emergence verification commit will run against the user's current state (USD/NIS 3.6→2.8) to confirm the architecture surfaces it as an emergent flag.
 
+### Sprint B landed (7/7 commits) — State observer
+
+All Spec B commits now ride main:
+- #1 — Migration 0049 `state_snapshots` + `monitor_flags.dedup_key` + CHECK relaxation
+- #2 — `argosy/services/state_snapshot.py` (six-section collector + persister + `as_of` time-travel + `historical_replay_gaps`)
+- #3 — `argosy/services/state_diff.py` (pure-function diff + `PLAN_BASELINE_COMPARATOR_MAP` + filter rules + 300-field truncation cap)
+- #4 — `argosy/agents/state_observer.py` `StateObserverAgent` (Opus 4.7, high thinking, tainted-data tag isolation, `_post_validate_output` hallucination guard)
+- #5 — `argosy/scripts/state_observer_backfill.py` empirical FX 3.6→2.8 backfill
+- #6 — `argosy/services/state_observer_flag_writer.py` (`v1|state_observer|...` dedup_key, tombstone-then-insert idempotency, inferred_kind mapping); `check_macro_shift` `@deprecated` per §6.1
+- #7 — `argosy/orchestrator/loops/state_observer.py` `StateObserverLoop` registered alongside `NewsDailyJob` at 17:00 Asia/Jerusalem (`cadences.state_observer` defaults `enabled=true, cron="0 17 * * *"`), `source_kind='monitor'`. 6h cool-off between successful runs via `MIN_RUN_INTERVAL_MINUTES=360`; `force=True` bypasses for backfill + on-demand triggers. On-demand entry point `run_state_observer_now(user_id, *, trigger_reason, force)` wraps the same `tick()` body for snapshot-upload + plan-resynthesis triggers (spec §7.3). `check_macro_shift` remains `@deprecated` — observer subsumes via the `state_observer_macro_observation`-family `inferred_kind` (one wave of coexistence so legacy `macro_shift` flags age out naturally before a future spec removes the function).
+
+Test surface across the observer area: ~149 tests passing under `pytest -m "not llm_eval"` (loop + agent + flag_writer + diff + snapshot + backfill).
+
 ---
 
 ### How this sprint was executed — autonomous-mode + codex + parallel sub-agents

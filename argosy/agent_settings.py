@@ -103,6 +103,17 @@ class CadencesBlock(BaseModel):
             enabled=True, cron="30 3 * * *", timezone="Asia/Jerusalem"
         )
     )
+    # Sprint B commit #7 — state-observer daily cron. 17:00 Asia/Jerusalem,
+    # same hour as ``news_daily`` so the observer reads a fully-settled
+    # state (Tel Aviv market closed + news pipeline classified the day's
+    # signals). Cool-off + force-flag tuning lives on the loop class
+    # constructor, not in the cadence config — the cadence config only
+    # owns the schedule.
+    state_observer: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(
+            enabled=True, cron="0 17 * * *", timezone="Asia/Jerusalem"
+        )
+    )
 
 
 class JobRunsRetentionConfig(BaseModel):
@@ -280,6 +291,9 @@ cadences:
   # 30 minutes after the backup cron so the backup captures the
   # pre-retention state).
   job_runs_retention:  { enabled: true, cron: "30 3 * * *", timezone: "Asia/Jerusalem" }
+  # Sprint B commit #7 — daily state-observer (17:00 IL-local; same
+  # hour as news_daily so the snapshot reads a fully-settled state).
+  state_observer:      { enabled: true, cron: "0 17 * * *", timezone: "Asia/Jerusalem" }
 
 models:
   defaults:
