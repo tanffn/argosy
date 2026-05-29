@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-29 (plan/execute/monitor sprint kickoff) by Claude — Ariel reframed the /plan↔/retirement bounce-loop as wrong: plan is made once (rare, on big life event); agents track monthly; red flags surface on home page. Two specs landed (commit `cbf6a07`) decomposing the UI into three concerns (creation / execution / monitoring) plus a separate Flow-2 spec for anomaly detection + RSU pre-vest planning. Both codex-reviewed APPROVE_WITH_CONDITIONS. Sprint commit #1 (user-guide audit rewrite) shipped alongside this entry. See "Wave 2026-05-29 (plan/execute/monitor reorg)" immediately below. Prior waves stay as historical context.
+**Last edit:** 2026-05-29 (autonomous sprint, late) by Claude — 14 commits this block. Specs #1 + #2 landed, plus 8 of 18 sprint #1 commits (user-guide audit, three schema migrations 0041-0043, /decide → /consult rename, WindfallCard move, UnallocatedCashCard Accept/Defer wiring, Schwab parser extension + rsu_vest_events table, canonical `effective_retire_ready_age()`), plus a follow-up cleanup pass (Path UnboundLocalError fix, stale 404 assertion fix). User closed both blockers mid-session: dropped a real Schwab CSV into `tests/fixtures/portfolio_ingest_schwab/` and provided Discord bot creds (at `~/.argosy/discord_creds.json`, gitignored). Sprint #2 (12 commits — anomaly + RSU pre-vest) is now fully unblocked; commit #16 (Discord bot scaffold) is unblocked. See "Wave 2026-05-29" sections below + "Morning report" — read both for state.
 
 ### Wave 2026-05-29 (plan/execute/monitor reorg) — sprint kickoff + user-guide audit
 
