@@ -406,7 +406,11 @@ def _assemble_reasoning(
         end = min(len(text), idx + 200)
         excerpt = text[start:end].strip()
         if excerpt:
-            role = row.get("agent_role") or "analyst"
+            # Map internal agent_role to a user-friendly label so the UI
+            # doesn't see "(fundamentals_analyst)" verbatim. See
+            # argosy/services/plain_english_labels.py.
+            from argosy.services.plain_english_labels import friendly_agent_role
+            role = friendly_agent_role(row.get("agent_role"))
             _add(f"({role}) … {excerpt} …")
 
     blob = "\n\n".join(pieces[:4])

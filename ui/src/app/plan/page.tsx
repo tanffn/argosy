@@ -40,6 +40,7 @@ import {
   type PortfolioSnapshotDTO,
   type TargetProgressResponse,
 } from "@/lib/api";
+import { friendlySourceLabels } from "@/lib/plain-english-labels";
 import { useWSEvents } from "@/lib/ws";
 
 const USER_ID = "ariel";
@@ -799,8 +800,12 @@ export default function PlanPage() {
                       </ul>
                     )}
                     {f.cited_sources.length > 0 && (
-                      <p className="text-xs font-mono text-muted-foreground mt-1">
-                        cite: {f.cited_sources.join(", ")}
+                      <p
+                        className="text-xs text-muted-foreground mt-1"
+                        title={f.cited_sources.join(", ")}
+                      >
+                        cite:{" "}
+                        {friendlySourceLabels(f.cited_sources).join(", ")}
                       </p>
                     )}
                     {f.recommended_action && (

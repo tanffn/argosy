@@ -9,6 +9,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { friendlySourceLabel } from "@/lib/plain-english-labels";
 import { cn } from "@/lib/utils";
 
 /**
@@ -152,13 +153,14 @@ export function PositionCard({ thesis }: PositionCardProps) {
               <Badge
                 key={src}
                 variant="outline"
-                className="text-xs font-mono"
+                className="text-xs"
+                title={src}
               >
-                {src}
+                {friendlySourceLabel(src)}
               </Badge>
             ))}
             {thesis.cited_sources.length > 6 && (
-              <Badge variant="outline" className="text-xs font-mono">
+              <Badge variant="outline" className="text-xs">
                 +{thesis.cited_sources.length - 6} more
               </Badge>
             )}

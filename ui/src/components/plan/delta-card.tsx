@@ -11,6 +11,7 @@ import {
   type FMObjection,
   type TargetProgress,
 } from "@/lib/api";
+import { friendlyItemId } from "@/lib/plain-english-labels";
 
 interface DeltaCardProps {
   delta: DeltaItem;
@@ -357,8 +358,11 @@ export function DeltaCard(props: DeltaCardProps) {
           <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wide">
             {itemKindLabel(delta.item_kind)}
           </span>
-          <span className="text-[10px] font-mono text-muted-foreground">
-            {delta.item_id}
+          <span
+            className="text-[10px] text-muted-foreground"
+            title={delta.item_id}
+          >
+            {friendlyItemId(delta.item_id)}
           </span>
         </div>
         <div className="flex items-center gap-1.5">

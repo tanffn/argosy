@@ -15,7 +15,54 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-29 (autonomous overnight block) by Claude — user dropped into overnight mode ("I'm going to bed, finish what you can, including the deferred items") after the 2026-05-28 wave. See "Autonomous overnight block (2026-05-29)" directly below for what shipped. The prior 2026-05-28 wave + cashflow handover + everything beneath remain current as historical context.
+**Last edit:** 2026-05-29 (afternoon sprint) by Claude — user authorized a long unattended sprint across three priorities (XLS upload wiring + bidirectional Osh pair, plain-English translation layer, unallocated-cash allocation tile). See "Wave 2026-05-29 (afternoon sprint)" immediately below for status. Prior waves below remain current as historical context.
+
+### Wave 2026-05-29 (afternoon sprint, in progress) — three-task block
+
+User collected data via AskUserQuestion, set work-style preference (`feedback_work_style_long_sprints.md`: long sprints, Codex is the ZigZag coworker, blockers documented but don't pause the sprint), and authorized "start working" across all three open priorities from the morning wave's "Open work" list.
+
+**Design calls (locked by user before code):**
+- (a) Cash source for XLS-only uploads: **Auto-pair via DB**, with bidirectional resolution (XLS-before-Osh must work).
+- (a) Scope: **Leumi XLS only** this sprint; Schwab CSV deferred.
+- (b) Unallocated-cash threshold: **Plan-target gap** (cash > plan-target by ~50% — self-tuning, no hard-coded number).
+- (c) Translation cache: **Precompute + persist** (mirror `fm_objection_translations`).
+
+**(a) Leumi XLS auto-pairs with Osh statement — SHIPPED (`198e19c`).**
+- Migration `0039_portfolio_snapshot_parts` adds the bidirectional pending-pair table. Dual idempotency: SHA-of-bytes fast-path + `(user_id, snapshot_date, portfolio_number)` semantic unique.
+- New service `argosy/services/portfolio_ingest/xls_osh_pair.py` implements `handle_xls_upload` + `try_resolve_pending_on_osh_arrival`. ±15d match window. Same-day txn ordering broken by `(occurred_on DESC, id DESC)`.
+- TSV synthesis splices XLS positions + Osh closing balance into the most-recent prior TSV. Schwab + Aborad + real-estate + NVDA-sales + pensions blocks carried forward verbatim. `Current allocation` recomputes `current_pct`/`current_k_usd`; target columns preserved.
+- Codex zigzag review (session `2026-05-29-xls-osh-pair-design`) returned 6 BLOCKERs on the architecture brief — all addressed in implementation:
+  - #1 symbol stability via `_build_prior_mappings` (security_id → prior-TSV symbol)
+  - #2 per-row currency inference from prior TSV
+  - #5 snapshot-effective FX (prior TSV's rate, not live)
+  - #9 dual idempotency (above)
+  - #10 response contract: `detect_status="pending_pair"` + `pending_pair_id` field
+  - #11 deterministic Osh closing-balance selection
+- Route extended to format-sniff TSV vs XLS. Osh-side hook lives in `expense_ingest/orchestrator.py` (codex zigzag #8: explicit parser-name check, not SQLAlchemy `after_insert`).
+- UI: `snapshot-upload-card.tsx` accepts `.xls` files; renders `AWAITING OSH` pill for pending-pair state with the detail text inline.
+- 6 new tests in `tests/test_xls_osh_pair.py`, 40 related tests green.
+
+**(c) Plain-English label sanitizers — IN PROGRESS.**
+- Strategy split: static dictionaries handle the well-known leaks (agent-role prefixes, source-ID namespaces, structured `item_id` keys); LLM precompute path deferred since the static translation covers ~80% of cases with predictable, instant rendering.
+- New module `argosy/services/plain_english_labels.py`: `friendly_agent_role()` + `friendly_source_label()`/`friendly_source_labels()`.
+- New module `ui/src/lib/plain-english-labels.ts` mirrors the Python (source labels + delta `item_id` labels).
+- Applied at:
+  - `per_position_thesis.py:410` — `(fundamentals_analyst)` prefix → `(fundamentals)`.
+  - `position-card.tsx:149` — `cited_sources` badges render friendly labels with raw IDs preserved in `title` (hover).
+  - `plan/page.tsx:801` — critique findings `cited_sources` render friendly labels.
+  - `delta-card.tsx:361` — `item_id` renders `friendlyItemId()` form (`long.targets.us_situs_taxable_assets_cap` → "US situs taxable assets cap") with raw key on hover.
+- LLM precompute path NOT shipped this sprint. If/when item_ids need 2-paragraph explanations (rather than re-flowed labels), follow the `fm_objection_translation_cache.py` pattern.
+
+**(b) Unallocated-cash allocation tile — PENDING (next).**
+- Architecture decided: detector reads latest portfolio snapshot's `Current allocation` block, finds the cash row's `current_k_usd` and matching `target_k_usd`, fires if `current > target × 1.5`. Reuses `_allocate_long_term()` from `windfall_allocator.py` (already parameterized).
+- Surface: `/portfolio` tile parallel to the snapshot-upload card.
+
+**Open work (after this sprint):**
+- (c) LLM precompute path for delta `item_id` — only if static labels prove insufficient. Requires `delta_item_translations` table mirroring `fm_objection_translations`, new translator agent, synthesis-completion hook.
+- (b) implementation: detector + card + tests.
+- Schwab CSV ingest path (deferred from this sprint).
+- `$ARGOSY_EXPENSE_SAMPLES_ROOT` removal (was partially addressed in `53a0145`; full removal still pending).
+- User-guide refresh at sprint end (covers the new XLS upload + AWAITING OSH state + friendly labels).
 
 ### Wave 2026-05-29 (late) — user-driven follow-on after the overnight block
 
