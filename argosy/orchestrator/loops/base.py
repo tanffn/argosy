@@ -53,14 +53,39 @@ class LoopSchedule:
     def next_due_after(self, ref: datetime) -> datetime:
         """Compute the next-due timestamp after `ref`.
 
-        For cron-driven loops, uses `croniter`. For interval-driven loops,
-        adds `interval_seconds`. If neither is set, returns ref+1h (a
-        defensive fallback so the scheduler never busy-loops).
+        For cron-driven loops, uses `croniter` and evaluates the cron
+        expression in ``self.timezone`` (Spec A commit #2 — codex BLOCKER
+        #3). Prior behavior ignored ``self.timezone`` and evaluated the
+        cron in UTC, which meant ``cron="0 9 * * *"`` with
+        ``timezone="Asia/Jerusalem"`` fired at 9:00 UTC instead of
+        9:00 IDT — a 2-3 hour offset depending on DST. All eight existing
+        cron-driven loops in ``CadencesBlock`` shipped with the implicit
+        IL-local intent and are corrected by this fix.
+
+        For interval-driven loops, adds ``interval_seconds``. If neither
+        is set, returns ref+1h (a defensive fallback so the scheduler
+        never busy-loops).
+
+        Returned value is always a tz-aware UTC datetime.
         """
         if self.cron and _croniter is not None:
             try:
-                ci = _croniter(self.cron, ref)
-                return ci.get_next(datetime)
+                from zoneinfo import ZoneInfo
+
+                tz = ZoneInfo(self.timezone)
+                # `ref` is conventionally UTC at the call sites; coerce
+                # to ensure astimezone works whether or not it carries
+                # an explicit tzinfo.
+                if ref.tzinfo is None:
+                    ref = ref.replace(tzinfo=timezone.utc)
+                ref_local = ref.astimezone(tz)
+                ci = _croniter(self.cron, ref_local)
+                next_local = ci.get_next(datetime)
+                # croniter returns a naive datetime; reattach the local
+                # tz before converting back to UTC.
+                if next_local.tzinfo is None:
+                    next_local = next_local.replace(tzinfo=tz)
+                return next_local.astimezone(timezone.utc)
             except Exception:  # pragma: no cover - malformed cron string
                 return ref + timedelta(hours=1)
         if self.interval_seconds and self.interval_seconds > 0:
