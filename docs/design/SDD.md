@@ -53,16 +53,19 @@ User collected data via AskUserQuestion, set work-style preference (`feedback_wo
   - `delta-card.tsx:361` — `item_id` renders `friendlyItemId()` form (`long.targets.us_situs_taxable_assets_cap` → "US situs taxable assets cap") with raw key on hover.
 - LLM precompute path NOT shipped this sprint. If/when item_ids need 2-paragraph explanations (rather than re-flowed labels), follow the `fm_objection_translation_cache.py` pattern.
 
-**(b) Unallocated-cash allocation tile — PENDING (next).**
-- Architecture decided: detector reads latest portfolio snapshot's `Current allocation` block, finds the cash row's `current_k_usd` and matching `target_k_usd`, fires if `current > target × 1.5`. Reuses `_allocate_long_term()` from `windfall_allocator.py` (already parameterized).
-- Surface: `/portfolio` tile parallel to the snapshot-upload card.
+**(b) Unallocated-cash allocation tile — SHIPPED.**
+- New service `argosy/services/unallocated_cash_detector.py` reads the latest portfolio snapshot's `Current allocation` block, locates the cash row (literal "Cash" or substring match), computes `overage_ratio = current_k / target_k`, fires when ratio >= 1.5 (self-tuning; no hard-coded dollar threshold per user spec). The detector returns an `UnallocatedCashEvent` carrying the excess amount + proposed long-term allocations.
+- Reuses `_allocate_long_term()` from `windfall_allocator.py` with `long_term_budget_fraction=1.0` (100% of overage to long-term — no medium/short stub for the routine paycheck-residue case).
+- New route `GET /api/portfolio/unallocated-cash-proposal?user_id=&overage_ratio=` returns the event or null.
+- New UI tile `UnallocatedCashCard` on `/portfolio` renders nothing when no overage; otherwise shows current/target/ratio + suggested buys with rationale.
+- 12 new tests in `tests/test_unallocated_cash_detector.py` covering threshold gating, proposal shape, missing-data edge cases, cash-row detection variants.
 
 **Open work (after this sprint):**
 - (c) LLM precompute path for delta `item_id` — only if static labels prove insufficient. Requires `delta_item_translations` table mirroring `fm_objection_translations`, new translator agent, synthesis-completion hook.
-- (b) implementation: detector + card + tests.
+- (b) Accept/Defer wiring for unallocated-cash proposals — currently the card surfaces buy suggestions but the user can't yet accept them through the UI. Path: reuse the existing `windfall_actions` table (codex zigzag flagged this is the right shape — same fields).
 - Schwab CSV ingest path (deferred from this sprint).
 - `$ARGOSY_EXPENSE_SAMPLES_ROOT` removal (was partially addressed in `53a0145`; full removal still pending).
-- User-guide refresh at sprint end (covers the new XLS upload + AWAITING OSH state + friendly labels).
+- User-guide refresh: completed inline as sprint-end step (covers the new XLS upload + AWAITING OSH state + friendly labels + unallocated-cash tile).
 
 ### Wave 2026-05-29 (late) — user-driven follow-on after the overnight block
 

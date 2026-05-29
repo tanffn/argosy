@@ -236,6 +236,37 @@ export interface PortfolioUploadSnapshotResponse {
   pending_pair_id?: number | null;
 }
 
+// Unallocated-cash overage proposal (2026-05-29). Self-tuning trigger
+// based on the plan's cash target -- not a hard-coded dollar threshold.
+// Null response = no overage detected (current cash within tolerance).
+export interface UnallocatedCashProposalDTO {
+  detected_at: string;
+  snapshot_date: string | null;
+  current_cash_k_usd: number;
+  target_cash_k_usd: number;
+  overage_ratio: number;
+  excess_usd: number;
+  headline: string;
+  proposals: Array<{
+    horizon: "long" | "medium" | "short";
+    asset_class: string;
+    instrument: string;
+    amount_usd: number;
+    rationale: string;
+    closes_delta_usd: number;
+    confidence: "high" | "medium" | "low";
+    source_id: string;
+  }>;
+  allocation_delta_table: Array<{
+    asset_class: string;
+    current_pct: number;
+    current_k_usd: number;
+    target_pct: number;
+    target_k_usd: number;
+    delta_k_usd: number;
+  }>;
+}
+
 export interface PlanCurrentDTO {
   plan_version_id: number | null;
   version_label: string | null;
@@ -1047,6 +1078,18 @@ export const api = {
   portfolioSnapshot: (userId: string) =>
     getJSON<PortfolioSnapshotDTO>(
       `/api/portfolio/snapshot?user_id=${encodeURIComponent(userId)}`,
+    ),
+  // Self-tuning unallocated-cash detector (2026-05-29). Fires when
+  // current cash > plan-target cash * overageRatio (default 1.5x).
+  // Returns null when no overage; the route response is null-able.
+  portfolioUnallocatedCashProposal: (
+    userId: string,
+    overageRatio: number = 1.5,
+  ): Promise<UnallocatedCashProposalDTO | null> =>
+    getJSON<UnallocatedCashProposalDTO | null>(
+      `/api/portfolio/unallocated-cash-proposal?user_id=${encodeURIComponent(
+        userId,
+      )}&overage_ratio=${overageRatio}`,
     ),
   // Monthly portfolio snapshot upload (2026-05-29). User drops the
   // Family Finances Status TSV; the route persists under the

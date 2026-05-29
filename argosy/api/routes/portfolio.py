@@ -675,4 +675,58 @@ def _event_to_dict(event) -> dict:
     }
 
 
+class UnallocatedCashProposalDTO(BaseModel):
+    """Response shape for GET /api/portfolio/unallocated-cash-proposal.
+
+    Mirrors UnallocatedCashEvent.to_dict shape exactly so the UI can
+    consume it without a separate transform. None response means no
+    overage detected (current cash is within plan-target tolerance).
+    """
+    detected_at: str
+    snapshot_date: str | None
+    current_cash_k_usd: float
+    target_cash_k_usd: float
+    overage_ratio: float
+    excess_usd: float
+    headline: str
+    proposals: list[dict]
+    allocation_delta_table: list[dict]
+
+
+@router.get(
+    "/unallocated-cash-proposal",
+    response_model=UnallocatedCashProposalDTO | None,
+)
+def get_unallocated_cash_proposal(
+    user_id: str = Query("ariel"),
+    overage_ratio: float = Query(1.5, ge=1.0, le=10.0),
+    db: Session = Depends(get_db),
+) -> UnallocatedCashProposalDTO | None:
+    """Return a proposed allocation for unallocated cash, or null.
+
+    Self-tuning: triggers when current cash > plan-target cash by the
+    given overage_ratio (default 1.5x). Reuses the windfall allocator's
+    long-term proposal logic with the cash excess as input. UI surfaces
+    this as a "$X above your cash target -> here's where it could go"
+    callout on /portfolio.
+
+    Returns null when:
+      * No snapshot for the user.
+      * No cash row in the snapshot's Current allocation block.
+      * Current cash is below the overage_ratio threshold.
+
+    See ``argosy.services.unallocated_cash_detector`` for the math.
+    """
+    from argosy.services.unallocated_cash_detector import (
+        detect_unallocated_cash_overage,
+    )
+    event = detect_unallocated_cash_overage(
+        db, user_id=user_id, overage_ratio=overage_ratio,
+    )
+    if event is None:
+        return None
+    payload = event.to_dict()
+    return UnallocatedCashProposalDTO(**payload)
+
+
 __all__ = ["router"]
