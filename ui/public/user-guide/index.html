@@ -598,7 +598,7 @@
   <li><strong>Sources</strong> — per-issuer health (Leumi-NIS · Leumi-USD · Discount · Cal · Schwab · Max).</li>
   <li><strong>Merchants</strong> — merchant-level rollup. Bulk relabel from here.</li>
   <li><strong>Trips</strong> — auto-detected travel periods (hotel + restaurant + transport cluster).</li>
-  <li><strong>RSU</strong> — Schwab disbursements vs Leumi USD wire credits cross-validation. Drop a Schwab Equity Awards CSV anywhere under <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code> and the ingestor parses historical vest events into <code>rsu_vest_events</code>; the parsed vests surface on the Holistic Timeline at <span class="nav-card">/retirement</span> and feed the latest-vest clamp on <code>effective_retire_ready_age()</code>.</li>
+  <li><strong>RSU</strong> — Schwab disbursements vs Leumi USD wire credits cross-validation. Drop a Schwab Equity Awards CSV (filename <code>EquityAwardsCenter_Transactions.csv</code> or the date-stamped variant) anywhere under <code>$ARGOSY_EXPENSE_SAMPLES_ROOT</code>. The monthly_cycle picks it up automatically (1st of the month at midnight); for an on-demand refresh, <code>POST /api/portfolio/refresh-rsu-vests</code> ingests it immediately. The parsed vests land in <code>rsu_vest_events</code>, surface on the Holistic Timeline at <span class="nav-card">/retirement</span>, and feed the latest-vest clamp on <code>effective_retire_ready_age()</code>. Ingest is idempotent — re-runs against the same CSV don't duplicate.</li>
   <li><strong>Income</strong> — per-month income breakdown (salary + dividends + bonus + side-income + RSU rollup), with month-shift navigation. Parallel to the expense-side detail.</li>
 </ul>
 
@@ -749,15 +749,15 @@
 
 <figure>
   <img src="site-tour/argonaut-top.png" alt="Argonaut page">
-  <figcaption><strong>Argonaut tab</strong> — $1,000 paper-mode bounded autonomous account. T0/T1 auto-execute; T2/T3 require human approval.</figcaption>
+  <figcaption><strong>Argonaut tab</strong> — $1,000 paper-mode bounded autonomous account. Today every proposal goes through manual approval on <span class="nav-card">/proposals</span>; see §27 for the auto-execute gap.</figcaption>
 </figure>
 
 <p>The trade-decision flow:</p>
 
 <ol>
-  <li>Submit a ticker via <span class="nav-card">/consult</span> — enter symbol + rationale, the agent fleet returns a Buy/Sell/Hold recommendation. The page itself returns the fleet's opinion; it does not execute or queue anything on its own.</li>
+  <li>Submit a ticker via <span class="nav-card">/consult</span> — enter symbol + rationale, pick tier T1 / T2 / T3. The agent fleet (analysts → bull/bear debate → trader → risk → fund manager) returns a Buy/Sell/Hold verdict and persists a trade proposal. <strong>T1</strong> is the fastest (3 analysts + 1-round debate + 1 risk perspective); <strong>T2</strong> runs the full 9-analyst fleet; <strong>T3</strong> adds plan-critique sign-off + cooling-off mechanics.</li>
   <li>The accept-or-reject decision lives on <span class="nav-card">/proposals</span>. The trade proposal lands there for your approval.</li>
-  <li>Approve / Reject / Escalate on <span class="nav-card">/proposals</span>. For T0/T1 in Argonaut on live mode, the engine auto-executes.</li>
+  <li>Approve / Reject / Escalate on <span class="nav-card">/proposals</span>. Every action requires a human click today.</li>
   <li>Filled orders surface in <span class="nav-card">/argonaut</span> (Recent trades) and <span class="nav-card">/audit</span>.</li>
 </ol>
 
@@ -1015,6 +1015,8 @@
 <p>Concrete example: when USD/NIS moves from 3.6 to 2.8 over a few months, no hand-coded FX-drift detector is needed. The observer sees that the plan baseline assumed 3.6, the current state is 2.8, and the gap is large enough that the agent emits a critical flag with reasoning. The same pathway catches anything else: an unexpected drop in monthly cash flow, a position that has drifted far outside its plan-target weight, an outsized accumulation of cash, a regime shift in volatility.</p>
 
 <p>Flags land in the <code>monitor_flags</code> table and surface on the <strong>Home Red-Flag Strip</strong> (&sect;8). Each flag carries severity (critical / warning / informational), the observation in plain English, the diff fields that triggered it, and a dedup key so re-fires don't duplicate.</p>
+
+<p>Warning- and critical-severity flags also kick the <strong>action proposer</strong> (Opus): an agent that reads the flag + the snapshot diff and emits 0-3 structured action proposals on <span class="nav-card">/proposals</span> (Allocate / Repatriate currency / Rebalance / Replan / Add life-event phase / Update plan assumption / Set watchlist / Note only — see &sect;16). Cooldown: 24h per (flag_kind, primary_field, user_id) — re-firing the same flag within the window short-circuits the proposer.</p>
 </section>
 
 <!-- ============================================================ -->
@@ -1087,6 +1089,12 @@
   <div class="callout-title">Hole #3 — No site-wide search</div>
   If you're hunting for a specific past decision ("the day we trimmed NVDA in March"), you have to know to go to /audit. No site-wide search box.<br>
   <strong>Suggested fix:</strong> ⌘K / Ctrl-K palette searching audit_log + transactions + plans.
+</div>
+
+<div class="callout warn">
+  <div class="callout-title">Hole #4 — Argonaut auto-execute not wired</div>
+  The Argonaut tab (<span class="nav-card">/argonaut</span>) is a $1,000 paper-mode bounded autonomous account. The original design called for T0/T1 proposals on the limited account to auto-execute (no human click). Today every proposal — T0 through T3 — sits on <span class="nav-card">/proposals</span> awaiting manual Accept / Reject. The execution router's <code>auto_execute_if_eligible</code> function exists but is uncalled from any production code path.<br>
+  <strong>Suggested fix:</strong> wire <code>auto_execute_if_eligible</code> into the post-FM decision-run close hook for T0/T1 + account_class='limited' + mode != queue_only.
 </div>
 </section>
 
