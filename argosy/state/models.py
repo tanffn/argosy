@@ -2875,3 +2875,340 @@ class PredictionOutcome(Base):
         Index("ix_outcomes_evaluated", "evaluated_at"),
         Index("ix_outcomes_kind", "outcome_kind"),
     )
+
+
+class ActionProposal(Base):
+    """One row per system-proposed action (the action ledger).
+
+    Spec E (last-mile delivery) §1 + Appendix A — written by the
+    action_proposer agent (commit #2) and the inferred-life-event
+    detector (commit #5).  The proposer NEVER executes; it RECORDS.
+    The user reviews via the /proposals UI (commit #6) and clicks
+    Accept / Defer / Reject / Customize.
+
+    The ``execution_state`` column is the structural capability-
+    boundary enforcement (codex BLOCKER #1 / spec §2.2.1).  Three-value
+    enum tracking SUGGESTION -> USER ACTION transitions only:
+
+    * ``proposed`` — default; every proposer write starts here.
+    * ``accepted_pending_user_action`` — Accept handler set this;
+      money has NOT moved; the row is queued for the existing
+      ``proposals -> action_engine -> orders`` pipeline which has its
+      own user-confirmation gates.
+    * ``dismissed`` — terminal state for rejected / expired proposals.
+
+    There is NO auto-execute path in this codebase.  The column gates
+    UI transitions; capability-boundary enforcement at the Accept
+    handlers (test_action_proposal_no_execution_invariant.py in commit
+    #2) is the runtime mirror.
+
+    Dedup contract (spec §1.5): the partial UNIQUE index
+    ``ix_action_proposals_dedup_open`` enforces "one open proposal per
+    (user_id, dedup_key)" only while ``status='open'`` AND
+    ``dedup_key IS NOT NULL``.  A proposal transitioning out of 'open'
+    releases its dedup_key for re-firing — write-orchestrated tombstone
+    pattern matching Spec B's pattern from migration 0049.
+
+    FKs:
+      * ``user_id`` -> users.id ON DELETE CASCADE.
+      * ``source_flag_id`` -> monitor_flags.id ON DELETE SET NULL.
+        Losing the source flag (housekeeping sweep) must NOT cascade
+        away an already-surfaced proposal.
+      * ``source_observation_id`` -> state_snapshots.id ON DELETE
+        SET NULL.  Same reasoning.
+      * ``source_inferred_event_id`` — plain INTEGER (NO FK
+        constraint); the inferred_life_event_findings table lands in
+        commit #5.  Writer in commit #5 populates this.
+
+    Migration: alembic 0055.
+    """
+
+    __tablename__ = "action_proposals"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_flag_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("monitor_flags.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_observation_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("state_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_inferred_event_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    rationale_md: Mapped[str] = mapped_column(Text, nullable=False)
+    # Structured payload per the kind's Pydantic schema (spec §1.4).
+    # json_valid CHECK declared in the migration.
+    suggested_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    # CHECK enum: info / warning / critical. Declared in migration.
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    surfaced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    # NOT NULL: writer computes surfaced_at + 7d (critical) / 30d
+    # (non-critical) cushion per spec §1.6.  Housekeeping loop
+    # transitions expires_at-passed rows out of status='open'.
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # CHECK enum: open / accepted / deferred / rejected / superseded.
+    # Default 'open' via server_default.  Declared in migration.
+    status: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=_sa_text("'open'"),
+        default="open",
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_by_user_note: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    # CHECK enum: 8 v1 kinds (allocate / repatriate_currency /
+    # rebalance / replan_full / add_life_event_phase /
+    # update_plan_assumption / set_watchlist / note_only). Declared
+    # in migration.
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    # Spec §1.5 tombstone-pattern dedup key. NULLABLE — proposals
+    # without a deterministic dedup contract fall outside the
+    # uniqueness scope. Partial UNIQUE index declared in migration.
+    dedup_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Codex BLOCKER #1 capability-boundary column (spec §2.2.1).
+    # CHECK enum: proposed / accepted_pending_user_action / dismissed.
+    # Default 'proposed' via server_default. Declared in migration.
+    execution_state: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=_sa_text("'proposed'"),
+        default="proposed",
+    )
+
+
+class NotificationSubscription(Base):
+    """One row per (user, channel, endpoint) push subscription.
+
+    Spec E §3.4 + Appendix A — written by the
+    ``POST /api/notifications/subscriptions`` route on UI opt-in
+    (commit #7).  The notification_dispatcher (commit #3) reads
+    ``status='active'`` rows and fans out per-channel.
+
+    Channels (CHECK enforced in migration):
+
+    * ``web_push`` — VAPID-signed POST to ``endpoint`` (browser-vendor
+      push service URL).  ``p256dh`` + ``auth`` carry the browser's
+      public key + auth secret captured via ``pushManager.subscribe``.
+    * ``email`` — ``endpoint`` is the recipient address; ``p256dh`` +
+      ``auth`` are NULL.
+    * ``in_app`` — ``endpoint`` is the WebSocket channel id; ``p256dh``
+      + ``auth`` are NULL.
+
+    The "p256dh + auth required when channel=web_push" invariant is
+    enforced at the application layer (NOT a DB constraint) per spec
+    §3.4 / codex review — too many edge cases (subscription
+    re-issuance, browser-vendor URL evolution) to pin at DDL time
+    without breaking legitimate writes.
+
+    Status lifecycle: ``active`` -> ``gone`` (set when the push
+    endpoint returns HTTP 410: browser uninstalled the service worker
+    or user revoked permission).  Gone rows are skipped by the
+    dispatcher; the partial index ``ix_notification_subscriptions_
+    user_active`` keeps active-only lookup bounded.
+
+    UNIQUE(user_id, channel, endpoint) prevents duplicate
+    subscriptions for the same channel-endpoint pair (browser may
+    re-POST on each reload; the writer treats UNIQUE-violation as
+    "already subscribed, no-op").
+
+    Migration: alembic 0055.
+    """
+
+    __tablename__ = "notification_subscriptions"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # CHECK enum: web_push / email / in_app. Declared in migration.
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    # Web-push crypto material — nullable for non-web_push channels.
+    p256dh: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auth: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subscribed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # CHECK enum: active / gone. Default 'active'.  Declared in
+    # migration.
+    status: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=_sa_text("'active'"),
+        default="active",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "channel",
+            "endpoint",
+            name="uq_notification_subscriptions_user_channel_endpoint",
+        ),
+    )
+
+
+class NotificationPreference(Base):
+    """Per-(user, channel, severity, kind) enable matrix.
+
+    Spec E §3.3 + Appendix A — one row per cell in the
+    channel x severity x kind enable cube.  ``enabled=1`` means the
+    notification_dispatcher (commit #3) will fan out matching
+    notifications on this channel; ``enabled=0`` mutes the cell.
+
+    Defaults are seeded at user creation (commit #3 wiring): see
+    spec §3.3 table — in_app/info default ON, web_push/info default
+    OFF (push is interruption-grade, warning is the floor), etc.
+
+    ``kind`` is permissive TEXT (NO CHECK enum) so adding a new
+    MonitorFlag.kind family or action_proposal.kind doesn't require
+    a CHECK-relaxation migration.  The writer contract accepts any
+    string starting with ``state_observer_`` / ``drift`` / etc. plus
+    the eight action_proposal kinds.
+
+    UNIQUE(user_id, channel, severity, kind) is the natural key — one
+    row per cell.  The dispatcher's preference-lookup query keys off
+    this UNIQUE constraint via an upsert pattern.
+
+    Migration: alembic 0055.
+    """
+
+    __tablename__ = "notification_preferences"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # CHECK enum: web_push / email / in_app. Declared in migration.
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    # CHECK enum: info / warning / critical. Declared in migration.
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    # Permissive TEXT — no CHECK enum (see class docstring).
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    # SQLite-native bool via INTEGER 0/1. CHECK enforces (0, 1) in
+    # the migration.
+    enabled: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=_sa_text("1"),
+        default=1,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "channel",
+            "severity",
+            "kind",
+            name="uq_notification_preferences_user_cell",
+        ),
+    )
+
+
+class NotificationDispatchLedger(Base):
+    """One row per dispatch attempt (audit + idempotency).
+
+    Spec E §3.6 + Appendix A — written by the notification_dispatcher
+    (commit #3) on every fan-out attempt.  ``notification_id`` is the
+    deterministic cross-channel dedup key (writer convention:
+    ``f"{kind}|{ref_id}|{channel}|{severity}|{utc_day}"``);
+    UNIQUE(user_id, notification_id, channel) enforces idempotent
+    re-dispatch at the DB layer — a retry attempt for the same
+    notification on the same channel is rejected even if the
+    application-level dedup check missed.  The uniqueness scope
+    INCLUDES ``user_id`` per codex BLOCKER (Spec E #1 review) — the
+    writer's deterministic notification_id isn't user-namespaced, so
+    two tenants would otherwise collide on identical ids.
+
+    Statuses (CHECK enforced in migration):
+
+    * ``sent`` — channel returned 2xx; ``error_message`` is NULL.
+    * ``failed`` — channel returned non-2xx; ``error_message`` carries
+      the diagnostic.
+    * ``skipped`` — preference matrix or dedup gate rejected before
+      attempt; ``error_message`` may carry the skip reason.
+
+    ``subscription_id`` FK -> notification_subscriptions ON DELETE
+    SET NULL.  Losing the subscription (user opted out) must NOT
+    cascade away the dispatch audit row.
+
+    Migration: alembic 0055.
+    """
+
+    __tablename__ = "notification_dispatch_ledger"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    notification_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # CHECK enum: web_push / email / in_app. Declared in migration.
+    channel: Mapped[str] = mapped_column(Text, nullable=False)
+    subscription_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(
+            "notification_subscriptions.id", ondelete="SET NULL"
+        ),
+        nullable=True,
+    )
+    dispatched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    # CHECK enum: sent / failed / skipped. Declared in migration.
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "notification_id",
+            "channel",
+            name="uq_notification_dispatch_ledger_user_notification_channel",
+        ),
+    )
