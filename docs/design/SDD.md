@@ -33,7 +33,8 @@
 | `94634fe` | feat | Anomaly buckets A/B/C/D wired into expense ingest. 3 tests. Codex APPROVE_WITH_CONDITIONS; cross-detector isolation assertion added per BLOCKER feedback |
 | `64b3119` | feat | State observer → action_proposer chain wired (warning/critical severity). Module kill-switch `INVOKE_ACTION_PROPOSER_ON_FLAG`. 4 tests. Codex APPROVE_WITH_CONDITIONS |
 | `6c4d3e2` | feat | RSU vest ingest wired — `argosy/services/rsu_vest_pull.py` scans `$ARGOSY_EXPENSE_SAMPLES_ROOT` for both Schwab CSV filename variants (no-date + date-stamped — codex BLOCKER fix); `monthly_cycle._real_rsu_pull` replaces the no-op; `POST /api/portfolio/refresh-rsu-vests` on-demand route. 11 tests |
-| (pending) | fix | /consult quorum + pre-skip — `MIN_QUORUM_TOTAL` lowered 3→2 (key-less env baseline) + analyst pre-skip on empty payload (cleaner errors, no wasted LLM calls). 10 tests. Triggered by live e2e showing 4/6 analysts had no upstream data without Finnhub/FRED/TipRanks keys |
+| `ddaadf8` | fix | /consult quorum + pre-skip — `MIN_QUORUM_TOTAL` lowered 3→2 (key-less env baseline) + analyst pre-skip on empty payload (cleaner errors, no wasted LLM calls). 10 tests. Triggered by live e2e showing 4/6 analysts had no upstream data without Finnhub/FRED/TipRanks keys |
+| `b0dac67` | doc | Morning report SDD wave entry + user-guide cleanup (§11 RSU, §16 /argonaut, §22 observer→proposer, §27 Hole #4) |
 
 **Original five-stub audit findings + current status** (compare to the §"Wave 2026-05-30 — /consult facade + five-stub audit" subsection below for the original verdicts):
 
@@ -43,7 +44,9 @@
 4. **RSU vest ingest** — FIXED in `6c4d3e2`. Monthly_cycle default + on-demand route.
 5. **Plan-synthesis post-#32** — VERIFIED healthy. DB shows synth #34 completed at 2026-05-29 18:49:20 with FM rejected (most recent completed synthesis). 10 completed runs, 24 failed, 9 stuck at `status='running'` (those are MY /consult failures pre-orphan-cleanup; see Pending below for the cleanup).
 
-**/consult live e2e** — verified end-to-end on ticker XYL at tier T2 with the new orchestrator. Per-ticker analysts produced 2/6 (technical + fx; the 4 paid-API-key-gated analysts pre-skipped on empty payload); quorum met; flow proceeded through bull/bear debate (Opus); … (running at the time of this handover; commit hash for the final quorum fix lands above; see latest `git log` for verification).
+**/consult live e2e** — VERIFIED. Full T2 flow on ticker XYL ran end-to-end in 231 seconds: 2/6 analysts succeeded (technical + fx; the 4 paid-API-key-gated analysts pre-skipped on empty payload — quorum 2/2 + 1 ticker-specific met); bull/bear debate (Opus, 2 rounds; bear had 1 malformed-JSON retry); researcher_facilitator; trader returned `HOLD` with citations to `[indicators/XYL, yfinance:XYL:1d, fx/rates/USD/NIS (boi:USD)]` (real data, real citations). Trader-hold short-circuited the flow to `BlockedProposal(blocked_by='trader_hold')`; decision_run #46 closed with `status='hold', fund_manager_decision='hold'`; 8 `agent_reports` rows persisted under it. Quorum-fix commit was `ddaadf8`.
+
+**Orphan DB hygiene** — one-time SQL cleanup closed 9 pre-fix `decision_runs` rows (IDs 35-43) that were stuck at `status='running'` from /consult attempts before the orphan-cleanup wiring landed in `3f6101a`. After-fix runs (#44, #45) closed correctly to `status='blocked'`. The cleanup script lived at `.tmp_orphan_cleanup.py` and ran once against `db/argosy.db`; not committed (one-off operational fix).
 
 **New memories**: [[feedback_user_guide_is_manual]] extended with operational-status anti-pattern (no "as of date X, Y is dormant" disclaimers); new [[feedback_sdd_content_no_history]] mirrors the rule for SDD design body. Handover section is the only legitimate growing-history surface.
 
@@ -55,14 +58,15 @@
 - §27 Known gaps — added Hole #4 (/argonaut auto-execute) per the manual-not-history binding.
 - §16 /argonaut + trade-decision flow — corrected to say "every action requires a human click today" (the prior false claim of T0/T1 auto-execute moved to §27).
 
-**Pending follow-ons NOT closed in this sprint**:
-- DB hygiene: 9 orphan `decision_runs` rows at `status='running'` from my pre-fix /consult attempts (IDs ~38-46). Now closed pattern works — but the historical orphans are still there. Run a one-time cleanup: `UPDATE decision_runs SET status='blocked', finished_at=CURRENT_TIMESTAMP WHERE status='running' AND id < 47`.
-- Cron `ce092151` (overnight-sprint heartbeat at :13 + :43 every hour) should be deleted now that the sprint completed. The job has a kill switch via CronDelete.
-- `run_action_proposer_for_snapshot` left unwired (codex-approved; flag for future Spec).
+**Pending follow-ons NOT closed in this sprint** (all NICE-level — none block usage):
+- `run_action_proposer_for_snapshot` left unwired (codex-approved; flag for future Spec — auto-firing on every snapshot would burn an Opus call per daily cron tick).
 - SDD's existing "72h cooldown" mentions vs proposer runner's 24h constant — clarify or unify (NICE follow-on per codex).
-- Anomaly: derive Test 1's seed from Bucket A constants instead of hardcoded threshold (NICE follow-on).
+- Anomaly Test 1's seed should derive from Bucket A constants instead of hardcoded threshold (NICE follow-on).
 - RSU vest UI button on `/expenses/rsu` calling `/refresh-rsu-vests` (route exists, page button is the missing piece — separate UI ticket).
 - Promote `INVOKE_ACTION_PROPOSER_ON_FLAG` from module-level to `agent_settings.yaml` so ops can flip without redeploy.
+- `/consult` cost-confirmation UI card before firing T2/T3 (NICE follow-on from codex round-1 design review).
+- `_has_any_citation` helper in `per_ticker_analysts.py` is close-but-not-guaranteed-identical to `BaseAgent._validate_citations`; safer is to share the validator (codex round-2 NICE).
+- `/argonaut` auto-execute (Hole #4) — explicit user-scope skip; gated behind a future spec.
 
 ### Wave 2026-05-30 — /consult facade + five-stub audit
 
