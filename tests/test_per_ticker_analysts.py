@@ -72,19 +72,24 @@ async def _seed_user() -> None:
 
 
 def _patch_gathers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Skip the real network/sqlite gather; return empty payloads.
+    """Skip the real network/sqlite gather; return NON-empty payloads.
 
-    The analyst runners we patch below take payloads but ignore them in
-    tests — we only care about WHICH analysts succeed/fail.
+    Each key carries a single sentinel entry so the orchestrator's
+    pre-skip-on-empty-payload guard (added 2026-05-30 after the
+    live-e2e revealed 4/6 gathers return empty without paid API keys)
+    routes every analyst through to its (monkeypatched) runner. The
+    runners we patch below ignore payload contents — we only care
+    about WHICH analysts succeed/fail in the orchestrator's quorum
+    logic.
     """
     async def _stub_gather(**_kwargs: Any) -> dict[str, Any]:
         return {
-            "fundamentals": {},
-            "news": {},
-            "indicators": {},
-            "social": {},
-            "macro": {},
-            "fx": {},
+            "fundamentals": {"XYL": {"pe": 20.0}},
+            "news": {"XYL": [{"headline": "test"}]},
+            "indicators": {"XYL": {"rsi_14": 55.0}},
+            "social": {"XYL": [{"text": "test"}]},
+            "macro": {"vix": 15.0},
+            "fx": {"USD/NIS": {"latest": 3.7}},
         }
     monkeypatch.setattr(
         pta, "_gather_inputs_for_ticker", _stub_gather,
@@ -188,9 +193,10 @@ async def test_all_six_succeed_persists_and_returns(
 
 
 @pytest.mark.asyncio
-async def test_quorum_fails_when_only_two_succeed(
+async def test_quorum_fails_when_only_one_succeeds(
     engine: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """MIN_QUORUM_TOTAL=2; one survivor is below."""
     await _seed_user()
     _patch_gathers(monkeypatch)
     _patch_runners(
@@ -200,9 +206,10 @@ async def test_quorum_fails_when_only_two_succeed(
             "news": RuntimeError,
             "sentiment": RuntimeError,
             "macro": RuntimeError,
+            "fx": RuntimeError,
         },
     )
-    # fundamentals + fx succeed → 2 total, below MIN_QUORUM_TOTAL=3.
+    # Only fundamentals succeeds → 1 total, below MIN_QUORUM_TOTAL=2.
     run_id = await open_decision_run_for_consult(
         user_id="ariel", ticker="XYL", tier_value="T2",
     )
@@ -211,9 +218,8 @@ async def test_quorum_fails_when_only_two_succeed(
             user_id="ariel", ticker="XYL", decision_run_id=run_id,
         )
     assert "fundamentals" in exc_info.value.succeeded
-    assert "fx" in exc_info.value.succeeded
-    assert len(exc_info.value.succeeded) == 2
-    assert len(exc_info.value.failed) == 4
+    assert len(exc_info.value.succeeded) == 1
+    assert len(exc_info.value.failed) == 5
 
 
 @pytest.mark.asyncio
@@ -255,18 +261,20 @@ async def test_quorum_fails_when_no_ticker_specific_succeeds(
 
 
 @pytest.mark.asyncio
-async def test_three_succeed_one_ticker_specific_meets_quorum(
+async def test_two_succeed_one_ticker_specific_meets_quorum(
     engine: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """fundamentals + macro + fx succeed; rest fail. 3 total + 1 ticker-specific."""
+    """technical + fx succeed; rest fail. 2 total + 1 ticker-specific
+    (matches the no-data-API-keys dev environment baseline)."""
     await _seed_user()
     _patch_gathers(monkeypatch)
     _patch_runners(
         monkeypatch,
         fail={
-            "technical": RuntimeError,
+            "fundamentals": RuntimeError,
             "news": RuntimeError,
             "sentiment": RuntimeError,
+            "macro": RuntimeError,
         },
     )
     run_id = await open_decision_run_for_consult(
@@ -275,9 +283,71 @@ async def test_three_succeed_one_ticker_specific_meets_quorum(
     result = await run_per_ticker_analysts(
         user_id="ariel", ticker="XYL", decision_run_id=run_id,
     )
-    assert set(result.succeeded_roles) == {"fundamentals", "macro", "fx"}
-    assert {r for r, _ in result.skipped_roles} == {"technical", "news", "sentiment"}
-    assert len(result.reports) == 3
+    assert set(result.succeeded_roles) == {"technical", "fx"}
+    assert {r for r, _ in result.skipped_roles} == {
+        "fundamentals", "news", "sentiment", "macro",
+    }
+    assert len(result.reports) == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_payload_pre_skips_without_llm_call(
+    engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a gather returns an empty payload, the analyst is
+    pre-skipped before any LLM call. Saves cost + gives a clearer
+    error than letting the citation gate fire."""
+    invoked: dict[str, int] = {r: 0 for r in (
+        "fundamentals", "technical", "news", "sentiment", "macro", "fx",
+    )}
+
+    # Patch gather to return SOME payloads empty (fundamentals, news,
+    # sentiment, macro) and others populated (indicators, fx).
+    async def _mixed(**_kwargs: Any) -> dict[str, Any]:
+        return {
+            "fundamentals": {},  # empty → pre-skip
+            "news": {},          # empty → pre-skip
+            "indicators": {"XYL": {"rsi_14": 55.0}},
+            "social": {},        # empty → pre-skip
+            "macro": {},         # empty → pre-skip
+            "fx": {"USD/NIS": {"latest": 3.7}},
+        }
+    monkeypatch.setattr(pta, "_gather_inputs_for_ticker", _mixed)
+
+    def _make_stub(role: str):
+        async def _stub(*_args: Any, **_kwargs: Any) -> AgentReport:
+            invoked[role] += 1
+            return _canned_report(role, cited=[f"{role}:source"])
+        return _stub
+
+    monkeypatch.setattr(pta, "_run_fundamentals", _make_stub("fundamentals"))
+    monkeypatch.setattr(pta, "_run_technical", _make_stub("technical"))
+    monkeypatch.setattr(pta, "_run_news", _make_stub("news"))
+    monkeypatch.setattr(pta, "_run_sentiment", _make_stub("sentiment"))
+    monkeypatch.setattr(pta, "_run_macro", _make_stub("macro"))
+    monkeypatch.setattr(pta, "_run_fx", _make_stub("fx"))
+
+    await _seed_user()
+    run_id = await open_decision_run_for_consult(
+        user_id="ariel", ticker="XYL", tier_value="T2",
+    )
+    result = await run_per_ticker_analysts(
+        user_id="ariel", ticker="XYL", decision_run_id=run_id,
+    )
+    # Only technical + fx were invoked (had non-empty payloads).
+    assert invoked["technical"] == 1
+    assert invoked["fx"] == 1
+    assert invoked["fundamentals"] == 0
+    assert invoked["news"] == 0
+    assert invoked["sentiment"] == 0
+    assert invoked["macro"] == 0
+    assert set(result.succeeded_roles) == {"technical", "fx"}
+    # Empty-payload reasons surface in skipped_roles with the cleaner string.
+    reasons = {r: why for r, why in result.skipped_roles}
+    assert "empty_payload" in reasons["fundamentals"]
+    assert "empty_payload" in reasons["news"]
+    assert "empty_payload" in reasons["sentiment"]
+    assert "empty_payload" in reasons["macro"]
 
 
 # ----------------------------------------------------------------------

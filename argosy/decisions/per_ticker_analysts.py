@@ -77,7 +77,20 @@ ALWAYS_ON_ROLES: tuple[str, ...] = (
 )
 
 #: Quorum: this many successful citation-bearing reports OR MORE.
-MIN_QUORUM_TOTAL: int = 3
+#:
+#: Codex's original recommendation was 3, but in practice 4/6 analysts
+#: (fundamentals, news, sentiment, macro) require paid data API keys
+#: (Finnhub / TipRanks / FRED) that may not be configured in a user's
+#: deployment. The key-less ticker-specific path is `technical`
+#: (yfinance OHLC) plus `fx` (BoI + Frankfurter), giving a minimum
+#: floor of 2. The "≥ 1 ticker-specific" requirement (below) still
+#: prevents macro+fx-only consultations — fx + technical OR
+#: fundamentals OR news OR sentiment all qualify as ticker-grounded.
+#:
+#: When more data sources are configured this can land back at 3 or
+#: higher; tighten via `agent_settings.yaml` rather than this constant
+#: once the surface gains config knobs.
+MIN_QUORUM_TOTAL: int = 2
 
 
 class InsufficientAnalystQuorum(RuntimeError):
@@ -205,24 +218,43 @@ async def run_per_ticker_analysts(
     tickers = [ticker]
     payloads = await _gather_inputs_for_ticker(ticker=ticker, tickers=tickers, user_id=user_id)
 
-    # 2) Run the 6 analysts in parallel. ``return_exceptions=True`` so
-    # one failure doesn't cancel the rest.
-    tasks: list[tuple[str, Any]] = [
-        ("fundamentals", _run_fundamentals(user_id, tickers, payloads["fundamentals"])),
-        ("technical", _run_technical(user_id, tickers, payloads["indicators"])),
-        ("news", _run_news(user_id, tickers, payloads["news"])),
-        ("sentiment", _run_sentiment(user_id, tickers, payloads["social"])),
-        ("macro", _run_macro(user_id, payloads["macro"])),
-        ("fx", _run_fx(user_id, payloads["fx"])),
-    ]
+    # 2) Pre-skip analysts whose data payload is empty. Without inputs,
+    # the analyst will (a) emit a no-citation output that fails the
+    # gate, or (b) hallucinate citations to placate the gate. Both are
+    # wrong. Skipping saves the LLM call and produces a clearer error.
+    skipped_empty_payload: list[tuple[str, str]] = []
+    runnable: list[tuple[str, Any]] = []
+
+    def _maybe(role: str, payload_key: str, coro_factory):
+        payload = payloads[payload_key]
+        if not payload:
+            skipped_empty_payload.append((role, f"empty_payload (no {payload_key} data)"))
+            return
+        runnable.append((role, coro_factory()))
+
+    _maybe("fundamentals", "fundamentals",
+           lambda: _run_fundamentals(user_id, tickers, payloads["fundamentals"]))
+    _maybe("technical", "indicators",
+           lambda: _run_technical(user_id, tickers, payloads["indicators"]))
+    _maybe("news", "news",
+           lambda: _run_news(user_id, tickers, payloads["news"]))
+    _maybe("sentiment", "social",
+           lambda: _run_sentiment(user_id, tickers, payloads["social"]))
+    _maybe("macro", "macro",
+           lambda: _run_macro(user_id, payloads["macro"]))
+    _maybe("fx", "fx",
+           lambda: _run_fx(user_id, payloads["fx"]))
+
+    tasks = runnable
     raw_results = await asyncio.gather(
         *(t[1] for t in tasks), return_exceptions=True,
-    )
+    ) if tasks else []
 
-    # 3) Filter: drop exceptions + empty-citation reports.
+    # 3) Filter: drop exceptions + empty-citation reports. Seed
+    # skipped_roles with the empty-payload pre-skips from step 2.
     surviving: list[AgentReport] = []
     succeeded_roles: list[str] = []
-    skipped_roles: list[tuple[str, str]] = []
+    skipped_roles: list[tuple[str, str]] = list(skipped_empty_payload)
     for (role, _coro), result in zip(tasks, raw_results):
         if isinstance(result, BaseException):
             log.warning(
