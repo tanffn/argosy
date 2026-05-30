@@ -208,12 +208,12 @@ async def run_per_ticker_analysts(
     # 2) Run the 6 analysts in parallel. ``return_exceptions=True`` so
     # one failure doesn't cancel the rest.
     tasks: list[tuple[str, Any]] = [
-        ("fundamentals", _run_fundamentals(tickers, payloads["fundamentals"])),
-        ("technical", _run_technical(tickers, payloads["indicators"])),
-        ("news", _run_news(tickers, payloads["news"])),
-        ("sentiment", _run_sentiment(tickers, payloads["social"])),
-        ("macro", _run_macro(payloads["macro"])),
-        ("fx", _run_fx(payloads["fx"])),
+        ("fundamentals", _run_fundamentals(user_id, tickers, payloads["fundamentals"])),
+        ("technical", _run_technical(user_id, tickers, payloads["indicators"])),
+        ("news", _run_news(user_id, tickers, payloads["news"])),
+        ("sentiment", _run_sentiment(user_id, tickers, payloads["social"])),
+        ("macro", _run_macro(user_id, payloads["macro"])),
+        ("fx", _run_fx(user_id, payloads["fx"])),
     ]
     raw_results = await asyncio.gather(
         *(t[1] for t in tasks), return_exceptions=True,
@@ -388,40 +388,40 @@ async def _gather_inputs_for_ticker(
 
 
 async def _run_fundamentals(
-    tickers: list[str], payload: dict[str, dict[str, Any]],
+    user_id: str, tickers: list[str], payload: dict[str, dict[str, Any]],
 ) -> AgentReport:
-    agent = FundamentalsAnalystAgent()
+    agent = FundamentalsAnalystAgent(user_id=user_id)
     return await agent.run(tickers=tickers, fundamentals_payload=payload)
 
 
 async def _run_technical(
-    tickers: list[str], payload: dict[str, dict[str, Any]],
+    user_id: str, tickers: list[str], payload: dict[str, dict[str, Any]],
 ) -> AgentReport:
-    agent = TechnicalAnalystAgent()
+    agent = TechnicalAnalystAgent(user_id=user_id)
     return await agent.run(tickers=tickers, indicators_payload=payload)
 
 
 async def _run_news(
-    tickers: list[str], payload: dict[str, list[dict[str, Any]]],
+    user_id: str, tickers: list[str], payload: dict[str, list[dict[str, Any]]],
 ) -> AgentReport:
-    agent = NewsAnalystAgent()
+    agent = NewsAnalystAgent(user_id=user_id)
     return await agent.run(tickers=tickers, news_payload=payload)
 
 
 async def _run_sentiment(
-    tickers: list[str], payload: dict[str, list[dict[str, Any]]],
+    user_id: str, tickers: list[str], payload: dict[str, list[dict[str, Any]]],
 ) -> AgentReport:
-    agent = SentimentAnalystAgent()
+    agent = SentimentAnalystAgent(user_id=user_id)
     return await agent.run(tickers=tickers, social_payload=payload)
 
 
-async def _run_macro(payload: dict[str, float]) -> AgentReport:
-    agent = MacroAnalystAgent()
+async def _run_macro(user_id: str, payload: dict[str, float]) -> AgentReport:
+    agent = MacroAnalystAgent(user_id=user_id)
     return await agent.run(macro_snapshot=payload)
 
 
-async def _run_fx(payload: dict[str, dict[str, float]]) -> AgentReport:
-    agent = FXAnalystAgent()
+async def _run_fx(user_id: str, payload: dict[str, dict[str, float]]) -> AgentReport:
+    agent = FXAnalystAgent(user_id=user_id)
     return await agent.run(fx_payload=payload)
 
 
