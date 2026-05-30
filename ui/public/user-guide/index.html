@@ -156,6 +156,12 @@
   <ol>
     <li><a href="#monitor">Monitor agent</a></li>
     <li><a href="#news">News pipeline</a></li>
+    <li><a href="#jobs">/admin/jobs</a></li>
+    <li><a href="#observer">State observer</a></li>
+    <li><a href="#predictions">Predictions ledger</a></li>
+    <li><a href="#inferred-life-events">Inferred life events</a></li>
+    <li><a href="#observer-replan">Observer &rarr; replan</a></li>
+    <li><a href="#notifications">Notifications</a></li>
   </ol>
 
   <h2>Audit</h2>
@@ -390,7 +396,7 @@
   <div class="flow-step">
     <div class="step-num">SIDE-EFFECT 3</div>
     <div class="step-title">Accept or Defer per proposal</div>
-    <div class="step-body">Live buttons. Accept persists a row in <code>windfall_actions</code> with <code>decided_status='accepted'</code>; Defer same with optional <code>due_date</code>. Already-decided proposals render as <em>"✓ Accepted"</em> / <em>"↻ Deferred · due 2026-06-15"</em> pills inline on re-fetch. The next step (promotion of an accepted row into an <code>action_engine</code> PrioritizedAction on the home-page action-items widget) is queued — see §21 Hole #2.</div>
+    <div class="step-body">Live buttons. Accept persists a row in <code>windfall_actions</code> with <code>decided_status='accepted'</code>; Defer same with optional <code>due_date</code>. Already-decided proposals render as <em>"✓ Accepted"</em> / <em>"↻ Deferred · due 2026-06-15"</em> pills inline on re-fetch. The next step (promotion of an accepted row into an <code>action_engine</code> PrioritizedAction on the home-page action-items widget) is queued — see §27 Hole #2.</div>
   </div>
 </div>
 
@@ -414,7 +420,7 @@
   <div class="flow-step">
     <div class="step-num">DECISION</div>
     <div class="step-title">Accept or Defer per suggested buy</div>
-    <div class="step-body">Each row in the list carries live Accept and Defer buttons. Accept persists a row in <code>allocation_actions</code> with <code>action_source='unallocated_cash'</code> and renders a <em>"✓ Accepted"</em> pill inline. Defer records the deferral with an optional due date and renders <em>"↻ Deferred"</em>. Promotion of an accepted row into a home-page action item is still pending — see §21 Hole #2.</div>
+    <div class="step-body">Each row in the list carries live Accept and Defer buttons. Accept persists a row in <code>allocation_actions</code> with <code>action_source='unallocated_cash'</code> and renders a <em>"✓ Accepted"</em> pill inline. Defer records the deferral with an optional due date and renders <em>"↻ Deferred"</em>. Promotion of an accepted row into a home-page action item is still pending — see §27 Hole #2.</div>
   </div>
 </div>
 </section>
@@ -603,27 +609,23 @@
 <section id="tab-life-events">
 <h2>12. <span class="nav-card">/life-events</span> Life Events in detail</h2>
 
-<p>The page where structured life-event data lives. Anything that changes the cashflow projection or the retirement-readiness math — new job, parental leave, asset purchase, recurring expense, retirement milestone — gets entered here so the plan engine can see it.</p>
+<p>The page where life-events that <em>change how your expenses behave over time</em> are entered. Anything that shifts the cashflow projection — kid leaves home (monthly expenses drop), wedding (one-shot outlay), new car every 5y (recurring expense) — gets recorded here so the plan engine sees the right shape.</p>
 
-<h3>Adding an event</h3>
+<h3>Three-section form</h3>
 
-<p>The form is a top-down wizard:</p>
+<p>The form is split into three sections, picked at the top:</p>
 
-<ol>
-  <li><strong>Category</strong> — pick one of six: <em>career</em>, <em>family</em>, <em>asset</em>, <em>expense</em>, <em>recurring</em>, <em>retirement-milestone</em>.</li>
-  <li><strong>Kind</strong> — the category narrows the options (e.g. career → <em>new_job</em> / <em>raise</em> / <em>bonus</em> / <em>job_loss</em>; family → <em>marriage</em> / <em>child_born</em> / <em>divorce</em>; asset → <em>property_purchase</em> / <em>vehicle</em>; retirement-milestone → <em>target_age</em> / <em>partial_retirement</em>).</li>
-  <li><strong>Detail fields</strong> — the kind drives the field set. Dates, amounts, currency, counterparty when relevant.</li>
-  <li><strong>Save</strong> — the event lands in the <code>life_events</code> table and the projection refreshes on next plan synthesis.</li>
-</ol>
+<ul>
+  <li><strong>One-shot</strong> — a single dated outlay or inflow. Kind, date, amount, currency. Examples: wedding, property down payment, inheritance, one-time bonus.</li>
+  <li><strong>Recurring</strong> — a repeating cashflow with a start date, optional end date, and interval. Kind, period (monthly / annual / every-N-years), amount, currency. Examples: new car every 5 years, annual tuition top-up, monthly support payment to a parent.</li>
+  <li><strong>Phase-change</strong> — a step change in baseline monthly expenses starting on a given date. Kind, effective date, monthly delta (positive or negative), currency. Examples: kid leaves home (delta &minus;₪3,000/mo), second kid starts daycare (delta +₪4,500/mo), partner returns from parental leave (delta &minus;₪2,000/mo income offset).</li>
+</ul>
 
-<h3>The loud-error 422 banner</h3>
+<h3>Saving + the 422 banner</h3>
 
-<p>If the form payload doesn't validate against the kind's schema (missing required field, invalid enum, malformed date), the page renders a structured error banner at the top of the form. The banner names the field that failed and lists the <em>valid alternatives</em> the backend accepts. No generic "invalid input" message — the banner tells you exactly what to change.</p>
+<p>Each section validates against its own kind &times; delta-shape schema. On failed validation the page renders a structured error banner at the top of the form. The banner names the field that failed and lists the valid alternatives the backend accepts. No generic "invalid input" message — the banner tells you exactly what to change.</p>
 
-<div class="callout">
-  <div class="callout-title">Where the data lands downstream</div>
-  Life events feed two surfaces directly: the Holistic Timeline on <span class="nav-card">/retirement</span> (the event appears as a marker at its date) and the <code>effective_retire_ready_age()</code> calculation (events with a retirement-relevant kind can clamp the projected ready-age in any of the three scenarios).
-</div>
+<p>Saved events land in the <code>life_events</code> table and feed two surfaces: the <strong>cashflow projection</strong> (per-month deltas applied via <code>apply_life_event_deltas()</code> during projection runs) and the <strong>Holistic Timeline</strong> on <span class="nav-card">/retirement</span> (each event appears as a marker at its date, with shape-aware tone — one-shot, recurring, phase-change).</p>
 </section>
 
 <!-- ============================================================ -->
@@ -751,6 +753,20 @@
   <li>Approve / Reject / Escalate on <span class="nav-card">/proposals</span>. For T0/T1 in Argonaut on live mode, the engine auto-executes.</li>
   <li>Filled orders surface in <span class="nav-card">/argonaut</span> (Recent trades) and <span class="nav-card">/audit</span>.</li>
 </ol>
+
+<h3>/proposals — the action queue</h3>
+
+<p>The Proposals page is the single inbox for every system-generated action that awaits a human decision. Five action kinds land here:</p>
+
+<ul>
+  <li><strong>Allocate cash</strong> — fired by the windfall detector or the unallocated-cash tile.</li>
+  <li><strong>Repatriate currency</strong> — fired when the USD/NIS split drifts outside plan-target bands.</li>
+  <li><strong>Rebalance position</strong> — fired when a per-position weight drifts outside the plan's tolerance.</li>
+  <li><strong>Replan</strong> — fired by the state observer (&sect;25) when an emergent flag crosses critical severity.</li>
+  <li><strong>Add inferred life event</strong> — fired by the inferred life-event detector (&sect;27) when transaction history shows a phase change.</li>
+</ul>
+
+<p>Each row carries four live buttons: <strong>Accept</strong> &middot; <strong>Defer</strong> &middot; <strong>Reject</strong> &middot; <strong>Customize</strong>. Accept persists the decision and the downstream effect runs on the next loop tick (allocation logs an <code>allocation_actions</code> row; replan kicks a new synthesis; an inferred life event lands on <span class="nav-card">/life-events</span> for confirmation). Defer takes an optional due date and parks the row. Reject closes the row with a recorded reason. Customize opens a per-kind form (e.g. edit the proposed amount before accepting). The system never auto-executes — every action passes through this queue.</p>
 
 <h3>/proposals#allocation — the windfall allocation queue</h3>
 
@@ -926,8 +942,92 @@
 </section>
 
 <!-- ============================================================ -->
+<section id="jobs">
+<h2>21. <span class="nav-card">/admin/jobs</span> — scheduled jobs</h2>
+
+<p>The admin surface for every scheduled job in the system. Lists each registered job with its cron expression, last-run timestamp, last-run outcome (ok / failed / running), and per-job controls (<strong>Run now</strong>, <strong>Stop</strong>, <strong>Reconnect</strong> where applicable).</p>
+
+<p>Access is gated by an admin token. The top of the page has a single text input — paste the token (from <code>~/.argosy/admin_token</code>) and the controls light up. Without a token the page renders in read-only mode.</p>
+
+<table>
+<thead><tr><th>Job</th><th>Cadence</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td>News pipeline</td><td>17:00 IDT daily</td><td>RSS + macro fetch then materiality classification (&sect;20)</td></tr>
+<tr><td>State observer</td><td>17:00 IDT daily</td><td>Snapshot + diff + LLM flag emit (&sect;22)</td></tr>
+<tr><td>Predictions evaluator</td><td>03:30 IDT daily</td><td>Score expired predictions, update source-reliability weights (&sect;23)</td></tr>
+<tr><td>Retention loop</td><td>03:00 IDT daily</td><td>Prune old <code>job_runs</code> + <code>state_snapshots</code> per retention policy</td></tr>
+<tr><td>Inferred life-event detector</td><td>03:00 IDT daily</td><td>Scan transactions for phase changes (&sect;27)</td></tr>
+<tr><td>Weekly email digest</td><td>Friday 08:00 IDT</td><td>Stitched-summary email (&sect;26)</td></tr>
+<tr><td>Discord listener</td><td>long-running</td><td>Live bot connection; <strong>Reconnect</strong> button to bounce the websocket</td></tr>
+</tbody>
+</table>
+
+<p>Every run writes a row to the <code>job_runs</code> audit table. Click any past run to see its log + duration + emitted artefacts (flags written, predictions scored, etc.).</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="observer">
+<h2>22. State observer — the macro-shift watchdog</h2>
+
+<p>The state observer runs daily at 17:00 IDT. It collects a six-section snapshot of current state (positions, cash, FX, plan baseline, recent transactions, recent agent outputs), diffs it against the prior snapshot <em>and</em> against the active plan's baseline assumptions, and hands the diff to an Opus agent. The agent doesn't run per-symptom detectors — it looks at the whole diff and flags whatever is emergently out of line.</p>
+
+<p>Concrete example: when USD/NIS moves from 3.6 to 2.8 over a few months, no hand-coded FX-drift detector is needed. The observer sees that the plan baseline assumed 3.6, the current state is 2.8, and the gap is large enough that the agent emits a critical flag with reasoning. The same pathway catches anything else: an unexpected drop in monthly cash flow, a position that has drifted far outside its plan-target weight, an outsized accumulation of cash, a regime shift in volatility.</p>
+
+<p>Flags land in the <code>monitor_flags</code> table and surface on the <strong>Home Red-Flag Strip</strong> (&sect;8). Each flag carries severity (critical / warning / informational), the observation in plain English, the diff fields that triggered it, and a dedup key so re-fires don't duplicate.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="predictions">
+<h2>23. Predictions ledger + source reliability</h2>
+
+<p>Every directional call from any source is recorded as a prediction the moment it is made. Sources include Discord posts, news-signal classifications, per-position theses from the agent fleet, observer flags, and the news-analyst Opus agent. Each prediction carries the source, the assertion (e.g. "NVDA up &ge; 10% within 30d"), the issue date, the evaluation window, and the method by which it will be scored when the window closes.</p>
+
+<p>The predictions evaluator runs daily at 03:30 IDT. It finds every prediction whose window has closed, scores the outcome via the method recorded at issue time, and writes a row to <code>prediction_outcomes</code>. From those outcomes Argosy maintains a <code>source_reliability</code> view: per-source hit rate, calibration score, and recency-weighted reliability.</p>
+
+<p>The reliability weights flow back into three consumers: the <strong>plan synthesizer</strong> (weights Discord and news-signal evidence by recent source reliability), the <strong>news analyst</strong> (down-weights low-reliability outlets), and the <strong>state observer</strong> (uses internal-agent reliability when deciding whether a prior flag's prediction came true).</p>
+
+<p>The Discord-channel 14-day backfill is a manual trigger via <span class="nav-card">/admin/jobs</span>. Click <strong>Run now</strong> on the Discord backfill job to seed historical predictions from the last 14 days of channel posts.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="observer-replan">
+<h2>24. Observer &rarr; replan auto-fire</h2>
+
+<p>When the state observer (&sect;22) emits a <strong>critical</strong> flag, the plan is automatically re-synthesized. Example trigger: FX drift &gt; 20% from the plan's baseline assumption. The replan runs the full 5-phase synthesis with the observer's flag context threaded into every agent's prompt.</p>
+
+<p>Two cooldowns guard against thrashing: per-trigger cooldown of <strong>72 hours</strong> (the same emergent condition cannot fire a second replan within 72h), and a global cap of <strong>4 replans within any 72h window</strong>. Warning-level flags do not auto-fire a replan — they log a dry-run row in the observer audit table that says "would have replanned if critical." Informational flags log nothing replan-side; they only render on the Red-Flag Strip.</p>
+
+<p>The resulting draft lands on <span class="nav-card">/plan</span> with a banner indicating it was observer-triggered, and a "Replan" row appears on the <span class="nav-card">/proposals</span> queue for explicit acceptance.</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="notifications">
+<h2>25. <span class="nav-card">/settings/notifications</span></h2>
+
+<p>Two notification channels are available, both opt-in:</p>
+
+<ul>
+  <li><strong>Browser web push</strong> — click <strong>Enable push notifications</strong> in the PushSubscriptionCard. The browser will prompt for permission; on accept, a subscription is registered against your account and the system can wake your browser with notifications even when the tab is closed.</li>
+  <li><strong>Weekly email digest</strong> — Friday 08:00 IDT. A stitched summary of the week: new flags, predictions resolved, proposals awaiting decision, and key cashflow deltas. Enable the toggle to start receiving it.</li>
+</ul>
+
+<p>Below the channel toggles sits a <strong>preferences matrix</strong> — channel &times; severity &times; kind. Each cell is a toggle. Example settings: route every critical observer flag to push but only warnings to the weekly email; suppress informational flags from both channels; route inferred life-event proposals to email only. The defaults are tuned conservatively (only critical events on push, full digest weekly).</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="inferred-life-events">
+<h2>26. Inferred life events</h2>
+
+<p>A daily scan at 03:00 IDT walks the transaction history looking for phase changes that the user hasn't entered manually on <span class="nav-card">/life-events</span>. Examples of what it looks for: tuition payments that stopped (kid finished school), recurring transfers consistent with car payments, wedding-scale transfers (one-shot outlays of a certain shape), monthly support payments that started or stopped (kid moved out / parent moved in).</p>
+
+<p>For new users the detector runs in <strong>shadow mode for the first 30 days</strong>. It logs its candidate findings to an internal table so the system can learn the household's baseline patterns, but nothing surfaces on the proposals queue. After day 30 the shadow window closes and confirmed phase-change candidates appear as <em>"Add inferred life event"</em> rows on <span class="nav-card">/proposals</span>. Each row carries the detector's best guess (shape + kind + amount + effective date) plus the supporting transaction sample so you can verify before accepting.</p>
+
+<p>On Accept the proposed event is written to <code>life_events</code> with the right shape (one-shot / recurring / phase-change) and immediately influences the cashflow projection and the Holistic Timeline. On Reject the candidate is suppressed and the detector won't re-fire on the same evidence.</p>
+</section>
+
+<!-- ============================================================ -->
 <section id="holes">
-<h2>21. Known gaps</h2>
+<h2>27. Known gaps</h2>
 
 <p>Things that don't work yet, or that the UI doesn't help with. None block usage; all worsen UX.</p>
 
@@ -952,7 +1052,7 @@
 
 <!-- ============================================================ -->
 <section id="health">
-<h2>22. System health (live audit, 2026-05-28)</h2>
+<h2>28. System health (live audit, 2026-05-28)</h2>
 
 <table>
 <thead><tr><th>Page</th><th>Loaded</th><th>Console errors</th><th>Failed requests</th></tr></thead>

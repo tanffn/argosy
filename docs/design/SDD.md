@@ -17,6 +17,38 @@
 
 **Last edit:** 2026-05-29 (late session) by Claude — **five-spec holistic-upgrade block committed; Sprint A kickoff authorized**. Specs A/B/C/D/E (`docs/superpowers/specs/2026-05-29-{jobs-registry,state-observer-agent,predictions-ledger,life-events-cashflow-redesign,last-mile-delivery}-design.md`) landed in `d24bd52` after a deep re-scoping audit against the user's original three-flow ask. The earlier `30/30 commits` block (kicked off in `cbf6a07`, final commit `550de81`) still holds — see older subsections below. A small build-coherence fix (`14483d6`) staged `ui/src/components/retirement/UpcomingVestCard.tsx` which was untracked despite being shipped per the prior sprint's "final" commit message.
 
+### Sprint A-E autonomous block COMPLETE — 35+ commits, full architecture upgrade
+
+**Last edit:** 2026-05-30 (morning report) by Claude. All five specs (A jobs-registry · B state-observer · C predictions-ledger · D life-events-cashflow-redesign · E last-mile-delivery) landed end-to-end in a single autonomous block spanning ~35 sprint commits plus supporting docs. The architecture has moved from "tactical detectors + opaque infra" to "general-purpose advisor with adaptive trust + last-mile delivery": scheduled work is visible + manually runnable through `/admin/jobs`; an Opus state observer continuously diffs current state vs plan baseline + prior snapshot (catches USD/NIS 3.6→2.8 without a coded detector); every alpha call from any source (Discord, news, internal agents) is scored after its window expires and feeds back into the synthesizer + news analyst + observer via `source_reliability`; `/life-events` models cashflow phase changes instead of retire-age clamps; web push + Friday email + observer→replan auto-fire + inferred life-event proposals close the loop into the user's attention.
+
+**Per-sprint commit table:**
+
+| Sprint | Final commit | Sprint commit count | One-line description |
+|---|---|---|---|
+| Pre-sprint fix | `14483d6` | 1 | Stage missing `UpcomingVestCard.tsx` from prior sprint |
+| Specs landed | `d24bd52` | 1 | Five-spec block (A/B/C/D/E + pre-kickoff locked-decisions companion) |
+| SDD handover | `9df866b` | 1 | Late-session handover note |
+| A — Jobs registry | `b7229fb` | 10 | `JobRegistry` + `LongRunningJob` + `/api/jobs` + `/admin/jobs` UI + `NewsDailyJob` + Discord wrap + retention loop + TZ fix |
+| A — progress note | `22c9367` | 1 | SDD Sprint-A handover |
+| B — State observer | `e159f3c` | 7 | Snapshot collector + pure-function diff + Opus observer agent + empirical FX 3.6→2.8 backfill + flag writer (deprecates `check_macro_shift`) + observer loop @17:00 IDT |
+| C — Predictions ledger | `faf21da` | 7 | `predictions` + `prediction_outcomes` migrations + writer adapters + evaluator + retention + `source_reliability` view + consumer integration + provenance + Discord 14-day backfill |
+| D — Life-events cashflow | `a7ef01a` | 6 | `life_events` cashflow-shape migration + `apply_life_event_deltas()` pure function + wire deltas + remove retire-age clamp + API DTO + `delta_kind` validators + UI form rewrite + shape-aware HolisticTimelineCard markers |
+| E — Last-mile delivery | `6c4e7f7` | 9 | `notifications` migration + `action_proposer` (Opus) + `notification_dispatcher` + web push + observer→replan + cooldown + inferred life-event detector + `/proposals` UI + PushSubscriptionCard + settings + weekly email + empirical merge gate |
+
+Roughly 35 sprint commits + 4 supporting commits (fix, specs, two SDD notes). Test surface across the touched areas: backend tests green under `pytest -m "not llm_eval"`.
+
+**Open follow-ons (NOT closed in this block — pick up next session):**
+- Backend route `POST /api/users/me/acknowledge-life-events-migration` not yet exposed (Spec D #5 sub-agent flagged). The frontend is ready but the API endpoint is stubbed.
+- `argosy/services/retirement_timeline.py::LifeEventMarker` DTO does NOT yet emit the new per-shape fields (one-shot vs recurring vs phase-change tone hints; Spec D #3/#6 sub-agent flagged). The UI degrades gracefully — markers render with generic tone — but shape-specific styling is pending.
+- LLM disambiguator for `inferred_life_event_classifier` is stubbed (Spec E #5). Heuristic classification is live; the LLM re-ranker that adds confidence + alternative-shape suggestions remains a stub return.
+- `inferred_life_event_findings` `family_event:marriage` cross-check is deferred (Spec E #5). Marriage candidates fire on transfer-shape alone; the cross-check against existing `/life-events` rows is not yet implemented.
+- VAPID creds at `~/.argosy/vapid_creds.json` must be generated separately (Spec E #6). The notification dispatcher reads from this path; without it, web-push delivery is dormant. Generate via `py-vapid` or the bundled `argosy/scripts/generate_vapid_creds.py`.
+- AES128GCM RFC 8291 encryption for web push is deferred; v1 sends unencrypted payloads via VAPID JWT only. Browsers accept this for non-sensitive payloads; tighten before any sensitive payload kind is added.
+- `check_macro_shift` is `@deprecated` and can be removed after the state observer's empirical coverage is confirmed across more snapshots (Spec B §6.1). One wave of coexistence intended to let legacy `macro_shift` flags age out naturally.
+- Spec F (bidirectional Discord/WhatsApp conversational surface) captured as `project_bidirectional_chat_ambition` memory; future scope, no commits in this block.
+- Sprint #2 user-guide refresh from the prior anomaly+RSU-prevest sprint is partially folded into this morning's refresh, but the Bucket A1 weighted-baselines statistical-precision pass remains open (task #3 in the session task list).
+- `.progress/` + `argosy/.stats/` + `argosy/services/.progress/` `.gitignore` cleanup still open (task #4).
+
 ### Wave 2026-05-29 (late session) — five-spec holistic upgrade + Sprint A authorization
 
 **Trigger:** user audit of `30/30` block against the original three-flow ask exposed four architectural mistakes the prior session had baked in (life-events misuse as retire-age clamps, hand-rolled per-symptom anomaly detectors, OS-level cron suggestions, Discord-only backtesting). User pushback re-shaped the work as five coordinated specs covering jobs/observer/ledger/cashflow/last-mile.
