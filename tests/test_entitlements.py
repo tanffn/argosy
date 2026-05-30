@@ -22,13 +22,29 @@ def _write_yaml(tmp_path: Path, user_id: str, content: str) -> Path:
     return p
 
 
-def test_default_free_plan(tmp_path: Path) -> None:
+def test_default_enterprise_plan_for_missing_yaml(tmp_path: Path) -> None:
+    """Missing entitlements.yaml defaults to ENTERPRISE — matches the
+    documented owner-operator single-tenant deployment shape (CLAUDE.md).
+    Multi-tenant deployments must declare a plan explicitly per tenant.
+    """
     ent = Entitlements.load("nobody", configs_dir=tmp_path)
+    assert ent.plan is PlanTier.ENTERPRISE
+    assert ent.has("agent_fleet_full") is True
+    assert ent.has("autonomous_mode") is True
+    assert ent.has("live_execution") is True
+    assert math.isinf(ent.limit("monthly_decisions"))
+    assert math.isinf(ent.limit("monthly_claude_spend_usd"))
+
+
+def test_explicit_free_plan_still_gates(tmp_path: Path) -> None:
+    """Multi-tenant case: an explicit `plan: free` YAML still locks the
+    tenant out of pro/enterprise features. Only the missing-file default
+    changed."""
+    _write_yaml(tmp_path, "alice", "plan: free\n")
+    ent = Entitlements.load("alice", configs_dir=tmp_path)
     assert ent.plan is PlanTier.FREE
-    # Free tier doesn't get autonomous_mode / live_execution.
     assert ent.has("autonomous_mode") is False
     assert ent.has("live_execution") is False
-    # And quotas are finite, not infinite.
     assert ent.limit("monthly_decisions") == 50
     assert ent.limit("monthly_claude_spend_usd") == 5
 

@@ -104,7 +104,11 @@ class Entitlements(BaseModel):
     """Resolved entitlements for one tenant."""
 
     user_id: str
-    plan: PlanTier = PlanTier.FREE
+    # Default to ENTERPRISE for single-tenant owner-operator deployments
+    # (the documented shape in CLAUDE.md). Tenants on multi-user
+    # deployments must declare a plan explicitly in their
+    # `configs/<id>/entitlements.yaml` to land on a lower tier.
+    plan: PlanTier = PlanTier.ENTERPRISE
     features: dict[str, bool] = Field(default_factory=dict)
     limits: dict[str, float] = Field(default_factory=dict)
 
@@ -125,10 +129,15 @@ class Entitlements(BaseModel):
 
     @classmethod
     def load(cls, user_id: str, *, configs_dir: Path | None = None) -> "Entitlements":
-        """Load `entitlements.yaml` for a user; fall back to plan defaults."""
+        """Load `entitlements.yaml` for a user; fall back to plan defaults.
+
+        Missing-file default is ENTERPRISE — matches the documented owner-
+        operator single-tenant deployment shape (CLAUDE.md). Multi-tenant
+        deployments must declare a plan explicitly per tenant.
+        """
         cfg_dir = configs_dir or get_settings().configs_dir
         path = cfg_dir / user_id / "entitlements.yaml"
-        plan = PlanTier.FREE
+        plan = PlanTier.ENTERPRISE
         features: dict[str, bool] | None = None
         limits: dict[str, Any] | None = None
         if path.is_file():

@@ -2360,8 +2360,26 @@ export const api = {
     getJSON<TargetProgressResponse>(
       `/api/plan/draft/target-progress?user_id=${encodeURIComponent(userId)}`,
     ),
-  decisionsRun: (body: DecisionRunRequest) =>
-    postJSON<DecisionRunResponse>(`/api/decisions/run`, body),
+  decisionsRun: async (body: DecisionRunRequest): Promise<DecisionRunResponse> => {
+    // The fleet (analysts → debate → trader → risk → fund manager) takes
+    // 3–10 minutes per ticker. The Next.js dev `rewrites()` proxy drops
+    // connections before the upstream finishes (same class as intakeUpload
+    // at line ~2076), surfacing as "Failed to fetch" in the browser even
+    // though the backend completes and writes decision_runs + agent_reports.
+    // Bypass the proxy in dev; in prod NEXT_PUBLIC_API_URL points at the
+    // engine directly.
+    const apiBase =
+      typeof process !== "undefined" && process.env.NEXT_PUBLIC_API_URL
+        ? process.env.NEXT_PUBLIC_API_URL
+        : "http://localhost:8000";
+    const res = await fetch(`${apiBase}/api/decisions/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await formatHttpError(res, "/api/decisions/run"));
+    return (await res.json()) as DecisionRunResponse;
+  },
   planDraftAccept: (draftId: number, userId: string) =>
     postJSON<{ status: string; new_current_id: number }>(
       `/api/plan/draft/${draftId}/accept?user_id=${encodeURIComponent(userId)}`,
