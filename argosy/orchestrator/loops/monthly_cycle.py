@@ -113,7 +113,7 @@ class MonthlyCycleLoop(CadenceLoop):
             lambda: PlanCritiqueAgent(user_id=user_id)
         )
         self._statement_reconcile = statement_reconcile or _noop_reconcile
-        self._rsu_vest_pull = rsu_vest_pull or _noop_rsu_pull
+        self._rsu_vest_pull = rsu_vest_pull or _real_rsu_pull
         self._buy_template_generator = buy_template_generator or _default_buy_template
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
@@ -244,7 +244,32 @@ async def _noop_reconcile(_uid: str) -> dict[str, Any]:
 
 
 async def _noop_rsu_pull(_uid: str) -> list[dict[str, Any]]:
+    """Kept for tests that explicitly want no-op behavior. The default
+    production callable on ``MonthlyCycleLoop.__init__`` is
+    :func:`_real_rsu_pull`, not this; this stays around so existing
+    tests passing ``rsu_vest_pull=None`` semantics aren't broken
+    if a future refactor wants the no-op back.
+    """
     return []
+
+
+async def _real_rsu_pull(user_id: str) -> list[dict[str, Any]]:
+    """Default production RSU vest pull (replaces ``_noop_rsu_pull``).
+
+    Bridges into the sync ``ingest_samples_root`` helper via
+    ``asyncio.to_thread`` because ``ingest_schwab_vest_events``
+    operates on a sync SQLAlchemy ``Session`` (not an
+    ``AsyncSession``). Returns the list of per-file result dicts that
+    monthly_cycle's audit-log payload measures with ``len(...)``.
+
+    Skips quietly when ``$ARGOSY_EXPENSE_SAMPLES_ROOT`` is unset or
+    the path doesn't exist — see ``rsu_vest_pull.ingest_samples_root``.
+    """
+    import asyncio
+
+    from argosy.services.rsu_vest_pull import ingest_samples_root
+
+    return await asyncio.to_thread(ingest_samples_root, user_id)
 
 
 async def _default_buy_template(_uid: str) -> dict[str, Any]:

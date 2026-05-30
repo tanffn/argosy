@@ -87,8 +87,14 @@ async def test_monthly_cycle_persists_critique_and_audit(engine: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_monthly_cycle_skips_critique_when_no_plan(engine: None) -> None:
+async def test_monthly_cycle_skips_critique_when_no_plan(
+    engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     reset_cost_guard()
+    # The default _real_rsu_pull now scans $ARGOSY_EXPENSE_SAMPLES_ROOT.
+    # Unset it so this test doesn't walk the dev's Google Drive copy of
+    # the Schwab CSV during a no-plan smoke run.
+    monkeypatch.delenv("ARGOSY_EXPENSE_SAMPLES_ROOT", raising=False)
 
     async with db_mod.get_session() as session:
         session.add(User(id="ariel"))

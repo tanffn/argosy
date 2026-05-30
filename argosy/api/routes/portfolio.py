@@ -777,4 +777,86 @@ def get_unallocated_cash_proposal(
     return UnallocatedCashProposalDTO(**payload)
 
 
+# ---------------------------------------------------------------------------
+# POST /api/portfolio/refresh-rsu-vests — explicit RSU vest ingest trigger
+#
+# The monthly cycle (``argosy/orchestrator/loops/monthly_cycle.py``)
+# already calls ``rsu_vest_pull.ingest_samples_root`` on the 1st of every
+# month. This route gives the user an on-demand "ingest now" button so
+# they don't have to wait for the next cycle after dropping a fresh
+# Schwab Equity Awards export under ``$ARGOSY_EXPENSE_SAMPLES_ROOT``.
+# Idempotent — ``ingest_schwab_vest_events`` skips rows whose
+# (user_id, grant_id, vest_date) tuple is already in rsu_vest_events.
+# ---------------------------------------------------------------------------
+
+
+class RsuVestIngestFileResult(BaseModel):
+    """Per-CSV outcome surfaced in the refresh-rsu-vests response."""
+
+    source_file: str
+    parsed: int | None = None
+    inserted: int | None = None
+    duplicates: int | None = None
+    error: str | None = None
+
+
+class RefreshRsuVestsResponse(BaseModel):
+    """POST /api/portfolio/refresh-rsu-vests response shape."""
+
+    samples_root: str | None
+    files_processed: int
+    total_inserted: int
+    total_duplicates: int
+    results: list[RsuVestIngestFileResult]
+    detail: str | None
+
+
+@router.post("/refresh-rsu-vests", response_model=RefreshRsuVestsResponse)
+def refresh_rsu_vests(
+    user_id: str = Query("ariel"),
+) -> RefreshRsuVestsResponse:
+    """Scan ``$ARGOSY_EXPENSE_SAMPLES_ROOT`` for Schwab Equity Awards
+    CSVs and ingest each into ``rsu_vest_events``.
+
+    Closes the "no UI surface for rsu_vest ingest" gap: the
+    monthly_cycle path is automatic but only fires on the 1st of the
+    month; this route lets the user trigger ingest immediately after
+    dropping a fresh export. Idempotent on the unique
+    ``(user_id, grant_id, vest_date)`` constraint.
+    """
+    from argosy.services.rsu_vest_pull import (
+        _resolve_samples_root,
+        ingest_samples_root,
+    )
+
+    root = _resolve_samples_root()
+    if root is None:
+        return RefreshRsuVestsResponse(
+            samples_root=os.environ.get("ARGOSY_EXPENSE_SAMPLES_ROOT"),
+            files_processed=0,
+            total_inserted=0,
+            total_duplicates=0,
+            results=[],
+            detail=(
+                "ARGOSY_EXPENSE_SAMPLES_ROOT is unset or doesn't exist. "
+                "Set the env var to the directory containing the Schwab "
+                "Equity Awards CSV (filename pattern "
+                "EquityAwardsCenter_Transactions_*.csv)."
+            ),
+        )
+
+    results = ingest_samples_root(user_id)
+    total_inserted = sum(r.get("inserted", 0) or 0 for r in results)
+    total_duplicates = sum(r.get("duplicates", 0) or 0 for r in results)
+
+    return RefreshRsuVestsResponse(
+        samples_root=str(root),
+        files_processed=len(results),
+        total_inserted=total_inserted,
+        total_duplicates=total_duplicates,
+        results=[RsuVestIngestFileResult(**r) for r in results],
+        detail=None,
+    )
+
+
 __all__ = ["router"]
