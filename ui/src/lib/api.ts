@@ -2672,7 +2672,181 @@ export const api = {
         `/api/jobs/${encodeURIComponent(name)}/reconnect`,
       ),
   },
+
+  // --------------------------------------------------------------------
+  // Spec E commit #7 — Notifications: VAPID + subscription + preferences.
+  // Backend routes: argosy/api/routes/notifications.py.
+  //
+  // Returned shapes match the Pydantic models in that file. We DO NOT
+  // duplicate the matrix kinds list here — the UI reads the
+  // ``channels`` / ``severities`` / ``kinds`` fields off the
+  // preferences response so adding a kind on the backend doesn't
+  // require a UI redeploy.
+  // --------------------------------------------------------------------
+  notifications: {
+    vapidKey: () =>
+      getJSON<NotificationVapidKeyDTO>("/api/notifications/vapid-key"),
+    listSubscriptions: (userId: string) =>
+      getJSON<NotificationSubscriptionDTO[]>(
+        `/api/notifications/subscriptions?user_id=${encodeURIComponent(userId)}`,
+      ),
+    subscribe: (
+      userId: string,
+      body: NotificationSubscribeRequest,
+    ): Promise<NotificationSubscriptionDTO> =>
+      postJSON<NotificationSubscriptionDTO>(
+        `/api/notifications/subscribe?user_id=${encodeURIComponent(userId)}`,
+        body,
+      ),
+    unsubscribe: async (userId: string, subscriptionId: number) => {
+      const res = await fetch(
+        apiUrl(
+          `/api/notifications/subscribe/${subscriptionId}?user_id=${encodeURIComponent(userId)}`,
+        ),
+        { method: "DELETE" },
+      );
+      if (!res.ok && res.status !== 204) {
+        throw new Error(`HTTP ${res.status} for notifications.unsubscribe`);
+      }
+    },
+    listPreferences: (userId: string) =>
+      getJSON<NotificationPreferencesResponse>(
+        `/api/notifications/preferences?user_id=${encodeURIComponent(userId)}`,
+      ),
+    updatePreferences: (
+      userId: string,
+      cells: NotificationPreferenceCell[],
+    ) =>
+      putJSON<NotificationPreferencesResponse>(
+        `/api/notifications/preferences?user_id=${encodeURIComponent(userId)}`,
+        { cells },
+      ),
+    testPush: (userId: string, body?: NotificationTestPushRequest) =>
+      postJSON<NotificationTestPushResponse>(
+        `/api/notifications/test-push?user_id=${encodeURIComponent(userId)}`,
+        body ?? {},
+      ),
+  },
+
+  // --------------------------------------------------------------------
+  // Spec E commit #6 — Action proposals (/api/proposals/actions/*).
+  // Backend routes: argosy/api/routes/action_proposals.py.
+  //
+  // The /proposals UI page consumes these to render the unified
+  // action-proposal queue across all eight kinds (allocate /
+  // repatriate_currency / rebalance / replan_full /
+  // add_life_event_phase / update_plan_assumption / set_watchlist /
+  // note_only). Accept / Defer / Reject / Customize each map to one
+  // POST. The service-layer guarantees the no-execution invariant
+  // (codex BLOCKER #1 / spec §2.2.1) — Accept ONLY advances
+  // execution_state to 'accepted_pending_user_action'; downstream
+  // money-movement is the user's separate explicit step.
+  // --------------------------------------------------------------------
+  getActionProposals: (
+    opts?: { userId?: string; status?: string },
+  ): Promise<ActionProposalListResponse> => {
+    const params = new URLSearchParams({
+      user_id: opts?.userId ?? "ariel",
+    });
+    if (opts?.status) params.set("status", opts.status);
+    return getJSON<ActionProposalListResponse>(
+      `/api/proposals/actions?${params.toString()}`,
+    );
+  },
+  acceptActionProposal: (
+    id: number,
+    opts?: { userId?: string; customPayload?: Record<string, unknown> },
+  ): Promise<ActionProposalActionResponse> =>
+    postJSON<ActionProposalActionResponse>(
+      `/api/proposals/actions/${id}/accept`,
+      {
+        user_id: opts?.userId ?? "ariel",
+        custom_payload: opts?.customPayload ?? null,
+      },
+    ),
+  deferActionProposal: (
+    id: number,
+    deferUntilDate: string | null,
+    opts?: { userId?: string; note?: string },
+  ): Promise<ActionProposalActionResponse> =>
+    postJSON<ActionProposalActionResponse>(
+      `/api/proposals/actions/${id}/defer`,
+      {
+        user_id: opts?.userId ?? "ariel",
+        defer_until_date: deferUntilDate,
+        note: opts?.note ?? null,
+      },
+    ),
+  rejectActionProposal: (
+    id: number,
+    opts?: { userId?: string; reason?: string },
+  ): Promise<ActionProposalActionResponse> =>
+    postJSON<ActionProposalActionResponse>(
+      `/api/proposals/actions/${id}/reject`,
+      {
+        user_id: opts?.userId ?? "ariel",
+        reason: opts?.reason ?? null,
+      },
+    ),
 };
+
+// ----------------------------------------------------------------------
+// Spec E commit #7 — Notification wire shapes.
+// Mirror argosy/api/routes/notifications.py:VapidKeyResponse / etc.
+// Keep these synced when the backend schema evolves.
+// ----------------------------------------------------------------------
+
+export interface NotificationVapidKeyDTO {
+  public_key: string;
+}
+
+export type NotificationChannel = "in_app" | "web_push" | "email";
+export type NotificationSeverity = "info" | "warning" | "critical";
+
+export interface NotificationSubscriptionDTO {
+  id: number;
+  user_id: string;
+  channel: string;
+  endpoint: string;
+  status: string;
+  subscribed_at: string;
+  last_seen_at: string | null;
+}
+
+export interface NotificationSubscribeRequest {
+  channel?: NotificationChannel;
+  endpoint: string;
+  p256dh?: string | null;
+  auth?: string | null;
+}
+
+export interface NotificationPreferenceCell {
+  channel: NotificationChannel;
+  severity: NotificationSeverity;
+  kind: string;
+  enabled: boolean;
+}
+
+export interface NotificationPreferencesResponse {
+  channels: string[];
+  severities: string[];
+  kinds: string[];
+  cells: NotificationPreferenceCell[];
+}
+
+export interface NotificationTestPushRequest {
+  title?: string;
+  body?: string;
+  severity?: NotificationSeverity;
+}
+
+export interface NotificationTestPushResponse {
+  notification_id: string;
+  channels_attempted: string[];
+  channels_sent: string[];
+  channels_skipped: string[];
+  errors: string[][];
+}
 
 // ----------------------------------------------------------------------
 // Sprint A commit #8 — Jobs DTOs + admin-token POST helper.
@@ -3867,4 +4041,61 @@ export interface WealthDashboardDTO {
   asset_class_composition: WealthCompositionSlice[];
   sector_composition: WealthCompositionSlice[];
   assumptions: WealthAssumptions;
+}
+
+// ----------------------------------------------------------------------
+// Spec E commit #6 — Action proposals wire shapes.
+//
+// Mirror argosy/api/routes/action_proposals.py:ActionProposalDTO. The
+// per-kind ``suggested_payload`` is intentionally typed as a permissive
+// Record<string, unknown> so adding a kind on the backend doesn't
+// require a UI type bump; the per-kind preview / Customize form
+// introspects the keys at render time.
+// ----------------------------------------------------------------------
+
+export type ActionProposalKind =
+  | "allocate"
+  | "repatriate_currency"
+  | "rebalance"
+  | "replan_full"
+  | "add_life_event_phase"
+  | "update_plan_assumption"
+  | "set_watchlist"
+  | "note_only";
+
+export type ActionProposalSeverity = "info" | "warning" | "critical";
+
+// Permissive payload type — the UI Customize editor walks
+// Object.entries() so adding a payload field on the backend doesn't
+// require a UI redeploy. Per-kind required fields are documented in
+// argosy/agents/action_proposer.py:REQUIRED_PAYLOAD_FIELDS_BY_KIND.
+export type ActionProposalPayload = Record<string, unknown>;
+
+export interface ActionProposalDTO {
+  id: number;
+  user_id: string;
+  kind: ActionProposalKind | string;
+  severity: ActionProposalSeverity;
+  status: string;
+  execution_state: string;
+  summary: string;
+  rationale_md: string;
+  suggested_payload: ActionProposalPayload;
+  surfaced_at: string;
+  expires_at: string;
+  decided_at: string | null;
+  decided_by_user_note: string | null;
+  source_flag_id: number | null;
+  source_observation_id: number | null;
+  source_inferred_event_id: number | null;
+}
+
+export interface ActionProposalListResponse {
+  rows: ActionProposalDTO[];
+  total: number;
+}
+
+export interface ActionProposalActionResponse {
+  status: "ok";
+  proposal: ActionProposalDTO;
 }

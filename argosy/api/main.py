@@ -58,6 +58,9 @@ from argosy.api.routes.wealth_dashboard import router as wealth_dashboard_router
 from argosy.api.routes.positions import router as positions_router
 from argosy.api.routes.allocation import router as allocation_router
 from argosy.api.routes.life_events import router as life_events_router
+from argosy.api.routes.action_proposals import (
+    router as action_proposals_router,
+)
 from argosy.api.routes.proposals import router as proposals_router
 from argosy.api.routes.security import router as security_router
 from argosy.api.routes.settings import (
@@ -129,6 +132,11 @@ def create_app() -> FastAPI:
     app.include_router(agent_activity_router, prefix=api_prefix)
 
     # Phase 3 — proposals + decisions
+    # Spec E commit #6 — /api/proposals/actions/* sits underneath the
+    # /api/proposals/* prefix; register FIRST so FastAPI's path matcher
+    # tries the literal "actions" segment before the proposals router's
+    # {proposal_id: int} catch.
+    app.include_router(action_proposals_router, prefix=api_prefix)
     app.include_router(proposals_router, prefix=api_prefix)
     # Generic Accept/Defer for allocation-action proposals (sprint commit
     # #6b). Mounts at /api/proposals/allocation/* — sibling to the
@@ -195,6 +203,13 @@ def create_app() -> FastAPI:
     # AnomalyCards for the Home tile + inline transaction badges.
     from argosy.api.routes.anomaly import router as anomaly_router
     app.include_router(anomaly_router, prefix=api_prefix)
+
+    # Spec E commit #7 — push-subscription card + preferences matrix +
+    # VAPID public-key endpoint + test-push button. UI side at
+    # ui/src/app/settings/notifications. Backend wiring routes through
+    # argosy/services/notification_dispatcher + web_push.
+    from argosy.api.routes.notifications import router as notifications_router
+    app.include_router(notifications_router, prefix=api_prefix)
 
     # T2.2 — startup orphan sweep. Mark any decision_runs that are still
     # status='running' from a prior process that was killed mid-flight as
@@ -572,6 +587,42 @@ def create_app() -> FastAPI:
         except (ImportError, ValueError) as exc:
             log.exception(
                 "scheduler.inferred_life_event_detector_register_failed",
+                error_type=type(exc).__name__,
+            )
+
+        # Sprint E commit #8 — WeeklyEmailDigestLoop. Gated on
+        # ``cadences.weekly_email_digest.enabled`` (default True).
+        # 08:00 IDT Fridays per Ariel's locked decision in spec §7.3
+        # — the recap lands before the weekend. SMTP creds load
+        # lazily from ARGOSY_SMTP_* env vars at tick time; missing
+        # creds surface as status='skipped_smtp_not_configured' in
+        # the admin UI per spec §7.2 (NOT a registration failure).
+        try:
+            from argosy.orchestrator.loops.weekly_email_digest import (  # noqa: PLC0415
+                WeeklyEmailDigestLoop,
+                weekly_email_digest_metadata,
+            )
+
+            wed_cfg = load_agent_settings(
+                "ariel"
+            ).cadences.weekly_email_digest
+            if wed_cfg.enabled:
+                wed_loop = WeeklyEmailDigestLoop(
+                    schedule=LoopSchedule.from_config(wed_cfg),
+                    enabled=True,
+                    user_id="ariel",
+                )
+                scheduler.register_loop(wed_loop)
+                registry.register(
+                    job=wed_loop,
+                    metadata=weekly_email_digest_metadata(),
+                )
+                log.info(
+                    "scheduler.weekly_email_digest_registered"
+                )
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.weekly_email_digest_register_failed",
                 error_type=type(exc).__name__,
             )
 

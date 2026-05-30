@@ -21,12 +21,18 @@ import {
 } from "@/components/ui/card";
 import {
   api,
+  type ActionProposalDTO,
+  type ActionProposalPayload,
   type FillItem,
   type ProposalDetail,
   type ProposalListItem,
   type ReasoningTrailItem,
 } from "@/lib/api";
 import { friendlySourceLabel } from "@/lib/plain-english-labels";
+import { ActionProposalCard } from "@/components/proposals/ActionProposalCard";
+import { CustomizeModal } from "@/components/proposals/CustomizeModal";
+import { DeferModal } from "@/components/proposals/DeferModal";
+import { RejectModal } from "@/components/proposals/RejectModal";
 import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { useWSEvents } from "@/lib/ws";
 
@@ -247,6 +253,125 @@ export default function ProposalsPage() {
     });
   }, []);
 
+  // -------------------------------------------------------------------
+  // Spec E commit #6 — Action proposals (the new section above the
+  // existing trade-proposal / windfall lists). State + handlers live
+  // here on the page so the modals + cards stay presentational.
+  // -------------------------------------------------------------------
+  const [actionProposals, setActionProposals] = useState<ActionProposalDTO[]>(
+    [],
+  );
+  const [actionLoading, setActionLoading] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<number | null>(null);
+  const [deferTarget, setDeferTarget] = useState<ActionProposalDTO | null>(
+    null,
+  );
+  const [rejectTarget, setRejectTarget] = useState<ActionProposalDTO | null>(
+    null,
+  );
+  const [customizeTarget, setCustomizeTarget] =
+    useState<ActionProposalDTO | null>(null);
+
+  const refreshActionProposals = useCallback(async () => {
+    try {
+      setActionLoading(true);
+      const r = await api.getActionProposals({
+        userId: USER_ID,
+        status: "open",
+      });
+      setActionProposals(r.rows);
+    } catch (e: unknown) {
+      setActionError(String(e));
+    } finally {
+      setActionLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshActionProposals();
+  }, [refreshActionProposals]);
+
+  const onActionAccept = useCallback(
+    async (id: number) => {
+      if (!window.confirm("Accept this proposal?")) return;
+      setActionBusy(id);
+      setActionError(null);
+      try {
+        await api.acceptActionProposal(id, { userId: USER_ID });
+        await refreshActionProposals();
+      } catch (e: unknown) {
+        setActionError(String(e));
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [refreshActionProposals],
+  );
+
+  const onActionDeferSubmit = useCallback(
+    async (deferDate: string, note: string) => {
+      if (!deferTarget) return;
+      setActionBusy(deferTarget.id);
+      setActionError(null);
+      try {
+        await api.deferActionProposal(deferTarget.id, deferDate, {
+          userId: USER_ID,
+          note,
+        });
+        await refreshActionProposals();
+      } catch (e: unknown) {
+        setActionError(String(e));
+        throw e;
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [deferTarget, refreshActionProposals],
+  );
+
+  const onActionRejectSubmit = useCallback(
+    async (reason: string) => {
+      if (!rejectTarget) return;
+      setActionBusy(rejectTarget.id);
+      setActionError(null);
+      try {
+        await api.rejectActionProposal(rejectTarget.id, {
+          userId: USER_ID,
+          reason,
+        });
+        await refreshActionProposals();
+      } catch (e: unknown) {
+        setActionError(String(e));
+        throw e;
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [rejectTarget, refreshActionProposals],
+  );
+
+  const onActionCustomizeSubmit = useCallback(
+    async (customPayload: ActionProposalPayload) => {
+      if (!customizeTarget) return;
+      setActionBusy(customizeTarget.id);
+      setActionError(null);
+      try {
+        await api.acceptActionProposal(customizeTarget.id, {
+          userId: USER_ID,
+          customPayload,
+        });
+        await refreshActionProposals();
+      } catch (e: unknown) {
+        setActionError(String(e));
+        throw e;
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [customizeTarget, refreshActionProposals],
+  );
+
   const refresh = useCallback(async () => {
     try {
       setLoading(true);
@@ -420,6 +545,80 @@ export default function ProposalsPage() {
           ))}
         </select>
       </header>
+
+      {/* Spec E commit #6 — Action proposals section. Sits ABOVE the
+          allocation / windfall section so the unified action-proposal
+          queue (all 8 kinds: allocate / repatriate_currency /
+          rebalance / replan_full / add_life_event_phase /
+          update_plan_assumption / set_watchlist / note_only) is the
+          first thing the user sees. The windfall / trade-proposal
+          surfaces below remain unchanged. */}
+      <section id="action-proposals" className="scroll-mt-6 flex flex-col gap-3">
+        <header>
+          <h2 className="text-lg font-semibold tracking-tight">
+            Action proposals
+          </h2>
+          <p className="text-xs text-muted-foreground">
+            System-proposed actions across all kinds. Accept / Defer /
+            Reject / Customize per row — Argosy never executes; you
+            decide.
+          </p>
+        </header>
+        {actionError && (
+          <p className="text-sm text-error font-mono">{actionError}</p>
+        )}
+        {actionLoading && (
+          <p className="text-sm text-muted-foreground">Loading action proposals…</p>
+        )}
+        {!actionLoading && actionProposals.length === 0 && (
+          <Card>
+            <CardContent className="py-6 text-center text-sm text-muted-foreground">
+              No open action proposals.
+            </CardContent>
+          </Card>
+        )}
+        {actionProposals.length > 0 && (
+          <ul className="flex flex-col gap-3">
+            {actionProposals.map((p) => (
+              <li key={p.id}>
+                <ActionProposalCard
+                  proposal={p}
+                  busy={actionBusy === p.id}
+                  onAccept={() => onActionAccept(p.id)}
+                  onDefer={() => setDeferTarget(p)}
+                  onReject={() => setRejectTarget(p)}
+                  onCustomize={() => setCustomizeTarget(p)}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <DeferModal
+        open={deferTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) setDeferTarget(null);
+        }}
+        proposal={deferTarget}
+        onConfirm={onActionDeferSubmit}
+      />
+      <RejectModal
+        open={rejectTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) setRejectTarget(null);
+        }}
+        proposal={rejectTarget}
+        onConfirm={onActionRejectSubmit}
+      />
+      <CustomizeModal
+        open={customizeTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) setCustomizeTarget(null);
+        }}
+        proposal={customizeTarget}
+        onConfirm={onActionCustomizeSubmit}
+      />
 
       {/* Allocation actions surface — WindfallCard self-suppresses when no
           event is detected, so the section renders as an empty scroll
