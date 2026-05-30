@@ -53,6 +53,41 @@ Total: ~45 commits in the autonomous block. Backend tests green under `pytest -m
 
 **Codex coverage status:** every commit that involved money math / LLM prompt / migration / parser / scheduler had a codex tandem session at `tools/codex-tandem/sessions/2026-05-{29,30}-*/`. All BLOCKERs integrated before commit. Nothing left in queue.
 
+### Post-block follow-on — Meet Kevin backtest verdict (2025-12-11 → 2026-05-29)
+
+After landing the alpha-report analyst (`ac6b528`) and processing 16 historical Meet Kevin alpha-report `.txt` files supplied manually (the 7 originals + 9 dropped covering Dec 2025 → Apr 2026 spanning ~5.5 months), per Ariel's direction (verbatim: "I don't want you to code... play what-if, we do what the report say... you have all the data") a one-shot Python backtest pulled yfinance prices for all 48 unique tickers + SPY + QQQ, scored every prediction against actual close-to-close price action over its declared timeframe, and aggregated by bucket.
+
+**Verdict:** Following Meet Kevin would have LOST money vs simply holding SPY across every cut. Conviction-weighted portfolio numbers (high=5% / medium=3% / low=1% sizing per [[feedback_prove_with_manual_analysis_first]] — frictionless, no tax drag):
+
+| Strategy | Return | SPY same windows | Alpha |
+|---|---:|---:|---:|
+| Follow ALL calls | -4.45% | +5.38% | **-9.83%** |
+| Long-only (skip his shorts) | -0.98% | +5.46% | -6.44% |
+| Long + high-conviction | +1.61% | +3.27% | -1.66% |
+| Structural picks only | -1.28% | +6.54% | -7.82% |
+| Daily signal-prose only | -7.59% | +4.23% | -11.83% |
+
+**What killed him**: 71 short calls, 25% hit rate. Worst single drag was NBIS (small-cap data-center play) shorted 3× from Dec onward → stock went up 2.5× → -153% on the position per entry. ORCL shorts (5 calls) -55 to -65%. IREN short -55%. His daily prose-based per-ticker chatter is the WORST bucket: -11.83% alpha.
+
+**What he got right**: small-cap thematic long picks. CRCL (Circle, crypto stablecoin IPO) called 5× — all winners, +27 to +105% per entry. APP (AppLovin) +19-35%. FIGR (Figure AI) +40%. OPEN short was his ONE working short. The "high-conviction structural long" subset comes within 1.66% of SPY — closest to break-even but still doesn't beat the index.
+
+**Critical caveats**:
+1. SPY was up +5-19% across sub-windows — strong bull market, hostile to shorts AND to active strategies vs index. A bear-market sample could meaningfully change the verdict.
+2. Frictionless math overstates Kevin's results — real Israeli tax (50% short-term, 25% long-term) + trade costs would worsen the verdict by another ~3-5%.
+3. Sample is 5.5 months — necessary but not statistically sufficient. To rule on his approach honestly: gather 2+ years covering multiple regimes.
+
+**Pending decision** (asked Ariel at the end of the backtest message): apply `source_reliability` overrides for the `discord_alpha_report` source now, or wait for older reports + bear-market sample first. Proposed override:
+- shorts → 0.10 (the floor; effectively ignore)
+- daily signal-prose longs → 0.30 (treat as noise)
+- high-conviction structural longs → 0.85 (matches SPY, no edge but not harmful)
+- macro-tone → don't propagate (always "cautiously_bullish" in every report — no information signal)
+
+If applied, this is a single tiny commit overriding the auto-computed `source_reliability` row — not a new engine. The same one-shot backtest re-runs quarterly as new data arrives to recalibrate.
+
+The backtest script was deliberately NOT committed — per the new binding [[feedback_prove_with_manual_analysis_first]], do the analysis manually with available tools (yfinance, pandas, DB), prove value, and propose minimal wiring AFTER the manual verdict. The systematization is the source_reliability override + (eventually) re-running the analysis on a cadence. Not an engine.
+
+Ariel asked whether to post the findings publicly in Kevin's Discord channel; recommendation was "don't post" — risk of being banned from the data feed Argosy depends on outweighs any educational benefit, and the methodology has real limitations (sample-period bias, frictionless math, naive position management) that pro-Kevin readers would correctly attack.
+
 ### Post-block follow-on — Alpha-report LLM analyst (replaces regex on long-form posts)
 
 The manual-ingest path (`argosy/scripts/manual_alpha_report_ingest.py`) pulled 7 Meet Kevin alpha-report `.txt` files into `news_signals`. The deterministic extractor handled the multi-ticker + sentiment + keywords well (15-17 tickers per report, sentiment classified, themes captured). But the `extract_alpha_call_from_text` regex (parsers.py) produced 1 false-positive prediction per report — every report has the boilerplate phrase "Buy low, sell high!" which matched as `BUY + LOW` (Lowe's Companies) under the case-insensitive regex.
