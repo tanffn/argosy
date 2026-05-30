@@ -125,6 +125,17 @@ class CadencesBlock(BaseModel):
             enabled=True, cron="30 3 * * *", timezone="Asia/Jerusalem"
         )
     )
+    # Sprint E commit #5 — inferred-life-event detector. 03:00
+    # Asia/Jerusalem daily per Ariel's locked decision in spec §5.5
+    # (after midnight, before the 17:00 IDT news + state observer
+    # window). Lookback window, shadow-mode override, and proposer-
+    # runner injection live on the loop class constructor — the
+    # cadence config only owns the schedule.
+    inferred_life_event_detector: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(
+            enabled=True, cron="0 3 * * *", timezone="Asia/Jerusalem"
+        )
+    )
 
 
 class JobRunsRetentionConfig(BaseModel):
@@ -305,6 +316,10 @@ cadences:
   # Sprint B commit #7 — daily state-observer (17:00 IL-local; same
   # hour as news_daily so the snapshot reads a fully-settled state).
   state_observer:      { enabled: true, cron: "0 17 * * *", timezone: "Asia/Jerusalem" }
+  # Sprint E commit #5 — daily inferred-life-event detector (03:00 IL-local;
+  # after midnight + before news + state observer; per Ariel's locked
+  # decision in spec §5.5).
+  inferred_life_event_detector: { enabled: true, cron: "0 3 * * *", timezone: "Asia/Jerusalem" }
 
 models:
   defaults:

@@ -533,6 +533,48 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # Sprint E commit #5 — InferredLifeEventDetectorLoop. Gated on
+        # ``cadences.inferred_life_event_detector.enabled`` (default
+        # True). 03:00 IDT daily per Ariel's locked decision in spec
+        # §5.5 — idle window before the news + state observer
+        # pipeline runs at 17:00 IDT. source_kind='monitor' (the
+        # detector's findings materialise as action_proposals on the
+        # Red-Flag Strip family, same as state_observer).
+        try:
+            from argosy.agent_settings import (  # noqa: PLC0415
+                load_agent_settings,
+            )
+            from argosy.orchestrator.loops.base import (  # noqa: PLC0415
+                LoopSchedule,
+            )
+            from argosy.orchestrator.loops.inferred_life_event_detector import (  # noqa: PLC0415
+                InferredLifeEventDetectorLoop,
+                inferred_life_event_detector_metadata,
+            )
+
+            ile_cfg = load_agent_settings(
+                "ariel"
+            ).cadences.inferred_life_event_detector
+            if ile_cfg.enabled:
+                ile_loop = InferredLifeEventDetectorLoop(
+                    schedule=LoopSchedule.from_config(ile_cfg),
+                    enabled=True,
+                    user_id="ariel",
+                )
+                scheduler.register_loop(ile_loop)
+                registry.register(
+                    job=ile_loop,
+                    metadata=inferred_life_event_detector_metadata(),
+                )
+                log.info(
+                    "scheduler.inferred_life_event_detector_registered"
+                )
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.inferred_life_event_detector_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Step 1: start_supervisors BEFORE scheduling so any
         # LongRunningJob supervisor is alive when its first connect
         # cycle opens. (No-op until commit #5 fills it in.)

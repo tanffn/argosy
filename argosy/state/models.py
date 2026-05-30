@@ -3289,3 +3289,105 @@ class ReplanDispatchLog(Base):
         server_default=_sa_text("CURRENT_TIMESTAMP"),
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class InferredLifeEventFinding(Base):
+    """One row per inferred life-event finding (Spec E commit #5 / §5.5).
+
+    The inferred-life-event detector reads the transaction stream and
+    proposes phase-change ``LifeEvent`` candidates to the user via the
+    same ``action_proposals`` ledger.  The detector NEVER writes
+    directly to ``life_events`` — it writes a finding here, then fires
+    the action-proposer-runner which lands an ``action_proposals`` row
+    with ``kind='add_life_event_phase'``.
+
+    The two layers (heuristic + LLM disambiguator) both leave their
+    audit trail here:
+
+    * ``heuristic_confidence`` — the deterministic layer's confidence
+      band (high / medium / low).  Drives whether the LLM
+      disambiguator fires (spec §5.2 — medium/low go through the LLM;
+      high bypasses it unless the conflict resolver flagged the
+      finding).
+    * ``llm_confirmed`` — the LLM disambiguator's outcome (NULL when
+      the LLM was skipped; TRUE/FALSE otherwise).
+    * ``dismissed`` — the final pre-proposer flag.  Any guardrail can
+      flip this; once flipped, no action_proposals row is created.
+
+    Conflict resolution (codex BLOCKER #3 / spec §5.4 guardrail #5):
+    ``conflict_resolution`` records the pre-proposal conflict
+    resolver's outcome.  See migration 0057 for the enum semantics.
+
+    Idempotency contract: UNIQUE(user_id, pattern,
+    evidence_window_start, evidence_window_end) — re-running the
+    detector with the same window-and-pattern combination MUST NOT
+    insert a duplicate finding.  See spec §5.5 / Appendix A.9.
+
+    FKs:
+      * ``user_id`` -> users.id ON DELETE CASCADE.
+      * ``proposed_action_id`` -> action_proposals.id ON DELETE SET
+        NULL.  Losing the proposal (housekeeping sweep) must NOT
+        cascade away the finding's audit trail.
+
+    Migration: alembic 0057.
+    """
+
+    __tablename__ = "inferred_life_event_findings"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # CHECK enum (six values; see migration 0057).  Matches
+    # InferredEventTrigger.pattern literal in
+    # argosy/agents/action_proposer.py.
+    pattern: Mapped[str] = mapped_column(Text, nullable=False)
+    # CHECK enum: high / medium / low.  Declared in migration.
+    heuristic_confidence: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL = disambiguator not run (high-confidence heuristic skipped
+    # the LLM).  TRUE/FALSE otherwise.
+    llm_confirmed: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    dismissed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=_sa_text("0"),
+    )
+    evidence_window_start: Mapped[date] = mapped_column(Date, nullable=False)
+    evidence_window_end: Mapped[date] = mapped_column(Date, nullable=False)
+    # JSON list of expense_transactions.id (the cited evidence).
+    # json_valid CHECK declared in migration.
+    evidence_transaction_ids: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )
+    evidence_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    proposed_action_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("action_proposals.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # CHECK enum (4 values + NULL).  See migration 0057.
+    conflict_resolution: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "pattern",
+            "evidence_window_start",
+            "evidence_window_end",
+            name="uq_inferred_findings_pattern_evidence",
+        ),
+    )
