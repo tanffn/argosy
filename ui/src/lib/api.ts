@@ -1118,9 +1118,37 @@ export interface TOTPStatusResponse {
   last_verified_at: string | null;
 }
 
+async function formatHttpError(res: Response, path: string): Promise<string> {
+  const fallback = `HTTP ${res.status} for ${path}`;
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return fallback;
+  }
+  const detail = (body as { detail?: unknown })?.detail;
+  if (typeof detail === "string" && detail.length > 0) {
+    return `${fallback}: ${detail}`;
+  }
+  if (detail && typeof detail === "object") {
+    const d = detail as Record<string, unknown>;
+    if (d.error === "feature_not_entitled") {
+      return `${fallback}: feature ${String(d.feature)} requires plan ${String(d.required_tier)} (current: ${String(d.plan)}). Edit configs/<user>/entitlements.yaml.`;
+    }
+    if (d.error === "quota_exceeded") {
+      return `${fallback}: quota ${String(d.quota)} exceeded (current=${String(d.current)}, limit=${String(d.limit)}).`;
+    }
+    if (Array.isArray(d) || Array.isArray((body as { detail?: unknown[] }).detail)) {
+      return `${fallback}: ${JSON.stringify(detail)}`;
+    }
+    return `${fallback}: ${JSON.stringify(detail)}`;
+  }
+  return fallback;
+}
+
 async function getJSON<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(apiUrl(path), { cache: "no-store", ...(init ?? {}) });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
+  if (!res.ok) throw new Error(await formatHttpError(res, path));
   return (await res.json()) as T;
 }
 
@@ -1130,7 +1158,7 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${path}`);
+  if (!res.ok) throw new Error(await formatHttpError(res, path));
   return (await res.json()) as T;
 }
 
@@ -1140,18 +1168,7 @@ async function putJSON<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    // Bubble up the server's detail string so the UI can surface a
-    // meaningful error (e.g. "counter_position is required when ...").
-    let detail = `HTTP ${res.status}`;
-    try {
-      const body = (await res.json()) as { detail?: string };
-      if (body.detail) detail = body.detail;
-    } catch {
-      // ignore — fall back to status
-    }
-    throw new Error(detail);
-  }
+  if (!res.ok) throw new Error(await formatHttpError(res, path));
   return (await res.json()) as T;
 }
 
