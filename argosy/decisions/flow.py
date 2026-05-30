@@ -201,8 +201,28 @@ class DecisionFlow:
         risk_caps: dict[str, Any] | None = None,
         account_class: Literal["main", "limited"] = "main",
         now: Callable[[], datetime] | None = None,
+        decision_run_id: int | None = None,
+        persist_input_analysts: bool = True,
     ) -> ApprovedProposal | BlockedProposal:
-        """Run the full pipeline for the given tier."""
+        """Run the full pipeline for the given tier.
+
+        ``decision_run_id`` + ``persist_input_analysts`` (codex BLOCKER #2
+        on the per-ticker-analysts design — 2026-05-30):
+
+        - When ``decision_run_id`` is supplied, ``_open_decision_run`` is
+          skipped; the flow runs under the caller's pre-opened id. Used
+          by ``argosy.decisions.per_ticker_analysts`` which opens the
+          run before calling its 6 always-on analysts so the analyst
+          rows + downstream phase rows all join under one id.
+        - When ``persist_input_analysts=False``, the input analyst
+          reports are assumed already persisted by the caller; the
+          flow skips its own ``_persist_agent_reports`` call to avoid
+          duplicate rows.
+
+        Existing callers (monthly_cycle, amendment paths) keep the
+        default behaviour: ``decision_run_id=None`` → open a fresh
+        run; ``persist_input_analysts=True`` → persist as before.
+        """
         risk_caps = risk_caps or {}
         clock = now or _utcnow
 
@@ -212,29 +232,31 @@ class DecisionFlow:
         ]
 
         analysts_started_at = clock()
-        decision_run_id = await self._open_decision_run(
-            ticker=ticker, tier=tier, started_at=analysts_started_at
-        )
+        if decision_run_id is None:
+            decision_run_id = await self._open_decision_run(
+                ticker=ticker, tier=tier, started_at=analysts_started_at
+            )
 
-        # Persist analyst reports under this decision_id (so the API can
-        # join them later).
-        analyst_ids = await self._persist_agent_reports(
-            decision_run_id, analyst_reports
-        )
-        # Provenance Wave C — record analyst phase. No facilitator verdict;
-        # the TL;DR will list the participating analysts and confidences.
-        try:
-            await record_negotiation_phase(
-                user_id=self.user_id, decision_run_id=decision_run_id,
-                kind="analysts", started_at=analysts_started_at,
-                finished_at=clock(),
-                agent_report_ids=analyst_ids, verdict=None,
+        # Persist analyst reports + record the analysts phase — unless the
+        # caller (e.g. per_ticker_analysts) already did both.
+        if persist_input_analysts:
+            analyst_ids = await self._persist_agent_reports(
+                decision_run_id, analyst_reports
             )
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            _log.warning(
-                "decision_flow.record_phase_failed",
-                phase="analysts", run_id=decision_run_id, error=str(exc),
-            )
+            # Provenance Wave C — record analyst phase. No facilitator verdict;
+            # the TL;DR will list the participating analysts and confidences.
+            try:
+                await record_negotiation_phase(
+                    user_id=self.user_id, decision_run_id=decision_run_id,
+                    kind="analysts", started_at=analysts_started_at,
+                    finished_at=clock(),
+                    agent_report_ids=analyst_ids, verdict=None,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                _log.warning(
+                    "decision_flow.record_phase_failed",
+                    phase="analysts", run_id=decision_run_id, error=str(exc),
+                )
 
         # ---------------- Researcher debate ----------------
         debate_outcome: DebateOutcome | None = None

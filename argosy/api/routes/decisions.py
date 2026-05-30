@@ -31,6 +31,12 @@ from argosy.decisions.flow import (
     BlockedProposal,
     DecisionFlow,
 )
+from argosy.decisions.per_ticker_analysts import (
+    InsufficientAnalystQuorum,
+    close_decision_run_blocked,
+    open_decision_run_for_consult,
+    run_per_ticker_analysts,
+)
 from argosy.decisions.tiers import Tier, TierContext, apply_override_mode, resolve_tier
 from argosy.state import db as db_mod
 from argosy.state.models import (
@@ -102,6 +108,54 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
 
     analyst_reports = await _load_analyst_reports(body.user_id, body.analyst_report_ids)
 
+    # Per-ticker analyst generation for /consult-shape calls — when the
+    # caller (typically the /consult page) sends no pre-existing analyst
+    # report ids AND the tier is above T0, generate the 6 always-on
+    # analyst reports for this ticker before handing them to the flow.
+    # See `argosy.decisions.per_ticker_analysts` for the design rationale
+    # (codex BLOCKER fixes from 2026-05-30). T0 is intentionally
+    # excluded — its spec is "trader only, known watchlist ticker, no
+    # recent news" so it shouldn't go through /consult anyway.
+    pre_opened_run_id: int | None = None
+    persist_input_analysts = True
+    if not analyst_reports and tier != Tier.T0:
+        pre_opened_run_id = await open_decision_run_for_consult(
+            user_id=body.user_id, ticker=body.ticker, tier_value=tier.value,
+        )
+        try:
+            result = await run_per_ticker_analysts(
+                user_id=body.user_id,
+                ticker=body.ticker,
+                decision_run_id=pre_opened_run_id,
+            )
+        except InsufficientAnalystQuorum as exc:
+            # Close the pre-opened decision_run row so we don't leak an
+            # orphan at status='running' (codex BLOCKER fix 2026-05-30).
+            await close_decision_run_blocked(
+                decision_run_id=pre_opened_run_id, reason=exc.reason,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "analyst_quorum_failed",
+                    "reason": exc.reason,
+                    "succeeded": exc.succeeded,
+                    "failed": [{"role": r, "reason": why} for r, why in exc.failed],
+                    "decision_run_id": pre_opened_run_id,
+                },
+            ) from exc
+        except Exception:
+            # Any other failure in the per-ticker orchestrator also leaves
+            # the pre-opened row orphaned — close it before re-raising so
+            # FastAPI's default 500 handler doesn't leave it stuck.
+            await close_decision_run_blocked(
+                decision_run_id=pre_opened_run_id,
+                reason="per_ticker_analysts unexpected failure",
+            )
+            raise
+        analyst_reports = result.reports
+        persist_input_analysts = False
+
     flow = DecisionFlow(user_id=body.user_id, settings=settings)
     outcome = await flow.run(
         ticker=body.ticker,
@@ -112,6 +166,8 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
         user_constraints=body.user_constraints,
         risk_caps=body.risk_caps,
         account_class=body.account_class,  # type: ignore[arg-type]
+        decision_run_id=pre_opened_run_id,
+        persist_input_analysts=persist_input_analysts,
     )
 
     if isinstance(outcome, ApprovedProposal):

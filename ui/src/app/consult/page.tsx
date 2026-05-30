@@ -47,7 +47,13 @@ const ACTIONS: Array<{ value: ActionHint; label: string }> = [
   { value: "lean_sell", label: "Lean sell" },
 ];
 
-const TIERS = ["auto", "T0", "T1", "T2", "T3"] as const;
+// /consult is an ad-hoc ticker consultation surface. T0 ("trader only,
+// known watchlist ticker, no recent news") and "auto" (which resolves
+// to T0 with the consult page's sentinel portfolio_value_usd=1.0) both
+// produce a trader run with no analyst sources to cite — see SDD §3.3
+// + §4.1. The full-fleet tiers are the meaningful options here; T2
+// matches the SDD "9 analysts + 2-round debate + risk team + FM" shape.
+const TIERS = ["T1", "T2", "T3"] as const;
 
 function newRow(): InputRow {
   return {
@@ -75,7 +81,7 @@ function actionVariant(action: ActionHint): "success" | "error" | "secondary" {
 
 export default function ConsultPage() {
   const [rows, setRows] = useState<InputRow[]>([newRow()]);
-  const [tier, setTier] = useState<(typeof TIERS)[number]>("auto");
+  const [tier, setTier] = useState<(typeof TIERS)[number]>("T2");
   const [outcomes, setOutcomes] = useState<OutcomeRow[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
