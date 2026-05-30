@@ -857,6 +857,41 @@
   The motivating use case: Card 2923's fee-waiver promotion expires. The anomaly_detection agent notices the discount line disappeared from your Discount Bank statement, fires a RED report, the Home banner links here. You see "card-2923-fee-waiver · ALERT · last seen 2026-04-30." That's the moment of truth.
 </div>
 
+<h3 id="detail-anomaly-buckets">Transaction-level anomaly buckets — A / B / C / D</h3>
+
+<p>Separate from the watchlist-anomaly system above. The transaction-level detector reads <code>expense_transactions</code> on every ingest pass and flags rows across four buckets. Findings surface as <strong>inline badges on transaction rows</strong> in <span class="nav-card">/expenses</span> Transactions tab, and as an <strong>AnomalyHighlights card</strong> on the Home page when severity is amber-or-higher.</p>
+
+<ul>
+  <li><strong>Bucket A — amount outliers</strong>. Per-category weighted baseline (10%-trimmed mean + MAD around it, shrunken toward a global cross-category baseline when sample is small). A transaction is flagged when its amount is more than 3 robust-z from the per-category center. Groceries and dining have separate baselines so a NIS 800 dinner doesn't flag against a NIS 800 grocery run.</li>
+  <li><strong>Bucket B — watchlist + recurring</strong>. The 4-state machine for things like Card 2923's fee-waiver promotion: NORMAL → ALERT (line missing) → RESOLVED (line back) → DORMANT (auto-stops nagging after 2 missed cycles, so an expired promotion doesn't keep firing forever).</li>
+  <li><strong>Bucket C — novel merchant + category drift</strong>. New counterparty appears with a non-trivial amount; or a known counterparty's category changes mid-stream (mortgage bank suddenly classified as utility — probably a parser regression).</li>
+  <li><strong>Bucket D — cross-card duplicates</strong>. Same merchant + amount + date appears on two cards within a 48h window (genuine duplicate charge vs. expected — e.g. you ran the same card twice by mistake).</li>
+</ul>
+
+<p>Dismissing an inline badge marks the dedup_key as acknowledged so the same finding doesn't refire. Each bucket has its own dedup_key formula so a fresh occurrence (different month, different amount band) fires cleanly.</p>
+
+<div class="callout">
+  <div class="callout-title">When to come here</div>
+  Three-second triage. Open <span class="nav-card">/expenses</span> Transactions, glance for the colored dot on the row. Click for the inline tooltip ("amount 4.3× category baseline · groceries") — accept or dismiss. The Home AnomalyHighlights card surfaces the top 3 unacknowledged.
+</div>
+
+<h3 id="detail-upcoming-vests"><span class="nav-card">/retirement</span> + <span class="nav-card">/expenses/rsu</span> — Upcoming RSU vests</h3>
+
+<p>The <strong>UpcomingVestCard</strong> sits between the Holistic Timeline and the Verdict on <span class="nav-card">/retirement</span>, and at the top of <span class="nav-card">/expenses/rsu</span>. Projects the next four per-grant vests at +90d cadence from the latest historical vest. Per vest:</p>
+
+<ul>
+  <li>Header: <em>"Vesting in N days: K NVDA shares (grant ABC)"</em> + expected vest date.</li>
+  <li>Estimated gross USD using the latest NVDA spot price from the most-recent portfolio snapshot.</li>
+  <li>Three-scenario post-tax estimates: <strong>nominal</strong> (plan-assumed marginal rate, default 42%), <strong>effective</strong> (your prior-year filed rate, default 30%), <strong>conservative</strong> (max(47%, nominal+5%) — the supplemental-withholding worst case). The nominal column drives the allocation preview.</li>
+  <li>Allocation preview — if this cash lands today, where it would go per your plan targets (long-term focus by default).</li>
+  <li><em>"Add as life event →"</em> CTA prefills the <span class="nav-card">/life-events</span> form with the post-tax-nominal amount + vest date.</li>
+</ul>
+
+<div class="callout">
+  <div class="callout-title">When to come here</div>
+  Before a known vest. "I have $200K vesting in September — plan for it." This is the card that answers "if I take this honestly, what survives the tax shave + where does it go?"
+</div>
+
 <h3 id="detail-positions"><span class="nav-card">/positions</span> — Per-holding thesis cards</h3>
 
 <figure>
