@@ -234,12 +234,21 @@ function VestRow({ vest }: { vest: UpcomingVestDTO }) {
       )}
 
       <div className="flex justify-end">
-        <Link
-          href={prefillHref}
-          className="text-xs text-info hover:underline"
-        >
-          Add as life event →
-        </Link>
+        {prefillHref === DISABLED_PREFILL_HREF ? (
+          <span
+            className="text-xs text-muted-foreground cursor-not-allowed"
+            title="Estimate unavailable — cannot prefill a life event"
+          >
+            Add as life event →
+          </span>
+        ) : (
+          <Link
+            href={prefillHref}
+            className="text-xs text-info hover:underline"
+          >
+            Add as life event →
+          </Link>
+        )}
       </div>
     </div>
   );
@@ -325,17 +334,31 @@ function formatUsd(n: number): string {
   });
 }
 
+// Spec D §4.3 — UpcomingVestCard prefill contract update. New URL
+// shape carries the per-shape `delta_kind=one_shot` discriminator +
+// `one_shot_amount_usd` (positive = income, since post-tax RSU cash IS
+// income). NO `kind=other_asset_acquired` URL slot is needed anymore;
+// the page reads the new keys via `formFromPrefill()`.
+//
+// Codex IMPORTANT 5 (defensive): if `expected_post_tax_nominal_usd` is
+// negative or NaN (e.g. tax-rate >100% bug, missing FMV), don't emit a
+// wrong-direction prefill. Return the disabled-link bare URL and let
+// the renderer disable the CTA with a tooltip.
+const DISABLED_PREFILL_HREF = "/life-events?section=one_shot";
+
 function buildLifeEventHref(vest: UpcomingVestDTO): string {
-  // The /life-events page consumes these query params on mount (see
-  // sibling page edits). category + kind + target_date + amount are
-  // optional URL prefills; description is the human-readable note.
+  const raw = vest.expected_post_tax_nominal_usd;
+  if (!Number.isFinite(raw) || raw <= 0) {
+    return DISABLED_PREFILL_HREF;
+  }
+  const amount = Math.round(raw);
   const params = new URLSearchParams({
+    section: "one_shot",
     prefill_category: "asset_event",
     prefill_kind: "other_asset_acquired",
-    prefill_date: vest.expected_vest_date,
-    prefill_amount: String(
-      Math.round(vest.expected_post_tax_nominal_usd),
-    ),
+    prefill_delta_kind: "one_shot",
+    prefill_target_date: vest.expected_vest_date,
+    prefill_one_shot_amount_usd: String(amount),
     prefill_description: `RSU vest from grant ${vest.grant_id}`,
   });
   return `/life-events?${params.toString()}`;

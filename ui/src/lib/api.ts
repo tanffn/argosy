@@ -360,18 +360,49 @@ export interface VestMarkerDTO {
 }
 
 export interface LifeEventMarkerDTO {
-  date: string; // ISO YYYY-MM-DD
+  // Shape discriminator from Spec D (2026-05-29 cashflow redesign §5).
+  // Optional during the transition — when absent (current backend
+  // emits the legacy shape only), the card falls back to the legacy
+  // single-dot rendering using `date` + `amount_usd`.
+  delta_kind?:
+    | "one_shot"
+    | "recurring_every_n_years"
+    | "phase_change_start"
+    | "phase_change_end"
+    | "none";
+  // Legacy single-date field — still emitted by the current backend
+  // for every marker. Going forward delta_kind='none' markers may
+  // omit it; treat as optional.
+  date?: string; // ISO YYYY-MM-DD
   category: string;
   kind: string;
   amount_usd: number | null;
   description: string | null;
+  // Per-shape render fields (Spec D §5). Each set is populated only
+  // for the matching delta_kind; other shapes leave them null/absent.
+  // Backend service-layer expansion (retirement_timeline.py marker
+  // builder) is queued for a follow-on commit — until then these are
+  // typically absent and the card falls back to the `date` field.
+  one_shot_date?: string | null; // ISO YYYY-MM-DD
+  one_shot_amount_usd?: number | null;
+  // Recurring expander: all in-horizon occurrence dates the service
+  // pre-computed so the UI doesn't replicate the period math.
+  recurring_dates?: string[] | null;
+  recurring_amount_usd?: number | null;
+  phase_start_date?: string | null; // ISO YYYY-MM-DD
+  phase_end_date?: string | null; // ISO YYYY-MM-DD; null = open-ended
+  monthly_delta_usd?: number | null;
 }
 
 export interface RetireZoneDTO {
   scenario: "bear" | "base" | "bull";
   age_years: number;
   expected_date: string; // ISO YYYY-MM-DD
-  clamp_reason: string; // 'no_clamp_needed' | 'rsu_unvested' | 'life_event' | 'no_crossing'
+  // Spec D #3 (2026-05-29) removed 'life_event' from this union —
+  // the life-event clamp branch was deleted from
+  // effective_retire_ready_age. Life events now flow through the
+  // cashflow projection, not through a date-clamp pathway.
+  clamp_reason: string; // 'no_clamp_needed' | 'rsu_unvested' | 'no_crossing'
 }
 
 export interface HolisticTimelineDTO {
@@ -452,11 +483,22 @@ export type LifeEventCategory =
   | "recurring_expense"
   | "retirement_milestone";
 
+/** Spec D §1.1 — five-value cashflow-shape discriminator. */
+export type LifeEventDeltaKind =
+  | "one_shot"
+  | "recurring_every_n_years"
+  | "phase_change_start"
+  | "phase_change_end"
+  | "none";
+
 export interface LifeEventDTO {
   id: number;
   user_id: string;
   category: string;
   kind: string;
+  // Legacy columns — preserved for backwards-compat reads (Spec D
+  // commit #4 / #7-deferred). The cashflow engine reads only the
+  // per-shape columns; the UI prefers per-shape fields for rendering.
   target_date: string | null;
   amount_usd: number | null;
   recurring_years: number | null;
@@ -464,6 +506,22 @@ export interface LifeEventDTO {
   source_id: number | null;
   created_at: string;
   updated_at: string;
+  // Spec D commit #4 — per-shape columns.
+  delta_kind: LifeEventDeltaKind;
+  one_shot_amount_usd: number | null;
+  recurring_amount_usd: number | null;
+  recurring_period_years: number | null;
+  monthly_delta_usd: number | null;
+  phase_start_date: string | null;
+  phase_end_date: string | null;
+  fx_at_event: number | null;
+}
+
+/** Spec D §3.2 — per-category interaction-matrix entry from the catalog. */
+export interface LifeEventDeltaKindRules {
+  allowed_delta_kinds: LifeEventDeltaKind[];
+  default_delta_kind: LifeEventDeltaKind;
+  nudge: string;
 }
 
 export interface LifeEventsCatalog {
@@ -474,17 +532,41 @@ export interface LifeEventsCatalog {
    *  Known flags today: requires_amount, supports_recurring_years.
    *  Unknown flags are ignored by the UI. */
   field_rules_by_category: Record<string, Record<string, boolean>>;
+  /** Spec D commit #4 — per-category interaction matrix (§1.4).
+   *  Drives the cross-section validation in the UI ("this category
+   *  doesn't support this section's shape"). */
+  delta_kind_rules_by_category: Record<string, LifeEventDeltaKindRules>;
+  /** Spec D commit #4 — per-shape required-field map (§3.2). UI uses
+   *  this to drive field rendering AND to pre-validate before submit
+   *  so common errors don't round-trip through the server. */
+  required_fields_by_delta_kind: Record<string, string[]>;
+  /** Spec D commit #4 — per-shape forbidden-field map (§3.2). UI uses
+   *  this to refuse sending fields the server will 422 on. */
+  forbidden_fields_by_delta_kind: Record<string, string[]>;
 }
 
 export interface LifeEventsCreateRequest {
   user_id: string;
   category: LifeEventCategory;
   kind: string;
+  // Legacy fields (preserved for backwards compat with non-Spec-D
+  // callers); when delta_kind is supplied, prefer per-shape fields.
   target_date?: string;
   amount_usd?: number;
   recurring_years?: number;
   description?: string;
   source_id?: number;
+  // Spec D commit #4 — per-shape fields. delta_kind is the
+  // discriminator; the per-shape required / forbidden field rules are
+  // enforced server-side (see required_fields_by_delta_kind on the
+  // catalog) and surface as 422 `delta_shape_invalid`.
+  delta_kind?: LifeEventDeltaKind;
+  one_shot_amount_usd?: number;
+  recurring_amount_usd?: number;
+  recurring_period_years?: number;
+  monthly_delta_usd?: number;
+  phase_start_date?: string;
+  phase_end_date?: string;
 }
 
 /**
@@ -492,6 +574,10 @@ export interface LifeEventsCreateRequest {
  * shape. The form pattern-matches on `kind` to render the inline red
  * banner above itself. Anything else (network failure, unknown 422
  * shape) surfaces as a plain Error.
+ *
+ * Spec D commit #4 adds two new variants: `delta_kind_not_valid_for_category`
+ * (§1.4 matrix violation) and `delta_shape_invalid` (per-shape required /
+ * forbidden field rule violation).
  */
 export type LifeEventsCreateError =
   | {
@@ -503,6 +589,19 @@ export type LifeEventsCreateError =
       kind: "kind_not_valid_for_category";
       input: string;
       validKinds: string[];
+    }
+  | {
+      kind: "delta_kind_not_valid_for_category";
+      category: string;
+      deltaKind: string;
+      allowedDeltaKinds: string[];
+    }
+  | {
+      kind: "delta_shape_invalid";
+      deltaKind: string;
+      reason: "missing_required" | "forbidden_present";
+      missingFields: string[];
+      forbiddenFields: string[];
     };
 
 export interface PlanCurrentDTO {
@@ -1489,6 +1588,12 @@ export const api = {
           input?: string;
           valid_categories?: string[];
           valid_kinds?: string[];
+          category?: string;
+          delta_kind?: string;
+          allowed_delta_kinds?: string[];
+          reason?: "missing_required" | "forbidden_present";
+          missing_fields?: string[];
+          forbidden_fields?: string[];
         };
         if (d.error === "category_not_recognized") {
           throw {
@@ -1504,12 +1609,59 @@ export const api = {
             validKinds: d.valid_kinds ?? [],
           } as LifeEventsCreateError;
         }
+        // Spec D commit #4 — two new structured-422 variants.
+        if (d.error === "delta_kind_not_valid_for_category") {
+          throw {
+            kind: "delta_kind_not_valid_for_category",
+            category: d.category ?? "",
+            deltaKind: d.delta_kind ?? "",
+            allowedDeltaKinds: d.allowed_delta_kinds ?? [],
+          } as LifeEventsCreateError;
+        }
+        if (d.error === "delta_shape_invalid") {
+          throw {
+            kind: "delta_shape_invalid",
+            deltaKind: d.delta_kind ?? "",
+            reason: d.reason ?? "missing_required",
+            missingFields: d.missing_fields ?? [],
+            forbiddenFields: d.forbidden_fields ?? [],
+          } as LifeEventsCreateError;
+        }
       }
       throw new Error(
         `HTTP 422 for /api/life-events: ${JSON.stringify(detail)}`,
       );
     }
     throw new Error(`HTTP ${res.status} for /api/life-events`);
+  },
+  // Spec D commit #5 — PUT for in-place edits (description tweaks, etc.).
+  // Cross-shape transitions are refused by the server (see
+  // LifeEventUpdateRequest docstring in argosy/services/life_events.py);
+  // callers that need to change shape should DELETE + POST.
+  lifeEventsUpdate: async (
+    id: number,
+    payload: Partial<LifeEventsCreateRequest>,
+  ): Promise<LifeEventDTO> => {
+    const res = await fetch(apiUrl(`/api/life-events/${id}`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) return (await res.json()) as LifeEventDTO;
+    if (res.status === 422) {
+      let body: unknown = null;
+      try {
+        body = await res.json();
+      } catch {
+        // fall through
+      }
+      const detail =
+        (body as { detail?: unknown } | null)?.detail ?? body;
+      throw new Error(
+        `HTTP 422 for PUT /api/life-events/${id}: ${JSON.stringify(detail)}`,
+      );
+    }
+    throw new Error(`HTTP ${res.status} for PUT /api/life-events/${id}`);
   },
   lifeEventsDelete: async (id: number, userId: string): Promise<void> => {
     const res = await fetch(
@@ -1520,6 +1672,30 @@ export const api = {
     );
     if (!res.ok && res.status !== 204) {
       throw new Error(`HTTP ${res.status} for DELETE /api/life-events/${id}`);
+    }
+  },
+  // Spec D commit #5 / spec §1.5 — POST a one-time acknowledgment of
+  // the migration-conversion banner. Sets
+  // `users.life_events_migration_acknowledged_at` server-side.
+  //
+  // NOTE: as of this commit the backend route is not yet wired (spec
+  // §1.6). Callers should treat a 404 as "feature pending" and degrade
+  // to a client-side dismiss (the banner is informational, not a gate).
+  acknowledgeLifeEventsMigration: async (userId: string): Promise<void> => {
+    const res = await fetch(
+      apiUrl(
+        `/api/users/me/acknowledge-life-events-migration?user_id=${encodeURIComponent(userId)}`,
+      ),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId }),
+      },
+    );
+    if (!res.ok && res.status !== 204) {
+      throw new Error(
+        `HTTP ${res.status} for POST /api/users/me/acknowledge-life-events-migration`,
+      );
     }
   },
   planCurrent: (userId: string) =>
