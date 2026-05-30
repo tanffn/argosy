@@ -103,6 +103,31 @@ from argosy.services.predictions.writers import (
 logger = logging.getLogger(__name__)
 
 
+# Long-form alpha-report skip thresholds — kept in sync with
+# ``argosy/services/discord_listener.py``. Posts above either threshold
+# are deferred to the ``alpha_report_analyst`` Opus cron rather than
+# fed to the regex parser (which produced one false-positive
+# Prediction per long-form post when it hit the first matching
+# pattern inside paragraphs of prose).
+LONG_FORM_BODY_CHAR_THRESHOLD: int = 500
+LONG_FORM_NEWLINE_THRESHOLD: int = 5
+
+
+def _is_long_form_alpha_report(text: str | None) -> bool:
+    """True when ``text`` is a long-form post the regex parser should
+    not attempt. Mirror of
+    :func:`argosy.services.discord_listener._is_long_form_alpha_report`
+    — duplicated rather than imported to avoid a service-layer ->
+    listener-layer dependency cycle."""
+    if not text:
+        return False
+    if len(text) > LONG_FORM_BODY_CHAR_THRESHOLD:
+        return True
+    if text.count("\n") > LONG_FORM_NEWLINE_THRESHOLD:
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -164,6 +189,12 @@ class BackfillSummary:
     messages_unparseable
         Messages whose body did not yield a (ticker, direction) pair
         via the parser — skipped, not written.
+    messages_long_form_skipped
+        Messages skipped because they were long-form (> 500 chars OR
+        > 5 newlines) and so are handled by the
+        ``alpha_report_analyst`` cron instead of the regex parser.
+        Reported separately from ``messages_unparseable`` so the
+        operator can see how many posts deferred to the LLM path.
     pages_fetched
         Number of paginated REST calls made.
     errors
@@ -178,6 +209,7 @@ class BackfillSummary:
     predictions_written: int = 0
     predictions_deduped: int = 0
     messages_unparseable: int = 0
+    messages_long_form_skipped: int = 0
     pages_fetched: int = 0
     errors: list[str] = field(default_factory=list)
     creds_path: str | None = None
@@ -194,6 +226,7 @@ class BackfillSummary:
             "predictions_written": self.predictions_written,
             "predictions_deduped": self.predictions_deduped,
             "messages_unparseable": self.messages_unparseable,
+            "messages_long_form_skipped": self.messages_long_form_skipped,
             "pages_fetched": self.pages_fetched,
             "errors": list(self.errors),
             "creds_path": self.creds_path,
@@ -590,6 +623,25 @@ async def backfill_discord_predictions(
                 if attachment_text
                 else msg_content
             )
+
+            # Long-form alpha-report skip — defer to the
+            # ``alpha_report_analyst`` cron for posts that the regex
+            # parser would mis-handle (multi-page commentary produces
+            # one false-positive Prediction per first-matching pattern
+            # in the prose). The NewsSignal row was already INSERTed
+            # by an upstream ingest path; the analyst cron picks up
+            # signals without an ``alpha_report_analyses`` row.
+            if _is_long_form_alpha_report(effective_text):
+                logger.debug(
+                    "discord_backfill: skipping regex parser, long-form "
+                    "report; analyst will handle (msg_id=%s, len=%d, "
+                    "newlines=%d)",
+                    msg_id,
+                    len(effective_text or ""),
+                    (effective_text or "").count("\n"),
+                )
+                summary.messages_long_form_skipped += 1
+                continue
 
             call = extract_alpha_call_from_text(effective_text)
             if call is None:

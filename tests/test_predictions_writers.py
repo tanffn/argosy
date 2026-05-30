@@ -27,6 +27,7 @@ from sqlalchemy.orm import sessionmaker
 
 from argosy.services.predictions.parsers import extract_alpha_call_from_text
 from argosy.services.predictions.writers import (
+    DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT,
     DEFAULT_TIMEFRAME_DAYS_DISCORD,
     DEFAULT_TIMEFRAME_DAYS_MONITOR,
     DEFAULT_TIMEFRAME_DAYS_NEWS_HIGH,
@@ -34,6 +35,7 @@ from argosy.services.predictions.writers import (
     DEFAULT_TIMEFRAME_DAYS_OBSERVER,
     DEFAULT_TIMEFRAME_DAYS_THESIS,
     LONG_HORIZON_CAP_DAYS,
+    write_alpha_report_prediction,
     write_discord_prediction,
     write_monitor_flag_prediction,
     write_news_signal_prediction,
@@ -633,7 +635,7 @@ def test_extract_alpha_call_ignores_isolated_direction_keyword():
 
 
 def test_source_enums_match_check_constraint(sync_session):
-    """Each writer's source value matches the migration 0050 CHECK enum.
+    """Each writer's source value matches the migration 0050 / 0058 CHECK enum.
 
     A failed CHECK would surface as IntegrityError at flush; this test
     pins the writer-to-enum binding by inserting one row per writer +
@@ -660,13 +662,114 @@ def test_source_enums_match_check_constraint(sync_session):
         sync_session, USER, monitor_flag_id=1, kind="allocation_drift",
         severity="warning", event_at=EVENT_AT,
     )
+    write_alpha_report_prediction(
+        sync_session, USER, analysis_id=1, news_signal_id=1,
+        ticker="NVDA", direction="long", kind="signal",
+        event_at=EVENT_AT,
+    )
     sync_session.commit()
 
     sources = sorted(sync_session.scalars(sa.select(Prediction.source)).all())
     assert sources == [
         "discord",
+        "discord_alpha_report",
         "internal_monitor_flags",
         "internal_news_signal_analyst",
         "internal_per_position_thesis",
         "internal_state_observer",
     ]
+
+
+# ---------------------------------------------------------------------------
+# write_alpha_report_prediction — migration 0058 source
+# ---------------------------------------------------------------------------
+
+
+def test_write_alpha_report_prediction_inserts_clean_row(sync_session):
+    """Writer inserts a Prediction with the new source + dedup key shape."""
+    row = write_alpha_report_prediction(
+        sync_session,
+        USER,
+        analysis_id=42,
+        news_signal_id=100,
+        ticker="NVDA",
+        direction="long",
+        kind="signal",
+        event_at=EVENT_AT,
+        timeframe_days=30,
+        raw_text_ref="news_signals.id:100",
+    )
+    sync_session.commit()
+
+    assert row.id is not None
+    assert row.source == "discord_alpha_report"
+    assert row.ticker == "NVDA"
+    assert row.direction == "long"
+    assert row.timeframe_days == 30
+    assert row.evaluation_method == "fixed_lookahead_30d"
+    assert _due_at_aware(row) == EVENT_AT + timedelta(days=30)
+    # dedup key formula — v1|predictions|discord_alpha_report|<analysis_id>.<ticker>.<kind>
+    assert row.message_id == "v1|predictions|discord_alpha_report|42.NVDA.signal"
+
+
+def test_write_alpha_report_prediction_signal_and_pick_distinct(sync_session):
+    """Same (analysis_id, ticker) with different `kind` → two rows."""
+    sig = write_alpha_report_prediction(
+        sync_session, USER, analysis_id=42, news_signal_id=100,
+        ticker="AAPL", direction="long", kind="signal", event_at=EVENT_AT,
+    )
+    pick = write_alpha_report_prediction(
+        sync_session, USER, analysis_id=42, news_signal_id=100,
+        ticker="AAPL", direction="long", kind="pick", event_at=EVENT_AT,
+    )
+    sync_session.commit()
+    assert sig.id != pick.id
+    assert sig.message_id != pick.message_id
+    # Same ticker, distinct rows.
+    rows = sync_session.execute(
+        sa.select(Prediction).where(Prediction.ticker == "AAPL")
+    ).scalars().all()
+    assert len(rows) == 2
+
+
+def test_write_alpha_report_prediction_idempotent(sync_session):
+    """Re-running with the same (analysis_id, ticker, kind) returns same row."""
+    a = write_alpha_report_prediction(
+        sync_session, USER, analysis_id=42, news_signal_id=100,
+        ticker="NVDA", direction="long", kind="signal", event_at=EVENT_AT,
+    )
+    sync_session.commit()
+    b = write_alpha_report_prediction(
+        sync_session, USER, analysis_id=42, news_signal_id=100,
+        ticker="NVDA", direction="long", kind="signal", event_at=EVENT_AT,
+    )
+    sync_session.commit()
+    assert a.id == b.id
+    count = sync_session.scalar(
+        sa.select(sa.func.count(Prediction.id)).where(
+            Prediction.source == "discord_alpha_report"
+        )
+    )
+    assert count == 1
+
+
+def test_write_alpha_report_prediction_invalid_kind_raises(sync_session):
+    with pytest.raises(ValueError, match="kind"):
+        write_alpha_report_prediction(
+            sync_session, USER, analysis_id=1, news_signal_id=1,
+            ticker="X", direction="long", kind="garbage",  # type: ignore[arg-type]
+            event_at=EVENT_AT,
+        )
+
+
+def test_write_alpha_report_prediction_default_timeframe_caps_at_30d(sync_session):
+    """timeframe_days=None falls back to 180; evaluator window caps at 30d
+    (spec §5.5 long-horizon cap)."""
+    row = write_alpha_report_prediction(
+        sync_session, USER, analysis_id=1, news_signal_id=1,
+        ticker="X", direction="long", kind="pick", event_at=EVENT_AT,
+    )
+    sync_session.commit()
+    assert row.timeframe_days == DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT
+    assert row.evaluation_method == "fixed_lookahead_30d"
+    assert _due_at_aware(row) == EVENT_AT + timedelta(days=LONG_HORIZON_CAP_DAYS)

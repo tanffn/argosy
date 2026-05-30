@@ -2191,6 +2191,115 @@ class StateSnapshot(Base):
     )
 
 
+class AlphaReportAnalysis(Base):
+    """LLM-structured analysis of one long-form Discord alpha report.
+
+    Stage 2 of the Discord alpha-report pipeline: the deterministic
+    ``extract_alpha_call_from_text`` regex handles tight messages
+    (``BUY $NVDA target $150 stop $130``); long-form posts
+    (Meet Kevin "Morning Brief" / multi-page commentary > 500 chars or
+    > 5 newlines) are skipped by the regex path and instead consumed
+    by the ``alpha_report_analyst`` Opus agent which extracts:
+
+      * Macro tone + tone confidence (drives state.macro.recent_news_summary;
+        the state_observer reads it as ONE input among many — no hardcoded
+        "3 bearish reports → flag" detector per
+        ``feedback_emergent_anomaly_detection``).
+      * Per-ticker signals (sentiment + conviction + timeframe + action
+        hint) → fan out to ``predictions`` rows with
+        ``source='discord_alpha_report'``.
+      * Structural picks (long_term_basket / rate_play / AI_play /
+        defensive / speculative / other) → fan out to ``predictions``
+        rows with long-bias + 180-day timeframe.
+      * Cautions (free-form short warnings) — recorded here; ONLY
+        cautions with a severity-warning hint promote to a MonitorFlag
+        with ``kind='alpha_report_caution'``.
+      * Index targets ({"QQQ": 738.5, "SPX": 5800.0}) — recorded for
+        future state-observer divergence checks.
+
+    Idempotency: ``UniqueConstraint(news_signal_id)`` enforces "at most
+    one analysis per NewsSignal" at the DB layer. The runner SELECTs
+    first and returns the existing row on re-runs (so downstream
+    Prediction writes don't double-fire either — the per-source dedup
+    keys in ``predictions.message_id`` are the second-layer guard).
+
+    Replay safety: ``agent_version`` defaults ``'v1'`` and is bumped
+    when the prompt / output schema evolves. Historical rows keep
+    their original version so a v2 consumer can fall back to v1
+    parsing when reading old rows.
+
+    CHECK constraints (declared in migration 0058, not here, per the
+    ``StateSnapshot`` precedent):
+      * ``macro_tone`` IN ('bullish', 'cautiously_bullish', 'mixed',
+        'cautiously_bearish', 'bearish').
+      * ``macro_tone_confidence`` / ``confidence_overall`` IN
+        ('low', 'medium', 'high').
+      * ``json_valid()`` on each of the five JSON columns.
+
+    Migration: alembic 0058.
+    """
+
+    __tablename__ = "alpha_report_analyses"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    news_signal_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("news_signals.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    analyzed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    # CHECK enums in migration 0058.
+    macro_tone: Mapped[str] = mapped_column(Text, nullable=False)
+    macro_tone_confidence: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )
+    # JSON list of theme tags (e.g. ["AI cycle", "rate cuts", "tariffs"]).
+    key_themes: Mapped[str] = mapped_column(Text, nullable=False)
+    # 2-3 sentence rationale from the LLM.
+    summary_rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON list of TickerSignal dicts.
+    ticker_signals_json: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )
+    # JSON list of StructuralPick dicts.
+    structural_picks_json: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )
+    # JSON list of short caution strings.
+    cautions_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # JSON map {symbol: float}, e.g. {"QQQ": 738.5, "SPX": 5800.0}.
+    index_targets_json: Mapped[str] = mapped_column(
+        Text, nullable=False
+    )
+    confidence_overall: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_version: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=_sa_text("'v1'"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "news_signal_id",
+            name="uq_alpha_report_analyses_news_signal_id",
+        ),
+    )
+
+
 class RsuVestEvent(Base):
     """Historical RSU vest event extracted from Schwab Equity Awards CSV.
 

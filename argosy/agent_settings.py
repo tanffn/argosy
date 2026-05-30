@@ -136,6 +136,18 @@ class CadencesBlock(BaseModel):
             enabled=True, cron="0 3 * * *", timezone="Asia/Jerusalem"
         )
     )
+    # Long-form Discord alpha-report analyst — 18:00 Asia/Jerusalem
+    # daily, one hour after the news pipeline (17:00 IDT) so all
+    # NewsSignal rows from the day's Discord posts have landed before
+    # the analyst classifies them. See
+    # ``argosy/orchestrator/loops/alpha_report_analyst.py`` for the
+    # schedule rationale. Batch limit lives on the loop constructor;
+    # this CadenceConfig owns only the schedule.
+    alpha_report_analyst: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(
+            enabled=True, cron="0 18 * * *", timezone="Asia/Jerusalem"
+        )
+    )
     # Sprint E commit #8 — weekly email digest. 08:00 Asia/Jerusalem
     # on Fridays per Ariel's locked decision in spec §7.3 (digest
     # lands before the weekend so the user reads it over coffee).

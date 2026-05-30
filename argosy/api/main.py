@@ -590,6 +590,41 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # Long-form Discord alpha-report analyst loop. Gated on
+        # ``cadences.alpha_report_analyst.enabled`` (default True).
+        # 18:00 IDT daily — one hour after the news pipeline so all
+        # Discord NewsSignals from the day are landed before the
+        # analyst classifies them. source_kind='analyst' (sibling to
+        # news_signal_analyst).
+        try:
+            from argosy.orchestrator.loops.alpha_report_analyst import (  # noqa: PLC0415
+                AlphaReportAnalystLoop,
+                alpha_report_analyst_metadata,
+            )
+
+            ara_cfg = load_agent_settings(
+                "ariel"
+            ).cadences.alpha_report_analyst
+            if ara_cfg.enabled:
+                ara_loop = AlphaReportAnalystLoop(
+                    schedule=LoopSchedule.from_config(ara_cfg),
+                    enabled=True,
+                    user_id="ariel",
+                )
+                scheduler.register_loop(ara_loop)
+                registry.register(
+                    job=ara_loop,
+                    metadata=alpha_report_analyst_metadata(),
+                )
+                log.info(
+                    "scheduler.alpha_report_analyst_registered"
+                )
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.alpha_report_analyst_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Sprint E commit #8 — WeeklyEmailDigestLoop. Gated on
         # ``cadences.weekly_email_digest.enabled`` (default True).
         # 08:00 IDT Fridays per Ariel's locked decision in spec §7.3

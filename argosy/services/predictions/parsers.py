@@ -24,13 +24,24 @@ from typing import Literal
 _DIRECTION_LONG: tuple[str, ...] = ("BUY", "LONG", "ADD", "BULL", "BULLISH")
 _DIRECTION_SHORT: tuple[str, ...] = ("SELL", "SHORT", "TRIM", "BEAR", "BEARISH")
 
-# Alpha-call regex — captures (direction_kw, optional $, ticker). Ticker
-# is 1-5 uppercase letters per US-equity convention; word boundaries on
-# both sides so "BUY SELLING" doesn't match (SELLING isn't a ticker).
+# Alpha-call regex — captures (direction_kw, optional $, ticker).
+#
+# Direction kw is case-insensitive (the channel writes "BUY" / "Buy" /
+# "buy" interchangeably). Ticker portion is case-sensitive uppercase
+# via (?-i:...) inline flag — `\$?(?-i:[A-Z]{1,5})\b`. Codex IMPORTANT
+# (2026-05-30 manual ingest of 7 Meet Kevin alpha-report .txt files
+# exposed this): without the per-group case clamp, the boilerplate
+# phrase "Buy low, sell high!" present in every report was matching as
+# BUY + low → LOW (Lowe's Companies) — every report produced the same
+# bogus prediction. Per-group case-sensitivity eliminates the false
+# positive because "low" is lowercase and doesn't match [A-Z]{1,5}.
+#
+# Word boundaries on both sides so "BUY SELLING" doesn't match
+# (SELLING isn't a ticker).
 _ALPHA_CALL_RE = re.compile(
     r"\b("
     + "|".join(_DIRECTION_LONG + _DIRECTION_SHORT)
-    + r")\s+\$?([A-Z]{1,5})\b",
+    + r")\s+\$?(?-i:([A-Z]{1,5}))\b",
     re.IGNORECASE,
 )
 

@@ -53,6 +53,34 @@ Total: ~45 commits in the autonomous block. Backend tests green under `pytest -m
 
 **Codex coverage status:** every commit that involved money math / LLM prompt / migration / parser / scheduler had a codex tandem session at `tools/codex-tandem/sessions/2026-05-{29,30}-*/`. All BLOCKERs integrated before commit. Nothing left in queue.
 
+### Post-block follow-on — Alpha-report LLM analyst (replaces regex on long-form posts)
+
+The manual-ingest path (`argosy/scripts/manual_alpha_report_ingest.py`) pulled 7 Meet Kevin alpha-report `.txt` files into `news_signals`. The deterministic extractor handled the multi-ticker + sentiment + keywords well (15-17 tickers per report, sentiment classified, themes captured). But the `extract_alpha_call_from_text` regex (parsers.py) produced 1 false-positive prediction per report — every report has the boilerplate phrase "Buy low, sell high!" which matched as `BUY + LOW` (Lowe's Companies) under the case-insensitive regex.
+
+User direction (verbatim): "I don't think the parse should be a script, it should be an LLM with a skill tailored for it" + "maybe the *tone* of the text is more important then the specific ticker."
+
+`argosy/agents/alpha_report_analyst.py` (754 lines, Opus, registered with high effort + 12000 max-tokens) replaces the regex for long-form posts. Tone-first system prompt; tainted-data tagging on the report body with closing-tag scrub (codex BLOCKER fix — `</alpha_report>` literal substring in user content would otherwise break out of the wrapper). Structured output schema:
+
+| Field | Shape | Purpose |
+|---|---|---|
+| `macro_tone` | enum: bullish / cautiously_bullish / mixed / cautiously_bearish / bearish | Daily author mood |
+| `key_themes` | list[str] | Cross-day theme tracking |
+| `ticker_signals` | list[{ticker, sentiment, conviction, timeframe, action_hint, context_excerpt}] | Per-ticker mention with author opinion + soft action hint |
+| `structural_picks` | list[{ticker, kind, conviction, rationale}] | Long-term basket picks (the "MEGA LONG-TERM" section) |
+| `cautions` | list[str] | Forward-looking warnings; promoted to MonitorFlag only when severity-hint substrings match |
+| `index_targets` | dict[index, target_level] | Hard numbers; state observer can flag divergence later |
+| `confidence_overall` | enum | How parseable was this report? |
+
+`alpha_report_analyst_runner.py` orchestrates: idempotent on `news_signal_id`, writes one `AlphaReportAnalysis` row + per-ticker `Prediction` rows (source='discord_alpha_report', new enum value) + structural-pick predictions + selective MonitorFlags for cautions. Scheduled as a CadenceLoop at 18:00 IDT (one hour after `news_daily` at 17:00 so signals are landed first).
+
+The regex parser stays in place for tight short-form posts (e.g. "BUY $NVDA target $150 stop $130") — `_maybe_write_discord_prediction` skips the regex when `len(text) > 500 OR text.count('\n') > 5`. Listener + backfill share the same skip predicate. Codex BLOCKER 2 fix: the runner's batch SELECT mirrors the full OR-condition via SQLite-portable newline-count expression so newline-dense short posts (400 chars / 8 newlines) don't fall through both gates.
+
+User-locked decisions honored: structural picks → predictions only (no action_proposals); macro tone → recorded only (state_observer reads emergently, no hardcoded "N bearish reports → flag" detector per [[feedback_emergent_anomaly_detection]]); per-ticker signals get `source='discord_alpha_report'` so source_reliability scores Meet Kevin's track record on a per-call basis over time.
+
+Migration 0058 adds the `alpha_report_analyses` table + extends `predictions.source` CHECK with `discord_alpha_report` + extends `monitor_flags.kind` CHECK with `alpha_report_caution`. Symmetric upgrade/downgrade preflights.
+
+103 affected tests green. 37 new tests cover post-validate, tag-scrub, idempotency, listener skip, batch select mirror, hallucination drop, oversized-array caps.
+
 ### Post-block follow-on — Discord text-attachment fetching
 
 After Ariel restarted the backend + UI for the first time, the live Discord listener connected fine but live ingest revealed an architectural gap: the alpha-report channel posts daily as `.txt` file attachments (filenames like `Alpha Report 5-29-2026.txt`), not as inline message text. The original listener + Spec C #7 backfill processed only `message.content`, so attachment bodies were silently dropped.

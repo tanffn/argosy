@@ -98,6 +98,16 @@ DEFAULT_TIMEFRAME_DAYS_THESIS: int = 30
 DEFAULT_TIMEFRAME_DAYS_OBSERVER: int = 30
 DEFAULT_TIMEFRAME_DAYS_MONITOR: int = 30
 
+#: Alpha-report fanout default (long-bias structural picks). The runner
+#: passes per-signal timeframe values (short=7, medium=30, long=180)
+#: for per-ticker signals; structural picks fall back to this
+#: long-horizon default. The write_alpha_report_prediction writer caps
+#: at LONG_HORIZON_CAP_DAYS via the shared method selector so the
+#: evaluator's due-at fires at 30 days even when the source asserts
+#: 180 days (§5.5 — the evaluator can re-fire on a fresh prediction
+#: when the next analyst run re-confirms the structural pick).
+DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT: int = 180
+
 
 # ---------------------------------------------------------------------------
 # Per-source message_id (== dedup_key) formulas — spec §2.2
@@ -197,6 +207,36 @@ def _monitor_flag_message_id(*, monitor_flag_id: int | str) -> str:
     if monitor_flag_id is None or monitor_flag_id == "":
         raise ValueError("monitor_flag prediction needs a non-empty monitor_flag_id")
     return f"{DEDUP_KEY_VERSION}|predictions|mf|{monitor_flag_id}"
+
+
+def _alpha_report_message_id(
+    *, analysis_id: int | str, ticker: str, kind: str
+) -> str:
+    """``v1|predictions|discord_alpha_report|<analysis_id>.<ticker>.<kind>``.
+
+    Per-(analysis, ticker, kind) granularity so a single AlphaReportAnalysis
+    that emits BOTH a per-ticker signal AND a structural pick for the same
+    ticker writes TWO distinct prediction rows (they're separate predictions
+    — one is a tactical opinion, the other a structural-portfolio bet).
+    ``kind`` is one of ``'signal'`` or ``'pick'`` to disambiguate.
+    """
+    if analysis_id is None or analysis_id == "":
+        raise ValueError(
+            "alpha_report prediction needs a non-empty analysis_id"
+        )
+    if not ticker:
+        raise ValueError(
+            "alpha_report prediction needs a non-empty ticker"
+        )
+    if kind not in ("signal", "pick"):
+        raise ValueError(
+            f"alpha_report prediction kind must be 'signal' or 'pick'; "
+            f"got {kind!r}"
+        )
+    return (
+        f"{DEDUP_KEY_VERSION}|predictions|discord_alpha_report|"
+        f"{analysis_id}.{ticker.upper()}.{kind}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -799,8 +839,91 @@ def write_monitor_flag_prediction(
     )
 
 
+def write_alpha_report_prediction(
+    session: Session,
+    user_id: str,
+    *,
+    analysis_id: int | str,
+    news_signal_id: int,
+    ticker: str,
+    direction: Literal["long", "short", "neutral"],
+    kind: Literal["signal", "pick"],
+    event_at: datetime,
+    timeframe_days: int | None = None,
+    raw_text_ref: str | None = None,
+) -> Prediction:
+    """Write a prediction row sourced from an AlphaReportAnalysis.
+
+    The alpha_report_analyst fans out each TickerSignal + StructuralPick
+    into its own prediction row so the ledger can score the analyst's
+    per-ticker calls independently. Caller is
+    :mod:`argosy.services.alpha_report_analyst_runner` which decides
+    direction + timeframe per-row based on the structured output's
+    sentiment / kind / timeframe enum.
+
+    Anti-collision: ``(source='discord_alpha_report', message_id=
+    v1|predictions|discord_alpha_report|<analysis_id>.<ticker>.<kind>)``.
+    Re-running the runner on the same news_signal returns the existing
+    AlphaReportAnalysis row → caller passes the same ``analysis_id``
+    → this writer dedup-hits.
+
+    Args:
+      session: live SQLAlchemy session. Caller owns the outer transaction.
+      user_id: tenant id.
+      analysis_id: the AlphaReportAnalysis row's PK — the per-analysis
+        dedup partition.
+      news_signal_id: the underlying NewsSignal row's PK — stored in
+        ``source_ref`` for traceability.
+      ticker: the ticker the signal/pick is about.
+      direction: ``"long"`` / ``"short"`` / ``"neutral"``. Caller's
+        mapping: positive sentiment → long, negative → short, neutral
+        → neutral; structural picks always long (Meet Kevin's bias).
+      kind: ``"signal"`` (TickerSignal) or ``"pick"`` (StructuralPick).
+        Stored on the dedup key so a ticker that appears in BOTH
+        produces two rows (different prediction questions: tactical
+        vs structural).
+      event_at: the NewsSignal's ``received_at`` — real-world prediction
+        time per spec §2.3 (analyzed_at would be 1+ hour later and
+        introduce hindsight bias).
+      timeframe_days: per-signal timeframe (caller maps from the
+        TickerSignal.timeframe enum: short=7, medium=30, long=180,
+        unspecified=30). The shared method selector caps at 30 days
+        via spec §5.5.
+      raw_text_ref: pointer to ``news_signals.id:<id>`` for citation
+        display. NEVER injected into LLM prompts.
+
+    Returns:
+      Persisted ``Prediction`` row (or existing row on idempotent re-run).
+    """
+    dedup_id = _alpha_report_message_id(
+        analysis_id=analysis_id, ticker=ticker, kind=kind,
+    )
+    return _insert_prediction(
+        session,
+        user_id,
+        source="discord_alpha_report",
+        source_ref={
+            "analysis_id": analysis_id,
+            "news_signal_id": int(news_signal_id),
+            "ticker": ticker.upper(),
+            "kind": kind,
+        },
+        message_id=dedup_id,
+        ticker=ticker.upper(),
+        direction=direction,
+        event_at=event_at,
+        timeframe_days=(
+            timeframe_days
+            if timeframe_days is not None
+            else DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT
+        ),
+        raw_text_ref=raw_text_ref,
+    )
+
+
 __all__ = [
     "DEDUP_KEY_VERSION",
+    "DEFAULT_TIMEFRAME_DAYS_ALPHA_REPORT",
     "DEFAULT_TIMEFRAME_DAYS_DISCORD",
     "DEFAULT_TIMEFRAME_DAYS_MONITOR",
     "DEFAULT_TIMEFRAME_DAYS_NEWS_HIGH",
@@ -809,6 +932,7 @@ __all__ = [
     "DEFAULT_TIMEFRAME_DAYS_THESIS",
     "LONG_HORIZON_CAP_DAYS",
     "discord_message_id",
+    "write_alpha_report_prediction",
     "write_discord_prediction",
     "write_monitor_flag_prediction",
     "write_news_signal_prediction",

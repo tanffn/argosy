@@ -94,6 +94,38 @@ from argosy.state.models import NewsSignal
 logger = logging.getLogger(__name__)
 
 
+# Long-form alpha-report skip thresholds — kept module-level so tests can
+# pin contracts via inspection. Mirrors the same constants in
+# ``argosy/services/predictions/discord_backfill.py``. Posts longer than
+# ``LONG_FORM_BODY_CHAR_THRESHOLD`` chars OR with more than
+# ``LONG_FORM_NEWLINE_THRESHOLD`` newlines are routed to the
+# ``alpha_report_analyst`` Opus pipeline instead of the regex parser
+# (which produces one false-positive ``Prediction`` per long post).
+LONG_FORM_BODY_CHAR_THRESHOLD: int = 500
+LONG_FORM_NEWLINE_THRESHOLD: int = 5
+
+
+def _is_long_form_alpha_report(text: str | None) -> bool:
+    """True when ``text`` is a long-form post that the regex parser
+    should NOT attempt — the ``alpha_report_analyst`` cron handles
+    these instead.
+
+    Why both thresholds: a length-only gate misses short multi-paragraph
+    posts (a 400-char post with 8 newlines is still long-form
+    commentary); a newline-only gate misses a 2-KB single-paragraph
+    rant. OR-ing both is generous on the safe side — false-positive
+    long-form classifications just defer the regex parse to the next
+    cron, which is harmless.
+    """
+    if not text:
+        return False
+    if len(text) > LONG_FORM_BODY_CHAR_THRESHOLD:
+        return True
+    if text.count("\n") > LONG_FORM_NEWLINE_THRESHOLD:
+        return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Credentials
 # ---------------------------------------------------------------------------
@@ -552,8 +584,27 @@ def _maybe_write_discord_prediction(
     Per [[feedback_ask_dont_assume]] the writer is best-effort: any
     failure here logs + swallows so a bad prediction write never blocks
     a legitimate NewsSignal ingest.
+
+    Long-form skip (alpha_report_analyst contract): the regex parser
+    is designed for tight messages (``BUY $NVDA target $150 stop $130``).
+    Long-form Discord posts (multi-page Meet Kevin-style commentary)
+    were producing one false-positive prediction per post when the
+    regex hit the first matching pattern inside paragraphs of prose.
+    For ``len > 500`` chars OR ``> 5`` newlines we skip — the
+    :func:`alpha_report_analyst_runner.run_pending_batch` cron picks
+    up these posts and runs the Opus analyst instead. Tight messages
+    keep the regex path.
     """
     parse_text = effective_text if effective_text is not None else event.content
+    if _is_long_form_alpha_report(parse_text):
+        logger.debug(
+            "discord_listener: skipping regex parser, long-form report; "
+            "analyst will handle (message_id=%s, len=%d, newlines=%d)",
+            event.message_id,
+            len(parse_text or ""),
+            (parse_text or "").count("\n"),
+        )
+        return
     call = extract_alpha_call_from_text(parse_text)
     if call is None:
         return
