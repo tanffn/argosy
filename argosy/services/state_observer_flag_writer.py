@@ -449,6 +449,21 @@ def write_observer_flags(
                 now=now,
             )
 
+            # Spec E commit #4 — observer→replan dispatcher wiring.
+            # GATE on actionable severity (>= warning) per spec §4.2:
+            # info-band fires never warrant a replan. The dispatcher
+            # itself enforces the FULL gate matrix (mapping table +
+            # cooldown + global cap + severity floor); we just
+            # invoke it from here.  Best-effort: any failure logs +
+            # swallows so a dispatcher issue never breaks the flag-
+            # write batch.
+            _maybe_dispatch_replan_safe(
+                session,
+                observer_flag_row=row,
+                severity=str(cand.severity),
+                now=now,
+            )
+
         except SQLAlchemyError as exc:  # noqa: PERF203 — per-cand guard
             # Catch-all for non-Integrity DB errors (e.g. operational
             # errors, programming errors). Roll back the bad partial
@@ -656,6 +671,48 @@ def _maybe_write_observer_prediction(
             extra={
                 "observer_flag_id": observer_flag_row.id,
                 "primary_field": primary_field,
+            },
+            exc_info=True,
+        )
+
+
+def _maybe_dispatch_replan_safe(
+    session: "Session",
+    *,
+    observer_flag_row: MonitorFlag,
+    severity: str,
+    now: datetime,
+) -> None:
+    """Spec E commit #4 — invoke the observer→replan dispatcher.
+
+    Gates on ``severity in {warning, critical}`` per spec §4.2 — info
+    band fires never warrant a replan.  The dispatcher itself enforces
+    the full gate matrix (mapping table + cooldown + global cap +
+    severity floor + critical-only auto-fire).
+
+    Best-effort: any failure logs + swallows so a dispatcher issue
+    never breaks the observer's flag-write batch.  The dispatcher
+    OWNS its own ``BEGIN IMMEDIATE`` transaction internally; we pass
+    the same session so the dispatcher can read against the just-
+    committed flag row.
+    """
+    if severity not in ("warning", "critical"):
+        return
+    if observer_flag_row.id is None:
+        return
+    try:
+        # Late import so the observer module can be imported in
+        # contexts where the dispatcher module isn't on the path
+        # (e.g. minimal test fixtures).
+        from argosy.services.replan_dispatcher import maybe_dispatch_replan
+
+        maybe_dispatch_replan(session, observer_flag_row, now=now)
+    except Exception:  # noqa: BLE001 — never break observer batch
+        _log.warning(
+            "state_observer_flag_writer.replan_dispatch_failed",
+            extra={
+                "observer_flag_id": observer_flag_row.id,
+                "severity": severity,
             },
             exc_info=True,
         )

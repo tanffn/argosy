@@ -8,6 +8,27 @@ Trigger registry (event names that fire a recompute):
   - fx_shock_10pct          (USD/NIS move > 10% in a month)
   - life_event              (birth, death, marriage, divorce, IDF service)
   - user_request            (manual re-compute on /retirement page)
+
+Spec E commit #4 extension — two synthetic kinds the observer→replan
+dispatcher records on monitor_flag kinds that don't map cleanly to the
+seven classical triggers above:
+
+  - observer_emergent_critical          (a critical-severity observer
+                                         flag whose mapping is "this
+                                         warrants a replan but isn't a
+                                         classical category")
+  - observer_emergent_warning_dry_run   (a warning-severity observer
+                                         flag whose mapping would fire
+                                         IF the severity gate allowed
+                                         warnings — recorded as a
+                                         dry-run for visibility)
+
+These two are NOT consumed by the plan_synthesis flow itself (the
+flow's trigger taxonomy stays the seven classical kinds); they exist
+to (a) satisfy the dispatcher's CHECK enum in
+``replan_dispatch_log.trigger_kind`` and (b) give the operator a
+discriminator on the audit log for "the dispatcher saw something but
+elected not to fire" vs "the dispatcher fired a classical replan."
 """
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +44,39 @@ TriggerKind = Literal[
     "life_event",
     "user_request",
 ]
+
+
+# Spec E commit #4 — synthetic trigger kinds for the observer→replan
+# dispatcher's audit log. Kept SEPARATE from ``TriggerKind`` so callers
+# of the plan_synthesis flow can keep their narrower Literal union; the
+# dispatcher's CHECK enum is the wider superset (see
+# ``replan_dispatch_log.trigger_kind`` in migration 0056).
+DispatchTriggerKind = Literal[
+    "market_drawdown_15pct",
+    "job_change",
+    "tax_law_change",
+    "health_event",
+    "fx_shock_10pct",
+    "life_event",
+    "user_request",
+    "observer_emergent_critical",
+    "observer_emergent_warning_dry_run",
+]
+
+
+#: The full set of trigger kinds the dispatcher may write — the CHECK
+#: enum in migration 0056 mirrors this tuple.
+ALL_DISPATCH_TRIGGER_KINDS: tuple[str, ...] = (
+    "market_drawdown_15pct",
+    "job_change",
+    "tax_law_change",
+    "health_event",
+    "fx_shock_10pct",
+    "life_event",
+    "user_request",
+    "observer_emergent_critical",
+    "observer_emergent_warning_dry_run",
+)
 
 
 @dataclass(frozen=True)

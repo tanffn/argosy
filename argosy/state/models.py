@@ -3212,3 +3212,80 @@ class NotificationDispatchLedger(Base):
             name="uq_notification_dispatch_ledger_user_notification_channel",
         ),
     )
+
+
+class ReplanDispatchLog(Base):
+    """One row per observer->replan dispatch decision (Spec E commit #4).
+
+    Spec E §4 + Appendix A.8 — written by
+    ``argosy/services/replan_dispatcher.py::maybe_dispatch_replan`` on
+    every flag arrival that the state-observer flag-writer routes
+    through the dispatcher (severity >= warning).  Every gate decision
+    produces a row regardless of outcome so the admin UI can audit
+    "why did the system not replan when FX shifted again?"
+
+    Outcomes (CHECK enforced in migration 0056):
+
+    * ``fired`` — all gates clear; ``JobRegistry.fire_now`` was called;
+      ``job_run_id`` is the audit row id from ``job_runs``.
+    * ``dry_run_logged`` — flag was mapped + severity below the
+      per-trigger threshold; the row exists so the operator can audit
+      warning-band observer fires that mapped to a replan kind but
+      were filtered out (spec §4.2 "warning is dry-run-logged").
+    * ``skipped_cooldown`` — same (user, trigger_kind) fired within
+      the per-kind cooldown window (default 72h; spec §4.3 Gate 1).
+    * ``skipped_global_cap`` — user already has 4 ``fired`` rows in
+      the last 72h regardless of trigger_kind (spec §4.3 Gate 2).
+    * ``skipped_severity`` — flag's kind is not in the mapping table
+      OR the severity didn't meet the trigger's minimum.
+    * ``error`` — ``JobRegistry.fire_now`` raised; the row may carry
+      job_run_id=NULL even though the dispatcher's intent was 'fired'.
+      See ``maybe_dispatch_replan`` for the idempotency-on-retry flip
+      logic.
+
+    FKs:
+      * ``user_id`` -> users.id ON DELETE CASCADE.
+      * ``source_flag_id`` -> monitor_flags.id ON DELETE SET NULL.
+        Losing the source flag (housekeeping sweep) must NOT cascade
+        away the dispatch audit row.
+      * ``job_run_id`` -> job_runs.id ON DELETE SET NULL.  Losing the
+        job_run (retention loop cleanup) must NOT cascade away the
+        dispatch audit row.
+
+    Migration: alembic 0056.
+    """
+
+    __tablename__ = "replan_dispatch_log"
+
+    id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_flag_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("monitor_flags.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # CHECK enum: nine kinds — seven classical replan_triggers plus
+    # two synthetic observer_emergent_* kinds. Declared in migration.
+    trigger_kind: Mapped[str] = mapped_column(Text, nullable=False)
+    # CHECK enum: info / warning / critical. Declared in migration.
+    severity: Mapped[str] = mapped_column(Text, nullable=False)
+    # CHECK enum: six outcome statuses (see class docstring). Declared
+    # in migration.
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    job_run_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("job_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    dispatched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
