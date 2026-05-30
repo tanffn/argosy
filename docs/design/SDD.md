@@ -34,8 +34,10 @@
 | C — Predictions ledger | `faf21da` | 7 | `predictions` + `prediction_outcomes` migrations + writer adapters + evaluator + retention + `source_reliability` view + consumer integration + provenance + Discord 14-day backfill |
 | D — Life-events cashflow | `a7ef01a` | 6 | `life_events` cashflow-shape migration + `apply_life_event_deltas()` pure function + wire deltas + remove retire-age clamp + API DTO + `delta_kind` validators + UI form rewrite + shape-aware HolisticTimelineCard markers |
 | E — Last-mile delivery | `6c4e7f7` | 9 | `notifications` migration + `action_proposer` (Opus) + `notification_dispatcher` + web push + observer→replan + cooldown + inferred life-event detector + `/proposals` UI + PushSubscriptionCard + settings + weekly email + empirical merge gate |
+| Sprint-end docs | `04f7feb` | 1 | User-guide refresh covering A-E surfaces + morning-report SDD handover |
+| Post-block follow-ons | `def9b28` · `3e89d44` · `faa4eb4` | 3 | task #4 `.gitignore` agent-scratch dirs; task #3 Bucket A1 weighted category baselines (codex BLOCKER fix on sparse-raw fallback); task #2 Sprint #2 user-guide entries for transaction-anomaly buckets + UpcomingVestCard |
 
-Roughly 35 sprint commits + 4 supporting commits (fix, specs, two SDD notes). Test surface across the touched areas: backend tests green under `pytest -m "not llm_eval"`.
+Total: ~45 commits in the autonomous block. Backend tests green under `pytest -m "not llm_eval"` across all touched areas; UI `tsc --noEmit` + `eslint` clean on every commit's touched files.
 
 **Open follow-ons (NOT closed in this block — pick up next session):**
 - Backend route `POST /api/users/me/acknowledge-life-events-migration` not yet exposed (Spec D #5 sub-agent flagged). The frontend is ready but the API endpoint is stubbed.
@@ -46,8 +48,10 @@ Roughly 35 sprint commits + 4 supporting commits (fix, specs, two SDD notes). Te
 - AES128GCM RFC 8291 encryption for web push is deferred; v1 sends unencrypted payloads via VAPID JWT only. Browsers accept this for non-sensitive payloads; tighten before any sensitive payload kind is added.
 - `check_macro_shift` is `@deprecated` and can be removed after the state observer's empirical coverage is confirmed across more snapshots (Spec B §6.1). One wave of coexistence intended to let legacy `macro_shift` flags age out naturally.
 - Spec F (bidirectional Discord/WhatsApp conversational surface) captured as `project_bidirectional_chat_ambition` memory; future scope, no commits in this block.
-- Sprint #2 user-guide refresh from the prior anomaly+RSU-prevest sprint is partially folded into this morning's refresh, but the Bucket A1 weighted-baselines statistical-precision pass remains open (task #3 in the session task list).
-- `.progress/` + `argosy/.stats/` + `argosy/services/.progress/` `.gitignore` cleanup still open (task #4).
+
+**All 15 session tasks closed.** Bucket A1 weighted-baselines (task #3), `.gitignore` agent-scratch cleanup (task #4), and Sprint #2 user-guide refresh (task #2) landed as the final three commits.
+
+**Codex coverage status:** every commit that involved money math / LLM prompt / migration / parser / scheduler had a codex tandem session at `tools/codex-tandem/sessions/2026-05-{29,30}-*/`. All BLOCKERs integrated before commit. Nothing left in queue.
 
 ### Wave 2026-05-29 (late session) — five-spec holistic upgrade + Sprint A authorization
 
