@@ -1,0 +1,58 @@
+{#-
+  Weekly Argosy digest — plain-text fallback (Spec E commit #8 §7.1).
+
+  Shipped alongside the HTML body as the second alternative in the
+  multipart/alternative SMTP envelope. Clients that don't render HTML
+  (text-only mail readers, accessibility tools, spam-filter previews)
+  read this version.
+
+  Same secrets-hygiene contract as the HTML template: NO tokens, API
+  keys, VAPID secrets, admin tokens. User-supplied LLM text is rendered
+  with default autoescape via the Jinja environment (autoescape is
+  off-by-default in plain-text but our environment enables it for both
+  .html.j2 and .txt.j2 templates so we get consistent rendering — the
+  scanner test asserts no secret-shaped string sneaks through).
+-#}
+Your weekly Argosy summary
+{{ digest.window_start_iso }} -> {{ digest.window_end_iso }} ({{ digest.window_days }} days)
+
+{% if not digest.has_any_activity -%}
+No activity this week.
+Argosy didn't detect any new flags, didn't open any new proposals,
+and your plan baseline is unchanged. Quiet weeks are good weeks.
+{%- else -%}
+
+SUMMARY
+  - {{ digest.summary.flag_count }} monitor flag{{ 's' if digest.summary.flag_count != 1 else '' }} fired
+  - {{ digest.summary.open_proposal_count }} proposal{{ 's' if digest.summary.open_proposal_count != 1 else '' }} currently open
+  - {{ digest.summary.decisions_count }} decision{{ 's' if digest.summary.decisions_count != 1 else '' }} this week
+  - {{ digest.summary.snapshot_count }} state snapshot{{ 's' if digest.summary.snapshot_count != 1 else '' }} recorded
+
+{% if digest.flags -%}
+FLAGS FIRED ({{ digest.flags | length }})
+{% for flag in digest.flags -%}
+  - [{{ flag.severity | upper }}] {{ flag.surfaced_at_iso }} {{ flag.kind }}
+    {{ flag.rationale_snippet }}
+{% endfor %}
+{%- endif %}
+{% if digest.open_proposals -%}
+OPEN PROPOSALS ({{ digest.open_proposals | length }})
+{% for proposal in digest.open_proposals -%}
+  {{ loop.index }}. [{{ proposal.severity | upper }}] {{ proposal.kind }}
+     {{ proposal.summary }}
+     {% if proposal.deep_link -%}
+     {{ proposal.deep_link }}
+     {%- endif %}
+{% endfor %}
+{%- endif %}
+{% if digest.snapshot_delta -%}
+PLAN BASELINE DELTA
+  {{ digest.snapshot_delta.summary }}
+{%- endif %}
+
+{%- endif %}
+
+---
+You're receiving this because email_digest is enabled in your Argosy
+notification preferences. To change your delivery cadence or unsubscribe,
+visit your notification settings: {{ digest.settings_link }}

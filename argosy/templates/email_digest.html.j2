@@ -1,0 +1,109 @@
+{#-
+  Weekly Argosy digest — HTML body (Spec E commit #8 §7).
+
+  Design notes:
+    * No external CSS framework — email clients vary wildly. Inline
+      attributes only on a handful of structural tags. Most clients
+      strip <style> blocks anyway; we lean on plain HTML.
+    * All user-supplied text fields (flag rationale, proposal summary,
+      proposal rationale_md) are rendered with the default Jinja autoescape
+      so a `<script>` snippet inside an LLM-generated rationale_md cannot
+      become live HTML. (Autoescape is enabled in
+      ``argosy/services/email_digest.py::_jinja_env``.)
+    * Deep links contain user_id in path-segment form. NEVER any token,
+      API key, VAPID secret, or admin token (§7.4 "Secrets hygiene").
+    * If every section is empty we render the "no activity" body via
+      ``digest.has_any_activity`` — the secrets-hygiene tests grep for
+      this exact phrase as a smoke check.
+-#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{ subject }}</title>
+</head>
+<body style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; color: #222; max-width: 640px; margin: 0 auto; padding: 16px;">
+
+  <h1 style="font-size: 20px; margin-bottom: 4px;">Your weekly Argosy summary</h1>
+  <p style="color: #666; margin-top: 0; font-size: 13px;">
+    {{ digest.window_start_iso }} &rarr; {{ digest.window_end_iso }} ({{ digest.window_days }} days)
+  </p>
+
+  {% if not digest.has_any_activity %}
+    <p style="margin-top: 16px; padding: 12px; background: #f6f6f6; border-radius: 4px;">
+      <strong>No activity this week.</strong>
+      Argosy didn't detect any new flags, didn't open any new proposals,
+      and your plan baseline is unchanged. Quiet weeks are good weeks.
+    </p>
+  {% else %}
+
+    <!-- Summary section -->
+    <h2 style="font-size: 16px; margin-top: 24px;">Summary</h2>
+    <ul>
+      <li>{{ digest.summary.flag_count }} monitor flag{{ 's' if digest.summary.flag_count != 1 else '' }} fired</li>
+      <li>{{ digest.summary.open_proposal_count }} proposal{{ 's' if digest.summary.open_proposal_count != 1 else '' }} currently open</li>
+      <li>{{ digest.summary.decisions_count }} decision{{ 's' if digest.summary.decisions_count != 1 else '' }} this week</li>
+      <li>{{ digest.summary.snapshot_count }} state snapshot{{ 's' if digest.summary.snapshot_count != 1 else '' }} recorded</li>
+    </ul>
+
+    {% if digest.flags %}
+      <!-- Monitor flags section -->
+      <h2 style="font-size: 16px; margin-top: 24px;">Flags fired ({{ digest.flags | length }})</h2>
+      <table cellspacing="0" cellpadding="6" border="1" style="border-collapse: collapse; width: 100%; font-size: 13px;">
+        <thead style="background: #f0f0f0;">
+          <tr>
+            <th align="left">When</th>
+            <th align="left">Kind</th>
+            <th align="left">Severity</th>
+            <th align="left">Snippet</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for flag in digest.flags %}
+            <tr>
+              <td>{{ flag.surfaced_at_iso }}</td>
+              <td>{{ flag.kind }}</td>
+              <td style="text-transform: uppercase;">{{ flag.severity }}</td>
+              <td>{{ flag.rationale_snippet }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    {% if digest.open_proposals %}
+      <!-- Action proposals section -->
+      <h2 style="font-size: 16px; margin-top: 24px;">Open proposals ({{ digest.open_proposals | length }})</h2>
+      <ol>
+        {% for proposal in digest.open_proposals %}
+          <li style="margin-bottom: 8px;">
+            <strong style="text-transform: uppercase;">{{ proposal.severity }}</strong>
+            &middot; {{ proposal.kind }}
+            <br />
+            {{ proposal.summary }}
+            {% if proposal.deep_link %}
+              <br />
+              <a href="{{ proposal.deep_link }}">Review in Argosy &rarr;</a>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+    {% endif %}
+
+    {% if digest.snapshot_delta %}
+      <!-- Snapshot delta section -->
+      <h2 style="font-size: 16px; margin-top: 24px;">Plan baseline delta</h2>
+      <p>{{ digest.snapshot_delta.summary }}</p>
+    {% endif %}
+
+  {% endif %}
+
+  <hr style="border: none; border-top: 1px solid #ddd; margin-top: 32px;" />
+  <p style="color: #888; font-size: 12px;">
+    You're receiving this because email_digest is enabled in your Argosy
+    notification preferences. To change your delivery cadence or unsubscribe,
+    visit your <a href="{{ digest.settings_link }}">notification settings</a>.
+  </p>
+
+</body>
+</html>

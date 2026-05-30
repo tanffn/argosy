@@ -136,6 +136,19 @@ class CadencesBlock(BaseModel):
             enabled=True, cron="0 3 * * *", timezone="Asia/Jerusalem"
         )
     )
+    # Sprint E commit #8 — weekly email digest. 08:00 Asia/Jerusalem
+    # on Fridays per Ariel's locked decision in spec §7.3 (digest
+    # lands before the weekend so the user reads it over coffee).
+    # Window-size, base-url, and SMTP sender injection live on the
+    # loop class constructor — the cadence config only owns the
+    # schedule.  SMTP creds load lazily from ARGOSY_SMTP_* env vars
+    # at tick time; missing creds → loop tick records
+    # status='skipped_smtp_not_configured' (per spec §7.2).
+    weekly_email_digest: CadenceConfig = Field(
+        default_factory=lambda: CadenceConfig(
+            enabled=True, cron="0 8 * * FRI", timezone="Asia/Jerusalem"
+        )
+    )
 
 
 class JobRunsRetentionConfig(BaseModel):
@@ -320,6 +333,9 @@ cadences:
   # after midnight + before news + state observer; per Ariel's locked
   # decision in spec §5.5).
   inferred_life_event_detector: { enabled: true, cron: "0 3 * * *", timezone: "Asia/Jerusalem" }
+  # Sprint E commit #8 — weekly email digest (Fridays 08:00 IL-local;
+  # the brief lands before the weekend so the user reads it over coffee).
+  weekly_email_digest: { enabled: true, cron: "0 8 * * FRI", timezone: "Asia/Jerusalem" }
 
 models:
   defaults:
