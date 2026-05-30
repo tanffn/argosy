@@ -179,6 +179,12 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # is doing emergent flag-classification with high downstream
     # consequence (replaces hand-rolled detectors). No Haiku fallback.
     "state_observer": "claude-opus-4-7",
+    # Spec E commit #2 — action_proposer agent (LLM money path).
+    # Opus per binding preference "accuracy over LLM cost"; the proposer
+    # turns observer flags / snapshot triggers / inferred events into
+    # structured action suggestions. NO auto-execution — the agent
+    # RECORDS only; user reviews via /proposals. No Haiku fallback.
+    "action_proposer": "claude-opus-4-7",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -232,6 +238,12 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     # domain_refresh band: emergent classification, high downstream
     # consequence (flags drive Red-Flag-Strip + /proposals nudges).
     "state_observer":          "high",
+    # Spec E commit #2 — action proposer matches the state_observer
+    # band: emergent action generation, high downstream consequence
+    # (proposals are user-visible and the no-execution invariant is
+    # load-bearing). High thinking effort lets the LLM weigh dedup +
+    # related_history + plan context before emitting.
+    "action_proposer":         "high",
     # Single-ticker analysts + helpers — moderate (data formatting + light reasoning)
     "concentration":        "medium",
     "fx":                   "medium",
@@ -348,6 +360,13 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     # Spec B commit #4 — observer output is a short JSON list of flag
     # candidates + a 1-2 sentence assessment. 16K is generous headroom.
     "state_observer": 16000,
+    # Spec E commit #2 — action proposer emits 0-3 structured proposals
+    # with rationale_md (<=2000 chars each) + summary (<=240 chars) +
+    # payload. 8K cap per the writing prompt; thinking budget is
+    # adaptive (effort='high') so the cap is the OUTPUT ceiling, not
+    # the thinking ceiling — Anthropic's adaptive thinking picks its
+    # own internal budget under this cap.
+    "action_proposer": 8000,
     # Conversational / categorical roles — no thinking, fallback-sized.
     "intake": 16000,
     "household_categorizer": 16000,
@@ -403,6 +422,11 @@ DEFAULT_CITATIONS_BY_ROLE: dict[str, bool] = {
     # LLM legitimately had no flags to surface; we disable it. The
     # post-validator enforces a stricter per-candidate check.
     "state_observer": False,
+    # Spec E commit #2 — action proposer cites field_paths from the
+    # trigger / state inputs, not external documents. Same reasoning
+    # as state_observer: citation gate would false-fire when the LLM
+    # legitimately had no proposals to emit.
+    "action_proposer": False,
     # FM-objection ZigZag (T4.9). Citations on for both — the analyst
     # responder cites its prior agent_report and the FM verdict cites
     # both the original objection and the analyst's response.
