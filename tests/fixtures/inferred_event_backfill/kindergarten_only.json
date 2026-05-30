@@ -1,0 +1,39 @@
+{
+  "name": "kindergarten_only",
+  "anchor_date": "2026-06-01",
+  "lookback_days": 365,
+  "description": "Nine months of recurring NIS 3,500 HAPPY KINDERGARTEN payments (Sep 2025 - May 2026, still active). NO college/university/academy transactions. The detector MUST NOT fire kid_started_college (a 3yo entering kindergarten is NOT the same phase change as an 18yo entering college — codex BLOCKER #2 from spec-E-5 review, locked by the _COLLEGE_ONLY_LABEL_PATTERNS split in inferred_life_event_detector.py). Also MUST NOT fire tuition_stopped because the stream is still active (no gap) AND the prior-count threshold of 12 months is not met (9mo < 12mo).",
+  "expectations": {
+    "patterns_expected": [],
+    "patterns_forbidden": [
+      "kid_started_college",
+      "tuition_stopped",
+      "recurring_car_purchase",
+      "wedding_scale_transfer",
+      "recurring_renovation"
+    ],
+    "findings_total_min": 0,
+    "findings_total_max": 0
+  },
+  "transactions": [
+    {"occurred_on": "2025-09-05", "merchant": "HAPPY KINDERGARTEN", "amount_nis": "3500", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-10-05", "merchant": "HAPPY KINDERGARTEN", "amount_nis": "3500", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-11-05", "merchant": "HAPPY KINDERGARTEN", "amount_nis": "3500", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-12-05", "merchant": "HAPPY KINDERGARTEN", "amount_nis": "3500", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-01-05", "merchant": "HAPPY KINDERGARTEN", "amount_nis": "3500", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-02-05", "merchant": "HAPPY KINDERGARTEN", "amount_nis": "3500", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-03-05", "merchant": "HAPPY KINDERGARTEN", "amount_nis": "3500", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-04-05", "merchant": "HAPPY KINDERGARTEN", "amount_nis": "3500", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-05-05", "merchant": "HAPPY KINDERGARTEN", "amount_nis": "3500", "direction": "debit", "tx_type": "regular"},
+
+    {"occurred_on": "2025-09-15", "merchant": "ELECTRIC COMPANY", "amount_nis": "620", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-10-15", "merchant": "ELECTRIC COMPANY", "amount_nis": "640", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-11-15", "merchant": "ELECTRIC COMPANY", "amount_nis": "590", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-12-15", "merchant": "ELECTRIC COMPANY", "amount_nis": "610", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-01-15", "merchant": "ELECTRIC COMPANY", "amount_nis": "700", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-02-15", "merchant": "ELECTRIC COMPANY", "amount_nis": "680", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-03-15", "merchant": "ELECTRIC COMPANY", "amount_nis": "620", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-04-15", "merchant": "ELECTRIC COMPANY", "amount_nis": "590", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-05-15", "merchant": "ELECTRIC COMPANY", "amount_nis": "570", "direction": "debit", "tx_type": "regular"}
+  ]
+}

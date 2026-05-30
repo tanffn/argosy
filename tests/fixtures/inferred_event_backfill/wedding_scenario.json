@@ -1,0 +1,25 @@
+{
+  "name": "wedding_scenario",
+  "anchor_date": "2026-06-01",
+  "lookback_days": 365,
+  "description": "Single NIS 150,000 transfer to a WEDDING_VENDOR counterparty (clears the strict NIS 100k floor per spec §5.3 / codex BLOCKER #1). The detector MUST fire at least one wedding_scale_transfer finding (medium confidence — wedding-shape is inherently ambiguous so confidence never reaches high).",
+  "expectations": {
+    "patterns_expected": ["wedding_scale_transfer"],
+    "patterns_forbidden": ["tuition_stopped", "recurring_car_purchase", "recurring_renovation"],
+    "findings_total_min": 1,
+    "findings_total_max": 3
+  },
+  "transactions": [
+    {"occurred_on": "2026-03-15", "merchant": "WEDDING VENDOR LTD", "amount_nis": "150000", "direction": "debit", "tx_type": "transfer"},
+
+    {"occurred_on": "2025-09-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "600", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-10-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "620", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-11-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "580", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-12-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "590", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-01-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "700", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-02-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "680", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-03-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "620", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-04-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "590", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-05-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "570", "direction": "debit", "tx_type": "regular"}
+  ]
+}

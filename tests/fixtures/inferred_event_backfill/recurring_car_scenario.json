@@ -1,0 +1,24 @@
+{
+  "name": "recurring_car_scenario",
+  "anchor_date": "2026-06-01",
+  "lookback_days": 4000,
+  "description": "Three car-scale purchases at ~5y cadence (2016, 2021, 2026) — the canonical recurring-car-purchase signal. Each tx >= NIS 60k against AUTO/DEALER labels. The detector MUST fire at least one recurring_car_purchase finding. Lookback is 4000d (>10y) to capture the full inter-arrival window — the spec's 12-month gate is the per-window false-positive contract, but the recurring-purchase pattern requires multi-year history by definition (spec §5.3 row 2).",
+  "expectations": {
+    "patterns_expected": ["recurring_car_purchase"],
+    "patterns_forbidden": ["wedding_scale_transfer", "tuition_stopped", "recurring_renovation"],
+    "findings_total_min": 1,
+    "findings_total_max": 3
+  },
+  "transactions": [
+    {"occurred_on": "2016-06-15", "merchant": "TOYOTA DEALER TEL AVIV", "amount_nis": "85000", "direction": "debit", "tx_type": "transfer"},
+    {"occurred_on": "2021-05-22", "merchant": "HONDA AUTO RAANANA", "amount_nis": "95000", "direction": "debit", "tx_type": "transfer"},
+    {"occurred_on": "2026-04-18", "merchant": "HYUNDAI DEALER NETANYA", "amount_nis": "110000", "direction": "debit", "tx_type": "transfer"},
+
+    {"occurred_on": "2025-08-20", "merchant": "AUTO REPAIR SHOP", "amount_nis": "2400", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2026-02-12", "merchant": "AUTO REPAIR SHOP", "amount_nis": "1850", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-09-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "600", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-10-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "620", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-11-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "580", "direction": "debit", "tx_type": "regular"},
+    {"occurred_on": "2025-12-10", "merchant": "ELECTRIC COMPANY", "amount_nis": "590", "direction": "debit", "tx_type": "regular"}
+  ]
+}
