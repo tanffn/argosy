@@ -83,10 +83,35 @@ dropped on the constraint swap.
 """
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import Sequence
+from pathlib import Path
 
 import sqlalchemy as sa
 from alembic import op
+
+
+def _load_view_sql_from_0052() -> str:
+    """Load the source_reliability view SQL from migration 0052.
+
+    Per the migration 0053 pattern: the predictions table batch_alter_table
+    in upgrade()/downgrade() requires DROPping the dependent source_reliability
+    view (created in 0052) before SQLite can rename _alembic_tmp_predictions
+    back to predictions. We re-create the view using the SAME SQL the 0052
+    migration shipped so an upgrade-then-downgrade cycle is byte-identical.
+    """
+    here = Path(__file__).resolve().parent
+    sibling = here / "0052_source_reliability_view.py"
+    spec = importlib.util.spec_from_file_location(
+        "argosy_alembic_0052_source_reliability_view", sibling
+    )
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise RuntimeError(
+            f"failed to load view-SQL from sibling migration {sibling}"
+        )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod._VIEW_SQL  # type: ignore[attr-defined]
 
 revision: str = "0058_alpha_report_analyses"
 down_revision: str | None = "0057_inferred_life_event_findings"
@@ -234,6 +259,18 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 1. alpha_report_analyses table.
     # ------------------------------------------------------------------
+    # SQLite DDL is non-transactional (op.create_table commits as soon
+    # as it runs); if a later step in this same migration fails, the
+    # table persists as an orphan on the DB while alembic_version stays
+    # at the prior revision. On retry the second create_table would
+    # raise "table already exists". Drop any orphans before creating
+    # fresh — same pattern other Argosy migrations use for the
+    # source_reliability view drop+recreate dance.
+    op.execute("DROP TABLE IF EXISTS alpha_report_analyses")
+    op.execute(
+        "DROP INDEX IF EXISTS ix_alpha_report_analyses_user_analyzed_at"
+    )
+
     op.create_table(
         "alpha_report_analyses",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
@@ -338,12 +375,20 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     _preflight_predictions_source(_ALL_PREDICTION_SOURCES)
 
+    # source_reliability view (from 0052) references predictions; SQLite
+    # refuses to rename _alembic_tmp_predictions back to predictions while
+    # the view exists. Drop, rebuild, then recreate the view. Mirrors
+    # migration 0053's pattern.
+    op.execute("DROP VIEW IF EXISTS source_reliability")
+
     with op.batch_alter_table("predictions") as batch:
         batch.drop_constraint("ck_predictions_source", type_="check")
         batch.create_check_constraint(
             "ck_predictions_source",
             f"source IN ({_quoted_csv(_ALL_PREDICTION_SOURCES)})",
         )
+
+    op.execute(_load_view_sql_from_0052())
 
     # ------------------------------------------------------------------
     # 3. monitor_flags.kind CHECK relaxation — add 'alpha_report_caution'.
@@ -371,12 +416,17 @@ def downgrade() -> None:
             f"kind IN ({_quoted_csv(_LEGACY_MF_KINDS)})",
         )
 
+    # Same view dance on the downgrade path.
+    op.execute("DROP VIEW IF EXISTS source_reliability")
+
     with op.batch_alter_table("predictions") as batch:
         batch.drop_constraint("ck_predictions_source", type_="check")
         batch.create_check_constraint(
             "ck_predictions_source",
             f"source IN ({_quoted_csv(_LEGACY_PREDICTION_SOURCES)})",
         )
+
+    op.execute(_load_view_sql_from_0052())
 
     op.drop_index(
         "ix_alpha_report_analyses_user_analyzed_at",
