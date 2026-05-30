@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Bell,
   BookOpen,
   Bot,
   Calendar,
@@ -59,6 +60,9 @@ const INSPECTION_TABS: NavTab[] = [
   { href: "/audit", label: "Audit", Icon: ScrollText },
   { href: "/domain-kb", label: "Domain KB", Icon: BookOpen },
   { href: "/settings", label: "Settings", Icon: Settings },
+  // Spec E commit #7 — push-subscription card + channel x severity x kind
+  // preference matrix. Sibling of /settings under the same inspection group.
+  { href: "/settings/notifications", label: "Notifications", Icon: Bell },
 ];
 
 export function NavBar() {
