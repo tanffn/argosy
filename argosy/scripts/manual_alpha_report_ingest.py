@@ -33,7 +33,7 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime, time as dtime, timezone
+from datetime import datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 import typer
@@ -166,13 +166,17 @@ async def _ingest_dir(
         try:
             # _handle_message handles dedup + extract + write
             # NewsSignal + write Prediction (if parseable).
-            # http_client is unused since attachments=[].
+            # http_client is unused since attachments=[]. max_age
+            # generous enough that backdated reports (filename date
+            # may be days/weeks ago) aren't dropped as "too old".
             await _handle_message(
                 event=event,
                 session_factory=session_factory,
                 http_client=None,
                 known_tickers=None,
                 channel_id=channel_id,
+                max_age=timedelta(days=365),
+                now_fn=lambda: datetime.now(timezone.utc),
             )
             counts["ingested"] += 1
             logger.info("ingested %s", path.name)
