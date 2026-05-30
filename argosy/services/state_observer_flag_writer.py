@@ -168,6 +168,16 @@ _INFERRED_KIND_MAP: tuple[tuple[str, str], ...] = (
 #: extended.
 _FALLBACK_INFERRED_KIND: str = "other_observation"
 
+#: Module-level toggle for the Spec E commit #2 observer→proposer wiring.
+#: Default ``True`` — production fires the action-proposer for every
+#: warning/critical flag the writer commits (see ``_maybe_run_action_proposer_safe``).
+#: Test fixtures monkeypatch this to ``False`` so the test suite doesn't
+#: spawn live LLM calls on every flag write.  The new wiring test
+#: (``tests/test_state_observer_proposer_wired.py``) explicitly leaves
+#: this enabled and mocks ``ActionProposerAgent`` instead.
+INVOKE_ACTION_PROPOSER_ON_FLAG: bool = True
+
+
 #: Brief-label → spec-label translation for ``deviation_bucket`` (the
 #: §-3 commit bridge). Accepts both families so the LLM and the
 #: deterministic helper round-trip cleanly. Anything not in this table
@@ -464,6 +474,23 @@ def write_observer_flags(
                 now=now,
             )
 
+            # Spec E commit #2 — observer→action_proposer wiring.
+            # GATE on actionable severity (>= warning) per spec §2.5:
+            # info-band fires are noise and never warrant a proposer
+            # run.  The runner itself enforces the 24h cooldown per
+            # (flag_kind, primary_field, user) and the per-proposal
+            # dedup contract so duplicate triggers are a no-op.  We
+            # just invoke it from here so the flag→proposal chain
+            # actually fires.  Best-effort: any failure logs +
+            # swallows so a proposer issue never breaks the flag-
+            # write batch.
+            _maybe_run_action_proposer_safe(
+                session,
+                observer_flag_row=row,
+                severity=str(cand.severity),
+                now=now,
+            )
+
         except SQLAlchemyError as exc:  # noqa: PERF203 — per-cand guard
             # Catch-all for non-Integrity DB errors (e.g. operational
             # errors, programming errors). Roll back the bad partial
@@ -718,6 +745,95 @@ def _maybe_dispatch_replan_safe(
         )
 
 
+def _maybe_run_action_proposer_safe(
+    session: "Session",
+    *,
+    observer_flag_row: MonitorFlag,
+    severity: str,
+    now: datetime,
+) -> None:
+    """Spec E commit #2 — invoke the action-proposer runner for the flag.
+
+    Gates on ``severity in {warning, critical}`` per spec §2.5 — info
+    band fires are noise and never warrant a proposer run.  The runner
+    itself enforces the FULL guard matrix:
+
+      * 24h cooldown per (flag_kind, primary_field, user) so refiring
+        the same logical signal doesn't re-pay the Opus call.
+      * Per-proposal dedup_key contract (spec §1.5 / §2.3) so the
+        same (kind, primary_ref, severity) write is idempotent at
+        the DB layer.
+
+    Async bridge: ``run_action_proposer_for_flag`` is a coroutine; the
+    flag-writer is sync but runs under :func:`asyncio.to_thread` in
+    production (the observer loop's worker thread).  We follow the same
+    no-running-loop guard pattern as ``replan_dispatcher._call_fire_now``:
+    if a loop is already running in this thread we raise ``RuntimeError``
+    (deadlock-prone) and let the outer try/except swallow it; otherwise
+    we bridge with :func:`asyncio.run`.
+
+    Best-effort: any failure logs + swallows so a proposer issue never
+    breaks the observer's flag-write batch.
+    """
+    import asyncio
+
+    if not INVOKE_ACTION_PROPOSER_ON_FLAG:
+        return
+    if severity not in ("warning", "critical"):
+        return
+    if observer_flag_row.id is None:
+        return
+    try:
+        # Late import so the observer module can be imported in
+        # contexts where the proposer module isn't on the path
+        # (e.g. minimal test fixtures).
+        from argosy.services.action_proposer_runner import (
+            run_action_proposer_for_flag,
+        )
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — safe to bridge.
+            asyncio.run(
+                run_action_proposer_for_flag(
+                    session,
+                    observer_flag_row,
+                    now=now,
+                )
+            )
+            return
+        # A loop IS running in this thread — deadlock-prone.  Raise so
+        # the outer except logs + swallows.  In production the flag
+        # writer runs under ``asyncio.to_thread`` so this branch never
+        # fires; it's a defensive guard for the test path.
+        raise RuntimeError(
+            "_maybe_run_action_proposer_safe: a running event loop is "
+            "present in the calling thread; cannot bridge to async "
+            "runner safely (deadlock-prone).  Run the flag writer "
+            "under asyncio.to_thread."
+        )
+    except Exception:  # noqa: BLE001 — never break observer batch
+        # Defensive rollback: the runner may have left partial state on
+        # the session (a write_action_proposal that flushed but didn't
+        # commit, etc.).  The outer flag-writer's per-candidate
+        # try/except will start the next candidate from a clean slate
+        # only if we rollback now — otherwise the next ``session.flush``
+        # would re-raise the same error.
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001 — never break observer batch
+            pass
+        _log.warning(
+            "state_observer_flag_writer.action_proposer_failed",
+            extra={
+                "observer_flag_id": observer_flag_row.id,
+                "severity": severity,
+            },
+            exc_info=True,
+        )
+
+
 def _tombstone_expired_peers(
     session: "Session",
     *,
@@ -939,6 +1055,7 @@ def _short_exc(exc: BaseException) -> str:
 __all__ = [
     "DEDUP_KEY_VERSION",
     "DEFAULT_OBSERVER_FLAG_TTL_DAYS",
+    "INVOKE_ACTION_PROPOSER_ON_FLAG",
     "WriteSummary",
     "build_dedup_key",
     "infer_kind_from_field",

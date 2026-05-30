@@ -63,6 +63,24 @@ SNAPSHOT_ID = 17
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _disable_proposer_hook(monkeypatch):
+    """Disable the observer→action_proposer wiring for flag-writer tests.
+
+    The wiring (Spec E commit #2) fires a live ``ActionProposerAgent``
+    LLM call on every warning/critical flag write — fine in production
+    but it would hang/slow this test file (whose contract is the flag
+    writer itself, not the downstream proposer chain).  The
+    ``test_state_observer_proposer_wired.py`` suite covers the wiring
+    end-to-end with a mocked LLM.
+    """
+    monkeypatch.setattr(
+        "argosy.services.state_observer_flag_writer."
+        "INVOKE_ACTION_PROPOSER_ON_FLAG",
+        False,
+    )
+
+
 @pytest.fixture
 def sync_session(tmp_path):
     """Sync sqlite Session bound to a tmp_path file DB.
