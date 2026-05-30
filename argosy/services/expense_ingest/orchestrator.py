@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
@@ -43,6 +44,9 @@ from argosy.services.expense_ingest.types import (
     ParseResult, ParserName, SourceHint,
 )
 from argosy.state.models import ExpenseCategory, UserFile
+from argosy.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Discount stub may not yet exist as p_discount — handle absence gracefully.
 try:
@@ -125,6 +129,64 @@ def _leumi_source_hint_assert(result: ParseResult) -> SourceHint:
     return result.source_hint
 
 
+def _run_anomaly_detectors(session: Session, user_id: str) -> None:
+    """Run all 5 non-LLM anomaly detectors sequentially after a successful
+    ingest. Each runs in its own try/except so one detector failing does
+    not abort the others or the ingest itself. Detectors write directly
+    to ``expense_review_queue`` via their own dedup_key formulas; this
+    function only orchestrates + logs.
+
+    Sequential by design: detectors share DB reads (transactions, rolling
+    stats) and v1 doesn't justify the parallelism complexity. Caller is
+    responsible for committing the session — every detector flushes its
+    own inserts under SAVEPOINTs, but doesn't commit.
+
+    Logs ``anomaly.<bucket>.failed`` (with the exception text) on a
+    detector exception, ``anomaly.<bucket>.ran`` (with fire count) on
+    success. Bucket labels: ``a``, ``b_recurring``, ``c_novel``,
+    ``c_drift``, ``d``.
+    """
+    # Import lazily so the orchestrator module stays cheap to import in
+    # tests that only exercise other code paths.
+    from argosy.services.anomaly.bucket_a import detect_bucket_a
+    from argosy.services.anomaly.bucket_b_recurring import (
+        detect_missing_recurring,
+    )
+    from argosy.services.anomaly.bucket_c import (
+        detect_category_drift, detect_novel_merchants,
+    )
+    from argosy.services.anomaly.bucket_d import detect_cross_card_duplicates
+
+    detectors: list[tuple[str, Callable[[], list]]] = [
+        ("a", lambda: detect_bucket_a(session, user_id)),
+        ("b_recurring", lambda: detect_missing_recurring(session, user_id)),
+        ("c_novel", lambda: detect_novel_merchants(session, user_id)),
+        ("c_drift", lambda: detect_category_drift(session, user_id)),
+        ("d", lambda: detect_cross_card_duplicates(session, user_id)),
+    ]
+    for bucket, run in detectors:
+        # Wrap each detector in its own SAVEPOINT so any unhandled
+        # exception rolls back ONLY this detector's partial writes —
+        # the outer ingest transaction (transactions/categories/refunds)
+        # and prior successful detectors stay intact. Without this an
+        # OperationalError raised mid-detector would mark the session
+        # ``in failed transaction`` and force a full ingest rollback.
+        try:
+            with session.begin_nested():
+                fires = run()
+            logger.info(
+                f"anomaly.{bucket}.ran",
+                user_id=user_id,
+                fires=len(fires) if fires is not None else 0,
+            )
+        except Exception as exc:  # noqa: BLE001 -- never break ingest
+            logger.warning(
+                f"anomaly.{bucket}.failed",
+                user_id=user_id,
+                error=str(exc),
+            )
+
+
 def ingest_user_file(
     session: Session, user_id: str, file_id: int,
     *, last4_hint: str | None = None,
@@ -176,6 +238,15 @@ def ingest_user_file(
     correlations = correlate_for_user(session, user_id)
     resolved = resolve_categories_for_user(session, user_id)
     refunds = match_refunds_for_user(session, user_id)
+
+    # Run all 5 non-LLM anomaly detectors (Buckets A/B-recurring/C/D) on
+    # every successful ingest. Each detector is self-contained: it scans
+    # the user's recent transactions, writes ExpenseReviewQueue rows
+    # under its own dedup_key, and is idempotent across reruns via the
+    # partial unique index ``ix_expense_review_queue_dedup``. Failures
+    # are isolated per-detector so a single bug never aborts ingest.
+    # See user-guide §18 for the bucket contract.
+    _run_anomaly_detectors(session, user_id)
 
     # Bidirectional XLS-Osh pair hook (codex zigzag 2026-05-29 #8 -- prefer
     # explicit Leumi-Osh-only hook over a global SQLAlchemy after_insert
