@@ -80,3 +80,13 @@ tmp/
 # never committed. The path is fixed (memory references it) but the
 # contents stay local.
 tools/codex-tandem/
+
+# Agent-scratch artifacts (codex outputs, watch/inspect scripts,
+# review notes, identity checks, etc) accumulated from prior sessions.
+# Live under per-area .progress/ + .stats/ dirs.
+.progress/
+argosy/.stats/
+argosy/services/.progress/
+
+# Knowledge-graph output (regenerated via /graphify; never committed).
+graphify-out/
