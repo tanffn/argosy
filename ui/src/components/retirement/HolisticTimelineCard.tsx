@@ -39,14 +39,21 @@ interface Props {
  * Five overlay layers (per spec #1 §3):
  *   1. Past RSU vests       — filled green circles
  *   2. Future RSU vests     — outlined green circles
- *   3. Life events          — colored markers per category
+ *   3. Life events          — shape-aware markers per delta_kind
+ *                             (one-shot dot / recurring fading-dots /
+ *                             phase-change vertical line)
  *   4. Retire-ready zones   — three thin vertical stripes (bear/base/bull)
  *   5. Constraint labels    — text annotation when a zone is clamped by
- *                             rsu_unvested or life_event
+ *                             rsu_unvested (the only surviving date
+ *                             clamp after Spec D #3 dropped life_event)
  *
  * Today's date gets a dedicated "TODAY" vertical line. Each marker is
  * positioned by `(markerDate - rangeStart) / (rangeEnd - rangeStart) *
  * 100%`, so the timeline scales with container width.
+ *
+ * Spec D §5 (2026-05-29 life-events cashflow redesign) added the
+ * delta_kind-aware marker mapping AND the "Undated events" sidebar
+ * list for delta_kind='none' / no-date rows.
  *
  * Backend: GET /api/retirement/timeline?user_id=X&horizon_days=Y.
  */
@@ -191,9 +198,19 @@ function TimelineBody({ data }: TimelineBodyProps) {
   const todayPct = pct(range, parseDateUtc(data.today));
 
   // Pull clamped-zone annotations out for the constraint-label row.
+  // Spec D #3 removed the 'life_event' clamp_reason — the only date-
+  // clamp constraint that survives is rsu_unvested (RSUs are a real
+  // liquidity constraint; life events flow through cashflow instead).
   const clampedZones = data.retire_ready_zones.filter(
-    (z) => z.clamp_reason === "rsu_unvested" || z.clamp_reason === "life_event",
+    (z) => z.clamp_reason === "rsu_unvested",
   );
+
+  // Spec D §5 — split events by cashflow shape. `none`-kind events
+  // (and any event missing every date field) render in the "Undated
+  // events" sidebar instead of the timeline plane (per spec §7.6
+  // test #3). Everything else maps onto the timeline per delta_kind.
+  const datedEvents = data.life_events.filter((e) => !isUndated(e));
+  const undatedEvents = data.life_events.filter(isUndated);
 
   return (
     <div className="space-y-3">
@@ -240,13 +257,24 @@ function TimelineBody({ data }: TimelineBodyProps) {
               />
             ))}
 
-            {/* Life events — colored markers, bottom half. */}
-            {data.life_events.map((e, i) => (
-              <LifeEventMarker
+            {/* Life events — colored markers, bottom half.
+                Per Spec D §5 the marker shape depends on delta_kind:
+                  one_shot            -> single dot at one_shot_date / date
+                  recurring_*         -> dots at each in-horizon occurrence,
+                                         fading toward the horizon
+                  phase_change_start  -> vertical line at phase_start_date
+                                         (subtle "from" label)
+                  phase_change_end    -> vertical line at phase_end_date
+                                         (subtle "until" label)
+                  none / undated      -> rendered in the sidebar list below,
+                                         NOT on the timeline plane
+                Legacy markers (no delta_kind from the current backend)
+                fall through to the single-dot path. */}
+            {datedEvents.map((e, i) => (
+              <LifeEventShape
                 key={`event-${i}`}
                 event={e}
-                leftPct={pct(range, parseDateUtc(e.date))}
-                top="72%"
+                range={range}
               />
             ))}
           </div>
@@ -292,12 +320,54 @@ function TimelineBody({ data }: TimelineBodyProps) {
         </div>
       ) : null}
 
+      {/* Undated events sidebar — Spec D §5 + §7.6 test #3.
+          delta_kind='none' rows (sigma_calibration, withdrawal_policy_change,
+          legacy retire-year-change rows preserved by migration 0049) and any
+          other event without a renderable date land here so they stay
+          visible without sitting on the timeline plane. */}
+      {undatedEvents.length > 0 ? (
+        <div className="rounded-md border border-border bg-secondary/20 px-3 py-2">
+          <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+            Undated events &middot;{" "}
+            <span className="font-mono">{undatedEvents.length}</span>
+          </div>
+          <ul className="space-y-1 text-xs">
+            {undatedEvents.map((e, i) => {
+              const { Icon, colorClass } = categoryStyle(e.category);
+              return (
+                <li
+                  key={`undated-${i}`}
+                  className="flex items-start gap-1.5"
+                  title={formatEventTooltip(e)}
+                >
+                  <Icon className={"h-3 w-3 mt-0.5 " + colorClass} />
+                  <span className="text-muted-foreground">
+                    <span className="font-mono">{e.category}/{e.kind}</span>
+                    {e.description ? (
+                      <span> &middot; {e.description}</span>
+                    ) : null}
+                    <span className="text-muted-foreground/70">
+                      {" "}&middot; no cashflow effect
+                    </span>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+
       <div className="text-[11px] text-muted-foreground pt-1">
         Vests: <span className="font-mono">{data.past_vests.length}</span>{" "}
         past /{" "}
         <span className="font-mono">{data.future_vests.length}</span>{" "}
         future &middot; Life events:{" "}
         <span className="font-mono">{data.life_events.length}</span>
+        {undatedEvents.length > 0 ? (
+          <span className="text-muted-foreground/70">
+            {" "}({undatedEvents.length} undated)
+          </span>
+        ) : null}
       </div>
     </div>
   );
@@ -335,19 +405,31 @@ function VestMarker({ vest, leftPct, top }: VestMarkerProps) {
   );
 }
 
-interface LifeEventMarkerProps {
+interface LifeEventDotProps {
   event: LifeEventMarkerDTO;
   leftPct: number;
   top: string;
+  /** Visual de-emphasis for far-out recurring occurrences. 1.0 = full
+   *  opacity; lower values fade toward the horizon (Spec D §5). */
+  opacity?: number;
+  /** Tooltip override — used to annotate which occurrence of a
+   *  recurring series the dot represents. */
+  tooltipOverride?: string;
 }
 
-function LifeEventMarker({ event, leftPct, top }: LifeEventMarkerProps) {
+function LifeEventDot({
+  event,
+  leftPct,
+  top,
+  opacity = 1,
+  tooltipOverride,
+}: LifeEventDotProps) {
   const { Icon, colorClass, isDown } = categoryStyle(event.category);
-  const tooltip = formatEventTooltip(event);
+  const tooltip = tooltipOverride ?? formatEventTooltip(event);
   return (
     <div
       className="absolute -translate-x-1/2 -translate-y-1/2 group"
-      style={{ left: `${leftPct}%`, top }}
+      style={{ left: `${leftPct}%`, top, opacity }}
       title={tooltip}
       aria-label={tooltip}
     >
@@ -359,6 +441,155 @@ function LifeEventMarker({ event, leftPct, top }: LifeEventMarkerProps) {
         }
       />
     </div>
+  );
+}
+
+interface LifeEventPhaseLineProps {
+  event: LifeEventMarkerDTO;
+  leftPct: number;
+  /** "from" for phase_change_start, "until" for phase_change_end. */
+  edgeLabel: "from" | "until";
+}
+
+/** Vertical line marker for phase_change_start / phase_change_end shapes.
+ *  Uses the same width/tone primitives as the retire-ready stripes to
+ *  stay visually consistent. */
+function LifeEventPhaseLine({
+  event,
+  leftPct,
+  edgeLabel,
+}: LifeEventPhaseLineProps) {
+  const { colorClass } = categoryStyle(event.category);
+  const tooltip = formatEventTooltip(event);
+  // Translate the tailwind text-color class into a matching background
+  // tint for the vertical line. categoryStyle ships text-* classes
+  // because the existing icons use those; lines need a bg-* sibling.
+  // Both lookups go through the static CATEGORY_BG map so Tailwind v4's
+  // source scanner can see the bg-* class names verbatim.
+  const bgTone = textToBg(colorClass);
+  return (
+    <div
+      className="absolute top-0 bottom-0 pointer-events-none"
+      style={{ left: `${leftPct}%` }}
+      title={tooltip}
+      aria-label={tooltip}
+    >
+      <div className={"w-[2px] h-full " + bgTone + " opacity-70"} />
+      <div
+        className={
+          "absolute bottom-0 -translate-x-1/2 px-1 py-px rounded-sm " +
+          "text-[9px] font-mono uppercase tracking-wider " +
+          colorClass +
+          " bg-secondary/40"
+        }
+      >
+        {edgeLabel}
+      </div>
+    </div>
+  );
+}
+
+interface LifeEventShapeProps {
+  event: LifeEventMarkerDTO;
+  range: DateRange;
+}
+
+/** Spec D §5 — dispatches each life-event marker to the right visual
+ *  primitive based on `delta_kind`. Events without a usable date are
+ *  filtered out upstream and render in the sidebar instead. */
+function LifeEventShape({ event, range }: LifeEventShapeProps) {
+  const TOP = "72%";
+  const dk = event.delta_kind;
+
+  // recurring_every_n_years — one dot per in-horizon occurrence,
+  // fading toward the horizon edge so the eye groups them as a series.
+  if (dk === "recurring_every_n_years") {
+    const dates = (event.recurring_dates ?? []).filter(Boolean);
+    if (dates.length === 0) {
+      // Backend hasn't expanded yet; degrade to a single anchor dot.
+      const anchor = event.date ?? null;
+      if (!anchor) return null;
+      return (
+        <LifeEventDot
+          event={event}
+          leftPct={pct(range, parseDateUtc(anchor))}
+          top={TOP}
+        />
+      );
+    }
+    return (
+      <>
+        {dates.map((d, i) => {
+          // Linear fade from 1.0 (first occurrence) to 0.45 (last) so
+          // far-future recurrences read as "still scheduled, less
+          // certain" without disappearing entirely.
+          const t = dates.length === 1 ? 0 : i / (dates.length - 1);
+          const opacity = 1 - 0.55 * t;
+          const amt =
+            event.recurring_amount_usd ??
+            event.amount_usd ??
+            null;
+          const amtLabel =
+            amt !== null ? `$${(amt / 1000).toFixed(1)}K` : "—";
+          const tooltip =
+            `${event.category}/${event.kind} · recurring #${i + 1}` +
+            ` · ${d} · ${amtLabel}`;
+          return (
+            <LifeEventDot
+              key={`rec-${i}`}
+              event={event}
+              leftPct={pct(range, parseDateUtc(d))}
+              top={TOP}
+              opacity={opacity}
+              tooltipOverride={tooltip}
+            />
+          );
+        })}
+      </>
+    );
+  }
+
+  // phase_change_start — vertical line at phase_start_date with
+  // subtle "from" label.
+  if (dk === "phase_change_start") {
+    const startDate =
+      event.phase_start_date ?? event.date ?? null;
+    if (!startDate) return null;
+    return (
+      <LifeEventPhaseLine
+        event={event}
+        leftPct={pct(range, parseDateUtc(startDate))}
+        edgeLabel="from"
+      />
+    );
+  }
+
+  // phase_change_end — vertical line at phase_end_date with subtle
+  // "until" label. The matching start line is implicit (renders only
+  // when start_date is also a separate row, per Spec D's row model).
+  if (dk === "phase_change_end") {
+    const endDate =
+      event.phase_end_date ?? event.phase_start_date ?? event.date ?? null;
+    if (!endDate) return null;
+    return (
+      <LifeEventPhaseLine
+        event={event}
+        leftPct={pct(range, parseDateUtc(endDate))}
+        edgeLabel="until"
+      />
+    );
+  }
+
+  // one_shot OR legacy (no delta_kind) — single dot at the event date.
+  const oneShotDate =
+    event.one_shot_date ?? event.date ?? null;
+  if (!oneShotDate) return null;
+  return (
+    <LifeEventDot
+      event={event}
+      leftPct={pct(range, parseDateUtc(oneShotDate))}
+      top={TOP}
+    />
   );
 }
 
@@ -460,7 +691,13 @@ function computeRange(data: HolisticTimelineDTO): DateRange {
   const allMs: number[] = [parseDateUtc(data.today)];
   for (const v of data.past_vests) allMs.push(parseDateUtc(v.date));
   for (const v of data.future_vests) allMs.push(parseDateUtc(v.date));
-  for (const e of data.life_events) allMs.push(parseDateUtc(e.date));
+  for (const e of data.life_events) {
+    // Spec D §5 — markers can carry per-shape dates instead of (or in
+    // addition to) the legacy `date` field. Pull every renderable date
+    // into the range so phase-change ends + recurring tails stretch
+    // the axis correctly.
+    for (const d of eventRenderDates(e)) allMs.push(parseDateUtc(d));
+  }
   for (const z of data.retire_ready_zones)
     allMs.push(parseDateUtc(z.expected_date));
   const minMs = Math.min(...allMs);
@@ -473,6 +710,62 @@ function computeRange(data: HolisticTimelineDTO): DateRange {
     return { startMs: minMs - year, endMs: maxMs + year };
   }
   return { startMs: minMs - padMs, endMs: maxMs + padMs };
+}
+
+/** Every date the marker would render on the timeline plane. Used by
+ *  the range computation AND the dated/undated split. Empty list means
+ *  the event has no renderable date (delta_kind='none' with no anchor)
+ *  — it goes in the sidebar list. */
+function eventRenderDates(e: LifeEventMarkerDTO): string[] {
+  const dk = e.delta_kind;
+  if (dk === "recurring_every_n_years") {
+    const dates = (e.recurring_dates ?? []).filter(
+      (d): d is string => Boolean(d),
+    );
+    if (dates.length > 0) return dates;
+    // Backend hasn't expanded the recurrence yet — anchor only.
+    return e.date ? [e.date] : [];
+  }
+  if (dk === "phase_change_start") {
+    const d = e.phase_start_date ?? e.date ?? null;
+    return d ? [d] : [];
+  }
+  if (dk === "phase_change_end") {
+    const d = e.phase_end_date ?? e.phase_start_date ?? e.date ?? null;
+    return d ? [d] : [];
+  }
+  if (dk === "none") return [];
+  // one_shot OR legacy (no delta_kind).
+  const d = e.one_shot_date ?? e.date ?? null;
+  return d ? [d] : [];
+}
+
+/** Sidebar/timeline split — undated when the marker has no renderable
+ *  date OR when delta_kind is explicitly 'none'. */
+function isUndated(e: LifeEventMarkerDTO): boolean {
+  if (e.delta_kind === "none") return true;
+  return eventRenderDates(e).length === 0;
+}
+
+/** Static text→bg mapping for the per-category tones used by
+ *  categoryStyle(). Tailwind v4's JIT-style scanner only sees literal
+ *  class strings in source, so the bg-* siblings of categoryStyle's
+ *  text-* classes must appear here verbatim — a runtime
+ *  `"bg-" + textClass.slice(5)` would tree-shake to nothing.
+ *
+ *  Keep CATEGORY_BG entries in sync with categoryStyle() below. */
+const CATEGORY_BG: Record<string, string> = {
+  "text-blue-400": "bg-blue-400",
+  "text-purple-400": "bg-purple-400",
+  "text-teal-400": "bg-teal-400",
+  "text-rose-400": "bg-rose-400",
+  "text-amber-400": "bg-amber-400",
+  "text-indigo-400": "bg-indigo-400",
+  "text-muted-foreground": "bg-muted-foreground",
+};
+
+function textToBg(textClass: string): string {
+  return CATEGORY_BG[textClass] ?? "bg-muted-foreground";
 }
 
 interface AxisTick {
@@ -512,10 +805,23 @@ function formatVestTooltip(v: VestMarkerDTO): string {
 }
 
 function formatEventTooltip(e: LifeEventMarkerDTO): string {
+  // Prefer the shape-specific signed amount (Spec D §1.2) when
+  // present so the tooltip reads in the new model; fall back to the
+  // legacy unsigned `amount_usd` otherwise.
+  const rawAmt =
+    e.one_shot_amount_usd ??
+    e.recurring_amount_usd ??
+    e.monthly_delta_usd ??
+    e.amount_usd ??
+    null;
   const amt =
-    e.amount_usd !== null ? `$${(e.amount_usd / 1000).toFixed(1)}K` : "—";
+    rawAmt !== null ? `$${(rawAmt / 1000).toFixed(1)}K` : "—";
   const desc = e.description ?? "—";
-  return `${e.category}/${e.kind} · ${e.date} · ${amt} · ${desc}`;
+  // Pick the most-relevant render date for the tooltip; falls back to
+  // a literal "(undated)" for delta_kind='none' rows.
+  const dates = eventRenderDates(e);
+  const dateLabel = dates.length > 0 ? dates[0] : "(undated)";
+  return `${e.category}/${e.kind} · ${dateLabel} · ${amt} · ${desc}`;
 }
 
 interface CategoryStyle {
