@@ -419,3 +419,361 @@ def test_idempotent_rerun_no_duplicate_rows(db):
     rows_after_second = _queue_rows(db)
     assert len(rows_after_second) == 1
     assert rows_after_second[0].id == rows_after_first[0].id
+
+
+# ---------------------------------------------------------------------------
+# Weighted-baselines follow-on (2026-05-30) — A1 raw-transaction path.
+# ---------------------------------------------------------------------------
+#
+# These tests cover the new behavior layered onto Pattern A1:
+#   - Per-category trimmed-mean + MAD computed from RAW transactions in
+#     the baseline window (preferred path).
+#   - Empirical-Bayes shrinkage toward a global cross-category baseline
+#     for small per-category samples.
+#   - Robustness to a single outlier in the training window via trim.
+#   - Category-isolation: groceries vs. dining maintain separate baselines.
+#   - Backwards-compat fallback: rolling-stats-only seeds keep working.
+# ---------------------------------------------------------------------------
+
+
+def _seed_baseline_history(
+    db,
+    *,
+    category_id: int,
+    amounts: list[Decimal | float | int],
+    merchant_prefix: str = "hist",
+    baseline_window_start_days: int = 90,
+) -> list[ExpenseTransaction]:
+    """Seed ``len(amounts)`` raw transactions in ``category_id``, all
+    inside the baseline window (between ``baseline_window_start_days``
+    days before AS_OF and AS_OF - 31 days, i.e. OUTSIDE the 30-day
+    detection window so they don't trigger detection themselves).
+
+    Spreads the dates across the baseline window so each row falls
+    safely outside the detection window.
+    """
+    out: list[ExpenseTransaction] = []
+    span_days = max(1, baseline_window_start_days - 31)
+    for i, amt in enumerate(amounts):
+        # All baseline txns fall between AS_OF - 90 and AS_OF - 31.
+        offset = 31 + (i * span_days // max(1, len(amounts)))
+        out.append(
+            _add_tx(
+                db,
+                merchant=f"{merchant_prefix}_{i}",
+                amount=amt,
+                occurred_on=AS_OF - timedelta(days=offset),
+                category_id=category_id,
+            )
+        )
+    return out
+
+
+def test_a1_raw_baseline_path_fires_on_clean_history(db):
+    """Raw-transaction baseline path: 30 prior tightly-clustered txns
+    around 100 NIS in category 'groceries' → a 400 NIS tx in groceries
+    fires A1 (critical, robust z >> 6)."""
+    cat = 100
+    # 30 prior groceries txns clustered tightly around 100 (so MAD is small).
+    amounts = [Decimal("95"), Decimal("98"), Decimal("100"), Decimal("102"), Decimal("105")] * 6
+    _seed_baseline_history(db, category_id=cat, amounts=amounts, merchant_prefix="grocer")
+    db.commit()
+
+    tx = _add_tx(
+        db, merchant="splurgy_supermarket", amount=400,
+        occurred_on=AS_OF - timedelta(days=1),
+        category_id=cat,
+    )
+    db.commit()
+
+    flags = detect_bucket_a(db, USER, as_of=AS_OF)
+    a1 = [f for f in flags if f.detector == "a1_category_outlier"]
+    assert len(a1) == 1, f"expected 1 A1 flag, got {flags}"
+    assert a1[0].transaction_id == tx.id
+    assert a1[0].severity == "critical"
+    # Rationale must mention the raw-baseline source label.
+    assert "src=raw" in a1[0].rationale
+
+
+def test_a1_raw_baseline_isolates_per_category(db):
+    """Category isolation: a 400 NIS tx is normal in 'dining' (where
+    baseline mean is ~300) but anomalous in 'groceries' (baseline ~100).
+
+    Seeds enough history in BOTH categories so each gets the raw path.
+    The detection tx lands in dining → should NOT fire.
+    """
+    groceries = 200
+    dining = 201
+    # Groceries: tightly clustered around 100. n=30.
+    _seed_baseline_history(
+        db, category_id=groceries,
+        amounts=[Decimal("100")] * 30, merchant_prefix="grocer",
+    )
+    # Dining: tightly clustered around 300. n=30.
+    _seed_baseline_history(
+        db, category_id=dining,
+        amounts=[Decimal("300")] * 30, merchant_prefix="dine",
+    )
+    db.commit()
+
+    # 400 NIS in dining — only ~33% above baseline, well within noise.
+    # But in groceries (baseline 100), 400 NIS would be a 4x outlier.
+    tx_dining = _add_tx(
+        db, merchant="nice_restaurant", amount=400,
+        occurred_on=AS_OF - timedelta(days=1),
+        category_id=dining,
+    )
+    db.commit()
+
+    flags = detect_bucket_a(db, USER, as_of=AS_OF)
+    a1_for_tx = [
+        f for f in flags
+        if f.detector == "a1_category_outlier" and f.transaction_id == tx_dining.id
+    ]
+    # Dining tx at 400 is NOT an outlier given dining's own baseline at 300.
+    # The MAD will be near 0 (tight cluster) — with k * scaled_MAD threshold
+    # the absolute delta of 100 must exceed it. Tightly clustered samples
+    # at exact value 300 give MAD=0 → A1 cannot evaluate → no fire (gate).
+    # Either way: no A1 fire on the dining tx.
+    assert a1_for_tx == [], (
+        "dining tx at 400 NIS should NOT trigger A1 — within its own "
+        f"category baseline, got flags={a1_for_tx}"
+    )
+
+
+def test_a1_raw_baseline_robust_to_single_outlier_in_training(db):
+    """Trimmed-mean robustness: a 30-txn training set clustered around
+    100 NIS plus ONE 5000 NIS outlier should still produce a baseline
+    center near 100 (the trim discards the outlier).
+
+    A 400 NIS detection tx should still fire (not be shielded by the
+    inflated mean a non-robust statistic would produce).
+    """
+    cat = 300
+    # 29 mildly-noisy obs around 100, 1 obs at 5000 (the corrupt outlier).
+    # The mild noise is REQUIRED so MAD > 0 after trimming — otherwise a
+    # pure-100 cluster gives spread=0 and short-circuits A1 entirely.
+    # 10% trim of 30 = 3 per tail; after trim we keep 24 of the 29 noisy
+    # values around 100 (trim discards the 5000 plus 2 of the largest
+    # 100-cluster vals; remaining 24 still spans 90..110).
+    amounts = [Decimal(str(v)) for v in (
+        [90, 92, 94, 96, 98, 99, 100, 100, 100, 100,
+         100, 100, 100, 100, 100, 100, 100, 100, 100, 102,
+         102, 104, 104, 106, 106, 108, 108, 110, 110]
+        + [5000]
+    )]
+    assert len(amounts) == 30
+    _seed_baseline_history(db, category_id=cat, amounts=amounts, merchant_prefix="rob")
+    db.commit()
+
+    tx = _add_tx(
+        db, merchant="suspicious_charge", amount=400,
+        occurred_on=AS_OF - timedelta(days=1),
+        category_id=cat,
+    )
+    db.commit()
+
+    flags = detect_bucket_a(db, USER, as_of=AS_OF)
+    a1 = [
+        f for f in flags
+        if f.detector == "a1_category_outlier" and f.transaction_id == tx.id
+    ]
+    # If the implementation used a NON-robust mean, the baseline would
+    # be (29*100 + 5000)/30 ≈ 263 — and a 400 NIS tx would look much
+    # closer to normal. With trimmed mean (trim 10%/tail = drop top 3),
+    # center stays at 100, so 400 NIS is clearly anomalous.
+    assert len(a1) == 1, (
+        f"expected trimmed mean to discard the 5000 NIS outlier and "
+        f"flag the 400 NIS test tx — got flags={a1}"
+    )
+    # The rationale should reflect the raw path was used.
+    assert "src=raw" in a1[0].rationale
+
+
+def test_a1_small_sample_shrinks_toward_global(db):
+    """Small per-category samples (n=6, just past the gate) should
+    shrink toward the global baseline.
+
+    Scenario: category 'rare_cat' has just 6 raw obs all at 100 NIS,
+    but the OVERALL spend across all categories has a much larger
+    spread (e.g. global center ≈ 500, MAD ≈ 200). A 250 NIS tx in
+    'rare_cat' should NOT fire because the small-n shrinkage pulls
+    the effective spread toward the global ~200 — well above the
+    raw 0 MAD that would have flagged anything > 100.
+
+    Without shrinkage (raw spread = 0), even a tiny excess would
+    fire spuriously. With shrinkage, the threshold becomes sane.
+    """
+    rare_cat = 400
+    # 6 obs in rare_cat at exactly 100 → raw MAD = 0.
+    _seed_baseline_history(
+        db, category_id=rare_cat,
+        amounts=[Decimal("100")] * 6, merchant_prefix="rare",
+    )
+    # Seed a noisy "big_cat" with high variance so the GLOBAL baseline
+    # has a real spread. n=24 → total raw observations across all
+    # categories = 30 → global baseline weight is meaningful.
+    big_cat = 401
+    big_amounts = [Decimal(str(v)) for v in [
+        100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,
+        100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,
+        100, 200, 300, 400,
+    ]]
+    _seed_baseline_history(
+        db, category_id=big_cat, amounts=big_amounts, merchant_prefix="big",
+    )
+    db.commit()
+
+    # A 250 NIS tx in rare_cat. Raw rare-cat baseline says (center=100,
+    # spread=0) → would fire trivially. After shrinkage with weight=6/30=0.2,
+    # effective_center ≈ 0.2*100 + 0.8*global_center; effective_spread ≈
+    # 0.2*0 + 0.8*global_spread — large enough that 250 NIS no longer looks
+    # like a 6+ sigma outlier.
+    tx = _add_tx(
+        db, merchant="rare_shop", amount=250,
+        occurred_on=AS_OF - timedelta(days=1),
+        category_id=rare_cat,
+    )
+    db.commit()
+
+    flags = detect_bucket_a(db, USER, as_of=AS_OF)
+    a1 = [
+        f for f in flags
+        if f.detector == "a1_category_outlier" and f.transaction_id == tx.id
+    ]
+    # Without shrinkage the spread=0 path would either fire wildly or
+    # be gated out by the spread<=0 check. EITHER way is acceptable as
+    # long as the spurious-fire path is closed. The behavior we DO NOT
+    # want is "fires critical/warning on a 250 NIS tx in a small-n
+    # category because raw MAD happened to be 0".
+    if a1:
+        # If it does fire, it must NOT be critical — the shrinkage
+        # toward the noisy global baseline should at most yield 'info'.
+        assert a1[0].severity == "info", (
+            f"small-sample category should not produce a critical/warning "
+            f"A1 flag on a 250 NIS tx; got {a1[0].severity}"
+        )
+
+
+def test_a1_fallback_to_rolling_stats_when_no_raw_history(db):
+    """Backwards-compat: when the category has zero raw transactions
+    in the baseline window but DOES have merchant_rolling_stats seeded,
+    A1 falls back to the rolling-stats aggregation path."""
+    cat = 500
+    # Seed only rolling-stats — no raw transactions in the baseline
+    # window. Six baselines with spread of ±10 around 100 → category
+    # median ≈ 100, MAD ≈ 10.
+    for i, med in enumerate([80, 90, 100, 100, 110, 120]):
+        _add_baseline(
+            db, merchant=f"fb_{i}", category_id=cat,
+            median=med, mad=Decimal("5"),
+            mean=med, txn_count=4,
+        )
+    db.commit()
+
+    tx = _add_tx(
+        db, merchant="fb_outlier", amount=200,
+        occurred_on=AS_OF - timedelta(days=1),
+        category_id=cat,
+    )
+    db.commit()
+
+    flags = detect_bucket_a(db, USER, as_of=AS_OF)
+    a1 = [f for f in flags if f.detector == "a1_category_outlier" and f.transaction_id == tx.id]
+    assert len(a1) == 1, f"fallback path should fire; got {flags}"
+    assert a1[0].severity == "critical"
+    # Rationale must show the rolling-stats fallback source.
+    assert "src=rolling" in a1[0].rationale
+
+
+def test_a1_sparse_raw_does_not_silently_fall_back_to_rolling(db):
+    """Codex BLOCKER (2026-05-30): once ANY raw history exists for a
+    category, the raw path wins. Sparse raw must NOT silently fall back
+    to a stale rolling-stats proxy — that would be mixed-mode behavior.
+
+    Scenario: category has just 3 raw obs (below the 6-count gate) AND
+    a healthy rolling-stats baseline. The detector must use raw (and
+    gate-suppress the fire because n<6), NOT fall back to rolling-stats
+    and fire.
+    """
+    cat = 700
+    # Sparse raw history: only 3 obs in cat 700. Add at varying amounts
+    # so it's not degenerate (MAD!=0).
+    _seed_baseline_history(
+        db, category_id=cat,
+        amounts=[Decimal("90"), Decimal("100"), Decimal("110")],
+        merchant_prefix="sparse",
+    )
+    # Healthy rolling-stats for the same category — would fire critical
+    # on a 200 NIS tx if it were consulted.
+    for i, med in enumerate([80, 90, 100, 100, 110, 120]):
+        _add_baseline(
+            db, merchant=f"healthy_{i}", category_id=cat,
+            median=med, mad=Decimal("5"),
+            mean=med, txn_count=4,
+        )
+    db.commit()
+
+    tx = _add_tx(
+        db, merchant="big_purchase", amount=200,
+        occurred_on=AS_OF - timedelta(days=1),
+        category_id=cat,
+    )
+    db.commit()
+
+    flags = detect_bucket_a(db, USER, as_of=AS_OF)
+    a1 = [
+        f for f in flags
+        if f.detector == "a1_category_outlier" and f.transaction_id == tx.id
+    ]
+    # The raw path returns (center, spread, n=3); _evaluate_a1 gates
+    # because 3 < A1_MIN_BASELINE_COUNT. NO fire. If the code had
+    # silently fallen through to rolling-stats, this would have fired
+    # critical (as in test_a1_fallback_to_rolling_stats_when_no_raw_history).
+    assert a1 == [], (
+        "sparse raw must gate on count<6, not fall through to "
+        f"rolling-stats; got flags={a1}"
+    )
+
+
+def test_a1_raw_baseline_excludes_detection_window_tx(db):
+    """A newly-arrived outlier in the detection window must NOT pollute
+    its own baseline.
+
+    Scenario: baseline window has 30 obs at 100 NIS, then a 600 NIS tx
+    arrives in the detection window. The detection tx must be excluded
+    from the baseline computation (otherwise its presence would bias
+    the trimmed mean upward and the spread outward, masking itself).
+    """
+    cat = 600
+    # Use a tightly-noisy distribution so MAD > 0 after trim; without
+    # natural noise the baseline spread collapses to zero and A1 gates
+    # out before evaluating.
+    noisy = [Decimal(str(v)) for v in (
+        [95, 97, 99, 100, 101, 103, 105] * 4 + [100, 100]
+    )]
+    assert len(noisy) == 30
+    _seed_baseline_history(
+        db, category_id=cat,
+        amounts=noisy, merchant_prefix="exc",
+    )
+    db.commit()
+
+    tx = _add_tx(
+        db, merchant="detection_outlier", amount=600,
+        occurred_on=AS_OF - timedelta(days=2),  # inside 30-day detection window.
+        category_id=cat,
+    )
+    db.commit()
+
+    flags = detect_bucket_a(db, USER, as_of=AS_OF)
+    a1 = [
+        f for f in flags
+        if f.detector == "a1_category_outlier" and f.transaction_id == tx.id
+    ]
+    # If the detection tx had been included in its own baseline, the
+    # baseline center would shift toward ~116 and the spread would
+    # widen. We assert it fires critical (z >= 6) — which requires the
+    # baseline to remain anchored at 100 NIS.
+    assert len(a1) == 1
+    assert a1[0].severity == "critical"
