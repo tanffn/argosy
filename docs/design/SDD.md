@@ -53,6 +53,18 @@ Total: ~45 commits in the autonomous block. Backend tests green under `pytest -m
 
 **Codex coverage status:** every commit that involved money math / LLM prompt / migration / parser / scheduler had a codex tandem session at `tools/codex-tandem/sessions/2026-05-{29,30}-*/`. All BLOCKERs integrated before commit. Nothing left in queue.
 
+### Post-block follow-on — Discord text-attachment fetching
+
+After Ariel restarted the backend + UI for the first time, the live Discord listener connected fine but live ingest revealed an architectural gap: the alpha-report channel posts daily as `.txt` file attachments (filenames like `Alpha Report 5-29-2026.txt`), not as inline message text. The original listener + Spec C #7 backfill processed only `message.content`, so attachment bodies were silently dropped.
+
+`argosy/services/discord_attachment_fetcher.py` (new, 418 lines) is the shared helper: parses Discord-CDN `attachments` payload shape, filters to `text/*` / `.txt` / `.md` / `.csv` under 1 MB, fetches via `httpx.AsyncClient` with per-request auth-header scrub (codex BLOCKER fix — injecting an httpx client with default Authorization headers would have leaked the bot token to the CDN), UTF-8 → latin-1 decoder fallback, two-layer size guard (Content-Length pre-check + streaming cut).
+
+Wired into both `discord_listener.py` (live ingest) and `discord_backfill.py` (REST 14-day backfill) so live + historical paths use the same helper — no drift. Effective text fed to the alpha-call parser is caption-first then attachment text, both persisted to `news_signals.raw_text` for citation.
+
+74 discord-area tests green incl. 25 new attachment-fetcher tests + 4 listener/backfill integration tests pinning caption+attachment ordering + bot-token-not-leaked-to-CDN.
+
+The Discord 14-day backfill (`predictions_backfill_discord` job from Spec C #7) was registered as manual-trigger; this follow-on commit makes its blind spot disappear. Firing the backfill after this commit was the next step.
+
 ### Wave 2026-05-29 (late session) — five-spec holistic upgrade + Sprint A authorization
 
 **Trigger:** user audit of `30/30` block against the original three-flow ask exposed four architectural mistakes the prior session had baked in (life-events misuse as retire-age clamps, hand-rolled per-symptom anomaly detectors, OS-level cron suggestions, Discord-only backtesting). User pushback re-shaped the work as five coordinated specs covering jobs/observer/ledger/cashflow/last-mile.

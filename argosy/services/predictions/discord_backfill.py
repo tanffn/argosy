@@ -84,6 +84,11 @@ from typing import Any
 import httpx
 from sqlalchemy.orm import Session
 
+from argosy.services.discord_attachment_fetcher import (
+    MAX_ATTACHMENT_BYTES,
+    fetch_text_attachments,
+    parse_attachments,
+)
 from argosy.services.discord_listener import (
     DiscordCreds,
     _default_creds_path,
@@ -376,6 +381,7 @@ async def backfill_discord_predictions(
     user_id: str = DEFAULT_USER_ID,
     page_fetcher: PageFetcher | None = None,
     now: Callable[[], datetime] | None = None,
+    attachment_http_client: httpx.AsyncClient | None = None,
 ) -> BackfillSummary:
     """Walk a Discord channel's history + write predictions for every
     actionable alpha call within the last ``lookback_days`` days.
@@ -445,7 +451,17 @@ async def backfill_discord_predictions(
                 _default_creds_path(),
             )
             return summary
+
         summary.creds_path = str(_default_creds_path())
+
+    # Attachment fetcher shares one httpx client across the whole run
+    # so CDN keepalive amortises across hundreds of attachments. Tests
+    # inject a MockTransport-backed client to avoid real CDN hits.
+    # Initialised AFTER the creds bail-out so a missing-creds run
+    # doesn't open + leak a client.
+    own_attachment_client = attachment_http_client is None
+    attachment_client = attachment_http_client or httpx.AsyncClient()
+
     final_channel_id = channel_id if channel_id is not None else creds.channel_id  # type: ignore[union-attr]
     final_bot_token = bot_token if bot_token is not None else creds.bot_token  # type: ignore[union-attr]
 
@@ -522,6 +538,7 @@ async def backfill_discord_predictions(
                 msg_id = str(msg["id"])
                 msg_ts = _parse_discord_ts(msg["timestamp"])
                 msg_content = str(msg.get("content", ""))
+                msg_attachments_raw = msg.get("attachments")
             except (KeyError, ValueError, TypeError) as exc:
                 summary.errors.append(
                     f"malformed_message: {type(exc).__name__}: {exc}"
@@ -552,7 +569,29 @@ async def backfill_discord_predictions(
             if msg_ts < cutoff:
                 continue
 
-            call = extract_alpha_call_from_text(msg_content)
+            # Fetch text attachments (alpha-report channel posts daily
+            # reports as ``.txt`` uploads with a caption). Combined
+            # text = caption first, then attachment body — caption-
+            # first so a user-supplied prefix wins alpha-call regex
+            # precedence. ``fetch_text_attachments`` never raises on
+            # operational errors; HTTP failures log + skip that one
+            # attachment.
+            attachments = parse_attachments(msg_attachments_raw)
+            if attachments:
+                attachment_text = await fetch_text_attachments(
+                    attachments,
+                    http_client=attachment_client,
+                    max_bytes=MAX_ATTACHMENT_BYTES,
+                )
+            else:
+                attachment_text = ""
+            effective_text = (
+                f"{msg_content}\n\n{attachment_text}"
+                if attachment_text
+                else msg_content
+            )
+
+            call = extract_alpha_call_from_text(effective_text)
             if call is None:
                 summary.messages_unparseable += 1
                 continue
@@ -637,6 +676,9 @@ async def backfill_discord_predictions(
         logger.warning(
             "discord_backfill: MAX_PAGES (%d) reached", MAX_PAGES
         )
+
+    if own_attachment_client:
+        await attachment_client.aclose()
 
     logger.info(
         "discord_backfill: done — scanned=%d written=%d deduped=%d "

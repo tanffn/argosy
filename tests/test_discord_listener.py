@@ -20,10 +20,12 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import sessionmaker
 
+from argosy.services.discord_attachment_fetcher import Attachment
 from argosy.services.discord_listener import (
     DiscordCreds,
     MessageEvent,
@@ -319,3 +321,134 @@ async def test_listener_ignores_messages_from_other_channels(
 
     with session_factory() as s:
         assert s.query(NewsSignal).count() == 0
+
+
+# ---------------------------------------------------------------------------
+# Attachment ingest — caption + .txt body both reach the extractor
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_listener_combines_caption_and_txt_attachment_into_raw_text(
+    session_factory, creds,
+) -> None:
+    """Daily-report channel posts as a ``.txt`` file with a short caption.
+
+    The listener must HTTPS-GET the attachment URL, decode it as
+    UTF-8, and feed BOTH the caption AND the downloaded text to the
+    extractor — so ``news_signals.raw_text`` includes BOTH (caption
+    first, attachment after; codex review focus — caption-first
+    ordering means a user-supplied alpha-call prefix wins regex
+    precedence).
+    """
+    caption = "Today's report"
+    attachment_body = (
+        "Alpha Report 5/29/2026\n"
+        "BUY $NVDA target $180 stop $135\n"
+        "(record revenue beat, strong guidance)"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Confirm signed-URL contract: bot token NEVER reaches the CDN
+        # (either no Authorization header, or our explicit empty scrub).
+        auth = request.headers.get("Authorization")
+        assert auth in (None, "")
+        body_bytes = attachment_body.encode("utf-8")
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": str(len(body_bytes)),
+            },
+            content=body_bytes,
+        )
+
+    attachment = Attachment(
+        id="att-1",
+        filename="Alpha Report 5-29-2026.txt",
+        content_type="text/plain",
+        size=len(attachment_body.encode("utf-8")),
+        url="https://cdn.discordapp.com/attachments/1/2/report.txt?ex=abc&hm=def",
+    )
+    event = MessageEvent(
+        message_id="9001",
+        channel_id=_CHANNEL_ID,
+        content=caption,
+        timestamp=_NOW - timedelta(minutes=2),
+        attachments=[attachment],
+    )
+    factory, _holder = _make_client_factory([event])
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        await run_discord_listener(
+            session_factory=session_factory,
+            creds=creds,
+            client_factory=factory,
+            now=lambda: _NOW,
+            http_client=http_client,
+        )
+
+    with session_factory() as s:
+        rows = s.query(NewsSignal).all()
+        assert len(rows) == 1
+        row = rows[0]
+        # Caption appears in raw_text...
+        assert caption in row.raw_text
+        # ...AND the attachment body too.
+        assert "Alpha Report 5/29/2026" in row.raw_text
+        assert "BUY $NVDA target $180 stop $135" in row.raw_text
+        # Caption-first ordering — caption's position precedes the
+        # attachment body in the stored raw_text.
+        assert row.raw_text.find(caption) < row.raw_text.find(
+            "Alpha Report 5/29/2026"
+        )
+        # Extractor still surfaced NVDA from the combined text.
+        assert "NVDA" in json.loads(row.parsed_tickers)
+
+
+@pytest.mark.asyncio
+async def test_listener_with_image_attachment_only_uses_caption(
+    session_factory, creds,
+) -> None:
+    """Non-text attachment (image) → not fetched; caption-only feeds
+    the extractor. No HTTP call attempted."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        calls.append(str(request.url))
+        return httpx.Response(200, content=b"should-not-happen")
+
+    image_att = Attachment(
+        id="img-1",
+        filename="screenshot.png",
+        content_type="image/png",
+        size=12345,
+        url="https://cdn.discordapp.com/img.png?sig=1",
+    )
+    event = MessageEvent(
+        message_id="9002",
+        channel_id=_CHANNEL_ID,
+        content="$NVDA earnings beat — screenshot attached.",
+        timestamp=_NOW - timedelta(minutes=2),
+        attachments=[image_att],
+    )
+    factory, _holder = _make_client_factory([event])
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        await run_discord_listener(
+            session_factory=session_factory,
+            creds=creds,
+            client_factory=factory,
+            now=lambda: _NOW,
+            http_client=http_client,
+        )
+
+    assert calls == []
+    with session_factory() as s:
+        rows = s.query(NewsSignal).all()
+        assert len(rows) == 1
+        assert rows[0].raw_text == event.content

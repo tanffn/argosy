@@ -830,6 +830,158 @@ async def test_loop_fire_now_via_jobregistry_runs_backfill(sync_session):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Service-level: attachment fetching (caption + .txt body combined)
+# ---------------------------------------------------------------------------
+
+
+def _msg_with_attachment(
+    msg_id: str,
+    ts: datetime,
+    content: str,
+    *,
+    attachment_url: str,
+    filename: str = "Alpha Report.txt",
+    content_type: str = "text/plain",
+    size: int = 256,
+) -> dict[str, Any]:
+    """Build a Discord message JSON object that carries one .txt
+    attachment alongside a caption."""
+    base = _msg(msg_id, ts, content)
+    base["attachments"] = [
+        {
+            "id": f"att-{msg_id}",
+            "filename": filename,
+            "content_type": content_type,
+            "size": size,
+            "url": attachment_url,
+            "proxy_url": attachment_url + "&proxy=1",
+        }
+    ]
+    return base
+
+
+@pytest.mark.asyncio
+async def test_backfill_fetches_txt_attachment_and_parses_alpha_call(
+    sync_session,
+):
+    """A historical Discord message with caption ``"Today's report"``
+    (no parseable alpha call by itself) plus a ``.txt`` attachment
+    containing ``BUY $NVDA target $180 stop $135`` → backfill must
+    HTTPS-GET the attachment, combine caption+body, and write a
+    prediction.
+    """
+    db, _, _ = sync_session
+
+    attachment_url = (
+        "https://cdn.discordapp.com/attachments/1/2/report.txt?"
+        "ex=abc&is=def&hm=signature"
+    )
+    attachment_body = (
+        "Alpha Report 5/29/2026\n"
+        "BUY $NVDA target $180 stop $135\n"
+        "Strong guidance, record revenue."
+    )
+
+    msgs = [
+        _msg_with_attachment(
+            msg_id="attmsg-001",
+            ts=NOW - timedelta(hours=2),
+            content="Today's report",  # caption alone has no alpha call
+            attachment_url=attachment_url,
+            size=len(attachment_body.encode("utf-8")),
+        ),
+    ]
+    fetcher = _mk_stub_fetcher([msgs])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Confirm signed-URL contract: bot token NEVER reaches the CDN
+        # (either no Authorization header, or our explicit empty scrub).
+        auth = request.headers.get("Authorization")
+        assert auth in (None, "")
+        body_bytes = attachment_body.encode("utf-8")
+        return httpx.Response(
+            200,
+            headers={
+                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Length": str(len(body_bytes)),
+            },
+            content=body_bytes,
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        summary = await backfill_discord_predictions(
+            db,
+            lookback_days=14,
+            channel_id=CHANNEL_ID,
+            bot_token=BOT_TOKEN,
+            page_fetcher=fetcher,
+            now=_now,
+            attachment_http_client=http_client,
+        )
+
+    assert summary.predictions_written == 1
+    assert summary.messages_unparseable == 0
+    assert summary.errors == []
+
+    row = db.scalar(sa.select(Prediction).where(Prediction.ticker == "NVDA"))
+    assert row is not None
+    assert row.direction == "long"
+
+
+@pytest.mark.asyncio
+async def test_backfill_skips_messages_with_only_image_attachments(
+    sync_session,
+):
+    """Image-only attachment + caption with no alpha call → message
+    counted as unparseable; NO HTTP call made (image filtered before
+    fetch). Defensive: confirms a 5 MiB JPEG can't accidentally be
+    pulled."""
+    db, _, _ = sync_session
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+        calls.append(str(request.url))
+        return httpx.Response(200, content=b"never")
+
+    msg = _msg("img-msg-1", NOW - timedelta(hours=1), "just a picture")
+    msg["attachments"] = [
+        {
+            "id": "img-1",
+            "filename": "chart.png",
+            "content_type": "image/png",
+            "size": 500_000,
+            "url": "https://cdn.discordapp.com/img.png?sig=1",
+        }
+    ]
+    fetcher = _mk_stub_fetcher([[msg]])
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        summary = await backfill_discord_predictions(
+            db,
+            lookback_days=14,
+            channel_id=CHANNEL_ID,
+            bot_token=BOT_TOKEN,
+            page_fetcher=fetcher,
+            now=_now,
+            attachment_http_client=http_client,
+        )
+
+    assert calls == []
+    assert summary.predictions_written == 0
+    assert summary.messages_unparseable == 1
+
+
+# ---------------------------------------------------------------------------
+# Service-level: HTTP error short-circuits the run
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
 async def test_http_error_mid_run_short_circuits_with_partial_progress(
     sync_session,

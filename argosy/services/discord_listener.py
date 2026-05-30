@@ -72,13 +72,20 @@ import json
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclasses_field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+import httpx
 from sqlalchemy.orm import Session
 
+from argosy.services.discord_attachment_fetcher import (
+    Attachment,
+    MAX_ATTACHMENT_BYTES,
+    fetch_text_attachments,
+    parse_attachments,
+)
 from argosy.services.news_extractor import extract
 from argosy.services.predictions.parsers import extract_alpha_call_from_text
 from argosy.services.predictions.writers import write_discord_prediction
@@ -216,8 +223,12 @@ class _MessageEvent(Protocol):
     """Shape of a MESSAGE_CREATE event surfaced to the dispatch handler.
 
     The real Discord gateway sends a JSON payload with many fields; we
-    only consume these four. Tests can construct a plain object/dict
+    only consume these five. Tests can construct a plain object/dict
     that satisfies this Protocol via ``.message_id`` / etc.
+
+    ``attachments`` was added when the alpha-report channel started
+    posting daily reports as ``.txt`` file uploads (caption + file). A
+    message with no attachments has an empty list — never ``None``.
     """
 
     @property
@@ -228,16 +239,24 @@ class _MessageEvent(Protocol):
     def content(self) -> str: ...
     @property
     def timestamp(self) -> datetime: ...
+    @property
+    def attachments(self) -> list[Attachment]: ...
 
 
 @dataclass(frozen=True)
 class MessageEvent:
-    """Concrete carrier for MESSAGE_CREATE events."""
+    """Concrete carrier for MESSAGE_CREATE events.
+
+    ``attachments`` defaults to an empty list so existing tests that
+    don't care about file uploads can construct a ``MessageEvent``
+    with only the four required fields.
+    """
 
     message_id: str
     channel_id: int
     content: str
     timestamp: datetime
+    attachments: list[Attachment] = dataclasses_field(default_factory=list)
 
 
 class DiscordClient(Protocol):
@@ -272,6 +291,7 @@ async def run_discord_listener(
     client_factory: ClientFactory | None = None,
     now: Callable[[], datetime] | None = None,
     on_connected: Callable[[], None] | None = None,
+    http_client: httpx.AsyncClient | None = None,
 ) -> None:
     """Connect to the Discord gateway and persist incoming messages.
 
@@ -362,6 +382,13 @@ async def run_discord_listener(
         except Exception:  # pragma: no cover - defensive
             logger.exception("discord_listener: on_connected callback raised")
 
+    # Attachment fetcher needs an httpx.AsyncClient. We open one for
+    # the lifetime of the listener so each MESSAGE_CREATE doesn't pay
+    # connection-setup cost; the CDN-keepalive amortizes across the
+    # daily-report cadence. Caller may inject one (tests do, to avoid
+    # real CDN hits).
+    own_http_client = http_client is None
+    effective_http_client = http_client or httpx.AsyncClient()
     try:
         async for event in await _ensure_async_iter(client.messages()):
             await _handle_message(
@@ -371,10 +398,13 @@ async def run_discord_listener(
                 known_tickers=known_tickers,
                 max_age=max_age,
                 now_fn=now_fn,
+                http_client=effective_http_client,
             )
     finally:
         logger.info("discord_listener: disconnecting")
         await client.close()
+        if own_http_client:
+            await effective_http_client.aclose()
 
 
 async def _ensure_async_iter(maybe_awaitable: Any) -> Any:
@@ -393,12 +423,15 @@ async def _handle_message(
     known_tickers: frozenset[str] | None,
     max_age: timedelta,
     now_fn: Callable[[], datetime],
+    http_client: httpx.AsyncClient,
 ) -> None:
     """Process one MESSAGE_CREATE event end-to-end.
 
     Filters: wrong channel → drop; message older than ``max_age`` →
-    drop. Otherwise: extract, idempotently persist on (discord,
-    msg-{id}).
+    drop. Otherwise: fetch any text attachments, concatenate
+    caption + attachment text (caption FIRST so a user-supplied prefix
+    wins for alpha-call regex precedence — see codex review focus),
+    extract, idempotently persist on (discord, msg-{id}).
     """
     # Filter: wrong channel (the gateway shouldn't send these because
     # we identified for one guild, but be defensive).
@@ -422,6 +455,23 @@ async def _handle_message(
     source_ref = f"msg-{event.message_id}"
     received_at = event.timestamp
 
+    # Fetch any text attachments. The alpha-report channel posts the
+    # daily report as a ``.txt`` file with a caption — the caption is
+    # in ``event.content`` and the actual report text is at the
+    # attachment URL. We feed BOTH (caption first, then attachment) to
+    # the extractor + alpha-call parser so the user-supplied caption's
+    # any explicit alpha-call prefix wins regex precedence.
+    attachment_text = await fetch_text_attachments(
+        getattr(event, "attachments", []) or [],
+        http_client=http_client,
+        max_bytes=MAX_ATTACHMENT_BYTES,
+    )
+    effective_text = (
+        f"{event.content}\n\n{attachment_text}"
+        if attachment_text
+        else event.content
+    )
+
     # Idempotency check — open a fresh session per message so a long
     # listener doesn't hold a transaction open for hours.
     session = session_factory()
@@ -436,7 +486,7 @@ async def _handle_message(
         signal = extract(
             source="discord",
             source_ref=source_ref,
-            raw_text=event.content,
+            raw_text=effective_text,
             received_at=received_at,
             known_tickers=known_tickers,
         )
@@ -455,9 +505,10 @@ async def _handle_message(
         session.commit()
         logger.info(
             "discord_listener: persisted message %s "
-            "(tickers=%s, keywords=%s, sentiment=%s)",
+            "(tickers=%s, keywords=%s, sentiment=%s, attachments=%d)",
             event.message_id, signal.parsed_tickers,
             signal.event_keywords, signal.sentiment,
+            len(getattr(event, "attachments", []) or []),
         )
 
         # Spec C commit #3 — predictions ledger writer wiring. GATE on
@@ -469,6 +520,7 @@ async def _handle_message(
             news_signal_row=row,
             event=event,
             channel_id=channel_id,
+            effective_text=effective_text,
         )
     except Exception:
         session.rollback()
@@ -483,6 +535,7 @@ def _maybe_write_discord_prediction(
     news_signal_row: NewsSignal,
     event: _MessageEvent,
     channel_id: int,
+    effective_text: str | None = None,
 ) -> None:
     """Spec C commit #3 — emit a prediction row for actionable Discord calls.
 
@@ -490,11 +543,18 @@ def _maybe_write_discord_prediction(
     pair via ``extract_alpha_call_from_text``. Non-actionable messages
     (chatter, off-topic) skip silently.
 
+    ``effective_text`` is the caption+attachment combined text; when
+    omitted (older callers) we fall back to ``event.content`` for
+    backward compat. The parser sees the combined text so an alpha
+    call that lives only in the attached daily-report ``.txt`` gets a
+    ledger entry.
+
     Per [[feedback_ask_dont_assume]] the writer is best-effort: any
     failure here logs + swallows so a bad prediction write never blocks
     a legitimate NewsSignal ingest.
     """
-    call = extract_alpha_call_from_text(event.content)
+    parse_text = effective_text if effective_text is not None else event.content
+    call = extract_alpha_call_from_text(parse_text)
     if call is None:
         return
     # User id: discord_listener doesn't carry a per-message user_id
@@ -644,6 +704,7 @@ class _RawWebsocketsDiscordClient:
                     channel_id=int(data["channel_id"]),
                     content=str(data.get("content", "")),
                     timestamp=_parse_discord_ts(data["timestamp"]),
+                    attachments=parse_attachments(data.get("attachments")),
                 )
             except (KeyError, ValueError) as exc:  # pragma: no cover
                 logger.warning(
@@ -679,6 +740,7 @@ def _parse_discord_ts(value: str) -> datetime:
 # Re-export the awaitable type hint so callers / tests can annotate
 # their client_factory without importing the protocol.
 __all__ = [
+    "Attachment",
     "DiscordCreds",
     "DiscordClient",
     "MessageEvent",
