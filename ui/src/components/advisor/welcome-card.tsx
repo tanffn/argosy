@@ -139,9 +139,13 @@ export function AdvisorWelcomeCard({ userId, gaps }: AdvisorWelcomeCardProps) {
     );
   }
   if (state.pendingDraft) {
+    const d = state.pendingDraft;
+    const isReallyPending = !d.effective_role || d.effective_role === "draft";
     inProgress.push(
       <li key="draft">
-        Plan draft #{state.pendingDraft.plan_version_id} pending review.{" "}
+        {isReallyPending
+          ? `Plan draft #${d.plan_version_id} pending review.`
+          : `Last plan draft #${d.plan_version_id} (no longer pending — re-run synthesis to refresh).`}{" "}
         <Link href="/plan" className="text-info hover:underline">
           /plan →
         </Link>
