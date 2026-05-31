@@ -214,17 +214,14 @@ def run_synthesis(
     )
     _emit_event("plan.draft.started", {"user_id": user_id, "trigger": trigger})
 
-    # Idempotency: demote any existing draft.
-    existing = get_pending_draft(session, user_id)
-    if existing is not None:
-        existing.role = "superseded"
-        existing.superseded_at = datetime.now(timezone.utc)
-        session.commit()
-        log.info(
-            "plan_synthesis.demoted_existing_draft",
-            superseded_id=existing.id,
-            user_id=user_id,
-        )
+    # Idempotency: demote any existing draft — but defer the actual
+    # role flip to commit time when the new draft is being written
+    # (see below in this function). The previous implementation
+    # demoted right here, before the 30-60 min synthesis ran; on any
+    # phase failure the user ended up with no pending draft and no
+    # successor (real incident: decision_run #43, 2026-05-30 — draft
+    # #14 stranded as role='superseded' with no successor for ~24h).
+    # See the same fix in plan_amendment/workers.py.
 
     # T2.1 — soft cost cap per synthesis run. Read from env so it can be
     # bumped without code edits ($10 default). When the cumulative cost
@@ -578,6 +575,24 @@ def run_synthesis(
         "prior_current_id": prior_current.id if prior_current else None,
         "decision_run_id": decision_run_id,  # int
     })
+
+    # Demote any prior draft at the same commit as the new draft so a
+    # synthesis failure earlier in this function never leaves the user
+    # with no pending draft (real incident on decision_run #43,
+    # 2026-05-30). The partial unique index uq_plan_versions_draft_per_user
+    # is enforced statement-by-statement on both SQLite (dev) and
+    # Postgres (prod); flushing the UPDATE before the INSERT keeps the
+    # constraint satisfied at every point.
+    existing_draft = get_pending_draft(session, user_id)
+    if existing_draft is not None:
+        existing_draft.role = "superseded"
+        existing_draft.superseded_at = datetime.now(timezone.utc)
+        session.flush()
+        log.info(
+            "plan_synthesis.demoted_existing_draft",
+            superseded_id=existing_draft.id,
+            user_id=user_id,
+        )
 
     draft = PlanVersion(
         user_id=user_id,

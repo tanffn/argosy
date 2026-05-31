@@ -88,6 +88,65 @@ def test_synthesis_flow_writes_role_draft(session, monkeypatch):
     assert parsed["status"] == "minor_revision"
 
 
+def test_synthesis_failure_does_not_demote_existing_draft(session, monkeypatch):
+    """Regression: pre-emptive demote stranded the prior draft when a
+    phase later raised. Real incident: decision_run #43 on 2026-05-30
+    blocked at phase boundary; draft #14 left as role=superseded with
+    no successor. The fix moves the demote into the same commit as the
+    new draft insert, so any failure before that commit leaves the
+    prior draft as role=draft.
+    """
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    # Seed an existing pending draft for ariel.
+    seed = PlanVersion(
+        user_id="ariel",
+        role="draft",
+        version_label="seed-existing-draft",
+        raw_markdown="",
+        horizon_long_json="{}",
+        horizon_medium_json="{}",
+        horizon_short_json="{}",
+    )
+    session.add(seed)
+    session.commit()
+    seed_id = seed.id
+
+    # Phase 3 raises — synthesis cannot complete.
+    monkeypatch.setattr(flow, "_run_phase_1_analysts", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_run_phase_2_debates", lambda **kw: "x")
+
+    def _boom(**kw):
+        raise RuntimeError("phase 3 blew up")
+
+    monkeypatch.setattr(flow, "_run_phase_3_synthesizer", _boom)
+    monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+    with pytest.raises(RuntimeError, match="phase 3 blew up"):
+        flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+
+    # Refresh from DB and confirm the prior draft is intact.
+    session.expire_all()
+    pv = session.get(PlanVersion, seed_id)
+    assert pv is not None
+    assert pv.role == "draft", (
+        f"existing draft must remain role='draft' after a failed synthesis; "
+        f"got role={pv.role!r}"
+    )
+    assert pv.superseded_at is None, (
+        "existing draft must not be stamped with a superseded_at "
+        "timestamp when synthesis fails"
+    )
+
+    # And no other role='draft' row was inserted.
+    drafts = session.query(PlanVersion).filter_by(
+        user_id="ariel", role="draft"
+    ).all()
+    assert len(drafts) == 1
+    assert drafts[0].id == seed_id
+
+
 def test_synthesis_flow_replaces_existing_draft(session, monkeypatch):
     """Idempotency: if a draft already exists, replace it (do not stack)."""
     from argosy.orchestrator.flows import plan_synthesis as flow

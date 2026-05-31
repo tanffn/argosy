@@ -153,12 +153,18 @@ def _medium_worker(*, session: Session, user_id: str,
                      decision_run_id=decision_run.id)
             return
 
-        # Idempotency: demote any pending draft.
+        # Idempotency: demote any pending draft. Held in the SAME commit
+        # as the new draft INSERT so a failure between this UPDATE and
+        # the INSERT can never strand the prior draft as superseded
+        # without a successor. The explicit ``session.flush()`` after the
+        # UPDATE ensures the partial unique index
+        # ``uq_plan_versions_draft_per_user`` sees the demote before the
+        # INSERT lands (statement-level enforcement on SQLite + Postgres).
         existing_draft = get_pending_draft(session, user_id)
         if existing_draft is not None:
             existing_draft.role = "superseded"
             existing_draft.superseded_at = datetime.now(timezone.utc)
-            session.commit()
+            session.flush()
 
         inputs = output.inputs.model_copy(update={
             "baseline_id": baseline.id,
