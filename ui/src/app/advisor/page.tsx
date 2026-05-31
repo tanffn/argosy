@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Paperclip, X } from "lucide-react";
 
 import { AgentCascadePanel } from "@/components/advisor/AgentCascadePanel";
+import { AdvisorWelcomeCard } from "@/components/advisor/welcome-card";
 import { Markdown } from "@/components/markdown";
 import { PlanInScopeCard } from "@/components/plan-in-scope-card";
 import { PlanRevisionSheet } from "@/components/plan-revision-sheet";
@@ -125,7 +126,10 @@ export default function AdvisorPage() {
   const [history, setHistory] = useState<Turn[]>([]);
   const [pending, setPending] = useState<AdvisorTurnResponse | null>(null);
   const [userInput, setUserInput] = useState("");
-  const [loading, setLoading] = useState(true);
+  // Idle by default — opening /advisor no longer auto-fires a turn;
+  // the welcome card surfaces context instantly and the LLM only
+  // runs when the user sends something or clicks a gap row.
+  const [loading, setLoading] = useState(false);
 
   // T4.7 — pre-seed the textarea from a ?seed= query param so the /plan
   // page's "Discuss with advisor" button can push a specific Fund Manager
@@ -414,10 +418,12 @@ export default function AdvisorPage() {
   );
 
   useEffect(() => {
-    // On mount: pull sidebar gaps + fire a gap-driven turn so the agent
-    // greets and asks the highest-priority missing field.
-    refreshGaps().then(() => askNext(""));
-  }, [refreshGaps, askNext]);
+    // On mount: pull sidebar gaps so the tracker renders. The welcome
+    // card aggregates the rest of the relevant state directly from
+    // REST in parallel, with no blocking LLM call — chat is silent
+    // until the user types or clicks a gap row.
+    refreshGaps();
+  }, [refreshGaps]);
 
   const submit = async () => {
     if (!pending && !userInput.trim() && attachedFiles.length === 0) return;
@@ -647,6 +653,8 @@ export default function AdvisorPage() {
           }}
         />
       )}
+
+      <AdvisorWelcomeCard userId={USER_ID} gaps={gaps} />
 
       <PlanInScopeCard userId={USER_ID} />
 
