@@ -560,7 +560,11 @@ export default function PlanPage() {
               ? `Active: ${plan.version_label}`
               : "No plan imported yet."}
             {draft
-              ? ` · pending draft #${draft.plan_version_id}${fmRejected ? " (Fund Manager rejected)" : ""}`
+              ? ` · ${
+                  draft.effective_role && draft.effective_role !== "draft"
+                    ? "last draft"
+                    : "pending draft"
+                } #${draft.plan_version_id}${fmRejected ? " (Fund Manager rejected)" : ""}`
               : ""}
             {inFlightSynthesis != null
               ? ` · synthesizing (#${inFlightSynthesis.decision_run_id})`
@@ -635,6 +639,26 @@ export default function PlanPage() {
           cascade tree under /decisions/<id>. */}
       {showInFlightCard && inFlightSynthesis && (
         <InFlightSynthesisCard inFlight={inFlightSynthesis} />
+      )}
+
+      {/* "Stale draft" banner — when /api/plan/draft fell back to the
+          most recent superseded draft because no real pending draft
+          exists. This happens when a synthesis run demoted the prior
+          draft as part of its idempotency step but then failed before
+          producing a successor (orchestrator bug; the transactional
+          fix moves the demote step to the same commit as the new
+          draft, but historical data can still land us here). */}
+      {draft && draft.effective_role && draft.effective_role !== "draft" && (
+        <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+          <p>
+            <strong>Showing the last completed draft</strong> — it was
+            marked <code className="font-mono">{draft.effective_role}</code>{" "}
+            by a later synthesis attempt that did not produce a fresh
+            draft. The rich view below is read-only context; press{" "}
+            <strong>Run synthesis</strong> to generate a new draft you
+            can accept or reject.
+          </p>
+        </div>
       )}
 
       {/* T0.7 — Synthesis fleet health banner. Renders above the

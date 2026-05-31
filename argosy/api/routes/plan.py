@@ -481,6 +481,13 @@ class DraftResponse(BaseModel):
     # (no synthesis has run, or the report row is missing/malformed). The UI's
     # NVDA PACE tile renders a "Awaiting synthesis run" tooltip in that case.
     nvda_pace: NvdaPaceView | None = None
+    # The PlanVersion.role the row was sourced from. "draft" when a real
+    # pending draft exists; "superseded" when the route fell back to the most
+    # recent non-pending draft (e.g. FM-rejected drafts that were auto-
+    # superseded by the next synthesis attempt). The UI uses this to
+    # render a "this draft is no longer pending" banner and to gate the
+    # accept/reject CTAs.
+    effective_role: str = "draft"
 
 
 class AcceptResponse(BaseModel):
@@ -700,11 +707,45 @@ def _build_synthesis_health(
 
 @router.get("/draft", response_model=DraftResponse)
 def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
+    """Return the user's pending draft, OR the most recent superseded
+    draft when no pending one exists.
+
+    Falling back to the most recent draft (any role except baseline /
+    current) keeps the /plan rich view alive between synthesis runs: a
+    failed/blocked synthesis attempt demotes the prior draft as part of
+    its idempotency step but doesn't roll back when the run never
+    produces a successor, leaving the user with no surface to act on.
+    The orchestrator commit that fixes the transactional ordering ships
+    alongside this; this route is the data-layer half of the safety net
+    so the surface is robust even when an orchestrator bug recurs.
+
+    The UI consumes ``effective_role`` to decide whether the standard
+    accept/reject CTAs should fire or whether to show a "press Run
+    synthesis to refresh" banner.
+    """
     from argosy.state.queries import get_pending_draft
 
     pv = get_pending_draft(db, user_id)
+    effective_role = "draft"
     if pv is None:
-        raise HTTPException(status_code=404, detail="no pending draft for user")
+        pv = (
+            db.execute(
+                select(PlanVersion)
+                .where(
+                    PlanVersion.user_id == user_id,
+                    PlanVersion.role.notin_(("baseline", "current")),
+                    # Draft-shaped rows carry horizon JSON; baselines
+                    # don't. Defensive filter so a malformed row can't
+                    # masquerade as a draft.
+                    PlanVersion.horizon_long_json.is_not(None),
+                )
+                .order_by(desc(PlanVersion.id))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if pv is None:
+            raise HTTPException(status_code=404, detail="no draft for user")
+        effective_role = pv.role or "superseded"
     return DraftResponse(
         plan_version_id=pv.id,
         version_label=pv.version_label or None,
@@ -719,6 +760,7 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
         horizon_short_md=pv.horizon_short_md,
         synthesis_health=_build_synthesis_health(db, pv.decision_run_id),
         nvda_pace=_build_nvda_pace(db, user_id, pv.decision_run_id),
+        effective_role=effective_role,
     )
 
 

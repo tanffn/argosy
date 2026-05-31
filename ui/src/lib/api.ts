@@ -3651,6 +3651,14 @@ export interface DraftResponse {
   // The home page's NVDA PACE tile renders an "Awaiting synthesis run"
   // tooltip in the null case.
   nvda_pace?: NvdaPaceDTO | null;
+  // The PlanVersion.role the row was sourced from. "draft" when the
+  // route returned a real pending draft; "superseded" when it fell back
+  // to the most recent non-pending draft (e.g. a prior draft demoted by
+  // an idempotency step on a synthesis run that never produced a
+  // successor). The /plan page renders a "no longer pending — re-run
+  // synthesis to refresh" banner when this is anything other than
+  // "draft".
+  effective_role?: string;
 }
 
 // ----------------------------------------------------------------------
