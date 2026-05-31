@@ -10,6 +10,7 @@ import {
   ClipboardList,
   FileText,
   Flag,
+  Gavel,
   Home,
   Inbox,
   MessageCircle,
@@ -56,6 +57,7 @@ const PRIMARY_TABS: NavTab[] = [
 const INSPECTION_TABS: NavTab[] = [
   { href: "/argonaut", label: "Argonaut", Icon: Bot },
   { href: "/agents", label: "Agents", Icon: Users },
+  { href: "/decisions", label: "Decisions", Icon: Gavel },
   { href: "/files", label: "Files", Icon: FileText },
   { href: "/audit", label: "Audit", Icon: ScrollText },
   { href: "/domain-kb", label: "Domain KB", Icon: BookOpen },
