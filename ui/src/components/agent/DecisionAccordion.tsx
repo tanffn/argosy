@@ -96,9 +96,9 @@ function formatDuration(ms: number | null): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function formatCost(usd: number): string {
-  return `$${usd.toFixed(4)}`;
-}
+// USD cost intentionally not surfaced in the decisions list — see the
+// no-USD-reporting binding preference. The detail drawer per agent still
+// shows it for inspection.
 
 function statusTone(
   status: DecisionGroup["status"],
@@ -251,11 +251,6 @@ function DecisionRow({
 
         {/* Spacer */}
         <span className="flex-1" />
-
-        {/* Total cost */}
-        <span className="font-mono text-xs text-muted-foreground shrink-0 w-16 text-right tabular-nums">
-          {formatCost(group.totalCostUsd)}
-        </span>
 
         {/* Total duration */}
         <span className="font-mono text-xs text-muted-foreground shrink-0 w-14 text-right tabular-nums">

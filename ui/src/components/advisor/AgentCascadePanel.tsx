@@ -43,11 +43,6 @@ type AgentCascadePanelProps = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Format a total cost in USD with 4 decimal places. */
-function formatCost(usd: number): string {
-  return `$${usd.toFixed(4)}`;
-}
-
 /** Format a duration from milliseconds to seconds with 1 decimal place. */
 function formatDurationS(ms: number | null): string {
   if (ms === null) return "—";
@@ -108,8 +103,10 @@ export function AgentCascadePanel({
   // Flatten all rows from all matching decisions into a single list.
   const allRows: AgentRow[] = decisions.flatMap((d) => d.rows);
 
-  // Aggregate cost + duration across all decisions for the summary line.
-  const totalCostUsd = decisions.reduce((acc, d) => acc + d.totalCostUsd, 0);
+  // Aggregate duration across all decisions for the summary line.
+  // Token-cost intentionally not surfaced here — see binding feedback
+  // "Argosy — don't report USD cost figures"; the detail drawer still
+  // shows it for inspection.
   const totalDurationMs = (() => {
     const durations = decisions.map((d) => d.totalDurationMs);
     if (durations.some((d) => d === null)) return null;
@@ -148,12 +145,11 @@ export function AgentCascadePanel({
 
   const summaryText = (() => {
     const agentWord = allRows.length === 1 ? "agent" : "agents";
-    const costStr = formatCost(totalCostUsd);
     const durStr = formatDurationS(totalDurationMs);
     if (isResolved) {
-      return `Cascade complete: ${allRows.length} ${agentWord} · ${costStr} · ${durStr}`;
+      return `Cascade complete: ${allRows.length} ${agentWord} · ${durStr}`;
     }
-    return `Cascade — ${allRows.length} ${agentWord} · ${costStr} · ${durStr}`;
+    return `Cascade — ${allRows.length} ${agentWord} · ${durStr}`;
   })();
 
   return (
