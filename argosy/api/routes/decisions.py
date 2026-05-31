@@ -16,7 +16,7 @@ import json
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -68,6 +68,13 @@ class RunRequest(BaseModel):
     is_plan_structural: bool = False
     crosses_concentration_cap: bool = False
     recent_red_flag: bool = False
+    # /consult mode (2026-05-31). 'tactical_trade' = SDD §3.3 default
+    # — full 6-analyst fleet + entry-timing trader prompt.
+    # 'long_hold' = long-horizon investor framing per
+    # [[user_long_hold_investor]] — 4 analysts (no FX, no technical),
+    # trader weighs thesis fit + fundamentals + dividends, ignores
+    # MACD/RSI chart timing and per-ticker FX hedging.
+    consult_mode: Literal["tactical_trade", "long_hold"] = "tactical_trade"
 
 
 class RunResponse(BaseModel):
@@ -127,6 +134,7 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
                 user_id=body.user_id,
                 ticker=body.ticker,
                 decision_run_id=pre_opened_run_id,
+                mode=body.consult_mode,
             )
         except InsufficientAnalystQuorum as exc:
             # Close the pre-opened decision_run row so we don't leak an
@@ -168,6 +176,7 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
         account_class=body.account_class,  # type: ignore[arg-type]
         decision_run_id=pre_opened_run_id,
         persist_input_analysts=persist_input_analysts,
+        consult_mode=body.consult_mode,
     )
 
     if isinstance(outcome, ApprovedProposal):

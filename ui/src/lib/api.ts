@@ -3761,6 +3761,14 @@ export interface DecisionRunRequest {
   is_plan_structural?: boolean;
   crosses_concentration_cap?: boolean;
   recent_red_flag?: boolean;
+  /**
+   * /consult mode (2026-05-31). `tactical_trade` (default) runs the
+   * SDD §3.3 trader — full 6-analyst fleet + entry-timing prompt.
+   * `long_hold` runs the long-horizon investor fleet — 4 analysts
+   * (no FX, no technical), trader weighs thesis fit + fundamentals
+   * + dividends, ignores MACD/RSI chart timing.
+   */
+  consult_mode?: "tactical_trade" | "long_hold";
 }
 
 export interface DecisionRunResponse {

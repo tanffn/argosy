@@ -203,6 +203,7 @@ class DecisionFlow:
         now: Callable[[], datetime] | None = None,
         decision_run_id: int | None = None,
         persist_input_analysts: bool = True,
+        consult_mode: Literal["tactical_trade", "long_hold"] = "tactical_trade",
     ) -> ApprovedProposal | BlockedProposal:
         """Run the full pipeline for the given tier.
 
@@ -341,6 +342,7 @@ class DecisionFlow:
             positions_snapshot=positions_summary,
             user_constraints=user_constraints,
             tier=tier.value,
+            mode=consult_mode,
             ticker=ticker,
         )
         trader_ids = await self._persist_agent_reports(

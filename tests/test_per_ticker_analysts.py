@@ -457,3 +457,143 @@ async def test_close_decision_run_blocked_is_noop_for_missing_id(
     await close_decision_run_blocked(
         decision_run_id=99999, reason="missing row test",
     )
+
+
+# ----------------------------------------------------------------------
+# Long-hold mode — 2026-05-31. Skips technical + fx; runs fundamentals
+# + news + sentiment + macro.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_long_hold_mode_skips_technical_and_fx(
+    engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mode='long_hold' must NOT invoke technical or fx — they're
+    irrelevant for multi-year-horizon decisions per
+    [[user_long_hold_investor]]."""
+    invoked: dict[str, int] = {r: 0 for r in (
+        "fundamentals", "technical", "news", "sentiment", "macro", "fx",
+    )}
+
+    def _make_stub(role: str):
+        async def _stub(*_args: Any, **_kwargs: Any) -> AgentReport:
+            invoked[role] += 1
+            return _canned_report(role, cited=[f"{role}:source"])
+        return _stub
+
+    _patch_gathers(monkeypatch)
+    monkeypatch.setattr(pta, "_run_fundamentals", _make_stub("fundamentals"))
+    monkeypatch.setattr(pta, "_run_technical", _make_stub("technical"))
+    monkeypatch.setattr(pta, "_run_news", _make_stub("news"))
+    monkeypatch.setattr(pta, "_run_sentiment", _make_stub("sentiment"))
+    monkeypatch.setattr(pta, "_run_macro", _make_stub("macro"))
+    monkeypatch.setattr(pta, "_run_fx", _make_stub("fx"))
+
+    await _seed_user()
+    run_id = await open_decision_run_for_consult(
+        user_id="ariel", ticker="XYL", tier_value="T2",
+    )
+    result = await run_per_ticker_analysts(
+        user_id="ariel", ticker="XYL", decision_run_id=run_id, mode="long_hold",
+    )
+    # Long-hold set: 4 analysts succeed.
+    assert set(result.succeeded_roles) == {"fundamentals", "news", "sentiment", "macro"}
+    # Technical + FX should NOT have been invoked at all (not just skipped).
+    assert invoked["technical"] == 0
+    assert invoked["fx"] == 0
+    assert invoked["fundamentals"] == 1
+    assert invoked["news"] == 1
+    assert invoked["sentiment"] == 1
+    assert invoked["macro"] == 1
+
+
+@pytest.mark.asyncio
+async def test_tactical_trade_mode_default_keeps_all_six(
+    engine: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mode='tactical_trade' (default) runs the full SDD 6-analyst fleet."""
+    invoked: dict[str, int] = {r: 0 for r in (
+        "fundamentals", "technical", "news", "sentiment", "macro", "fx",
+    )}
+
+    def _make_stub(role: str):
+        async def _stub(*_args: Any, **_kwargs: Any) -> AgentReport:
+            invoked[role] += 1
+            return _canned_report(role, cited=[f"{role}:source"])
+        return _stub
+
+    _patch_gathers(monkeypatch)
+    monkeypatch.setattr(pta, "_run_fundamentals", _make_stub("fundamentals"))
+    monkeypatch.setattr(pta, "_run_technical", _make_stub("technical"))
+    monkeypatch.setattr(pta, "_run_news", _make_stub("news"))
+    monkeypatch.setattr(pta, "_run_sentiment", _make_stub("sentiment"))
+    monkeypatch.setattr(pta, "_run_macro", _make_stub("macro"))
+    monkeypatch.setattr(pta, "_run_fx", _make_stub("fx"))
+
+    await _seed_user()
+    run_id = await open_decision_run_for_consult(
+        user_id="ariel", ticker="XYL", tier_value="T2",
+    )
+    result = await run_per_ticker_analysts(
+        user_id="ariel", ticker="XYL", decision_run_id=run_id,
+        # tactical_trade is the default; omit to verify default
+    )
+    assert len(result.reports) == 6
+    assert all(invoked[r] == 1 for r in invoked)
+
+
+@pytest.mark.asyncio
+async def test_unknown_mode_raises(
+    engine: None,
+) -> None:
+    """Bad mode string fails fast with ValueError — caller should know."""
+    from argosy.decisions.per_ticker_analysts import (
+        InsufficientAnalystQuorum, run_per_ticker_analysts,
+    )
+
+    await _seed_user()
+    run_id = await open_decision_run_for_consult(
+        user_id="ariel", ticker="XYL", tier_value="T2",
+    )
+    with pytest.raises(ValueError, match="unknown consult mode"):
+        await run_per_ticker_analysts(
+            user_id="ariel", ticker="XYL", decision_run_id=run_id,
+            mode="not_a_mode",  # type: ignore[arg-type]
+        )
+
+
+def test_trader_long_hold_prompt_distinct_from_tactical() -> None:
+    """The trader's long_hold SYSTEM prompt explicitly tells the agent
+    to ignore MACD/RSI timing and FX hedging; the tactical_trade
+    prompt does not. This locks the two prompt variants apart."""
+    from argosy.agents.trader import TraderAgent
+
+    agent = TraderAgent(user_id="ariel", tier="T2")
+
+    tactical_sys, _ = agent.build_prompt(
+        analyst_reports=[],
+        debate_outcome={},
+        positions_snapshot="",
+        user_constraints="",
+        ticker="XYL",
+        mode="tactical_trade",
+    )
+    long_hold_sys, _ = agent.build_prompt(
+        analyst_reports=[],
+        debate_outcome={},
+        positions_snapshot="",
+        user_constraints="",
+        ticker="XYL",
+        mode="long_hold",
+    )
+
+    assert tactical_sys != long_hold_sys
+    # Long-hold prompt must explicitly de-emphasise the things the user
+    # called out (MACD, RSI, FX hedging).
+    long_hold_lower = long_hold_sys.lower()
+    assert "macd" in long_hold_lower
+    assert "do not gate on chart timing" in long_hold_lower
+    assert "do not cite fx" in long_hold_lower
+    # Tactical prompt should NOT contain those de-emphasis instructions.
+    assert "do not gate on chart timing" not in tactical_sys.lower()

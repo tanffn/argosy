@@ -42,7 +42,10 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
+
+
+ConsultMode = Literal["tactical_trade", "long_hold"]
 
 from argosy.agents.base import AgentReport
 from argosy.agents.fundamentals_analyst import FundamentalsAnalystAgent
@@ -65,9 +68,10 @@ TICKER_SPECIFIC_ROLES: frozenset[str] = frozenset(
     {"fundamentals", "technical", "news", "sentiment"}
 )
 
-#: The full set of always-on roles. Order is presentation-only; agents
-#: actually run in parallel via ``asyncio.gather``.
-ALWAYS_ON_ROLES: tuple[str, ...] = (
+#: Tactical-trade mode (default) — full 6-analyst fleet. Matches the
+#: SDD §3.1 per-trade fleet shape: technical timing + FX backdrop both
+#: weigh in on entry decisions.
+TACTICAL_TRADE_ROLES: tuple[str, ...] = (
     "fundamentals",
     "technical",
     "news",
@@ -75,6 +79,29 @@ ALWAYS_ON_ROLES: tuple[str, ...] = (
     "macro",
     "fx",
 )
+
+#: Long-hold mode (2026-05-31) — 4 analysts. Per [[user_long_hold_investor]]
+#: + the live 2026-05-30 e2e on XYL/APD: for a long-hold investor with
+#: USD already in hand making a USD-into-USD-stock decision, FX is
+#: noise (portfolio-level concern, not per-ticker entry signal) and
+#: technical chart timing (MACD/RSI/MA crossings) doesn't matter at
+#: multi-year horizons. Fundamentals + news + sentiment + macro are
+#: the inputs that actually answer "should I own this for the long term?"
+LONG_HOLD_ROLES: tuple[str, ...] = (
+    "fundamentals",
+    "news",
+    "sentiment",
+    "macro",
+)
+
+#: Mode → analyst set.
+ROLES_BY_MODE: dict[str, tuple[str, ...]] = {
+    "tactical_trade": TACTICAL_TRADE_ROLES,
+    "long_hold": LONG_HOLD_ROLES,
+}
+
+#: Back-compat alias — early callers used this name.
+ALWAYS_ON_ROLES: tuple[str, ...] = TACTICAL_TRADE_ROLES
 
 #: Quorum: this many successful citation-bearing reports OR MORE.
 #:
@@ -187,8 +214,18 @@ async def run_per_ticker_analysts(
     user_id: str,
     ticker: str,
     decision_run_id: int,
+    mode: ConsultMode = "tactical_trade",
 ) -> PerTickerAnalystsResult:
-    """Run the 6 always-on analysts on ``ticker`` in parallel.
+    """Run the per-ticker analyst fleet on ``ticker`` in parallel.
+
+    Args:
+      mode: ``"tactical_trade"`` (default) runs the SDD 6-analyst fleet
+        (fundamentals, technical, news, sentiment, macro, fx) — short-
+        horizon trade decision shape. ``"long_hold"`` runs the 4-analyst
+        long-hold fleet (fundamentals, news, sentiment, macro) — skips
+        technical (chart timing irrelevant for multi-year horizons) and
+        fx (USD-into-USD-stock decisions don't depend on FX) per
+        [[user_long_hold_investor]].
 
     Returns the surviving citation-bearing reports. Raises
     ``InsufficientAnalystQuorum`` if fewer than ``MIN_QUORUM_TOTAL``
@@ -200,12 +237,16 @@ async def run_per_ticker_analysts(
         ``decision_run_id``.
       - Logs per-analyst start/end/skip events.
     """
+    if mode not in ROLES_BY_MODE:
+        raise ValueError(f"unknown consult mode: {mode!r}")
+    selected_roles = ROLES_BY_MODE[mode]
     log.info(
         "per_ticker_analysts.start",
         user_id=user_id,
         ticker=ticker,
         decision_run_id=decision_run_id,
-        roles=list(ALWAYS_ON_ROLES),
+        mode=mode,
+        roles=list(selected_roles),
     )
 
     # 1) Gather per-ticker + macro/fx data inputs in parallel.
@@ -216,7 +257,9 @@ async def run_per_ticker_analysts(
     # #1 fix). FX is special — it expects a sync ``Session``; we open
     # one inside the thread.
     tickers = [ticker]
-    payloads = await _gather_inputs_for_ticker(ticker=ticker, tickers=tickers, user_id=user_id)
+    payloads = await _gather_inputs_for_ticker(
+        ticker=ticker, tickers=tickers, user_id=user_id, mode=mode,
+    )
 
     # 2) Pre-skip analysts whose data payload is empty. Without inputs,
     # the analyst will (a) emit a no-citation output that fails the
@@ -226,6 +269,8 @@ async def run_per_ticker_analysts(
     runnable: list[tuple[str, Any]] = []
 
     def _maybe(role: str, payload_key: str, coro_factory):
+        if role not in selected_roles:
+            return  # role excluded by mode (e.g. long_hold skips fx + technical)
         payload = payloads[payload_key]
         if not payload:
             skipped_empty_payload.append((role, f"empty_payload (no {payload_key} data)"))
@@ -277,12 +322,14 @@ async def run_per_ticker_analysts(
         surviving.append(result)
         succeeded_roles.append(role)
 
-    # 4) Quorum check (codex IMPORTANT #6) — ≥ 3/6 total AND ≥ 1 ticker-specific.
+    # 4) Quorum check — ≥ MIN_QUORUM_TOTAL succeeded AND ≥ 1 ticker-specific.
+    # Denominator is the SELECTED roles for this mode (long_hold runs 4,
+    # tactical_trade runs 6) — codex follow-on 2026-05-31.
     ticker_specific_hits = [r for r in succeeded_roles if r in TICKER_SPECIFIC_ROLES]
     if len(surviving) < MIN_QUORUM_TOTAL or not ticker_specific_hits:
         reason = (
-            f"per-ticker analyst quorum not met for {ticker}: "
-            f"{len(surviving)}/{len(ALWAYS_ON_ROLES)} succeeded "
+            f"per-ticker analyst quorum not met for {ticker} (mode={mode}): "
+            f"{len(surviving)}/{len(selected_roles)} succeeded "
             f"(need ≥{MIN_QUORUM_TOTAL}); "
             f"ticker-specific hits: {ticker_specific_hits or '(none)'}"
         )
@@ -345,7 +392,11 @@ def _has_any_citation(report: AgentReport) -> bool:
 
 
 async def _gather_inputs_for_ticker(
-    *, ticker: str, tickers: list[str], user_id: str,
+    *,
+    ticker: str,
+    tickers: list[str],
+    user_id: str,
+    mode: ConsultMode = "tactical_trade",
 ) -> dict[str, Any]:
     """Fetch fundamentals / news / indicators / social / macro / fx
     payloads for one ticker.
@@ -391,10 +442,14 @@ async def _gather_inputs_for_ticker(
             )
             return {}
 
-    # Run all 6 gathers concurrently.
+    # Run all 6 gathers concurrently. fundamentals + news fall back to
+    # yfinance when the primary Finnhub source returned nothing — load-
+    # bearing for long-hold mode (no Finnhub key, no fundamentals); also
+    # safe for tactical_trade (yfinance is the same dataset Argosy
+    # already uses for OHLC, indicators, and current_price elsewhere).
     fundamentals, news, indicators, social, macro, fx = await asyncio.gather(
-        asyncio.to_thread(_gather_fundamentals, tickers),
-        asyncio.to_thread(_gather_news, tickers),
+        asyncio.to_thread(_gather_fundamentals, tickers, with_yfinance_fallback=True),
+        asyncio.to_thread(_gather_news, tickers, with_yfinance_fallback=True),
         asyncio.to_thread(_gather_indicators_payload, tickers),
         asyncio.to_thread(_gather_social_payload, tickers),
         asyncio.to_thread(_gather_macro_snapshot),
@@ -502,9 +557,13 @@ async def _persist_reports(decision_run_id: int, reports: list[AgentReport]) -> 
 
 __all__ = [
     "ALWAYS_ON_ROLES",
+    "ConsultMode",
     "InsufficientAnalystQuorum",
+    "LONG_HOLD_ROLES",
     "MIN_QUORUM_TOTAL",
     "PerTickerAnalystsResult",
+    "ROLES_BY_MODE",
+    "TACTICAL_TRADE_ROLES",
     "TICKER_SPECIFIC_ROLES",
     "close_decision_run_blocked",
     "open_decision_run_for_consult",

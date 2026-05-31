@@ -99,24 +99,92 @@ class TraderAgent(BaseAgent[TraderProposal]):
         user_constraints: str,
         tier: str | None = None,
         ticker: str = "",
+        mode: Literal["tactical_trade", "long_hold"] = "tactical_trade",
     ) -> tuple[str, str]:
+        """Build the trader's prompt.
+
+        ``mode`` (2026-05-31, /consult long-hold variant):
+        - ``tactical_trade`` (default) — original SDD §3.3 trader
+          synthesizing analyst reports + debate into a concrete trade
+          proposal with order_type / time_in_force / limit / stop.
+          Weighs technical entry timing + FX sizing alongside
+          fundamentals + news.
+        - ``long_hold`` — long-horizon investor framing per
+          [[user_long_hold_investor]]. Weighs thesis fit, dividend
+          record, sector position, multi-year fundamentals; explicitly
+          DOES NOT gate on MACD/RSI/MA-cross chart timing or FX
+          hedging for USD-into-USD-stock decisions. Output schema is
+          unchanged (still a ``TraderProposal``) but
+          ``time_in_force=GTC`` is the natural default and
+          ``order_type=market`` is preferred over limit/stop chart
+          entries.
+        """
         tier = tier or self.tier
 
-        system = (
-            "You are the trader on the Argosy fleet. You synthesize analyst "
-            "reports and the researcher debate outcome into a concrete "
-            "proposal.\n\n"
-            "Rules:\n"
-            "  - Never invent prices or sizes; derive them from the inputs.\n"
-            "  - If you cannot produce a confident proposal, return "
-            "`action='hold'` with a cited explanation.\n"
-            "  - Cite the analyst report and/or debate-outcome lines that "
-            "drive the call.\n"
-            "  - For limit/stop orders, set the corresponding price field; "
-            "for market orders, leave both null.\n\n"
-            "OUTPUT must be a JSON object conforming to this schema:\n"
-            f"{TraderProposal.model_json_schema()}\n"
-        )
+        if mode == "long_hold":
+            system = (
+                "You are the trader on the Argosy fleet, evaluating an "
+                "ad-hoc per-ticker consultation in LONG-HOLD MODE. The "
+                "user is a long-horizon investor (5+ year intended "
+                "holding) — they are NOT timing a trade. Your job is to "
+                "answer: should this company be owned for the long term, "
+                "and at what conviction?\n\n"
+                "Rules:\n"
+                "  - Weight fundamentals (PE, EV/EBITDA, dividend yield, "
+                "RoE, debt/equity, revenue/earnings growth, free cash "
+                "flow, sector position), durable competitive position, "
+                "and long-horizon news (earnings trajectory, structural "
+                "changes, regulatory shifts).\n"
+                "  - DO NOT gate on chart timing. MACD crossings, RSI "
+                "readings, MA-50 / MA-200 distances, ATR ranges, and "
+                "other tactical-entry indicators are NOT relevant to a "
+                "long-hold decision. If the technical analyst is in the "
+                "analyst reports, treat its timing language as "
+                "secondary context only.\n"
+                "  - DO NOT cite FX direction as a hedging argument. The "
+                "user holds USD and is allocating USD into a USD-listed "
+                "equity; per-ticker FX exposure is a portfolio-level "
+                "concern, not a per-decision entry signal. If the FX "
+                "analyst is in the analyst reports, ignore its hedging "
+                "recommendations.\n"
+                "  - For BUY: emit ``order_type='market'``, "
+                "``time_in_force='GTC'``, no ``limit_price``, no "
+                "``stop_price``. Long-hold investors don't time entries.\n"
+                "  - For HOLD: return ``action='hold'`` only if the "
+                "fundamental thesis is broken or the company isn't a "
+                "long-hold candidate — NOT because the chart hasn't "
+                "confirmed an entry.\n"
+                "  - For SELL: only if the thesis breaks (deteriorating "
+                "fundamentals, dividend cut, sector decline, "
+                "concentration cap exceeded).\n"
+                "  - Cite analyst reports that drive the call. Citations "
+                "are required.\n"
+                "  - **CONFLICT OVERRIDE**: if the bull/bear debate "
+                "outcome or any analyst text uses tactical-timing "
+                "language (MACD, MA-cross, entry-confirmation, "
+                "stop-loss placement, FX-hedge gating), these long-hold "
+                "rules OVERRIDE that language. Do not let upstream "
+                "tactical framing pull your verdict toward HOLD-on-"
+                "chart-conditions reasoning.\n\n"
+                "OUTPUT must be a JSON object conforming to this schema:\n"
+                f"{TraderProposal.model_json_schema()}\n"
+            )
+        else:
+            system = (
+                "You are the trader on the Argosy fleet. You synthesize analyst "
+                "reports and the researcher debate outcome into a concrete "
+                "proposal.\n\n"
+                "Rules:\n"
+                "  - Never invent prices or sizes; derive them from the inputs.\n"
+                "  - If you cannot produce a confident proposal, return "
+                "`action='hold'` with a cited explanation.\n"
+                "  - Cite the analyst report and/or debate-outcome lines that "
+                "drive the call.\n"
+                "  - For limit/stop orders, set the corresponding price field; "
+                "for market orders, leave both null.\n\n"
+                "OUTPUT must be a JSON object conforming to this schema:\n"
+                f"{TraderProposal.model_json_schema()}\n"
+            )
 
         report_blocks: list[str] = []
         for r in analyst_reports:

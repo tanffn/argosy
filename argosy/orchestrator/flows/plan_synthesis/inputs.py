@@ -1051,9 +1051,19 @@ def _summarize_positions(snapshot) -> str:
     return header + "\n".join(lines)
 
 
-def _gather_news(tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
+def _gather_news(
+    tickers: list[str],
+    *,
+    with_yfinance_fallback: bool = False,
+) -> dict[str, list[dict[str, Any]]]:
     """Per-ticker Finnhub headlines (overnight window). Empty on any
-    failure with a structured warning."""
+    failure with a structured warning.
+
+    ``with_yfinance_fallback`` (2026-05-31, /consult long-hold mode):
+    when set, tickers Finnhub returned nothing for get a second
+    attempt via ``yfinance.Ticker(ticker).news`` (free, no API key).
+    Plan-synthesis keeps the default behaviour (``False``).
+    """
     from argosy.adapters import (
         MissingAPIKeyError as AdapterMissingAPIKeyError,
         MissingDataSourceError,
@@ -1101,11 +1111,67 @@ def _gather_news(tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
             "plan_synthesis.inputs.news_failed",
             error=str(exc),
         )
+
+    if with_yfinance_fallback:
+        _yfinance_news_fallback(tickers, out)
     return out
+
+
+def _yfinance_news_fallback(
+    tickers: list[str], out: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Best-effort yfinance backfill for tickers Finnhub returned no
+    news for. Mutates ``out`` in place. Errors are logged + swallowed."""
+    try:
+        import yfinance as yf
+    except ImportError:
+        log.warning("plan_synthesis.inputs.news_yfinance_unavailable")
+        return
+
+    for ticker in tickers[:25]:
+        if ticker in out:
+            continue
+        try:
+            raw = yf.Ticker(ticker).news or []
+        except Exception as exc:  # noqa: BLE001 - per-ticker defensive
+            log.warning(
+                "plan_synthesis.inputs.news_yfinance_per_ticker_failed",
+                ticker=ticker, error=str(exc)[:200],
+            )
+            continue
+        # yfinance returns either the legacy {"title", "publisher",
+        # "link", "providerPublishTime"} shape OR the new
+        # {"content": {"title": ..., "summary": ..., "pubDate": ...}}
+        # shape. Normalize to the legacy shape so the news analyst's
+        # prompt sees stable keys regardless of which version landed.
+        headlines: list[dict[str, Any]] = []
+        for item in raw[:10]:
+            content = item.get("content") if isinstance(item, dict) else None
+            if isinstance(content, dict):
+                headlines.append({
+                    "title": content.get("title"),
+                    "publisher": (content.get("provider") or {}).get("displayName"),
+                    "link": (content.get("canonicalUrl") or {}).get("url"),
+                    "published": content.get("pubDate"),
+                    "summary": content.get("summary"),
+                })
+            else:
+                headlines.append({
+                    "title": item.get("title"),
+                    "publisher": item.get("publisher"),
+                    "link": item.get("link"),
+                    "published": item.get("providerPublishTime"),
+                })
+        # Drop entries with no title (yfinance occasionally emits empty rows).
+        headlines = [h for h in headlines if h.get("title")]
+        if headlines:
+            out[ticker] = headlines
 
 
 def _gather_fundamentals(
     tickers: list[str],
+    *,
+    with_yfinance_fallback: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Per-ticker Finnhub fundamentals (W3b.E).
 
@@ -1115,6 +1181,16 @@ def _gather_fundamentals(
     ticker failures log + continue. Israeli ETFs and other non-US
     listings typically return empty ``metric`` blocks, surface as
     ``MissingDataSourceError`` per-ticker, get skipped, do not raise.
+
+    ``with_yfinance_fallback`` (2026-05-31, /consult long-hold mode):
+    when set, tickers that Finnhub returned no payload for get a
+    second attempt via ``yfinance.Ticker(ticker).info`` (free, no API
+    key). yfinance covers PE / EV-EBITDA / dividend yield / D/E / RoE
+    / growth / sector for most US listings; the long-hold consult
+    cannot function without these inputs, and the default Finnhub-only
+    path leaves the analyst with empty payload. Plan-synthesis keeps
+    the default behaviour (``False``) — its other analysts cover the
+    gaps and we don't want to silently shift its data source.
     """
     from argosy.adapters import (
         MissingAPIKeyError as AdapterMissingAPIKeyError,
@@ -1168,7 +1244,60 @@ def _gather_fundamentals(
             "plan_synthesis.inputs.fundamentals_failed",
             error=str(exc),
         )
+
+    if with_yfinance_fallback:
+        _yfinance_fundamentals_fallback(tickers, out)
     return out
+
+
+def _yfinance_fundamentals_fallback(
+    tickers: list[str], out: dict[str, dict[str, Any]],
+) -> None:
+    """Best-effort yfinance backfill for tickers Finnhub didn't cover.
+
+    Mutates ``out`` in place — only fills tickers absent from ``out``.
+    Errors are logged + swallowed (defensive). yfinance is already a
+    project dependency so the ``import`` should succeed; if not, log
+    + return.
+    """
+    try:
+        import yfinance as yf
+    except ImportError:
+        log.warning("plan_synthesis.inputs.fundamentals_yfinance_unavailable")
+        return
+
+    for ticker in tickers[:25]:
+        if ticker in out:
+            continue
+        try:
+            info = yf.Ticker(ticker).info or {}
+        except Exception as exc:  # noqa: BLE001 - per-ticker defensive
+            log.warning(
+                "plan_synthesis.inputs.fundamentals_yfinance_per_ticker_failed",
+                ticker=ticker, error=str(exc)[:200],
+            )
+            continue
+        if not info:
+            continue
+        payload = {
+            "pe_ratio": info.get("trailingPE"),
+            "forward_pe": info.get("forwardPE"),
+            "ev_ebitda": info.get("enterpriseToEbitda"),
+            "dividend_yield": info.get("dividendYield"),
+            "payout_ratio": info.get("payoutRatio"),
+            "debt_to_equity": info.get("debtToEquity"),
+            "revenue_growth_yoy": info.get("revenueGrowth"),
+            "earnings_growth_yoy": info.get("earningsGrowth"),
+            "return_on_equity": info.get("returnOnEquity"),
+            "free_cashflow": info.get("freeCashflow"),
+            "market_cap": info.get("marketCap"),
+            "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
+            "sector": info.get("sector"),
+            "industry": info.get("industry"),
+            "source_url": f"yfinance:{ticker}",
+        }
+        # Drop None-valued keys to keep the prompt tight.
+        out[ticker] = {k: v for k, v in payload.items() if v is not None}
 
 
 def _gather_indicators_payload(
