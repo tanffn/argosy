@@ -101,7 +101,7 @@ function actionVariant(action: ActionHint): "success" | "error" | "secondary" {
 // We surface those citations as pills and strip them from the body so
 // the prose reads cleanly.
 
-type Verdict = "BUY" | "SELL" | "HOLD" | "BLOCKED";
+type Verdict = "BUY" | "SELL" | "HOLD" | "NEEDS DATA" | "BLOCKED";
 
 interface ParsedOutcome {
   verdict: Verdict;
@@ -114,6 +114,7 @@ interface ParsedOutcome {
 
 const BLOCKED_BY_LABEL: Record<string, string> = {
   trader_hold: "Trader",
+  trader_insufficient_data: "Trader (data gap)",
   risk_team: "Risk team",
   plan_critique_red: "Plan critique",
   fund_manager: "Fund manager",
@@ -159,7 +160,7 @@ function splitFirstSentence(text: string): { first: string; rest: string } {
   if (!text) return { first: "", rest: "" };
   // Strip a leading "Trader returned HOLD:" / "Trader returned BUY:" preamble
   // when present — the verdict is already shown as a heading.
-  const preambleRe = /^Trader returned (?:HOLD|BUY|SELL|BLOCKED)\s*:\s*/i;
+  const preambleRe = /^Trader returned (?:HOLD|BUY|SELL|BLOCKED|INSUFFICIENT_DATA)\s*:\s*/i;
   const stripped = text.replace(preambleRe, "");
   // Find first sentence terminator followed by whitespace. Tolerate
   // missing trailing punctuation.
@@ -195,6 +196,14 @@ function verdictFor(
   // blocked
   if (result.blocked_by === "trader_hold") {
     return { verdict: "HOLD", tone: "warning" };
+  }
+  if (result.blocked_by === "trader_insufficient_data") {
+    // Distinct from HOLD — analysis couldn't complete because
+    // load-bearing data was missing after remediation. The result
+    // card shows this as "NEEDS DATA" with a secondary tone so the
+    // user knows the system didn't fail-soft into a wait-it-out
+    // recommendation.
+    return { verdict: "NEEDS DATA", tone: "secondary" };
   }
   return { verdict: "BLOCKED", tone: "error" };
 }

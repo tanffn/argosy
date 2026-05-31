@@ -37,6 +37,10 @@ from argosy.decisions.per_ticker_analysts import (
     open_decision_run_for_consult,
     run_per_ticker_analysts,
 )
+from argosy.logging import get_logger
+from argosy.services.pending_reevaluation import enqueue_pending_reevaluation
+
+_log = get_logger(__name__)
 from argosy.decisions.tiers import Tier, TierContext, apply_override_mode, resolve_tier
 from argosy.state import db as db_mod
 from argosy.state.models import (
@@ -142,6 +146,24 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
             await close_decision_run_blocked(
                 decision_run_id=pre_opened_run_id, reason=exc.reason,
             )
+            # Enqueue an auto-retry — the daily pending_reevaluation
+            # job sweeps the queue, re-fires the consult, and notifies
+            # on a real verdict. Per the 2026-05-31 user feedback "who
+            # will provide that valuation?".
+            try:
+                await enqueue_pending_reevaluation(
+                    user_id=body.user_id,
+                    ticker=body.ticker,
+                    tier_value=tier.value,
+                    consult_mode=body.consult_mode,
+                    user_constraints=body.user_constraints,
+                    failure_reason=exc.reason,
+                )
+            except Exception as enq_exc:  # noqa: BLE001 - never block on the queue write
+                _log.warning(
+                    "consult.pending_reevaluation_enqueue_failed",
+                    error=str(enq_exc)[:200],
+                )
             raise HTTPException(
                 status_code=422,
                 detail={
@@ -187,6 +209,24 @@ async def run_decision_flow(body: RunRequest) -> RunResponse:
             tier=tier.value,
         )
     assert isinstance(outcome, BlockedProposal)
+    # If the trader returned INSUFFICIENT_DATA, enqueue an auto-retry
+    # row so the daily pending_reevaluation job re-fires the consult
+    # when fresh data lands.
+    if outcome.blocked_by == "trader_insufficient_data":
+        try:
+            await enqueue_pending_reevaluation(
+                user_id=body.user_id,
+                ticker=body.ticker,
+                tier_value=tier.value,
+                consult_mode=body.consult_mode,
+                user_constraints=body.user_constraints,
+                failure_reason=outcome.reason,
+            )
+        except Exception as enq_exc:  # noqa: BLE001 - never block the response
+            _log.warning(
+                "consult.pending_reevaluation_enqueue_failed",
+                error=str(enq_exc)[:200],
+            )
     return RunResponse(
         decision_run_id=outcome.decision_run_id,
         status="blocked",

@@ -3500,3 +3500,48 @@ class InferredLifeEventFinding(Base):
             name="uq_inferred_findings_pattern_evidence",
         ),
     )
+
+
+class PendingReevaluation(Base):
+    """/consult auto-retry queue.
+
+    When a /consult run lands at INSUFFICIENT_DATA (trader couldn't
+    complete the analysis because load-bearing inputs were missing
+    AFTER the per-ticker remediation flow exhausted its retries), the
+    route persists a row here. A daily job
+    (``argosy/orchestrator/loops/pending_reevaluation_daily.py``)
+    sweeps the queue + re-fires the consult with the original
+    parameters; on a real BUY/HOLD/SELL verdict the user is notified
+    via the existing notification_dispatcher with a deep-link to the
+    new run.
+
+    CHECK constraints + UNIQUE / INDEX declared in migration 0059.
+    """
+
+    __tablename__ = "pending_reevaluations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    ticker: Mapped[str] = mapped_column(String(20), nullable=False)
+    tier_value: Mapped[str] = mapped_column(String(8), nullable=False)
+    consult_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    user_constraints: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 'pending' (will retry tomorrow), 'resolved' (retry succeeded),
+    # 'abandoned' (exceeded max attempts).  CHECK in migration 0059.
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    last_attempted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=False),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    # FK kept lightweight (no ondelete cascade) so dropping a
+    # decision_run doesn't silently null the resolution link — the
+    # daily job nulls it explicitly when re-queuing.
+    resolved_decision_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

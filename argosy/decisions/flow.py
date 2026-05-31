@@ -82,7 +82,12 @@ class BlockedProposal:
     """Fund manager blocked, or risk team rejected, or T3 plan-critique RED."""
 
     reason: str
-    blocked_by: str  # 'fund_manager' | 'risk_team' | 'plan_critique_red' | 'trader_hold'
+    # Reasons the trade was blocked. ``trader_insufficient_data`` is
+    # distinct from ``trader_hold``: HOLD means the analysis completed
+    # and the recommendation is to wait; INSUFFICIENT_DATA means the
+    # analysis couldn't complete because load-bearing inputs were
+    # missing or flagged-unusable AFTER remediation.
+    blocked_by: str  # 'fund_manager' | 'risk_team' | 'plan_critique_red' | 'trader_hold' | 'trader_insufficient_data'
     fund_manager: FundManagerDecision | None = None
     risk_outcome: RiskOutcome | None = None
     debate_outcome: DebateOutcome | None = None
@@ -369,6 +374,28 @@ class DecisionFlow:
             return BlockedProposal(
                 reason=f"Trader returned HOLD: {trader_proposal.rationale_summary}",
                 blocked_by="trader_hold",
+                debate_outcome=debate_outcome,
+                decision_run_id=decision_run_id,
+            )
+
+        if trader_proposal.action == "insufficient_data":
+            # Distinct early-exit from HOLD — the trader couldn't
+            # complete the analysis (load-bearing data missing AFTER
+            # remediation). Surfaces in the UI as a separate verdict
+            # so the user knows the system didn't fail-soft into HOLD.
+            # See SDD §3.3 + [[feedback_agents_talk_to_each_other]].
+            await self._close_decision_run(
+                decision_run_id,
+                finished_at=clock(),
+                status="insufficient_data",
+                fm="insufficient_data",
+            )
+            return BlockedProposal(
+                reason=(
+                    f"Trader returned INSUFFICIENT_DATA: "
+                    f"{trader_proposal.rationale_summary}"
+                ),
+                blocked_by="trader_insufficient_data",
                 debate_outcome=debate_outcome,
                 decision_run_id=decision_run_id,
             )

@@ -661,6 +661,36 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # PendingReevaluationDailyLoop (2026-05-31) — sweeps the
+        # pending_reevaluations queue + re-fires INSUFFICIENT_DATA
+        # consults with refreshed data. 04:00 IDT daily (slots after
+        # the 03:00 inferred-life-event detector, before the 17:00
+        # news / observer pipeline). source_kind='maintenance' so it
+        # lives next to the retention + evaluator loops.
+        try:
+            from argosy.orchestrator.loops.pending_reevaluation_daily import (  # noqa: PLC0415
+                PendingReevaluationDailyLoop,
+                pending_reevaluation_daily_metadata,
+            )
+
+            preeval_loop = PendingReevaluationDailyLoop(
+                enabled=True,
+                user_id="ariel",
+            )
+            scheduler.register_loop(preeval_loop)
+            registry.register(
+                job=preeval_loop,
+                metadata=pending_reevaluation_daily_metadata(),
+            )
+            log.info(
+                "scheduler.pending_reevaluation_daily_registered"
+            )
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.pending_reevaluation_daily_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Step 1: start_supervisors BEFORE scheduling so any
         # LongRunningJob supervisor is alive when its first connect
         # cycle opens. (No-op until commit #5 fills it in.)

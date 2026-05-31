@@ -621,3 +621,76 @@ def test_trader_never_recommend_refresh_in_both_modes() -> None:
             f"trader prompt for mode={mode!r} missing the agent-refresh "
             "prohibition"
         )
+
+
+def test_trader_proposal_accepts_insufficient_data_action() -> None:
+    """The 4th verdict state — INSUFFICIENT_DATA — must be a valid
+    action on TraderProposal. Distinct from HOLD per the 2026-05-31
+    user feedback ('NEEDS DATA' verdict in the UI)."""
+    from argosy.agents.trader import TraderProposal
+
+    p = TraderProposal(
+        ticker="NOW",
+        action="insufficient_data",
+        size_shares_or_currency=0.0,
+        size_units="shares",
+        instrument="stock",
+        rationale_summary=(
+            "Cannot complete the analysis: the supplied price input "
+            "was flagged stale and remained incomplete after refresh."
+        ),
+        cited_sources=["fundamentals/NOW"],
+    )
+    assert p.action == "insufficient_data"
+
+
+def test_trader_prompt_explains_insufficient_data_vs_hold() -> None:
+    """BOTH trader prompts must explicitly distinguish HOLD
+    (analysis completed, wait) from INSUFFICIENT_DATA (analysis
+    aborted, data missing). Codex BLOCKER 2026-05-31 — without the
+    distinction in tactical_trade mode, the trader fail-soft into
+    HOLD and the auto-retry queue never fires."""
+    from argosy.agents.trader import TraderAgent
+
+    agent = TraderAgent(user_id="ariel", tier="T2")
+    for mode in ("long_hold", "tactical_trade"):
+        sys_prompt, _ = agent.build_prompt(
+            analyst_reports=[],
+            debate_outcome={},
+            positions_snapshot="",
+            user_constraints="",
+            ticker="NOW",
+            mode=mode,
+        )
+        lower = sys_prompt.lower()
+        assert "insufficient_data" in lower, mode
+        # The distinction must be stated explicitly.
+        assert (
+            "not hold" in lower
+            or "not the same" in lower
+            or "— not hold" in lower
+        ), mode
+
+
+def test_trader_prompt_writes_for_non_investor() -> None:
+    """Both trader prompts (2026-05-31) include the WRITE-FOR-A-NON-
+    INVESTOR directive — spell out acronyms, explain contradictions,
+    avoid raw jargon."""
+    from argosy.agents.trader import TraderAgent
+
+    agent = TraderAgent(user_id="ariel", tier="T2")
+    for mode in ("tactical_trade", "long_hold"):
+        sys_prompt, _ = agent.build_prompt(
+            analyst_reports=[],
+            debate_outcome={},
+            positions_snapshot="",
+            user_constraints="",
+            ticker="NOW",
+            mode=mode,
+        )
+        assert "write for a non-investor" in sys_prompt.lower(), mode
+        # The plain-English directive must mention spelling out acronyms.
+        assert (
+            "spell out" in sys_prompt.lower()
+            or "acronyms on first use" in sys_prompt.lower()
+        ), mode
