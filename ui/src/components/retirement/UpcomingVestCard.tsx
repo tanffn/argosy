@@ -234,21 +234,12 @@ function VestRow({ vest }: { vest: UpcomingVestDTO }) {
       )}
 
       <div className="flex justify-end">
-        {prefillHref === DISABLED_PREFILL_HREF ? (
-          <span
-            className="text-xs text-muted-foreground cursor-not-allowed"
-            title="Estimate unavailable — cannot prefill a life event"
-          >
-            Add as life event →
-          </span>
-        ) : (
-          <Link
-            href={prefillHref}
-            className="text-xs text-info hover:underline"
-          >
-            Add as life event →
-          </Link>
-        )}
+        <Link
+          href={prefillHref}
+          className="text-xs text-info hover:underline"
+        >
+          Discuss in Advisor →
+        </Link>
       </div>
     </div>
   );
@@ -334,32 +325,24 @@ function formatUsd(n: number): string {
   });
 }
 
-// Spec D §4.3 — UpcomingVestCard prefill contract update. New URL
-// shape carries the per-shape `delta_kind=one_shot` discriminator +
-// `one_shot_amount_usd` (positive = income, since post-tax RSU cash IS
-// income). NO `kind=other_asset_acquired` URL slot is needed anymore;
-// the page reads the new keys via `formFromPrefill()`.
+// The vest-planning CTA opens an Advisor conversation pre-seeded with
+// the vest details so the user can talk through the cashflow impact in
+// chat. Replaces the previous /life-events form prefill — the dedicated
+// Life Events page was removed in the 2026-05-31 wave; the advisor is
+// now the entry point for capturing cashflow events.
 //
-// Codex IMPORTANT 5 (defensive): if `expected_post_tax_nominal_usd` is
-// negative or NaN (e.g. tax-rate >100% bug, missing FMV), don't emit a
-// wrong-direction prefill. Return the disabled-link bare URL and let
-// the renderer disable the CTA with a tooltip.
-const DISABLED_PREFILL_HREF = "/life-events?section=one_shot";
-
+// Defensive: when `expected_post_tax_nominal_usd` is missing or
+// non-positive (tax-rate bug, missing FMV), open Advisor with a
+// generic vest-discussion seed instead of a wrong-amount one.
 function buildLifeEventHref(vest: UpcomingVestDTO): string {
   const raw = vest.expected_post_tax_nominal_usd;
-  if (!Number.isFinite(raw) || raw <= 0) {
-    return DISABLED_PREFILL_HREF;
-  }
-  const amount = Math.round(raw);
-  const params = new URLSearchParams({
-    section: "one_shot",
-    prefill_category: "asset_event",
-    prefill_kind: "other_asset_acquired",
-    prefill_delta_kind: "one_shot",
-    prefill_target_date: vest.expected_vest_date,
-    prefill_one_shot_amount_usd: String(amount),
-    prefill_description: `RSU vest from grant ${vest.grant_id}`,
-  });
-  return `/life-events?${params.toString()}`;
+  const hasAmount = Number.isFinite(raw) && raw > 0;
+  const amountClause = hasAmount
+    ? ` Expected post-tax cash: ~$${Math.round(raw).toLocaleString()}.`
+    : "";
+  const seed =
+    `RSU vest from grant ${vest.grant_id} expected on ${vest.expected_vest_date}.` +
+    amountClause +
+    ` Help me think through what to do with the cash and how it changes my plan.`;
+  return `/advisor?seed=${encodeURIComponent(seed)}`;
 }

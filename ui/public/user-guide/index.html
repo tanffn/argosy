@@ -149,7 +149,6 @@
     <li><a href="#tab-advisor">Advisor</a></li>
     <li><a href="#tab-portfolio">Portfolio</a></li>
     <li><a href="#tab-expenses">Expenses</a></li>
-    <li><a href="#tab-life-events">Life Events</a></li>
     <li><a href="#tab-plan">Plan</a></li>
     <li><a href="#tab-retirement">Retirement</a></li>
     <li><a href="#tab-files">Files</a></li>
@@ -185,7 +184,7 @@
   <div class="meta">
     <span><strong>Audience:</strong> Ariel (single-user mode)</span>
     <span><strong>Screenshots:</strong> Playwright + Chromium @ 1400&times;900</span>
-    <span><strong>Covers:</strong> 16 top-nav tabs + 5 click-through detail pages</span>
+    <span><strong>Covers:</strong> 15 top-nav tabs + 5 click-through detail pages</span>
   </div>
 </header>
 
@@ -613,29 +612,6 @@
 </section>
 
 <!-- ============================================================ -->
-<section id="tab-life-events">
-<h2>12. <span class="nav-card">/life-events</span> Life Events in detail</h2>
-
-<p>The page where life-events that <em>change how your expenses behave over time</em> are entered. Anything that shifts the cashflow projection — kid leaves home (monthly expenses drop), wedding (one-shot outlay), new car every 5y (recurring expense) — gets recorded here so the plan engine sees the right shape.</p>
-
-<h3>Three-section form</h3>
-
-<p>The form is split into three sections, picked at the top:</p>
-
-<ul>
-  <li><strong>One-shot</strong> — a single dated outlay or inflow. Kind, date, amount, currency. Examples: wedding, property down payment, inheritance, one-time bonus.</li>
-  <li><strong>Recurring</strong> — a repeating cashflow with a start date, optional end date, and interval. Kind, period (monthly / annual / every-N-years), amount, currency. Examples: new car every 5 years, annual tuition top-up, monthly support payment to a parent.</li>
-  <li><strong>Phase-change</strong> — a step change in baseline monthly expenses starting on a given date. Kind, effective date, monthly delta (positive or negative), currency. Examples: kid leaves home (delta &minus;₪3,000/mo), second kid starts daycare (delta +₪4,500/mo), partner returns from parental leave (delta &minus;₪2,000/mo income offset).</li>
-</ul>
-
-<h3>Saving + the 422 banner</h3>
-
-<p>Each section validates against its own kind &times; delta-shape schema. On failed validation the page renders a structured error banner at the top of the form. The banner names the field that failed and lists the valid alternatives the backend accepts. No generic "invalid input" message — the banner tells you exactly what to change.</p>
-
-<p>Saved events land in the <code>life_events</code> table and feed two surfaces: the <strong>cashflow projection</strong> (per-month deltas applied via <code>apply_life_event_deltas()</code> during projection runs) and the <strong>Holistic Timeline</strong> on <span class="nav-card">/retirement</span> (each event appears as a marker at its date, with shape-aware tone — one-shot, recurring, phase-change).</p>
-</section>
-
-<!-- ============================================================ -->
 <section id="tab-plan">
 <h2>13. <span class="nav-card">/plan</span> Plan in detail</h2>
 
@@ -686,7 +662,7 @@
 
 <h3>Expected retirement age</h3>
 
-<p>The ExpectedRetirementAgeCard surfaces the three scenarios from <code>effective_retire_ready_age()</code> — bear / base / bull — sourced from the cashflow projection on the current plan draft, then clamped by (1) the latest known RSU vest plus a 90-day projection and (2) any retirement-milestone events on <span class="nav-card">/life-events</span>. Every retire-ready-age value across the UI (Holistic Timeline bands, the hero card, the safety gates) flows through this single function — they will not disagree.</p>
+<p>The ExpectedRetirementAgeCard surfaces the three scenarios from <code>effective_retire_ready_age()</code> — bear / base / bull — sourced from the cashflow projection on the current plan draft, then clamped by (1) the latest known RSU vest plus a 90-day projection and (2) any retirement-milestone events recorded for the household. Every retire-ready-age value across the UI (Holistic Timeline bands, the hero card, the safety gates) flows through this single function — they will not disagree.</p>
 
 <p>19 cards in 13 named sections, navigable via the sticky left-sidebar TOC.</p>
 
@@ -1061,7 +1037,7 @@
 <section id="inferred-life-events">
 <h2>26. Inferred life events</h2>
 
-<p>A daily scan at 03:00 IDT walks the transaction history looking for phase changes that the user hasn't entered manually on <span class="nav-card">/life-events</span>. Examples of what it looks for: tuition payments that stopped (kid finished school), recurring transfers consistent with car payments, wedding-scale transfers (one-shot outlays of a certain shape), monthly support payments that started or stopped (kid moved out / parent moved in).</p>
+<p>A daily scan at 03:00 IDT walks the transaction history looking for phase changes the user has not already mentioned in <span class="nav-card">/advisor</span>. Examples of what it looks for: tuition payments that stopped (kid finished school), recurring transfers consistent with car payments, wedding-scale transfers (one-shot outlays of a certain shape), monthly support payments that started or stopped (kid moved out / parent moved in).</p>
 
 <p>For new users the detector runs in <strong>shadow mode for the first 30 days</strong>. It logs its candidate findings to an internal table so the system can learn the household's baseline patterns, but nothing surfaces on the proposals queue. After day 30 the shadow window closes and confirmed phase-change candidates appear as <em>"Add inferred life event"</em> rows on <span class="nav-card">/proposals</span>. Each row carries the detector's best guess (shape + kind + amount + effective date) plus the supporting transaction sample so you can verify before accepting.</p>
 

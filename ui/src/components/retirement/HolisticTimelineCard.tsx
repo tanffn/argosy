@@ -178,17 +178,17 @@ function TimelineBody({ data }: TimelineBodyProps) {
   const ticks = useMemo(() => buildAxisTicks(range), [range]);
 
   // Empty-state nudge — distinct from "API failed" so the user gets a
-  // pointer to the two seeding surfaces (/life-events form +
-  // Schwab CSV upload).
+  // pointer to the two seeding surfaces (Advisor chat for life events +
+  // Schwab CSV upload for vests).
   if (totalMarkers === 0) {
     return (
       <div className="rounded-md border border-dashed border-border bg-secondary/20 px-4 py-6 text-sm text-muted-foreground">
-        No timeline data yet. Add life events on{" "}
+        No timeline data yet. Mention upcoming life events on{" "}
         <Link
-          href="/life-events"
+          href="/advisor"
           className="text-info hover:underline"
         >
-          /life-events
+          /advisor
         </Link>{" "}
         to populate it, or upload a Schwab CSV to seed vest events.
       </div>
