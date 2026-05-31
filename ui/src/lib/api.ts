@@ -1747,6 +1747,19 @@ export const api = {
     getJSON<AdvisorGapsResponse>(
       `/api/advisor/gaps?user_id=${encodeURIComponent(userId)}`,
     ),
+  // Welcome-card hydration call. POSTs the state_summary the card
+  // already assembled client-side from the static REST fetches, and
+  // receives a 1-3 sentence "today's insight" paragraph (or an empty
+  // string when nothing meaningful stands out). LLM failures collapse
+  // to `insight=""` server-side so this never throws on the happy path.
+  advisorInsight: (
+    userId: string,
+    stateSummary: string,
+  ): Promise<{ insight: string; confidence: string }> =>
+    postJSON<{ insight: string; confidence: string }>(
+      "/api/advisor/insight",
+      { user_id: userId, state_summary: stateSummary },
+    ),
   advisorHomeBrief: (userId: string) =>
     // 8s timeout — the home brief stitches cached state and shouldn't
     // ever take that long. Surfaces as an `AbortError` (DOMException)

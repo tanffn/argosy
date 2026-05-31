@@ -1606,6 +1606,86 @@ def post_amendment_cancel(
     )
 
 
+# ----------------------------------------------------------------------
+# /insight — server-rendered "today's insight" for the welcome card
+# ----------------------------------------------------------------------
+#
+# Hydration call for the /advisor welcome card. The card has already
+# rendered three static sections (in-progress · coming-up · needs-
+# attention) on mount; this route appends ONE paragraph of LLM-
+# generated insight below them. Stateless single-shot.
+#
+# Empty `insight` is a valid response — the UI hides the section when
+# the agent decides nothing meaningful stands out. We deliberately
+# don't pre-fetch state server-side: the welcome card already
+# assembled a markdown summary, so the route accepts it as-is and
+# passes it through to the agent. (Single-user app; no concern about
+# the client lying about state.)
+
+
+class InsightRequest(BaseModel):
+    user_id: str = "ariel"
+    state_summary: str
+    # Optional caller-supplied correlation id; threaded into agent.run.*
+    # WS events so the welcome card can subscribe + show the cascade.
+    request_id: str | None = None
+
+
+class InsightResponse(BaseModel):
+    insight: str
+    confidence: str = "MEDIUM"
+
+
+@router.post("/insight", response_model=InsightResponse)
+async def post_insight(body: InsightRequest) -> InsightResponse:
+    """One-shot insight generator for the welcome-card hydration slot.
+
+    Reads the caller's state_summary verbatim + an excerpt of the
+    user's identity_yaml for framing context, runs the
+    AdvisorInsightAgent, returns the 1-3 sentence paragraph. Returns
+    `insight=""` whenever the agent decides nothing meaningful is
+    worth saying — the UI suppresses the section in that case.
+
+    LLM failures degrade to `insight=""` rather than a 500 — losing
+    the hydration paragraph is acceptable; failing the page is not.
+    """
+    from argosy.agents.advisor_insight import AdvisorInsightAgent
+
+    # Pull a short identity excerpt for the framing context. Not the
+    # full YAML — that bloats the prompt. We just want the agent to
+    # know who it's talking to (long-hold posture, NVDA reduction).
+    user_profile_excerpt = ""
+    async with db_mod.get_session() as session:
+        ctx = (
+            await session.execute(
+                select(UserContext).where(UserContext.user_id == body.user_id)
+            )
+        ).scalar_one_or_none()
+        if ctx is not None and ctx.identity_yaml:
+            # Keep the first ~2 KB only — enough for the headline
+            # profile bits without dragging the entire profile.
+            user_profile_excerpt = (ctx.identity_yaml or "")[:2000]
+
+    try:
+        agent = AdvisorInsightAgent(user_id=body.user_id)
+        report = await agent.run(
+            state_summary=body.state_summary,
+            user_profile_excerpt=user_profile_excerpt,
+        )
+        out = report.output
+        return InsightResponse(
+            insight=(out.insight or "").strip(),
+            confidence=str(out.confidence or "MEDIUM"),
+        )
+    except Exception as exc:  # noqa: BLE001 — never fail the page
+        _log.warning(
+            "advisor_insight.failed",
+            user_id=body.user_id,
+            error=str(exc),
+        )
+        return InsightResponse(insight="", confidence="LOW")
+
+
 __all__ = [
     "AdvisorTurnRequest",
     "AdvisorTurnResponse",
@@ -1617,6 +1697,8 @@ __all__ = [
     "HomeBriefBullet",
     "HomeBriefCTA",
     "HomeBriefResponse",
+    "InsightRequest",
+    "InsightResponse",
     "_persist_turn",
     "classify_mode",
     "field_by_path",

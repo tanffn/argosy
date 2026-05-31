@@ -54,8 +54,17 @@ const INITIAL_STATE: WelcomeState = {
   loading: true,
 };
 
+interface InsightState {
+  status: "idle" | "loading" | "done" | "failed";
+  text: string;
+}
+
 export function AdvisorWelcomeCard({ userId, gaps }: AdvisorWelcomeCardProps) {
   const [state, setState] = useState<WelcomeState>(INITIAL_STATE);
+  const [insight, setInsight] = useState<InsightState>({
+    status: "idle",
+    text: "",
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -73,19 +82,38 @@ export function AdvisorWelcomeCard({ userId, gaps }: AdvisorWelcomeCardProps) {
         api.anomalyHighlights(userId, 3).catch(() => []),
       ]);
       if (cancelled) return;
-      setState({
+      const next: WelcomeState = {
         inFlightSynth: synth?.in_flight_synthesis ?? null,
         pendingDraft: draft,
         upcomingVests: (vestsOutlook?.upcoming ?? []).slice(0, 3),
         actionProposals: actions?.rows ?? [],
         anomalies: anoms ?? [],
         loading: false,
-      });
+      };
+      setState(next);
+
+      // Kick off the LLM hydration call once the static surface is
+      // rendered. We pass the same summary the user can already see on
+      // the static card, plus the gap-tracker headline, so the agent
+      // has the full picture without re-fetching server-side.
+      setInsight({ status: "loading", text: "" });
+      const summary = buildStateSummary(next, gaps);
+      try {
+        const r = await api.advisorInsight(userId, summary);
+        if (cancelled) return;
+        const t = (r.insight || "").trim();
+        setInsight({ status: t ? "done" : "idle", text: t });
+      } catch {
+        if (cancelled) return;
+        // The route degrades to insight="" on its own errors; reaching
+        // here means a real network failure. Hide the section.
+        setInsight({ status: "failed", text: "" });
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [userId, gaps]);
 
   if (state.loading) {
     return (
@@ -215,9 +243,31 @@ export function AdvisorWelcomeCard({ userId, gaps }: AdvisorWelcomeCardProps) {
           <WelcomeSection title="Needs your attention">{attention}</WelcomeSection>
         )}
         {gapsHint}
+        <InsightSlot state={insight} />
       </CardContent>
     </Card>
   );
+}
+
+function InsightSlot({ state }: { state: InsightState }) {
+  if (state.status === "loading") {
+    return (
+      <section className="text-xs text-muted-foreground italic">
+        Looking for today&apos;s most useful insight…
+      </section>
+    );
+  }
+  if (state.status === "done" && state.text) {
+    return (
+      <section>
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1.5">
+          Today&apos;s insight
+        </h3>
+        <p className="text-sm">{state.text}</p>
+      </section>
+    );
+  }
+  return null;
 }
 
 function WelcomeSection({
@@ -237,4 +287,74 @@ function WelcomeSection({
       </ul>
     </section>
   );
+}
+
+/**
+ * Assemble a compact markdown summary of the current state for the
+ * insight agent. Mirrors what the static card already shows the user
+ * — no extra signals; the LLM should base its judgment on the same
+ * surface the user is looking at, not a richer hidden view.
+ */
+function buildStateSummary(
+  state: WelcomeState,
+  gaps: AdvisorGapsResponse | null,
+): string {
+  const lines: string[] = [];
+
+  lines.push("## In progress");
+  if (state.inFlightSynth) {
+    const s = state.inFlightSynth;
+    lines.push(
+      `- plan synthesis #${s.decision_run_id} running, phase ${s.completed_phases}/${s.total_phases}`,
+    );
+  }
+  if (state.pendingDraft) {
+    lines.push(
+      `- plan draft #${state.pendingDraft.plan_version_id} pending review`,
+    );
+  }
+  if (lines[lines.length - 1] === "## In progress") {
+    lines.push("- (nothing in flight)");
+  }
+
+  lines.push("");
+  lines.push("## Coming up");
+  if (state.upcomingVests.length === 0) {
+    lines.push("- (no RSU vests within 90 days)");
+  } else {
+    for (const v of state.upcomingVests) {
+      lines.push(
+        `- RSU vest in ${v.days_until}d (grant ${v.grant_id}, ${v.shares_projected} NVDA shares, ${v.expected_vest_date})`,
+      );
+    }
+  }
+
+  lines.push("");
+  lines.push("## Needs your attention");
+  if (state.actionProposals.length === 0 && state.anomalies.length === 0) {
+    lines.push("- (no pending action proposals or anomalies)");
+  } else {
+    for (const p of state.actionProposals.slice(0, 3)) {
+      lines.push(`- [proposal/${p.severity}] ${p.summary}`);
+    }
+    for (const a of state.anomalies.slice(0, 3)) {
+      lines.push(`- [anomaly/${a.severity}] ${a.message}`);
+    }
+  }
+
+  if (gaps) {
+    lines.push("");
+    lines.push("## Context gap tracker");
+    lines.push(
+      `- counts: fresh=${gaps.counts.fresh} stale=${gaps.counts.stale} missing=${gaps.counts.missing}`,
+    );
+    const open = gaps.items.filter(
+      (it) => it.state === "missing" || it.state === "stale",
+    );
+    for (const it of open.slice(0, 4)) {
+      lines.push(`- [${it.state}] ${it.label}`);
+    }
+  }
+
+  return lines.join("\n");
 }

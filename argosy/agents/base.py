@@ -165,6 +165,9 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     "plan_synthesizer": "claude-opus-4-7",
     # Objection translator (T4.6).
     "objection_translator": "claude-opus-4-7",
+    # Advisor welcome-card insight (single-paragraph "today's insight" appended
+    # below the static welcome surface on /advisor — see argosy/agents/advisor_insight.py).
+    "advisor_insight": "claude-opus-4-7",
     # FM-objection ZigZag (T4.9).
     "analyst_responder": "claude-opus-4-7",
     "fund_manager_dialogue_verdict": "claude-opus-4-7",
