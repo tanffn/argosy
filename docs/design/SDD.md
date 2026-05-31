@@ -15,9 +15,68 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-31 (morning) by Claude — **/consult long-hold mode + structured result card + /decisions list page**. Two commits today: `dc3db54` (long-hold mode end-to-end + result card formatting) and `7e3a296` (decisions list page + nav entry). New binding memory `user_long_hold_investor.md` (Ariel evaluates per-ticker decisions as 5+ year holdings, not tactical trades — the SDD-default trader prompt is wrong instrument for /consult; long_hold mode skips technical + FX + swaps the trader prompt to weigh thesis fit + dividends + multi-year fundamentals). Backend restarted at `7e3a296`. See §"Wave 2026-05-31 — /consult long-hold mode + UX cleanup" below. Yesterday's overnight sprint (2026-05-30) is the wave below this one.
+**Last edit:** 2026-05-31 (late evening) by Claude — **eight commits on /consult today: long-hold mode (default) + decisions list page + structured result card + remediation flow (in-flight agent-talks-to-agent) + INSUFFICIENT_DATA verdict + auto-retry queue + plain-English trader + trust-the-data analyst fix**. Branch `main` @ `3028849`. Backend restarted there. Three binding memories saved this session: `user_long_hold_investor.md`, `feedback_agents_talk_to_each_other.md`, `feedback_trust_data_feed.md`. The session worked through live /consult feedback turn-by-turn on real tickers (APD, XYL, NOW); the trust-the-data fix at the end was the highest-leverage finding — the analyst was hallucinating "stale price" against internally-consistent post-split yfinance data. See §"Wave 2026-05-31" below. Yesterday's overnight sprint wave (2026-05-30) is below this one.
 
-### Wave 2026-05-31 — /consult long-hold mode + UX cleanup
+### Wave 2026-05-31 — /consult long-hold + remediation + trust-the-data
+
+**Full commit list (10 commits this session):**
+
+| Commit | One-line |
+|---|---|
+| `dc3db54` | feat(consult): long-hold mode + structured result card (Block A + B) |
+| `7e3a296` | feat(decisions): list page + nav entry under More (Block C) |
+| `45638dc` | docs(sdd): morning wave entry |
+| `d6d3d1a` | fix(consult): yfinance fallback now actually fires (break-not-return — was bypassed when Finnhub key absent) |
+| `8386704` | feat(remediation): inter-agent data-quality remediation flow — new `RemediationRequest` schema + `argosy/orchestrator/flows/per_ticker_remediation.py`; bounded multi-round dispatch + rerun; per [[feedback_agents_talk_to_each_other]] |
+| `782e28a` | feat(consult): plain-English trader prompts + new `insufficient_data` action + new `pending_reevaluations` table + daily auto-retry loop |
+| `3028849` | fix(fundamentals): trust the data feed; demonstrate inconsistency, don't hallucinate from training-data priors — per [[feedback_trust_data_feed]] |
+| (afternoon) | follow-ons absorbed into commits above; SDD wave reorganised here |
+
+**Architectural shape post-session:**
+
+1. **Modes on /consult.** `consult_mode: Literal["tactical_trade", "long_hold"]` threaded route → per-ticker analyst orchestrator → trader. UI defaults to `long_hold`; backend defaults to `tactical_trade` for API stability (asymmetry intentional; codex-approved). `long_hold` runs 4 analysts (fundamentals + news + sentiment + macro — skips technical + fx); trader prompt explicitly de-emphasises MACD/RSI/MA-cross + FX-hedging, weighs thesis fit + dividend record + multi-year fundamentals.
+
+2. **Result card formatting.** `/consult` outcome card surfaces verdict heading (BUY / SELL / HOLD / NEEDS DATA / BLOCKED), one-line summary stripped of inline citations, body prose, citation pills, "Your lean vs Fleet verdict" comparator line, "View full run →" deep-link to `/decisions/{id}`. Replaces the blob-of-prose `blocked_reason` rendering.
+
+3. **Decisions list.** `/decisions` (under More) backed by existing `GET /api/decisions/recent`. Click-through to existing `/decisions/[id]` detail page. Status pill colour-coded; filter by `decision_kind` + limit; skeleton / empty / error states.
+
+4. **Inter-agent remediation (in-flight).** When an analyst flags a data-quality issue (stale price, empty payload), the orchestrator dispatches the appropriate refresh + re-runs the requesting analyst — within the same consult call. Bounded 2 rounds. Per-rerun citation re-gate (codex BLOCKER fix) prevents empty-citation reports from being swapped back in. **The fleet handles its own remediation; never punts to the user.**
+
+5. **INSUFFICIENT_DATA verdict.** Distinct from HOLD — HOLD means "evaluated, recommend wait"; INSUFFICIENT_DATA means "couldn't evaluate because load-bearing inputs were missing AFTER remediation." UI maps to "NEEDS DATA" verdict, secondary tone. Trader prompts in BOTH modes carry the explicit distinction so tactical mode also fires the queue.
+
+6. **Auto-retry queue (safety net).** Migration `0059_pending_reevaluations` + `argosy/services/pending_reevaluation.py` + `argosy/orchestrator/loops/pending_reevaluation_daily.py` (04:00 IDT daily). When /consult returns INSUFFICIENT_DATA or raises 422 quorum-failed, route enqueues a row. The daily loop sweeps + re-fires + classifies (resolved / still_pending / abandoned after `MAX_REEVAL_ATTEMPTS=7`). Visible at `/admin/jobs`. **NICE follow-on open:** user-facing notification on resolved/abandoned via `notification_dispatcher` (queue currently logs only).
+
+7. **Plain-English trader output.** Both trader prompts (tactical + long-hold) carry a "WRITE FOR A NON-INVESTOR" directive: spell out acronyms on first use (P/E, EV/EBITDA, D/E, RoE), translate jargon, explain apparent contradictions (e.g. 22% revenue + 2.3% earnings → margin compression). Doesn't change verdicts; just makes them readable.
+
+8. **Trust-the-data analyst principle (the most important fix of the day).** Fundamentals analyst prompt rewritten to ONLY emit `remediation_request` when one of two demonstrable conditions holds: (a) `|marketCap/sharesOutstanding − current_price| / current_price > 0.10` (internal inconsistency in the data itself) or (b) empty payload. "This price feels low vs what I remember" is explicitly NOT a valid reason. Stock splits + corporate actions are real; training data ages. Bound by [[feedback_trust_data_feed]].
+
+**The NOW diagnosis** (run #52 explains the trust-the-data fix's genesis):
+
+```
+yfinance returned for NOW:
+  currentPrice $124.37 × sharesOutstanding 1,031,308,000 = marketCap $128.3B  ✓ (consistent)
+```
+
+ServiceNow had a 5:1 stock split since the LLM's training cut-off. Post-split price ~$124 (was ~$640); shares ~1.03B (was ~205M); marketCap unchanged. The data was correct. The analyst flagged it as stale based on its own outdated memory — pure training-data hallucination. The remediation flow couldn't fix it (nothing to fix); the auto-retry queue couldn't help either (same data tomorrow). The actual fix was teaching the analyst to trust the feed.
+
+**Codex tandem usage this session:** 5 zigzag rounds.
+- Long-hold mode design + impl review (APPROVE_WITH_CONDITIONS after 2 cheap fixes).
+- Remediation flow review (BLOCKERS round 1: citation re-gate, agent-refresh prohibition in both modes — both fixed before commit).
+- Three-blocks review (BLOCKER round 1: INSUFFICIENT_DATA-vs-HOLD rule missing from tactical_trade prompt; cheap log-capture nit — both fixed).
+- All codex sessions at `tools/codex-tandem/sessions/2026-05-31-*/`.
+
+**Tests this session:** 36/36 pass on the consult-area suites (14 per_ticker + 6 per_ticker_remediation + 11 pending_reevaluation + 5 trader-prompt locks).
+
+**Pending follow-ons** (all NICE-level — none block usage):
+- `notification_dispatcher` wire-up for pending_reevaluation resolved/abandoned events (codex-flagged).
+- Refactor: extract a shared `consult_runner` service so the daily loop doesn't call the route handler directly (route decorators run in cron context today — works, but smelly).
+- `lifetime_attempt_count` field for `pending_reevaluations` if we want historical attempt audit beyond the current-cycle count.
+- Bull/bear + risk team + FM remain mode-unaware; trader is the only mode-aware decision agent. Acceptable for v1 since the analyst dicts they see are already mode-filtered.
+- "View full run →" link is in the result card but `/decisions/{id}` could surface the remediation transcript (which analyst flagged what, what was retried) as a structured section. Today it's only in logs.
+- `_refresh_payload` dispatch table in `per_ticker_analysts` is hardcoded; converting to a `REMEDIATION_DISPATCH: dict[RemediationKind, Callable]` registry is the natural growth path.
+- Yfinance vs Finnhub provenance telemetry — surface `yfinance_used` counters so a Finnhub regression isn't silently masked.
+
+### Wave 2026-05-31 (morning) — /consult long-hold mode + UX cleanup
 
 **Trigger:** user retried `/consult` for APD after yesterday's overnight sprint. Live e2e succeeded but the trader's HOLD rationale gated on MACD-not-crossed + FX-weakening — both irrelevant for the user's actual decision style ("I have USD, I need to allocate USD. How is FX relevant? I'm looking for long hold, not trade. What is MACD?"). The default trader prompt per SDD §3.3 is wired for tactical entry-timing decisions. For Ariel's actual style (long-horizon investor), the system was producing technically-correct-but-categorically-wrong output.
 
