@@ -669,13 +669,17 @@ export default function PlanPage() {
       {/* Section 2 — Visualizations. SourcesHeatmap is rendered at the
           bottom of the page (after Critique findings) so the top of the
           plan tab stays focused on the proposal + dynamics, not the
-          citation audit trail. */}
-      {draft && (
+          citation audit trail.
+
+          AllocationChart + DeltaMap require a draft (they overlay
+          targets from horizon rows). NvdaTrajectoryChart +
+          CashflowProjectionChart read from identity_yaml + household
+          state, so they render whether or not a draft exists. */}
+      {(draft || plan?.plan_version_id) && (
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <AllocationChart snapshot={snapshot} draft={draft} />
+          {draft && <AllocationChart snapshot={snapshot} draft={draft} />}
           <NvdaTrajectoryChart data={nvda} />
-          <DeltaMap draft={draft} />
-          {/* Cashflow projection — spans both columns at lg+. */}
+          {draft && <DeltaMap draft={draft} />}
           <CashflowProjectionChart userId={USER_ID} />
         </section>
       )}
@@ -827,16 +831,42 @@ export default function PlanPage() {
           proposal + dynamics; reviewers scan the heatmap last. */}
       {draft && <SourcesHeatmap draft={draft} />}
 
-      {/* No-draft empty state */}
-      {!loading && !draft && plan?.raw_markdown ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Plan document</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Markdown>{plan.raw_markdown}</Markdown>
-          </CardContent>
-        </Card>
+      {/* No-draft state — show a clear "synthesis hasn't run yet"
+          banner over the baseline plan document. The visualizations
+          above already render from identity_yaml + household state;
+          this branch fills in the proposal/delta surface that's
+          gated on a real draft. */}
+      {!loading && !draft && !showInFlightCard && plan?.raw_markdown ? (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">
+                No pending plan draft
+              </CardTitle>
+              <CardDescription>
+                Your baseline plan is below. Press{" "}
+                <strong>Run synthesis</strong> at the top of the page to
+                let the agent fleet propose changes; the structured
+                executive summary, per-horizon deltas, critique
+                findings, and source heatmap show up here once a draft
+                lands.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+          <Card>
+            <CardHeader>
+              <CardTitle>Baseline plan</CardTitle>
+              <CardDescription>
+                Source markdown — read-only. Edits happen through
+                synthesis (re-run the fleet) or by re-ingesting a
+                fresh plan document on the CLI.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Markdown>{plan.raw_markdown}</Markdown>
+            </CardContent>
+          </Card>
+        </>
       ) : null}
 
       {!loading && !draft && !plan?.raw_markdown && !showInFlightCard && (

@@ -208,3 +208,110 @@
    gradient flourishes (this ring + a top-edge stripe + the body
    radial). The hero now uses a single left-edge accent rule in
    the brand-green semantic token instead. */
+
+/* Markdown typography. Mirrors what @tailwindcss/typography would
+   produce — kept inline so we don't carry the plugin dependency.
+   Applied to the <article class="prose"> wrapper emitted by the
+   shared Markdown component (used by /plan, /advisor, intake). */
+.prose {
+  color: var(--foreground);
+  line-height: 1.65;
+  max-width: 65ch;
+}
+.prose.max-w-none {
+  max-width: none;
+}
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  color: var(--foreground);
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 1.6em;
+  margin-bottom: 0.6em;
+  scroll-margin-top: 80px;
+}
+.prose h1 { font-size: 1.875rem; }
+.prose h2 {
+  font-size: 1.4rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.25em;
+}
+.prose h3 { font-size: 1.15rem; }
+.prose h4 { font-size: 1rem; }
+.prose p {
+  margin: 0.75em 0;
+}
+.prose ul,
+.prose ol {
+  margin: 0.75em 0;
+  padding-left: 1.5em;
+}
+.prose ul { list-style: disc; }
+.prose ol { list-style: decimal; }
+.prose li { margin: 0.25em 0; }
+.prose li > p { margin: 0.25em 0; }
+.prose blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 1em;
+  color: var(--muted-foreground);
+  font-style: italic;
+  margin: 1em 0;
+}
+.prose code {
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
+  padding: 0.1em 0.35em;
+  border-radius: 0.25rem;
+  font-size: 0.875em;
+  font-family: var(--font-mono);
+}
+.prose pre {
+  background: color-mix(in oklab, var(--muted) 80%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.9em 1em;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+.prose pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+}
+.prose a {
+  color: var(--info);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose a:hover { text-decoration: none; }
+.prose strong { color: var(--foreground); font-weight: 600; }
+.prose em { font-style: italic; }
+.prose hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.5em 0;
+}
+.prose table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  width: 100%;
+  font-size: 0.9em;
+}
+.prose th,
+.prose td {
+  border: 1px solid var(--border);
+  padding: 0.45em 0.7em;
+  text-align: left;
+  vertical-align: top;
+}
+.prose th {
+  background: color-mix(in oklab, var(--muted) 60%, transparent);
+  font-weight: 600;
+}
+.prose-sm {
+  font-size: 0.9rem;
+}
+.prose-sm h1 { font-size: 1.5rem; }
+.prose-sm h2 { font-size: 1.2rem; }
+.prose-sm h3 { font-size: 1.05rem; }
