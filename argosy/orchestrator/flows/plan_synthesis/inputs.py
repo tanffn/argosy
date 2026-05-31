@@ -1090,8 +1090,12 @@ def _gather_news(
                     reason=str(exc).splitlines()[0],
                 )
                 # API-key / package failures are global — no point
-                # iterating further.
-                return out
+                # iterating further. ``break`` (not ``return``) so the
+                # ``with_yfinance_fallback`` block at the bottom still
+                # runs — codex follow-on 2026-05-31 (long-hold mode
+                # needs the fallback to actually fire when Finnhub
+                # key is absent).
+                break
             except Exception as exc:  # noqa: BLE001 - per-ticker defensive
                 log.warning(
                     "plan_synthesis.inputs.news_per_ticker_failed",
@@ -1213,8 +1217,10 @@ def _gather_fundamentals(
                     ticker=ticker,
                     reason=str(exc).splitlines()[0],
                 )
-                # API-key failure is global — stop iterating.
-                return out
+                # API-key failure is global — stop iterating. ``break``
+                # (not ``return``) so the ``with_yfinance_fallback``
+                # block below still runs — codex follow-on 2026-05-31.
+                break
             except MissingDataSourceError as exc:
                 # Per-ticker "no data" — Finnhub doesn't cover this
                 # symbol (typical for Israeli ETFs / non-US listings).
