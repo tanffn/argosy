@@ -15,7 +15,69 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-31 (late evening) by Claude — **eight commits on /consult today: long-hold mode (default) + decisions list page + structured result card + remediation flow (in-flight agent-talks-to-agent) + INSUFFICIENT_DATA verdict + auto-retry queue + plain-English trader + trust-the-data analyst fix**. Branch `main` @ `3028849`. Backend restarted there. Three binding memories saved this session: `user_long_hold_investor.md`, `feedback_agents_talk_to_each_other.md`, `feedback_trust_data_feed.md`. The session worked through live /consult feedback turn-by-turn on real tickers (APD, XYL, NOW); the trust-the-data fix at the end was the highest-leverage finding — the analyst was hallucinating "stale price" against internally-consistent post-split yfinance data. See §"Wave 2026-05-31" below. Yesterday's overnight sprint wave (2026-05-30) is below this one.
+**Last edit:** 2026-05-31 (overnight, wave 2) by Claude — **nine-commit sprint: tab cleanup + advisor cold-start redesign + Plan-tab data-loss fix**. Branch `main` @ `77e9e8d`. (1) Life Events tab + page deleted (backend stays); UpcomingVestCard's deep-link routes to /advisor now. (2) /advisor opens with a server-aggregated welcome card (in-progress / coming-up / needs-attention sections) instantly + a single Opus call hydrates a "today's insight" paragraph below; the old auto-fired gap turn on mount is gone. Codex tandem audited the insight prompt — landed prompt-injection guards, no-USD ban, single-paragraph constraint, long-hold framing. (3) USD cost figures stripped from cascade panel + agent rows + decisions list per [[feedback_no_dollar_reporting]]. (4) Plan tab restored: the `prose` typography was inert (no `@tailwindcss/typography`) → markdown rendered flat; baseline view ungated NvdaTrajectoryChart + CashflowProjectionChart from the draft gate. **(5) Bigger find: synthesis orchestrator's pre-emptive demote was a data-loss bug.** `plan_synthesis/orchestrator.py:217` demoted the prior draft to `superseded` BEFORE running the 30-60 min synthesis; any failure (decision_run #43, 2026-05-30, status=blocked) stranded the prior draft with no successor — exactly what made the Plan tab look broken. Fix landed on both flows (plan_synthesis + plan_amendment medium worker): defer the demote to the same commit as the new draft INSERT, with explicit `session.flush()` between UPDATE and INSERT so the partial unique index sees the right state. `/api/plan/draft` also falls back to the most recent non-pending draft with a new `effective_role` field so the UI shows a "this draft is no longer pending" banner instead of going blank. One-shot DB fix restored draft #14 back to `role='draft'` for Ariel's current state. Codex tandem audited the orchestrator change — confirmed no mid-run reader expects the prior to already be superseded; flagged one nice-to-have follow-up: wrap `run_synthesis` in try/except that sets DecisionRun.status='failed' for non-wrapper callers (monthly_cycle today catches generic Exception but doesn't update DecisionRun status). Three binding memories from earlier today still apply: `user_long_hold_investor.md`, `feedback_agents_talk_to_each_other.md`, `feedback_trust_data_feed.md`. See §"Wave 2026-05-31 (wave 2)" below for the full commit list. Wave 1 (the /consult work from earlier today) is in the section below that.
+
+### Wave 2026-05-31 (wave 2) — tab cleanup + advisor welcome + Plan-tab data-loss fix
+
+**Full commit list (8 commits this sub-wave):**
+
+| Commit | One-line |
+|---|---|
+| `27db1e8` | docs(spec): tab cleanup + advisor welcome — design doc |
+| `5279f76` | feat(life-events): remove UI surface; chat is the entry point (tab + page deleted; backend intact) |
+| `684f5b8` | fix(plan): structured baseline view; no more plain-text fallthrough (add `.prose` CSS, ungate charts that don't need draft) |
+| `4da886f` | feat(advisor): static welcome card; no more blocking LLM on mount |
+| `c0772e7` | feat(advisor): LLM insight hydration on the welcome card (codex tandem on prompt — 4 blockers landed) |
+| `408a46c` | chore(ui): hide USD cost from cascade panel + agent rows + decision list |
+| `b22fe0c` | fix(plan): surface most-recent draft when no pending one exists (`effective_role` field + banner) |
+| `e2f81bd` | fix(orchestrator): defer draft demote until same commit as new draft (root cause fix — codex tandem audited) |
+| `77e9e8d` | fix(advisor): welcome card distinguishes pending vs last-draft state |
+
+**The data-loss find:**
+
+`plan_synthesis/orchestrator.py` had been demoting the prior `role='draft'` row to `superseded` IMMEDIATELY on entry (line 217 of the old code), before any of phases 1-5 ran. If anything failed during the ~30-60 min synthesis, the user ended up with no pending draft and no successor. Real incident: decision_run #43 on 2026-05-30 demoted draft #14 at 18:01:23, ended status=`blocked` at 18:44:37, no successor draft was ever written. Same anti-pattern in `plan_amendment/workers.py:156-161`.
+
+Fix shape (both flows):
+- Remove the early demote at the function entry.
+- Add the demote inline with the new-draft INSERT in the same transaction.
+- Explicit `session.flush()` after the UPDATE so the partial unique index `uq_plan_versions_draft_per_user` sees the right state during INSERT (statement-level enforcement on both SQLite and Postgres).
+
+Defensive companion (UI layer):
+- `/api/plan/draft` now falls back to the most recent draft of any role (with `horizon_long_json is not None`) when no `role='draft'` exists, exposing the actual role on a new `effective_role` field on `DraftResponse`.
+- /plan header label flips "pending draft #N" → "last draft #N" + a yellow banner explains the state when `effective_role !== 'draft'`.
+- AdvisorWelcomeCard 'In progress' bullet does the same.
+
+**One-shot for Ariel's current state:** After the orchestrator fix shipped, draft #14 was still sitting at `role='superseded'` from the historical bug. Restored via `UPDATE plan_versions SET role='draft', superseded_at=NULL WHERE id=14 AND user_id='ariel';` Pre-checks confirmed no other `role IN ('draft', 'current')` rows for ariel before applying.
+
+**Advisor cold-start redesign:**
+
+Old behavior: opening /advisor fired `askNext("")` on mount → 5+ second wait → a dense orchestrator-style intake-status dump appeared in the chat surface (the yellow note Ariel called out). The full LLM cost ($0.0233 chip) violated [[feedback_no_dollar_reporting]] too.
+
+New behavior:
+1. `<AdvisorWelcomeCard>` fans out to existing REST routes in parallel (planInFlightSynthesis, planDraft, upcomingVests, getActionProposals, anomalyHighlights, advisorGaps) — renders three conditional sections (In progress · Coming up · Needs your attention) in <500 ms with no LLM call.
+2. After the static surface lands, ONE background Opus call hits `POST /api/advisor/insight` with a markdown summary the card already assembled. Returns 1-3 sentences appended below the static surface (or empty → hidden).
+3. Auto-fired gap-turn on mount is gone. The gap-tracker sidebar still surfaces missing fields and is clickable for focused conversations.
+
+Codex tandem audit on the insight prompt landed 4 blockers:
+- Prompt-injection guard: `<user_profile>` / `<current_state>` declared as untrusted data + closing tags escaped to `‹/` before insertion.
+- No-USD constraint strengthened: explicit ban on "$", "USD", "dollar(s)".
+- Long-hold framing: tactical examples replaced with fundamentals/cashflow language; market-timing explicitly banned.
+- Format: "single plain paragraph only — no bullets, no headings, no internal line breaks."
+
+**Life Events removal:**
+
+Per the user's direct ask, the /life-events tab + page + UpcomingVestCard deep-links + HolisticTimelineCard nudge + lifeEvents* API client methods + types + user-guide section #12 are gone. Backend (`/api/life-events` route, service, migrations 0042+0054, cashflow projection, retirement timeline phase markers, state-observer pre-event logic) is intact — the 11 existing events still feed the model. **Follow-on (NICE)**: teach the Advisor agent to capture new life events from natural-language chat → POST `/api/life-events`. The route is callable from anywhere today; this is just the missing chat→API tool.
+
+**Plan-tab markdown rendering:**
+
+Tailwind v4 doesn't carry `@tailwindcss/typography` automatically. The Markdown component's `prose prose-sm dark:prose-invert max-w-none` classes were inert — headers / lists / tables / code all rendered as flat text. Added a self-contained `.prose` ruleset in `globals.css` mirroring what the plugin would emit. Applies to every Markdown surface (/plan, /advisor, intake). Also ungated NvdaTrajectoryChart + CashflowProjectionChart from `draft &&` on /plan — both read identity_yaml + household state and don't need a draft.
+
+**Pending follow-ons (all NICE — none block usage):**
+
+- Wrap `run_synthesis` body in try/except that stamps `DecisionRun.status='failed'` + `finished_at`. Today the advisor.py wrapper + plan_amendment workers handle this for 2 of 3 call paths; monthly_cycle catches generic Exception + logs but doesn't update DecisionRun. Codex flagged as MUST-FIX during audit but it's a hardening, not a data-loss fix.
+- Capture-via-Advisor for life events (see above).
+- Disable the /plan Accept / Reject CTAs when `effective_role !== 'draft'`; today they fire and the backend refuses, surfacing as a generic error. Right UX is a tooltip + disabled state.
+- The `superseded` fallback can return very stale drafts (we go back arbitrarily). Consider capping by age (e.g. "no fallback if >30 days old") or by `decision_run.status` (skip when the LATER run is itself completed and just happens to not have produced anything — unlikely state).
 
 ### Wave 2026-05-31 — /consult long-hold + remediation + trust-the-data
 
