@@ -15,7 +15,56 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-05-30 (overnight autonomous sprint) by Claude — **9 commits, 4 of the 5 facades fixed end-to-end, /consult verified live**. User authorized overnight autonomous work: "I want you and codex to work during the night and make sure all is correct"; "/argonaut is fine, but I do about the rest". This wave entry is the morning report. See §"Wave 2026-05-30 — overnight facade-fix sprint" below for the per-block summary table.
+**Last edit:** 2026-05-31 (morning) by Claude — **/consult long-hold mode + structured result card + /decisions list page**. Two commits today: `dc3db54` (long-hold mode end-to-end + result card formatting) and `7e3a296` (decisions list page + nav entry). New binding memory `user_long_hold_investor.md` (Ariel evaluates per-ticker decisions as 5+ year holdings, not tactical trades — the SDD-default trader prompt is wrong instrument for /consult; long_hold mode skips technical + FX + swaps the trader prompt to weigh thesis fit + dividends + multi-year fundamentals). Backend restarted at `7e3a296`. See §"Wave 2026-05-31 — /consult long-hold mode + UX cleanup" below. Yesterday's overnight sprint (2026-05-30) is the wave below this one.
+
+### Wave 2026-05-31 — /consult long-hold mode + UX cleanup
+
+**Trigger:** user retried `/consult` for APD after yesterday's overnight sprint. Live e2e succeeded but the trader's HOLD rationale gated on MACD-not-crossed + FX-weakening — both irrelevant for the user's actual decision style ("I have USD, I need to allocate USD. How is FX relevant? I'm looking for long hold, not trade. What is MACD?"). The default trader prompt per SDD §3.3 is wired for tactical entry-timing decisions. For Ariel's actual style (long-horizon investor), the system was producing technically-correct-but-categorically-wrong output.
+
+User's three asks: (1) build a long-hold mode but **not as a new tab** — integrate into `/consult`; (2) format the trader's blob-of-prose result into something readable; (3) expose `/decisions` properly as a list page under the "More" dropdown.
+
+**Two commits:**
+
+| Commit | Block | One-line |
+|---|---|---|
+| `dc3db54` | feat | /consult long-hold mode + structured result card (Block A + B combined — both touch the same UI surface) |
+| `7e3a296` | feat | /decisions list page + nav entry (Block C) |
+
+**`dc3db54` — long-hold mode + structured result card.**
+
+End-to-end mode parameter:
+- `argosy/decisions/per_ticker_analysts.py` — `ConsultMode = Literal["tactical_trade", "long_hold"]` + `ROLES_BY_MODE`. `TACTICAL_TRADE_ROLES` = 6 (default — fundamentals + technical + news + sentiment + macro + fx). `LONG_HOLD_ROLES` = 4 (fundamentals + news + sentiment + macro — drops technical + fx). `run_per_ticker_analysts(mode=...)` honours dispatch.
+- `argosy/agents/trader.py` — `build_prompt(mode=...)` swaps the SYSTEM prompt. Long-hold variant explicitly tells the trader to ignore MACD/RSI/MA-cross + FX hedging arguments; defaults to `market`+`GTC` orders; HOLD only when fundamental thesis is broken (not when chart hasn't confirmed); includes a CONFLICT OVERRIDE rule so upstream bull/bear tactical-timing language can't drag the verdict back to chart-condition reasoning.
+- `argosy/decisions/flow.py` — `DecisionFlow.run(consult_mode=...)` threads to `trader.run(mode=...)`. Default `tactical_trade` preserves existing callers (monthly_cycle, amendment paths).
+- `argosy/api/routes/decisions.py` — `RunRequest.consult_mode` field threads to both per-ticker analysts (analyst set) + flow (trader prompt). Backend default stays `tactical_trade` for API stability.
+
+yfinance fallback (load-bearing for long-hold without paid keys):
+- `argosy/orchestrator/flows/plan_synthesis/inputs.py` — `_gather_fundamentals` + `_gather_news` accept `with_yfinance_fallback: bool = False`. Per-ticker orchestrator passes `True`. yfinance covers PE / EV-EBITDA / dividend yield / D-E / RoE / growth / market_cap / sector + `Ticker.news` headlines without a Finnhub key. Plan-synthesis default unchanged.
+
+Structured result card on `/consult`:
+- `ui/src/app/consult/page.tsx` — replaces the trader's blob-of-prose `blocked_reason` with: large verdict heading (BUY/HOLD/SELL/BLOCKED, tone-coloured), one-line summary (first sentence, citations stripped), body prose (with `[citation/tokens]` groups removed), citation pills (deduped `font-mono` Badges parsed from the `[...]` groups), "Your lean vs Fleet verdict" contextual line when the fleet pushed back, "View full run →" deep-link to `/decisions/{id}`. Plus the new mode dropdown next to tier; **default `long_hold`** for Ariel's style.
+- `ui/src/lib/api.ts` — `DecisionRunRequest.consult_mode?` field.
+
+Quorum failure message now reports the correct mode-aware denominator (4 in long-hold, 6 in tactical_trade) — codex follow-on.
+
+**`7e3a296` — /decisions list page + nav.**
+
+The detail page `/decisions/[id]` already existed but had no index. User asked for the list under "More" with a short description per row. New `ui/src/app/decisions/page.tsx` backed by the existing `GET /api/decisions/recent`. Columns: Ticker / Tier / Kind / Status / Started / Duration / Agents / Cost / Description. Filter row: decision_kind dropdown + limit selector. Status pill colour-coded. Skeleton / empty / error states. Rows clickable through to `/decisions/[id]`. Nav entry `{ href: "/decisions", label: "Decisions", Icon: Gavel }` added to `INSPECTION_TABS` in `ui/src/components/nav.tsx` between `/agents` and `/audit`.
+
+**Tests + verification**: 14/14 per_ticker tests pass (4 new for long_hold mode); 42-test broader regression on touched-area tests pass; tsc + eslint clean on the 4 touched UI files. Backend restarted at `7e3a296`.
+
+**Codex tandem**: 1 zigzag round on long-hold mode, returned APPROVE_WITH_CONDITIONS. Two cheap NICE fixes integrated before commit (quorum denominator messaging; long-hold prompt CONFLICT OVERRIDE rule). Three NICE follow-ons documented and deferred: yfinance-provenance telemetry (so we don't hide Finnhub regressions); mode-awareness on bull/bear SYSTEM prompts (currently only trader sees mode); backend default flip to match UI default (currently UI=long_hold, backend=tactical_trade — API-stability call). Session at `tools/codex-tandem/sessions/2026-05-31-consult-long-hold-mode/`.
+
+**Pending follow-ons NOT closed in this wave** (all NICE-level — none block usage):
+- yfinance vs Finnhub provenance telemetry — surface `finnhub_empty` / `yfinance_used` counters so a Finnhub regression isn't silently masked.
+- Bull/bear mode-awareness — only trader currently sees `mode`; bull/bear see the analyst dicts and naturally adapt because technical + fx are absent in long-hold, but their SYSTEM prompts are unchanged.
+- Mode default asymmetry (UI=long_hold, backend=tactical_trade). API-stability call for now.
+- Quorum `MIN_QUORUM_TOTAL=2` is mode-agnostic — 2/4 (50%) in long-hold mode is tighter than 2/6 (33%) in tactical. May need a per-mode threshold knob.
+- User-guide §16 still describes the tactical/timing trader; add a paragraph mentioning the long-hold mode toggle + the structured result card.
+
+---
+
+
 
 ### Wave 2026-05-30 — overnight facade-fix sprint
 
