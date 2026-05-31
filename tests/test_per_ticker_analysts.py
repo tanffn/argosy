@@ -672,6 +672,38 @@ def test_trader_prompt_explains_insufficient_data_vs_hold() -> None:
         ), mode
 
 
+def test_fundamentals_analyst_prompt_is_conservative_about_staleness() -> None:
+    """2026-05-31 user feedback (run #52 on NOW): the fundamentals
+    analyst hallucinated 'stale price' based on its training-data
+    expectations of ServiceNow trading higher, but the supplied yfinance
+    data was internally consistent (marketCap = sharesOutstanding ×
+    currentPrice). The analyst should TRUST the data feed unless it can
+    demonstrate internal inconsistency. Stock splits + corporate
+    actions are real; training data ages. Don't conjure data-quality
+    issues out of memory."""
+    from argosy.agents.fundamentals_analyst import FundamentalsAnalystAgent
+
+    agent = FundamentalsAnalystAgent(user_id="ariel")
+    system, _user, _sources = agent.build_prompt(
+        tickers=["NOW"],
+        fundamentals_payload={"NOW": {
+            "pe_ratio": 74.0,
+            "ev_ebitda": 43.5,
+            "revenue_growth_yoy": 0.221,
+            "current_price": 124.37,
+        }},
+    )
+    lower = system.lower()
+    # The conservative-staleness directive must be present.
+    assert "trust the supplied data" in lower
+    assert "stock split" in lower or "corporate action" in lower
+    # The internal-inconsistency criterion must be specified, not vibes.
+    assert "marketcap" in lower
+    assert "sharesoutstanding" in lower
+    # The 10% tolerance must be specified.
+    assert "0.10" in lower or "10%" in lower
+
+
 def test_trader_prompt_writes_for_non_investor() -> None:
     """Both trader prompts (2026-05-31) include the WRITE-FOR-A-NON-
     INVESTOR directive — spell out acronyms, explain contradictions,
