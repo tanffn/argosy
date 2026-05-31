@@ -18,6 +18,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from argosy.agents.base import BaseAgent, ConfidenceBand
+from argosy.agents.remediation import RemediationRequest
 
 
 class TickerFundamentals(BaseModel):
@@ -56,6 +57,18 @@ class FundamentalsReport(BaseModel):
     cited_sources: list[str] = Field(
         default_factory=list,
         description="Top-level distinct citations.",
+    )
+    remediation_requests: list[RemediationRequest] = Field(
+        default_factory=list,
+        description=(
+            "Structured requests back to the orchestrator when the "
+            "input data has detectable quality issues (stale price, "
+            "missing payload, etc.). The orchestrator dispatches each "
+            "+ re-runs this analyst with fresh data — DO NOT write "
+            "data-refresh recommendations into ``summary`` prose. "
+            "Per [[feedback_agents_talk_to_each_other]] the fleet "
+            "resolves these internally, never punts to the user."
+        ),
     )
 
 
@@ -112,7 +125,18 @@ class FundamentalsAnalystAgent(BaseAgent[FundamentalsReport]):
             "fabricate a multiple that wasn't in the input.\n"
             "  - balance_sheet_quality: 'strong' (low D/E + ample liquidity), "
             "'adequate' (mid D/E), 'weak' (high D/E or thin liquidity), "
-            "'unknown' if inputs are absent.\n\n"
+            "'unknown' if inputs are absent.\n"
+            "  - DATA QUALITY: if the supplied price/payload looks "
+            "materially inconsistent (e.g. current_price is stale or "
+            "pre-split, fundamentals payload is empty), DO NOT write "
+            "'recommend refresh' into ``summary`` prose. Instead emit a "
+            "structured ``RemediationRequest`` on the report's "
+            "``remediation_requests`` list — the orchestrator will "
+            "re-fetch + re-run this analyst before any downstream agent "
+            "sees the report. Use kind='price_stale' for stale prices, "
+            "'fundamentals_stale' for missing/empty fundamentals, or "
+            "'data_refresh' if uncertain. Include the affected ticker "
+            "and a one-sentence reason.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
             f"{FundamentalsReport.model_json_schema()}\n"
         )

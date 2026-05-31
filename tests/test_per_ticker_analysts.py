@@ -597,3 +597,27 @@ def test_trader_long_hold_prompt_distinct_from_tactical() -> None:
     assert "do not cite fx" in long_hold_lower
     # Tactical prompt should NOT contain those de-emphasis instructions.
     assert "do not gate on chart timing" not in tactical_sys.lower()
+
+
+def test_trader_never_recommend_refresh_in_both_modes() -> None:
+    """Codex BLOCKER 2026-05-31 — the 'NEVER RECOMMEND AGENT REFRESHES'
+    rule per [[feedback_agents_talk_to_each_other]] must be in BOTH
+    trader prompt variants. Without it, the tactical_trade trader
+    could still regress to 'recommend agent X re-pull Y' prose that
+    punts to the user."""
+    from argosy.agents.trader import TraderAgent
+
+    agent = TraderAgent(user_id="ariel", tier="T2")
+    for mode in ("tactical_trade", "long_hold"):
+        sys_prompt, _ = agent.build_prompt(
+            analyst_reports=[],
+            debate_outcome={},
+            positions_snapshot="",
+            user_constraints="",
+            ticker="XYL",
+            mode=mode,
+        )
+        assert "never recommend agent refreshes" in sys_prompt.lower(), (
+            f"trader prompt for mode={mode!r} missing the agent-refresh "
+            "prohibition"
+        )

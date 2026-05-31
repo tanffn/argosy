@@ -347,7 +347,103 @@ async def run_per_ticker_analysts(
             reason=reason,
         )
 
-    # 5) Persist surviving reports under decision_run_id.
+    # 5) Inter-agent remediation pass — per [[feedback_agents_talk_to_each_other]].
+    # Analysts may flag stale-data / empty-payload issues on their
+    # ``remediation_requests`` field. The orchestrator re-fetches the
+    # affected payload + re-runs only the requesting analyst, up to a
+    # bounded number of rounds. The trader sees the post-remediation
+    # reports — never the original "data is broken, please refresh"
+    # output that punted to the user.
+    from argosy.orchestrator.flows.per_ticker_remediation import (
+        apply_remediations_and_rerun,
+    )
+
+    async def _refresh_payload(kind: str, t: str) -> bool:
+        """Re-fetch the data for the requested kind. Returns True if
+        the refreshed payload now has content (different / non-empty)
+        from the original — i.e. worth re-running the analyst against."""
+        nonlocal payloads
+        if kind in ("price_stale", "fundamentals_stale"):
+            new = await asyncio.to_thread(
+                _refresh_fundamentals_payload, [t]
+            )
+            payloads["fundamentals"] = new
+            return bool(new)
+        if kind == "news_empty":
+            new = await asyncio.to_thread(
+                _refresh_news_payload, [t]
+            )
+            payloads["news"] = new
+            return bool(new)
+        if kind == "data_refresh":
+            # Whole-ticker refresh — re-call all per-ticker gathers.
+            payloads = await _gather_inputs_for_ticker(
+                ticker=t, tickers=[t], user_id=user_id, mode=mode,
+            )
+            return True
+        return False
+
+    async def _rerun_analyst_for_role(
+        role: str, _current_reports: list[AgentReport],
+    ) -> AgentReport | None:
+        """Re-run only the requesting analyst with the (refreshed)
+        payload. Returns the new AgentReport or None on failure.
+
+        Codex BLOCKER #1 on the remediation review (2026-05-31): the
+        re-run output goes through the SAME citation gate as the
+        initial pass. If the refreshed analyst comes back with no
+        citations (data still empty / agent had nothing to ground
+        on), treat as failed — caller keeps the original report,
+        surfaces the request as unresolved. Without this guard the
+        swap could re-introduce empty-citation reports after the
+        initial empty-payload filter already dropped them, violating
+        the 'surviving citation-bearing reports' contract.
+        """
+        runner_map = {
+            "fundamentals": lambda: _run_fundamentals(
+                user_id, [ticker], payloads["fundamentals"],
+            ),
+            "technical": lambda: _run_technical(
+                user_id, [ticker], payloads["indicators"],
+            ),
+            "news": lambda: _run_news(
+                user_id, [ticker], payloads["news"],
+            ),
+            "sentiment": lambda: _run_sentiment(
+                user_id, [ticker], payloads["social"],
+            ),
+            "macro": lambda: _run_macro(user_id, payloads["macro"]),
+            "fx": lambda: _run_fx(user_id, payloads["fx"]),
+        }
+        runner = runner_map.get(role)
+        if runner is None:
+            return None
+        try:
+            new_report = await runner()
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "per_ticker_analysts.rerun_failed",
+                role=role, error=str(exc)[:200],
+            )
+            return None
+        if not _has_any_citation(new_report):
+            log.info(
+                "per_ticker_analysts.rerun_empty_citations_dropped",
+                role=role,
+            )
+            return None
+        return new_report
+
+    surviving, unresolved_remediations = await apply_remediations_and_rerun(
+        reports=surviving,
+        user_id=user_id,
+        ticker=ticker,
+        decision_run_id=decision_run_id,
+        rerun_analyst=_rerun_analyst_for_role,
+        refresh_payload=_refresh_payload,
+    )
+
+    # 6) Persist surviving reports under decision_run_id.
     await _persist_reports(decision_run_id, surviving)
 
     log.info(
@@ -356,6 +452,10 @@ async def run_per_ticker_analysts(
         decision_run_id=decision_run_id,
         succeeded=succeeded_roles,
         skipped=skipped_roles,
+        unresolved_remediations=[
+            {"kind": r.kind, "target_role": r.target_role, "reason": r.reason[:120]}
+            for r in unresolved_remediations
+        ],
     )
     return PerTickerAnalystsResult(
         decision_run_id=decision_run_id,
@@ -389,6 +489,29 @@ def _has_any_citation(report: AgentReport) -> bool:
         return False
 
     return _walk(payload)
+
+
+def _refresh_fundamentals_payload(tickers: list[str]) -> dict[str, dict[str, Any]]:
+    """Sync helper called via asyncio.to_thread from the remediation
+    flow. Re-runs ``_gather_fundamentals`` with the yfinance fallback
+    on. yfinance ``Ticker.info`` is not cached on the gather side, so
+    each call is a fresh fetch.
+
+    A future revision could pass a cache-bypass flag to the adapter
+    layer; for v1, the re-call alone is the refresh.
+    """
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        _gather_fundamentals,
+    )
+    return _gather_fundamentals(tickers, with_yfinance_fallback=True)
+
+
+def _refresh_news_payload(tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Sync helper — sibling of ``_refresh_fundamentals_payload`` for news."""
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        _gather_news,
+    )
+    return _gather_news(tickers, with_yfinance_fallback=True)
 
 
 async def _gather_inputs_for_ticker(

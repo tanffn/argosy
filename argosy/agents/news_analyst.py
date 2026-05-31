@@ -14,6 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from argosy.agents.base import BaseAgent, ConfidenceBand
+from argosy.agents.remediation import RemediationRequest
 
 
 class Headline(BaseModel):
@@ -44,6 +45,19 @@ class NewsDigest(BaseModel):
     cited_sources: list[str] = Field(
         default_factory=list,
         description="Top-level distinct cited URLs / file paths.",
+    )
+    remediation_requests: list[RemediationRequest] = Field(
+        default_factory=list,
+        description=(
+            "Structured requests back to the orchestrator when the "
+            "news payload has detectable quality issues (empty for a "
+            "ticker that should have coverage, all-stale headlines, "
+            "etc.). The orchestrator dispatches each + re-runs this "
+            "analyst with fresh data — DO NOT write data-refresh "
+            "recommendations into ``top_line`` prose. Per "
+            "[[feedback_agents_talk_to_each_other]] the fleet resolves "
+            "these internally, never punts to the user."
+        ),
     )
 
 
@@ -88,6 +102,14 @@ class NewsAnalystAgent(BaseAgent[NewsDigest]):
             "  - Materiality is 0.0 (pure noise) to 1.0 (definitely moves "
             "the position). Be parsimonious; >0.7 should be rare.\n"
             "  - Cite the source URL on every headline you keep.\n"
+            "  - DATA QUALITY: if a ticker that should have coverage has "
+            "no headlines (or all are clearly stale / off-topic), DO NOT "
+            "write 'recommend refresh' into ``top_line`` prose. Instead "
+            "emit a structured ``RemediationRequest`` on "
+            "``remediation_requests`` with kind='news_empty' (or "
+            "'data_refresh' if uncertain). The orchestrator re-fetches "
+            "+ re-runs this analyst before any downstream agent reads "
+            "the report.\n"
             "  - `top_line` is one sentence for a dashboard card; lead with "
             "the most material item across all tickers.\n\n"
             "OUTPUT must be a JSON object conforming to this schema:\n"
