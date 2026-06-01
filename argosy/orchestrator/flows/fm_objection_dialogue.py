@@ -596,6 +596,160 @@ def start_fm_objection_dialogue(
     return StartResult(decision_run_id=decision_run_id, inflight=False)
 
 
+def schedule_auto_dialogues_for_draft(
+    session: Session,
+    *,
+    user_id: str,
+    plan_version_id: int,
+    decision_run_id: int,
+) -> int:
+    """Fire FM<->analyst dialogues for every objection on this draft
+    that has a parseable analyst owner.
+
+    Called by plan_synthesis/orchestrator.py post-FM-verdict to
+    pre-resolve concerns the fleet can settle internally, BEFORE the
+    user sees /plan. Best-effort and idempotent (the underlying
+    dispatcher short-circuits on duplicate in-flight runs). Background-
+    threaded per objection, so this returns quickly.
+
+    Surfacing decision lives downstream: the objections route reads the
+    dialogue outcomes and hides objections that resolved to
+    FM_ACCEPTS_ANALYST; FM_MAINTAINS_OBJECTION / ESCALATE_TO_USER /
+    FM_REVISES_OBJECTION + no-analyst-owner cases surface as Blocker /
+    Decision rows. See ``/api/plan/draft/objections``.
+
+    Returns the count of dialogues actually dispatched (those without
+    an analyst owner are skipped; cost-cap-refused calls don't count).
+    """
+    from argosy.api.routes.plan import (
+        _classify_severity,
+        _parse_fm_response,
+        _split_reason,
+    )
+    from argosy.state.models import AgentReport
+
+    decision_audit_token = f"plan-synth-{decision_run_id}"
+    fm_row = session.execute(
+        select(AgentReport).where(
+            AgentReport.user_id == user_id,
+            AgentReport.decision_id == decision_audit_token,
+            AgentReport.agent_role == "fund_manager",
+        ).order_by(desc(AgentReport.created_at)).limit(1)
+    ).scalar_one_or_none()
+    if fm_row is None or not fm_row.response_text:
+        log.info(
+            "auto_dialogue.no_fm_row",
+            user_id=user_id, plan_version_id=plan_version_id,
+            decision_run_id=decision_run_id,
+        )
+        return 0
+
+    parsed = _parse_fm_response(fm_row.response_text)
+    reasons = parsed.get("reasons") or []
+
+    dispatched = 0
+    for idx, raw in enumerate(reasons):
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        topic, detail = _split_reason(raw)
+        severity = _classify_severity(topic, detail)
+        # Scan BOTH topic and detail — see UI-side parser comment;
+        # the backend splitter occasionally puts citation text in
+        # the topic half for long FM reasons.
+        analyst_roles = _parse_analyst_refs_any_form(topic + " " + detail)
+        if not analyst_roles:
+            log.info(
+                "auto_dialogue.skipped_no_analyst_owner",
+                user_id=user_id, plan_version_id=plan_version_id,
+                decision_run_id=decision_run_id, objection_index=idx,
+            )
+            continue
+        # Use the first analyst ref (most-cited / canonical owner).
+        # Multi-analyst objections are rare; when the user wants a
+        # different analyst they can still fire the manual dialogue.
+        analyst_role = analyst_roles[0]
+        try:
+            result = start_fm_objection_dialogue(
+                session,
+                user_id=user_id,
+                plan_version_id=plan_version_id,
+                objection_index=idx,
+                analyst_role=analyst_role,
+                objection_topic=topic,
+                objection_detail=detail,
+                objection_severity=severity,
+                prior_decision_audit_token=decision_audit_token,
+                user_guidance="",  # No user input on auto-dispatch.
+            )
+            dispatched += 1
+            log.info(
+                "auto_dialogue.dispatched",
+                user_id=user_id, plan_version_id=plan_version_id,
+                objection_index=idx, analyst_role=analyst_role,
+                dialogue_run_id=result.decision_run_id,
+                inflight=result.inflight,
+            )
+        except CostCapExceededError as exc:
+            log.warning(
+                "auto_dialogue.cost_cap_stopped",
+                user_id=user_id, plan_version_id=plan_version_id,
+                objection_index=idx, dispatched_before_stop=dispatched,
+                error=str(exc),
+            )
+            # Stop here — subsequent dialogues would also breach.
+            break
+        except InvalidAnalystRoleError as exc:
+            log.warning(
+                "auto_dialogue.invalid_role",
+                user_id=user_id, objection_index=idx,
+                analyst_role=analyst_role, error=str(exc),
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            log.warning(
+                "auto_dialogue.dispatch_failed",
+                user_id=user_id, objection_index=idx,
+                analyst_role=analyst_role, error=str(exc),
+            )
+            continue
+    log.info(
+        "auto_dialogue.batch_complete",
+        user_id=user_id, plan_version_id=plan_version_id,
+        decision_run_id=decision_run_id, dispatched=dispatched,
+        total_objections=len(reasons),
+    )
+    return dispatched
+
+
+def _parse_analyst_refs_any_form(text: str) -> list[str]:
+    """Find every distinct analyst reference in ``text``, tolerating
+    both the CamelCase class form (``agent_report:PlanCritiqueAgent``)
+    and the snake_case role form (``agent_report:plan_critique``).
+
+    Returns role names in encounter order, deduplicated. Empty when no
+    recognized analyst references are present. Mirrors the UI parser
+    in ``ui/src/components/plan/fm-objections-card.tsx`` so backend
+    auto-dispatch and frontend "Discuss with [analyst]" agree on which
+    objections have an analyst owner.
+    """
+    import re
+    from argosy.agents.analyst_responder import ANALYST_AGENT_NAME_TO_ROLE
+
+    if not text:
+        return []
+    seen: dict[str, None] = {}
+    pattern = re.compile(r"agent_report:([A-Za-z_]+)")
+    known_roles = set(ANALYST_AGENT_NAME_TO_ROLE.values())
+    for m in pattern.finditer(text):
+        ref = m.group(1)
+        role = ANALYST_AGENT_NAME_TO_ROLE.get(ref)
+        if role is None and ref in known_roles:
+            role = ref
+        if role and role not in seen:
+            seen[role] = None
+    return list(seen.keys())
+
+
 def _thread_entry(**kwargs: Any) -> None:
     """Background-thread wrapper — always releases the in-flight slot."""
     user_id = kwargs["user_id"]

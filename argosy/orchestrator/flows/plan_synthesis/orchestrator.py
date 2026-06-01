@@ -724,6 +724,38 @@ def run_synthesis(
             error=str(exc),
         )
 
+    # Auto-dialogue dispatch — fire FM<->analyst dialogues for every
+    # FM objection that has an analyst owner so the fleet pre-resolves
+    # what it can BEFORE the user sees /plan. Surfacing decision lives
+    # in the /api/plan/draft/objections route: objections that resolve
+    # to FM_ACCEPTS_ANALYST hide; FM_MAINTAINS_OBJECTION /
+    # ESCALATE_TO_USER / FM_REVISES_OBJECTION + no-analyst-owner cases
+    # surface as Blocker / Decision rows.
+    #
+    # Background-threaded per objection. Best-effort: if cost cap is
+    # breached partway, the remaining objections surface unresolved
+    # (still a Blocker, just without an analyst push-back attempt).
+    # Skipped entirely when FM approved — no objections to dispatch.
+    if not approved:
+        try:
+            from argosy.orchestrator.flows.fm_objection_dialogue import (
+                schedule_auto_dialogues_for_draft,
+            )
+            schedule_auto_dialogues_for_draft(
+                session,
+                user_id=user_id,
+                plan_version_id=draft.id,
+                decision_run_id=decision_run_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            log.warning(
+                "auto_dialogue.schedule_failed",
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                draft_id=draft.id,
+                error=str(exc),
+            )
+
     # Provenance Wave C — final FM-decision row with the parsed verdict
     # DTO. The 5 per-phase rows (kinds 'synthesis.phase_1'..'phase_5')
     # were already persisted by _record_phase_completion during the
