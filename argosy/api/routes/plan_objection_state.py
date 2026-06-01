@@ -79,6 +79,7 @@ def _compose_new_round_guidance(
     decided; re-evaluate honestly".
     """
     agreed: list[str] = []
+    resolved: list[str] = []  # AGREE rows that carry a resolution note
     disagreed: list[str] = []
     deferred: list[str] = []
 
@@ -86,10 +87,16 @@ def _compose_new_round_guidance(
         row = state_by_idx.get(idx)
         stance = (row.stance if row else "DEFER").upper()
         line = f"  - [{obj.severity}] {obj.topic} — {obj.detail}"
+        cp = (row.counter_position or "").strip() if row else ""
         if stance == "AGREE":
-            agreed.append(line)
+            if cp:
+                resolved.append(
+                    line
+                    + f"\n    USER RESOLUTION NOTE (authoritative): {cp}"
+                )
+            else:
+                agreed.append(line)
         elif stance == "DISAGREE":
-            cp = (row.counter_position or "").strip() if row else ""
             cp_line = (
                 f"\n    USER COUNTER-POSITION (authoritative): {cp}"
                 if cp else ""
@@ -107,6 +114,17 @@ def _compose_new_round_guidance(
         "objections."
     )
 
+    if resolved:
+        sections.append(
+            "RESOLVED OUTSIDE LOOP — the user resolved these objections "
+            "outside the synthesis loop (premise correction, chat edit, "
+            "manual change, etc.). Each row carries a USER RESOLUTION "
+            "NOTE describing how. Treat the note as authoritative — the "
+            "underlying premise of the FM concern has been altered. "
+            "Re-derive any affected targets from the new premise rather "
+            "than re-raising the original concern:\n"
+            + "\n".join(resolved)
+        )
     if agreed:
         sections.append(
             "AGREED OBJECTIONS — the user accepts these constraints; "
@@ -294,13 +312,13 @@ def put_fm_objection_state(
         db.add(row)
     else:
         row.stance = stance
-        # Only set counter_position to the new value when stance is
-        # DISAGREE; AGREE clears it; DEFER preserves the prior value
-        # (it's neutral, the user may flip back).
-        if stance == "DISAGREE":
+        # DISAGREE carries a counter-position (required). AGREE carries
+        # an optional resolution note ("what did you do outside the
+        # loop?"); both are persisted in the same column. DEFER is
+        # neutral so we preserve whatever was there in case the user
+        # flips back.
+        if stance in ("DISAGREE", "AGREE"):
             row.counter_position = counter
-        elif stance == "AGREE":
-            row.counter_position = None
         if body.topic or body.detail:
             row.topic_hash = topic_hash
     db.commit()
