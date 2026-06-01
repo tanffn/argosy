@@ -424,6 +424,34 @@ def _normalize_pct_value(v: float, peers: list[float]) -> float:
     return v
 
 
+def _matched_categories(
+    eligible_labels: list[str], portfolio_categories: dict[str, float]
+) -> set[str]:
+    """Return the set of portfolio_categories keys (lowercased) that
+    a target label has bound to — either via exact match or alias
+    keyword routing. Used to identify the "untargeted" snapshot
+    categories that should still be flat-lined on the chart so the
+    user sees their whole portfolio mix, not just the synth-targeted
+    slices (codex deep-audit finding #5)."""
+    matched: set[str] = set()
+    for label_lower in eligible_labels:
+        if label_lower in portfolio_categories:
+            matched.add(label_lower)
+            continue
+        for kw, candidates in _LABEL_KEYWORD_TO_SNAPSHOT_CATEGORY.items():
+            if kw not in label_lower:
+                continue
+            for cat in candidates:
+                cat_lower = _normalize_label(cat)
+                if cat_lower in portfolio_categories:
+                    matched.add(cat_lower)
+                    break
+            else:
+                continue
+            break
+    return matched
+
+
 def build_glidepath(
     *,
     portfolio_categories: dict[str, float],
@@ -444,6 +472,13 @@ def build_glidepath(
     whole-percentage (``35.0``) or fraction-of-1 (``0.35``). We
     auto-detect per asset class and normalize to 0-100 so the chart
     always sees consistent units.
+
+    Wave 8 v2 polish (codex deep-audit #5) — UNION semantics: classes
+    appear on the chart for both (a) every target label and (b) every
+    snapshot category not already bound to a target. Untargeted
+    snapshot bands flat-line at today's value across the horizon and
+    surface as ``anchor_status.matched=True + alias_source="snapshot"``
+    so the UI can label them as "unconstrained" rather than missing.
     """
     today_first = _first_of_month(today)
     eligible, excluded = filter_targets_by_pct_unit(targets)
@@ -534,16 +569,39 @@ def build_glidepath(
         per_class_waypoints[label_lower] = anchored
 
     if max_revisit is None:
-        # No eligible waypoints survived; degrade to empty.
+        # No eligible waypoints survived; degrade to empty (still
+        # surface untargeted snapshot bands so the chart can render
+        # the user's current allocation as flat lines).
+        untargeted_only = _add_untargeted_snapshot_bands(
+            per_class_waypoints={},
+            anchor_status=anchor_status_list,
+            portfolio_categories=portfolio_categories,
+            today_first=today_first,
+            horizon_end=today_first,
+        )
         return AllocationGlidepath(
             points=[],
             collapsed_waypoints=collapsed_total,
             excluded_targets=excluded,
-            asset_classes=[],
+            asset_classes=list(untargeted_only.keys()),
             anchor_status=anchor_status_list,
             today=today_first,
             end_date=None,
         )
+
+    # Wave 8 v2 polish — union the untargeted snapshot categories so
+    # the chart shows the user's full current mix, not just the synth-
+    # targeted slices. Untargeted bands flat-line at today's value;
+    # the codex deep-audit flagged the missing-categories issue as the
+    # root cause of the user's "the plan doesn't have more categories?"
+    # complaint.
+    per_class_waypoints = _add_untargeted_snapshot_bands(
+        per_class_waypoints=per_class_waypoints,
+        anchor_status=anchor_status_list,
+        portfolio_categories=portfolio_categories,
+        today_first=today_first,
+        horizon_end=max_revisit,
+    )
 
     points = interpolate_glidepath(
         per_class_waypoints=per_class_waypoints,
@@ -559,6 +617,43 @@ def build_glidepath(
         today=today_first,
         end_date=max_revisit,
     )
+
+
+def _add_untargeted_snapshot_bands(
+    *,
+    per_class_waypoints: dict[str, list[tuple[date, float]]],
+    anchor_status: list[AssetClassAnchorStatus],
+    portfolio_categories: dict[str, float],
+    today_first: date,
+    horizon_end: date,
+) -> dict[str, list[tuple[date, float]]]:
+    """Mutate-and-return: extend ``per_class_waypoints`` with one
+    flat-line band per untargeted snapshot category. Also append an
+    AssetClassAnchorStatus row for each so the UI can label these as
+    "unconstrained — held flat at today's value".
+    """
+    matched_cats = _matched_categories(
+        list(per_class_waypoints.keys()), portfolio_categories
+    )
+    for cat_lower, pct in portfolio_categories.items():
+        if cat_lower in matched_cats or cat_lower in per_class_waypoints:
+            continue
+        # Two waypoints: today and the horizon end, both at the
+        # current snapshot value. Interpolation between them is the
+        # constant function.
+        per_class_waypoints[cat_lower] = [
+            (today_first, pct),
+            (horizon_end, pct),
+        ]
+        anchor_status.append(
+            AssetClassAnchorStatus(
+                asset_class=cat_lower,
+                matched=True,
+                today_value=pct,
+                alias_source="snapshot (unconstrained — no plan target)",
+            )
+        )
+    return per_class_waypoints
 
 
 def _horizon_from_target(t: SynthTarget) -> str:
@@ -585,7 +680,11 @@ def _categories_from_snapshot(
 ) -> dict[str, float]:
     """Pull asset-class composition out of a portfolio_snapshot's
     ``allocations_json``. Returns ``{}`` when the row is missing,
-    malformed, or has no allocation rows."""
+    malformed, or has no allocation rows.
+
+    Filters out summary rows the TSV ingest produces ("Grand Total",
+    "Total", etc.) so they don't pollute the glidepath as fake
+    asset-class bands."""
     if snap is None or not snap.allocations_json:
         return {}
     try:
@@ -595,6 +694,7 @@ def _categories_from_snapshot(
     if not isinstance(payload, list):
         return {}
     out: dict[str, float] = {}
+    summary_labels = {"grand total", "total", "sum", "subtotal"}
     for row in payload:
         if not isinstance(row, dict):
             continue
@@ -602,11 +702,18 @@ def _categories_from_snapshot(
         pct = row.get("pct")
         if not isinstance(cat, str):
             continue
+        cat_lower = _normalize_label(cat)
+        if cat_lower in summary_labels:
+            continue
         try:
             pct_f = float(pct) if pct is not None else 0.0
         except (TypeError, ValueError):
             continue
-        out[_normalize_label(cat)] = pct_f
+        # Drop near-zero allocations from the chart to reduce noise
+        # (categories with 0% don't add information for a glidepath).
+        if pct_f <= 0.01:
+            continue
+        out[cat_lower] = pct_f
     return out
 
 

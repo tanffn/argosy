@@ -1157,3 +1157,120 @@ class TestProjectCashflowWiringRegression:
         assert len(proj.series) == 30 * 12 + 1
         # And the retire-ready fields are populated as before.
         assert proj.retire_ready_age_base is not None
+
+
+class TestPreRetirementSavingsContribution:
+    """Wave 8 v2 polish — savings during the accumulation phase.
+
+    Pre-fix: cashflow_projection withdrew expenses every month from
+    age 44 onward regardless of retirement_age, treating every user
+    as already retired today. The MC simulation's "worst-10% depletes
+    by age 55" was a direct consequence of that bug. Post-fix: when
+    age_t < retirement_age, the household's monthly_savings_nis flows
+    INTO the portfolio and the expenses-shortfall withdrawal is
+    suppressed. These tests pin the new contract.
+    """
+
+    def _pensions(self) -> PensionState:
+        return PensionState(
+            kupat_pensia_balance_nis=1_000_000.0,
+            kupat_pensia_contribution_monthly_nis=3_500.0,
+            executive_insurance_balance_nis=500_000.0,
+            keren_hishtalmut_balance_nis=400_000.0,
+            keren_hishtalmut_contribution_monthly_nis=2_500.0,
+            kupat_gemel_balance_nis=100_000.0,
+        )
+
+    def test_deterministic_savings_grows_portfolio_pre_retirement(self) -> None:
+        from argosy.services.cashflow_projection import (
+            HouseholdState,
+            project_cashflow,
+        )
+
+        with_savings = project_cashflow(
+            household=HouseholdState(
+                monthly_expenses_nis=25_000.0,
+                portfolio_value_nis=3_000_000.0,
+                fx_usd_nis=3.0,
+                current_age_years=44.0,
+                monthly_savings_nis=30_000.0,
+            ),
+            pensions=self._pensions(),
+            retirement_age=49.0,
+            years=10,
+        )
+        without_savings = project_cashflow(
+            household=HouseholdState(
+                monthly_expenses_nis=25_000.0,
+                portfolio_value_nis=3_000_000.0,
+                fx_usd_nis=3.0,
+                current_age_years=44.0,
+                monthly_savings_nis=0.0,
+            ),
+            pensions=self._pensions(),
+            retirement_age=49.0,
+            years=10,
+        )
+        # At 5-year mark (right at retirement_age=49), the with-savings
+        # portfolio should be meaningfully larger than the no-savings
+        # baseline — at least 30k * 60 months = 1.8M NIS of cumulative
+        # contributions minus inflation drift.
+        with_at_5y = with_savings.series[60].portfolio_value_base_nis
+        without_at_5y = without_savings.series[60].portfolio_value_base_nis
+        assert with_at_5y > without_at_5y + 1_500_000.0
+
+    def test_monte_carlo_skips_withdrawal_pre_retirement(self) -> None:
+        from argosy.services.cashflow_projection import (
+            HouseholdState,
+            project_monte_carlo,
+        )
+
+        mc = project_monte_carlo(
+            household=HouseholdState(
+                monthly_expenses_nis=25_000.0,
+                portfolio_value_nis=3_000_000.0,
+                fx_usd_nis=3.0,
+                current_age_years=44.0,
+                monthly_savings_nis=30_000.0,
+            ),
+            pensions=self._pensions(),
+            retirement_age=49.0,
+            years=5,
+            n_paths=200,
+            seed=42,
+            sigma_annual=0.18,
+        )
+        # All paths solvent at age 49 — no withdrawals during accumulation.
+        last = mc.series[-1]
+        assert last.fraction_solvent == 1.0
+        assert mc.p_failure_before_age_75 == 0.0
+
+    def test_higher_retirement_age_lowers_p_broke(self) -> None:
+        """The user's regression complaint: higher retire age was
+        making P(broke) go UP. Post-fix, working longer should
+        ALWAYS hurt less for a saver."""
+        from argosy.services.cashflow_projection import (
+            HouseholdState,
+            project_monte_carlo,
+        )
+
+        common = dict(
+            household=HouseholdState(
+                monthly_expenses_nis=25_000.0,
+                portfolio_value_nis=3_000_000.0,
+                fx_usd_nis=3.0,
+                current_age_years=44.0,
+                monthly_savings_nis=30_000.0,
+            ),
+            pensions=self._pensions(),
+            years=50,
+            n_paths=200,
+            seed=42,
+            sigma_annual=0.34,  # NVDA-heavy vol to provoke failures
+        )
+        retire_49 = project_monte_carlo(retirement_age=49.0, **common)
+        retire_67 = project_monte_carlo(retirement_age=67.0, **common)
+        assert (
+            retire_67.p_failure_before_age_95
+            <= retire_49.p_failure_before_age_95
+        )

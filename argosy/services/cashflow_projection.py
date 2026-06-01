@@ -63,6 +63,15 @@ class HouseholdState:
     portfolio_value_nis: float
     fx_usd_nis: float
     current_age_years: float
+    # Accumulation-phase savings rate. The portfolio grows by this
+    # amount each month UNTIL the user reaches ``retirement_age``.
+    # Sourced from identity_yaml as (household_net_to_bank_monthly +
+    # espp_monthly) − monthly_expenses_total_nis. RSU vests + bonuses
+    # are NOT counted here — they re-enter the model via
+    # portfolio_value_nis at each snapshot refresh. Default 0.0
+    # preserves the no-savings legacy behavior for users without an
+    # identity_yaml or with negative discretionary cashflow.
+    monthly_savings_nis: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -322,6 +331,29 @@ def extract_household_state(
 
     monthly_expenses_nis = _safe_float(budget, "monthly_burn_nis")
 
+    # Accumulation-phase savings rate from identity_yaml. Sources:
+    #   household_net_to_bank_monthly — total household salary net
+    #   espp_monthly_nis_mar_onwards_2026 — ESPP cash flow
+    # Less monthly expenses → discretionary monthly surplus that
+    # flows into the portfolio during pre-retirement years. Floored
+    # at 0 so a negative number (rare) doesn't silently introduce a
+    # forced-withdrawal during accumulation. RSU vests + bonuses are
+    # excluded because they re-enter the portfolio via the next
+    # snapshot refresh.
+    monthly_savings_nis = 0.0
+    if isinstance(ctx, dict):
+        bank_in = _safe_float(ctx, "employment_household_net_to_bank_monthly")
+        espp_now = _safe_float(ctx, "espp_monthly_nis_mar_onwards_2026")
+        if espp_now == 0.0:
+            espp_now = _safe_float(ctx, "espp_monthly_nis_jan_feb_2026")
+        # monthly_expenses might also be on the ctx (separate from
+        # the budget report). Prefer the budget value when present.
+        ctx_expenses = _safe_float(ctx, "monthly_expenses_total_nis")
+        expenses_for_savings = (
+            monthly_expenses_nis if monthly_expenses_nis > 0 else ctx_expenses
+        )
+        monthly_savings_nis = max(0.0, bank_in + espp_now - expenses_for_savings)
+
     # Portfolio value: read total_usd_value_k from the latest snapshot's
     # totals_json, convert via FX.
     portfolio_value_nis = 0.0
@@ -345,6 +377,7 @@ def extract_household_state(
         portfolio_value_nis=portfolio_value_nis,
         fx_usd_nis=fx_usd_nis,
         current_age_years=age,
+        monthly_savings_nis=monthly_savings_nis,
     )
 
 
@@ -468,6 +501,22 @@ def project_cashflow(
         # Skipped at t=0 so we emit today's actual state first.
         if t > 0:
             portfolio_base_nis *= monthly_growth
+            # Pre-retirement accumulation: add the household's net
+            # discretionary savings into the portfolio. Inflated at
+            # the effective-expense growth rate so the contribution
+            # holds purchasing power constant in real terms (a mild
+            # OPTIMISTIC bias relative to actual salary growth, which
+            # tends to track inflation + productivity). Stops strictly
+            # at age >= retirement_age; the user-driven retirement
+            # transition is the cutoff per codex round-1 verdict.
+            if (
+                household.monthly_savings_nis > 0.0
+                and age_t < retirement_age
+            ):
+                savings_t = household.monthly_savings_nis * (
+                    (1.0 + effective_expense_growth) ** ((t - 1) / 12.0)
+                )
+                portfolio_base_nis += savings_t
 
         # Step 2: advance pension bucket balances by one month.
         if t > 0:
@@ -702,6 +751,20 @@ def project_monte_carlo(
         # Portfolio: stochastic step (only for non-failed paths)
         portfolio[~failed] = portfolio[~failed] * np.exp(log_returns[~failed, t - 1])
 
+        # Pre-retirement accumulation: add the household's net
+        # discretionary savings to every solvent path. Deterministic
+        # cashflow → same value across paths, inflated to hold
+        # purchasing power constant in real terms. Combined with the
+        # shortfall=0 gate below, this is the accumulation phase.
+        if (
+            household.monthly_savings_nis > 0.0
+            and age_t < retirement_age
+        ):
+            savings_t = household.monthly_savings_nis * (
+                (1.0 + expense_growth) ** ((t - 1) / 12.0)
+            )
+            portfolio[~failed] = portfolio[~failed] + savings_t
+
         # Pension buckets: deterministic (same across paths)
         if not annuity_locked:
             contrib_pensia = (
@@ -756,7 +819,19 @@ def project_monte_carlo(
         # 'bucket': behave like Bengen but cap draw at 5% of remaining
         # portfolio (cash-bucket equivalent).
         # See argosy/services/retirement/withdrawal_policy.py for full rules.
-        shortfall = max(0.0, expenses_t - annuity_nominal_t)
+        #
+        # Wave 8 v2 polish — accumulation gate. Pre-retirement years
+        # (age_t < retirement_age) skip drawdown entirely; the user is
+        # still earning a salary that already entered the portfolio
+        # above via household.monthly_savings_nis. Without this gate
+        # the MC simulation withdraws expenses every month from age 44
+        # onward, which both contradicts reality and produces the
+        # "depletes by 55" worst-10% paths the user flagged. Drawdown
+        # resumes at age >= retirement_age.
+        if age_t < retirement_age:
+            shortfall = 0.0
+        else:
+            shortfall = max(0.0, expenses_t - annuity_nominal_t)
 
         # Tax engine integration: age-aware effective rate captures the
         # life-stage mix of taxable / hishtalmut / annuity sources without

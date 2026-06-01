@@ -165,6 +165,57 @@ def _all_actions_with_dates(
     return out
 
 
+def _format_retirement_readiness(
+    *,
+    retire_ready_age_base: float | None,
+    retire_ready_age_bear: float | None,
+    retirement_target_age: float | None,
+    current_age: float | None,
+) -> str:
+    """Render the retirement-readiness line with explicit semantics
+    around what's "earliest" vs "planned". When the portfolio is
+    already FI-capable today (earliest <= current age), tell the
+    user that explicitly — that's the case the Jacobs plan calls
+    "FI achieved on paper, continuing employment".
+    """
+    if retire_ready_age_base is None:
+        return (
+            "Retirement age not yet projected — the cashflow model "
+            "couldn't find a crossing within the horizon."
+        )
+    target_str = (
+        f" Your plan targets retirement at age {retirement_target_age:.0f}."
+        if retirement_target_age is not None
+        else ""
+    )
+    # Already-FI case: portfolio income covers expenses today.
+    if (
+        current_age is not None
+        and retire_ready_age_base <= current_age + 0.5
+    ):
+        return (
+            "Financial independence is achieved on paper: at today's "
+            f"portfolio + expense levels, returns + pension already "
+            f"cover spending."
+            + target_str
+        )
+    # Otherwise quote both base and bear when they're meaningfully apart.
+    base_str = f"age {retire_ready_age_base:.0f}"
+    if (
+        retire_ready_age_bear is not None
+        and abs(retire_ready_age_bear - retire_ready_age_base) >= 0.5
+    ):
+        earliest = (
+            f"The earliest your portfolio can carry you is {base_str} "
+            f"(base case), age {retire_ready_age_bear:.0f} (bear case)."
+        )
+    else:
+        earliest = (
+            f"The earliest your portfolio can carry you is {base_str}."
+        )
+    return earliest + target_str
+
+
 def _parse_iso_date(s: str | None) -> date | None:
     """Liberal ISO-date parser.
 
@@ -190,33 +241,33 @@ def compute_headline_lines(
     horizons: Iterable[HorizonSection],
     retire_ready_age_base: float | None,
     retire_ready_age_bear: float | None,
+    retirement_target_age: float | None = None,
+    current_age: float | None = None,
 ) -> HeadlineLines:
     """Produce the three-line headline from the synthesizer's horizons
     + the cashflow service's retire-ready ages.
 
     Pure: no DB, no LLM, no clock.
+
+    Wave 8 v2 polish (codex deep-audit #1): the headline now
+    explicitly distinguishes ``retire_ready_age`` (earliest age the
+    portfolio can support expenses on its own) from
+    ``retirement_target_age`` (the user's stated retirement plan).
+    These are different concepts; confusing them was the source of
+    the "44 vs 49 — which is right?" user complaint.
     """
     horizons_list = list(horizons)
     dated = _all_actions_with_dates(horizons_list)
 
-    # Line 1 — retirement readiness
-    if retire_ready_age_base is not None:
-        base_str = f"age {retire_ready_age_base:.0f} (base case)"
-        if (
-            retire_ready_age_bear is not None
-            and abs(retire_ready_age_bear - retire_ready_age_base) >= 0.5
-        ):
-            line1 = (
-                f"You can safely retire at {base_str}, "
-                f"age {retire_ready_age_bear:.0f} (bear case)."
-            )
-        else:
-            line1 = f"You can safely retire at {base_str}."
-    else:
-        line1 = (
-            "Retirement age not yet projected — the cashflow service "
-            "couldn't find a base-case crossing within the projection horizon."
-        )
+    # Line 1 — retirement readiness, plain-English with explicit
+    # earliest-vs-planned distinction so the user doesn't read "44"
+    # as conflict with their goals_yaml retirement_target_age=49.
+    line1 = _format_retirement_readiness(
+        retire_ready_age_base=retire_ready_age_base,
+        retire_ready_age_bear=retire_ready_age_bear,
+        retirement_target_age=retirement_target_age,
+        current_age=current_age,
+    )
 
     # Line 2 — next big move
     line2: str | None = None
@@ -494,6 +545,16 @@ def compute_recap_summary(
         sensitivity = _compute_mu_sensitivity(
             db, user_id, assumptions=assumptions
         )
+        # Read current age once for the "FI already on paper" framing
+        # so the headline doesn't read "retire at 44" when the user
+        # is already 44.
+        try:
+            from argosy.services.cashflow_projection import extract_household_state
+            current_age_yrs: float | None = (
+                extract_household_state(db, user_id).current_age_years
+            )
+        except Exception:  # pragma: no cover - defensive
+            current_age_yrs = None
         derivation = HeadlineDerivation(
             mu_nominal_annual=assumptions.mu_nominal_annual.value,
             sigma_annual=assumptions.sigma_annual.value,
@@ -510,8 +571,18 @@ def compute_recap_summary(
     else:
         base_age, bear_age = None, None
         derivation = None
+        current_age_yrs = None
 
-    headline = compute_headline_lines(horizons, base_age, bear_age)
+    target_age_for_headline = (
+        assumptions.retirement_age.value if assumptions is not None else None
+    )
+    headline = compute_headline_lines(
+        horizons,
+        base_age,
+        bear_age,
+        retirement_target_age=target_age_for_headline,
+        current_age=current_age_yrs,
+    )
     accepted = summarize_accepted_deltas(horizons)
     portfolio_value = _portfolio_value_from_snapshot(
         _latest_portfolio_snapshot(db, user_id)

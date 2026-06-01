@@ -148,16 +148,33 @@ class TestAllActionsWithDates:
 
 class TestComputeHeadlineLines:
     def test_base_plus_bear_when_meaningfully_different(self) -> None:
-        lines = compute_headline_lines([], 49.0, 51.0)
-        assert lines.retirement_readiness == (
-            "You can safely retire at age 49 (base case), age 51 (bear case)."
-        )
+        # current_age=44 → 49 is in the future, so the "earliest" framing fires
+        lines = compute_headline_lines([], 49.0, 51.0, current_age=44.0)
+        assert "earliest" in lines.retirement_readiness.lower()
+        assert "age 49" in lines.retirement_readiness
+        assert "age 51" in lines.retirement_readiness
 
     def test_base_only_when_bear_within_half_year(self) -> None:
-        lines = compute_headline_lines([], 49.0, 49.3)
-        assert lines.retirement_readiness == (
-            "You can safely retire at age 49 (base case)."
+        lines = compute_headline_lines([], 49.0, 49.3, current_age=44.0)
+        assert "age 49" in lines.retirement_readiness
+        assert "bear" not in lines.retirement_readiness.lower()
+
+    def test_fi_on_paper_when_earliest_le_current_age(self) -> None:
+        # User is 44 and earliest is 44 → FI on paper framing.
+        lines = compute_headline_lines([], 44.0, 46.0, current_age=44.0)
+        assert "Financial independence is achieved on paper" in (
+            lines.retirement_readiness
         )
+
+    def test_includes_planned_target_age_when_provided(self) -> None:
+        lines = compute_headline_lines(
+            [],
+            49.0,
+            51.0,
+            retirement_target_age=49.0,
+            current_age=44.0,
+        )
+        assert "targets retirement at age 49" in lines.retirement_readiness
 
     def test_fallback_when_no_base_crossing(self) -> None:
         lines = compute_headline_lines([], None, None)

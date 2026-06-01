@@ -126,7 +126,12 @@ def _resolve_sigma(
 ) -> AssumptionField:
     """Best-effort calibrate σ from the user's portfolio. Falls back
     to the unweighted default + a "calibration unavailable" rationale
-    when the calibrator can't produce a portfolio-aware figure."""
+    when the calibrator can't produce a portfolio-aware figure.
+
+    Wave 8 v2 polish: rationale text is rewritten in plain English so
+    the user understands what σ actually MEANS for outcomes — not
+    just the number.
+    """
     if session is None:
         return AssumptionField(
             value=DEFAULT_SIGMA_ANNUAL,
@@ -142,12 +147,42 @@ def _resolve_sigma(
         sigma_value = float(cal.sigma_annual.value)
         if sigma_value <= 0:
             raise ValueError("non-positive sigma")
+        sigma_pct = sigma_value * 100.0
+        default_pct = DEFAULT_SIGMA_ANNUAL * 100.0
+        # Plain-English risk band — "safe" is the wrong word for σ
+        # (volatility is risk, not safety) so we frame it as
+        # year-to-year swing magnitude.
+        if sigma_pct < 15:
+            risk_band = (
+                "lower than a typical all-stocks portfolio — "
+                "year-to-year swings should be modest"
+            )
+        elif sigma_pct < 22:
+            risk_band = (
+                "in the diversified-equity range — a normal year might "
+                "swing the portfolio about ±20% top to bottom"
+            )
+        elif sigma_pct < 30:
+            risk_band = (
+                "elevated compared to a fully diversified portfolio — "
+                "this reflects meaningful single-name or sector "
+                "exposure; expect bigger drawdowns in bad years"
+            )
+        else:
+            risk_band = (
+                "high — this number reflects heavy concentration "
+                "(typically a single stock that's a large share of the "
+                "portfolio). Bad years can lose 30-50% before recovering. "
+                "The plan's diversification glidepath is designed to "
+                "bring this down over time"
+            )
         rationale = (
-            f"Portfolio-weighted σ from your latest snapshot: "
-            f"{sigma_value * 100:.1f}% (vs. the unweighted-equity default "
-            f"{DEFAULT_SIGMA_ANNUAL * 100:.0f}%). "
-            + (cal.sigma_annual.rationale or "")
-        ).strip()
+            f"Portfolio-weighted volatility from your latest snapshot. "
+            f"σ = {sigma_pct:.1f}% per year — {risk_band}. "
+            f"For reference, a diversified S&P-500 portfolio has "
+            f"σ ≈ {default_pct:.0f}%. Lower σ = smaller year-to-year "
+            f"swings; higher σ = bigger swings (in both directions)."
+        )
         return AssumptionField(
             value=sigma_value,
             source="sigma_calibrator",
@@ -162,6 +197,16 @@ def _resolve_sigma(
 
 
 def _resolve_tax_rate(goals: dict) -> AssumptionField:
+    """Resolve effective tax rate.
+
+    Wave 8 v2 polish: rationale text now explains the Israeli
+    age-aware tax model the Monte Carlo simulation ACTUALLY uses
+    (25% pre-60 → 15% 60-67 → 12% 67+) rather than telling the user
+    to "adjust if your effective rate is different". The flat
+    `tax_rate` value here is the headline single-number rate used in
+    the deterministic projection; the MC engine internally bands
+    the rate by age via apply_age_aware_tax=True.
+    """
     raw = goals.get("tax_rate_pct")
     val = _coerce_float(raw)
     if val is not None and 0.0 <= val <= 0.5:
@@ -169,13 +214,26 @@ def _resolve_tax_rate(goals: dict) -> AssumptionField:
             value=val,
             source="goals_yaml",
             rationale_md=(
-                f"From your goals_yaml `tax_rate_pct`: {val * 100:.1f}%."
+                f"From your goals_yaml `tax_rate_pct`: {val * 100:.1f}%. "
+                "This is the headline single-number rate used in the "
+                "deterministic projection; the Monte Carlo engine bands "
+                "the effective rate by age (25% pre-60 → 15% 60-67 → "
+                "12% 67+ — Israeli CGT + age-aware pension tax breaks)."
             ),
         )
     return AssumptionField(
         value=DEFAULT_TAX_RATE,
         source="default",
-        rationale_md=RATIONALE_TAX_DEFAULT,
+        rationale_md=(
+            "Israeli capital-gains marginal rate (25%) is the headline "
+            "default for the deterministic projection. The Monte Carlo "
+            "engine actually applies an age-banded effective rate "
+            "internally — 25% pre-60, 15% during the lump-pension "
+            "window (60-67), 12% from age 67 onward — so you'd see "
+            "different effective rates in MC results vs the slider's "
+            "single number. Set `tax_rate_pct` in goals_yaml if your "
+            "effective rate is meaningfully different."
+        ),
     )
 
 
