@@ -470,6 +470,47 @@ export interface PlanCurrentDTO {
   latest_critique_created_at: string | null;
 }
 
+// Wave 8 Piece G — /api/plan/current/headline response shape. Drives
+// the HeadlineCard at the top of the /plan recap layout. All fields
+// degrade gracefully (null lines, "Coverage not assessed" insurance
+// summary, etc.) so the card renders even when input data is sparse.
+export interface HeadlineLinesDTO {
+  retirement_readiness: string;
+  next_big_move: string | null;
+  then: string | null;
+}
+
+export interface AcceptedDeltaSummaryDTO {
+  horizon: string;
+  item_kind: string;
+  summary: string;
+}
+
+export interface PortfolioValueAnchorDTO {
+  total_usd_value_k: number | null;
+  snapshot_date: string | null;
+}
+
+export interface InsuranceGapsSummaryDTO {
+  one_line: string;
+  has_data: boolean;
+}
+
+export interface AuditLineDTO {
+  plan_version_id: number;
+  decision_run_id: number | null;
+  approved_at: string | null;
+  synthesis_trail_link: string | null;
+}
+
+export interface RecapSummaryDTO {
+  headline: HeadlineLinesDTO;
+  accepted_deltas: AcceptedDeltaSummaryDTO[];
+  portfolio_value: PortfolioValueAnchorDTO;
+  insurance_gaps: InsuranceGapsSummaryDTO;
+  audit: AuditLineDTO;
+}
+
 export interface DailyBriefDTO {
   id: number;
   user_id: string;
@@ -2212,6 +2253,14 @@ export const api = {
   planCurrentStructured: (userId: string) =>
     getJSON<DraftResponse | null>(
       `/api/plan/current/structured?user_id=${encodeURIComponent(userId)}`,
+    ),
+  // Wave 8 Piece G — plain-English headline + four at-a-glance blocks
+  // for the /plan recap surface. 200 + null when no current plan
+  // exists (matches the absence-of-data convention used by
+  // /current/structured + /in-flight-synthesis).
+  planCurrentHeadline: (userId: string) =>
+    getJSON<RecapSummaryDTO | null>(
+      `/api/plan/current/headline?user_id=${encodeURIComponent(userId)}`,
     ),
   planSpeculativeTake: (
     userId: string,

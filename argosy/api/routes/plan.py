@@ -2388,6 +2388,92 @@ def _build_carried_over_response(
     )
 
 
+# ---------------------------------------------------------------------------
+# Wave 8 Piece G — plain-English headline + recap summary for /plan
+# ---------------------------------------------------------------------------
+
+
+class HeadlineLinesDTO(BaseModel):
+    retirement_readiness: str
+    next_big_move: str | None
+    then: str | None
+
+
+class AcceptedDeltaSummaryDTO(BaseModel):
+    horizon: str
+    item_kind: str
+    summary: str
+
+
+class PortfolioValueAnchorDTO(BaseModel):
+    total_usd_value_k: float | None
+    snapshot_date: str | None
+
+
+class InsuranceGapsSummaryDTO(BaseModel):
+    one_line: str
+    has_data: bool
+
+
+class AuditLineDTO(BaseModel):
+    plan_version_id: int
+    decision_run_id: int | None
+    approved_at: str | None
+    synthesis_trail_link: str | None
+
+
+class RecapSummaryDTO(BaseModel):
+    headline: HeadlineLinesDTO
+    accepted_deltas: list[AcceptedDeltaSummaryDTO]
+    portfolio_value: PortfolioValueAnchorDTO
+    insurance_gaps: InsuranceGapsSummaryDTO
+    audit: AuditLineDTO
+
+
+@router.get("/current/headline", response_model=RecapSummaryDTO | None)
+def get_current_headline(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> RecapSummaryDTO | None:
+    """Return the recap-summary block for the /plan recap view (Wave 8 Piece G).
+
+    Returns 200 + null when no current plan exists (matches the
+    /current/structured + /in-flight-synthesis "absence of data"
+    contract used elsewhere in /api/plan/*)."""
+    from argosy.services.plan_headline import compute_recap_summary
+
+    summary = compute_recap_summary(db, user_id)
+    if summary is None:
+        return None
+    return RecapSummaryDTO(
+        headline=HeadlineLinesDTO(
+            retirement_readiness=summary.headline.retirement_readiness,
+            next_big_move=summary.headline.next_big_move,
+            then=summary.headline.then,
+        ),
+        accepted_deltas=[
+            AcceptedDeltaSummaryDTO(
+                horizon=d.horizon, item_kind=d.item_kind, summary=d.summary
+            )
+            for d in summary.accepted_deltas
+        ],
+        portfolio_value=PortfolioValueAnchorDTO(
+            total_usd_value_k=summary.portfolio_value.total_usd_value_k,
+            snapshot_date=summary.portfolio_value.snapshot_date,
+        ),
+        insurance_gaps=InsuranceGapsSummaryDTO(
+            one_line=summary.insurance_gaps.one_line,
+            has_data=summary.insurance_gaps.has_data,
+        ),
+        audit=AuditLineDTO(
+            plan_version_id=summary.audit.plan_version_id,
+            decision_run_id=summary.audit.decision_run_id,
+            approved_at=summary.audit.approved_at,
+            synthesis_trail_link=summary.audit.synthesis_trail_link,
+        ),
+    )
+
+
 @router.get("/current/structured", response_model=DraftResponse | None)
 def get_current_structured(
     user_id: str, db: Session = Depends(get_db)

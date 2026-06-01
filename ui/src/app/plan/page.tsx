@@ -13,6 +13,7 @@ import { DeltaCard } from "@/components/plan/delta-card";
 import { DeltaMap } from "@/components/plan/delta-map";
 import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
+import { HeadlineCard } from "@/components/plan/headline-card";
 import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
 import { CashflowProjectionChart } from "@/components/plan/cashflow-projection-chart";
 import { SourcesHeatmap } from "@/components/plan/sources-heatmap";
@@ -38,6 +39,7 @@ import {
   type NvdaTrajectoryResponse,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
+  type RecapSummaryDTO,
   type TargetProgressResponse,
 } from "@/lib/api";
 import { friendlySourceLabels } from "@/lib/plain-english-labels";
@@ -104,6 +106,12 @@ export default function PlanPage() {
   const [planStructured, setPlanStructured] = useState<DraftResponse | null>(
     null,
   );
+  // Wave 8 Piece G — three-line plain-English headline + four
+  // at-a-glance blocks (deltas / portfolio total / insurance / audit).
+  // Drives the HeadlineCard at the top of the recap_current layout.
+  const [recapSummary, setRecapSummary] = useState<RecapSummaryDTO | null>(
+    null,
+  );
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [objections, setObjections] = useState<FMObjectionsResponse | null>(null);
   // Live target-progress map keyed by item_id — fetched in parallel with
@@ -148,6 +156,7 @@ export default function PlanPage() {
     const planStructuredP = api
       .planCurrentStructured(USER_ID)
       .catch(() => null);
+    const recapP = api.planCurrentHeadline(USER_ID).catch(() => null);
     const draftP = api.planDraft(USER_ID).catch(() => null);
     const objP = api.planDraftObjections(USER_ID).catch(() => null);
     const snapP = api.portfolioSnapshot(USER_ID).catch(() => null);
@@ -164,6 +173,7 @@ export default function PlanPage() {
       const [
         planV,
         planStructuredV,
+        recapV,
         draftV,
         objV,
         snapV,
@@ -173,6 +183,7 @@ export default function PlanPage() {
       ] = await Promise.all([
         planP,
         planStructuredP,
+        recapP,
         draftP,
         objP,
         snapP,
@@ -182,6 +193,7 @@ export default function PlanPage() {
       ]);
       setPlan(planV);
       setPlanStructured(planStructuredV);
+      setRecapSummary(recapV);
       setDraft(draftV);
       setObjections(objV);
       setSnapshot(snapV);
@@ -937,7 +949,10 @@ export default function PlanPage() {
           minimal placeholder so the page renders SOMETHING the user
           can read instead of falling through to a stale-draft view. */}
       {viewState === "recap_current" && plan && (
-        <RecapCurrentPlaceholder plan={plan} structured={planStructured} />
+        <>
+          {recapSummary ? <HeadlineCard recap={recapSummary} /> : null}
+          <RecapCurrentPlaceholder plan={plan} structured={planStructured} />
+        </>
       )}
 
       {/* no_plan state — user has never imported a baseline plan AND
@@ -1133,9 +1148,6 @@ function RecapCurrentPlaceholder({
   plan,
   structured,
 }: RecapCurrentPlaceholderProps) {
-  const importedLabel = plan.imported_at
-    ? formatLocalDateTime(plan.imported_at)
-    : null;
   const horizons: Array<{
     key: "long" | "medium" | "short";
     title: string;
@@ -1162,25 +1174,6 @@ function RecapCurrentPlaceholder({
   );
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Your plan is current</CardTitle>
-          <CardDescription>
-            {plan.version_label ? (
-              <>
-                Active plan:{" "}
-                <code className="font-mono">{plan.version_label}</code>
-                {importedLabel ? <> · accepted {importedLabel}</> : null}.
-              </>
-            ) : (
-              <>This is the canonical plan on record.</>
-            )}{" "}
-            The visual recap (headline, glidepath, Monte Carlo, actions
-            timeline) is being built — press <strong>Run synthesis</strong>{" "}
-            at the top of the page to propose changes.
-          </CardDescription>
-        </CardHeader>
-      </Card>
       {horizonsWithContent.length > 0 ? (
         <Card>
           <CardHeader>
