@@ -1,7 +1,7 @@
 # Wave 8 — Plan recap view ("what's the plan, in plain English")
 
 **Drafted:** 2026-06-01 (night, wave 7 closed)
-**Status:** scoping **rev 2** — codex zigzag SCOPE-CHANGES applied; round 2 confirmation pending
+**Status:** scoping **rev 3** — codex zigzag rounds 1 + 2 applied; final converge expected
 **Triggered by:** Ariel pressing Accept All on synth #62 and landing on a confusing fallback view ("loading verdict…" + "showing last completed draft — superseded by a later synthesis that did not produce a fresh draft"). The page doesn't have a post-accept "your plan is canonical, here's what it says" view. Plus the broader complaint: the existing /plan page is engineer-focused (targets / themes / actions / deltas as separate sections) — a non-expert can't tell what the plan actually IS.
 
 ## What this wave fixes
@@ -184,7 +184,7 @@ New backend helper `argosy/services/cashflow_assumptions.py`:
   - `tax_rate`: from `goals_yaml.tax_rate_pct` if present, else hardcoded `0.25` with rationale="Israeli CGT marginal rate at user's bracket. Adjust if your effective rate is different."
   - `inflation_annual`: hardcoded `0.025` with rationale="Bank of Israel long-run target."
   - `retirement_age`: from `goals_yaml.retirement_target_age` if present, else hardcoded `49` with rationale="Default FIRE target. Override to model what-ifs at other ages."
-  - `lifestyle_drift_annual`: hardcoded `0.0` with rationale="Conservative; matches goals_yaml `lifestyle_aspirations_note` if user expects flat real spend."
+  - `lifestyle_drift_annual`: from `goals_yaml.lifestyle_drift_annual` if present (source="goals_yaml"); else hardcoded `0.0` (source="default") with rationale="Conservative default — matches goals_yaml `lifestyle_aspirations_note` when the user expects flat real spend. Override to model gradual spending growth."
 
 Each field carries `value` + `rationale_md` + `source ∈ {"sigma_calibrator", "goals_yaml", "default"}`.
 
@@ -217,17 +217,23 @@ New UI component `ui/src/components/plan/actions-timeline.tsx`:
 - Vertical timeline sorted by date (dated first, then ongoing)
 - Click any action → expands to show `detail` + `rationale` + `cited_sources`
 
-### Piece G — Plain-English headline
+### Piece G — Plain-English headline + recap-summary service
 
-New backend helper `argosy/services/plan_headline.py`:
+New backend helper `argosy/services/plan_headline.py` covering the headline THREE-LINE prose AND the four at-a-glance blocks. Single service so the contract is in one place rather than scattered:
 
-- Inputs: current PlanVersion + cashflow projection + actions timeline
-- Output: structured headline with three lines:
-  1. **Bottom-line retirement readiness**: "You can safely retire at age 49 (base case) / age 51 (bear case)" — pulls from `effective_retire_ready_age()` for both scenarios
-  2. **Next big move**: derived from the soonest-dated action across all horizons (e.g., "Cross-border attorney retainer by 2026-06-15")
-  3. **Then**: the SECOND-soonest dated action
+- Inputs: current `PlanVersion` + cashflow projection + actions list (cross-horizon) + latest `portfolio_snapshot` + existing `InsuranceGapsCard` data source
+- Output: `RecapSummaryResponse` with:
+  - **`headline`**: structured object with three lines:
+    1. **Bottom-line retirement readiness**: "You can safely retire at age 49 (base case) / age 51 (bear case)" — pulls from `effective_retire_ready_age()` for both scenarios
+    2. **Next big move**: derived from the soonest-dated action across all horizons (e.g., "Cross-border attorney retainer by 2026-06-15")
+    3. **Then**: the SECOND-soonest dated action
+  - **`at_a_glance`**: structured object with the four at-a-glance blocks (per codex zigzag round 1):
+    - `accepted_deltas`: list of the user-accepted deltas for THIS PlanVersion (the `Delta` rows with `accepted=True`), summarized one-line each
+    - `portfolio_value`: `{value_usd, value_nis, snapshot_date}` from latest `portfolio_snapshot`
+    - `insurance_gaps`: existing `InsuranceGapsCard` one-line summary (e.g., "Life: 3M NIS face covers X; Disability: missing") OR "No major gaps"
+    - `audit`: `{plan_version_id, decision_run_id, approved_at, synthesis_trail_link}`
 
-UI: prominent card at the top of the recap, with the three lines as large readable text.
+UI: a prominent **HeadlineCard** at the top of the recap renders the three headline lines + the four at-a-glance blocks in a compact tile layout.
 
 ## Scope checklist (wave 8)
 
@@ -251,10 +257,20 @@ UI: prominent card at the top of the recap, with the three lines as large readab
 
 ## Open questions (kept minimal)
 
-Codex zigzag round 1 resolved the original open question #1 (synthesizer-derived mu — answer: no, hardcoded-with-rationale for v1; structured enum-only contract for v2 if ever wanted). Remaining open questions are minimal + bounded:
+Codex zigzag round 1 resolved the original open question #1 (synthesizer-derived mu — answer: no, hardcoded-with-rationale for v1; structured enum-only contract for v2 if ever wanted). Codex round 2 surfaced three more contract-level decisions. Remaining open questions:
 
-1. **Direction-reversal default behaviour** (codex zigzag added). When an intermediate waypoint reverses direction relative to today's value and the eventual endpoint (e.g., current NVDA 64.9% → medium 70% → long 15%), the matcher collapses the intermediate by default unless the target has an explicit `intentional_hold_or_rise=True` annotation. **Question for Ariel**: does the synthesizer ever emit "let it run for a year, then cut harder" plans where the rising intermediate IS intentional? If yes, we'd want a way for the synthesizer to flag it via the new annotation (schema extension). **Proposed default**: skip the schema extension for v1; the default-collapse behaviour matches every plan we've seen so far. Revisit only if a real plan surfaces a legitimate intentional rise.
-2. **Inclusion rule for non-% targets** (codex zigzag added). Only `pct_of_portfolio` + `pct_of_liquid` units are in the glidepath; other-unit targets (`usd`, `nis`, `shares`, `months`, etc.) are surfaced in the Actions Timeline / Full Plan instead. **Question**: should the recap have a third visualization dedicated to non-% targets (e.g., a "FI dollar target progress" gauge for the 22M NIS bare-FI target)? **Proposed default**: defer to a future wave; for v1 they appear as items in the Actions Timeline + Full Plan only.
+1. **Direction-reversal default behaviour** (codex round 1). When an intermediate waypoint reverses direction relative to today's value and the eventual endpoint (e.g., current NVDA 64.9% → medium 70% → long 15%), the matcher collapses the intermediate by default unless the target has an explicit `intentional_hold_or_rise=True` annotation. **Question for Ariel**: does the synthesizer ever emit "let it run for a year, then cut harder" plans where the rising intermediate IS intentional? **Proposed default**: skip the schema extension for v1; the default-collapse behaviour matches every plan we've seen so far. Revisit only if a real plan surfaces a legitimate intentional rise.
+
+2. **Inclusion rule for non-% targets** (codex round 1). Only `pct_of_portfolio` + `pct_of_liquid` units are in the glidepath; other-unit targets (`usd`, `nis`, `shares`, `months`, etc.) are surfaced elsewhere. **Question**: should the recap have a third visualization dedicated to non-% targets (e.g., a "FI dollar target progress" gauge for the 22M NIS bare-FI target)? **Proposed default**: defer to a future wave; for v1 they appear as items in the Actions Timeline + Full Plan only (see question #5 below for HOW they appear in the timeline).
+
+3. **Piece A — precedence when BOTH a pending draft AND a current plan exist** (codex round 2). User accepts plan A → `current_plan_version` is set. User then clicks Run synthesis → eventually a pending draft B exists. Which view does /plan show: triage of draft B, or recap of current A? **Proposed default**: pending draft wins — `pending_draft_triage` takes precedence because the user explicitly triggered the new cycle and presumably wants to act on B. Recap is reachable via a "View accepted plan" link in the page header when both exist. Tested as part of the five-state discriminator branch matrix.
+
+4. **Piece B1 — where `intentional_hold_or_rise` lives** (codex round 2). The direction-reversal guardrail needs the synthesizer to flag intentional holds/rises somehow. **Proposed default**: extend `SynthTarget` pydantic with `intentional_hold_or_rise: bool = False`. Absent (the default) = False = collapse behaviour applies. Backwards-compat for prior drafts: missing field deserializes to False per pydantic's default — no migration needed. Documented as the canonical field, not a free-form metadata blob.
+
+5. **Piece F — how non-% targets appear in the Actions Timeline** (codex round 2). Two patterns:
+   (a) **Merged as timeline items**: each non-% target becomes a row on the timeline with its `revisit_after` date as the timestamp + the value (e.g., "22M NIS bare-FI target — revisit 2027-06-01")
+   (b) **Callout only**: a single grouped link from the glidepath chart that opens a list of excluded targets in a side panel
+   **Proposed default**: (a) — merge them as timeline items. The timeline is already the cross-horizon date-sorted action register; one more item type slots in cleanly. The glidepath chart's sidebar callout (per B2) just deep-links to the timeline section where excluded targets surface inline.
 
 ## What this wave does NOT do
 
@@ -274,13 +290,14 @@ Codex zigzag round 1 resolved the original open question #1 (synthesizer-derived
 
 | Piece | Days |
 |---|---|
-| A — state routing | 1 |
-| B — allocation glidepath service + chart | 2-3 |
-| C — synthesizer-aware defaults + rationale | 1-2 |
+| A — state routing + 5-state discriminator + branch tests | 1 |
+| **B1 — allocation glidepath backend service + contract + interpolation tests** | **2-3 (biggest overrun risk per codex)** |
+| B2 — allocation glidepath UI chart (ships against B1 contract) | 1 |
+| C — cashflow assumption defaults service + tooltips (v1 deterministic, no synthesizer-string parsing) | 1 |
 | D — MC integration on recap | 1 |
 | E — markdown rendering | 0.5 |
-| F — actions timeline | 1 |
-| G — headline + service | 1 |
+| F — actions timeline (includes non-% targets per B1's `excluded_targets`) | 1 |
+| G — headline + recap-summary service (3 lines + 4 at-a-glance blocks: deltas / portfolio value / insurance gaps / audit line) | 1 |
 | Tests + polish | 1-2 |
 | **Total wave 8** | **~1.5-2 weeks of focused sessions** |
 
