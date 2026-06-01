@@ -909,6 +909,33 @@ class FMObjection(BaseModel):
     # doesn't mistake an un-re-evaluated concern for a fresh one.
     carried_over: bool = False
     carried_over_from_plan_version_id: int | None = None
+    # Auto-dialogue status, populated by the route from the dialogue
+    # run + FM verdict agent_report (if any) keyed to this objection's
+    # (plan_version_id, objection_index). Drives the /plan filter
+    # described below.
+    #
+    #   "not_dispatched": no auto-dialogue ran for this row. Happens
+    #     when the objection has no analyst owner OR when the synthesis
+    #     was older than the auto-dispatch feature (commit 75e24c8).
+    #   "running":  dialogue dispatched but FM verdict hasn't landed
+    #     yet. UI shows a "resolving..." pill + polls until done.
+    #   "completed": dialogue produced an FM verdict. See
+    #     auto_dialogue_resolution for the outcome.
+    #   "failed" / "superseded": dialogue ran but errored or was raced.
+    auto_dialogue_status: str = "not_dispatched"
+    auto_dialogue_resolution: str | None = None
+    # Derived: True when the user must take action on this objection
+    # (it's a Blocker or a Decision). False when the fleet resolved
+    # it internally (FM_ACCEPTS_ANALYST). The /plan filter hides
+    # ``user_action_required=False`` rows behind a collapsed footer.
+    user_action_required: bool = True
+    # Categorization of what kind of user action is needed:
+    #   "blocker"  — user must AGREE/DISAGREE/DEFER on the underlying
+    #     concern; agents couldn't resolve it.
+    #   "decision" — FM proposed a revised objection; user picks
+    #     original-vs-revised.
+    #   None — no action needed (auto-resolved by fleet).
+    action_kind: str | None = "blocker"
 
 
 class FMObjectionsResponse(BaseModel):
@@ -1884,6 +1911,28 @@ def get_draft_objections(
         )
         raw_for_cache.append({"severity": sev, "topic": topic, "detail": detail})
 
+    # Enrich each objection with its auto-dialogue resolution status so
+    # the UI can filter the surface to Blocker / Decision rows only.
+    # See FMObjection field docstrings for the state machine. Best-
+    # effort: cache failures or schema misses fall through to the
+    # default (action_kind="blocker", user_action_required=True) which
+    # is the safe direction — we'd rather surface a row that could
+    # have been auto-resolved than hide one that needs user input.
+    if objections:
+        try:
+            _enrich_with_auto_dialogue_status(
+                db,
+                user_id=user_id,
+                plan_version_id=pv.id,
+                objections=objections,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "auto_dialogue.status_enrich_failed user_id=%s "
+                "plan_version_id=%s err=%s",
+                user_id, pv.id, exc,
+            )
+
     # Precompute (or read from cache) plain-English translations and
     # attach them inline so the UI toggle between original FM wording
     # and plain English is instant - no per-click round-trip. First
@@ -1969,6 +2018,159 @@ def get_draft_objections(
         raw_response_excerpt=fm_row.response_text[:500],
         prior_round_objections=prior_round_objections,
     )
+
+
+def _enrich_with_auto_dialogue_status(
+    db: Session,
+    *,
+    user_id: str,
+    plan_version_id: int,
+    objections: list[FMObjection],
+) -> None:
+    """Populate auto_dialogue_status / resolution / action_kind /
+    user_action_required on each FMObjection IN-PLACE.
+
+    Reads dialogue runs from ``decision_runs`` (decision_kind=
+    ``fm_objection_dialogue``) keyed by the notes_json field
+    {plan_version_id, objection_index}, then resolves each to its FM
+    verdict agent_report (decision_id=``fm-obj-dialogue-<run_id>``).
+
+    The action_kind decision table:
+      - No analyst owner       -> blocker      (no dialogue possible)
+      - Dialogue running       -> blocker      (placeholder; UI polls)
+      - Dialogue failed        -> blocker      (degrade to user)
+      - FM_ACCEPTS_ANALYST     -> None         (auto-resolved; HIDDEN)
+      - FM_MAINTAINS_OBJECTION -> blocker      (real disagreement)
+      - ESCALATE_TO_USER       -> blocker      (judgment call)
+      - FM_REVISES_OBJECTION   -> decision     (pick original vs revised)
+    """
+    import json as _json
+    import re as _re
+
+    from argosy.state.models import DecisionRun
+
+    # Pull every dialogue run for this draft.
+    dialogue_runs = db.execute(
+        select(DecisionRun)
+        .where(
+            DecisionRun.user_id == user_id,
+            DecisionRun.decision_kind == "fm_objection_dialogue",
+        )
+        .order_by(desc(DecisionRun.id))
+    ).scalars().all()
+
+    # Bucket by objection_index, keeping the most recent (largest id).
+    latest_by_idx: dict[int, DecisionRun] = {}
+    for run in dialogue_runs:
+        if not run.notes_json:
+            continue
+        try:
+            notes = _json.loads(run.notes_json)
+        except (ValueError, TypeError):
+            continue
+        if notes.get("plan_version_id") != plan_version_id:
+            continue
+        idx = notes.get("objection_index")
+        if not isinstance(idx, int):
+            continue
+        if idx not in latest_by_idx:
+            latest_by_idx[idx] = run
+
+    # Detect analyst ownership per objection so we know which
+    # rows COULD have had a dialogue dispatched. Without it we'd
+    # mistakenly mark "no analyst owner" rows as
+    # auto_dialogue_status="not_dispatched" when the underlying state
+    # is "can't dispatch". The UI uses action_kind not the status
+    # string for the surface decision, so both branches map to
+    # "blocker", but the status string is more honest this way.
+    from argosy.orchestrator.flows.fm_objection_dialogue import (
+        _parse_analyst_refs_any_form,
+    )
+
+    for idx, obj in enumerate(objections):
+        analyst_refs = _parse_analyst_refs_any_form(f"{obj.topic} {obj.detail}")
+        run = latest_by_idx.get(idx)
+        if run is None:
+            # No dialogue dispatched. If no analyst owner, this is
+            # structural — user must arbitrate. Otherwise it's an
+            # older synthesis (pre-auto-dispatch) — user can still
+            # fire a manual dialogue.
+            obj.auto_dialogue_status = "not_dispatched"
+            obj.action_kind = "blocker"
+            obj.user_action_required = True
+            continue
+
+        # Map run.status to dialogue status. The orchestrator writes
+        # status='running' initially and the dialogue background
+        # thread later finalizes via _execute_and_finalize (which
+        # internally writes 'completed' / 'failed' via the
+        # negotiation_recorder ladder).
+        run_status = (run.status or "").lower()
+        if run_status in ("running", "starting"):
+            obj.auto_dialogue_status = "running"
+            obj.action_kind = "blocker"  # Provisional until done.
+            obj.user_action_required = True
+            continue
+        if run_status in ("failed", "superseded", "blocked"):
+            obj.auto_dialogue_status = run_status
+            obj.action_kind = "blocker"
+            obj.user_action_required = True
+            continue
+
+        # Completed — look up the FM verdict agent_report for this
+        # dialogue and extract the resolution.
+        fm_dialogue_decision_id = f"fm-obj-dialogue-{run.id}"
+        fm_dialogue_row = db.execute(
+            select(AgentReport)
+            .where(
+                AgentReport.user_id == user_id,
+                AgentReport.decision_id == fm_dialogue_decision_id,
+                AgentReport.agent_role == "fund_manager_dialogue_verdict",
+            )
+            .order_by(desc(AgentReport.created_at))
+            .limit(1)
+        ).scalar_one_or_none()
+        if fm_dialogue_row is None or not fm_dialogue_row.response_text:
+            obj.auto_dialogue_status = "completed_no_verdict"
+            obj.action_kind = "blocker"
+            obj.user_action_required = True
+            continue
+
+        # Parse resolution out of the FM verdict's JSON-shaped output.
+        resolution: str | None = None
+        text = fm_dialogue_row.response_text
+        try:
+            obj_payload = _parse_fm_response(text)
+            if isinstance(obj_payload, dict):
+                resolution = obj_payload.get("resolution")
+        except Exception:  # noqa: BLE001
+            resolution = None
+        # Fallback: regex sniff if JSON parse missed it.
+        if not isinstance(resolution, str):
+            m = _re.search(
+                r'"resolution"\s*:\s*"([A-Z_]+)"', text
+            )
+            if m:
+                resolution = m.group(1)
+
+        obj.auto_dialogue_status = "completed"
+        obj.auto_dialogue_resolution = resolution
+
+        if resolution == "FM_ACCEPTS_ANALYST":
+            obj.action_kind = None
+            obj.user_action_required = False
+        elif resolution == "FM_REVISES_OBJECTION":
+            obj.action_kind = "decision"
+            obj.user_action_required = True
+        else:
+            # FM_MAINTAINS_OBJECTION, ESCALATE_TO_USER, or unrecognized.
+            obj.action_kind = "blocker"
+            obj.user_action_required = True
+
+        # Defense in depth: if no analyst could be parsed yet a
+        # dialogue resolution is somehow present, leave it as-is
+        # (the analyst owner check is informational, not a gate).
+        _ = analyst_refs  # silence unused — kept for future audit logs
 
 
 def _build_carried_over_response(

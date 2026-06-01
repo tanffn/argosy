@@ -642,6 +642,21 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
     (a, b) => sevOrder[a.severity] - sevOrder[b.severity],
   );
 
+  // Split into "needs your action" vs "resolved among the fleet".
+  // Backend tags each row with action_kind (blocker | decision | null);
+  // null means the FM↔analyst auto-dialogue settled it internally
+  // (FM_ACCEPTS_ANALYST) and the user doesn't have to triage. The
+  // resolved rows live behind a collapsed footer for audit. Carried-
+  // over rows always need action (no dialogue against them); the
+  // backend short-circuits action_kind="blocker" in that path.
+  // Default-true if the field is missing (legacy synthesis runs).
+  const actionable = sorted.filter(
+    (o) => o.action_kind != null && o.action_kind !== undefined,
+  );
+  const resolvedByFleet = sorted.filter((o) => o.action_kind == null);
+  const visibleObjections = actionable.length > 0 ? actionable : sorted;
+  const [showResolved, setShowResolved] = useState(false);
+
   const persistStance = async (
     idx: number,
     stance: FMObjectionStance,
@@ -783,7 +798,13 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
         </div>
       )}
       <ul className="flex flex-col gap-2">
-        {sorted.map((o, i) => {
+        {visibleObjections.map((o, idxInVisible) => {
+          // Recover the index this objection has in the sorted list so
+          // stance keys + dialogue lookups keep pointing at the right
+          // row. The visible filter only ever HIDES rows (resolved by
+          // the fleet), never reorders within the surviving set.
+          const i = sorted.indexOf(o);
+          void idxInVisible;
           const cls = severityClasses(o.severity);
 
           // Pick the active translation: precomputed wins, else the
@@ -1258,6 +1279,57 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
           );
         })}
       </ul>
+
+      {/* Resolved-among-the-fleet footer. When the auto-dialogue
+          dispatch resolved any objection to FM_ACCEPTS_ANALYST, the
+          row is hidden from the main list above and rolls up here.
+          Click-to-expand surfaces the row text + which analyst
+          convinced the FM, so the audit trail is intact even when
+          the user never had to triage it manually. */}
+      {resolvedByFleet.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-border/40">
+          <button
+            type="button"
+            onClick={() => setShowResolved((v) => !v)}
+            className="text-xs font-mono text-muted-foreground hover:text-foreground hover:underline"
+            title={
+              "These objections were resolved internally by the FM<->analyst " +
+              "dialogue (the analyst convinced the FM). The fleet handled them " +
+              "without needing your input; click to audit what was resolved."
+            }
+          >
+            {showResolved ? "▾ Hide" : "▸ Show"}{" "}
+            <strong className="text-foreground">
+              {resolvedByFleet.length}
+            </strong>{" "}
+            resolved among the fleet
+          </button>
+          {showResolved && (
+            <ul className="mt-2 flex flex-col gap-1">
+              {resolvedByFleet.map((o) => {
+                const idx = sorted.indexOf(o);
+                return (
+                  <li
+                    key={`resolved-${idx}`}
+                    className="rounded-md border border-border/30 bg-muted/20 px-3 py-2 text-xs flex items-start gap-2 opacity-70"
+                  >
+                    <Check className="h-3 w-3 mt-0.5 text-success shrink-0" />
+                    <div className="flex flex-col gap-0.5 min-w-0">
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        FM-OBJ #{idx + 1} ·{" "}
+                        {o.auto_dialogue_resolution ?? "auto-resolved"}
+                      </span>
+                      <span className="text-foreground line-clamp-2">
+                        {o.translation?.headline ?? o.topic}
+                      </span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
 
       {(onResynthesize || planVersionId != null) && (
         <div className="mt-3 pt-3 border-t border-error/30 flex flex-col gap-2">

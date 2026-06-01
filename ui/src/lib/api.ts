@@ -3261,6 +3261,32 @@ export interface FMObjection {
   // concern for a fresh one.
   carried_over?: boolean;
   carried_over_from_plan_version_id?: number | null;
+  // Auto-dialogue (FM<->analyst) status for this objection. Populated
+  // by the backend from any DecisionRun row keyed by
+  // (plan_version_id, objection_index). See the FMObjection docstring
+  // in argosy/api/routes/plan.py for the full state machine. Values:
+  //   "not_dispatched": no auto-dialogue ran (no analyst owner or
+  //     pre-auto-dispatch synthesis).
+  //   "running": dispatched, FM verdict not yet landed. UI polls.
+  //   "completed": dialogue done; see auto_dialogue_resolution.
+  //   "failed" / "superseded" / "blocked" / "completed_no_verdict":
+  //     edge cases — surface as Blocker.
+  auto_dialogue_status?: string;
+  // The dialogue's final resolution string when status="completed".
+  // One of FM_ACCEPTS_ANALYST, FM_MAINTAINS_OBJECTION,
+  // FM_REVISES_OBJECTION, ESCALATE_TO_USER. Null otherwise.
+  auto_dialogue_resolution?: string | null;
+  // True when the user must take action on this row. False only when
+  // the fleet resolved the concern internally (FM_ACCEPTS_ANALYST).
+  // /plan filters the objection list on this field — Blockers /
+  // Decisions surface; auto-resolved rows live behind a collapsed
+  // footer.
+  user_action_required?: boolean;
+  // "blocker"  — user must AGREE/DISAGREE/DEFER.
+  // "decision" — FM proposed a revised wording; user picks original
+  //              vs revised (FM_REVISES_OBJECTION path).
+  // null — no action needed; row is hidden from the main list.
+  action_kind?: "blocker" | "decision" | null;
 }
 
 export interface FMObjectionsResponse {
