@@ -536,6 +536,11 @@ export default function PlanPage() {
   const findings = critique?.findings ?? [];
 
   const fmRejected = objections?.approved === false;
+  // approved=null when no FM has actually evaluated this draft —
+  // surfaces as "FM not evaluated" instead of silently rendering Approved.
+  const fmNotEvaluated =
+    objections != null && objections.approved === null;
+  const fmVerdictStatus = objections?.verdict_status ?? "evaluated";
   const draftDecisionToken =
     draft?.decision_run_id != null ? `plan-synth-${draft.decision_run_id}` : null;
 
@@ -568,7 +573,15 @@ export default function PlanPage() {
                   draft.effective_role && draft.effective_role !== "draft"
                     ? "last draft"
                     : "pending draft"
-                } #${draft.plan_version_id}${fmRejected ? " (Fund Manager rejected)" : ""}`
+                } #${draft.plan_version_id}${
+                  fmRejected
+                    ? " (Fund Manager rejected)"
+                    : fmNotEvaluated && fmVerdictStatus === "carried_over"
+                      ? " (FM verdict not refreshed)"
+                      : fmNotEvaluated
+                        ? " (not FM-evaluated)"
+                        : ""
+                }`
               : ""}
             {inFlightSynthesis != null
               ? ` · synthesizing (#${inFlightSynthesis.decision_run_id})`

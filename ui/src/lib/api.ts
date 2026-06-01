@@ -3254,10 +3254,25 @@ export interface FMObjection {
   // agent failed; the UI falls back to the on-demand button which
   // POSTs to /api/plan/draft/objections/translate.
   translation?: FMObjectionTranslation | null;
+  // True when this objection was carried over from a prior draft's FM
+  // verdict because the current draft has no Fund-Manager evaluation
+  // of its own (typical for plan_amendment_chat drafts). The UI
+  // tags these visibly so the user doesn't mistake an un-re-evaluated
+  // concern for a fresh one.
+  carried_over?: boolean;
+  carried_over_from_plan_version_id?: number | null;
 }
 
 export interface FMObjectionsResponse {
-  approved: boolean;
+  // null when no FM has actually evaluated this draft yet
+  // (plan_amendment_chat drafts, manually-ingested drafts). The UI maps
+  // null to "Not FM-evaluated" instead of silently rendering Approved.
+  approved: boolean | null;
+  // Verdict provenance — "evaluated" (real FM run for this draft),
+  // "carried_over" (no FM for this draft; objections inherited from a
+  // prior draft), or "not_evaluated" (no FM verdict anywhere up the
+  // chain). Used by the /plan banner state machine.
+  verdict_status?: "evaluated" | "carried_over" | "not_evaluated";
   objections: FMObjection[];
   cited_sources: string[];
   decision_run_id: number | null;

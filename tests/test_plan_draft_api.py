@@ -426,6 +426,165 @@ def test_get_draft_objections_prior_round_empty_when_no_predecessor(
     assert body["prior_round_objections"] == []
 
 
+def test_get_draft_objections_carries_over_when_no_fm_on_current(
+    app_with_draft,
+):
+    """Codex audit case 1 — no FM verdict on the current draft (typical for
+    a plan_amendment_chat draft) + a prior draft with a real FM verdict:
+    the route surfaces the prior verdict's objections, each tagged
+    carried_over=True. approved=None + verdict_status='carried_over'.
+    """
+    from datetime import datetime, timedelta, timezone
+    from argosy.state.models import AgentReport, PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        # Current draft has a decision_run_id but no fund_manager report
+        # (mimics the plan_amendment_chat case).
+        draft.decision_run_id = 400
+
+        # Insert a superseded predecessor with its own FM verdict.
+        earlier = (draft.imported_at or datetime.now(timezone.utc)) - timedelta(hours=2)
+        prior_draft = PlanVersion(
+            user_id="ariel",
+            role="superseded",
+            version_label="synth-prior-400",
+            raw_markdown="",
+            decision_run_id=399,
+            imported_at=earlier,
+        )
+        sess.add(prior_draft)
+        sess.flush()
+        prior_id = prior_draft.id
+
+        sess.add(AgentReport(
+            user_id="ariel",
+            agent_role="fund_manager",
+            decision_id="plan-synth-399",
+            response_text=json.dumps({
+                "approved": False,
+                "reasons": [
+                    "MISSING — open concern A",
+                    "BLOCKER — open concern B",
+                ],
+                "cited_sources": [],
+            }),
+            model="claude-opus-4-7",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft/objections?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["approved"] is None
+    assert body["verdict_status"] == "carried_over"
+    assert len(body["objections"]) == 2
+    for obj in body["objections"]:
+        assert obj["carried_over"] is True
+        assert obj["carried_over_from_plan_version_id"] == prior_id
+
+
+def test_get_draft_objections_walks_back_past_amendment_drafts(
+    app_with_draft,
+):
+    """Codex audit case 2 — recursive walk-back. Current draft has no FM;
+    immediate prior draft also has no FM (a chain of amendments); the
+    route must keep walking back until it hits a real FM verdict.
+    """
+    from datetime import datetime, timedelta, timezone
+    from argosy.state.models import AgentReport, PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.decision_run_id = 500
+
+        base_time = draft.imported_at or datetime.now(timezone.utc)
+
+        # Intermediate amendment draft with decision_run_id but NO FM row.
+        intermediate = PlanVersion(
+            user_id="ariel",
+            role="superseded",
+            version_label="amend-intermediate",
+            raw_markdown="",
+            decision_run_id=499,
+            imported_at=base_time - timedelta(hours=1),
+        )
+        sess.add(intermediate)
+
+        # Older "real" draft with a FM verdict — should be the source.
+        older = PlanVersion(
+            user_id="ariel",
+            role="superseded",
+            version_label="synth-real",
+            raw_markdown="",
+            decision_run_id=498,
+            imported_at=base_time - timedelta(hours=3),
+        )
+        sess.add(older)
+        sess.flush()
+        older_id = older.id
+
+        sess.add(AgentReport(
+            user_id="ariel",
+            agent_role="fund_manager",
+            decision_id="plan-synth-498",
+            response_text=json.dumps({
+                "approved": False,
+                "reasons": ["MISSING — older draft's open concern"],
+                "cited_sources": [],
+            }),
+            model="claude-opus-4-7",
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft/objections?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["verdict_status"] == "carried_over"
+    assert body["approved"] is None
+    assert len(body["objections"]) == 1
+    assert body["objections"][0]["carried_over"] is True
+    assert body["objections"][0]["carried_over_from_plan_version_id"] == older_id
+
+
+def test_get_draft_objections_not_evaluated_when_no_fm_anywhere(
+    app_with_draft,
+):
+    """Codex audit case 3 — no FM verdict anywhere in history. The route
+    returns verdict_status='not_evaluated', approved=None, empty objections.
+    """
+    from argosy.state.models import PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        # Decision_run_id set but no FM report; no superseded predecessors
+        # either.
+        draft.decision_run_id = 600
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = app_with_draft.get("/api/plan/draft/objections?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["approved"] is None
+    assert body["verdict_status"] == "not_evaluated"
+    assert body["objections"] == []
+
+
 def test_post_delta_reject_stamps_user_edit_note(app_with_draft):
     """Per-delta reject writes REJECTED prefix + flips user_edited."""
     from argosy.state.models import PlanVersion

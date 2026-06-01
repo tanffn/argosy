@@ -83,6 +83,10 @@ function parseAnalystRefsFromObjection(detail: string): string[] {
 interface FMObjectionsCardProps {
   objections: FMObjection[];
   userId: string;
+  // When set to "carried_over" or "not_evaluated", a banner explains the
+  // verdict-provenance state at the top of the card. Default
+  // "evaluated" (real FM verdict for this draft).
+  verdictStatus?: "evaluated" | "carried_over" | "not_evaluated";
   // When provided, the user-state toggle (agree / defer / disagree) is
   // rendered per objection and the "Start new round with my decisions"
   // CTA is enabled. Without it the card falls back to the legacy
@@ -363,12 +367,14 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
   const {
     objections,
     userId,
+    verdictStatus = "evaluated",
     planVersionId,
     onResynthesize,
     resynthesizing,
     onDiscussObjection,
     onStartNewRound,
   } = props;
+  const isCarriedOver = verdictStatus === "carried_over";
 
   // Lazy-fetch cache for objections whose precomputed translation is
   // missing (translator failed at draft-load time). Keyed by index in
@@ -694,16 +700,41 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
     planVersionId != null && (nAgreed > 0 || nDisagreed > 0);
 
   return (
-    <div className="rounded-md border border-error/40 bg-error/5 p-4">
+    <div
+      className={`rounded-md border p-4 ${
+        isCarriedOver ? "border-warning/40 bg-warning/5" : "border-error/40 bg-error/5"
+      }`}
+    >
       <div className="flex items-center gap-2 mb-3">
-        <AlertTriangle className="h-4 w-4 text-error" />
-        <h3 className="text-sm font-semibold tracking-wide uppercase text-error">
-          Fund Manager objections ({objections.length})
+        <AlertTriangle
+          className={`h-4 w-4 ${isCarriedOver ? "text-warning" : "text-error"}`}
+        />
+        <h3
+          className={`text-sm font-semibold tracking-wide uppercase ${
+            isCarriedOver ? "text-warning" : "text-error"
+          }`}
+        >
+          {isCarriedOver
+            ? `Carried-over objections (${objections.length})`
+            : `Fund Manager objections (${objections.length})`}
         </h3>
         <span className="ml-2 text-[10px] font-mono text-muted-foreground">
-          (the agent that signs off on the synthesized plan)
+          {isCarriedOver
+            ? "from a prior draft — not re-evaluated against current state"
+            : "(the agent that signs off on the synthesized plan)"}
         </span>
       </div>
+      {isCarriedOver && (
+        <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 p-2.5 text-xs">
+          The Fund Manager hasn&apos;t scored this draft. The amendment
+          flow that produced it writes a synthetic phase record but
+          doesn&apos;t invoke the FM agent. The objections below are
+          inherited from the most recent earlier draft that had a real FM
+          verdict — they may not all still apply. Press{" "}
+          <strong>Run synthesis</strong> at the top of the page for a
+          fresh FM verdict against the current state.
+        </div>
+      )}
       <ul className="flex flex-col gap-2">
         {sorted.map((o, i) => {
           const cls = severityClasses(o.severity);
@@ -753,6 +784,22 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                       >
                         FM-OBJ #{i + 1}
                       </Badge>
+                      {o.carried_over && (
+                        <Badge
+                          variant="outline"
+                          className="border-warning/40 bg-warning/10 text-warning font-mono text-[10px] shrink-0"
+                          title={
+                            o.carried_over_from_plan_version_id != null
+                              ? `Carried over from draft #${o.carried_over_from_plan_version_id} — not re-evaluated against the current draft's inputs.`
+                              : "Carried over from a prior draft — not re-evaluated against the current draft's inputs."
+                          }
+                        >
+                          carried over
+                          {o.carried_over_from_plan_version_id != null
+                            ? ` (#${o.carried_over_from_plan_version_id})`
+                            : ""}
+                        </Badge>
+                      )}
                       <span className="font-medium">
                         {renderTranslated && activeTranslation
                           ? activeTranslation.headline
@@ -1011,6 +1058,45 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                               {counter.trim()
                                 ? "Saves on blur."
                                 : "Required for disagree — the new round needs a position to honor."}
+                            </p>
+                          </div>
+                        )}
+                        {curStance === "AGREE" && (
+                          <div className="mt-2">
+                            <label
+                              htmlFor={`resolution-${i}`}
+                              className="block text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-1"
+                            >
+                              Resolution note (optional — what did you do?)
+                            </label>
+                            <textarea
+                              id={`resolution-${i}`}
+                              className="w-full text-sm rounded-md border border-border/60 bg-background px-2 py-1.5 min-h-[3.5rem] focus:outline-none focus:ring-1 focus:ring-ring"
+                              value={counter}
+                              onChange={(e) =>
+                                setCounterDrafts((prev) => ({
+                                  ...prev,
+                                  [i]: e.target.value,
+                                }))
+                              }
+                              onBlur={() => {
+                                const draft = (
+                                  counterDrafts[i] ?? ""
+                                ).trim();
+                                if (
+                                  draft &&
+                                  draft !==
+                                    (stances[i]?.counter_position ?? "")
+                                ) {
+                                  void persistStance(i, "AGREE", draft, o);
+                                }
+                              }}
+                              placeholder="e.g. Updated goals_yaml via /advisor to split apartment goal from household contribution; combined liability now 1 M instead of 3 M."
+                            />
+                            <p className="text-[10px] text-muted-foreground mt-1">
+                              Records how this objection was resolved
+                              outside the plan loop (chat edit, manual
+                              change, etc.). Saves on blur.
                             </p>
                           </div>
                         )}

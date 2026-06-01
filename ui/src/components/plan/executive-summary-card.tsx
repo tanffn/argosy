@@ -92,7 +92,17 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
     onDiscussObjection,
     onStartNewRound,
   } = props;
+  // Three verdict states map to four UI shapes (plus "loading"):
+  //   evaluated + approved=false → "Fund Manager rejected" (red)
+  //   evaluated + approved=true  → "Fund Manager approved" (green)
+  //   carried_over               → "FM verdict not refreshed" (yellow banner;
+  //                                 objections below come from a prior draft)
+  //   not_evaluated              → "Not FM-evaluated yet" (yellow)
   const fmRejected = objections?.approved === false;
+  const verdictStatus = objections?.verdict_status ?? "evaluated";
+  const notEvaluated =
+    objections != null && objections.approved === null;
+  const carriedOver = verdictStatus === "carried_over";
 
   const totals = useMemo(() => {
     const long = countDeltasByKind(draft.horizon_long);
@@ -115,9 +125,11 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
       className={
         fmRejected
           ? "border-error/40 bg-gradient-to-br from-error/5 to-background"
-          : objections
-            ? "border-success/40 bg-gradient-to-br from-success/5 to-background"
-            : undefined
+          : notEvaluated
+            ? "border-warning/40 bg-gradient-to-br from-warning/5 to-background"
+            : objections
+              ? "border-success/40 bg-gradient-to-br from-success/5 to-background"
+              : undefined
       }
     >
       <CardHeader>
@@ -128,6 +140,16 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
                 <>
                   <AlertTriangle className="h-5 w-5 text-error" />
                   Draft #{draft.plan_version_id} · Fund Manager rejected
+                </>
+              ) : notEvaluated && carriedOver ? (
+                <>
+                  <AlertTriangle className="h-5 w-5 text-warning" />
+                  Draft #{draft.plan_version_id} · FM verdict not refreshed
+                </>
+              ) : notEvaluated ? (
+                <>
+                  <AlertTriangle className="h-5 w-5 text-warning" />
+                  Draft #{draft.plan_version_id} · Not FM-evaluated yet
                 </>
               ) : objections ? (
                 <>
@@ -180,14 +202,23 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
               {objections != null && (
                 <>
                   <Badge
-                    variant={fmRejected ? "error" : "success"}
+                    variant={
+                      fmRejected ? "error" : notEvaluated ? "warning" : "success"
+                    }
                     className="mr-1"
                   >
-                    {fmRejected ? "REJECTED" : "APPROVED"}
+                    {fmRejected
+                      ? "REJECTED"
+                      : notEvaluated
+                        ? carriedOver
+                          ? "STALE"
+                          : "NOT EVALUATED"
+                        : "APPROVED"}
                   </Badge>
-                  {fmRejected && (
+                  {(fmRejected || carriedOver) && objections.objections.length > 0 && (
                     <span className="text-muted-foreground">
-                      {objections.objections.length} objections
+                      {objections.objections.length}{" "}
+                      {carriedOver ? "carried-over objections" : "objections"}
                     </span>
                   )}
                 </>
@@ -241,9 +272,10 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
           </div>
         )}
 
-        {fmRejected && objections && (
+        {(fmRejected || carriedOver) && objections && (
           <FMObjectionsCard
             objections={objections.objections}
+            verdictStatus={verdictStatus}
             userId={userId}
             planVersionId={draft.plan_version_id}
             onResynthesize={onResynthesize}
@@ -251,6 +283,18 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
             onDiscussObjection={onDiscussObjection}
             onStartNewRound={onStartNewRound}
           />
+        )}
+
+        {notEvaluated && !carriedOver && objections && (
+          <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+            <p>
+              <strong>This draft has not been evaluated by the Fund
+              Manager yet.</strong> The amendment flow that produced it
+              writes a synthetic phase record but does not invoke the FM
+              agent. Press <strong>Run synthesis</strong> at the top of the
+              page to get a real verdict against the current state.
+            </p>
+          </div>
         )}
       </CardContent>
     </Card>

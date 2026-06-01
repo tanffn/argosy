@@ -902,10 +902,31 @@ class FMObjection(BaseModel):
     # failed or the cache helper was skipped (legacy clients). UI falls
     # back to the on-demand POST when null.
     translation: FMObjectionTranslationDTO | None = None
+    # When True, this objection was carried over from a prior draft's
+    # FM verdict because the current draft has no Fund-Manager
+    # evaluation of its own (typical for plan_amendment_chat drafts).
+    # The UI badges these as "carried over from draft #N" so the user
+    # doesn't mistake an un-re-evaluated concern for a fresh one.
+    carried_over: bool = False
+    carried_over_from_plan_version_id: int | None = None
 
 
 class FMObjectionsResponse(BaseModel):
-    approved: bool
+    # `approved` is the Fund Manager's literal verdict (True/False).
+    # `None` means no FM has evaluated this draft yet — typically a
+    # plan_amendment_chat draft whose worker writes a synthetic phase
+    # record but never invokes the FM agent. The UI maps None to
+    # "Not FM-evaluated — run synthesis for a verdict" instead of
+    # silently rendering "Approved".
+    approved: bool | None
+    # Verdict provenance — drives the /plan banner state machine.
+    #   "evaluated"    — a real FM agent_report exists for this draft
+    #   "not_evaluated"— no FM has scored this draft; objections list
+    #                    is empty AND no carry-forward source found
+    #   "carried_over" — no FM verdict on this draft, but the prior
+    #                    draft had one and its objections are surfaced
+    #                    below with carried_over=True
+    verdict_status: str = "evaluated"
     objections: list[FMObjection]
     cited_sources: list[str]
     decision_run_id: int | None
@@ -1816,29 +1837,34 @@ def get_draft_objections(
     pv = get_pending_draft(db, user_id)
     if pv is None:
         raise HTTPException(status_code=404, detail="no pending draft for user")
-    if pv.decision_run_id is None:
-        # Synth-produced drafts always carry decision_run_id; manually-ingested
-        # ones may not. Without it, we can't find the FM row.
-        return FMObjectionsResponse(
-            approved=True, objections=[], cited_sources=[],
-            decision_run_id=None, raw_response_excerpt="",
-        )
 
-    # agent_reports.decision_id is a string column; synthesis writes
-    # ``plan-synth-<int>`` per orchestrator.py.
-    decision_id_str = f"plan-synth-{pv.decision_run_id}"
-    fm_row = db.execute(
-        select(AgentReport).where(
-            AgentReport.user_id == user_id,
-            AgentReport.decision_id == decision_id_str,
-            AgentReport.agent_role == "fund_manager",
-        ).order_by(desc(AgentReport.created_at)).limit(1)
-    ).scalar_one_or_none()
+    # Look up the FM agent_report for this draft's synthesis run. Drafts
+    # produced by plan_amendment_chat do NOT carry a fund_manager
+    # agent_report (the medium worker stamps a synthetic negotiation
+    # phase record but never invokes the agent), so we fall through to
+    # the carry-forward path below in that case.
+    fm_row = None
+    decision_id_str = (
+        f"plan-synth-{pv.decision_run_id}" if pv.decision_run_id is not None else None
+    )
+    if decision_id_str is not None:
+        fm_row = db.execute(
+            select(AgentReport).where(
+                AgentReport.user_id == user_id,
+                AgentReport.decision_id == decision_id_str,
+                AgentReport.agent_role == "fund_manager",
+            ).order_by(desc(AgentReport.created_at)).limit(1)
+        ).scalar_one_or_none()
 
     if fm_row is None or not fm_row.response_text:
-        return FMObjectionsResponse(
-            approved=True, objections=[], cited_sources=[],
-            decision_run_id=pv.decision_run_id, raw_response_excerpt="",
+        # No real FM verdict for this draft. Try to carry forward the
+        # most recent earlier draft's FM objections so the user sees
+        # what's still potentially open instead of a misleading silent
+        # "Approved" state. The carry-forward is purely informational:
+        # the objections come from a draft that was evaluated against
+        # different inputs and may not still apply.
+        return _build_carried_over_response(
+            db, user_id=user_id, current_pv=pv,
         )
 
     parsed = _parse_fm_response(fm_row.response_text)
@@ -1936,11 +1962,100 @@ def get_draft_objections(
 
     return FMObjectionsResponse(
         approved=approved,
+        verdict_status="evaluated",
         objections=objections,
         cited_sources=cited,
         decision_run_id=pv.decision_run_id,
         raw_response_excerpt=fm_row.response_text[:500],
         prior_round_objections=prior_round_objections,
+    )
+
+
+def _build_carried_over_response(
+    db: Session, *, user_id: str, current_pv: PlanVersion
+) -> FMObjectionsResponse:
+    """Build an FMObjectionsResponse for a draft that has no FM verdict.
+
+    Walks back through earlier plan_versions in descending imported_at
+    order until it finds one with a real ``fund_manager`` agent_report,
+    then surfaces THAT verdict's objections tagged ``carried_over=True``.
+    The walk-back is necessary because a chain of plan_amendment_chat
+    drafts can stack with none of them carrying an FM report — a
+    single-hop lookup would still erase the prior open objections from
+    the user's view. Stops at the first row with a real FM report or
+    when history is exhausted; returns the bare ``not_evaluated`` shape
+    when nothing is found.
+
+    The carried-over objections aren't a fresh judgment — they're
+    surfaced so the user knows what was still potentially open before
+    the amendment landed. The /plan UI banners this state explicitly.
+    """
+    candidate_rows = db.execute(
+        select(PlanVersion).where(
+            PlanVersion.user_id == user_id,
+            PlanVersion.id != current_pv.id,
+            PlanVersion.imported_at < current_pv.imported_at,
+            PlanVersion.decision_run_id.is_not(None),
+        ).order_by(desc(PlanVersion.imported_at))
+    ).scalars().all()
+
+    for prior_pv in candidate_rows:
+        if prior_pv.decision_run_id is None:
+            continue
+        prior_decision_id_str = f"plan-synth-{prior_pv.decision_run_id}"
+        prior_fm_row = db.execute(
+            select(AgentReport).where(
+                AgentReport.user_id == user_id,
+                AgentReport.decision_id == prior_decision_id_str,
+                AgentReport.agent_role == "fund_manager",
+            ).order_by(desc(AgentReport.created_at)).limit(1)
+        ).scalar_one_or_none()
+        if prior_fm_row is None or not prior_fm_row.response_text:
+            # No FM on this candidate (e.g. another plan_amendment_chat
+            # draft). Keep walking back.
+            continue
+        # Found a real FM verdict — carry forward its objections.
+        parsed = _parse_fm_response(prior_fm_row.response_text)
+        reasons = parsed.get("reasons") or []
+        cited = [
+            c for c in (parsed.get("cited_sources") or []) if isinstance(c, str)
+        ]
+        carried: list[FMObjection] = []
+        for r in reasons:
+            if not isinstance(r, str) or not r.strip():
+                continue
+            topic, detail = _split_reason(r)
+            sev = _classify_severity(topic, detail)
+            carried.append(
+                FMObjection(
+                    severity=sev,
+                    topic=topic,
+                    detail=detail,
+                    carried_over=True,
+                    carried_over_from_plan_version_id=prior_pv.id,
+                )
+            )
+        return FMObjectionsResponse(
+            # approved stays None — the current draft has not been
+            # evaluated. The prior bool would mislead if surfaced as
+            # the current verdict; raw_response_excerpt carries the
+            # prior FM's prose for context if the UI wants it.
+            approved=None,
+            verdict_status="carried_over",
+            objections=carried,
+            cited_sources=cited,
+            decision_run_id=current_pv.decision_run_id,
+            raw_response_excerpt=prior_fm_row.response_text[:500],
+        )
+
+    # Walked the entire history; no FM verdict anywhere.
+    return FMObjectionsResponse(
+        approved=None,
+        verdict_status="not_evaluated",
+        objections=[],
+        cited_sources=[],
+        decision_run_id=current_pv.decision_run_id,
+        raw_response_excerpt="",
     )
 
 
