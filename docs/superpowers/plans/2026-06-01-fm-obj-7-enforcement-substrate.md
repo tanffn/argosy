@@ -99,22 +99,43 @@ Reason: the latent "fire-and-forget never completed" failure cannot recur silent
 ## Scope checklist (wave 6)
 
 - [ ] **Migration 0060_plan_policies**: `plan_policies` table (policy_version, effective_at, source_plan_version_id, rules JSON), `instrument_classification` table
-- [ ] **Pydantic types**: `argosy/agents/plan_policy_types.py` with discriminated union
+- [ ] **Pydantic types**: `argosy/agents/plan_policy_types.py` with discriminated union (`TickerCapRule` + `SectorCapRule` only; `ExposureCapRule` stub for Wave 7 but no production wiring)
 - [ ] **Synthesizer schema extension**: `PlanSynthesisOutput` emits `policy: PlanPolicy` (or equivalent) so the distillate carries typed rules instead of label-keyed targets
 - [ ] **Distiller update**: `PlanDistillerAgent` produces `PlanPolicy` from synthesizer output
+- [ ] **Backwards-compat adapter**: convert typed `PlanPolicy` back to `{label: value}` legacy dict for `ConcentrationAnalystAgent` until consumers migrate (or document explicit consumer-migration plan inline)
 - [ ] **Distillation backfill**: `argosy/cli/distill.py` adds `--missing-baselines`, scheduled job, retry logic, upload-time `distillation_pending` state
-- [ ] **Instrument classification sync**: `argosy/services/instrument_classification.py` + scheduled job pulling from Finnhub `/stock/profile2`
+- [ ] **Backfill validation gates**: post-backfill assertion (parse-failure count + row count + spot-check on at least one distillate's `policy.rules`) before flipping the active baseline pointer; rollback path if gate fails
+- [ ] **Instrument classification sync**: `argosy/services/instrument_classification.py` + scheduled job pulling from Finnhub `/stock/profile2` with manual-override write path
 - [ ] **Preflight rewrite**: `risk_preflight.check_concentration_cap` becomes `evaluate_policy(proposal, snapshot, policy, classification_map)` returning per-rule results
-- [ ] **Override logging**: when a user explicitly confirms past a HARD_FAIL, record `decision_runs.notes_json.override_reason`
+- [ ] **Rule-evaluation semantics**: define precedence (ticker rules > sector rules?), aggregation (does a per-ticker PASS override a per-sector FAIL?), and HARD_FAIL short-circuit policy upfront — encoded in `evaluate_policy` + tested
+- [ ] **Unknown-classification behavior**: explicit policy when proposal ticker is absent from `instrument_classification` — currently considering SOFT_FAIL with banner OR HARD_FAIL with override; decision in open questions
+- [ ] **Policy selection at decision time**: given multiple `plan_policies` rows (different `effective_at`, different `source_plan_version_id`), define which one applies to "right now" + tie-break semantics + rollback shape
+- [ ] **Override logging**: when a user explicitly confirms past a HARD_FAIL, record structured `decision_runs.notes_json.override_reason` (enum + actor identity + free-text justification)
 - [ ] **Startup health check**: `distillation_backlog` monitor flag if any active-user baseline has NULL distillate
-- [ ] **Tests**: per-rule preflight (ticker pass/fail, sector pass/fail, exposure pass/fail), backfill idempotence, classification sync end-to-end, override logging
+- [ ] **Tests**:
+  - per-rule preflight: ticker pass/fail, sector pass/fail (no exposure tests in Wave 6 — those land with `ExposureCapRule` in Wave 7)
+  - unknown-ticker / unknown-sector classification behavior
+  - policy selection + effective-date tie-break behavior
+  - backfill idempotence + validation gate failure modes
+  - classification sync end-to-end (mocked Finnhub)
+  - override logging audit trail
+  - backwards-compat adapter shape
 
 ## Open questions for approval
+
+### Original four (wave-5 scoping pass)
 
 1. **Wave 6 timeline target.** Codex says 2026-07-15 is feasible **if** scope hard-caps to enforcement backend (no UX redesign for /plan policy editor — that's Wave 7). Ariel: is the first NVDA-deconcentration redeployment trade confirmed before or after 2026-07-15? If after, we have slack; if before, this wave is on the critical path.
 2. **Sector code source-of-truth.** Finnhub uses GICS (Information Technology / Semiconductors / etc.). The user's plan-prose uses "info tech" / "tech tilt." Question: do we adopt GICS verbatim, or normalize to a smaller user-facing taxonomy? Affects how synthesizer expresses caps + how UI renders them.
 3. **Backwards compatibility.** Existing `_extract_plan_targets` returns `{label: value}` and ConcentrationAnalystAgent consumes it that way. Do we (a) ship the new typed model alongside the legacy dict and migrate consumers over a few cycles, (b) hard-flip everyone to the typed model in one commit, or (c) treat ConcentrationAnalystAgent's iteration as deprecated and remove the label-keyed extractor entirely?
 4. **Override authority.** FM-OBJ #5's text says *"override authority reserved to user-confirmation only."* Today every trade goes through the user anyway (single-user system). Multi-tenant ready by design — is the override permission a per-policy-rule property (e.g., "this ticker cap is overridable; this sector cap is not") or one global "user can override anything" flag?
+
+### Added by codex review (must answer before code starts)
+
+5. **Unknown-ticker / unknown-sector enforcement policy.** When a proposed trade's ticker is absent from `instrument_classification` (new symbol, vendor gap, sync lag), what does preflight return? Options: (a) **HARD_FAIL with override** — block by default, force user confirm with explicit reason; (b) **SOFT_FAIL with banner** — allow trade, flag the gap visibly; (c) **PASS with audit trail** — assume benign, record for review later. Codex flagged this as "the biggest regression-risk gap" in the current plan.
+6. **Policy lifecycle semantics.** Each successful synthesis writes a new `plan_policies` row. At decision time, multiple policy rows may exist (different `effective_at`, different `source_plan_version_id`). Question: (a) how is "the active policy" selected — most recent `effective_at` past `now()`? Most recent `source_plan_version_id` matching the active baseline? (b) What happens when a synthesis is rolled back — does its policy get superseded automatically, marked inactive, or deleted? (c) Replay behavior: when re-running a preflight check against a historical proposal, which policy applies?
+7. **Override audit schema contract.** What fields are mandatory on a user-confirmed override past HARD_FAIL? Codex calls out: `actor identity` (user_id), `enum reason` (e.g., `risk_accepted` / `data_correction` / `emergency` / `other`), `free-text justification`. Anything else? Affects schema for `decision_runs.notes_json.override` + downstream replay/audit pages.
+8. **Sync SLO + rate-limit / backoff policy.** Finnhub free tier rate-limits at 60/min. The `instrument_classification` table has ~26 user tickers + watchlist. Refresh cadence proposal: nightly full-sync? Hourly delta against recent fills? On-demand refresh when a new ticker enters positions? Plus: how stale is too stale before preflight downgrades to "unknown-classification" semantics? Codex flags this as risk #3 (rate limits / staleness causing sync lag).
 
 ## What this wave does NOT do
 
@@ -127,3 +148,12 @@ Reason: the latent "fire-and-forget never completed" failure cannot recur silent
 ## Dependencies on other in-flight work
 
 None blocking. Wave 5 fixes (Finnhub/FRED keys, tax plumbing) need to land cleanly first so wave 6's distill rerun has a healthy substrate to read from.
+
+## Known risks (codex review)
+
+To flag explicitly before the wave starts:
+
+1. **Unknown/stale classification.** A position whose actual sector has shifted (M&A, business pivot) but whose `instrument_classification` row hasn't been refreshed could cause a **false block** (legitimate trade rejected) or a **missed block** (real cap breach allowed through). Severity depends on the unknown-classification policy chosen in open question #5. Mitigation: SLO-driven sync cadence + staleness threshold + audit log of preflight decisions made against potentially-stale rows.
+2. **Typed-schema rollout breaking legacy distillates.** During the rollout window, some `plan_versions` rows will have legacy `distillate_json` (label-keyed) and new rows will have typed-policy `distillate_json`. Consumers must handle both shapes until migration completes. Without an explicit compatibility adapter (see scope checklist), readers will break on whichever shape they didn't expect.
+3. **Finnhub rate limits + staleness.** Free tier is 60 calls/min. Sync job that hits Finnhub for every position + watchlist daily would burn ~30 calls — fine in isolation, but if cache invalidation cascades or the sync re-fires on every position change, the budget gets thin. Backoff policy + staleness threshold needed (open question #8).
+4. **Backfill partial success.** `argosy distill --missing-baselines` runs against an unknown number of baselines. If 10 succeed and 3 fail mid-run, the system ends up with mixed policy generations — some users on the new schema, some on the legacy. The backfill validation gate (scope checklist) is the mitigation: don't flip the active baseline pointer until validation passes; on failure, rollback path defined.
