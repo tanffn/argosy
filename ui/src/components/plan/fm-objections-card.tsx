@@ -59,19 +59,37 @@ const ANALYST_ROLE_TO_DISPLAY: Record<string, string> = {
   plan_critique: "Plan critique",
 };
 
-// Pulls every distinct agent_report:<AgentClassName> reference from an
-// objection's detail text, then maps each to the canonical analyst role.
+// Pulls every distinct ``agent_report:<ref>`` reference from an
+// objection's detail text and resolves each to its canonical analyst
+// role. Two citation forms are tolerated because the FM agent has
+// drifted between them across versions:
+//
+//   1. CamelCase class form — ``agent_report:PlanCritiqueAgent``
+//      (older verdicts) — resolved via ANALYST_AGENT_NAME_TO_ROLE.
+//   2. snake_case role form — ``agent_report:plan_critique``
+//      (newer verdicts) — used directly as the role if it's in the
+//      role-display map.
+//
 // Returns the list in encounter order, deduplicated. Empty array when
 // no recognized analyst refs are present (button is disabled in that
 // case — the FM's concern is structural / no specific analyst owner).
 function parseAnalystRefsFromObjection(detail: string): string[] {
   if (!detail) return [];
-  const re = /agent_report:([A-Z][A-Za-z]+Agent)/g;
+  // Match either CamelCase class OR snake_case role name. The regex
+  // intentionally allows both since the FM citations evolved.
+  const re = /agent_report:([A-Za-z_]+)/g;
   const seen = new Set<string>();
   const out: string[] = [];
   for (const m of detail.matchAll(re)) {
-    const name = m[1];
-    const role = ANALYST_AGENT_NAME_TO_ROLE[name];
+    const ref = m[1];
+    // Resolve class-form first ("PlanCritiqueAgent" → "plan_critique");
+    // fall through to role-form ("plan_critique" stays as-is, but
+    // only if it's in the role-display map so we don't surface a
+    // misspelling).
+    let role: string | undefined = ANALYST_AGENT_NAME_TO_ROLE[ref];
+    if (!role && ref in ANALYST_ROLE_TO_DISPLAY) {
+      role = ref;
+    }
     if (role && !seen.has(role)) {
       seen.add(role);
       out.push(role);
