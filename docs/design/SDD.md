@@ -15,7 +15,54 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-06-01 (morning, wave 3) by Claude — **15-commit sprint on the /plan FM-objection surface**. Branch `main` @ `77d1ff3`. The headline change is architectural: post-synthesis the fleet now **auto-resolves FM↔analyst dialogues** for every objection with an analyst owner; the /plan list filters down to only **Blockers** (user must arbitrate) + **Decisions** (FM proposed a revised wording — user picks); items the fleet settled internally roll up into a collapsed "Resolved among the fleet (N)" footer. Driven by Ariel's framing *"if they can come to an agreement without me, why was it surfaced to begin with?"* — same shape as `feedback_agents_talk_to_each_other`, one level up. Plus: editing locked while a fresh synthesis is in flight (stances written against the old draft don't transfer); buttons gated by `verdict_status='evaluated'` so carried-over drafts can't trigger backend endpoints that need a current FM verdict; FM-OBJ #N visible identifier on every objection card; per-objection translation cache follows the carry-over path; cascade panel cache_hit math fixed (was producing 290000% when the cache was warm); USD cost stripped from every agent surface; ISO timestamps now UTC-tagged so the UI correctly localizes (was rendering UTC values as local — 06:42 instead of 09:42 IDT); date format unified to YYYY-MM-DD across /plan. Codex tandem audited two design changes — the user_guidance prompt threading (4 blockers landed) and the route enrichment (3 blockers landed, including a recursive walk-back through amendment-chain drafts). **Operational lesson logged below**: never restart uvicorn while a background synthesis is running — daemon threads die with the parent process, leaving DecisionRun rows zombie-stuck at `status='running'`. Recoverable via `/api/advisor/check-in/{id}/resume` (resume-from-phase is wired). Branch `main` @ `77d1ff3`. Three binding memories from yesterday still apply: `user_long_hold_investor.md`, `feedback_agents_talk_to_each_other.md`, `feedback_trust_data_feed.md`. See §"Wave 2026-06-01" below for the full commit list. Wave 2 (yesterday's tab-cleanup + welcome-card + data-loss-fix sprint) is in the section below that.
+**Last edit:** 2026-06-01 (late morning, wave 4) by Claude — **synth #58 incident response: plan_synthesizer truncation root-cause fix + in-flight DTO visibility**. Branch `main` @ `221254a`. Synth #58 hit 3-of-3 retry failures with `plan_synthesizer` emitting only a markdown fence opener (`\`\`\`json\n`) and running out of output tokens before producing JSON body — fence-strip left empty text, raw_decode raised `Expecting value: line 1 column 1 (char 0)`. Root cause: Opus 4.7 at `thinking_effort="max"` against a ~30K-token prompt (including a ~5K-token raw `model_json_schema()` dump) was burning thinking budget at the cost of output. Two codex tandem passes (audit → ranked fixes; review → 1 BLOCKER + 2 MINORs landed) drove a five-piece fix in commit `4145dc5`: (F) opt-in `use_structured_output` ClassVar on BaseAgent → bundled claude.exe receives `--json-schema` and enforces shape server-side; (D) replaced raw schema dump with concise field summary in plan_synthesizer prompt (~5K tokens reclaimed); (B) terminal "respond with JSON directly, no fences" instruction; (A) `_parse_output` scans every `{`/`[` in both cleaned + original text and ALSO model-validates each candidate (codex caught the case where an early example JSON fragment could parse but fail validation, leaving the real payload unreached); (C) synthesizer effort dropped `max → high`. 11 new tests landed (8 parser fallback cases + 2 structured-output propagation + 1 effort-table pin). Plus `221254a` surfaces phase + elapsed time in InFlightSynthesisDTO so the user can see "phase 3 (synthesizer), 24 min elapsed" instead of just "completed 2 of 5" — and a warning hint surfaces when a phase runs >15 min pointing at `claude_code.malformed_json_retry` log entries. Three binding memories from prior sessions still apply: `user_long_hold_investor.md`, `feedback_agents_talk_to_each_other.md`, `feedback_trust_data_feed.md`. The wave-3 auto-dispatch + filtered-list architecture is in place but **untested end-to-end** — synth #58 died before its FM verdict landed, so the auto-dispatch hook has never run on a real fresh draft. Verifying the full chain (synthesis succeeds → auto-dispatch fires → /plan filters to Blockers + Decisions) is the first task next session. See §"Wave 2026-06-01 (wave 4)" below; wave 3 (the architectural shift) and wave 2 (tab cleanup + welcome card + data-loss fix) are in the sections below that.
+
+### Wave 2026-06-01 (wave 4) — synth #58 truncation incident + recovery
+
+**Full commit list (2 commits):**
+
+| Commit | One-line |
+|---|---|
+| `4145dc5` | fix(synth): schema-constrained output + parser fallback + effort tuning (codex tandem audit + review; F + D + B + A + C from the ranked-fix table) |
+| `221254a` | feat(plan): surface current phase + elapsed time in in-flight DTO (derived from decision_phases; UI shows "phase N — synthesizer · 24 min elapsed" with warning hint at 15+ min) |
+
+**The incident (synth #58, 2026-06-01 06:42–08:05 UTC):**
+
+User clicked Run synthesis on draft #16 after the wave-3 architecture shipped. Phases 1+2 completed cleanly (~16 min). Phase 3 (plan_synthesizer Opus 4.7, effort=max, ~30K-token input) hit `claude_code.malformed_json_retry` on attempts 1 + 2 (~9 min each, identical prompt re-roll). My restart of uvicorn for an unrelated UTC-timestamp fix killed the daemon thread mid-attempt-3; orchestrator's resume route picked up at phase 3 but the same prompt triggered the same failure. Attempt 3 of resume also failed at 08:05; orchestrator wrote `plan_synthesis.background_failed` and the run flipped to `status='failed'`. Total wall-clock burned: ~83 minutes (with the kill + resume in the middle).
+
+**Operational lesson — uvicorn restart still kills running synthesis:** wave-3 logged this and synth #58 confirmed it the hard way. Even the resume path doesn't help when the prompt is deterministic-failing — the fix has to land in the prompt + parser, not the orchestration. Going forward: when uvicorn must restart, check `/api/plan/in-flight-synthesis` first; if a synthesis is running, decide whether the change can wait OR the resume path can recover (it can, when the failure isn't deterministic).
+
+**Root cause + 5-piece fix (codex tandem ranked + reviewed):**
+
+The bundled `claude_agent_sdk` has supported `output_format={"type":"json_schema","schema":<dict>}` natively — it forwards `--json-schema` to claude.exe (verified in `.venv/.../subprocess_cli.py:371-381`). The plan_synthesizer wasn't using it. Opting in lets the model emit JSON directly with no markdown wrapper and no preamble; combined with effort tuning + a trimmed prompt, the output-budget squeeze that produced the truncation goes away.
+
+| Fix | Where | What |
+|---|---|---|
+| **F** — structured output | `argosy/agents/base.py` (new `use_structured_output` ClassVar) + `plan_synthesizer.py` (opt in) | SDK call adds `output_format` when True → claude.exe enforces schema |
+| **D** — trim schema dump | `plan_synthesizer.py` system prompt | Replaced `model_json_schema()` dump (~5K tokens) with hand-written field summary (~700 tokens). Verified against `plan_synthesizer_types.py`; codex review caught earlier drift (non-existent `'on_event'` freshness enum, wrong SynthTarget required fields) |
+| **B** — JSON-start instruction | `plan_synthesizer.py` user prompt (last line) | "Respond with JSON directly — no fences, no preamble. Your response MUST start with `{`." Prose backstop in case model regresses |
+| **A** — defensive parser | `argosy/agents/base.py` `_parse_output` | When `raw_decode` fails at head, scan every `{`/`[` offset in cleaned + original text; pass each candidate through `model_validate` too; only return when BOTH succeed. Logs `agent.parse_output.recovered_from_scan` |
+| **C** — effort tuning | `argosy/agents/base.py` `DEFAULT_THINKING_EFFORT_BY_ROLE` | `plan_synthesizer`: `max → high`. `fund_manager` / `plan_critique` / `fund_manager_dialogue_verdict` stay `max` (no incident history) |
+
+**Codex tandem footprint this wave:**
+
+- Audit pass (`tools/codex-tandem/scripts/_synthesizer_truncation_audit.py`) — ranked the 5 fixes; flagged E (chunked output) as too-early architecture, recommended F+D as primary leverage.
+- Review pass (`tools/codex-tandem/scripts/_synthesizer_fix_review.py`) — caught 1 BLOCKER (`test_thinking_effort.py:112` had `plan_synthesizer` pinned in `heavy_max`; would have failed CI) + 2 MINORs (prompt-schema drift; parser latching on early fragment). All landed in the final commit.
+
+**In-flight DTO visibility:**
+
+While debugging the incident, the UI told the user "completed 2 of 5" — true but not actionable. `221254a` adds `current_phase`, `current_phase_label` (analysts / debate teams / synthesizer / risk officers / fund manager), `current_phase_started_at`, `current_phase_elapsed_seconds` derived from the latest `decision_phases` row. The InFlightSynthesisCard now renders "Phase 3 of 5 — synthesizer · currently running · 24 min elapsed"; past 15 min a warning hint points at the `claude_code.malformed_json_retry` log line. No orchestrator changes — pure derived data.
+
+**Pending verification:**
+
+The wave-3 auto-dispatch + filtered-list architecture is **untested end-to-end** because synth #58 died before its FM verdict landed. Verifying the full chain on draft #17 (or whatever comes next) is the first task next session: confirm `schedule_auto_dialogues_for_draft` fires, dialogues converge, `/api/plan/draft/objections` annotates `action_kind` correctly, and the UI filter renders only Blockers + Decisions with the resolved rows in the collapsed footer.
+
+**Pending follow-ons (NICE, deferred):**
+
+- Other agents opting into `use_structured_output` (fund_manager, plan_critique, analyst_responder, etc.) on a case-by-case verification basis. No incident data warranting a forced rollout.
+- Retry-specific hint injection (codex MINOR in the audit pass) — on retry, inject "your last response started with a code fence" into the next attempt's prompt so deterministic-failing prompts at least vary across retries. Defer until we see whether the structured-output fix removes the failure class entirely.
+- Chunked-horizon synthesis (fix E) — phase-2 reliability work if truncation recurs at high effort.
+- Graceful uvicorn restart that drains in-flight background work — bigger lift; the rule of thumb (check in-flight before restart) is enough for now.
 
 ### Wave 2026-06-01 — auto-resolve + filtered list + carried-over hygiene
 
