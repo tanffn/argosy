@@ -15,7 +15,105 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-06-01 (late morning, wave 4) by Claude — **synth #58 incident response: plan_synthesizer truncation root-cause fix + in-flight DTO visibility**. Branch `main` @ `221254a`. Synth #58 hit 3-of-3 retry failures with `plan_synthesizer` emitting only a markdown fence opener (`\`\`\`json\n`) and running out of output tokens before producing JSON body — fence-strip left empty text, raw_decode raised `Expecting value: line 1 column 1 (char 0)`. Root cause: Opus 4.7 at `thinking_effort="max"` against a ~30K-token prompt (including a ~5K-token raw `model_json_schema()` dump) was burning thinking budget at the cost of output. Two codex tandem passes (audit → ranked fixes; review → 1 BLOCKER + 2 MINORs landed) drove a five-piece fix in commit `4145dc5`: (F) opt-in `use_structured_output` ClassVar on BaseAgent → bundled claude.exe receives `--json-schema` and enforces shape server-side; (D) replaced raw schema dump with concise field summary in plan_synthesizer prompt (~5K tokens reclaimed); (B) terminal "respond with JSON directly, no fences" instruction; (A) `_parse_output` scans every `{`/`[` in both cleaned + original text and ALSO model-validates each candidate (codex caught the case where an early example JSON fragment could parse but fail validation, leaving the real payload unreached); (C) synthesizer effort dropped `max → high`. 11 new tests landed (8 parser fallback cases + 2 structured-output propagation + 1 effort-table pin). Plus `221254a` surfaces phase + elapsed time in InFlightSynthesisDTO so the user can see "phase 3 (synthesizer), 24 min elapsed" instead of just "completed 2 of 5" — and a warning hint surfaces when a phase runs >15 min pointing at `claude_code.malformed_json_retry` log entries. Three binding memories from prior sessions still apply: `user_long_hold_investor.md`, `feedback_agents_talk_to_each_other.md`, `feedback_trust_data_feed.md`. The wave-3 auto-dispatch + filtered-list architecture is in place but **untested end-to-end** — synth #58 died before its FM verdict landed, so the auto-dispatch hook has never run on a real fresh draft. Verifying the full chain (synthesis succeeds → auto-dispatch fires → /plan filters to Blockers + Decisions) is the first task next session. See §"Wave 2026-06-01 (wave 4)" below; wave 3 (the architectural shift) and wave 2 (tab cleanup + welcome card + data-loss fix) are in the sections below that.
+**Last edit:** 2026-06-01 (afternoon, wave 5) by Claude — **FM-OBJ #4 backend fix + analyst-substrate dropout RCA + file-based external API key fallback**. Branch `main` @ `dade0f3`. Two-piece scope, both rooted in /plan workflow. **(1) FM-OBJ #4 backend fix** (`2674664`): the AGREE-with-resolution-note path silently wiped the note on update — first PUT created the row with `counter_position=null` from the button click; the textarea-blur PUT hit the update branch which had an explicit `if stance == "AGREE": counter_position = None`. Note never persisted past page reload, never reached the next round's guidance composer. Fix collapses AGREE + DISAGREE into one branch that persists `counter_position`; DEFER preserves prior value. Plus a new **RESOLVED OUTSIDE LOOP** section in the guidance composer for AGREE rows that carry a non-empty resolution note: synthesizer is told to treat the note as authoritative and re-derive affected targets from the new premise rather than baking the original FM concern. AGREE without a note stays in AGREED OBJECTIONS — correct framing for plain constraint-acceptance. Two regression tests. **(2) External-API-key file fallback** (`dade0f3`): traced FM-OBJ #5 ("Failed-analyst remediation — macro/news/tax/fundamentals failed for the second consecutive cycle") to a banal root cause — Finnhub + FRED keychain entries went missing around 2026-05-30 (no env vars; no .env file; `argosy.totp.*` / `argosy.email.*` / `argosy.admin.*` keychain entries were present, but `argosy.finnhub.api_key` + `argosy.fred.api_key` slots were empty). Adapters resolved `None` → `_gather_news/macro/fundamentals` returned `{}` → analyst prompts ran with empty source data → models honestly emitted `cited_sources: []` → `BaseAgent._validate_citations` raised `AgentRunError` → orchestrator's `_safe_run_agent` swallowed it (logged error, appended "FAILED" marker to concatenated text, **did not persist any row to `agent_reports`**). Three consecutive plan-revision cycles (#33, #34, #56) ran with degraded substrate; the synthesizer happily built drafts on the surviving 5 analysts; **only the FM agent caught it** by counting analysts in its verdict prompt. Mitigation: new helper `argosy.secrets.get_external_api_key(provider)` reads from `~/.argosy/external_api_keys.json` (JSON object mapping provider slug → key string). Mirrors the existing Discord-creds convention. Wired into both `finnhub_adapter._resolve_api_key()` and `fred_adapter._resolve_api_key()` as the third step in the chain: keychain → env var → file → `MissingAPIKeyError`. Existing keychain/env setups unaffected. 15 new tests. User created the file with valid keys; dry-run of `assemble_phase1_inputs` confirms `news_count 0→15, macro_count 0→3, fundamentals_count 0→19`. **Tax analyst still fails** — it doesn't depend on a public API; its `TaxAnalystAgent.build_prompt` declares `domain_kb_files` as "Mandatory input — citation-gate fails without these" and the inputs-pipeline plumbing into that call site is the next investigation. **FM-OBJ #7** (enforcement-substrate timeline) is a sibling architectural concern flagged but not investigated — the inputs telemetry shows `plan_targets_count: 0` across runs, so `risk_preflight.check_concentration_cap` is effectively a no-op for /plan today. **The class-of-problem revealed by FM-OBJ #5**: three layers in the chain (adapter, orchestrator, synthesizer) had the signal and none of them surfaced it; the FM agent was the only thing that emerged-anomaly-detected the substrate degradation. This is exactly what `feedback_emergent_anomaly_detection.md` calls out. Two designed-but-unbuilt fix paths from the analysis are tracked below: **Fix C** (surface `inputs.*_skipped` and `phase_1.agent_failed` as `state_observer` monitor flags on /home + /plan — visibility) and **Fix D** (add `check_substrate_freshness()` to `risk_preflight.py` that hard-fails equity-allocation proposals when ≥N analysts missing for ≥M cycles — enforcement). C and D are complementary; D matches FM-OBJ #5's literal ask. Binding memories still apply: `user_long_hold_investor.md`, `feedback_agents_talk_to_each_other.md`, `feedback_trust_data_feed.md`, `feedback_emergent_anomaly_detection.md`. **Pending verification**: user has not yet clicked Run synthesis on /plan to verify (a) FM-OBJ #4 RESOLVED OUTSIDE LOOP bucket end-to-end (b) full plan_revision with restored macro/news/fundamentals substrate. See §"Wave 2026-06-01 (wave 5)" below for the full breakdown. **Previous (late morning, wave 4) by Claude — synth #58 incident response: plan_synthesizer truncation root-cause fix + in-flight DTO visibility**. Branch `main` @ `221254a`. Synth #58 hit 3-of-3 retry failures with `plan_synthesizer` emitting only a markdown fence opener (`\`\`\`json\n`) and running out of output tokens before producing JSON body — fence-strip left empty text, raw_decode raised `Expecting value: line 1 column 1 (char 0)`. Root cause: Opus 4.7 at `thinking_effort="max"` against a ~30K-token prompt (including a ~5K-token raw `model_json_schema()` dump) was burning thinking budget at the cost of output. Two codex tandem passes (audit → ranked fixes; review → 1 BLOCKER + 2 MINORs landed) drove a five-piece fix in commit `4145dc5`: (F) opt-in `use_structured_output` ClassVar on BaseAgent → bundled claude.exe receives `--json-schema` and enforces shape server-side; (D) replaced raw schema dump with concise field summary in plan_synthesizer prompt (~5K tokens reclaimed); (B) terminal "respond with JSON directly, no fences" instruction; (A) `_parse_output` scans every `{`/`[` in both cleaned + original text and ALSO model-validates each candidate (codex caught the case where an early example JSON fragment could parse but fail validation, leaving the real payload unreached); (C) synthesizer effort dropped `max → high`. 11 new tests landed (8 parser fallback cases + 2 structured-output propagation + 1 effort-table pin). Plus `221254a` surfaces phase + elapsed time in InFlightSynthesisDTO so the user can see "phase 3 (synthesizer), 24 min elapsed" instead of just "completed 2 of 5" — and a warning hint surfaces when a phase runs >15 min pointing at `claude_code.malformed_json_retry` log entries. Three binding memories from prior sessions still apply: `user_long_hold_investor.md`, `feedback_agents_talk_to_each_other.md`, `feedback_trust_data_feed.md`. The wave-3 auto-dispatch + filtered-list architecture is in place but **untested end-to-end** — synth #58 died before its FM verdict landed, so the auto-dispatch hook has never run on a real fresh draft. Verifying the full chain (synthesis succeeds → auto-dispatch fires → /plan filters to Blockers + Decisions) is the first task next session. See §"Wave 2026-06-01 (wave 4)" below; wave 3 (the architectural shift) and wave 2 (tab cleanup + welcome card + data-loss fix) are in the sections below that.
+
+### Wave 2026-06-01 (wave 5) — FM-OBJ #4 backend fix + substrate dropout RCA + external API key file
+
+**Full commit list (3 commits):**
+
+| Commit | One-line |
+|---|---|
+| `2674664` | fix(plan): persist AGREE resolution note + emit RESOLVED OUTSIDE LOOP guidance bucket |
+| `dade0f3` | feat(secrets): file-based external API key fallback (~/.argosy/external_api_keys.json) |
+| _(this)_ | docs(sdd): wave 5 handover |
+
+**Trigger:** User opened /plan, looked at FM-OBJ #4 (FI urgency framing single-scenario; FM was working from a 500k NIS near_term_spending premise that wasn't user-asserted — actual canonical spend basis is 277k NIS tracked + extrapolated). UI offered Agree/Defer/Disagree and the AGREE branch surfaced a "Resolution note (optional — what did you do?)" textarea, but the resolution-note didn't actually persist past the page reload.
+
+**Part 1 — FM-OBJ #4 backend fix (`2674664`):**
+
+Two distinct problems, one commit:
+
+| Problem | Where | Fix |
+|---|---|---|
+| AGREE-with-note silently wiped | `argosy/api/routes/plan_objection_state.py` update branch | Collapsed `if DISAGREE` / `elif AGREE → None` into `if stance in ("DISAGREE", "AGREE"): row.counter_position = counter`. DEFER still preserves prior value (neutral) |
+| AGREED bucket framing wrong for premise correction | `_compose_new_round_guidance` | AGREE rows with non-empty `counter_position` now route to new RESOLVED OUTSIDE LOOP section: synthesizer is told to treat the note as authoritative and re-derive affected targets from the new premise, NOT bake the original FM constraint into the new draft. AGREE-without-note stays in AGREED OBJECTIONS (correct for plain constraint-acceptance) |
+
+Two regression tests: one pins the update-path persistence, one pins the new RESOLVED bucket label + AGREE-vs-RESOLVED split semantics.
+
+**Part 2 — Substrate dropout investigation + external API key file (`dade0f3`):**
+
+User asked "what can we do about FM-OBJ #5 (Failed-analyst remediation)?" — the FM had flagged macro/news/tax/fundamentals as failed for "second consecutive cycle." Investigation went four layers deep:
+
+1. **Layer 1 — DB**: `agent_reports` for plan-synth runs #33, #34, #56 have **no rows** for macro/news/tax/fundamentals; #30 (last healthy) had all four; #32 partial (tax already dropped). So third consecutive cycle, not second — FM was being conservative.
+2. **Layer 2 — Orchestrator**: `_safe_run_agent` in `plan_synthesis/orchestrator.py:1837` catches every exception, logs `phase_1.agent_failed`, appends "(FAILED)" marker to the concatenated reports text, **does not** persist a row to `agent_reports`. Failure is recoverable per design — but the silence is the bug.
+3. **Layer 3 — Validator**: `BaseAgent._validate_citations` raises `AgentRunError("output is missing required citations (cited_sources is empty or absent)")`. The failing 4 agents all produce structured output, but `cited_sources` is `[]` recursively. All 9 phase-1 agents have `require_citations=True` and `cited_sources` in their output_model — schema isn't the issue.
+4. **Layer 4 — Inputs pipeline**: `plan_synthesis.inputs.done` telemetry showed `news_count=0, macro_count=0, fundamentals_count=0, social_count=0` for run #56 vs non-zero in #31/#32. Tracing back: `inputs.news_skipped: Finnhub API key is not configured` and `inputs.macro_skipped: FRED API key is not configured` log lines appeared starting 2026-05-31 03:59 UTC.
+
+**Root cause**: `argosy.finnhub.api_key` and `argosy.fred.api_key` keychain entries went missing around 2026-05-30. No env vars; no `.env` file in project root. Other `argosy.*` keychain entries (TOTP, email signing key, admin token) were present, so the keychain backend itself wasn't wiped — these two slots specifically were never repopulated (cause unknown; possibly a credential rotation or accidental delete).
+
+**Mitigation — file-based fallback**:
+
+| Layer | What |
+|---|---|
+| New helper | `argosy.secrets.get_external_api_key(provider: str)` reads `~/.argosy/external_api_keys.json` (JSON object mapping provider slug → key string). Missing file / provider-absent → returns `None` (caller falls through). Malformed JSON / non-object top level / empty-or-non-string value → raises `ValueError` (loud, points at the real problem instead of a downstream `MissingAPIKeyError`) |
+| Finnhub adapter | `_resolve_api_key` chain becomes: `get_secret(KEYCHAIN_KEY)` → `os.environ[ENV_VAR]` → `get_external_api_key("finnhub")` → `MissingAPIKeyError` |
+| FRED adapter | Same chain with `get_external_api_key("fred")` |
+| Convention | Mirrors `~/.argosy/discord_creds.json`. One consistent on-disk place for external creds the user maintains by hand |
+
+**15 new tests**: 7 in `tests/test_secrets_external_keys.py` covering the helper (missing file, present, absent provider, malformed JSON, non-object top-level, empty/non-string value, path resolution) + 8 in `tests/test_adapter_key_resolution.py` covering the 3-step fallback chain on both adapters (each layer's precedence + the final raise).
+
+**Verification — dry-run of `assemble_phase1_inputs`**:
+
+User saved the file. Direct call to the inputs assembler against ariel's current baseline + pending draft:
+
+```
+news_count           0 → 15
+macro_count          0 → 3
+fundamentals_count   0 → 19
+```
+
+Substrate restored. Next "Run synthesis" should produce real agent_report rows for macro/news/fundamentals for the first time since 2026-05-27 (run #32).
+
+**Still-failing — Tax analyst (not addressed in this wave)**:
+
+Tax doesn't depend on a public API. `TaxAnalystAgent.build_prompt` declares `domain_kb_files: dict[str, str]` with the docstring *"Mandatory input — citation-gate fails without these."* The inputs-pipeline plumbing into that call site is the next investigation. Likely fix: trace whether `domain_knowledge/tax/*.md` is being loaded into `Phase1Inputs` and passed through. Not started.
+
+**Side findings from the dry-run** (pre-existing, not caused by this wave):
+
+- `social_count: 0` — sentiment adapter has its own (currently unknown) missing-input story. Some prior runs had sentiment, some didn't.
+- `indicators_skipped` for European UCITS tickers (CNDX/CSPX/FWRA/MSCI World/XZEW) — yfinance symbol mapping. Long-running pre-existing warning.
+- `plan_targets_count: 0` — `_extract_plan_targets(baseline)` returns 0 entries. Contributes to FM-OBJ #7 (the cap-enforcement timeline concern): even the existing `risk_preflight.check_concentration_cap` is effectively a no-op for /plan today because there are no targets to compare proposals against.
+
+**The class-of-problem revealed by FM-OBJ #5 — emergent anomaly detection gap**:
+
+Three layers in the chain had the signal and none surfaced it to the user:
+
+| Layer | Signal | Surface | Result |
+|---|---|---|---|
+| Adapter | `inputs.*_skipped` with "API key not configured" | structlog WARNING | eaten |
+| Orchestrator `_safe_run_agent` | `AgentRunError: missing citations` | structlog ERROR + "(FAILED)" marker in concatenated text | eaten |
+| Plan synthesizer | 5 of 10 analyst outputs missing | none — synthesizer builds plan from surviving 5 | eaten |
+| FM agent | "4 of 10 analysts produced uncited output this cycle" | `fund_manager` agent's verdict prose | **caught it — surfaced as objection on /plan** |
+
+The FM agent did exactly what `feedback_emergent_anomaly_detection.md` describes: caught a class of problem by observing system state, not by a hardcoded `check_substrate_health()` detector. The other layers already have the detection signal — they just don't propagate it up.
+
+**Two designed-but-unbuilt fix paths** (deferred to the next wave):
+
+- **Fix C — substrate visibility (passive observability)**: route `inputs.*_skipped` + `phase_1.agent_failed` events through `state_observer` into a monitor flag visible on /home + the /plan banner. Future substrate degradations would be visible *before* the FM catches them. Matches the user's `feedback_emergent_anomaly_detection.md` directly — no hardcoded per-symptom detector, just a generic "observe + surface" pipe.
+- **Fix D — substrate-freshness preflight (active enforcement)**: add `check_substrate_freshness()` to `argosy/decisions/risk_preflight.py` that returns `HARD_FAIL` for equity-allocation proposals when ≥N of {macro, news, tax, fundamentals} have failed for ≥M consecutive cycles. User-confirmation override only. Matches FM-OBJ #5's literal ask.
+
+C and D are complementary, not redundant. C is the data layer (visibility); D is the policy layer (enforcement). Without D, the user could see the banner and still trade through. Without C, D blocks trades with no context on why.
+
+**Pending verification** (first task next session):
+
+1. User clicks "Run synthesis" on /plan → verify the next plan_revision lands successfully with macro/news/fundamentals agent_report rows present + Tax still missing (until fixed separately).
+2. User clicks "Start new round with my decisions" with FM-OBJ #4 marked AGREE + the premise-correction resolution note → verify the next round's guidance string contains the RESOLVED OUTSIDE LOOP bucket with the note as `USER RESOLUTION NOTE (authoritative)`.
+
+**Pending follow-ons (deferred but tracked)**:
+
+- Tax analyst `domain_kb_files` plumbing fix
+- FM-OBJ #7 — `plan_targets` empty + cap enforcement timing (sibling project-level concern)
+- Fix C + Fix D from the substrate analysis above
 
 ### Wave 2026-06-01 (wave 4) — synth #58 truncation incident + recovery
 
