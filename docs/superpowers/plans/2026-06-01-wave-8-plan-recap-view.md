@@ -1,7 +1,7 @@
 # Wave 8 — Plan recap view ("what's the plan, in plain English")
 
 **Drafted:** 2026-06-01 (night, wave 7 closed)
-**Status:** scoping rev 1 — codex zigzag pending
+**Status:** scoping **rev 2** — codex zigzag SCOPE-CHANGES applied; round 2 confirmation pending
 **Triggered by:** Ariel pressing Accept All on synth #62 and landing on a confusing fallback view ("loading verdict…" + "showing last completed draft — superseded by a later synthesis that did not produce a fresh draft"). The page doesn't have a post-accept "your plan is canonical, here's what it says" view. Plus the broader complaint: the existing /plan page is engineer-focused (targets / themes / actions / deltas as separate sections) — a non-expert can't tell what the plan actually IS.
 
 ## What this wave fixes
@@ -118,6 +118,15 @@ Three exploratory passes (Subagent A on `/retirement` + cashflow, Subagent B on 
 └────────────────────────────────────────────────────────────────┘
 ```
 
+**At-a-glance blocks added per codex zigzag round 1** (rendered in or near the headline; details below):
+
+| Block | Source | Why |
+|---|---|---|
+| **"What changed in this accepted round"** | the N `deltas_from_prior` items the user accepted (4 in #62's case: US-situs $1.37M target, FIRE-bridge analysis, multiple-compression theme, parameterized UCITS top-up trigger) | Non-expert needs to see WHAT they just signed off on, not just "approved" |
+| **Current portfolio total value anchor** | latest `portfolio_snapshot.total_usd_value_k` (single number, big text) | Anchors all the percentages — without an absolute number, "64.9% NVDA" doesn't translate to "$2.3M" |
+| **Insurance gaps callout** | existing `InsuranceGapsCard` summary (one line: "Life: 3M NIS face — covers X; Disability: missing"; or "No major gaps") | Non-expert plan reading often forgets risk-transfer; one line reminds |
+| **Audit line** | `plan_version_id` + `decision_run_id` + `approved_at` timestamp + "View synthesis trail →" link | Trust + auditability; user can drill into the agents' reasoning if they want to |
+
 ## Six pieces of work
 
 ### Piece A — Post-accept state routing
@@ -129,44 +138,61 @@ Three exploratory passes (Subagent A on `/retirement` + cashflow, Subagent B on 
 - Recap layout reads from `/api/plan/current/structured` (already exists) for the canonical plan
 - "Run synthesis" CTA stays prominent for users who want a fresh round
 - Pending-draft state continues to show the existing draft-review flow unchanged
+- **Explicit state discriminator** (codex zigzag): the page renders one of `{ "no_plan", "pending_draft_triage", "in_flight_synthesis", "recap_current", "stale_fallback_with_warning" }` based on a single derived `view_state` value. Each state has a dedicated test that pins which sub-components render. This prevents the #61/#62 regression where the page silently falls through to a stale view without anyone noticing. Tests cover the FIVE branches explicitly so adding a state in the future requires updating the test matrix.
 
-### Piece B — Allocation glidepath (multi-asset, time-series)
+### Piece B1 — Allocation glidepath BACKEND service + contract
+
+Split per codex zigzag round 1: B1 ships the backend logic (the highest-risk piece — semantics + interpolation + edge cases) so B2's chart can land against a stable, tested API.
 
 New backend service `argosy/services/allocation_glidepath.py`:
 
-- Input: current `portfolio_snapshot` (asset-class composition) + the plan's `targets[]` across all three horizons with `revisit_after` dates
-- Output: `list[GlidepathPoint]` — for each month from today to the most-distant target date, the projected composition (linear interpolation between current and each target's stated `revisit_after`)
-- Multi-horizon handling: per asset class, the closest-in-the-future target with `unit ∈ {pct_of_portfolio, pct_of_liquid}` wins as the endpoint; intermediate targets create waypoint vertices
+- **Input**: current `portfolio_snapshot` (asset-class composition) + the plan's `targets[]` across all three horizons with `revisit_after` dates.
+- **Inclusion filter** (codex zigzag): only targets with `unit ∈ {"pct_of_portfolio", "pct_of_liquid"}` are eligible for the glidepath. Other-unit targets (`usd`, `nis`, `shares`, `months`, etc.) are excluded from the glidepath and surfaced in the actions timeline / Full Plan section instead. Documented as a hard rule + tested.
+- **Output**: `list[GlidepathPoint]` — for each month from today to the most-distant in-scope target date, the projected composition computed by linear interpolation between waypoints (today's snapshot → each in-scope target's `revisit_after`).
+- **Multi-horizon waypoint stitching**: per asset class, all in-scope targets become waypoints sorted by `revisit_after`. The path interpolates from today → waypoint 1 → waypoint 2 → … → last waypoint.
+- **Direction-reversal guardrail** (codex zigzag): if an intermediate waypoint **reverses direction** relative to today's value and the eventual endpoint (e.g., current NVDA 64.9% → medium 70% → long 15%), the intermediate is **collapsed** (skipped) unless the target carries an explicit `intentional_hold_or_rise=True` annotation. Default behaviour: smooth monotonic glidepath. Loud warning event logged when a target is collapsed so the user/audit can see WHY.
 
-New backend route: `GET /api/plan/current/allocation-glidepath?user_id=...` returning `list[GlidepathPoint]`.
+New backend route: `GET /api/plan/current/allocation-glidepath?user_id=...` returning the glidepath payload with `points: list[GlidepathPoint]` + `collapsed_waypoints: list[CollapsedWaypoint]` + `excluded_targets: list[ExcludedTarget]` (the non-% targets) so the UI can surface "we excluded N targets from the glidepath; see them in the timeline."
+
+### Piece B2 — Allocation glidepath UI chart
 
 New UI component `ui/src/components/plan/allocation-glidepath-chart.tsx`:
+
 - Recharts `AreaChart` with stacked bands per asset class
 - X-axis: months from today, formatted as YYYY-MM
 - Y-axis: 0-100% composition
-- Vertical reference line at "today" + each target's `revisit_after` date
+- Vertical reference lines at "today" + each in-scope target's `revisit_after` date
 - Tooltips show composition at the hovered date + which target's `revisit_after` is nearest
+- Sidebar callout when `collapsed_waypoints` or `excluded_targets` are non-empty: "N targets are surfaced in the Actions Timeline / Full Plan instead of on this chart; click to see why."
 
-### Piece C — Synthesizer-aware cashflow assumption defaults
+Ships against the B1 contract; B1 lands first.
 
-Today's defaults are hardcoded (`DEFAULT_MU_NOMINAL_ANNUAL = 0.08`, etc.). They should be derived from the synthesizer's plan + the user's actual portfolio + the existing `SigmaCalibrationCard` machinery, with a rationale string per slider.
+### Piece C — Cashflow assumption defaults with rationale (v1: deterministic)
+
+Per codex zigzag round 1: **narrowed for v1** — no synthesizer-posture-string interpretation. The previous draft proposed pulling `mu` from `posture: "capital-preservation"` via free-text mapping; codex flagged this as hidden coupling (synthesizer vocabulary change → silent default shift). For v1, defaults come from three deterministic sources only:
+
+1. **Sigma calibrator** (existing): `/api/retirement/projection/sigma-calibrated` already auto-calibrates portfolio σ for the user's actual positions (NVDA-heavy → ~29-30% vs the default 18%). Wave 8 consumes this directly.
+2. **goals_yaml** (existing): user-stated values for `retirement_age`, `tax_rate` (if present), `lifestyle_drift_annual`.
+3. **Hardcoded fallback with rationale**: for any field not derivable from (1) or (2), use a hardcoded default with an explicit rationale string.
 
 New backend helper `argosy/services/cashflow_assumptions.py`:
 
 - `get_default_assumptions(session, user_id, plan_version_id) -> DefaultAssumptionsResponse`
-- Pulls:
-  - `mu_nominal_annual`: from synthesizer's posture (e.g., capital-preservation → 6-7%; aggressive growth → 9-10%) OR fall back to hardcoded 8% with rationale="capital-preservation posture; weighted average of long-horizon equity expected return"
-  - `sigma_annual`: from `argosy/api/routes/retirement.py::projection/sigma-calibrated` (auto-calibrates for NVDA-heavy portfolios; Ariel's gets ~29-30% vs the default 18%)
-  - `tax_rate`: from goals_yaml (user-stated) or hardcoded 25% with rationale="Israeli capital-gains marginal rate at user's bracket"
-  - `inflation_annual`: hardcoded 2.5% with rationale="BoI long-run target"
-  - `retirement_age`: from goals_yaml or hardcoded 49 with rationale="user-stated FIRE target"
-  - `lifestyle_drift_annual`: hardcoded 0% with rationale="conservative; matches goals_yaml `lifestyle_aspirations_note`"
+- Per-field sourcing for v1:
+  - `mu_nominal_annual`: hardcoded `0.08` with rationale="Long-run real-equity expected return; conservative side of 7-10% historical range. Override with your own number if you have a specific portfolio view." (v2 may derive from a structured `risk_profile_enum` IF the synthesizer's output schema is extended to emit one — see open question below.)
+  - `sigma_annual`: from sigma-calibrator endpoint with `source="sigma_calibrator"` and rationale showing the calibrated value + the contributing positions (e.g., "Calibrated for your portfolio's NVDA weight: σ=29% vs the unweighted default 18%.")
+  - `tax_rate`: from `goals_yaml.tax_rate_pct` if present, else hardcoded `0.25` with rationale="Israeli CGT marginal rate at user's bracket. Adjust if your effective rate is different."
+  - `inflation_annual`: hardcoded `0.025` with rationale="Bank of Israel long-run target."
+  - `retirement_age`: from `goals_yaml.retirement_target_age` if present, else hardcoded `49` with rationale="Default FIRE target. Override to model what-ifs at other ages."
+  - `lifestyle_drift_annual`: hardcoded `0.0` with rationale="Conservative; matches goals_yaml `lifestyle_aspirations_note` if user expects flat real spend."
 
-Each field carries its `value` + `rationale_md` + `source` (synthesizer / sigma-calibrator / goals_yaml / default).
+Each field carries `value` + `rationale_md` + `source ∈ {"sigma_calibrator", "goals_yaml", "default"}`.
 
 New route `GET /api/plan/current/cashflow-default-assumptions?user_id=...`.
 
 UI: each slider in the recap's cashflow section reads these defaults on mount + shows a `▸ why?` tooltip with the rationale.
+
+**v2 follow-on (NOT in wave 8 scope)**: if the synthesizer's output schema is extended to emit a structured `risk_profile_enum: Literal["conservative", "balanced", "aggressive"]` with optional numeric hints (e.g., `mu_hint: float | None`, `sigma_hint: float | None`), the assumptions helper can consume those deterministically. **String-posture interpretation is explicitly out of scope** — codex flagged this as hidden coupling and we agree.
 
 ### Piece D — Monte Carlo on the recap view
 
@@ -205,26 +231,30 @@ UI: prominent card at the top of the recap, with the three lines as large readab
 
 ## Scope checklist (wave 8)
 
-- [ ] **State routing (Piece A)**: /plan page state machine handles "current exists + no pending draft" → recap layout. Existing draft-review state preserved
-- [ ] **Backend service**: `argosy/services/allocation_glidepath.py` with `GlidepathPoint` + projection logic
-- [ ] **Backend route**: `GET /api/plan/current/allocation-glidepath`
-- [ ] **UI component**: `allocation-glidepath-chart.tsx` (Recharts AreaChart)
-- [ ] **Backend service**: `argosy/services/cashflow_assumptions.py` with `DefaultAssumptionsResponse`
-- [ ] **Backend route**: `GET /api/plan/current/cashflow-default-assumptions`
-- [ ] **UI**: cashflow section consumes the defaults on mount + renders `▸ why?` tooltips with rationale
-- [ ] **Backend route**: `GET /api/plan/current/cashflow-monte-carlo` (symmetric to existing draft route)
-- [ ] **UI**: Monte Carlo bands chart + RuinProbabilityHero re-used in recap
-- [ ] **UI component**: `actions-timeline.tsx` (vertical date-sorted timeline)
-- [ ] **Backend service**: `argosy/services/plan_headline.py` with retirement-age + soonest-actions
-- [ ] **Backend route**: `GET /api/plan/current/headline`
-- [ ] **UI**: headline card at top of recap
-- [ ] **Markdown rendering**: replace `<pre>` with `<Markdown>` in "Full plan" collapsible
-- [ ] **Tests**: glidepath service edge cases (single horizon, conflicting targets, no targets); default-assumptions service per-field sourcing; headline service when retire_ready_age is null; actions timeline mixed kinds; UI smoke that the recap renders for a real plan_version=19 row
+- [ ] **State routing (Piece A)**: /plan renders one of 5 explicit states (`no_plan`, `pending_draft_triage`, `in_flight_synthesis`, `recap_current`, `stale_fallback_with_warning`) via a single derived `view_state`. Existing draft-review preserved
+- [ ] **State discriminator tests** (Piece A): one test per branch pins which sub-components render. Prevents the #61/#62 fall-through regression
+- [ ] **B1 backend — glidepath service**: `argosy/services/allocation_glidepath.py` with `GlidepathPoint` + waypoint interpolation + direction-reversal guardrail + pct-only filter + `excluded_targets` + `collapsed_waypoints` payload fields
+- [ ] **B1 backend route**: `GET /api/plan/current/allocation-glidepath`
+- [ ] **B1 tests**: single-horizon path; multi-horizon stitching; direction-reversal collapse with logged warning; non-% exclusion list populated correctly; explicit `intentional_hold_or_rise` opt-in honored
+- [ ] **B2 UI — glidepath chart**: `allocation-glidepath-chart.tsx` (Recharts AreaChart) + sidebar callout for excluded/collapsed targets. Ships against the B1 contract; depends on B1 landing
+- [ ] **C backend — cashflow defaults** (v1 deterministic): `argosy/services/cashflow_assumptions.py` consuming sigma-calibrator + goals_yaml + hardcoded fallbacks with rationale strings; NO synthesizer-posture string interpretation
+- [ ] **C backend route**: `GET /api/plan/current/cashflow-default-assumptions`
+- [ ] **C UI**: cashflow section consumes defaults on mount + renders `▸ why?` tooltips with rationale
+- [ ] **D backend route**: `GET /api/plan/current/cashflow-monte-carlo` (symmetric to existing draft route)
+- [ ] **D UI**: Monte Carlo bands chart + `RuinProbabilityHero` re-used in recap
+- [ ] **E markdown rendering**: replace `<pre>` with shared `<Markdown>` component in "Full plan" collapsible
+- [ ] **F UI — actions timeline**: `actions-timeline.tsx` (vertical date-sorted timeline); includes non-% targets per B1's `excluded_targets` payload so nothing gets dropped
+- [ ] **G backend — headline service**: `argosy/services/plan_headline.py` with retirement-age + soonest-actions + total portfolio value + insurance-gap summary
+- [ ] **G backend route**: `GET /api/plan/current/headline`
+- [ ] **G UI**: headline card at top of recap + the four at-a-glance blocks (what changed / total portfolio value / insurance gaps / audit line)
+- [ ] **Tests across the wave**: B1 covered above; C per-field sourcing tests (sigma_calibrator vs goals_yaml vs default); G headline when retire_ready_age is null; F mixed-kind actions; E markdown safety (no XSS / arbitrary HTML); smoke test that the recap renders for a real plan_version=19 row in CI
 
 ## Open questions (kept minimal)
 
-1. **Defaults — synthesizer-derived vs hand-curated.** Piece C proposes pulling some defaults from the synthesizer's posture (mu derived from "capital-preservation" vs "aggressive growth") and others from hardcoded fallbacks. Question: is the synthesizer's posture field rich enough to deterministically derive a mu? Or should mu always start hardcoded with a rationale string and let the user adjust? **Proposed default: hardcoded 8% with a clear rationale ("capital-preservation portfolio expected return; conservative side of 7-10% historical equity real return")** for v1; revisit if the synthesizer's posture taxonomy becomes structured enough to derive numerically.
-2. **Glidepath conflict resolution.** When the long-horizon target and medium-horizon target disagree on the endpoint composition for the same asset class (e.g., long says "NVDA 15%", medium says "NVDA 30%"), the glidepath must pick a path. **Proposed default: linear interpolation through both waypoints in date order** (today → medium target → long target). Codex zigzag may disagree.
+Codex zigzag round 1 resolved the original open question #1 (synthesizer-derived mu — answer: no, hardcoded-with-rationale for v1; structured enum-only contract for v2 if ever wanted). Remaining open questions are minimal + bounded:
+
+1. **Direction-reversal default behaviour** (codex zigzag added). When an intermediate waypoint reverses direction relative to today's value and the eventual endpoint (e.g., current NVDA 64.9% → medium 70% → long 15%), the matcher collapses the intermediate by default unless the target has an explicit `intentional_hold_or_rise=True` annotation. **Question for Ariel**: does the synthesizer ever emit "let it run for a year, then cut harder" plans where the rising intermediate IS intentional? If yes, we'd want a way for the synthesizer to flag it via the new annotation (schema extension). **Proposed default**: skip the schema extension for v1; the default-collapse behaviour matches every plan we've seen so far. Revisit only if a real plan surfaces a legitimate intentional rise.
+2. **Inclusion rule for non-% targets** (codex zigzag added). Only `pct_of_portfolio` + `pct_of_liquid` units are in the glidepath; other-unit targets (`usd`, `nis`, `shares`, `months`, etc.) are surfaced in the Actions Timeline / Full Plan instead. **Question**: should the recap have a third visualization dedicated to non-% targets (e.g., a "FI dollar target progress" gauge for the 22M NIS bare-FI target)? **Proposed default**: defer to a future wave; for v1 they appear as items in the Actions Timeline + Full Plan only.
 
 ## What this wave does NOT do
 
