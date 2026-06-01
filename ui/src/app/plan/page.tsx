@@ -12,9 +12,12 @@ import { AllocationChart } from "@/components/plan/allocation-chart";
 import { DeltaCard } from "@/components/plan/delta-card";
 import { DeltaMap } from "@/components/plan/delta-map";
 import { ActionsTimeline } from "@/components/plan/actions-timeline";
+import { AllocationGlidepathChart } from "@/components/plan/allocation-glidepath-chart";
+import { AssumptionsCard } from "@/components/plan/assumptions-card";
 import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { HeadlineCard } from "@/components/plan/headline-card";
+import { MonteCarloBandsChart } from "@/components/plan/monte-carlo-bands-chart";
 import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
 import { CashflowProjectionChart } from "@/components/plan/cashflow-projection-chart";
 import { SourcesHeatmap } from "@/components/plan/sources-heatmap";
@@ -38,6 +41,8 @@ import {
   type HorizonView,
   type InFlightSynthesisDTO,
   type AllocationGlidepathResponse,
+  type DefaultAssumptionsResponseDTO,
+  type MonteCarloProjectionResponse,
   type NvdaTrajectoryResponse,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
@@ -115,10 +120,18 @@ export default function PlanPage() {
     null,
   );
   // Wave 8 Piece B1 — allocation glidepath payload. Feeds the
-  // ActionsTimeline (excluded non-pct targets) today; the Piece B2
-  // chart consumes the same payload next.
+  // ActionsTimeline (excluded non-pct targets) + the Piece B2 chart.
   const [glidepath, setGlidepath] =
     useState<AllocationGlidepathResponse | null>(null);
+  // Wave 8 Piece C — pre-populated cashflow assumption defaults
+  // with per-field rationale tooltips. Drives AssumptionsCard.
+  const [assumptions, setAssumptions] =
+    useState<DefaultAssumptionsResponseDTO | null>(null);
+  // Wave 8 Piece D — Monte Carlo projection for the recap surface.
+  // Fetched lazily after the assumptions arrive so the projection
+  // uses the calibrated sigma + goals_yaml-sourced inputs.
+  const [monteCarlo, setMonteCarlo] =
+    useState<MonteCarloProjectionResponse | null>(null);
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [objections, setObjections] = useState<FMObjectionsResponse | null>(null);
   // Live target-progress map keyed by item_id — fetched in parallel with
@@ -167,6 +180,9 @@ export default function PlanPage() {
     const glidepathP = api
       .planCurrentAllocationGlidepath(USER_ID)
       .catch(() => null);
+    const assumptionsP = api
+      .planCurrentCashflowDefaultAssumptions(USER_ID)
+      .catch(() => null);
     const draftP = api.planDraft(USER_ID).catch(() => null);
     const objP = api.planDraftObjections(USER_ID).catch(() => null);
     const snapP = api.portfolioSnapshot(USER_ID).catch(() => null);
@@ -185,6 +201,7 @@ export default function PlanPage() {
         planStructuredV,
         recapV,
         glidepathV,
+        assumptionsV,
         draftV,
         objV,
         snapV,
@@ -196,6 +213,7 @@ export default function PlanPage() {
         planStructuredP,
         recapP,
         glidepathP,
+        assumptionsP,
         draftP,
         objP,
         snapP,
@@ -207,6 +225,7 @@ export default function PlanPage() {
       setPlanStructured(planStructuredV);
       setRecapSummary(recapV);
       setGlidepath(glidepathV);
+      setAssumptions(assumptionsV);
       setDraft(draftV);
       setObjections(objV);
       setSnapshot(snapV);
@@ -219,6 +238,35 @@ export default function PlanPage() {
       setLoading(false);
     }
   }, []);
+
+  // Wave 8 Piece D — fetch the recap's Monte Carlo projection once
+  // the calibrated assumptions arrive. Re-fetch only when the
+  // calibrated sigma / retirement_age / etc. shift; the chart caches
+  // by reference equality otherwise. Defensive: any failure resolves
+  // to null and the chart renders its "unavailable" empty state.
+  useEffect(() => {
+    if (assumptions == null) return;
+    let cancelled = false;
+    api
+      .planCurrentCashflowMonteCarlo(USER_ID, {
+        years: 50,
+        retirement_age: assumptions.retirement_age.value,
+        tax_rate: assumptions.tax_rate.value,
+        mu_nominal_annual: assumptions.mu_nominal_annual.value,
+        sigma_annual: assumptions.sigma_annual.value,
+        lifestyle_drift_annual: assumptions.lifestyle_drift_annual.value,
+        n_paths: 1000,
+      })
+      .then((r) => {
+        if (!cancelled) setMonteCarlo(r);
+      })
+      .catch(() => {
+        if (!cancelled) setMonteCarlo(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assumptions]);
 
   // Poll the in-flight synthesis endpoint while one is running so the
   // phase counter on the "Synthesis in flight" card ticks up live. The
@@ -964,6 +1012,11 @@ export default function PlanPage() {
       {viewState === "recap_current" && plan && (
         <>
           {recapSummary ? <HeadlineCard recap={recapSummary} /> : null}
+          <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <AllocationGlidepathChart response={glidepath} />
+            <MonteCarloBandsChart response={monteCarlo} />
+          </section>
+          <AssumptionsCard defaults={assumptions} />
           <ActionsTimeline
             structured={planStructured}
             glidepath={glidepath}

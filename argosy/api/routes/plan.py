@@ -1528,6 +1528,44 @@ def get_draft_cashflow_monte_carlo(
     )
 
 
+@router.get(
+    "/current/cashflow-monte-carlo", response_model=MonteCarloProjectionResponse
+)
+def get_current_cashflow_monte_carlo(
+    user_id: str = Query("ariel"),
+    years: int = Query(40, ge=1, le=50),
+    retirement_age: float = Query(49.0, ge=30.0, le=80.0),
+    tax_rate: float = Query(0.25, ge=0.0, le=0.5),
+    mu_nominal_annual: float = Query(0.08, ge=0.02, le=0.15),
+    sigma_annual: float = Query(0.18, ge=0.05, le=0.60),
+    lifestyle_drift_annual: float = Query(0.0, ge=0.0, le=0.10),
+    portfolio_value_usd_override: float | None = Query(None, ge=0, le=100_000_000),
+    n_paths: int = Query(1000, ge=100, le=10_000),
+    seed: int | None = Query(None),
+    db: Session = Depends(get_db),
+) -> MonteCarloProjectionResponse:
+    """Wave 8 Piece D — Monte Carlo retirement projection for the
+    canonical CURRENT plan's recap surface.
+
+    The math is identical to ``/api/plan/draft/cashflow-monte-carlo``;
+    routing them under ``/current/...`` keeps the recap's wire surface
+    symmetric with ``/current/headline`` + ``/current/allocation-glidepath``
+    so the UI's recap layer reads exclusively from ``/current/*``."""
+    return get_draft_cashflow_monte_carlo(
+        user_id=user_id,
+        years=years,
+        retirement_age=retirement_age,
+        tax_rate=tax_rate,
+        mu_nominal_annual=mu_nominal_annual,
+        sigma_annual=sigma_annual,
+        lifestyle_drift_annual=lifestyle_drift_annual,
+        portfolio_value_usd_override=portfolio_value_usd_override,
+        n_paths=n_paths,
+        seed=seed,
+        db=db,
+    )
+
+
 class NvdaVestEvent(BaseModel):
     date: str  # YYYY-MM-DD
     shares: int
@@ -2385,6 +2423,59 @@ def _build_carried_over_response(
         cited_sources=[],
         decision_run_id=current_pv.decision_run_id,
         raw_response_excerpt="",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave 8 Piece C — cashflow assumption defaults for /plan recap sliders
+# ---------------------------------------------------------------------------
+
+
+class AssumptionFieldDTO(BaseModel):
+    value: float
+    source: str  # "sigma_calibrator" | "goals_yaml" | "default"
+    rationale_md: str
+
+
+class DefaultAssumptionsResponseDTO(BaseModel):
+    mu_nominal_annual: AssumptionFieldDTO
+    sigma_annual: AssumptionFieldDTO
+    tax_rate: AssumptionFieldDTO
+    inflation_annual: AssumptionFieldDTO
+    retirement_age: AssumptionFieldDTO
+    lifestyle_drift_annual: AssumptionFieldDTO
+
+
+@router.get(
+    "/current/cashflow-default-assumptions",
+    response_model=DefaultAssumptionsResponseDTO,
+)
+def get_current_cashflow_default_assumptions(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> DefaultAssumptionsResponseDTO:
+    """Return pre-populated cashflow-projection defaults for the recap's
+    assumption sliders (Wave 8 Piece C). Every field carries source +
+    rationale_md so the UI can show a `▸ why?` tooltip explaining
+    where the default came from."""
+    from argosy.services.cashflow_assumptions import (
+        get_default_assumptions,
+    )
+
+    out = get_default_assumptions(session=db, user_id=user_id)
+
+    def _to_dto(f) -> AssumptionFieldDTO:
+        return AssumptionFieldDTO(
+            value=f.value, source=f.source, rationale_md=f.rationale_md
+        )
+
+    return DefaultAssumptionsResponseDTO(
+        mu_nominal_annual=_to_dto(out.mu_nominal_annual),
+        sigma_annual=_to_dto(out.sigma_annual),
+        tax_rate=_to_dto(out.tax_rate),
+        inflation_annual=_to_dto(out.inflation_annual),
+        retirement_age=_to_dto(out.retirement_age),
+        lifestyle_drift_annual=_to_dto(out.lifestyle_drift_annual),
     )
 
 

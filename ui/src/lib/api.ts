@@ -545,6 +545,23 @@ export interface AllocationGlidepathResponse {
   end_date: string | null;
 }
 
+// Wave 8 Piece C — pre-populated cashflow-projection assumptions
+// with per-field rationale tooltips.
+export interface AssumptionFieldDTO {
+  value: number;
+  source: "sigma_calibrator" | "goals_yaml" | "default";
+  rationale_md: string;
+}
+
+export interface DefaultAssumptionsResponseDTO {
+  mu_nominal_annual: AssumptionFieldDTO;
+  sigma_annual: AssumptionFieldDTO;
+  tax_rate: AssumptionFieldDTO;
+  inflation_annual: AssumptionFieldDTO;
+  retirement_age: AssumptionFieldDTO;
+  lifestyle_drift_annual: AssumptionFieldDTO;
+}
+
 export interface DailyBriefDTO {
   id: number;
   user_id: string;
@@ -2304,6 +2321,45 @@ export const api = {
     getJSON<AllocationGlidepathResponse | null>(
       `/api/plan/current/allocation-glidepath?user_id=${encodeURIComponent(userId)}`,
     ),
+  // Wave 8 Piece C — defaults-with-rationale for the recap's
+  // cashflow assumption sliders.
+  planCurrentCashflowDefaultAssumptions: (userId: string) =>
+    getJSON<DefaultAssumptionsResponseDTO>(
+      `/api/plan/current/cashflow-default-assumptions?user_id=${encodeURIComponent(userId)}`,
+    ),
+  // Wave 8 Piece D — Monte Carlo projection alias for the canonical
+  // current plan. Same math as /draft/cashflow-monte-carlo; lives
+  // under /current/* so the recap reads from a symmetric surface.
+  planCurrentCashflowMonteCarlo: (
+    userId: string,
+    opts?: {
+      years?: number;
+      retirement_age?: number;
+      tax_rate?: number;
+      mu_nominal_annual?: number;
+      sigma_annual?: number;
+      lifestyle_drift_annual?: number;
+      n_paths?: number;
+      seed?: number;
+    },
+  ) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (opts?.years != null) qs.set("years", String(opts.years));
+    if (opts?.retirement_age != null)
+      qs.set("retirement_age", String(opts.retirement_age));
+    if (opts?.tax_rate != null) qs.set("tax_rate", String(opts.tax_rate));
+    if (opts?.mu_nominal_annual != null)
+      qs.set("mu_nominal_annual", String(opts.mu_nominal_annual));
+    if (opts?.sigma_annual != null)
+      qs.set("sigma_annual", String(opts.sigma_annual));
+    if (opts?.lifestyle_drift_annual != null)
+      qs.set("lifestyle_drift_annual", String(opts.lifestyle_drift_annual));
+    if (opts?.n_paths != null) qs.set("n_paths", String(opts.n_paths));
+    if (opts?.seed != null) qs.set("seed", String(opts.seed));
+    return getJSON<MonteCarloProjectionResponse>(
+      `/api/plan/current/cashflow-monte-carlo?${qs.toString()}`,
+    );
+  },
   planSpeculativeTake: (
     userId: string,
     ticker: string,
