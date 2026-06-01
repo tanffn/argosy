@@ -95,6 +95,15 @@ function provenanceLabelToAgentRole(label: string): string | null {
 export default function PlanPage() {
   const router = useRouter();
   const [plan, setPlan] = useState<PlanCurrentDTO | null>(null);
+  // Wave 8 Piece E — DraftResponse-shape for the canonical current
+  // plan so the recap surface can render horizon_long_md /
+  // horizon_medium_md / horizon_short_md (the structured per-horizon
+  // markdown emitted by the synthesizer). Fetched alongside the other
+  // /plan resources; null when no current plan exists or the route
+  // returns 404.
+  const [planStructured, setPlanStructured] = useState<DraftResponse | null>(
+    null,
+  );
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [objections, setObjections] = useState<FMObjectionsResponse | null>(null);
   // Live target-progress map keyed by item_id — fetched in parallel with
@@ -136,6 +145,9 @@ export default function PlanPage() {
     setLoading(true);
     setError(null);
     const planP = api.planCurrent(USER_ID).catch(() => null);
+    const planStructuredP = api
+      .planCurrentStructured(USER_ID)
+      .catch(() => null);
     const draftP = api.planDraft(USER_ID).catch(() => null);
     const objP = api.planDraftObjections(USER_ID).catch(() => null);
     const snapP = api.portfolioSnapshot(USER_ID).catch(() => null);
@@ -149,17 +161,27 @@ export default function PlanPage() {
       .planInFlightSynthesis(USER_ID)
       .catch(() => ({ in_flight_synthesis: null }));
     try {
-      const [planV, draftV, objV, snapV, nvdaV, inFlightV, progressV] =
-        await Promise.all([
-          planP,
-          draftP,
-          objP,
-          snapP,
-          nvdaP,
-          inFlightP,
-          progressP,
-        ]);
+      const [
+        planV,
+        planStructuredV,
+        draftV,
+        objV,
+        snapV,
+        nvdaV,
+        inFlightV,
+        progressV,
+      ] = await Promise.all([
+        planP,
+        planStructuredP,
+        draftP,
+        objP,
+        snapP,
+        nvdaP,
+        inFlightP,
+        progressP,
+      ]);
       setPlan(planV);
+      setPlanStructured(planStructuredV);
       setDraft(draftV);
       setObjections(objV);
       setSnapshot(snapV);
@@ -915,7 +937,7 @@ export default function PlanPage() {
           minimal placeholder so the page renders SOMETHING the user
           can read instead of falling through to a stale-draft view. */}
       {viewState === "recap_current" && plan && (
-        <RecapCurrentPlaceholder plan={plan} />
+        <RecapCurrentPlaceholder plan={plan} structured={planStructured} />
       )}
 
       {/* no_plan state — user has never imported a baseline plan AND
@@ -1089,22 +1111,55 @@ function formatElapsedMinutes(seconds: number): string {
 
 interface RecapCurrentPlaceholderProps {
   plan: PlanCurrentDTO;
+  // Wave 8 Piece E — DraftResponse for the canonical current plan
+  // (from /api/plan/current/structured). Carries horizon_long_md /
+  // horizon_medium_md / horizon_short_md, which the recap renders
+  // as the "Full plan" surface broken out by horizon. Null when the
+  // structured route returned no plan or fell through.
+  structured: DraftResponse | null;
 }
 
 /**
- * Wave 8 Piece A placeholder for the recap_current state. Renders the
- * canonical current plan markdown so the page has SOMETHING readable
- * the moment routing lands here; the headline (Piece G), glidepath
- * chart (Piece B), actions timeline (Piece F), cashflow defaults
- * (Piece C), Monte Carlo (Piece D), and proper markdown rendering
- * (Piece E) replace this surface piece by piece per the wave-8 ship
- * order. The component lives here (not its own file) so the placeholder
- * is trivial to delete when Piece G's HeadlineCard arrives.
+ * Wave 8 Piece A + E surface for the recap_current state. The header
+ * card identifies the canonical current plan; the Full Plan section
+ * renders the synthesizer's per-horizon markdown (long / medium /
+ * short) via the shared <Markdown> component so prose, tables, and
+ * lists read naturally instead of as a code dump. Pieces G (headline
+ * card), B (allocation glidepath), F (actions timeline), C (cashflow
+ * defaults), and D (Monte Carlo) compose into / above this surface in
+ * later commits per the wave-8 ship order.
  */
-function RecapCurrentPlaceholder({ plan }: RecapCurrentPlaceholderProps) {
+function RecapCurrentPlaceholder({
+  plan,
+  structured,
+}: RecapCurrentPlaceholderProps) {
   const importedLabel = plan.imported_at
     ? formatLocalDateTime(plan.imported_at)
     : null;
+  const horizons: Array<{
+    key: "long" | "medium" | "short";
+    title: string;
+    md: string | null | undefined;
+  }> = [
+    {
+      key: "long",
+      title: "Long horizon (multi-year)",
+      md: structured?.horizon_long_md,
+    },
+    {
+      key: "medium",
+      title: "Medium horizon (12–24 months)",
+      md: structured?.horizon_medium_md,
+    },
+    {
+      key: "short",
+      title: "Short horizon (next 90 days)",
+      md: structured?.horizon_short_md,
+    },
+  ];
+  const horizonsWithContent = horizons.filter(
+    (h) => h.md != null && h.md.trim() !== "",
+  );
   return (
     <>
       <Card>
@@ -1126,13 +1181,34 @@ function RecapCurrentPlaceholder({ plan }: RecapCurrentPlaceholderProps) {
           </CardDescription>
         </CardHeader>
       </Card>
-      {plan.raw_markdown ? (
+      {horizonsWithContent.length > 0 ? (
         <Card>
           <CardHeader>
             <CardTitle>Full plan</CardTitle>
             <CardDescription>
-              Source markdown — read-only. Changes happen through a new
-              synthesis round or by re-ingesting a fresh plan document.
+              The synthesizer&apos;s per-horizon plan. Changes happen
+              through a new synthesis round.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-6">
+            {horizonsWithContent.map((h) => (
+              <section key={h.key}>
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                  {h.title}
+                </h3>
+                <Markdown>{h.md as string}</Markdown>
+              </section>
+            ))}
+          </CardContent>
+        </Card>
+      ) : plan.raw_markdown ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Full plan</CardTitle>
+            <CardDescription>
+              Source markdown — read-only. The per-horizon structured
+              render is unavailable for this plan_version; falling back
+              to the baseline markdown.
             </CardDescription>
           </CardHeader>
           <CardContent>

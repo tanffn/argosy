@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Check, Star, X } from "lucide-react";
 
+import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -276,11 +277,14 @@ function HorizonViewBlock(props: {
       </div>
     );
   }
+  // Wave 8 Piece E — render the horizon markdown through the shared
+  // <Markdown> component (react-markdown + remark-gfm) instead of a
+  // raw <pre> dump so headings, lists, tables, and code fences format
+  // like prose. The repo's <Markdown> wrapper handles XSS by relying
+  // on react-markdown's default safe-mode (no raw HTML rendering).
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none mt-3">
-      <pre className="whitespace-pre-wrap font-mono text-xs">
-        {props.md ?? ""}
-      </pre>
+    <div className="mt-3">
+      <Markdown>{props.md ?? ""}</Markdown>
     </div>
   );
 }
