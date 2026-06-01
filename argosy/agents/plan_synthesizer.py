@@ -115,7 +115,7 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "    long: HorizonSection,\n"
             "    medium: HorizonSection,\n"
             "    short: HorizonSection,\n"
-            "    inputs: SynthesisInputs  // metadata; orchestrator overwrites baseline_id / prior_current_id / decision_run_id\n"
+            "    inputs: SynthesisInputs  // ALWAYS emit { baseline_id: null, prior_current_id: null, snapshot_id: null, fill_ids: [], agent_report_ids: [], debate_outcome_ids: [], decision_run_id: null }. The orchestrator overwrites these fields with the real numeric IDs post-hoc. DO NOT emit audit tokens, plan labels, or any strings here — these fields are typed int|None and any string value will fail pydantic validation and kill the whole synthesis run.\n"
             "  }\n"
             "HorizonSection = {\n"
             "  horizon: 'long' | 'medium' | 'short',\n"

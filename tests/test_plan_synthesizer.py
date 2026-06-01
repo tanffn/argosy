@@ -151,6 +151,16 @@ def test_plan_synthesizer_prompt_includes_authority_disclaimer_and_inputs():
     assert "tighten" in usr
     assert "NVDA 14%" in usr
     assert "sold 1000 NVDA" in usr
+    # Regression for synth #60: the SynthesisInputs metadata-field hint
+    # in the OUTPUT SHAPE section MUST tell the model to emit null for
+    # the int|None ID fields, NOT to populate them with audit tokens or
+    # plan labels. Synth #60 failed because the model emitted
+    # baseline_id="plan-synth-60" + prior_current_id="plan#16" — strings
+    # that fail pydantic int parsing, killing the whole 14-min run.
+    assert "baseline_id: null" in sys
+    assert "prior_current_id: null" in sys
+    assert "decision_run_id: null" in sys
+    assert "DO NOT emit audit tokens" in sys
 
 
 def test_synthesizer_prompt_includes_speculation_cap():
