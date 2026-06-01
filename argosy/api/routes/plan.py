@@ -2389,6 +2389,99 @@ def _build_carried_over_response(
 
 
 # ---------------------------------------------------------------------------
+# Wave 8 Piece B1 — allocation glidepath for /plan recap
+# ---------------------------------------------------------------------------
+
+
+class GlidepathPointDTO(BaseModel):
+    months_out: int
+    date: str  # ISO YYYY-MM-DD (first-of-month)
+    composition_pct_by_class: dict[str, float]
+
+
+class CollapsedWaypointDTO(BaseModel):
+    asset_class: str
+    waypoint_date: str
+    target_pct: float
+    source_horizon: str
+    reason: str
+
+
+class ExcludedTargetDTO(BaseModel):
+    target_label: str
+    target_unit: str
+    target_value: float
+    target_date: str
+    reason: str
+
+
+class AllocationGlidepathResponse(BaseModel):
+    points: list[GlidepathPointDTO]
+    collapsed_waypoints: list[CollapsedWaypointDTO]
+    excluded_targets: list[ExcludedTargetDTO]
+    asset_classes: list[str]
+    today: str | None
+    end_date: str | None
+
+
+@router.get(
+    "/current/allocation-glidepath",
+    response_model=AllocationGlidepathResponse | None,
+)
+def get_current_allocation_glidepath(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> AllocationGlidepathResponse | None:
+    """Return the projected allocation glidepath for the user's current
+    plan (Wave 8 Piece B1).
+
+    Returns 200 + null when no current plan exists (matches the
+    /current/structured + /current/headline absence-of-data
+    convention)."""
+    from argosy.services.allocation_glidepath import (
+        compute_allocation_glidepath,
+    )
+
+    today = datetime.now(timezone.utc).date()
+    out = compute_allocation_glidepath(db, user_id, today)
+    if out is None:
+        return None
+    return AllocationGlidepathResponse(
+        points=[
+            GlidepathPointDTO(
+                months_out=p.months_out,
+                date=p.point_date.isoformat(),
+                composition_pct_by_class=p.composition_pct_by_class,
+            )
+            for p in out.points
+        ],
+        collapsed_waypoints=[
+            CollapsedWaypointDTO(
+                asset_class=w.asset_class,
+                waypoint_date=w.waypoint_date.isoformat(),
+                target_pct=w.target_pct,
+                source_horizon=w.source_horizon,
+                reason=w.reason,
+            )
+            for w in out.collapsed_waypoints
+        ],
+        excluded_targets=[
+            ExcludedTargetDTO(
+                target_label=t.target_label,
+                target_unit=t.target_unit,
+                target_value=t.target_value,
+                target_date=t.target_date.isoformat(),
+                reason=t.reason,
+            )
+            for t in out.excluded_targets
+        ],
+        asset_classes=out.asset_classes,
+        today=out.today.isoformat() if out.today else None,
+        end_date=out.end_date.isoformat() if out.end_date else None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Wave 8 Piece G — plain-English headline + recap summary for /plan
 # ---------------------------------------------------------------------------
 

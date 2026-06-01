@@ -11,6 +11,7 @@ import { AgentReasoningDrawer } from "@/components/plan/agent-reasoning-drawer";
 import { AllocationChart } from "@/components/plan/allocation-chart";
 import { DeltaCard } from "@/components/plan/delta-card";
 import { DeltaMap } from "@/components/plan/delta-map";
+import { ActionsTimeline } from "@/components/plan/actions-timeline";
 import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { HeadlineCard } from "@/components/plan/headline-card";
@@ -36,6 +37,7 @@ import {
   type FMObjectionsResponse,
   type HorizonView,
   type InFlightSynthesisDTO,
+  type AllocationGlidepathResponse,
   type NvdaTrajectoryResponse,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
@@ -112,6 +114,11 @@ export default function PlanPage() {
   const [recapSummary, setRecapSummary] = useState<RecapSummaryDTO | null>(
     null,
   );
+  // Wave 8 Piece B1 — allocation glidepath payload. Feeds the
+  // ActionsTimeline (excluded non-pct targets) today; the Piece B2
+  // chart consumes the same payload next.
+  const [glidepath, setGlidepath] =
+    useState<AllocationGlidepathResponse | null>(null);
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [objections, setObjections] = useState<FMObjectionsResponse | null>(null);
   // Live target-progress map keyed by item_id — fetched in parallel with
@@ -157,6 +164,9 @@ export default function PlanPage() {
       .planCurrentStructured(USER_ID)
       .catch(() => null);
     const recapP = api.planCurrentHeadline(USER_ID).catch(() => null);
+    const glidepathP = api
+      .planCurrentAllocationGlidepath(USER_ID)
+      .catch(() => null);
     const draftP = api.planDraft(USER_ID).catch(() => null);
     const objP = api.planDraftObjections(USER_ID).catch(() => null);
     const snapP = api.portfolioSnapshot(USER_ID).catch(() => null);
@@ -174,6 +184,7 @@ export default function PlanPage() {
         planV,
         planStructuredV,
         recapV,
+        glidepathV,
         draftV,
         objV,
         snapV,
@@ -184,6 +195,7 @@ export default function PlanPage() {
         planP,
         planStructuredP,
         recapP,
+        glidepathP,
         draftP,
         objP,
         snapP,
@@ -194,6 +206,7 @@ export default function PlanPage() {
       setPlan(planV);
       setPlanStructured(planStructuredV);
       setRecapSummary(recapV);
+      setGlidepath(glidepathV);
       setDraft(draftV);
       setObjections(objV);
       setSnapshot(snapV);
@@ -951,6 +964,10 @@ export default function PlanPage() {
       {viewState === "recap_current" && plan && (
         <>
           {recapSummary ? <HeadlineCard recap={recapSummary} /> : null}
+          <ActionsTimeline
+            structured={planStructured}
+            glidepath={glidepath}
+          />
           <RecapCurrentPlaceholder plan={plan} structured={planStructured} />
         </>
       )}

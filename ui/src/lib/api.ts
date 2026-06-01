@@ -511,6 +511,40 @@ export interface RecapSummaryDTO {
   audit: AuditLineDTO;
 }
 
+// Wave 8 Piece B1 — /api/plan/current/allocation-glidepath response.
+// Drives the AllocationGlidepathChart (Piece B2) + feeds the
+// ActionsTimeline (Piece F) with the excluded non-pct targets.
+export interface GlidepathPointDTO {
+  months_out: number;
+  date: string; // ISO YYYY-MM-DD
+  composition_pct_by_class: Record<string, number>;
+}
+
+export interface CollapsedWaypointDTO {
+  asset_class: string;
+  waypoint_date: string;
+  target_pct: number;
+  source_horizon: string;
+  reason: string;
+}
+
+export interface ExcludedTargetDTO {
+  target_label: string;
+  target_unit: string;
+  target_value: number;
+  target_date: string;
+  reason: string;
+}
+
+export interface AllocationGlidepathResponse {
+  points: GlidepathPointDTO[];
+  collapsed_waypoints: CollapsedWaypointDTO[];
+  excluded_targets: ExcludedTargetDTO[];
+  asset_classes: string[];
+  today: string | null;
+  end_date: string | null;
+}
+
 export interface DailyBriefDTO {
   id: number;
   user_id: string;
@@ -2261,6 +2295,14 @@ export const api = {
   planCurrentHeadline: (userId: string) =>
     getJSON<RecapSummaryDTO | null>(
       `/api/plan/current/headline?user_id=${encodeURIComponent(userId)}`,
+    ),
+  // Wave 8 Piece B1 — allocation glidepath for the current plan.
+  // Drives the Piece B2 chart + supplies the Piece F timeline with
+  // the excluded non-pct targets. Returns 200 + null when no current
+  // plan exists.
+  planCurrentAllocationGlidepath: (userId: string) =>
+    getJSON<AllocationGlidepathResponse | null>(
+      `/api/plan/current/allocation-glidepath?user_id=${encodeURIComponent(userId)}`,
     ),
   planSpeculativeTake: (
     userId: string,
