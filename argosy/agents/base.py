@@ -227,7 +227,16 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     str, Literal["low", "medium", "high", "max"]
 ] = {
     # Heaviest reasoning — full effort
-    "plan_synthesizer":              "max",
+    # plan_synthesizer dropped from "max" to "high" (2026-06-01) after
+    # synth #58 hit 3-of-3 truncation failures at effort=max. The
+    # synthesizer's job is structured composition (analysts already
+    # produced the evidence); much of its "thinking" was restating
+    # debate-team conclusions. effort=high reclaims output budget so
+    # the model has room to actually emit the JSON. Codex tandem
+    # recommendation: prefer max→high over max→medium for the
+    # synthesizer specifically — medium plausibly reduces synthesis
+    # nuance at the load-bearing composition step.
+    "plan_synthesizer":              "high",
     "fund_manager":                  "max",
     "plan_critique":                 "max",
     "fund_manager_dialogue_verdict": "max",
@@ -770,6 +779,20 @@ class BaseAgent(Generic[T]):
 
     #: Max output tokens for the call. Reasonable default; subclasses tune.
     max_tokens: ClassVar[int] = 4096
+
+    #: When True, the SDK call passes ``output_format={"type":
+    #: "json_schema", "schema": output_model.model_json_schema()}``
+    #: which forwards ``--json-schema`` to the bundled ``claude.exe``
+    #: and makes the model emit schema-constrained JSON directly (no
+    #: markdown code fence, no prose preamble). Use for long-output
+    #: agents where the prose-discipline path is unreliable — symptom
+    #: is the model emitting "```json\\n" and running out of output
+    #: tokens before producing the body, surfacing as
+    #: ``JSONDecodeError("Expecting value: line 1 column 1 (char 0)")``
+    #: after the wrapper's fence-strip step. Opt-in per subclass so
+    #: agents whose pydantic schemas have features the bundled
+    #: claude.exe doesn't understand keep the legacy free-form path.
+    use_structured_output: ClassVar[bool] = False
 
     # Wave A.5 — XML markup used to inline citation sources into the user
     # prompt on the claude_code backend, which has no equivalent of
@@ -1538,6 +1561,27 @@ class BaseAgent(Generic[T]):
                 "budget_tokens": self.thinking_budget,
             }
             options_kwargs["max_thinking_tokens"] = self.thinking_budget
+
+        # Schema-constrained JSON output — see use_structured_output
+        # docstring on BaseAgent. The bundled claude.exe receives this
+        # as ``--json-schema <JSON>`` and forces the model to emit
+        # JSON that validates against the schema (no markdown fence,
+        # no prose preamble). Per-agent opt-in.
+        if self.use_structured_output:
+            try:
+                options_kwargs["output_format"] = {
+                    "type": "json_schema",
+                    "schema": self.output_model.model_json_schema(),
+                }
+            except Exception as exc:  # noqa: BLE001
+                # If the pydantic schema can't be serialised (e.g. an
+                # unsupported pydantic feature), fall back to the
+                # legacy free-form path rather than crashing the run.
+                self._log.warning(
+                    "claude_code.structured_output_schema_failed",
+                    agent_role=self.agent_role,
+                    error=str(exc)[:200],
+                )
 
         options = ClaudeAgentOptions(**options_kwargs)
 
@@ -2358,8 +2402,59 @@ class BaseAgent(Generic[T]):
         #     JSON object (Concentration/FX/Macro hit "Extra data: line N
         #     column 1 (char N)" in run #9). We discard the trailing text.
         decoder = json.JSONDecoder(strict=False)
-        data, _end = decoder.raw_decode(cleaned)
-        return self.output_model.model_validate(data)
+        try:
+            data, _end = decoder.raw_decode(cleaned)
+            return self.output_model.model_validate(data)
+        except json.JSONDecodeError as primary_exc:
+            # Defense in depth: when `cleaned` doesn't start with a
+            # valid JSON value (e.g. prose preamble that escaped the
+            # fence-strip, a partial markdown wrapper, or a truncated
+            # output that left only the fence marker), scan for every
+            # ``{`` / ``[`` in the text and try raw_decode + model
+            # validation at each offset. Returns the first candidate
+            # that BOTH parses AND validates. Surfaces a WARNING log
+            # on recovery so the underlying truncation isn't masked.
+            #
+            # Important: we don't stop at the first parse-success
+            # because a prose preamble may contain an EXAMPLE object
+            # ahead of the real payload (codex review case). Only
+            # accept a candidate that also passes model_validate.
+            from pydantic import ValidationError
+
+            for source in (cleaned, text):
+                if not source:
+                    continue
+                for needle in ("{", "["):
+                    start = 0
+                    while True:
+                        idx = source.find(needle, start)
+                        if idx == -1:
+                            break
+                        candidate = source[idx:]
+                        try:
+                            data, _end = decoder.raw_decode(candidate)
+                        except json.JSONDecodeError:
+                            start = idx + 1
+                            continue
+                        try:
+                            out = self.output_model.model_validate(data)
+                        except (ValidationError, TypeError, ValueError):
+                            # Decoded valid JSON but doesn't validate
+                            # against the schema — keep scanning past
+                            # this position for the next candidate.
+                            start = idx + 1
+                            continue
+                        self._log.warning(
+                            "agent.parse_output.recovered_from_scan",
+                            agent_role=self.agent_role,
+                            primary_error=str(primary_exc)[:120],
+                            needle=needle,
+                            source="cleaned" if source is cleaned else "raw",
+                            offset=idx,
+                            head=text[:80] if text else "",
+                        )
+                        return out
+            raise
 
     def _validate_citations(self, output: BaseModel) -> None:
         """Reject outputs that have no citations when citations are required.

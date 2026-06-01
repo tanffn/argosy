@@ -162,6 +162,62 @@ async def test_thinking_config_absent_when_budget_zero(monkeypatch):
 
 
 # ----------------------------------------------------------------------
+# use_structured_output (2026-06-01) — codex tandem MUST-FIX from the
+# synth #58 truncation fix review.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_use_structured_output_forwards_json_schema(monkeypatch):
+    """When BaseAgent.use_structured_output=True, options.output_format
+    is populated with {type='json_schema', schema=<pydantic_schema>}.
+
+    The bundled claude.exe receives this as ``--json-schema`` and
+    enforces the schema at the model level (no markdown fence, no
+    prose preamble). See subprocess_cli.py:371-381 in the SDK.
+    """
+    captured = _install_fake_query(monkeypatch)
+
+    class _StructuredAgent(BaseAgent[_Out]):
+        agent_role = "test_subagent_wave_a5"
+        output_model = _Out
+        require_citations = False
+        use_structured_output = True
+
+        def build_prompt(self, **_):
+            return ("system", "user")
+
+    agent = _StructuredAgent(user_id="test")
+    agent.thinking_effort = None
+    agent.thinking_budget = 0
+    await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    opts = captured["options"]
+    assert opts.output_format is not None, (
+        "use_structured_output=True must populate options.output_format"
+    )
+    assert opts.output_format["type"] == "json_schema"
+    schema = opts.output_format["schema"]
+    assert isinstance(schema, dict)
+    # The schema dict should be the pydantic-emitted JSON schema for
+    # the agent's output_model.
+    assert "properties" in schema or "$defs" in schema or "type" in schema
+
+
+@pytest.mark.asyncio
+async def test_use_structured_output_omitted_by_default(monkeypatch):
+    """Default agents (use_structured_output=False) keep
+    output_format=None — preserves the legacy free-form path."""
+    captured = _install_fake_query(monkeypatch)
+
+    agent = _make_agent()  # default _Subagent has use_structured_output=False
+    await agent._call_via_claude_code_inner(system="sys", user="hi")
+
+    opts = captured["options"]
+    assert opts.output_format is None
+
+
+# ----------------------------------------------------------------------
 # Change 2 — cache + thinking telemetry from ResultMessage
 # ----------------------------------------------------------------------
 

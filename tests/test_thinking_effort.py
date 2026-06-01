@@ -109,7 +109,7 @@ def test_default_thinking_effort_per_role():
     # the effort table OR resolve to the "high" instance fallback. We
     # assert on the explicit entries first.
     heavy_max = {
-        "plan_synthesizer", "fund_manager", "plan_critique",
+        "fund_manager", "plan_critique",
         "fund_manager_dialogue_verdict",
     }
     for role in heavy_max:
@@ -117,7 +117,13 @@ def test_default_thinking_effort_per_role():
             f"{role!r} should default to 'max' effort"
         )
 
+    # plan_synthesizer moved from "max" -> "high" on 2026-06-01 after
+    # synth #58 hit 3-of-3 truncation failures at max effort. Codex
+    # tandem audit + see argosy/agents/base.py:230 docstring. Pin
+    # explicitly here so a future "let's bump it back" doesn't slip
+    # silently.
     deep_high = {
+        "plan_synthesizer",
         "bull_researcher", "bear_researcher", "researcher_facilitator",
         "risk_officer", "risk_facilitator", "audit", "trader",
         "analyst_responder", "plan_distiller", "intake_extractor",

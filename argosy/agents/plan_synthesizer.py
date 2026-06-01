@@ -29,6 +29,13 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
     output_model = PlanSynthesisOutput
     require_citations = True
     # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (32000).
+    # Opt into schema-constrained JSON output. Codex tandem found
+    # synth #58 truncating at the markdown-fence opener with
+    # effort=max; the bundled claude.exe's --json-schema path makes
+    # the model emit JSON directly (no fence, no preamble), removing
+    # the truncation surface AND letting us trim the system prompt's
+    # raw schema dump (~5K tokens reclaimed for thinking + output).
+    use_structured_output = True
 
     def build_prompt(
         self,
@@ -95,8 +102,39 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "`domain_kb:<path>` for jurisdiction rules, "
             "`plan_section:<heading>` for baseline references, "
             "`prior_current:<id>` for diff context.\n\n"
-            "OUTPUT must be a JSON object conforming to:\n"
-            f"{PlanSynthesisOutput.model_json_schema()}\n"
+            # Schema enforcement: the SDK is called with --json-schema
+            # (per use_structured_output=True above) so the model emits
+            # schema-validated JSON directly. Concise field summary
+            # replaces the ~5K-token raw pydantic schema dump that
+            # used to live here. Reclaimed budget went into output.
+            # Field shapes verified against
+            # argosy/agents/plan_synthesizer_types.py.
+            "OUTPUT SHAPE (the SDK enforces the schema strictly; this "
+            "summary just tells you what each field carries):\n"
+            "  {\n"
+            "    long: HorizonSection,\n"
+            "    medium: HorizonSection,\n"
+            "    short: HorizonSection,\n"
+            "    inputs: SynthesisInputs  // metadata; orchestrator overwrites baseline_id / prior_current_id / decision_run_id\n"
+            "  }\n"
+            "HorizonSection = {\n"
+            "  horizon: 'long' | 'medium' | 'short',\n"
+            "  freshness_expected: 'annual' | 'quarterly' | 'monthly',\n"
+            "  status: 'no_change' | 'minor_revision' | 'major_revision',\n"
+            "  posture: <prose, the horizon's strategic stance>,\n"
+            "  targets: SynthTarget[],\n"
+            "  themes: Theme[],\n"
+            "  actions: Action[],\n"
+            "  speculative_candidates: SpeculativeCandidate[]  // short horizon only; obeys SPECULATION CAP\n"
+            "  deltas_from_prior: Delta[],\n"
+            "  rationale: <prose, why this horizon ended up where it did>,\n"
+            "  cited_sources: string[]\n"
+            "}\n"
+            "SynthTarget = {label, value: number, unit: 'pct_of_portfolio'|'pct_of_net_worth'|'pct_of_liquid'|'usd'|'nis'|'shares'|'ratio'|'years'|'months'|'days', stated_at: 'YYYY-MM-DD', revisit_after: 'YYYY-MM-DD', rationale: string, source_section?: string}\n"
+            "Theme = {label, direction: 'lean_into'|'lean_away_from'|'monitor', rationale: string, cited_sources: string[]}\n"
+            "Action = {label, horizon_kind: 'directional'|'parameterized'|'dated', trigger_or_date?: string, detail: string, rationale: string, cited_sources: string[]}\n"
+            "SpeculativeCandidate = {ticker, thesis_summary, suggested_position_usd: number, suggested_position_pct_of_net_worth: number, risk_ceiling_check: bool, horizon_days: int, expected_drawdown_pct: number, exit_trigger: string, sourced_from: string[]}\n"
+            "Delta = {item_kind: 'target'|'theme'|'action'|'speculative_candidate', item_id, horizon: 'long'|'medium'|'short', change_kind: 'added'|'modified'|'removed', summary, prior?: object, proposed?: object, rationale, cited_sources: string[], accepted: bool=false, user_edited: bool=false, user_edit_note?: string}\n\n"
         )
 
         if speculation_cap_pct is not None:
@@ -200,7 +238,17 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "centerpiece framing. If status=no_change for a horizon, deltas_from_prior "
             "must be empty AND the rationale must explicitly justify why nothing changed. "
             "Honor the item_id lineage contract — REUSE ids from the PRIOR ITEMS INDEX "
-            "when revising; only mint new ids for genuinely new items.",
+            "when revising; only mint new ids for genuinely new items.\n\n"
+            # JSON-start discipline (codex tandem MUST-FIX). The SDK's
+            # --json-schema enforcement is the primary guardrail; this
+            # instruction is the prose backstop in case the model
+            # tries to wrap output in a markdown fence or prefix
+            # prose. Synth #58 truncated specifically at the fence
+            # opener — telling the model not to emit one removes the
+            # entire failure class.
+            "RESPONSE FORMAT: emit the JSON object directly — no "
+            "markdown code fences, no preamble, no commentary. Your "
+            "response MUST start with `{` and END with `}`.",
         ])
         return system, usr
 
