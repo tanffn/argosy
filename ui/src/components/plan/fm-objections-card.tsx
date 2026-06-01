@@ -87,6 +87,14 @@ interface FMObjectionsCardProps {
   // verdict-provenance state at the top of the card. Default
   // "evaluated" (real FM verdict for this draft).
   verdictStatus?: "evaluated" | "carried_over" | "not_evaluated";
+  // When true, all per-objection editing affordances (stance toggle,
+  // resolution-note textarea, counter-position textarea, discuss
+  // buttons) are disabled and a banner explains why. Set by the parent
+  // when a fresh synthesis is in flight — editing the carried-over
+  // draft is wasted work; the user_state rows key on plan_version_id
+  // and the soon-to-arrive draft will have a fresh objection list to
+  // act on instead.
+  editingLocked?: boolean;
   // When provided, the user-state toggle (agree / defer / disagree) is
   // rendered per objection and the "Start new round with my decisions"
   // CTA is enabled. Without it the card falls back to the legacy
@@ -368,6 +376,7 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
     objections,
     userId,
     verdictStatus = "evaluated",
+    editingLocked = false,
     planVersionId,
     onResynthesize,
     resynthesizing,
@@ -731,7 +740,7 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
             : "(the agent that signs off on the synthesized plan)"}
         </span>
       </div>
-      {isCarriedOver && (
+      {isCarriedOver && !editingLocked && (
         <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 p-2.5 text-xs">
           The Fund Manager hasn&apos;t evaluated this draft yet. Drafts
           created by the chat-driven amendment flow skip the FM step.{" "}
@@ -742,6 +751,17 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
           resolution note), then press <strong>Run synthesis</strong> at
           the top of the page for a real fresh FM verdict against the
           current state.
+        </div>
+      )}
+      {editingLocked && (
+        <div className="mb-3 rounded-md border border-info/40 bg-info/10 p-2.5 text-xs">
+          <strong>Editing locked — synthesis in flight.</strong> A fresh
+          synthesis is running and will produce a new draft with its own
+          FM verdict. Acting on these carried-over objections now is
+          wasted work — your stances are keyed to the current draft and
+          won&apos;t transfer to the new one. Wait for the new draft to
+          land, then mark stances on the fresh objections. The
+          banner at the top of the page tracks the run.
         </div>
       )}
       <ul className="flex flex-col gap-2">
@@ -938,11 +958,14 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                         variant="outline"
                         className="h-7 text-xs"
                         onClick={() => onDiscussObjection(o, i + 1)}
+                        disabled={editingLocked}
                         title={
-                          "Open a free-form chat in /advisor pre-seeded with this objection. " +
-                          "The agent explains in plain English; useful when you want to understand " +
-                          "the math/logic or share context that changes the framing. No formal " +
-                          "output, no FM follow-up."
+                          editingLocked
+                            ? "Editing locked — synthesis in flight. Wait for the new draft."
+                            : "Open a free-form chat in /advisor pre-seeded with this objection. " +
+                              "The agent explains in plain English; useful when you want to understand " +
+                              "the math/logic or share context that changes the framing. No formal " +
+                              "output, no FM follow-up."
                         }
                       >
                         <MessageCircle className="h-3 w-3 mr-1" />
@@ -1096,6 +1119,8 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                             className="h-7 text-xs"
                             onClick={() => onPickStance(i, "AGREE", o)}
                             aria-pressed={curStance === "AGREE"}
+                            disabled={editingLocked}
+                            title={editingLocked ? "Editing locked — synthesis in flight." : undefined}
                           >
                             <Check className="h-3 w-3 mr-1" />
                             Agree
@@ -1108,6 +1133,8 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                             className="h-7 text-xs"
                             onClick={() => onPickStance(i, "DEFER", o)}
                             aria-pressed={curStance === "DEFER"}
+                            disabled={editingLocked}
+                            title={editingLocked ? "Editing locked — synthesis in flight." : undefined}
                           >
                             <Minus className="h-3 w-3 mr-1" />
                             Defer
@@ -1120,6 +1147,8 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                             className="h-7 text-xs"
                             onClick={() => onPickStance(i, "DISAGREE", o)}
                             aria-pressed={curStance === "DISAGREE"}
+                            disabled={editingLocked}
+                            title={editingLocked ? "Editing locked — synthesis in flight." : undefined}
                           >
                             <X className="h-3 w-3 mr-1" />
                             Disagree
@@ -1136,7 +1165,7 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                             </label>
                             <textarea
                               id={`counter-${i}`}
-                              className="w-full text-sm rounded-md border border-border/60 bg-background px-2 py-1.5 min-h-[3.5rem] focus:outline-none focus:ring-1 focus:ring-ring"
+                              className="w-full text-sm rounded-md border border-border/60 bg-background px-2 py-1.5 min-h-[3.5rem] focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
                               value={counter}
                               onChange={(e) =>
                                 setCounterDrafts((prev) => ({
@@ -1146,6 +1175,7 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                               }
                               onBlur={() => onBlurCounter(i, o)}
                               placeholder="e.g. I prefer a 12% drawdown trigger over the 8% the FM proposed."
+                              disabled={editingLocked}
                             />
                             <p className="text-[10px] text-muted-foreground mt-1">
                               {counter.trim()
@@ -1164,7 +1194,7 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                             </label>
                             <textarea
                               id={`resolution-${i}`}
-                              className="w-full text-sm rounded-md border border-border/60 bg-background px-2 py-1.5 min-h-[3.5rem] focus:outline-none focus:ring-1 focus:ring-ring"
+                              className="w-full text-sm rounded-md border border-border/60 bg-background px-2 py-1.5 min-h-[3.5rem] focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
                               value={counter}
                               onChange={(e) =>
                                 setCounterDrafts((prev) => ({
@@ -1172,6 +1202,7 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                                   [i]: e.target.value,
                                 }))
                               }
+                              disabled={editingLocked}
                               onBlur={() => {
                                 const draft = (
                                   counterDrafts[i] ?? ""

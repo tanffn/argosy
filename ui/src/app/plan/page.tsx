@@ -702,6 +702,12 @@ export default function PlanPage() {
           onRejectAll={onRejectAll}
           onResynthesize={onResynthesizeWithObjections}
           resynthesizing={anyInFlight}
+          // Lock per-objection editing while a fresh synthesis is in
+          // flight — the user will act on the new draft's objections,
+          // not on the stale carried-over ones. Stances written against
+          // the stale draft don't carry over to the fresh draft anyway
+          // (the user_state table keys on plan_version_id).
+          editingLocked={inFlightSynthesis != null}
           onDiscussObjection={onDiscussObjection}
           onStartNewRound={onStartNewRound}
         />

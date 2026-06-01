@@ -41,6 +41,12 @@ interface ExecutiveSummaryCardProps {
     decisionAuditToken: string,
     decisionRunId: number,
   ) => void;
+  // When true, per-objection editing on the FMObjectionsCard is locked
+  // (stance toggles, resolution-note textarea, discuss buttons all
+  // disabled). Set by the parent when a fresh synthesis is in flight —
+  // editing a stale carried-over draft is wasted effort because the
+  // user_state rows key on plan_version_id and don't transfer.
+  editingLocked?: boolean;
 }
 
 function countDeltasByKind(h: HorizonView | null): {
@@ -91,6 +97,7 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
     resynthesizing,
     onDiscussObjection,
     onStartNewRound,
+    editingLocked,
   } = props;
   // Three verdict states map to four UI shapes (plus "loading"):
   //   evaluated + approved=false → "Fund Manager rejected" (red)
@@ -282,6 +289,7 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
             resynthesizing={resynthesizing}
             onDiscussObjection={onDiscussObjection}
             onStartNewRound={onStartNewRound}
+            editingLocked={editingLocked}
           />
         )}
 
