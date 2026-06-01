@@ -2803,10 +2803,18 @@ export interface AnomalyDismissResponse {
 // Sprint commit #17 — Monitor flag DTOs (Home Red-Flag Strip).
 // ----------------------------------------------------------------------
 
-export type MonitorFlagKind =
-  | "allocation_drift"
-  | "mc_regression"
-  | "macro_shift";
+// MonitorFlag.kind is permissive TEXT server-side (see state/models.py
+// docstring on MonitorFlag — "no CHECK enum so adding a kind family
+// doesn't require a CHECK-relaxation migration"). The UI used to enum
+// this to the three sprint-#17 kinds; the state-observer + alpha-report
+// waves added new kinds without updating the type, and the defensive
+// fallback at normalizeMonitorFlag() collapsed every unknown kind to
+// "macro_shift", which is why the red-flag strip rendered identical
+// rows even when each underlying observation was different. The type
+// is now a bare string and the RedFlagStrip switches on a known set
+// (with a generic fallback that still produces a meaningful label
+// from the kind itself).
+export type MonitorFlagKind = string;
 
 export type MonitorFlagSeverity = "info" | "warning" | "critical";
 
@@ -2854,16 +2862,13 @@ function normalizeMonitorFlag(
   raw: MonitorFlagRawRow,
   idx: number,
 ): MonitorFlagDTO {
+  // Pass the kind through verbatim; the renderer handles the family
+  // (state_observer_*, alpha_report_*, etc.) generically. The earlier
+  // collapse-to-macro_shift was masking the new state-observer kinds.
   const kind: MonitorFlagKind =
-    raw.kind === "allocation_drift" ||
-    raw.kind === "mc_regression" ||
-    raw.kind === "macro_shift"
-      ? (raw.kind as MonitorFlagKind)
-      : // Defensive: unknown kinds get mapped to macro_shift so the
-        // strip renders a generic row rather than crashing. The summary
-        // renderer falls back to "<kind> flag detected" when the
-        // payload doesn't carry the expected fields.
-        "macro_shift";
+    typeof raw.kind === "string" && raw.kind.length > 0
+      ? raw.kind
+      : "unknown";
   const severity: MonitorFlagSeverity =
     raw.severity === "warning" || raw.severity === "critical"
       ? raw.severity

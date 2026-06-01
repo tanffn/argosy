@@ -80,7 +80,13 @@ export function RedFlagStrip({ userId }: Props) {
   );
 
   if (flags === null) return null; // initial fetch still in flight
-  if (flags.length === 0) return null; // silent empty state
+  // Red-flag strip is for ACTIONABLE items only. Severity='info' rows
+  // are observations the state observer surfaced — interesting but not
+  // urgent. They were drowning the strip with low-signal noise, so we
+  // filter them out here. (Info rows still live in the audit trail and
+  // can be surfaced elsewhere if/when an observations view ships.)
+  const urgent = flags.filter((f) => f.severity !== "info");
+  if (urgent.length === 0) return null; // silent empty state
 
   return (
     <Card
@@ -92,7 +98,7 @@ export function RedFlagStrip({ userId }: Props) {
           Red flags
         </div>
         <ul className="flex flex-col gap-2">
-          {flags.map((flag) => (
+          {urgent.map((flag) => (
             <RedFlagRow
               key={flag.id}
               flag={flag}
@@ -167,6 +173,11 @@ function RedFlagRow({ flag, busy, onAcknowledge }: RedFlagRowProps) {
 
 // ---------- helpers ---------------------------------------------------
 
+// Map a flag.kind (permissive TEXT server-side — see api.ts comment) to
+// a human-readable badge label. Known kinds get a hand-tuned label; the
+// state_observer_* family is humanized by stripping the prefix; anything
+// else falls back to a Title-Cased rendering of the raw kind so the row
+// still carries a meaningful label instead of a duplicate "Macro shift".
 function kindLabel(kind: MonitorFlagKind): string {
   switch (kind) {
     case "allocation_drift":
@@ -175,7 +186,20 @@ function kindLabel(kind: MonitorFlagKind): string {
       return "Monte Carlo regression";
     case "macro_shift":
       return "Macro shift";
+    case "alpha_report_caution":
+      return "Alpha-report caution";
   }
+  if (kind.startsWith("state_observer_")) {
+    // state_observer_allocation_observation -> "Allocation"
+    // state_observer_cashflow_observation   -> "Cashflow"
+    // state_observer_fx_observation         -> "FX"
+    const stripped = kind
+      .replace(/^state_observer_/, "")
+      .replace(/_observation$/, "");
+    if (stripped === "fx") return "FX";
+    return humanize(stripped);
+  }
+  return humanize(kind);
 }
 
 function linkForKind(kind: MonitorFlagKind): string {
@@ -186,7 +210,35 @@ function linkForKind(kind: MonitorFlagKind): string {
       return "/plan";
     case "macro_shift":
       return "/plan";
+    case "alpha_report_caution":
+      return "/proposals";
   }
+  if (kind === "state_observer_allocation_observation") {
+    return "/portfolio";
+  }
+  if (kind === "state_observer_tax_observation") {
+    return "/retirement#tax";
+  }
+  if (kind === "state_observer_cashflow_observation") {
+    return "/expenses";
+  }
+  if (kind === "state_observer_fx_observation") {
+    return "/retirement#fx";
+  }
+  if (kind === "state_observer_plan_assumption_observation") {
+    return "/plan";
+  }
+  if (kind.startsWith("state_observer_")) {
+    return "/advisor";
+  }
+  return "/advisor";
+}
+
+function humanize(s: string): string {
+  if (!s) return "Flag";
+  return s
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function severityDotClass(severity: MonitorFlagSeverity): string {
@@ -246,7 +298,13 @@ function buildSummary(flag: MonitorFlagDTO): string {
         return mcRegressionSummary(flag.payload);
       case "macro_shift":
         return macroShiftSummary(flag.payload);
+      case "alpha_report_caution":
+        return alphaReportCautionSummary(flag.payload);
     }
+    if (flag.kind.startsWith("state_observer_")) {
+      return stateObserverSummary(flag.payload);
+    }
+    return `${kindLabel(flag.kind)} flag detected`;
   } catch {
     return `${kindLabel(flag.kind)} flag detected`;
   }
@@ -308,12 +366,43 @@ function macroShiftSummary(payload: Record<string, unknown>): string {
     return "Macro-shift signal detected";
   }
   const snippet =
-    rationale === null
-      ? null
-      : rationale.length > 80
-        ? `${rationale.slice(0, 77).trimEnd()}...`
-        : rationale;
+    rationale === null ? null : truncate(rationale, 80);
   if (trigger && snippet) return `${trigger}: ${snippet}`;
   if (trigger) return trigger;
   return snippet ?? "Macro-shift signal detected";
+}
+
+function stateObserverSummary(payload: Record<string, unknown>): string {
+  // State-observer flags carry a rich payload: primary_field (the
+  // observation anchor), rationale_md (a paragraph explanation), and
+  // deviation_bucket (small/moderate/large/extreme). The rationale is
+  // the user-readable bit — we surface a truncated version with the
+  // primary_field as an optional prefix when it's meaningfully short.
+  const primaryField =
+    typeof payload.primary_field === "string" ? payload.primary_field : null;
+  const rationale =
+    typeof payload.rationale_md === "string" ? payload.rationale_md : null;
+  const bucket =
+    typeof payload.deviation_bucket === "string"
+      ? payload.deviation_bucket
+      : null;
+  const snippet = rationale === null ? null : truncate(rationale, 120);
+  if (snippet) {
+    if (bucket && bucket !== "small") return `[${bucket}] ${snippet}`;
+    return snippet;
+  }
+  if (primaryField) return primaryField;
+  return "State-observer flag detected";
+}
+
+function alphaReportCautionSummary(payload: Record<string, unknown>): string {
+  const caution =
+    typeof payload.caution === "string" ? payload.caution : null;
+  if (caution) return truncate(caution, 120);
+  return "Alpha-report caution detected";
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 3).trimEnd()}...`;
 }
