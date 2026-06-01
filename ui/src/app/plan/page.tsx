@@ -551,13 +551,15 @@ export default function PlanPage() {
   // + label state so the button never lies about what's happening.
   const anyInFlight =
     synthesisRunning || inFlightSynthesis != null;
-  // The "Synthesis in flight" card renders only when there's no draft
-  // to look at (draft would otherwise dominate the page). When BOTH a
-  // draft and an in-flight run exist (the transition state after a
-  // fleet successfully revised an existing draft), we trust the draft
-  // surface — the AgentCascadePanel kickoff banner already shows the
-  // running run.
-  const showInFlightCard = inFlightSynthesis != null && draft == null;
+  // Show the "Synthesis in flight" card whenever a synthesis is
+  // running. Prior version gated this on `draft == null` so the card
+  // hid itself when a pending draft was still visible — but that left
+  // the user with no visible indicator that a new synthesis was
+  // chewing in the background, only a tiny subtitle text most people
+  // miss. The card is light enough to render alongside an existing
+  // draft; it's the truth signal for "what is the fleet doing right
+  // now."
+  const showInFlightCard = inFlightSynthesis != null;
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
