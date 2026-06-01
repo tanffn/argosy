@@ -2427,6 +2427,47 @@ def _build_carried_over_response(
 
 
 # ---------------------------------------------------------------------------
+# Wave 8 v2 polish — plain-English narrative for /plan recap "Full plan" card
+# ---------------------------------------------------------------------------
+
+
+class PlanNarrativeResponse(BaseModel):
+    plan_version_id: int
+    narrative_md_en: str
+    narrative_md_he: str
+    confidence: str
+
+
+@router.get(
+    "/current/narrative", response_model=PlanNarrativeResponse | None
+)
+async def get_current_plan_narrative(
+    user_id: str = Query("ariel"),
+    force_refresh: bool = Query(False),
+    db: Session = Depends(get_db),
+) -> PlanNarrativeResponse | None:
+    """Wave 8 v2 polish — bilingual plain-English narrative for the
+    recap's "Full plan" surface. Wraps the PlanNarrativeAgent +
+    process-local cache; returns 200 + null when no current plan
+    exists (matches the other /current/* routes' absence-of-data
+    convention).
+
+    Set ``force_refresh=true`` to bypass the cache (admin-style
+    knob — the UI never sets this)."""
+    from argosy.services.plan_narrative import get_plan_narrative
+
+    result = await get_plan_narrative(db, user_id, force_refresh=force_refresh)
+    if result is None:
+        return None
+    return PlanNarrativeResponse(
+        plan_version_id=result.plan_version_id,
+        narrative_md_en=result.narrative_md_en,
+        narrative_md_he=result.narrative_md_he,
+        confidence=result.confidence,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Wave 8 Piece C — cashflow assumption defaults for /plan recap sliders
 # ---------------------------------------------------------------------------
 

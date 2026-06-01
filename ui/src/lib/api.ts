@@ -550,6 +550,14 @@ export interface ExcludedTargetDTO {
   reason: string;
 }
 
+// Wave 8 v2 polish — bilingual narrative response.
+export interface PlanNarrativeResponseDTO {
+  plan_version_id: number;
+  narrative_md_en: string;
+  narrative_md_he: string;
+  confidence: string;
+}
+
 export interface AssetClassAnchorStatusDTO {
   asset_class: string;
   matched: boolean;
@@ -2349,6 +2357,14 @@ export const api = {
     getJSON<DefaultAssumptionsResponseDTO>(
       `/api/plan/current/cashflow-default-assumptions?user_id=${encodeURIComponent(userId)}`,
     ),
+  // Wave 8 v2 polish — bilingual narrative for the Full Plan card.
+  planCurrentNarrative: (userId: string, forceRefresh = false) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (forceRefresh) qs.set("force_refresh", "true");
+    return getJSON<PlanNarrativeResponseDTO | null>(
+      `/api/plan/current/narrative?${qs.toString()}`,
+    );
+  },
   // Wave 8 Piece D — Monte Carlo projection alias for the canonical
   // current plan. Same math as /draft/cashflow-monte-carlo; lives
   // under /current/* so the recap reads from a symmetric surface.

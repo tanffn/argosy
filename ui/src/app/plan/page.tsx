@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { AgentCascadePanel } from "@/components/advisor/AgentCascadePanel";
-import { Markdown } from "@/components/markdown";
 import { AgentCascadeStrip } from "@/components/plan/agent-cascade-strip";
 import { AgentReasoningDrawer } from "@/components/plan/agent-reasoning-drawer";
 import { AllocationChart } from "@/components/plan/allocation-chart";
@@ -16,6 +15,7 @@ import { AllocationGlidepathChart } from "@/components/plan/allocation-glidepath
 import { AssumptionsCard } from "@/components/plan/assumptions-card";
 import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
+import { FullPlanNarrative } from "@/components/plan/full-plan-narrative";
 import { HeadlineCard } from "@/components/plan/headline-card";
 import { MonteCarloBandsChart } from "@/components/plan/monte-carlo-bands-chart";
 import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
@@ -1019,7 +1019,11 @@ export default function PlanPage() {
           </section>
           <MonteCarloBandsChart response={monteCarlo} />
           <AllocationGlidepathChart response={glidepath} />
-          <RecapCurrentPlaceholder plan={plan} structured={planStructured} />
+          <FullPlanNarrative
+            userId={USER_ID}
+            structured={planStructured}
+            rawMarkdown={plan.raw_markdown}
+          />
           <ActionsTimeline
             structured={planStructured}
             glidepath={glidepath}
@@ -1194,95 +1198,6 @@ function formatElapsedMinutes(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return s === 0 ? `${m} min elapsed` : `${m} min ${s}s elapsed`;
-}
-
-interface RecapCurrentPlaceholderProps {
-  plan: PlanCurrentDTO;
-  // Wave 8 Piece E — DraftResponse for the canonical current plan
-  // (from /api/plan/current/structured). Carries horizon_long_md /
-  // horizon_medium_md / horizon_short_md, which the recap renders
-  // as the "Full plan" surface broken out by horizon. Null when the
-  // structured route returned no plan or fell through.
-  structured: DraftResponse | null;
-}
-
-/**
- * Wave 8 Piece A + E surface for the recap_current state. The header
- * card identifies the canonical current plan; the Full Plan section
- * renders the synthesizer's per-horizon markdown (long / medium /
- * short) via the shared <Markdown> component so prose, tables, and
- * lists read naturally instead of as a code dump. Pieces G (headline
- * card), B (allocation glidepath), F (actions timeline), C (cashflow
- * defaults), and D (Monte Carlo) compose into / above this surface in
- * later commits per the wave-8 ship order.
- */
-function RecapCurrentPlaceholder({
-  plan,
-  structured,
-}: RecapCurrentPlaceholderProps) {
-  const horizons: Array<{
-    key: "long" | "medium" | "short";
-    title: string;
-    md: string | null | undefined;
-  }> = [
-    {
-      key: "long",
-      title: "Long horizon (multi-year)",
-      md: structured?.horizon_long_md,
-    },
-    {
-      key: "medium",
-      title: "Medium horizon (12–24 months)",
-      md: structured?.horizon_medium_md,
-    },
-    {
-      key: "short",
-      title: "Short horizon (next 90 days)",
-      md: structured?.horizon_short_md,
-    },
-  ];
-  const horizonsWithContent = horizons.filter(
-    (h) => h.md != null && h.md.trim() !== "",
-  );
-  return (
-    <>
-      {horizonsWithContent.length > 0 ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Full plan</CardTitle>
-            <CardDescription>
-              The synthesizer&apos;s per-horizon plan. Changes happen
-              through a new synthesis round.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-6">
-            {horizonsWithContent.map((h) => (
-              <section key={h.key}>
-                <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-2">
-                  {h.title}
-                </h3>
-                <Markdown>{h.md as string}</Markdown>
-              </section>
-            ))}
-          </CardContent>
-        </Card>
-      ) : plan.raw_markdown ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Full plan</CardTitle>
-            <CardDescription>
-              Source markdown — read-only. The per-horizon structured
-              render is unavailable for this plan_version; falling back
-              to the baseline markdown.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Markdown>{plan.raw_markdown}</Markdown>
-          </CardContent>
-        </Card>
-      ) : null}
-    </>
-  );
 }
 
 function severityVariant(
