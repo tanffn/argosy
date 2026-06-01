@@ -1610,6 +1610,19 @@ class FMObjectionUserState(Base):
         onupdate=_utcnow,
         nullable=False,
     )
+    # Wave 7 Piece B — stance carry-forward audit fields. NULL on fresh
+    # (user-typed) rows; populated by the carry-forward matcher when a
+    # prior-draft objection was carried over into this row.
+    matched_from_plan_version_id: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    match_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    match_top2_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    embedding_model_version: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
 
 
 # ----------------------------------------------------------------------
