@@ -14,6 +14,20 @@ from pydantic import BaseModel, Field
 from argosy.agents.base import BaseAgent, ConfidenceBand
 
 
+class PriorResolvedConcern(BaseModel):
+    """One FM objection the user resolved in a prior draft, threaded
+    into the next-round FM plan_revision prompt so the FM doesn't
+    silently re-raise it. Populated by the wave-7 carry-forward
+    pipeline (see ``argosy/services/objection_carry_forward.py``).
+    """
+
+    topic: str
+    detail: str
+    severity: str  # "RED" | "AMBER" | "YELLOW"
+    stance: str    # "AGREE" | "DISAGREE" (DEFER is never carried forward)
+    counter_position: str | None = None
+
+
 class FundManagerDecision(BaseModel):
     """Fund manager's final verdict (trade-proposal flow)."""
 
@@ -173,6 +187,7 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         risk_verdict: str,
         user_directive: str = "",
         codex_second_opinion=None,
+        prior_resolved_concerns: list[PriorResolvedConcern] | None = None,
     ) -> tuple[str, str]:
         """Plan-revision integrity check (Wave 2 Phase 5).
 
@@ -255,6 +270,45 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
                 "You retain authority to raise NEW objections on issues the user has not addressed, or to call\n"
                 "out where the synthesizer has ignored a load-bearing directive.\n"
             )
+        # Wave 7 Piece B — prior-resolved concerns carry-forward. The
+        # orchestrator threads in the concerns the user already resolved
+        # in a prior draft (AGREE / DISAGREE, never DEFER) so the FM
+        # cannot silently re-raise them. Same system-pointer / user-
+        # content split as user_directive + codex_second_opinion to dodge
+        # the bundled SDK's empty-output path on large system prompts.
+        if prior_resolved_concerns:
+            system = system + (
+                "\nPRIOR-RESOLVED CONCERNS PRESENT: a PRIOR-RESOLVED CONCERNS "
+                "block appears in the user message below listing FM objections "
+                "from prior drafts that the user has already resolved (AGREE "
+                "with a resolution note OR DISAGREE with a counter-position). "
+                "Rules for these:\n"
+                "  - For AGREED prior concerns: do NOT re-raise the SAME concern "
+                "in this draft. The user has resolved it. If the new draft's "
+                "contents make the underlying concern materially worse OR "
+                "introduce a NEW failure mode in the same area, you MAY raise "
+                "a new objection — but you MUST cite specifically what has "
+                "changed in the new draft vs the prior, and reference the "
+                "prior resolution by topic in your reasoning. Boilerplate "
+                "re-raising without citing what changed is anti-goal per the "
+                "prime directive (the user already paid the cognitive cost; "
+                "re-asking burns time without advancing FI).\n"
+                "  - For DISAGREED prior concerns: the user's counter-position "
+                "is authoritative for re-evaluation. The synthesizer should "
+                "have honored the counter-position in the new draft. Evaluate "
+                "whether the new draft did so. Raise an objection ONLY if the "
+                "synthesizer ignored or contradicted the counter-position, or "
+                "if the counter-position itself violates a hard safety "
+                "constraint (Section 102, statutory deadline, irreversible "
+                "tax realization that the family cannot reverse, catastrophic "
+                "tail risk). The user's say-so does not override hard "
+                "constraints; surface that conflict explicitly if it exists.\n"
+                "  - Never silently drop a prior-resolved concern that you "
+                "would have raised in this draft. If you DECIDE not to raise "
+                "it, that decision is itself part of the verdict — log it in "
+                "your reasoning as 'prior-resolved as <stance> in draft N; "
+                "no change in this draft warrants re-raising.'\n"
+            )
         # Codex ZigZag second opinion — pointer in system, full JSON in
         # user prompt. Same anti-empty-output pattern as user_directive.
         if codex_second_opinion is not None:
@@ -276,6 +330,26 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
             f"=== USER DIRECTIVE (authoritative human input on this run) ===\n{user_directive}\n\n"
             if user_directive else ""
         )
+        prior_resolved_section = ""
+        if prior_resolved_concerns:
+            lines = [
+                "=== PRIOR-RESOLVED CONCERNS (carried forward from prior drafts) ==="
+            ]
+            for i, c in enumerate(prior_resolved_concerns, 1):
+                lines.append(
+                    f"\n[{i}] [{c.severity}] STANCE: {c.stance}"
+                )
+                lines.append(f"    TOPIC: {c.topic}")
+                lines.append(f"    DETAIL: {c.detail}")
+                if c.counter_position:
+                    label = (
+                        "USER COUNTER-POSITION (authoritative)"
+                        if c.stance == "DISAGREE"
+                        else "USER RESOLUTION NOTE"
+                    )
+                    lines.append(f"    {label}: {c.counter_position}")
+            lines.append("\n")
+            prior_resolved_section = "\n".join(lines) + "\n"
         codex_section = ""
         if codex_second_opinion is not None:
             try:
@@ -294,6 +368,7 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
                 )
         user = (
             f"{directive_section}"
+            f"{prior_resolved_section}"
             f"{codex_section}"
             f"=== DRAFT PLAN ===\n{draft_plan}\n\n"
             f"=== CONSOLIDATED RISK VERDICT ===\n{risk_verdict}\n\n"
@@ -302,4 +377,9 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         return system, user
 
 
-__all__ = ["FundManagerAgent", "FundManagerDecision", "FundManagerPlanRevisionDecision"]
+__all__ = [
+    "FundManagerAgent",
+    "FundManagerDecision",
+    "FundManagerPlanRevisionDecision",
+    "PriorResolvedConcern",
+]

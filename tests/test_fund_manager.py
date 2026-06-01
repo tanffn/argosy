@@ -228,6 +228,89 @@ def test_plan_revision_prompt_carries_argosy_prime_directive() -> None:
     assert "trade-off" in sys.lower() or "tradeoff" in sys.lower()
 
 
+def test_plan_revision_prompt_threads_prior_resolved_concerns() -> None:
+    """Wave 7 Piece B carry-forward: when the orchestrator supplies a
+    non-empty `prior_resolved_concerns` list to the FM plan_revision
+    build_prompt, the FM's system prompt MUST surface a PRIOR-RESOLVED
+    CONCERNS block telling the FM that the user already answered these
+    in a prior draft, with strict instructions not to re-raise them
+    without citing what changed.
+
+    User-pain incident this guards against: synth #59 → #61 burned a
+    full day because the FM kept re-raising concerns the user had
+    AGREEd to in a prior round, because per-draft stance scoping meant
+    the FM never saw them.
+    """
+    from argosy.agents.fund_manager import (
+        FundManagerAgent,
+        PriorResolvedConcern,
+    )
+
+    agent = FundManagerAgent(user_id="ariel")
+    prior_resolved = [
+        PriorResolvedConcern(
+            topic="NVDA concentration breach",
+            detail="Position at 64.9%, cap is 55%.",
+            severity="AMBER",
+            stance="AGREE",
+            counter_position="Push tranche to 2026-06-17 per estate gate.",
+        ),
+        PriorResolvedConcern(
+            topic="Tax substrate sequencing",
+            detail="Section 102 deadline ambiguity.",
+            severity="RED",
+            stance="DISAGREE",
+            counter_position="Tax-loss-harvest defer to Q4 instead.",
+        ),
+    ]
+
+    sys, usr = agent.build_prompt(
+        decision_kind="plan_revision",
+        draft_plan='{"long": {}}',
+        risk_verdict="APPROVE",
+        prior_resolved_concerns=prior_resolved,
+    )
+
+    # System prompt has a POINTER + behavioural rule for the block.
+    assert "PRIOR-RESOLVED CONCERNS" in sys
+    # The rule must tell the FM not to silently re-raise.
+    assert "do NOT re-raise" in sys or "do not re-raise" in sys
+    # And must require the FM to cite WHAT CHANGED if it does re-raise.
+    assert "what changed" in sys.lower() or "what has changed" in sys.lower()
+
+    # The actual prior-resolved content lives in the user prompt (same
+    # anti-empty-output discipline as user_directive — large variable
+    # content in the system prompt empirically triggers SDK empty-out).
+    assert "NVDA concentration breach" in usr
+    assert "Push tranche to 2026-06-17" in usr
+    assert "Tax substrate sequencing" in usr
+    assert "Tax-loss-harvest defer to Q4" in usr
+    # Stance labels must be visible so the FM can distinguish AGREE
+    # from DISAGREE in the prior round.
+    assert "AGREE" in usr
+    assert "DISAGREE" in usr
+
+
+def test_plan_revision_prompt_omits_prior_resolved_section_when_empty() -> None:
+    """Empty `prior_resolved_concerns` (default) MUST produce the
+    same system + user prompt as the no-kwarg call. Guards the
+    backwards-compat path."""
+    from argosy.agents.fund_manager import FundManagerAgent
+
+    agent = FundManagerAgent(user_id="ariel")
+    base = dict(
+        decision_kind="plan_revision",
+        draft_plan='{"long": {}}',
+        risk_verdict="APPROVE",
+    )
+    sys_a, usr_a = agent.build_prompt(**base)
+    sys_b, usr_b = agent.build_prompt(**base, prior_resolved_concerns=[])
+    assert sys_a == sys_b
+    assert usr_a == usr_b
+    assert "PRIOR-RESOLVED CONCERNS" not in sys_a
+    assert "PRIOR-RESOLVED" not in usr_a
+
+
 def test_dialogue_verdict_prompt_carries_argosy_prime_directive() -> None:
     """Same directive lands in the FM↔analyst dialogue-verdict system
     prompt so resolutions (FM_ACCEPTS_ANALYST / FM_MAINTAINS_OBJECTION /
