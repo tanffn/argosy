@@ -1232,18 +1232,25 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
             </p>
           )}
           <p className="text-xs text-muted-foreground">
-            Don&apos;t want to handle these yourself? Either re-run the fleet
-            with every objection as guidance, or mark each one above and start
-            a new round driven by your decisions.
+            {isCarriedOver
+              ? "These objections aren't tied to a fresh FM verdict, so the per-objection re-round and re-synth flows can't run here. Press Run synthesis at the top of the page for a real full FM evaluation against the current state."
+              : "Don't want to handle these yourself? Either re-run the fleet with every objection as guidance, or mark each one above and start a new round driven by your decisions."}
           </p>
           <div className="flex items-center justify-end gap-2 flex-wrap">
             {onResynthesize && (
               <Button
                 onClick={onResynthesize}
-                disabled={resynthesizing || startingNewRound}
+                disabled={
+                  resynthesizing || startingNewRound || isCarriedOver
+                }
                 variant="outline"
                 size="sm"
                 className="whitespace-nowrap"
+                title={
+                  isCarriedOver
+                    ? "Re-synthesize with carried-over concerns is disabled — the underlying endpoint needs an FM verdict on the current draft. Press Run synthesis at the top of the page instead."
+                    : undefined
+                }
               >
                 <RefreshCw
                   className={`h-3.5 w-3.5 mr-1 ${
@@ -1259,15 +1266,20 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
               <Button
                 onClick={startNewRound}
                 disabled={
-                  !canStartNewRound || startingNewRound || resynthesizing
+                  !canStartNewRound ||
+                  startingNewRound ||
+                  resynthesizing ||
+                  isCarriedOver
                 }
                 variant="default"
                 size="sm"
                 className="whitespace-nowrap"
                 title={
-                  canStartNewRound
-                    ? "Compose guidance from your AGREE/DISAGREE decisions and start a new synthesis round"
-                    : "Mark at least one objection AGREE or DISAGREE first"
+                  isCarriedOver
+                    ? "Start-new-round needs a fresh FM verdict on the current draft. Press Run synthesis at the top of the page first; this button re-enables once a new draft lands."
+                    : canStartNewRound
+                      ? "Compose guidance from your AGREE/DISAGREE decisions and start a new synthesis round"
+                      : "Mark at least one objection AGREE or DISAGREE first"
                 }
               >
                 <RefreshCw
