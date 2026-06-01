@@ -89,6 +89,60 @@ def _load_baseline_voice(session: Session, user_id: str) -> str:
     return md[:800]
 
 
+def _load_snapshot_composition_md(
+    session: Session, user_id: str
+) -> str:
+    """Render the user's latest portfolio_snapshot allocation as a
+    short markdown block so the narrative agent has explicit ground
+    truth about CURRENT diversification (not just the synth's
+    framing). Without this, the narrative inherits the synth's
+    "concentrated single stock" framing even when the user already
+    has many asset classes.
+
+    Returns empty string when no snapshot exists.
+    """
+    from argosy.state.models import PortfolioSnapshotRow
+
+    snap = (
+        session.execute(
+            select(PortfolioSnapshotRow)
+            .where(PortfolioSnapshotRow.user_id == user_id)
+            .order_by(desc(PortfolioSnapshotRow.imported_at))
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if snap is None or not snap.allocations_json:
+        return ""
+    try:
+        rows = json.loads(snap.allocations_json)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(rows, list):
+        return ""
+    lines: list[str] = [
+        f"# Current portfolio composition "
+        f"(from snapshot {snap.snapshot_date.isoformat() if snap.snapshot_date else 'today'})",
+        "",
+        "| Asset class | % of portfolio |",
+        "|---|---|",
+    ]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cat = row.get("category")
+        pct = row.get("pct")
+        if not isinstance(cat, str):
+            continue
+        try:
+            pct_f = float(pct) if pct is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+        if pct_f <= 0.0:
+            continue
+        lines.append(f"| {cat} | {pct_f:.1f}% |")
+    return "\n".join(lines)
+
+
 def _assemble_plan_input(pv: PlanVersion) -> str:
     """Concatenate the three horizon markdowns + a compact JSON
     summary of structured targets / themes / actions / deltas for
@@ -151,6 +205,14 @@ async def get_plan_narrative(
         return _CACHE[cache_key]
 
     plan_input = _assemble_plan_input(pv)
+    # Wave 8 v2 polish: include the current portfolio composition so
+    # the narrative agent can correctly frame today's diversification
+    # vs the plan's NVDA-reduction direction. Without this the
+    # narrative inherits the synth's "concentrated single stock"
+    # framing even when the user already has 8 asset classes.
+    snapshot_md = _load_snapshot_composition_md(session, user_id)
+    if snapshot_md:
+        plan_input = snapshot_md + "\n\n" + plan_input
     identity = _load_identity_excerpt(session, user_id)
     baseline = _load_baseline_voice(session, user_id)
 

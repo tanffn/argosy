@@ -2,8 +2,8 @@
 
 Provides six per-field defaults the recap's cashflow sliders should
 pre-populate with, each carrying a ``source`` ("sigma_calibrator",
-"goals_yaml", or "default") and a markdown rationale the UI can
-render as a `▸ why?` tooltip.
+"goals_yaml", "plan_baseline", or "default") and a markdown
+rationale the UI can render as a `▸ why?` tooltip.
 
 Codex zigzag round 1 narrowed this to deterministic v1: NO
 synthesizer-posture-string interpretation. Three sources only:
@@ -62,7 +62,9 @@ RATIONALE_LIFESTYLE_DEFAULT = (
 )
 
 
-AssumptionSource = Literal["sigma_calibrator", "goals_yaml", "default"]
+AssumptionSource = Literal[
+    "sigma_calibrator", "goals_yaml", "plan_baseline", "default"
+]
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,105 @@ def _coerce_float(v: object) -> float | None:
     try:
         return float(v)  # type: ignore[arg-type]
     except (TypeError, ValueError):
+        return None
+
+
+def _resolve_mu_nominal(
+    session: Session | None, user_id: str
+) -> AssumptionField:
+    """Resolve nominal expected portfolio return.
+
+    Priority order (codex deep-audit #3):
+      1. Plan baseline raw_markdown — search for "Real return: X%"
+         pattern and convert to nominal via inflation default. This
+         binds the recap's μ to what the user's plan actually
+         assumes, rather than overriding it with the hardcoded 8%.
+      2. goals_yaml.mu_nominal_annual when explicitly set.
+      3. Hardcoded 0.08 default.
+
+    Real → Nominal conversion uses DEFAULT_INFLATION_ANNUAL (2.5%),
+    matching the plan's own framework. Plans that emit nominal
+    directly should set goals_yaml.mu_nominal_annual.
+    """
+    plan_mu = _try_extract_mu_from_plan(session, user_id)
+    if plan_mu is not None:
+        return plan_mu
+    if session is None:
+        return AssumptionField(
+            value=DEFAULT_MU_NOMINAL_ANNUAL,
+            source="default",
+            rationale_md=RATIONALE_MU,
+        )
+    return AssumptionField(
+        value=DEFAULT_MU_NOMINAL_ANNUAL,
+        source="default",
+        rationale_md=RATIONALE_MU,
+    )
+
+
+def _try_extract_mu_from_plan(
+    session: Session | None, user_id: str
+) -> AssumptionField | None:
+    """Best-effort parse of the user's baseline plan raw_markdown
+    for a "Real return: X%" line. Returns None when the plan is
+    absent or the pattern doesn't match.
+
+    Pattern: matches "real return" (case-insensitive) followed by
+    a numeric percentage like "4.5%" or "4.5 %", optionally with
+    "per year" / "/yr" trailer. Converts real → nominal at the
+    DEFAULT_INFLATION_ANNUAL rate (Bank of Israel 2.5%).
+    """
+    if session is None:
+        return None
+    try:
+        import re
+
+        from sqlalchemy import desc, select
+
+        from argosy.state.models import PlanVersion
+
+        plan = (
+            session.execute(
+                select(PlanVersion)
+                .where(
+                    PlanVersion.user_id == user_id,
+                    PlanVersion.role == "baseline",
+                )
+                .order_by(desc(PlanVersion.imported_at))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if plan is None or not plan.raw_markdown:
+            return None
+        # Match: "Real return: 4.5%" or "Real return - 4.5 %" or
+        # "real return is 4.5% per year". Case-insensitive.
+        m = re.search(
+            r"real\s+return[^0-9]{0,20}(\d+(?:\.\d+)?)\s*%",
+            plan.raw_markdown,
+            flags=re.IGNORECASE,
+        )
+        if m is None:
+            return None
+        real_pct = float(m.group(1))
+        if not (0.0 <= real_pct <= 20.0):
+            return None
+        real_decimal = real_pct / 100.0
+        nominal = real_decimal + DEFAULT_INFLATION_ANNUAL
+        return AssumptionField(
+            value=nominal,
+            source="plan_baseline",
+            rationale_md=(
+                f"From your baseline plan: real return {real_pct:.1f}% "
+                f"per year. Adding inflation "
+                f"({DEFAULT_INFLATION_ANNUAL * 100:.1f}%) gives nominal μ = "
+                f"{nominal * 100:.1f}%. This is the conservative-side "
+                f"figure the plan itself uses for projections; the "
+                f"recap's cashflow projection inherits it so the "
+                f"recap and the plan don't disagree on what return to "
+                f"expect."
+            ),
+        )
+    except Exception:  # pragma: no cover - defensive
         return None
 
 
@@ -281,11 +382,7 @@ def get_default_assumptions(
     """Top-level entry. Compute all six default-with-rationale fields."""
     goals = _load_goals_yaml(session, user_id)
     return DefaultAssumptionsResponse(
-        mu_nominal_annual=AssumptionField(
-            value=DEFAULT_MU_NOMINAL_ANNUAL,
-            source="default",
-            rationale_md=RATIONALE_MU,
-        ),
+        mu_nominal_annual=_resolve_mu_nominal(session, user_id),
         sigma_annual=_resolve_sigma(session, user_id),
         tax_rate=_resolve_tax_rate(goals),
         inflation_annual=AssumptionField(
