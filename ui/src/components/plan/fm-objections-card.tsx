@@ -726,13 +726,15 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
       </div>
       {isCarriedOver && (
         <div className="mb-3 rounded-md border border-warning/40 bg-warning/10 p-2.5 text-xs">
-          The Fund Manager hasn&apos;t scored this draft. The amendment
-          flow that produced it writes a synthetic phase record but
-          doesn&apos;t invoke the FM agent. The objections below are
-          inherited from the most recent earlier draft that had a real FM
-          verdict — they may not all still apply. Press{" "}
-          <strong>Run synthesis</strong> at the top of the page for a
-          fresh FM verdict against the current state.
+          The Fund Manager hasn&apos;t evaluated this draft yet. Drafts
+          created by the chat-driven amendment flow skip the FM step.{" "}
+          <strong>Nothing was lost</strong> — the objections below come
+          from your most recent FM-scored draft and are surfaced here so
+          they don&apos;t silently drop off the radar. Mark a stance on
+          each one as you address it (the AGREE textarea takes a free-text
+          resolution note), then press <strong>Run synthesis</strong> at
+          the top of the page for a real fresh FM verdict against the
+          current state.
         </div>
       )}
       <ul className="flex flex-col gap-2">
@@ -772,34 +774,32 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                   aria-hidden
                 />
                 <div className="flex-1">
-                  <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Badge
-                        variant="outline"
-                        className="font-mono text-[10px] tracking-wide shrink-0"
-                        title={
-                          "Stable identifier for this objection on the current draft. " +
-                          "Reference as “FM-Obj #" + (i + 1) + "” in chat / notes."
-                        }
-                      >
-                        FM-OBJ #{i + 1}
-                      </Badge>
-                      {o.carried_over && (
+                  <div className="flex items-start justify-between gap-2 mb-1 flex-wrap">
+                    <div className="flex items-start gap-2 min-w-0">
+                      <div className="flex flex-col items-start gap-0.5 shrink-0">
                         <Badge
                           variant="outline"
-                          className="border-warning/40 bg-warning/10 text-warning font-mono text-[10px] shrink-0"
+                          className="font-mono text-[10px] tracking-wide"
                           title={
-                            o.carried_over_from_plan_version_id != null
-                              ? `Carried over from draft #${o.carried_over_from_plan_version_id} — not re-evaluated against the current draft's inputs.`
-                              : "Carried over from a prior draft — not re-evaluated against the current draft's inputs."
+                            "Stable identifier for this objection on the current draft. " +
+                            "Reference as “FM-Obj #" + (i + 1) + "” in chat / notes."
                           }
                         >
-                          carried over
-                          {o.carried_over_from_plan_version_id != null
-                            ? ` (#${o.carried_over_from_plan_version_id})`
-                            : ""}
+                          FM-OBJ #{i + 1}
                         </Badge>
-                      )}
+                        {o.carried_over && (
+                          <span
+                            className="font-mono text-[9px] text-warning/80 leading-none px-0.5"
+                            title={
+                              o.carried_over_from_plan_version_id != null
+                                ? `Carried over from draft #${o.carried_over_from_plan_version_id} — not re-evaluated against the current draft's inputs.`
+                                : "Carried over from a prior draft — not re-evaluated against the current draft's inputs."
+                            }
+                          >
+                            from #{o.carried_over_from_plan_version_id ?? "?"}
+                          </span>
+                        )}
+                      </div>
                       <span className="font-medium">
                         {renderTranslated && activeTranslation
                           ? activeTranslation.headline

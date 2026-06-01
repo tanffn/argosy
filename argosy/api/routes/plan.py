@@ -2021,6 +2021,7 @@ def _build_carried_over_response(
             c for c in (parsed.get("cited_sources") or []) if isinstance(c, str)
         ]
         carried: list[FMObjection] = []
+        raw_for_cache: list[dict] = []
         for r in reasons:
             if not isinstance(r, str) or not r.strip():
                 continue
@@ -2035,6 +2036,45 @@ def _build_carried_over_response(
                     carried_over_from_plan_version_id=prior_pv.id,
                 )
             )
+            raw_for_cache.append({"severity": sev, "topic": topic, "detail": detail})
+
+        # Pre-computed plain-English translations for these objections
+        # exist in fm_objection_translations keyed by the SOURCE draft's
+        # plan_version_id. Look them up there so the UI's instant
+        # toggle works on carried-over rows too. Skip silently on cache
+        # failure — the per-row "Explain in plain English" lazy
+        # fallback still works on click.
+        if carried:
+            try:
+                from argosy.services.fm_objection_translation_cache import (
+                    get_or_compute_translations,
+                )
+
+                translations = get_or_compute_translations(
+                    db,
+                    user_id=user_id,
+                    plan_version_id=prior_pv.id,
+                    objections=raw_for_cache,
+                    cited_sources=cited,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "fm_objection_translation_cache failed on "
+                    "carry-forward source_plan_version_id=%s err=%s",
+                    prior_pv.id,
+                    exc,
+                )
+                translations = {}
+            for idx, obj in enumerate(carried):
+                dto = translations.get(idx)
+                if dto is None:
+                    continue
+                obj.translation = FMObjectionTranslationDTO(
+                    headline=dto.headline,
+                    plain_english=dto.plain_english,
+                    recommended_actions=list(dto.recommended_actions or []),
+                )
+
         return FMObjectionsResponse(
             # approved stays None — the current draft has not been
             # evaluated. The prior bool would mislead if surfaced as
