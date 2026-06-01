@@ -1013,6 +1013,10 @@ function InFlightSynthesisCard({ inFlight }: InFlightSynthesisCardProps) {
   // ISO so the Date parse correctly localizes (was rendering UTC
   // directly when the suffix was missing — 06:42 instead of 09:42).
   const startedAtLabel = formatLocalDateTime(inFlight.started_at);
+  const phaseElapsedLabel =
+    inFlight.current_phase_elapsed_seconds != null
+      ? formatElapsedMinutes(inFlight.current_phase_elapsed_seconds)
+      : null;
   return (
     <Card>
       <CardHeader>
@@ -1024,19 +1028,62 @@ function InFlightSynthesisCard({ inFlight }: InFlightSynthesisCardProps) {
           phase {inFlight.completed_phases} of {inFlight.total_phases} complete
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground">
-          A new draft will appear when complete (~30 min).
-        </p>
-        <Link
-          href={`/decisions/${inFlight.decision_run_id}`}
-          className="text-sm text-primary hover:underline"
-        >
-          Drill in →
-        </Link>
+      <CardContent className="flex flex-col gap-2">
+        {inFlight.current_phase != null && (
+          <div
+            className="rounded-md border border-info/30 bg-info/5 p-2.5 text-sm flex flex-col gap-0.5"
+            data-slot="current-phase"
+          >
+            <span>
+              <strong>
+                Phase {inFlight.current_phase} of {inFlight.total_phases}
+                {inFlight.current_phase_label
+                  ? ` — ${inFlight.current_phase_label}`
+                  : ""}
+              </strong>{" "}
+              <span className="text-muted-foreground">currently running</span>
+              {phaseElapsedLabel ? (
+                <span className="text-muted-foreground">
+                  {" "}
+                  · {phaseElapsedLabel}
+                </span>
+              ) : null}
+            </span>
+            {inFlight.current_phase_elapsed_seconds != null &&
+              inFlight.current_phase_elapsed_seconds > 15 * 60 && (
+                <span className="text-xs text-warning">
+                  This phase has been running unusually long. The
+                  Opus call may be in a retry loop on malformed JSON
+                  — check uvicorn logs for{" "}
+                  <code className="font-mono text-[11px]">
+                    claude_code.malformed_json_retry
+                  </code>
+                  .
+                </span>
+              )}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">
+            A new draft will appear when complete (~30 min total).
+          </p>
+          <Link
+            href={`/decisions/${inFlight.decision_run_id}`}
+            className="text-sm text-primary hover:underline"
+          >
+            Drill in →
+          </Link>
+        </div>
       </CardContent>
     </Card>
   );
+}
+
+function formatElapsedMinutes(seconds: number): string {
+  if (seconds < 60) return `${seconds}s elapsed`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return s === 0 ? `${m} min elapsed` : `${m} min ${s}s elapsed`;
 }
 
 function severityVariant(

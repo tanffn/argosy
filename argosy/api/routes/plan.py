@@ -811,6 +811,27 @@ class InFlightSynthesisDTO(BaseModel):
     completed_phases: int  # decision_phases rows where finished_at IS NOT NULL
     total_phases: int = 5  # constant for synthesis runs (phase_1..phase_5)
     status: str  # "running" today; surfaced verbatim so we can extend later
+    # Live phase visibility — derived from the latest decision_phases row.
+    # Lets the UI render "Synthesizer (phase 3 of 5) — running for 24
+    # minutes" instead of just "phase 2 of 5 complete" (which is
+    # technically true but doesn't tell the user that phase 3 is the
+    # one actually chewing right now).
+    current_phase: int | None = None  # 1..5; None when finished.
+    current_phase_label: str | None = None
+    current_phase_started_at: str | None = None  # ISO-UTC
+    current_phase_elapsed_seconds: int | None = None
+
+
+# Synthesis phase names — used to label which phase is mid-flight in
+# the in-flight DTO. Mirrors the synthesis.phase_N kinds written by
+# decision_phases rows in argosy/orchestrator/flows/plan_synthesis/.
+_SYNTHESIS_PHASE_LABELS = {
+    1: "analysts",
+    2: "debate teams",
+    3: "synthesizer",
+    4: "risk officers",
+    5: "fund manager",
+}
 
 
 class InFlightSynthesisResponse(BaseModel):
@@ -875,6 +896,54 @@ def get_in_flight_synthesis(
     if completed_phases > 5:
         completed_phases = 5
 
+    # Derive current-phase visibility from the latest decision_phases
+    # row for this run. The orchestrator writes a phase row when each
+    # phase STARTS (and updates finished_at when it commits). When
+    # the most-recent row has no finished_at, that phase is in flight
+    # right now — even if the LLM call inside is mid-retry. Surfaces
+    # in the DTO so the UI can render "Synthesizer (phase 3 of 5) —
+    # running for N minutes" instead of just "phase 2 of 5 complete"
+    # (the user can't otherwise tell that phase 3 is the one actively
+    # chewing).
+    from datetime import datetime as _dt, timezone as _tz
+
+    latest_phase = db.execute(
+        select(DecisionPhase)
+        .where(DecisionPhase.decision_run_id == run.id)
+        .order_by(desc(DecisionPhase.seq))
+        .limit(1)
+    ).scalar_one_or_none()
+
+    current_phase: int | None = None
+    current_phase_label: str | None = None
+    current_phase_started_at: str | None = None
+    current_phase_elapsed_seconds: int | None = None
+    if latest_phase is not None:
+        if latest_phase.finished_at is None:
+            # Phase is in flight.
+            current_phase = int(latest_phase.seq)
+            current_phase_started_at = _iso_utc(latest_phase.started_at)
+            if latest_phase.started_at is not None:
+                started = latest_phase.started_at
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=_tz.utc)
+                current_phase_elapsed_seconds = int(
+                    (_dt.now(_tz.utc) - started).total_seconds()
+                )
+        elif completed_phases < 5:
+            # Last persisted phase is done; the NEXT phase has begun
+            # but hasn't written its decision_phases row yet (the
+            # orchestrator's _record_phase_completion writes both
+            # started_at and finished_at on commit, so the gap
+            # between phases looks like "no current phase" until the
+            # next phase's LLM call returns). Surface the gap state
+            # honestly so the UI can render "Phase 3 (synthesizer) —
+            # starting" instead of pretending phase 2 is still
+            # running.
+            current_phase = int(latest_phase.seq) + 1
+    if current_phase is not None:
+        current_phase_label = _SYNTHESIS_PHASE_LABELS.get(current_phase)
+
     return InFlightSynthesisResponse(
         in_flight_synthesis=InFlightSynthesisDTO(
             decision_run_id=run.id,
@@ -883,6 +952,10 @@ def get_in_flight_synthesis(
             completed_phases=int(completed_phases),
             total_phases=5,
             status=run.status or "running",
+            current_phase=current_phase,
+            current_phase_label=current_phase_label,
+            current_phase_started_at=current_phase_started_at,
+            current_phase_elapsed_seconds=current_phase_elapsed_seconds,
         ),
     )
 

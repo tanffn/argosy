@@ -3637,6 +3637,13 @@ export interface InFlightSynthesisDTO {
   completed_phases: number;
   total_phases: number;
   status: string;
+  // Live phase visibility — populated by the backend from the latest
+  // decision_phases row for this run. Null when the synthesis has
+  // finished or hasn't written its first phase row yet.
+  current_phase?: number | null;
+  current_phase_label?: string | null;
+  current_phase_started_at?: string | null;
+  current_phase_elapsed_seconds?: number | null;
 }
 
 export interface InFlightSynthesisResponse {
