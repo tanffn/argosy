@@ -17,6 +17,7 @@ import type {
   FMObjectionsResponse,
   HorizonView,
 } from "@/lib/api";
+import { formatLocalDateTime } from "@/lib/utils";
 
 import { FMObjectionsCard } from "./fm-objections-card";
 
@@ -168,7 +169,7 @@ export function ExecutiveSummaryCard(props: ExecutiveSummaryCardProps) {
               )}
             </CardTitle>
             <CardDescription className="font-mono text-xs">
-              Drafted {new Date(draft.drafted_at).toLocaleString()}
+              Drafted {formatLocalDateTime(draft.drafted_at)}
               {draft.derived_from_id != null
                 ? ` · derived from baseline #${draft.derived_from_id}`
                 : ""}

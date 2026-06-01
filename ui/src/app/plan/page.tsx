@@ -41,6 +41,7 @@ import {
   type TargetProgressResponse,
 } from "@/lib/api";
 import { friendlySourceLabels } from "@/lib/plain-english-labels";
+import { formatLocalDateTime } from "@/lib/utils";
 import { useWSEvents } from "@/lib/ws";
 
 const USER_ID = "ariel";
@@ -1008,19 +1009,10 @@ interface InFlightSynthesisCardProps {
 }
 
 function InFlightSynthesisCard({ inFlight }: InFlightSynthesisCardProps) {
-  // Format the started_at timestamp as HH:MM in the user's locale so the
-  // "started 18:51" hint matches the wall clock they're staring at. ISO
-  // string from the backend; let toLocaleTimeString do the heavy lifting.
-  let startedAtLabel = "";
-  if (inFlight.started_at) {
-    const d = new Date(inFlight.started_at);
-    if (!Number.isNaN(d.getTime())) {
-      startedAtLabel = d.toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    }
-  }
+  // YYYY-MM-DD HH:mm in user-local time. Backend now sends UTC-tagged
+  // ISO so the Date parse correctly localizes (was rendering UTC
+  // directly when the suffix was missing — 06:42 instead of 09:42).
+  const startedAtLabel = formatLocalDateTime(inFlight.started_at);
   return (
     <Card>
       <CardHeader>

@@ -180,12 +180,12 @@ async def get_plan_current(user_id: str = Query("ariel")) -> PlanCurrentDTO:
                 critique_json = json.loads(critique.critique_json or "{}")
             except json.JSONDecodeError:  # pragma: no cover - defensive
                 critique_json = None
-            critique_created_at = critique.created_at.isoformat()
+            critique_created_at = _iso_utc(critique.created_at)
         return PlanCurrentDTO(
             plan_version_id=plan.id,
             version_label=plan.version_label or None,
             raw_markdown=plan.raw_markdown,
-            imported_at=plan.imported_at.isoformat() if plan.imported_at else None,
+            imported_at=_iso_utc(plan.imported_at),
             latest_critique_json=critique_json,
             latest_critique_created_at=critique_created_at,
         )
@@ -299,7 +299,7 @@ def _build_baseline_response(pv: PlanVersion) -> BaselineResponse:
         raw_markdown=pv.raw_markdown,
         distillate=distillate_obj,
         distillate_rendered=pv.distillate_rendered,
-        distilled_at=pv.distilled_at.isoformat() if pv.distilled_at else None,
+        distilled_at=_iso_utc(pv.distilled_at),
         source_hash=pv.source_hash,
     )
 
@@ -403,6 +403,24 @@ def patch_distillate_item(
 # ---------------------------------------------------------------------------
 
 from datetime import datetime, timedelta, timezone
+
+
+def _iso_utc(dt: datetime | None) -> str | None:
+    """Render a datetime as ISO 8601 with explicit UTC marker.
+
+    SQLite stores naive datetimes — but every write in this codebase
+    uses ``datetime.now(timezone.utc)``, so a naive value coming back
+    out IS UTC by convention. Stamping the tzinfo before ``isoformat``
+    ensures the rendered string carries a timezone suffix, so the
+    frontend can correctly convert UTC -> the user's local time
+    instead of misreading the timestamp as local-naive (which was
+    showing 06:42 in the UI when actual local was 09:42 IDT).
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
 
 
 class HorizonSectionView(BaseModel):
@@ -749,7 +767,7 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
     return DraftResponse(
         plan_version_id=pv.id,
         version_label=pv.version_label or None,
-        drafted_at=pv.imported_at.isoformat(),
+        drafted_at=_iso_utc(pv.imported_at) or "",
         derived_from_id=pv.derived_from_id,
         decision_run_id=pv.decision_run_id,
         horizon_long=_horizon_view(pv.horizon_long_json),
@@ -861,7 +879,7 @@ def get_in_flight_synthesis(
         in_flight_synthesis=InFlightSynthesisDTO(
             decision_run_id=run.id,
             decision_audit_token=f"plan-synth-{run.id}",
-            started_at=run.started_at.isoformat() if run.started_at else "",
+            started_at=_iso_utc(run.started_at) or "",
             completed_phases=int(completed_phases),
             total_phases=5,
             status=run.status or "running",
@@ -1736,9 +1754,7 @@ def get_item_history(
                         plan_version_id=pv.id,
                         version_label=pv.version_label,
                         role=pv.role or "?",
-                        drafted_at=pv.imported_at.isoformat()
-                        if pv.imported_at
-                        else "",
+                        drafted_at=_iso_utc(pv.imported_at) or "",
                         horizon=delta.get("horizon") or horizon,
                         summary=delta.get("summary") or "",
                         label=proposed.get("label", "")
@@ -1776,9 +1792,7 @@ def get_item_history(
                             plan_version_id=pv.id,
                             version_label=pv.version_label,
                             role=pv.role or "?",
-                            drafted_at=pv.imported_at.isoformat()
-                            if pv.imported_at
-                            else "",
+                            drafted_at=_iso_utc(pv.imported_at) or "",
                             horizon=horizon,
                             summary=label,
                             label=label,
@@ -2328,7 +2342,7 @@ def get_current_structured(
     return DraftResponse(
         plan_version_id=pv.id,
         version_label=pv.version_label or None,
-        drafted_at=(pv.accepted_at or pv.imported_at).isoformat(),
+        drafted_at=_iso_utc(pv.accepted_at or pv.imported_at) or "",
         derived_from_id=pv.derived_from_id,
         decision_run_id=pv.decision_run_id,
         horizon_long=_horizon_view(pv.horizon_long_json),
