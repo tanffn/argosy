@@ -31,6 +31,7 @@ interface ExecutiveSummaryCardProps {
   resynthesizing?: boolean;
   onDiscussObjection?: (
     objection: { topic: string; detail: string; severity: string },
+    objectionNumber: number,
   ) => void;
   // Called when the user clicks "Start new round with my decisions" and
   // the start-new-round endpoint returns 202. Propagates the audit token

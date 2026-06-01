@@ -269,10 +269,14 @@ export default function PlanPage() {
   // string the advisor page reads on mount and inserts as the first
   // user message.
   const onDiscussObjection = useCallback(
-    (objection: { topic: string; detail: string; severity: string }) => {
+    (
+      objection: { topic: string; detail: string; severity: string },
+      objectionNumber: number,
+    ) => {
       const seed = (
-        `The Fund Manager objected to the pending draft #${draft?.plan_version_id ?? "?"} ` +
-        `with this [${objection.severity}] concern titled "${objection.topic}":\n\n` +
+        `Fund Manager objection FM-Obj #${objectionNumber} on draft #${
+          draft?.plan_version_id ?? "?"
+        } ([${objection.severity}] — "${objection.topic}"):\n\n` +
         `${objection.detail}\n\n` +
         `Please explain what this means in plain English, what data the ` +
         `Fund Manager looked at to reach this conclusion, and what I should ` +

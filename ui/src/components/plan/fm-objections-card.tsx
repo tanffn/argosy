@@ -96,7 +96,10 @@ interface FMObjectionsCardProps {
   resynthesizing?: boolean;
   // T4.7 — when provided, the "Discuss" button per objection opens a
   // conversation with the advisor seeded with the objection content.
-  onDiscussObjection?: (o: FMObjection) => void;
+  // `objectionNumber` is the 1-based human-facing identifier rendered
+  // on the card ("FM-Obj #N"); the parent uses it to tag the seed so
+  // the resulting chat / decisions trail can be cross-referenced.
+  onDiscussObjection?: (o: FMObjection, objectionNumber: number) => void;
   // Called after start-new-round succeeds so the caller can flip its
   // "synthesis running" state on without re-calling the API to learn
   // the new decision_audit_token.
@@ -729,7 +732,8 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
           return (
             <li
               key={i}
-              className={`rounded-md border ${cls.ring} p-3 text-sm`}
+              id={`fm-obj-${i + 1}`}
+              className={`rounded-md border ${cls.ring} p-3 text-sm scroll-mt-20`}
             >
               <div className="flex items-start gap-2">
                 <span
@@ -738,11 +742,23 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                 />
                 <div className="flex-1">
                   <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
-                    <span className="font-medium">
-                      {renderTranslated && activeTranslation
-                        ? activeTranslation.headline
-                        : o.topic}
-                    </span>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Badge
+                        variant="outline"
+                        className="font-mono text-[10px] tracking-wide shrink-0"
+                        title={
+                          "Stable identifier for this objection on the current draft. " +
+                          "Reference as “FM-Obj #" + (i + 1) + "” in chat / notes."
+                        }
+                      >
+                        FM-OBJ #{i + 1}
+                      </Badge>
+                      <span className="font-medium">
+                        {renderTranslated && activeTranslation
+                          ? activeTranslation.headline
+                          : o.topic}
+                      </span>
+                    </div>
                     <Badge variant={cls.badge}>{o.severity}</Badge>
                   </div>
                   {renderTranslated && activeTranslation ? (
@@ -819,7 +835,7 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                         size="sm"
                         variant="outline"
                         className="h-7 text-xs"
-                        onClick={() => onDiscussObjection(o)}
+                        onClick={() => onDiscussObjection(o, i + 1)}
                       >
                         <MessageCircle className="h-3 w-3 mr-1" />
                         Discuss with advisor
