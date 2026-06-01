@@ -633,8 +633,21 @@ def assemble_phase1_inputs(
     # 10. Tax fields (lots / dividends / RSU schedule). Operational
     #     tables are still empty (`lots=0`, `fills=0`); leave the
     #     fields as empty strings for the tax analyst — W3b populates.
-    #     domain_kb_files stays empty here: each analyst pulls its own
-    #     subset via its prompt builder.
+    #     domain_kb_files MUST be loaded here: TaxAnalystAgent.build_prompt
+    #     declares it as "Mandatory input — citation-gate fails without
+    #     these." Loading every Markdown under domain_knowledge/tax/
+    #     (recursive, including .../israel/treaties/...). When the
+    #     directory is missing the loader returns an empty dict and
+    #     Tax will fail citations the same as before — the loader is
+    #     best-effort, never raises.
+    try:
+        inputs.domain_kb_files = _load_tax_domain_kb_files()
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.domain_kb_files_failed",
+            user_id=user_id,
+            error=str(exc),
+        )
 
     # 11. User context YAML (identity + goals + constraints).
     #     Resolve via the package namespace so tests that monkeypatch
@@ -705,6 +718,39 @@ def assemble_phase1_inputs(
 # ----------------------------------------------------------------------
 # Section helpers (internal — no contract guarantees)
 # ----------------------------------------------------------------------
+
+
+def _load_tax_domain_kb_files() -> dict[str, str]:
+    """Load every Markdown file under ``domain_knowledge/tax/``.
+
+    Returns ``{repo-relative-path: file-contents}`` keyed by the form
+    ``"domain_knowledge/tax/israel/capital_gains.md"`` — the same path
+    shape TaxAnalystAgent + PlanCritiqueAgent cite in their prompts.
+    Walks the directory recursively so ``.../israel/retirement/...``
+    and ``.../israel/treaties/...`` subtrees are included.
+
+    Best-effort: missing directory returns ``{}``; per-file read
+    failures are skipped with a structured warning. Non-Markdown files
+    are ignored. The function never raises.
+    """
+    from argosy.config import get_settings
+
+    settings = get_settings()
+    tax_dir = settings.domain_knowledge_dir / "tax"
+    if not tax_dir.exists() or not tax_dir.is_dir():
+        return {}
+    out: dict[str, str] = {}
+    for path in sorted(tax_dir.rglob("*.md")):
+        try:
+            rel = path.relative_to(settings.home).as_posix()
+            out[rel] = path.read_text(encoding="utf-8")
+        except (OSError, ValueError) as exc:
+            log.warning(
+                "plan_synthesis.inputs.domain_kb_file_read_failed",
+                path=str(path),
+                error=str(exc),
+            )
+    return out
 
 
 def _extract_plan_targets(baseline) -> dict[str, float]:

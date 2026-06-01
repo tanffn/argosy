@@ -885,3 +885,109 @@ def test_assemble_fills_summary_empty_when_no_data():
 
     text = _assemble_fills_summary(session=session, user_id="ariel")
     assert text == "(no recent fills or accepted decisions in last 90 days)"
+
+
+# ----------------------------------------------------------------------
+# Tax / treaties domain-KB loader
+# ----------------------------------------------------------------------
+# Wave 5: TaxAnalystAgent.build_prompt declares domain_kb_files as
+# "Mandatory input — citation-gate fails without these." The inputs
+# assembler was leaving the field empty (with a wrong comment claiming
+# each analyst pulls its own files), so Tax silently failed citations
+# for three consecutive plan-revision cycles. These tests pin the
+# loader so the regression doesn't repeat.
+
+
+def test_load_tax_domain_kb_files_returns_every_markdown_under_tax(tmp_path, monkeypatch):
+    """Walks ARGOSY_HOME/domain_knowledge/tax/ recursively, returns every
+    `.md` file as { repo-relative-path: contents }."""
+    home = tmp_path / "fake_argosy"
+    tax = home / "domain_knowledge" / "tax"
+    (tax / "israel" / "retirement").mkdir(parents=True)
+    (tax / "us").mkdir()
+    (tax / "israel" / "capital_gains.md").write_text("CG content", encoding="utf-8")
+    (tax / "israel" / "retirement" / "section_102.md").write_text(
+        "S102 content", encoding="utf-8"
+    )
+    (tax / "us" / "estate_tax_nonresidents.md").write_text(
+        "estate content", encoding="utf-8"
+    )
+    # Non-markdown file → should be skipped, never appears in the dict.
+    (tax / "README.txt").write_text("ignored", encoding="utf-8")
+
+    monkeypatch.setenv("ARGOSY_HOME", str(home))
+    from argosy.config import reload_settings
+
+    reload_settings()
+
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        _load_tax_domain_kb_files,
+    )
+
+    out = _load_tax_domain_kb_files()
+    assert set(out.keys()) == {
+        "domain_knowledge/tax/israel/capital_gains.md",
+        "domain_knowledge/tax/israel/retirement/section_102.md",
+        "domain_knowledge/tax/us/estate_tax_nonresidents.md",
+    }
+    assert out["domain_knowledge/tax/israel/capital_gains.md"] == "CG content"
+    assert out["domain_knowledge/tax/us/estate_tax_nonresidents.md"] == "estate content"
+
+
+def test_load_tax_domain_kb_files_returns_empty_when_dir_missing(tmp_path, monkeypatch):
+    """No ``domain_knowledge/tax/`` directory → empty dict, no raise."""
+    home = tmp_path / "fake_argosy"
+    home.mkdir()
+    # Deliberately do NOT create the domain_knowledge dir.
+
+    monkeypatch.setenv("ARGOSY_HOME", str(home))
+    from argosy.config import reload_settings
+
+    reload_settings()
+
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        _load_tax_domain_kb_files,
+    )
+
+    assert _load_tax_domain_kb_files() == {}
+
+
+def test_assemble_phase1_inputs_populates_domain_kb_files_from_tax_dir(
+    tmp_path, monkeypatch
+):
+    """End-to-end: a real-shaped ARGOSY_HOME with tax markdown produces
+    a non-empty inputs.domain_kb_files. Regression: the field was being
+    left empty despite files existing on disk."""
+    home = tmp_path / "fake_argosy"
+    tax = home / "domain_knowledge" / "tax" / "israel"
+    tax.mkdir(parents=True)
+    (tax / "capital_gains.md").write_text("CG content for test", encoding="utf-8")
+
+    monkeypatch.setenv("ARGOSY_HOME", str(home))
+    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    from argosy.config import reload_settings
+
+    reload_settings()
+
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        assemble_phase1_inputs,
+    )
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+    session.commit()
+
+    inputs = assemble_phase1_inputs(
+        session,
+        user_id="ariel",
+        baseline=None,
+        prior_current=None,
+        decision_audit_token="plan-synth-42",
+    )
+    # The field MUST be populated — TaxAnalystAgent.build_prompt requires it.
+    assert "domain_knowledge/tax/israel/capital_gains.md" in inputs.domain_kb_files
+    assert (
+        inputs.domain_kb_files["domain_knowledge/tax/israel/capital_gains.md"]
+        == "CG content for test"
+    )
