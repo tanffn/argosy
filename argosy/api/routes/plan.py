@@ -2506,11 +2506,19 @@ class ExcludedTargetDTO(BaseModel):
     reason: str
 
 
+class AssetClassAnchorStatusDTO(BaseModel):
+    asset_class: str
+    matched: bool
+    today_value: float
+    alias_source: str | None
+
+
 class AllocationGlidepathResponse(BaseModel):
     points: list[GlidepathPointDTO]
     collapsed_waypoints: list[CollapsedWaypointDTO]
     excluded_targets: list[ExcludedTargetDTO]
     asset_classes: list[str]
+    anchor_status: list[AssetClassAnchorStatusDTO] = []
     today: str | None
     end_date: str | None
 
@@ -2567,6 +2575,15 @@ def get_current_allocation_glidepath(
             for t in out.excluded_targets
         ],
         asset_classes=out.asset_classes,
+        anchor_status=[
+            AssetClassAnchorStatusDTO(
+                asset_class=a.asset_class,
+                matched=a.matched,
+                today_value=a.today_value,
+                alias_source=a.alias_source,
+            )
+            for a in out.anchor_status
+        ],
         today=out.today.isoformat() if out.today else None,
         end_date=out.end_date.isoformat() if out.end_date else None,
     )
@@ -2606,8 +2623,19 @@ class AuditLineDTO(BaseModel):
     synthesis_trail_link: str | None
 
 
+class HeadlineDerivationDTO(BaseModel):
+    mu_nominal_annual: float
+    sigma_annual: float
+    tax_rate: float
+    retirement_target_age: float
+    # list of [mu, retire_age | null] pairs.
+    sensitivity_by_mu: list[list[float | None]]
+    sourced_from: str
+
+
 class RecapSummaryDTO(BaseModel):
     headline: HeadlineLinesDTO
+    derivation: HeadlineDerivationDTO | None
     accepted_deltas: list[AcceptedDeltaSummaryDTO]
     portfolio_value: PortfolioValueAnchorDTO
     insurance_gaps: InsuranceGapsSummaryDTO
@@ -2629,12 +2657,27 @@ def get_current_headline(
     summary = compute_recap_summary(db, user_id)
     if summary is None:
         return None
+    derivation_dto: HeadlineDerivationDTO | None = None
+    if summary.derivation is not None:
+        derivation_dto = HeadlineDerivationDTO(
+            mu_nominal_annual=summary.derivation.mu_nominal_annual,
+            sigma_annual=summary.derivation.sigma_annual,
+            tax_rate=summary.derivation.tax_rate,
+            retirement_target_age=summary.derivation.retirement_target_age,
+            sensitivity_by_mu=[
+                [mu, age]
+                for (mu, age) in summary.derivation.sensitivity_by_mu
+            ],
+            sourced_from=summary.derivation.sourced_from,
+        )
+
     return RecapSummaryDTO(
         headline=HeadlineLinesDTO(
             retirement_readiness=summary.headline.retirement_readiness,
             next_big_move=summary.headline.next_big_move,
             then=summary.headline.then,
         ),
+        derivation=derivation_dto,
         accepted_deltas=[
             AcceptedDeltaSummaryDTO(
                 horizon=d.horizon, item_kind=d.item_kind, summary=d.summary

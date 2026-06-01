@@ -171,15 +171,21 @@ export function ActionsTimeline({
   const isEmpty =
     dated.length === 0 && parameterized.length === 0 && directional.length === 0;
 
+  // Wave 8 v2 polish — group dated actions by quarter so a 30-row
+  // list reads as ~6 collapsable groups instead of a wall of dates.
+  const datedByQuarter = useMemo(() => groupByQuarter(dated), [dated]);
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Key actions</CardTitle>
+        <CardTitle className="text-base">Key actions &amp; triggers</CardTitle>
         <CardDescription>
-          Cross-horizon timeline of every dated action, parameterized
-          trigger, and directional posture the synthesizer emitted —
-          plus every non-percentage target the allocation glidepath
-          couldn&apos;t place on its chart (so nothing gets dropped).
+          Cross-horizon timeline. Dated items are grouped by quarter
+          (click to expand). Ongoing triggers (if-this-then-that
+          rules) and directional posture appear at the bottom because
+          they don&apos;t have a specific date. Non-percentage targets
+          that the allocation glidepath couldn&apos;t plot are
+          surfaced here too so nothing gets dropped.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -189,10 +195,15 @@ export function ActionsTimeline({
           </p>
         ) : (
           <div className="flex flex-col gap-4">
-            {dated.length > 0 ? (
-              <TimelineSection title="Dated">
-                {dated.map((r, i) => (
-                  <TimelineRowBlock key={`d-${i}`} row={r} />
+            {datedByQuarter.length > 0 ? (
+              <TimelineSection title="Dated (by quarter)">
+                {datedByQuarter.map((g, i) => (
+                  <QuarterGroup
+                    key={g.quarterLabel}
+                    quarterLabel={g.quarterLabel}
+                    rows={g.rows}
+                    defaultOpen={i === 0}
+                  />
                 ))}
               </TimelineSection>
             ) : null}
@@ -214,6 +225,68 @@ export function ActionsTimeline({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+interface QuarterGroupSpec {
+  quarterLabel: string;
+  rows: TimelineRow[];
+}
+
+function quarterFor(dateIso: string): string {
+  // dateIso is "YYYY-MM" or longer; pull the first 7 chars.
+  const ym = dateIso.slice(0, 7);
+  const [yearStr, monthStr] = ym.split("-");
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  if (!Number.isFinite(year) || !Number.isFinite(month)) return ym;
+  const q = Math.floor((month - 1) / 3) + 1;
+  return `${year} Q${q}`;
+}
+
+function groupByQuarter(rows: TimelineRow[]): QuarterGroupSpec[] {
+  const map = new Map<string, TimelineRow[]>();
+  for (const r of rows) {
+    if (r.dateIso == null) continue;
+    const q = quarterFor(r.dateIso);
+    if (!map.has(q)) map.set(q, []);
+    map.get(q)!.push(r);
+  }
+  return Array.from(map.entries()).map(([quarterLabel, rs]) => ({
+    quarterLabel,
+    rows: rs,
+  }));
+}
+
+function QuarterGroup(props: {
+  quarterLabel: string;
+  rows: TimelineRow[];
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(props.defaultOpen);
+  return (
+    <li className="border border-border/60 rounded-md">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full text-left flex items-center gap-2 px-2.5 py-1.5"
+      >
+        <span className="text-xs font-mono text-muted-foreground">
+          {open ? "▼" : "▸"}
+        </span>
+        <span className="text-sm font-semibold">{props.quarterLabel}</span>
+        <span className="text-xs text-muted-foreground">
+          ({props.rows.length} item{props.rows.length === 1 ? "" : "s"})
+        </span>
+      </button>
+      {open ? (
+        <ul className="flex flex-col gap-2 px-2.5 pb-2 pt-1 border-t border-border/40">
+          {props.rows.map((r, i) => (
+            <TimelineRowBlock key={`qr-${i}`} row={r} />
+          ))}
+        </ul>
+      ) : null}
+    </li>
   );
 }
 
@@ -243,32 +316,33 @@ function TimelineRowBlock({ row }: { row: TimelineRow }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="w-full text-left flex items-start gap-2"
+        className="w-full text-left flex flex-col gap-1"
       >
-        <span className="text-xs uppercase font-mono text-muted-foreground min-w-[55px]">
-          [{row.horizon}]
-        </span>
-        {dateLabel ? (
-          <span className="text-xs font-mono text-primary min-w-[85px]">
-            {dateLabel}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] uppercase font-mono text-muted-foreground">
+            [{row.horizon}]
           </span>
-        ) : row.trigger ? (
-          <span
-            className="text-xs font-mono text-info min-w-[85px] truncate"
-            title={row.trigger}
-          >
-            {row.trigger}
-          </span>
-        ) : (
-          <span className="text-xs font-mono text-muted-foreground min-w-[85px]">
-            ongoing
-          </span>
-        )}
-        <span className="text-sm flex-1">{row.label}</span>
-        {row.source === "excluded_target" ? (
-          <Badge variant="outline" className="text-[10px]">
-            target
-          </Badge>
+          {dateLabel ? (
+            <span className="text-xs font-mono text-primary">{dateLabel}</span>
+          ) : row.trigger == null ? (
+            <span className="text-[10px] font-mono uppercase text-muted-foreground">
+              ongoing
+            </span>
+          ) : null}
+          {row.source === "excluded_target" ? (
+            <Badge variant="outline" className="text-[10px]">
+              non-pct target
+            </Badge>
+          ) : null}
+          <span className="text-sm flex-1 min-w-0">{row.label}</span>
+        </div>
+        {/* Parameterized actions: render the trigger expression on
+            its own line so long triggers (e.g. "USD/NIS > 2.95 AND
+            VIX > 30 → accelerate tranche") don't truncate. */}
+        {row.trigger ? (
+          <p className="text-xs text-info font-mono pl-12 break-words">
+            trigger: {row.trigger}
+          </p>
         ) : null}
       </button>
       {open ? (

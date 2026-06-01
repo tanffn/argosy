@@ -53,6 +53,27 @@ class HeadlineLines:
 
 
 @dataclass(frozen=True)
+class HeadlineDerivation:
+    """The assumptions that drove the retirement-readiness line, plus
+    a small μ-sensitivity table so the user can see how fragile the
+    retire-age conclusion is. Wave 8 v2 polish — codex round 2."""
+
+    # Assumptions used to compute retire_ready_age_base.
+    mu_nominal_annual: float
+    sigma_annual: float
+    tax_rate: float
+    retirement_target_age: float
+    # Per-(μ, retire-age) sensitivity. Computed by running the
+    # cashflow projection at μ ∈ {0.04, 0.06, 0.08, 0.10} and
+    # extracting the base-case retire-ready age each time. Helps the
+    # user see how sensitive the headline is to the expected-return
+    # assumption (which it is — strongly).
+    sensitivity_by_mu: list[tuple[float, float | None]]
+    # Plain-English explanation of where each number came from.
+    sourced_from: str
+
+
+@dataclass(frozen=True)
 class AcceptedDeltaSummary:
     """One row in the accepted_deltas at-a-glance block."""
 
@@ -90,6 +111,7 @@ class AuditLine:
 @dataclass(frozen=True)
 class RecapSummary:
     headline: HeadlineLines
+    derivation: HeadlineDerivation | None
     accepted_deltas: list[AcceptedDeltaSummary]
     portfolio_value: PortfolioValueAnchor
     insurance_gaps: InsuranceGapsSummary
@@ -316,10 +338,10 @@ def _portfolio_value_from_snapshot(
 
 
 def _compute_retire_ready_ages(
-    db: Session, user_id: str
+    db: Session, user_id: str, *, assumptions
 ) -> tuple[float | None, float | None]:
-    """Run the existing cashflow projection with defaults and return
-    (retire_ready_age_base, retire_ready_age_bear).
+    """Run the existing cashflow projection at the calibrated
+    assumptions and return (retire_ready_age_base, retire_ready_age_bear).
 
     Wrapped in try/except so a missing-fixture / empty-DB user doesn't
     block the rest of the headline; we just degrade to None and the
@@ -337,17 +359,59 @@ def _compute_retire_ready_ages(
         proj = project_cashflow(
             household=hh,
             pensions=pen,
-            retirement_age=49.0,
+            retirement_age=assumptions.retirement_age.value,
             years=30,
-            mu_nominal_annual=0.08,
-            sigma_annual=0.18,
-            lifestyle_drift_annual=0.0,
-            tax_rate=0.25,
+            mu_nominal_annual=assumptions.mu_nominal_annual.value,
+            sigma_annual=assumptions.sigma_annual.value,
+            lifestyle_drift_annual=assumptions.lifestyle_drift_annual.value,
+            tax_rate=assumptions.tax_rate.value,
             life_events=[],
         )
         return proj.retire_ready_age_base, proj.retire_ready_age_bear
     except Exception:  # pragma: no cover - defensive degradation
         return None, None
+
+
+def _compute_mu_sensitivity(
+    db: Session, user_id: str, *, assumptions
+) -> list[tuple[float, float | None]]:
+    """Run the deterministic cashflow projection at μ ∈ {4%, 6%, 8%,
+    10%} and collect the resulting base-case retire-ready age for
+    each. Helps the user see how sensitive the headline conclusion is
+    to the expected-return assumption.
+
+    Other assumptions held at the calibrated values so this is a
+    pure-μ sensitivity sweep, not a multi-knob explosion.
+    """
+    out: list[tuple[float, float | None]] = []
+    try:
+        from argosy.services.cashflow_projection import (
+            extract_household_state,
+            extract_pension_state,
+            project_cashflow,
+        )
+
+        hh = extract_household_state(db, user_id)
+        pen = extract_pension_state(db, user_id)
+        for mu in (0.04, 0.06, 0.08, 0.10):
+            try:
+                proj = project_cashflow(
+                    household=hh,
+                    pensions=pen,
+                    retirement_age=assumptions.retirement_age.value,
+                    years=50,  # extended so 4%-scenario can find a crossing
+                    mu_nominal_annual=mu,
+                    sigma_annual=assumptions.sigma_annual.value,
+                    lifestyle_drift_annual=assumptions.lifestyle_drift_annual.value,
+                    tax_rate=assumptions.tax_rate.value,
+                    life_events=[],
+                )
+                out.append((mu, proj.retire_ready_age_base))
+            except Exception:  # pragma: no cover - per-mu defensive
+                out.append((mu, None))
+    except Exception:  # pragma: no cover - defensive
+        return []
+    return out
 
 
 def _compute_insurance_gaps_for_user(db: Session, user_id: str) -> list:
@@ -411,7 +475,42 @@ def compute_recap_summary(
         if h is not None
     ]
 
-    base_age, bear_age = _compute_retire_ready_ages(db, user_id)
+    # Wave 8 v2 polish — surface the assumptions that drove the
+    # retirement-age line + a μ sensitivity sweep so the user can
+    # see how fragile the conclusion is. The sweep runs the
+    # deterministic projection 4 times (<30ms each); cheap relative
+    # to the MC route the recap also fetches.
+    from argosy.services.cashflow_assumptions import get_default_assumptions
+
+    try:
+        assumptions = get_default_assumptions(session=db, user_id=user_id)
+    except Exception:  # pragma: no cover - defensive
+        assumptions = None
+
+    if assumptions is not None:
+        base_age, bear_age = _compute_retire_ready_ages(
+            db, user_id, assumptions=assumptions
+        )
+        sensitivity = _compute_mu_sensitivity(
+            db, user_id, assumptions=assumptions
+        )
+        derivation = HeadlineDerivation(
+            mu_nominal_annual=assumptions.mu_nominal_annual.value,
+            sigma_annual=assumptions.sigma_annual.value,
+            tax_rate=assumptions.tax_rate.value,
+            retirement_target_age=assumptions.retirement_age.value,
+            sensitivity_by_mu=sensitivity,
+            sourced_from=(
+                f"μ from {assumptions.mu_nominal_annual.source}, "
+                f"σ from {assumptions.sigma_annual.source}, "
+                f"tax from {assumptions.tax_rate.source}, "
+                f"target age from {assumptions.retirement_age.source}."
+            ),
+        )
+    else:
+        base_age, bear_age = None, None
+        derivation = None
+
     headline = compute_headline_lines(horizons, base_age, bear_age)
     accepted = summarize_accepted_deltas(horizons)
     portfolio_value = _portfolio_value_from_snapshot(
@@ -423,6 +522,7 @@ def compute_recap_summary(
 
     return RecapSummary(
         headline=headline,
+        derivation=derivation,
         accepted_deltas=accepted,
         portfolio_value=portfolio_value,
         insurance_gaps=insurance,

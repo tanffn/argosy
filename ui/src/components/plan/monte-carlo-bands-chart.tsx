@@ -81,14 +81,43 @@ function tierBadgeClasses(tier: "green" | "amber" | "red"): string {
 }
 
 function tierHeadline(tier: "green" | "amber" | "red"): string {
+  // Wave 8 v2 polish: explicit + plain-language phrasing — no
+  // "off track" / "high risk" panic words that the user reads
+  // before context. The full sentence beside this tag carries the
+  // actual numbers.
   switch (tier) {
     case "green":
-      return "On track";
+      return "Likely solvent";
     case "amber":
-      return "Watch — material ruin risk";
+      return "Material variability";
     case "red":
-      return "Off track — high ruin risk";
+      return "Stress-test fails";
   }
+}
+
+// Find the first month-out where the P10 path runs out (portfolio = 0).
+function findP10DepletionAge(
+  series: MonteCarloProjectionResponse["series"],
+): number | null {
+  for (const p of series) {
+    if (p.portfolio_value_p10_usd <= 0) return p.age_years;
+  }
+  return null;
+}
+
+function findP50AtAge(
+  series: MonteCarloProjectionResponse["series"],
+  targetAge: number,
+): number | null {
+  // Pick the row whose age is closest to targetAge.
+  let best: { diff: number; v: number } | null = null;
+  for (const p of series) {
+    const diff = Math.abs(p.age_years - targetAge);
+    if (best == null || diff < best.diff) {
+      best = { diff, v: p.portfolio_value_p50_usd };
+    }
+  }
+  return best?.v ?? null;
 }
 
 function readNumberKey(
@@ -280,31 +309,57 @@ export function MonteCarloBandsChart({ response }: MonteCarloBandsChartProps) {
         </ResponsiveContainer>
 
         <div
-          className={`flex flex-wrap items-center gap-3 rounded-md border px-3 py-2 text-sm ${tierBadgeClasses(
+          className={`rounded-md border px-3 py-2 text-sm ${tierBadgeClasses(
             tier,
           )}`}
         >
-          <span className="font-semibold uppercase tracking-wide text-xs">
+          <p className="font-semibold uppercase tracking-wide text-xs mb-1">
             {tierHeadline(tier)}
-          </span>
-          <span className="text-muted-foreground">
-            P(broke before 75):{" "}
-            <span className="font-mono font-medium text-foreground">
+          </p>
+          {/* Narrative risk line (codex v2 polish): describe the bad
+              tail in plain language before showing the probabilities,
+              so a green-light plan doesn't read as alarming. */}
+          <p className="text-sm text-foreground">
+            {(() => {
+              const p10Depletes = findP10DepletionAge(response.series);
+              const median80 = findP50AtAge(response.series, 80);
+              const median80Str =
+                median80 != null && Number.isFinite(median80)
+                  ? fmtUsd(median80)
+                  : "—";
+              if (p10Depletes != null) {
+                return (
+                  <>
+                    In the worst 10% of paths, the portfolio depletes by{" "}
+                    age {p10Depletes.toFixed(0)}. Median path projects{" "}
+                    <span className="font-mono">{median80Str}</span> at age 80.
+                  </>
+                );
+              }
+              return (
+                <>
+                  Across {response.n_paths.toLocaleString()} simulated
+                  paths, even the worst-10% path stays solvent through
+                  the projection horizon. Median path projects{" "}
+                  <span className="font-mono">{median80Str}</span> at age 80.
+                </>
+              );
+            })()}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-2">
+            P(deplete before 75):{" "}
+            <span className="font-mono">
               {fmtPct(response.p_failure_before_age_75)}
-            </span>
-          </span>
-          <span className="text-muted-foreground">
-            P(broke before 85):{" "}
-            <span className="font-mono font-medium text-foreground">
+            </span>{" "}
+            · P(before 85):{" "}
+            <span className="font-mono">
               {fmtPct(response.p_failure_before_age_85)}
-            </span>
-          </span>
-          <span className="text-muted-foreground">
-            P(broke before 95):{" "}
-            <span className="font-mono font-medium text-foreground">
+            </span>{" "}
+            · P(before 95):{" "}
+            <span className="font-mono">
               {fmtPct(response.p_failure_before_age_95)}
             </span>
-          </span>
+          </p>
         </div>
       </CardContent>
     </Card>

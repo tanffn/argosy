@@ -50,6 +50,47 @@ logger = logging.getLogger(__name__)
 _PCT_UNITS = frozenset({"pct_of_portfolio", "pct_of_liquid"})
 
 
+# Wave 8 v2 polish — bridge alias map for synthesizer label → snapshot
+# category matching. The synthesizer emits descriptive prose labels
+# (e.g. "info-tech sector cap on managed portfolio (excludes nvda
+# rsu)") that don't match the snapshot's short category names ("Growth",
+# "Core Equity", "Individual Stocks", etc.). Until the synthesizer's
+# output schema is extended to carry an explicit ``asset_class_key``
+# (v2 follow-on per codex round 2), this keyword table catches the
+# common cases so the glidepath at least anchors on a real today
+# value when the label mentions a recognizable asset class.
+#
+# Keys are lowercase substrings to look for in the synthesizer label.
+# Values are ordered tuples of candidate snapshot categories — first
+# match wins. Snapshot category names are matched case-insensitively
+# via ``_normalize_label``.
+_LABEL_KEYWORD_TO_SNAPSHOT_CATEGORY: dict[str, tuple[str, ...]] = {
+    "nvda": ("Individual Stocks",),
+    "nvidia": ("Individual Stocks",),
+    "sgov": ("Cash",),
+    "treasury": ("Cash",),
+    "t-bill": ("Cash",),
+    "cash": ("Cash",),
+    "liquid": ("Cash",),
+    "core equity": ("Core Equity",),
+    "core-equity": ("Core Equity",),
+    "growth": ("Growth",),
+    "dividend": ("Dividend",),
+    "international": ("International",),
+    "defensive": ("Defensive",),
+    "alternative": ("Alternative",),
+    "real estate": ("REIT", "Real estate"),
+    "reit": ("REIT",),
+    "info-tech": ("Growth",),  # info-tech maps to the growth bucket
+    "tech sector": ("Growth",),
+    "us-equity": ("Core Equity", "Growth"),
+    "us equity": ("Core Equity", "Growth"),
+    "fixed income": ("Defensive",),
+    "bond": ("Defensive",),
+    "individual stock": ("Individual Stocks",),
+}
+
+
 # ---------------------------------------------------------------------------
 # Output dataclasses
 # ---------------------------------------------------------------------------
@@ -88,6 +129,21 @@ class ExcludedTarget:
 
 
 @dataclass(frozen=True)
+class AssetClassAnchorStatus:
+    """Per-class diagnostic for the chart. Was today's value pulled
+    from a real snapshot category match (``matched=True``), an alias-
+    map keyword match (``matched=True`` + ``alias_source``), or did
+    the matcher fall back to 0 (``matched=False``)?"""
+
+    asset_class: str  # the synthesizer label, lowercased
+    matched: bool
+    today_value: float
+    # When matched via the alias keyword table, this is the snapshot
+    # category name it routed to (so the chart can show "→ Growth").
+    alias_source: str | None = None
+
+
+@dataclass(frozen=True)
 class AllocationGlidepath:
     """Top-level result returned to the route."""
 
@@ -95,6 +151,7 @@ class AllocationGlidepath:
     collapsed_waypoints: list[CollapsedWaypoint]
     excluded_targets: list[ExcludedTarget]
     asset_classes: list[str] = field(default_factory=list)
+    anchor_status: list[AssetClassAnchorStatus] = field(default_factory=list)
     today: date | None = None
     end_date: date | None = None
 
@@ -135,6 +192,33 @@ def filter_targets_by_pct_unit(
 
 def _normalize_label(label: str) -> str:
     return label.strip().lower()
+
+
+def _resolve_today_value(
+    label_lower: str,
+    portfolio_categories: dict[str, float],
+) -> tuple[float, bool, str | None]:
+    """Find today's value for an asset-class label.
+
+    Returns ``(value, matched, alias_source)``.
+
+    Match strategy:
+      1. Exact-match the lowercase label against snapshot categories.
+      2. Otherwise walk the alias keyword table and try each
+         keyword-substring against the label; for the first hit, try
+         each candidate snapshot category in order.
+      3. Fall back to 0.0 + matched=False if nothing hits.
+    """
+    if label_lower in portfolio_categories:
+        return portfolio_categories[label_lower], True, None
+    for kw, candidates in _LABEL_KEYWORD_TO_SNAPSHOT_CATEGORY.items():
+        if kw not in label_lower:
+            continue
+        for cat in candidates:
+            cat_lower = _normalize_label(cat)
+            if cat_lower in portfolio_categories:
+                return portfolio_categories[cat_lower], True, cat
+    return 0.0, False, None
 
 
 def group_targets_by_label(
@@ -369,6 +453,7 @@ def build_glidepath(
             collapsed_waypoints=[],
             excluded_targets=excluded,
             asset_classes=[],
+            anchor_status=[],
             today=today_first,
             end_date=None,
         )
@@ -378,17 +463,29 @@ def build_glidepath(
     collapsed_total: list[CollapsedWaypoint] = []
     max_revisit: date | None = None
 
+    anchor_status_list: list[AssetClassAnchorStatus] = []
     for label_lower, group in groups.items():
-        raw_today_value = portfolio_categories.get(label_lower, 0.0)
+        raw_today_value, matched, alias_source = _resolve_today_value(
+            label_lower, portfolio_categories
+        )
         # Codex B1 finding #3 — surface the no-match case so the UI
         # can render a "starts from 0" caveat instead of silently
         # showing a misleading rising-from-zero curve.
-        if label_lower not in portfolio_categories:
+        if not matched:
             logger.warning(
                 "allocation_glidepath.no_snapshot_match asset_class=%s "
-                "anchor=0.0 (target label not present in portfolio_snapshot)",
+                "anchor=0.0 (target label not present in portfolio_snapshot, "
+                "and no alias-keyword routed it to a snapshot category)",
                 label_lower,
             )
+        anchor_status_list.append(
+            AssetClassAnchorStatus(
+                asset_class=label_lower,
+                matched=matched,
+                today_value=raw_today_value,
+                alias_source=alias_source,
+            )
+        )
         raw_waypoints: list[tuple[date, float, str]] = []
         for t in group:
             horizon = _horizon_from_target(t)
@@ -443,6 +540,7 @@ def build_glidepath(
             collapsed_waypoints=collapsed_total,
             excluded_targets=excluded,
             asset_classes=[],
+            anchor_status=anchor_status_list,
             today=today_first,
             end_date=None,
         )
@@ -457,6 +555,7 @@ def build_glidepath(
         collapsed_waypoints=collapsed_total,
         excluded_targets=excluded,
         asset_classes=list(per_class_waypoints.keys()),
+        anchor_status=anchor_status_list,
         today=today_first,
         end_date=max_revisit,
     )

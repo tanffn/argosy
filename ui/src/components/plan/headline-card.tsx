@@ -19,7 +19,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { RecapSummaryDTO } from "@/lib/api";
+import type { HeadlineDerivationDTO, RecapSummaryDTO } from "@/lib/api";
 import { formatLocalDateTime } from "@/lib/utils";
 
 interface HeadlineCardProps {
@@ -61,6 +61,15 @@ export function HeadlineCard({ recap }: HeadlineCardProps) {
           <p className="text-lg font-semibold leading-tight">
             {headline.retirement_readiness}
           </p>
+          {recap.derivation ? (
+            <p className="text-xs text-muted-foreground">
+              based on μ={(recap.derivation.mu_nominal_annual * 100).toFixed(0)}%,
+              σ={(recap.derivation.sigma_annual * 100).toFixed(1)}%,
+              tax={(recap.derivation.tax_rate * 100).toFixed(0)}%,
+              target age {recap.derivation.retirement_target_age.toFixed(0)}.{" "}
+              {recap.derivation.sourced_from}
+            </p>
+          ) : null}
           {headline.next_big_move ? (
             <p className="text-sm text-muted-foreground">
               {headline.next_big_move}
@@ -70,6 +79,10 @@ export function HeadlineCard({ recap }: HeadlineCardProps) {
             <p className="text-sm text-muted-foreground">{headline.then}</p>
           ) : null}
         </div>
+
+        {recap.derivation && recap.derivation.sensitivity_by_mu.length > 0 ? (
+          <SensitivityStrip derivation={recap.derivation} />
+        ) : null}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {/* Tile 1 — accepted deltas */}
@@ -174,5 +187,63 @@ export function HeadlineCard({ recap }: HeadlineCardProps) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Wave 8 v2 polish — μ sensitivity strip.
+ *
+ * The cashflow projection is dominated by the expected-return
+ * assumption. A 2-percentage-point change in μ can move the
+ * retirement age by 5-15 years, so the user needs to SEE the
+ * fragility, not just trust the base-case number.
+ */
+function SensitivityStrip({
+  derivation,
+}: {
+  derivation: HeadlineDerivationDTO;
+}) {
+  const baseMu = derivation.mu_nominal_annual;
+  return (
+    <div className="rounded-md border border-warning/40 bg-warning/5 p-3">
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+        How fragile is this? — retire age at different expected returns
+      </p>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        {derivation.sensitivity_by_mu.map(([mu, age], i) => {
+          const isBase = Math.abs(mu - baseMu) < 1e-6;
+          return (
+            <div
+              key={`mu-${i}`}
+              className={
+                isBase
+                  ? "rounded border border-primary/60 bg-primary/10 p-2 text-center"
+                  : "rounded border border-border/60 p-2 text-center"
+              }
+            >
+              <p className="text-[10px] text-muted-foreground">
+                if μ = {(mu * 100).toFixed(0)}%
+                {isBase ? " (base)" : ""}
+              </p>
+              <p className="text-lg font-semibold font-mono">
+                {age == null
+                  ? "—"
+                  : Number.isFinite(age)
+                    ? `age ${age.toFixed(0)}`
+                    : "—"}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-muted-foreground mt-2">
+        μ is the expected nominal portfolio return per year. The base
+        case calibrates σ from your portfolio composition; other
+        knobs (tax, inflation, drift) are held constant in this sweep.
+        A 2-point swing in μ moves the retire age by several years —
+        the number is real but the precision isn&apos;t. Use the
+        cashflow chart sliders to stress-test other knobs.
+      </p>
+    </div>
   );
 }

@@ -833,23 +833,15 @@ export default function PlanPage() {
         />
       )}
 
-      {/* Section 2 — Visualizations. SourcesHeatmap is rendered at the
-          bottom of the page (after Critique findings) so the top of the
-          plan tab stays focused on the proposal + dynamics, not the
-          citation audit trail.
-
-          AllocationChart + DeltaMap overlay targets from horizon rows
-          so they only make sense alongside a draft surface (Piece A:
-          gated on renderDraftSurfaces). NvdaTrajectoryChart +
-          CashflowProjectionChart read from identity_yaml + household
-          state, so they render whenever there's any plan context. */}
-      {(renderDraftSurfaces || plan?.plan_version_id) && (
+      {/* Section 2 — Draft-surface visualizations. The recap_current
+          state composes the same charts in a tighter order below
+          (Wave 8 v2 polish), so we only render this section under
+          pending_draft_triage / stale_fallback_with_warning. */}
+      {renderDraftSurfaces && draft && (
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {renderDraftSurfaces && draft && (
-            <AllocationChart snapshot={snapshot} draft={draft} />
-          )}
+          <AllocationChart snapshot={snapshot} draft={draft} />
           <NvdaTrajectoryChart data={nvda} />
-          {renderDraftSurfaces && draft && <DeltaMap draft={draft} />}
+          <DeltaMap draft={draft} />
           <CashflowProjectionChart userId={USER_ID} />
         </section>
       )}
@@ -1012,16 +1004,26 @@ export default function PlanPage() {
       {viewState === "recap_current" && plan && (
         <>
           {recapSummary ? <HeadlineCard recap={recapSummary} /> : null}
-          <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <AllocationGlidepathChart response={glidepath} />
-            <MonteCarloBandsChart response={monteCarlo} />
-          </section>
+          {/* Wave 8 v2 polish: codex-recommended order is
+              Headline → Assumptions → Monthly Cashflow → Current
+              Allocation → NVDA → MC → Glidepath → Full Plan →
+              Actions/Triggers (last). Two-column charts where they
+              fit cleanly side-by-side. */}
           <AssumptionsCard defaults={assumptions} />
+          <CashflowProjectionChart userId={USER_ID} />
+          <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {planStructured ? (
+              <AllocationChart snapshot={snapshot} draft={planStructured} />
+            ) : null}
+            <NvdaTrajectoryChart data={nvda} />
+          </section>
+          <MonteCarloBandsChart response={monteCarlo} />
+          <AllocationGlidepathChart response={glidepath} />
+          <RecapCurrentPlaceholder plan={plan} structured={planStructured} />
           <ActionsTimeline
             structured={planStructured}
             glidepath={glidepath}
           />
-          <RecapCurrentPlaceholder plan={plan} structured={planStructured} />
         </>
       )}
 

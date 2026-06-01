@@ -199,6 +199,35 @@ export function AllocationGlidepathChart({
           </div>
         ) : null}
 
+        {response.anchor_status && response.anchor_status.length > 0 ? (
+          <div className="text-xs text-muted-foreground border-t border-border/40 pt-2">
+            <p className="font-semibold mb-1">Today&apos;s anchor per band</p>
+            <ul className="flex flex-col gap-0.5">
+              {response.anchor_status.map((a) => (
+                <li key={a.asset_class}>
+                  <span className="font-mono">{a.asset_class}</span> →{" "}
+                  {a.matched ? (
+                    <>
+                      anchored at{" "}
+                      <span className="font-mono">
+                        {a.today_value.toFixed(1)}%
+                      </span>
+                      {a.alias_source ? (
+                        <span className="opacity-70"> (via {a.alias_source})</span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="text-warning">
+                      no snapshot match — anchored at 0% (chart shows the
+                      target&apos;s direction only)
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+
         {excludedCount > 0 ? (
           <p className="text-xs text-muted-foreground">
             {excludedCount} target

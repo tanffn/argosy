@@ -503,8 +503,22 @@ export interface AuditLineDTO {
   synthesis_trail_link: string | null;
 }
 
+// Wave 8 v2 polish — assumptions + μ-sensitivity table that drove
+// the retirement-readiness headline. Lets the user see what they
+// can trust and where the conclusion gets fragile.
+export interface HeadlineDerivationDTO {
+  mu_nominal_annual: number;
+  sigma_annual: number;
+  tax_rate: number;
+  retirement_target_age: number;
+  // [mu, retire_age | null] tuples.
+  sensitivity_by_mu: Array<[number, number | null]>;
+  sourced_from: string;
+}
+
 export interface RecapSummaryDTO {
   headline: HeadlineLinesDTO;
+  derivation: HeadlineDerivationDTO | null;
   accepted_deltas: AcceptedDeltaSummaryDTO[];
   portfolio_value: PortfolioValueAnchorDTO;
   insurance_gaps: InsuranceGapsSummaryDTO;
@@ -536,11 +550,19 @@ export interface ExcludedTargetDTO {
   reason: string;
 }
 
+export interface AssetClassAnchorStatusDTO {
+  asset_class: string;
+  matched: boolean;
+  today_value: number;
+  alias_source: string | null;
+}
+
 export interface AllocationGlidepathResponse {
   points: GlidepathPointDTO[];
   collapsed_waypoints: CollapsedWaypointDTO[];
   excluded_targets: ExcludedTargetDTO[];
   asset_classes: string[];
+  anchor_status?: AssetClassAnchorStatusDTO[];
   today: string | null;
   end_date: string | null;
 }
