@@ -997,8 +997,15 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                         present, a select dropdown appears alongside so the
                         user picks which analyst to discuss with. */}
                     {(() => {
+                      // Scan BOTH topic and detail — the backend's
+                      // _split_reason() chops on the first em-dash, and
+                      // FM verdicts that include an em-dash mid-prose
+                      // (e.g. "... ~$19.5k — a 33% understatement") put
+                      // all the citation text into the topic half. The
+                      // parser must look at both halves to find
+                      // agent_report:* references reliably.
                       const analystRoles = parseAnalystRefsFromObjection(
-                        o.detail,
+                        `${o.topic} ${o.detail}`,
                       );
                       const status = dialogueStatus[i] ?? "idle";
                       const inFlight =
