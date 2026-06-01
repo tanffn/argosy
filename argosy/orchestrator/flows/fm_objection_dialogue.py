@@ -341,6 +341,7 @@ def _run_dialogue(
     prior_agent_report_excerpt: str,
     prior_agent_report_id: int | None,
     decision_audit_token: str,
+    user_guidance: str = "",
 ) -> tuple[DialogueOutcome, list[AgentReport]]:
     """Run the analyst → FM 2-LLM-call dialogue.
 
@@ -366,6 +367,7 @@ def _run_dialogue(
         ),
         prior_decision_audit_token=prior_decision_audit_token,
         prior_agent_report_id=prior_agent_report_id,
+        user_guidance=user_guidance or "",
         decision_id=decision_audit_token,
     )
     if isinstance(analyst_report, AgentReport):
@@ -387,6 +389,7 @@ def _run_dialogue(
         analyst_reasoning_md=analyst_reasoning_md,
         analyst_suggested_fix=analyst_suggested_fix,
         analyst_cited_sources=analyst_cited_sources,
+        user_guidance=user_guidance or "",
         decision_id=decision_audit_token,
     )
     if isinstance(fm_report, AgentReport):
@@ -443,6 +446,7 @@ def start_fm_objection_dialogue(
     objection_detail: str,
     objection_severity: str,
     prior_decision_audit_token: str,
+    user_guidance: str = "",
     run_inline: bool = False,
 ) -> StartResult:
     """Kick off the slim FM↔analyst dialogue for one objection.
@@ -522,6 +526,9 @@ def start_fm_objection_dialogue(
         "objection_severity": objection_severity,
         "prior_decision_audit_token": prior_decision_audit_token,
         "plan_version_id": plan_version_id,
+        # Persist user_guidance verbatim for audit / replay. Already
+        # length-capped at the route layer (max 2000 chars).
+        "user_guidance": (user_guidance or "")[:2000],
     }
     run = DecisionRun(
         user_id=user_id,
@@ -567,6 +574,7 @@ def start_fm_objection_dialogue(
         "prior_agent_report_excerpt": prior_excerpt,
         "prior_agent_report_id": prior_id,
         "decision_run_id": decision_run_id,
+        "user_guidance": user_guidance or "",
     }
     if run_inline:
         try:
@@ -623,6 +631,7 @@ def _execute_and_finalize(
     prior_agent_report_excerpt: str,
     prior_agent_report_id: int | None,
     decision_run_id: int,
+    user_guidance: str = "",
 ) -> None:
     """End-to-end execution of one dialogue. Persists outcome + finalizes row."""
     from argosy.api.events import publish_event_threadsafe
@@ -657,6 +666,7 @@ def _execute_and_finalize(
             prior_agent_report_excerpt=prior_agent_report_excerpt,
             prior_agent_report_id=prior_agent_report_id,
             decision_audit_token=decision_audit_token,
+            user_guidance=user_guidance,
         )
     except Exception as exc:  # noqa: BLE001
         error_text = str(exc)

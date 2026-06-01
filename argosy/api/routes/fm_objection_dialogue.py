@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
@@ -48,6 +48,16 @@ router = APIRouter(prefix="/plan", tags=["plan"])
 class DiscussObjectionRequest(BaseModel):
     user_id: str
     analyst_role: str  # one of ANALYST_AGENT_NAME_TO_ROLE values
+    # Optional free-form context the user typed before clicking Discuss.
+    # Threaded through to BOTH the analyst's prompt and the FM verdict
+    # prompt so the dialogue isn't a closed-loop LLM exchange that
+    # ignores the human. Treated as untrusted data (prompt-injection
+    # guard) by the agents; weighted highly but cannot override hard
+    # constraints. Empty string is the legacy behavior.
+    # Length capped to keep prompt cost bounded — caller-side truncation
+    # is preferred so the user sees the cap in the textarea, but we
+    # enforce server-side defensively.
+    user_guidance: str = Field(default="", max_length=2000)
 
 
 class DiscussObjectionResponse(BaseModel):
@@ -235,6 +245,7 @@ def post_discuss_objection(
             objection_detail=objection.detail,
             objection_severity=objection.severity,
             prior_decision_audit_token=decision_audit_token,
+            user_guidance=(body.user_guidance or ""),
         )
     except InvalidAnalystRoleError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
