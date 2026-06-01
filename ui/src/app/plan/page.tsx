@@ -41,6 +41,7 @@ import {
   type TargetProgressResponse,
 } from "@/lib/api";
 import { friendlySourceLabels } from "@/lib/plain-english-labels";
+import { derivePlanViewState } from "@/lib/plan-view-state";
 import { formatLocalDateTime } from "@/lib/utils";
 import { useWSEvents } from "@/lib/ws";
 
@@ -562,8 +563,29 @@ export default function PlanPage() {
   // now."
   const showInFlightCard = inFlightSynthesis != null;
 
+  // Wave 8 Piece A — explicit five-state discriminator. Drives every
+  // page-level render gate so the post-Accept-All path lands on the
+  // recap layout instead of falling through to a stale-draft view.
+  // Pure logic + matrix tests live in ``@/lib/plan-view-state``.
+  const viewState = derivePlanViewState({
+    plan,
+    draft,
+    inFlightSynthesis,
+  });
+  // pending_draft_triage and stale_fallback_with_warning both surface
+  // the draft-driven sections (ExecutiveSummaryCard, proposal tabs,
+  // critique, sources). recap_current and in_flight_synthesis suppress
+  // those even when the backend returns a fallback draft row, because
+  // a current plan / running synthesis is the authoritative content.
+  const renderDraftSurfaces =
+    viewState === "pending_draft_triage" ||
+    viewState === "stale_fallback_with_warning";
+
   return (
-    <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
+    <main
+      className="max-w-6xl mx-auto p-6 flex flex-col gap-6"
+      data-view-state={viewState}
+    >
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Plan</h1>
@@ -571,7 +593,7 @@ export default function PlanPage() {
             {plan?.version_label
               ? `Active: ${plan.version_label}`
               : "No plan imported yet."}
-            {draft
+            {renderDraftSurfaces && draft
               ? ` · ${
                   draft.effective_role && draft.effective_role !== "draft"
                     ? "last draft"
@@ -661,14 +683,12 @@ export default function PlanPage() {
         <InFlightSynthesisCard inFlight={inFlightSynthesis} />
       )}
 
-      {/* "Stale draft" banner — when /api/plan/draft fell back to the
-          most recent superseded draft because no real pending draft
-          exists. This happens when a synthesis run demoted the prior
-          draft as part of its idempotency step but then failed before
-          producing a successor (orchestrator bug; the transactional
-          fix moves the demote step to the same commit as the new
-          draft, but historical data can still land us here). */}
-      {draft && draft.effective_role && draft.effective_role !== "draft" && (
+      {/* "Stale draft" banner — only when the backend's /api/plan/draft
+          fell back to a superseded draft AND there is no canonical
+          current plan to fall forward to. Wave 8 Piece A: when a
+          current plan IS set, the recap branch hides the stale draft
+          entirely instead of papering over it with this warning. */}
+      {viewState === "stale_fallback_with_warning" && draft && (
         <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
           <p>
             <strong>Showing the last completed draft</strong> — it was
@@ -686,16 +706,18 @@ export default function PlanPage() {
           always sees how the fleet ran, even when FM approved (in which
           case the FMObjectionsCard suppresses itself). The banner itself
           short-circuits to null when the backend returns
-          synthesis_health=null (legacy drafts or builder failures). */}
-      {draft && (
+          synthesis_health=null (legacy drafts or builder failures).
+          Wave 8 Piece A: gated on renderDraftSurfaces so the recap and
+          in-flight states don't surface health of a stale draft. */}
+      {renderDraftSurfaces && draft && (
         <SynthesisHealthBanner
           health={draft.synthesis_health}
           decisionRunId={draft.decision_run_id}
         />
       )}
 
-      {/* Section 1 — Executive summary */}
-      {draft && (
+      {/* Section 1 — Executive summary (draft-driven surface). */}
+      {renderDraftSurfaces && draft && (
         <ExecutiveSummaryCard
           draft={draft}
           objections={objections}
@@ -721,21 +743,24 @@ export default function PlanPage() {
           plan tab stays focused on the proposal + dynamics, not the
           citation audit trail.
 
-          AllocationChart + DeltaMap require a draft (they overlay
-          targets from horizon rows). NvdaTrajectoryChart +
+          AllocationChart + DeltaMap overlay targets from horizon rows
+          so they only make sense alongside a draft surface (Piece A:
+          gated on renderDraftSurfaces). NvdaTrajectoryChart +
           CashflowProjectionChart read from identity_yaml + household
-          state, so they render whether or not a draft exists. */}
-      {(draft || plan?.plan_version_id) && (
+          state, so they render whenever there's any plan context. */}
+      {(renderDraftSurfaces || plan?.plan_version_id) && (
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {draft && <AllocationChart snapshot={snapshot} draft={draft} />}
+          {renderDraftSurfaces && draft && (
+            <AllocationChart snapshot={snapshot} draft={draft} />
+          )}
           <NvdaTrajectoryChart data={nvda} />
-          {draft && <DeltaMap draft={draft} />}
+          {renderDraftSurfaces && draft && <DeltaMap draft={draft} />}
           <CashflowProjectionChart userId={USER_ID} />
         </section>
       )}
 
       {/* Section 3 — Proposed changes by horizon */}
-      {draft && (
+      {renderDraftSurfaces && draft && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Proposed changes</CardTitle>
@@ -808,7 +833,7 @@ export default function PlanPage() {
       )}
 
       {/* Section 4 — Agent cascade */}
-      {draft && draftDecisionToken && (
+      {renderDraftSurfaces && draft && draftDecisionToken && (
         <AgentCascadeStrip
           userId={USER_ID}
           decisionId={draftDecisionToken}
@@ -879,47 +904,23 @@ export default function PlanPage() {
       {/* Section 6 — Cited sources by item (citation audit trail). Lives
           at the bottom of the page so the top stays focused on the
           proposal + dynamics; reviewers scan the heatmap last. */}
-      {draft && <SourcesHeatmap draft={draft} />}
+      {renderDraftSurfaces && draft && <SourcesHeatmap draft={draft} />}
 
-      {/* No-draft state — show a clear "synthesis hasn't run yet"
-          banner over the baseline plan document. The visualizations
-          above already render from identity_yaml + household state;
-          this branch fills in the proposal/delta surface that's
-          gated on a real draft. */}
-      {!loading && !draft && !showInFlightCard && plan?.raw_markdown ? (
-        <>
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">
-                No pending plan draft
-              </CardTitle>
-              <CardDescription>
-                Your baseline plan is below. Press{" "}
-                <strong>Run synthesis</strong> at the top of the page to
-                let the agent fleet propose changes; the structured
-                executive summary, per-horizon deltas, critique
-                findings, and source heatmap show up here once a draft
-                lands.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Baseline plan</CardTitle>
-              <CardDescription>
-                Source markdown — read-only. Edits happen through
-                synthesis (re-run the fleet) or by re-ingesting a
-                fresh plan document on the CLI.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Markdown>{plan.raw_markdown}</Markdown>
-            </CardContent>
-          </Card>
-        </>
-      ) : null}
+      {/* Wave 8 Piece A — recap_current placeholder. The page lands
+          here when a canonical current plan exists with no pending
+          draft + no in-flight run (the post-Accept-All state). Pieces
+          E / G / B / F / C / D fill this surface with the headline,
+          markdown rendering, glidepath, actions timeline, and
+          cashflow assumptions. Piece A ships only the routing + a
+          minimal placeholder so the page renders SOMETHING the user
+          can read instead of falling through to a stale-draft view. */}
+      {viewState === "recap_current" && plan && (
+        <RecapCurrentPlaceholder plan={plan} />
+      )}
 
-      {!loading && !draft && !plan?.raw_markdown && !showInFlightCard && (
+      {/* no_plan state — user has never imported a baseline plan AND
+          there's no draft, no in-flight, no fallback. */}
+      {viewState === "no_plan" && !loading && (
         <p className="text-sm text-muted-foreground">
           Run <code>argosy ingest plan &lt;path&gt;</code> to import a plan, or
           click <em>Run synthesis</em> to generate a draft from your active
@@ -1084,6 +1085,63 @@ function formatElapsedMinutes(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return s === 0 ? `${m} min elapsed` : `${m} min ${s}s elapsed`;
+}
+
+interface RecapCurrentPlaceholderProps {
+  plan: PlanCurrentDTO;
+}
+
+/**
+ * Wave 8 Piece A placeholder for the recap_current state. Renders the
+ * canonical current plan markdown so the page has SOMETHING readable
+ * the moment routing lands here; the headline (Piece G), glidepath
+ * chart (Piece B), actions timeline (Piece F), cashflow defaults
+ * (Piece C), Monte Carlo (Piece D), and proper markdown rendering
+ * (Piece E) replace this surface piece by piece per the wave-8 ship
+ * order. The component lives here (not its own file) so the placeholder
+ * is trivial to delete when Piece G's HeadlineCard arrives.
+ */
+function RecapCurrentPlaceholder({ plan }: RecapCurrentPlaceholderProps) {
+  const importedLabel = plan.imported_at
+    ? formatLocalDateTime(plan.imported_at)
+    : null;
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Your plan is current</CardTitle>
+          <CardDescription>
+            {plan.version_label ? (
+              <>
+                Active plan:{" "}
+                <code className="font-mono">{plan.version_label}</code>
+                {importedLabel ? <> · accepted {importedLabel}</> : null}.
+              </>
+            ) : (
+              <>This is the canonical plan on record.</>
+            )}{" "}
+            The visual recap (headline, glidepath, Monte Carlo, actions
+            timeline) is being built — press <strong>Run synthesis</strong>{" "}
+            at the top of the page to propose changes.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+      {plan.raw_markdown ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Full plan</CardTitle>
+            <CardDescription>
+              Source markdown — read-only. Changes happen through a new
+              synthesis round or by re-ingesting a fresh plan document.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Markdown>{plan.raw_markdown}</Markdown>
+          </CardContent>
+        </Card>
+      ) : null}
+    </>
+  );
 }
 
 function severityVariant(
