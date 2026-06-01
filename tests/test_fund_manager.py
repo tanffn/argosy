@@ -202,6 +202,58 @@ def test_build_prompt_omits_directive_section_when_empty() -> None:
     assert "USER DIRECTIVE" not in usr_a
 
 
+def test_plan_revision_prompt_carries_argosy_prime_directive() -> None:
+    """Argosy's prime directive — maximize the family's financial position
+    and secure the earliest safe retirement — must be in the FM's plan-
+    revision system prompt. Without it the FM defaults to risk-avoidance
+    framing and produces conservatism-that-delays-FI verdicts (anti-goal
+    per feedback_argosy_prime_directive memory).
+
+    Pins the load-bearing phrases so a future prompt refactor doesn't
+    silently regress the directive into risk-only language.
+    """
+    agent = FundManagerAgent(user_id="ariel")
+    sys, _ = agent.build_prompt(
+        decision_kind="plan_revision",
+        draft_plan='{"long": {}}',
+        risk_verdict="APPROVE",
+    )
+    # Top-of-prompt directive must be present + explicitly labelled.
+    assert "PRIME DIRECTIVE" in sys
+    assert "maximize" in sys.lower()
+    assert "earliest safe retirement" in sys.lower() or "retire" in sys.lower()
+    # The anti-goal framing — conservatism-that-costs-years is wrong.
+    assert "anti-goal" in sys.lower() or "delay" in sys.lower()
+    # The FI-trade-off-honesty rule: every objection names both sides.
+    assert "trade-off" in sys.lower() or "tradeoff" in sys.lower()
+
+
+def test_dialogue_verdict_prompt_carries_argosy_prime_directive() -> None:
+    """Same directive lands in the FM↔analyst dialogue-verdict system
+    prompt so resolutions (FM_ACCEPTS_ANALYST / FM_MAINTAINS_OBJECTION /
+    etc.) are also weighed against the prime goal, not just internal
+    consistency.
+    """
+    from argosy.agents.fund_manager_dialogue_verdict import (
+        FundManagerDialogueVerdictAgent,
+    )
+
+    agent = FundManagerDialogueVerdictAgent(user_id="ariel")
+    sys, _ = agent.build_prompt(
+        objection_topic="NVDA concentration risk",
+        objection_detail="Position exceeds 65%.",
+        objection_severity="RED",
+        analyst_role="concentration",
+        analyst_stance="REBUT",
+        analyst_reasoning_md="Concentration is intentional during deconcentration arc.",
+        analyst_suggested_fix=None,
+        analyst_cited_sources=["concentration_report"],
+    )
+    assert "PRIME DIRECTIVE" in sys
+    assert "maximize" in sys.lower()
+    assert "anti-goal" in sys.lower() or "delay" in sys.lower()
+
+
 @pytest.mark.asyncio
 async def test_default_decision_kind_is_trade_proposal() -> None:
     """Omitting decision_kind defaults to trade_proposal schema."""
