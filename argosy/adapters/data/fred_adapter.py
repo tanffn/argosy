@@ -17,11 +17,12 @@ from typing import Any
 
 from argosy.adapters import MissingAPIKeyError, MissingDataSourceError
 from argosy.adapters.data.cache import CacheKind, cached_call
-from argosy.secrets import get_secret
+from argosy.secrets import get_external_api_key, get_secret
 from argosy.services.adapter_outcomes import track_adapter_call
 
 KEYCHAIN_KEY = "argosy.fred.api_key"
 ENV_VAR = "FRED_API_KEY"
+EXTERNAL_KEYS_PROVIDER = "fred"
 
 
 def _approx_size_bytes(payload: Any) -> int:
@@ -44,6 +45,9 @@ def _resolve_api_key() -> str:
     env_v = os.environ.get(ENV_VAR)
     if env_v:
         return env_v
+    file_v = get_external_api_key(EXTERNAL_KEYS_PROVIDER)
+    if file_v:
+        return file_v
     raise MissingAPIKeyError(
         provider="FRED", keychain_key=KEYCHAIN_KEY, env_var=ENV_VAR
     )
