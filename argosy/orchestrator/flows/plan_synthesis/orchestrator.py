@@ -2635,6 +2635,7 @@ def _run_phase_5_fund_manager(*, session, user_id,
                               risk_verdict: str, decision_run_id: str,
                               guidance: str = "",
                               codex_second_opinion=None,
+                              current_plan_version_id: int | None = None,
                               ) -> tuple[bool, list[AgentReport]]:
     """Final integrity check.
 
@@ -2665,9 +2666,34 @@ def _run_phase_5_fund_manager(*, session, user_id,
     """
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
+    # Wave 7 Piece B — pull the user's prior-draft resolutions so the
+    # FM cannot silently re-raise concerns Ariel already answered.
+    # Best-effort: if the lookup throws (test session with partial
+    # schema, fetcher import failure on a stub run), we degrade to
+    # the no-carry-forward path rather than blocking phase 5.
+    prior_resolved_list: list = []
+    try:
+        from argosy.services.prior_resolved_concerns import (
+            get_prior_resolved_concerns,
+        )
+
+        prior_resolved_list = get_prior_resolved_concerns(
+            session,
+            user_id=user_id,
+            current_plan_version_id=current_plan_version_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.phase_5.prior_resolved_failed",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            error=str(exc),
+        )
+
     log.info("plan_synthesis.phase_5.start",
              user_id=user_id, decision_run_id=decision_run_id,
-             has_codex_opinion=codex_second_opinion is not None)
+             has_codex_opinion=codex_second_opinion is not None,
+             prior_resolved_count=len(prior_resolved_list))
     fm = _pkg._make_fund_manager(user_id=user_id)
     fm_kwargs: dict = dict(
         decision_kind="plan_revision",
@@ -2680,6 +2706,10 @@ def _run_phase_5_fund_manager(*, session, user_id,
     # whose run_sync doesn't accept the kwarg keeps working unchanged.
     if codex_second_opinion is not None:
         fm_kwargs["codex_second_opinion"] = codex_second_opinion
+    # Same gating for prior_resolved_concerns — only thread it when
+    # non-empty so legacy stubs without the kwarg keep working.
+    if prior_resolved_list:
+        fm_kwargs["prior_resolved_concerns"] = prior_resolved_list
     result = fm.run_sync(**fm_kwargs)
     # W1.C-v2: uniform bulk-persist pattern. Phase 5 calls exactly one
     # agent; wrap its dataclass in a 1-element list and route through
