@@ -396,6 +396,13 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
   const [counterDrafts, setCounterDrafts] = useState<Record<number, string>>(
     {},
   );
+  // Resolved-row expand toggle. When stance=AGREE the card collapses
+  // to a single-line summary by default; clicking "show details"
+  // reveals the body + dialogue panel again. State is per-mount only
+  // (no server persistence needed — collapse is purely a view state).
+  const [resolvedExpanded, setResolvedExpanded] = useState<
+    Record<number, boolean>
+  >({});
   const [stanceError, setStanceError] = useState<string | null>(null);
   const [startingNewRound, setStartingNewRound] = useState(false);
   const [startNewRoundError, setStartNewRoundError] = useState<string | null>(
@@ -762,11 +769,22 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
           const renderTranslated =
             activeTranslation !== null && !rowShowsOriginal;
 
+          const currentStance: FMObjectionStance =
+            stances[i]?.stance ?? "DEFER";
+          const isResolved = currentStance === "AGREE";
+          const showResolvedDetails = resolvedExpanded[i] === true;
+          // When stance=AGREE the body collapses; user can re-expand
+          // to review/edit. Stance toggle + resolution note stay
+          // visible so they can change their mind without re-expanding.
+          const hideBody = isResolved && !showResolvedDetails;
+
           return (
             <li
               key={i}
               id={`fm-obj-${i + 1}`}
-              className={`rounded-md border ${cls.ring} p-3 text-sm scroll-mt-20`}
+              className={`rounded-md border ${cls.ring} p-3 text-sm scroll-mt-20 ${
+                isResolved ? "opacity-70" : ""
+              }`}
             >
               <div className="flex items-start gap-2">
                 <span
@@ -806,33 +824,70 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                           : o.topic}
                       </span>
                     </div>
-                    <Badge variant={cls.badge}>{o.severity}</Badge>
-                  </div>
-                  {renderTranslated && activeTranslation ? (
-                    <>
-                      <p className="text-sm whitespace-pre-line">
-                        {activeTranslation.plain_english}
-                      </p>
-                      {activeTranslation.recommended_actions.length > 0 && (
-                        <div className="mt-2">
-                          <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-1">
-                            Recommended actions
-                          </div>
-                          <ul className="text-xs list-disc list-inside space-y-0.5">
-                            {activeTranslation.recommended_actions.map(
-                              (a, j) => (
-                                <li key={j}>{a}</li>
-                              ),
-                            )}
-                          </ul>
-                        </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {isResolved && (
+                        <Badge
+                          variant="outline"
+                          className="border-success/40 bg-success/10 text-success font-mono text-[10px]"
+                          title="You marked this objection AGREE. Click the row to expand if you want to review the original FM text or change your stance."
+                        >
+                          <Check className="h-3 w-3 mr-1" />
+                          Resolved
+                        </Badge>
                       )}
-                    </>
-                  ) : (
-                    <p className="text-sm text-muted-foreground whitespace-pre-line">
-                      {o.detail}
-                    </p>
+                      <Badge variant={cls.badge}>{o.severity}</Badge>
+                    </div>
+                  </div>
+                  {hideBody && (
+                    <div className="flex items-center gap-2 mt-1">
+                      {stances[i]?.counter_position && (
+                        <span className="text-[11px] text-muted-foreground italic line-clamp-1">
+                          “{stances[i]?.counter_position}”
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setResolvedExpanded((prev) => ({
+                            ...prev,
+                            [i]: true,
+                          }))
+                        }
+                        className="text-[11px] font-mono text-muted-foreground hover:text-foreground hover:underline ml-auto shrink-0"
+                        title="Re-expand to review the original FM text + change your stance"
+                      >
+                        Show details
+                      </button>
+                    </div>
                   )}
+                  {!hideBody &&
+                    (renderTranslated && activeTranslation ? (
+                      <>
+                        <p className="text-sm whitespace-pre-line">
+                          {activeTranslation.plain_english}
+                        </p>
+                        {activeTranslation.recommended_actions.length > 0 && (
+                          <div className="mt-2">
+                            <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground mb-1">
+                              Recommended actions
+                            </div>
+                            <ul className="text-xs list-disc list-inside space-y-0.5">
+                              {activeTranslation.recommended_actions.map(
+                                (a, j) => (
+                                  <li key={j}>{a}</li>
+                                ),
+                              )}
+                            </ul>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-sm text-muted-foreground whitespace-pre-line">
+                        {o.detail}
+                      </p>
+                    ))}
+                  {!hideBody && (
+                  <>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     {activeTranslation ? (
                       // Precomputed (or freshly lazy-fetched) translation
@@ -883,6 +938,12 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                         variant="outline"
                         className="h-7 text-xs"
                         onClick={() => onDiscussObjection(o, i + 1)}
+                        title={
+                          "Open a free-form chat in /advisor pre-seeded with this objection. " +
+                          "The agent explains in plain English; useful when you want to understand " +
+                          "the math/logic or share context that changes the framing. No formal " +
+                          "output, no FM follow-up."
+                        }
                       >
                         <MessageCircle className="h-3 w-3 mr-1" />
                         Discuss with advisor
@@ -901,6 +962,29 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                       const status = dialogueStatus[i] ?? "idle";
                       const inFlight =
                         status === "starting" || status === "running";
+                      // Structured analyst<->FM dialogue requires a real
+                      // FM verdict on the CURRENT draft. Carried-over
+                      // objections come from a prior draft; the current
+                      // draft hasn't been evaluated, so there's nothing
+                      // for the analyst to push back against. Disable
+                      // the button in that state with a clear tooltip.
+                      if (isCarriedOver || o.carried_over) {
+                        return (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            disabled
+                            title={
+                              "Analyst<->FM dialogue needs a fresh FM verdict on the current draft. " +
+                              "Press Run synthesis first; this button re-enables once FM has scored the new draft."
+                            }
+                          >
+                            <Users className="h-3 w-3 mr-1" />
+                            Run synthesis first
+                          </Button>
+                        );
+                      }
                       if (analystRoles.length === 0) {
                         return (
                           <Button
@@ -955,6 +1039,12 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                             onClick={() =>
                               void kickOffDialogue(i, o, pickedRole)
                             }
+                            title={
+                              "Fire a structured 3-turn dialogue with this analyst. " +
+                              "The analyst writes a stance (CONCEDE/REBUT/CLARIFY); the FM writes " +
+                              "a verdict. The result is machine-readable and feeds the next synthesis. " +
+                              "Use when you want the FM and analyst to actually argue it out."
+                            }
                           >
                             {inFlight ? (
                               <Loader2 className="h-3 w-3 mr-1 animate-spin" />
@@ -981,10 +1071,13 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
                     errorMessage={dialogueErrors[i] ?? null}
                     dialogue={dialogueRuns[i] ?? null}
                   />
+                  </>
+                  )}
 
                   {/* Per-objection stance toggle (AGREE / DEFER / DISAGREE).
-                      Only rendered when a planVersionId is wired so we know
-                      where to PUT. */}
+                      Stays visible even when the body is collapsed for a
+                      resolved row — the user must always be able to change
+                      their stance or edit the resolution note. */}
                   {planVersionId != null && (() => {
                     const curStance: FMObjectionStance =
                       stances[i]?.stance ?? "DEFER";
