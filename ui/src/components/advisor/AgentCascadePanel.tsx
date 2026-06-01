@@ -183,7 +183,19 @@ export function AgentCascadePanel({
             {allRows.map((row, idx) => {
               const activityRow = agentRowToActivityRow(row);
               const isPersisted = row.id !== null && row.id !== -1;
-              const key = row.run_correlation_id ?? `row-${idx}`;
+              // Per-row React key. The DB id is globally unique once
+              // persisted; WS-only stubs share a correlation_id when an
+              // agent retries or two streams emit the same event (the
+              // user hit a duplicate-key warning when 35 agents were
+              // mid-flight). Including the array index forces uniqueness
+              // even on duplicate correlation_id arrivals — the array
+              // position is what React actually uses anyway, and we don't
+              // need cross-render identity for these stub rows because
+              // they'll be replaced wholesale by their persisted twin.
+              const key =
+                isPersisted && row.id !== null
+                  ? `id-${row.id}`
+                  : `ws-${row.run_correlation_id ?? "anon"}-${idx}`;
 
               if (!isPersisted) {
                 // WS-only row: show the card but disable click with a tooltip.
