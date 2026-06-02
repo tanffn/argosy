@@ -32,7 +32,7 @@ This document describes Argosy as it stands today. History (per-wave changes, pr
 | Subscribe to WS events from UI | `ui/src/lib/ws.ts` `useWSEvents([.])` hook | filter on `payload.user_id !== USER_ID` (advisor page does this; home/proposals do not — known latent issue, §15.4) |
 | Add a test | `tests/test_<module>.py`, fixtures in `tests/conftest.py` | use `alembic_engine_at_head` for DB-backed; `client_with_db` for FastAPI-backed |
 | Add a live-LLM test | mark `@pytest.mark.llm_eval`; gate via `_llm_backend_available()` | see `tests/test_plan_synthesis_e2e.py` for the pattern |
-| Understand a specific wave's intent | §6.10 (W1 distillate), §6.11 (W2 synthesis), §6.12 (W3 speculation), §6.13 (W4 amendment chat) | full design specs at `docs/superpowers/specs/` (historical but rich) |
+| Understand a subsystem in depth | §6.10 (plan-distillate), §6.11 (plan-synthesis), §6.12 (speculation routing), §6.13 (amendment chat) | per-feature design specs at `docs/superpowers/specs/` |
 | Speculation cap enforcement | `argosy/config.py::SpeculationCap`, `argosy/agents/plan_synthesizer.py` (prompt block), `argosy/orchestrator/flows/plan_synthesis/orchestrator.py::_enforce_speculation_cap`, `argosy/orchestrator/speculation_router.py` (preflight) | §6.12 |
 | Audit lineage walkthrough | §8.6 (the `decision_runs ↔ plan_versions ↔ proposals ↔ agent_reports` map) | grep `decision_kind` |
 | Add another chat-upload attachment kind | `argosy/services/turn_attachments.py::_classify` (MIME + extension allowlist), `argosy/api/routes/advisor.py::_run_turn` (kind dispatch), `argosy/agents/base.py::_call_via_api_key` + `_call_via_claude_code_inner` (image content blocks on both backends) | §6.14 |
@@ -41,9 +41,9 @@ This document describes Argosy as it stands today. History (per-wave changes, pr
 
 ### Project-wide conventions / gotchas
 
-These are the things that have bitten the implementation team during Waves 1-5 + the provenance waves (A-F). A new agent should know them before changing code.
+These are the things that have bitten implementers in the past. A new agent should know them before changing code.
 
-- **`BaseAgent.__init__` requires `user_id` (kwarg-only).** Tests instantiate as `AgentClass(user_id="ariel")` (or `"test"` / `"system"`). The original specs forgot this on every wave; every plan ended up adapting it.
+- **`BaseAgent.__init__` requires `user_id` (kwarg-only).** Tests instantiate as `AgentClass(user_id="ariel")` (or `"test"` / `"system"`).
 - **`FXAnalystAgent`** has capital `FX` (not `Fx`). The synthesis flow imports it as `from argosy.agents.fx_analyst import FXAnalystAgent as FxAnalystAgent` to match the spec's casing in tests. If you grep for `FxAnalystAgent`, you'll find the alias; the real class is capital-X.
 - **`RiskOfficerAgent` takes `perspective=.`** (not `stance=`). Values: `"aggressive" | "neutral" | "conservative"`. Single class; no per-stance subclasses (unlike researchers, which split into `BullResearcherAgent` / `BearResearcherAgent`).
 - **`account_class="limited"`** is the DB string for the Argonaut account. The feature/UI name "Argonaut" and the DB column value "limited" are different. Every site that every site that wrote `"argonaut"` to `"limited"` because the broker router (`argosy/execution/router.py:102`) checks `proposal.account_class == "limited"`. Don't write `"argonaut"` to the column.
@@ -63,7 +63,7 @@ These are the things that have bitten the implementation team during Waves 1-5 +
 ### User preferences (binding policy)
 
 - **Accuracy over LLM cost.** Synthesizer + bull/bear/trader/fund_manager/audit/plan_synthesizer default to Opus. No Haiku defaults remain. Reviewer agents on Opus too. See §3.8.
-- **Manual UI smokes deliberately skipped** by user request across every wave; backend tests + live LLM e2e are the verification surface.
+- **Manual UI smokes deliberately skipped** by user instruction; backend tests + live LLM e2e are the verification surface.
 - **Live LLM tests cost-controlled** by the `@pytest.mark.llm_eval` marker; opt-in only.
 
 ### Test discipline — don't run the full suite every time
@@ -72,7 +72,7 @@ The full backend test suite (`pytest -m "not llm_eval" --tb=no -q`) takes **~13 
 
 - **Per task during red→green**: run ONLY the test file(s) for the change. Example: `pytest tests/test_advisor_route.py -xvs` (~5 s).
 - **Per commit, broader sanity**: run the affected area, not the whole repo. Use the mapping below — typically 2–6 files.
-- **Full suite**: reserve for (a) before merging a feature branch to main, (b) at the end of a wave, (c) when investigating a suspected cross-cutting regression.
+- **Full suite**: reserve for (a) before merging a feature branch to main, (b) at feature completion, (c) when investigating a suspected cross-cutting regression.
 - **Never** run the full suite inside a TDD loop. If you're watching 13-minute outputs while iterating, you're doing it wrong.
 
 **Mapping — if you touched.**
@@ -146,11 +146,11 @@ These are reproduced inline so a fresh agent never needs to look elsewhere. They
 > - Aggressive prompt caching is fine and encouraged because it improves both axes (faster + cheaper + more consistent).
 > - Reserve cost concerns for guardrails (monthly budget cap per §A.2) and runaway-prevention, not for shaping per-call depth choices.
 
-#### Other binding preferences observed during Waves 1-4
+#### Other binding preferences
 
-- **Manual UI smokes skipped by default.** The user has consistently chosen to defer manual browser smokes for every wave; backend tests + live LLM e2e are the verification surface. Don't add manual-smoke gates to plans unless the user explicitly asks.
+- **Manual UI smokes skipped by default.** The user defers manual browser smokes; backend tests + live LLM e2e are the verification surface. Don't add manual-smoke gates to plans unless the user explicitly asks.
 - **Live LLM tests must be opt-in.** Mark with `@pytest.mark.llm_eval` and gate via `_llm_backend_available()` so they're skipped without a live backend (`claude.exe` on PATH for `claude_code` mode, or `ANTHROPIC_API_KEY` for `api_key` mode).
-- **Local-only operation.** No remote git push has happened in Waves 1-4. Branches merge fast-forward into `main` locally. If a future agent wants to push, ask first.
+- **Local-only operation.** No remote git push is configured. Branches merge fast-forward into `main` locally. If a future agent wants to push, ask first.
 - **Solo developer, single-user system.** Multi-tenant concerns are not in scope. The "single in-flight per user" partial unique index is the level of multi-user safety baked in.
 
 If you find a binding policy not listed above that you've inferred from the codebase, add it here so the next agent doesn't have to re-derive it.
@@ -1239,7 +1239,7 @@ fresh `role='baseline'` `plan_versions` row, demotes any prior baseline
 to `role='superseded'`, and schedules `distill_baseline_plan_async` via
 FastAPI `BackgroundTasks`. The chat response returns immediately;
 distillation surfaces via the existing draft-pending banner on next
-refresh. The post-Wave-5 review fix (I2) tightened this from "extension
+refresh. The current implementation tightens this from "extension
 OR > 500 chars" to extension-only because a long pasted `.txt` (e.g. a
 forwarded email) was silently overwriting the wealth plan.
 
@@ -1981,7 +1981,7 @@ All routes mount under `/api` (canonical source: `argosy.api.main.create_app`). 
 | GET | `/api/lots` | List lots (filterable). |
 | GET | `/api/fills` | List fills (filterable). |
 | GET | `/api/audit` | List audit-log rows (filterable). |
-| **Provenance** (Waves A + D — see §17) | | |
+| **Provenance** (see §17) | | |
 | GET | `/api/files` | List the user's `user_files` catalog rows; filter by `kind` / `source` / `since` / `until` / `include_deleted`; pagination via `limit` / `offset`. |
 | GET | `/api/files/{id}/content` | Stream the bytes of one cataloged file. ACL on `user_id` (404 for the wrong user; doesn't leak existence). 410 when the catalog row points at a missing on-disk file. |
 | GET | `/api/decisions/{id}/replay` | Full replay payload for one decision_run: the run row, every recorded `decision_phases` row (parsed verdict DTO + tldr_md + sequence_mmd + participants), and `inputs.user_files` (rows linked to this run). 404 for unknown / wrong-user. |
@@ -2442,7 +2442,7 @@ flowchart LR
 
 **Filesystem layout:**
 `<ARGOSY_HOME>/uploads/<user_id>/<YYYY>/<YYYY-MM-DD>/<HHMMSS>__<sha8>__<sanitized>`.
-Legacy Wave-5 paths under `<turn_uuid>/<file>` continue to work — the
+Legacy paths under `<turn_uuid>/<file>` continue to work — the
 backfill CLI inserts catalog rows pointing at them without relocating.
 
 **Backfill** (`argosy admin catalog-backfill [--user-id <id>] [--dry-run]`):
@@ -2635,7 +2635,7 @@ GitHub / IDE markdown previews and serve as the canonical visual.
 The largest section of the SDD by shipped surface area. Spans ingest
 (EX1), stabilization (EX1.1), dashboard (EX4, EX4.x, EX6), Leumi-USD
 + Schwab cross-validation (EX4.2), trip/vacation tags (EX5), and the
-merchant-category curation tab (EX8). Two waves remain scheduled:
+merchant-category curation tab. Two follow-on tracks remain:
 EX2 (anomaly-detection agent + advisor surfacing) and EX3
 (`HouseholdBudgetAnalystAgent` feeding plan synthesis as the 10th
 analyst).
@@ -2905,7 +2905,7 @@ flowchart TD
  style SKIP fill:#fc9
 ```
 
-### 18.1 EX1 surface (ingest core) — landed
+### 18.1 EX1 surface (ingest core)
 
 **Schema:** Initially six new tables via **migration 0021** (`expense_sources`, `expense_statements`, `expense_transactions`, `expense_categories`, `merchant_category_cache`, `expense_review_queue`). Subsequent migrations extended the model: **0022** made `expense_transactions.amount_nis` nullable (foreign-currency Isracard rows now leave it NULL); **0024** added `expense_transactions.tags TEXT NOT NULL DEFAULT '[]'` for trip/vacation/lump-sum tagging (EX5). See §8.5 for the full column list. (FX cache `fx_rates` from migration 0023 lives in §18.2; that table is a sibling, not part of the `expense_*` family.)
 
@@ -2948,7 +2948,7 @@ All conservation-passing. ~$2-5 of LLM categorization spend on the one-time `arg
 - Foreign-currency `amount_nis` stored raw foreign amount — fixed: Isracard parser now sets `amount_nis=NULL` for non-NIS rows; correlator + refund-matcher handle NULL; migration 0022 made the column nullable.
 - Leumi account-number was hardcoded `"44745280"` — fixed: orchestrator's `_LEUMI_EXPECTED_ACCTS` is now a frozenset accepting both `44745280` (NIS) and `44745200` (USD).
 
-### 18.2 EX1.1 stabilization — landed
+### 18.2 EX1.1 Stabilization
 
 Defect-closure work on top of the expense subsystem (see (
 full enumeration). Closed seven issues identified during the first
@@ -2987,7 +2987,7 @@ than raising. Backfill on real machine: 401 daily USD rates spanning
 endpoint ignores `start`/`end`, so the BoI client now fetches latest
 from BoI + history from Frankfurter and merges both).
 
-### 18.3 Dashboard surface (EX4 + EX4.x + EX6) — landed
+### 18.3 Dashboard surface (EX4 + EX4.x + EX6)
 
 The `/expenses` route family is the primary user-facing surface for
 this section. It split into two views in EX6:
@@ -3036,7 +3036,7 @@ hero, the Monthly Spend chart, and the Spending categories pie all
 honor this split. Surfaced via `DashboardMonthly.oneoff_categories:
 list[CategorySpend]`.
 
-### 18.4 Leumi USD + Schwab cross-validation (EX4.2) — landed
+### 18.4 Leumi USD + Schwab cross-validation (EX4.2)
 
 A second Leumi source (USD brokerage account `44745200`) plus a
 read-only Schwab Equity Awards Center CSV cross-validator. The Schwab
@@ -3067,7 +3067,7 @@ tax: 25% + 3% surtax, withheld at the bank) bridges Schwab gross →
 Leumi net. Adding a soft-match tolerance for the haircut is queued
 (see §15.4 open items).
 
-### 18.5 Tags + Trips (EX5) — landed
+### 18.5 Tags + Trips (EX5)
 
 **Schema** (migration **0024**): `expense_transactions.tags TEXT NOT NULL
 DEFAULT '[]'` — JSON-encoded list of free-form string tags. SQLite has
@@ -3093,7 +3093,7 @@ no functional index on JSON arrays; at single-user scale `LIKE
 namespaces (case-sensitive prefix; legacy `Vacation:*` capital-V tags
 normalized via direct DB rewrite on 2026-05-15).
 
-### 18.6 Merchant↔Category curation (EX8) — landed
+### 18.6 Merchant↔Category curation (EX8)
 
 **Tab:** `/expenses/merchants` — merchant-grouped table with filter
 bar (search, category, source, max-confidence, hide-confirmed
