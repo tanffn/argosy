@@ -1077,14 +1077,28 @@ full-fidelity audit variants of the horizon markdown (migration
 
 **Pipeline shape** (in order, per `run_synthesis`):
 
-1. Phase 1 analysts (10 default; 12 with `ARGOSY_PHASE5_AGENTS=true`)
-2. Phase 2 per-horizon researcher debates
-3. Phase 3 synthesizer → structured `PlanSynthesisOutput`
-4. `PlanLanguageRewriter` + `validate_rewriter_invariants` (prose
-   translation + bit-equality contract on structured fields)
-5. `_enforce_speculation_cap` (post-filter on speculative candidates)
-6. Phase 4 risk team
-7. Phase 5 fund manager
+1. Phase 1 analysts (10 default; 12 with `ARGOSY_PHASE5_AGENTS=true`).
+   Phase 5 agents (`PlanCoverageAnalyst`, `WithdrawalSequencerAgent`)
+   run with `use_structured_output=False` — the SDK fails on their
+   complex schemas (nested `Decimal | str | None` unions); Pydantic
+   post-call validation enforces the contract.
+2. Phase 2 per-horizon researcher debates.
+3. Phase 3 synthesizer → structured `PlanSynthesisOutput`.
+4. `PlanLanguageRewriter` → `_force_preserve_structured_fields` →
+   `validate_rewriter_invariants`. The rewriter translates prose
+   fields; force-preserve restores subtrees the rewriter is
+   contractually required to leave alone but practically does touch
+   under live-LLM conditions (`Section.evidence` subtree,
+   `Target.source_section`, `deltas_from_prior`,
+   `speculative_candidates`, `PlanSynthesisOutput.inputs` provenance).
+   The validator then runs against the restored output. Violations
+   split: structural drift raises `RewriterInvariantError` (aborts
+   cycle); prose-only drift logs a warning and ships the
+   mostly-scrubbed output — the Phase 0 `/accept` gate is the
+   last-line check on the rendered markdown.
+5. `_enforce_speculation_cap` (post-filter on speculative candidates).
+6. Phase 4 risk team.
+7. Phase 5 fund manager.
 
 See `docs/plans/argosy-comprehensive-plan-integration.md` for the
 integration-plan reference. That doc is the planning-and-deliverables
