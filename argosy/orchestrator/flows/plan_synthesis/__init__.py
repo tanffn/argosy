@@ -62,6 +62,11 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     _run_phase_2_debates,
     _run_one_horizon_debate,
     _run_phase_3_synthesizer,
+    # Phase 2 — prose rewriter wired between phase-3 and the
+    # speculation-cap enforcer. Exposed on the package namespace so
+    # tests can monkeypatch via ``flow._run_plan_language_rewriter``.
+    _run_plan_language_rewriter,
+    RewriterInvariantError,
     _enforce_speculation_cap,
     _run_phase_4_risk,
     _run_one_risk_perspective,
@@ -132,6 +137,8 @@ __all__ = [
     "_run_one_horizon_debate",
     "_run_phase_3_synthesizer",
     "_enforce_speculation_cap",
+    "_run_plan_language_rewriter",
+    "RewriterInvariantError",
     "_run_phase_4_risk",
     "_run_one_risk_perspective",
     "_make_risk_officer",

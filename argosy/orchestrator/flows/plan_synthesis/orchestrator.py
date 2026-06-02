@@ -432,6 +432,18 @@ def run_synthesis(
         user_id=user_id,
     )
 
+    # Phase 2 of docs/plans/argosy-comprehensive-plan-integration.md:
+    # rewrite jargon-heavy prose to household English BEFORE the
+    # speculation-cap post-filter mutates structure. The invariant
+    # validator enforces bit-equality on every structured field; any
+    # drift raises and aborts the synthesis cycle. Resolved through
+    # the package namespace so tests can monkeypatch the rewriter.
+    output = _pkg._run_plan_language_rewriter(
+        output=output,
+        user_id=user_id,
+        decision_run_id=decision_run_id,
+    )
+
     # Defense-in-depth: post-filter speculative candidates that breach
     # the cap or lack ``risk_ceiling_check``.  Resolved via the package
     # namespace so tests that monkeypatch ``flow._enforce_speculation_cap``
@@ -2416,6 +2428,97 @@ def _enforce_speculation_cap(
         return output
     new_short = output.short.model_copy(update={"speculative_candidates": kept})
     return output.model_copy(update={"short": new_short})
+
+
+class RewriterInvariantError(RuntimeError):
+    """Raised when ``PlanLanguageRewriter`` violated a §5.2 invariant.
+
+    Aborts the synthesis cycle per Phase 2 of
+    docs/plans/argosy-comprehensive-plan-integration.md. The
+    ``violations`` attribute carries the structured list the gate
+    surfaced; the orchestrator persists it onto the decision-run log
+    so the audit pane can show what failed.
+    """
+
+    def __init__(self, violations: list[Any]) -> None:
+        super().__init__(
+            f"PlanLanguageRewriter produced {len(violations)} invariant "
+            f"violation(s); see violations attribute for detail."
+        )
+        self.violations = violations
+
+
+def _run_plan_language_rewriter(
+    *,
+    output: PlanSynthesisOutput,
+    user_id: str,
+    decision_run_id: int | None = None,
+) -> PlanSynthesisOutput:
+    """Run the Phase 2 prose rewriter and enforce its invariants.
+
+    Returns the rewritten ``PlanSynthesisOutput`` on success. Raises
+    ``RewriterInvariantError`` when:
+      - the validator finds drift in the rewritten output, OR
+      - the rewriter system itself fails (SDK error, timeout, etc.).
+
+    Fail-loud on crash. The earlier draft of this wrapper fell back
+    silently to the un-rewritten ``output`` on exception, but that is
+    not safe: the un-rewritten output is precisely what carries
+    ``TaxAnalyst`` / ``PlanCritique RED`` / ``substrate-gated`` prose
+    (the rewriter exists to scrub it). Publishing the fallback would
+    leak jargon to the user-facing horizon MD. We abort instead and
+    let the caller's retry / banner machinery handle the failure
+    visibly. The Phase-0 publication gate is the last-line check at
+    the persist boundary; the rewriter is the load-bearing scrub
+    upstream.
+    """
+    # Late import keeps the agent module out of the eager import graph
+    # (PlanLanguageRewriter pulls the SDK, which the orchestrator
+    # doesn't otherwise need to load until synthesis runs).
+    from argosy.agents.plan_language_rewriter import PlanLanguageRewriter
+    from argosy.quality.rewriter_invariants import validate_rewriter_invariants
+    from argosy.quality.gate_types import GateCheck, GateViolation
+
+    try:
+        rewriter = PlanLanguageRewriter(user_id=user_id)
+        result = rewriter.run_sync(
+            synth_output=output,
+            decision_id=decision_run_id,
+        )
+        rewritten = result.output
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "plan_synthesis.rewriter_crashed",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+        raise RewriterInvariantError(violations=[
+            GateViolation(
+                check=GateCheck.JARGON_LEAK,
+                detail=(
+                    f"PlanLanguageRewriter raised "
+                    f"{type(exc).__name__}: {exc}. Aborting rather "
+                    "than publishing un-rewritten output (would leak "
+                    "jargon to user-facing horizon MD)."
+                ),
+                locator="plan_language_rewriter.run_sync",
+            )
+        ]) from exc
+
+    violations = validate_rewriter_invariants(before=output, after=rewritten)
+    if violations:
+        log.error(
+            "plan_synthesis.rewriter_invariant_violations",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            count=len(violations),
+            first=violations[0].detail,
+            first_locator=violations[0].locator,
+        )
+        raise RewriterInvariantError(violations=violations)
+    return rewritten
 
 
 def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,

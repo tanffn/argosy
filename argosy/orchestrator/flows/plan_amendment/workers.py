@@ -162,6 +162,20 @@ def _medium_worker(*, session: Session, user_id: str,
             speculation_cap_concurrent=cap.max_concurrent_positions,
         )
 
+        # Phase 2 — translate jargon-heavy prose to household English
+        # BEFORE the speculation-cap post-filter. Without this, medium
+        # amendments would persist horizon MD that still names agent
+        # classes and uses substrate terminology — the main synthesis
+        # flow runs this between phase 3 and cap enforcement.
+        from argosy.orchestrator.flows.plan_synthesis import (
+            _run_plan_language_rewriter,
+        )
+        output = _run_plan_language_rewriter(
+            output=output,
+            user_id=user_id,
+            decision_run_id=decision_run.id,
+        )
+
         # Layer 2 post-filter.
         output = _enforce_speculation_cap(
             output,
