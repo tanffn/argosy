@@ -2542,15 +2542,56 @@ def _run_plan_language_rewriter(
 
     violations = validate_rewriter_invariants(before=output, after=rewritten)
     if violations:
-        log.error(
-            "plan_synthesis.rewriter_invariant_violations",
+        # Split: structural drift (count change, preserved-field
+        # mutation, evidence subtree mutation, inputs mutation) =
+        # data corruption → must abort. Prose drift (residual
+        # history/jargon in rewritten rationale / label / etc.) =
+        # quality issue → log + use the (mostly-scrubbed) rewritten
+        # output, let the Phase 0 publication gate at /accept catch
+        # any residual the rewriter missed.
+        #
+        # Detection: structural-drift detail strings start with
+        # "rewriter changed" / "rewriter modified" or describe
+        # "subtree modified" / "count changed" / "(preserved field)".
+        # Prose-drift detail comes straight from check_history_leak /
+        # check_jargon_leak ("matched `...`").
+        structural = [
+            v for v in violations
+            if (
+                "rewriter changed" in v.detail
+                or "rewriter modified" in v.detail
+                or "subtree modified" in v.detail
+                or "preserved field" in v.detail
+                or "(provenance)" in v.detail
+            )
+        ]
+        prose = [v for v in violations if v not in structural]
+        if structural:
+            log.error(
+                "plan_synthesis.rewriter_structural_violations",
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                structural_count=len(structural),
+                prose_count=len(prose),
+                first=structural[0].detail,
+                first_locator=structural[0].locator,
+            )
+            raise RewriterInvariantError(violations=structural)
+        # Prose-only violations — log and continue. The /accept gate
+        # downstream catches anything that survives.
+        log.warning(
+            "plan_synthesis.rewriter_prose_violations",
             user_id=user_id,
             decision_run_id=decision_run_id,
-            count=len(violations),
-            first=violations[0].detail,
-            first_locator=violations[0].locator,
+            count=len(prose),
+            first=prose[0].detail,
+            first_locator=prose[0].locator,
+            note=(
+                "Rewriter scrubbed most jargon but left residual prose "
+                "leaks. Synth proceeds; /accept gate will catch any "
+                "horizon-MD-level violations."
+            ),
         )
-        raise RewriterInvariantError(violations=violations)
     return rewritten
 
 

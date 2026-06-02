@@ -190,26 +190,45 @@ class PlanCoverageAnalyst(BaseAgent[PlanCoverageOutput]):
     def build_prompt(
         self,
         *,
-        distillate_summary: str,
-        portfolio_snapshot: str,
+        plan_markdown: str = "",
+        snapshot_summary: str = "",
     ) -> tuple[str, str]:
         """Assemble (system, user) prompts.
 
+        Kwarg names align with ``Phase1Inputs`` field names so the
+        orchestrator's ``_safe_run_agent`` introspection narrowing
+        (``inspect.signature(build_prompt)``) routes the right slices
+        of the common kwargs bag to this agent.
+
+        Defaults exist so the narrowing works, but if both material
+        inputs are empty the agent raises: producing baselines from
+        placeholder text would confabulate. Hard-fail surfaces the
+        routing bug as a normal analyst failure caught by
+        ``_safe_run_agent``.
+
         Args:
-            distillate_summary: Rendered markdown of the user's
-                PlanDistillate — the structured baseline-plan content.
-                Tells the agent which sections the user already
-                authored (so it can avoid duplicating them).
-            portfolio_snapshot: Current portfolio composition + balances
-                + household profile. Grounds the baseline numbers (e.g.
+            plan_markdown: Rendered baseline-plan markdown (typically
+                the distillate render). Tells the agent which sections
+                the user already authored so it can avoid duplicating
+                them.
+            snapshot_summary: Current portfolio composition + balances +
+                household profile. Grounds baseline numbers (e.g.
                 healthcare cost projections scale with household size).
         """
+        if not plan_markdown and not snapshot_summary:
+            raise ValueError(
+                "PlanCoverageAnalyst.build_prompt called with both "
+                "plan_markdown and snapshot_summary empty. Producing "
+                "baseline sections from placeholder text would "
+                "confabulate; fail loud so the routing bug surfaces "
+                "as a normal analyst failure."
+            )
         user_parts: list[str] = [
             "<distillate_summary>\n"
-            + _escape_data_block(distillate_summary.strip())
+            + _escape_data_block((plan_markdown or "(no baseline-plan markdown supplied)").strip())
             + "\n</distillate_summary>",
             "<portfolio_snapshot>\n"
-            + _escape_data_block(portfolio_snapshot.strip())
+            + _escape_data_block((snapshot_summary or "(no portfolio snapshot supplied)").strip())
             + "\n</portfolio_snapshot>",
             (
                 "Emit baseline Section objects for canonical section_ids "

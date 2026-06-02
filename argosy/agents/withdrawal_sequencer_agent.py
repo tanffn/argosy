@@ -229,52 +229,118 @@ class WithdrawalSequencerAgent(BaseAgent[WithdrawalSequencerOutput]):
     def build_prompt(
         self,
         *,
-        portfolio_snapshot: str,
-        household_budget: str,
-        account_vintages: str,
-        assumption_register: str,
+        snapshot_summary: str = "",
+        positions_summary: str = "",
+        household_budget_payload: dict | None = None,
+        plan_markdown: str = "",
+        plan_label: str = "",
     ) -> tuple[str, str]:
         """Assemble (system, user) prompts.
 
+        Kwarg names align with ``Phase1Inputs`` field names so the
+        orchestrator's ``_safe_run_agent`` introspection narrowing
+        routes the right slices of the common kwargs bag here.
+
+        Defaults exist so the orchestrator's per-agent narrowing
+        works, but if ALL material inputs are empty the agent raises:
+        running an LLM call on placeholder text would burn cost and
+        produce a confabulation that the user can't audit. Hard-fail
+        surfaces the routing bug (caught by ``_safe_run_agent`` as a
+        normal analyst failure) instead of masking it.
+
         Args:
-            portfolio_snapshot: Current portfolio composition + bucket
-                balances. Free-form text; the agent reads NIS / USD
-                bucket balances out of it.
-            household_budget: Inflation-indexed annual spending profile
-                including any declared CashflowPhase deltas (kids leave
-                home, wedding bulge, car cadence). The schedule's net
-                NIS should match this year-over-year.
-            account_vintages: Vintage dates for each kupot_gemel /
-                executive_insurance / pensia / keren_hishtalmut
-                position — needed to evaluate §102 24-month clocks,
-                pre/post-2008 partial-unlock eligibility, and statutory
-                pension age. See ``integration_notes.md`` for the open
-                question of where this string actually comes from.
-            assumption_register: User-overridable defaults (expected
-                real return, fee drag, retirement target age, etc.).
-                Anything in this block can be cited as
-                ``assumption_register.<key>``.
+            snapshot_summary: Current portfolio composition aggregate
+                (totals + posture). May be empty when the orchestrator
+                has no fresh snapshot.
+            positions_summary: Position-level holdings + account
+                breakdown. ``snapshot_summary`` is the rolled-up view;
+                ``positions_summary`` carries the per-position detail
+                this agent needs to identify keren-hishtalmut / kupot-
+                gemel / pensia buckets in the user's portfolio.
+            household_budget_payload: Structured budget dict from
+                Phase1Inputs (income, expenses, NIS+USD bucket
+                breakdown). JSON-stringified into the <household_budget>
+                block.
+            plan_markdown: Rendered baseline-plan markdown. Account
+                vintages + assumption register are not yet first-class
+                Phase1Inputs fields; the agent extracts what it can
+                from this body. Phase 5b will lift them out.
+            plan_label: Plan-version label — log correlation only.
         """
+        if not any([
+            snapshot_summary,
+            positions_summary,
+            household_budget_payload,
+            plan_markdown,
+        ]):
+            raise ValueError(
+                "WithdrawalSequencerAgent.build_prompt called with no "
+                "material inputs (snapshot_summary, positions_summary, "
+                "household_budget_payload, plan_markdown all empty). "
+                "This usually means the orchestrator's per-agent kwarg "
+                "narrowing routed empty kwargs — fail loud so the "
+                "routing bug surfaces as a normal analyst failure."
+            )
+        import json as _json
+        budget_text = (
+            _json.dumps(household_budget_payload, indent=2, default=str)
+            if household_budget_payload
+            else "(no household_budget payload supplied)"
+        )
+        portfolio_text = (
+            snapshot_summary
+            or positions_summary
+            or "(no portfolio snapshot supplied)"
+        )
+        positions_text = (
+            positions_summary
+            or "(no per-position detail; using snapshot rollup only)"
+        )
+        vintages_text = (
+            "Account vintages are not yet exported as a first-class "
+            "field. Inspect <plan_markdown> for any keren-hishtalmut / "
+            "kupot-gemel / executive-insurance / pensia vintage refs; "
+            "if absent, set confidence=LOW and default vintage = today "
+            "minus 10y."
+        )
+        assumptions_text = (
+            "Assumption register is not yet exported as a first-class "
+            "field. Inspect <plan_markdown> for return / inflation / "
+            "longevity assumptions; default to 4.5% real return, 2.5% "
+            "inflation, retire-age 49, longevity-95 if absent. Flag "
+            "these as agent_baseline assumptions."
+        )
+
         user_parts: list[str] = []
         user_parts.append(
             "<portfolio>\n"
-            + _escape_data_block(portfolio_snapshot.strip())
+            + _escape_data_block(portfolio_text.strip())
             + "\n</portfolio>"
         )
         user_parts.append(
+            "<positions>\n"
+            + _escape_data_block(positions_text.strip())
+            + "\n</positions>"
+        )
+        user_parts.append(
             "<household_budget>\n"
-            + _escape_data_block(household_budget.strip())
+            + _escape_data_block(budget_text.strip())
             + "\n</household_budget>"
         )
         user_parts.append(
             "<account_vintages>\n"
-            + _escape_data_block(account_vintages.strip())
+            + _escape_data_block(vintages_text.strip())
             + "\n</account_vintages>"
         )
         user_parts.append(
             "<assumptions>\n"
-            + _escape_data_block(assumption_register.strip())
+            + _escape_data_block(assumptions_text.strip())
             + "\n</assumptions>"
+        )
+        user_parts.append(
+            "<plan_markdown>\n"
+            + _escape_data_block((plan_markdown or "(no plan markdown supplied)").strip())
+            + "\n</plan_markdown>"
         )
         user_parts.append(
             "Build the FI-bridge ladder + year-by-year withdrawal "

@@ -434,6 +434,70 @@ def test_orchestrator_aborts_on_rewriter_crash(monkeypatch):
     assert any("SDK exploded" in v.detail for v in exc.value.violations)
 
 
+def test_orchestrator_soft_fails_on_prose_only_violations(monkeypatch, caplog):
+    """Codex supervised-fixes review: prose-only violations (residual
+    jargon in label / rationale / posture) log a warning and ship the
+    rewritten output. The /accept gate downstream catches anything
+    that survives. Only structural drift (count / value / preserved
+    field) still aborts."""
+    before = _make_baseline_plan()
+    after = before.model_copy(deep=True)
+    # Rewriter scrubbed most jargon but left "substrate" in a target
+    # label — exactly the symptom that prompted the soft-fail change.
+    after.medium.targets[0].label = "substrate-gated NVDA share of portfolio"
+
+    monkeypatch.setattr(
+        "argosy.agents.plan_language_rewriter.PlanLanguageRewriter",
+        _stub_rewriter_returning(after),
+    )
+    import logging
+    with caplog.at_level(logging.WARNING):
+        out = _run_plan_language_rewriter(
+            output=before, user_id="ariel", decision_run_id=42,
+        )
+    # Rewritten output returned (not the un-rewritten original).
+    assert out.medium.targets[0].label == "substrate-gated NVDA share of portfolio"
+    # Warning was emitted.
+    assert any(
+        "rewriter_prose_violations" in r.message
+        or "rewriter_prose_violations" in str(r.args)
+        for r in caplog.records
+    ), f"expected rewriter_prose_violations log; got {[r.message for r in caplog.records]}"
+
+
+def test_orchestrator_still_aborts_on_structural_violations(monkeypatch):
+    """The soft-fail behavior is prose-only. Any structural drift
+    (count change, preserved-field mutation, evidence subtree mutation,
+    inputs mutation) still raises RewriterInvariantError."""
+    before = _make_baseline_plan()
+    after = before.model_copy(deep=True)
+    # Structural drift: a Target.value was changed (which the rewriter
+    # MUST NOT touch).
+    after.medium.targets[0].value = 99
+
+    monkeypatch.setattr(
+        "argosy.agents.plan_language_rewriter.PlanLanguageRewriter",
+        _stub_rewriter_returning(after),
+    )
+    with pytest.raises(RewriterInvariantError) as exc:
+        _run_plan_language_rewriter(
+            output=before, user_id="ariel", decision_run_id=42,
+        )
+    # Only structural violations should be in the aborted-cycle's
+    # violations list — prose violations were partitioned out.
+    assert all(
+        "preserved field" in v.detail
+        or "rewriter changed" in v.detail
+        or "rewriter modified" in v.detail
+        or "subtree modified" in v.detail
+        or "(provenance)" in v.detail
+        for v in exc.value.violations
+    ), (
+        f"expected only structural violations in raised exception; "
+        f"got: {[v.detail for v in exc.value.violations]}"
+    )
+
+
 def test_validator_catches_inputs_field_mutation():
     """PlanSynthesisOutput.inputs (provenance: baseline_id,
     prior_current_id, etc.) is structured metadata. The rewriter
