@@ -10,6 +10,11 @@
  * collapse, pct-scale normalisation); this component only renders
  * its output + surfaces the collapsed/excluded callouts so the user
  * understands why some targets aren't on the chart.
+ *
+ * v2.3 polish — unconstrained snapshot bands render dashed + at
+ * reduced opacity to visually separate "this is your current holding
+ * with no plan target moving it" from "the plan is actively steering
+ * this band".
  */
 
 import { useMemo } from "react";
@@ -25,6 +30,7 @@ import {
 } from "recharts";
 type GlidepathTooltipProps = TooltipContentProps;
 
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -41,8 +47,6 @@ interface AllocationGlidepathChartProps {
   response: AllocationGlidepathResponse | null;
 }
 
-// Palette mirrors the existing AllocationChart so the recap reads
-// consistent with the other charts on /plan.
 const BAND_COLORS = [
   "var(--color-chart-1, #6366f1)",
   "var(--color-chart-2, #22d3ee)",
@@ -52,6 +56,17 @@ const BAND_COLORS = [
   "var(--color-chart-6, #8b5cf6)",
   "var(--color-chart-7, #14b8a6)",
 ];
+
+const UNCONSTRAINED_ALIAS_PREFIX = "snapshot (unconstrained";
+
+function isUnconstrainedAlias(
+  aliasSource: string | null | undefined,
+): boolean {
+  return (
+    typeof aliasSource === "string" &&
+    aliasSource.startsWith(UNCONSTRAINED_ALIAS_PREFIX)
+  );
+}
 
 interface RowShape {
   monthLabel: string;
@@ -112,6 +127,16 @@ export function AllocationGlidepathChart({
     [response],
   );
 
+  const unconstrainedByClass = useMemo(() => {
+    const map = new Map<string, boolean>();
+    if (response?.anchor_status) {
+      for (const a of response.anchor_status) {
+        map.set(a.asset_class, isUnconstrainedAlias(a.alias_source));
+      }
+    }
+    return map;
+  }, [response]);
+
   if (response == null) {
     return (
       <Card>
@@ -128,6 +153,9 @@ export function AllocationGlidepathChart({
   const hasPoints = rows.length > 0;
   const hasCollapsed = response.collapsed_waypoints.length > 0;
   const excludedCount = response.excluded_targets.length;
+  const hasUnconstrained = Array.from(unconstrainedByClass.values()).some(
+    (v) => v,
+  );
 
   return (
     <Card>
@@ -135,10 +163,11 @@ export function AllocationGlidepathChart({
         <CardTitle className="text-base">Allocation glidepath</CardTitle>
         <CardDescription>
           Projected portfolio composition over time. Each band is one
-          asset class the plan has a percentage-of-portfolio (or
-          percentage-of-liquid) target on. Today&apos;s value comes from
+          asset class. Solid bands have a plan target driving the
+          trajectory; dashed bands are your current holdings held flat
+          (no plan target moves them). Today&apos;s value comes from
           your latest snapshot; future values are linear-interpolated
-          between waypoint dates set by the plan&apos;s targets.
+          between waypoint dates set by the plan.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -156,18 +185,23 @@ export function AllocationGlidepathChart({
                 tickFormatter={(v) => `${v}%`}
               />
               <Tooltip content={GlidepathTooltip} />
-              {response.asset_classes.map((cls, i) => (
-                <Area
-                  key={cls}
-                  type="monotone"
-                  dataKey={cls}
-                  stackId="alloc"
-                  stroke={BAND_COLORS[i % BAND_COLORS.length]}
-                  fill={BAND_COLORS[i % BAND_COLORS.length]}
-                  fillOpacity={0.35}
-                  isAnimationActive={false}
-                />
-              ))}
+              {response.asset_classes.map((cls, i) => {
+                const unconstrained = unconstrainedByClass.get(cls) === true;
+                return (
+                  <Area
+                    key={cls}
+                    type="monotone"
+                    dataKey={cls}
+                    stackId="alloc"
+                    name={unconstrained ? `${cls} (unconstrained)` : cls}
+                    stroke={BAND_COLORS[i % BAND_COLORS.length]}
+                    fill={BAND_COLORS[i % BAND_COLORS.length]}
+                    fillOpacity={unconstrained ? 0.15 : 0.35}
+                    strokeDasharray={unconstrained ? "4 4" : undefined}
+                    isAnimationActive={false}
+                  />
+                );
+              })}
             </AreaChart>
           </ResponsiveContainer>
         ) : (
@@ -203,28 +237,53 @@ export function AllocationGlidepathChart({
           <div className="text-xs text-muted-foreground border-t border-border/40 pt-2">
             <p className="font-semibold mb-1">Today&apos;s anchor per band</p>
             <ul className="flex flex-col gap-0.5">
-              {response.anchor_status.map((a) => (
-                <li key={a.asset_class}>
-                  <span className="font-mono">{a.asset_class}</span> →{" "}
-                  {a.matched ? (
-                    <>
-                      anchored at{" "}
-                      <span className="font-mono">
-                        {a.today_value.toFixed(1)}%
+              {response.anchor_status.map((a) => {
+                const unconstrained = isUnconstrainedAlias(a.alias_source);
+                return (
+                  <li
+                    key={a.asset_class}
+                    className={
+                      unconstrained
+                        ? "flex items-center gap-2 opacity-70"
+                        : "flex items-center gap-2"
+                    }
+                  >
+                    <span className="font-mono">{a.asset_class}</span>
+                    <span>→</span>
+                    {a.matched ? (
+                      <span className="flex items-center gap-2">
+                        anchored at{" "}
+                        <span className="font-mono">
+                          {a.today_value.toFixed(1)}%
+                        </span>
+                        {a.alias_source && !unconstrained ? (
+                          <span className="opacity-70">
+                            {" "}
+                            (via {a.alias_source})
+                          </span>
+                        ) : null}
+                        {unconstrained ? (
+                          <Badge variant="outline" className="text-[10px]">
+                            unconstrained
+                          </Badge>
+                        ) : null}
                       </span>
-                      {a.alias_source ? (
-                        <span className="opacity-70"> (via {a.alias_source})</span>
-                      ) : null}
-                    </>
-                  ) : (
-                    <span className="text-warning">
-                      no snapshot match — anchored at 0% (chart shows the
-                      target&apos;s direction only)
-                    </span>
-                  )}
-                </li>
-              ))}
+                    ) : (
+                      <span className="text-warning">
+                        no snapshot match — anchored at 0% (chart shows the
+                        target&apos;s direction only)
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
+            {hasUnconstrained ? (
+              <p className="mt-1 opacity-70">
+                Unconstrained bands exist in your snapshot but have no plan
+                target — they flat-line at today&apos;s value.
+              </p>
+            ) : null}
           </div>
         ) : null}
 

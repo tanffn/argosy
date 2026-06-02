@@ -506,6 +506,17 @@ export interface AuditLineDTO {
 // Wave 8 v2 polish — assumptions + μ-sensitivity table that drove
 // the retirement-readiness headline. Lets the user see what they
 // can trust and where the conclusion gets fragile.
+//
+// Wave 8 v2.3 — also surfaces per-policy retire-ready verdicts so
+// the user can compare "returns-only" (capital preservation) with
+// SWR-3.5% (Bengen-style, what the plan actually uses) and
+// SWR-4.0% (more aggressive).
+export interface ReadinessVerdictSummaryDTO {
+  policy: string; // "returns_only" | "swr_3_5" | "swr_4_0"
+  retire_ready_age: number | null;
+  rationale: string;
+}
+
 export interface HeadlineDerivationDTO {
   mu_nominal_annual: number;
   sigma_annual: number;
@@ -514,6 +525,7 @@ export interface HeadlineDerivationDTO {
   // [mu, retire_age | null] tuples.
   sensitivity_by_mu: Array<[number, number | null]>;
   sourced_from: string;
+  readiness_by_policy?: ReadinessVerdictSummaryDTO[];
 }
 
 export interface RecapSummaryDTO {

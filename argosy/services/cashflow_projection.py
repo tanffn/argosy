@@ -23,6 +23,7 @@ from typing import Sequence
 
 from sqlalchemy.orm import Session
 
+from argosy.services.tax_curve import effective_tax_rate_at_age
 from argosy.services.wealth_dashboard import (
     _latest_household_budget_report,
     _latest_snapshot,
@@ -405,6 +406,7 @@ def project_cashflow(
     years: int,
     mu_nominal_annual: float = DEFAULT_MU_NOMINAL_ANNUAL,
     sigma_annual: float = DEFAULT_SIGMA_ANNUAL,
+    sigma_curve: object | None = None,  # SigmaCurve | list[float] | None
     inflation_annual: float = DEFAULT_INFLATION_ANNUAL,
     mekadem: float = DEFAULT_MEKADEM,
     tax_rate: float = DEFAULT_TAX_RATE,
@@ -567,12 +569,30 @@ def project_cashflow(
 
         # Step 5: derive bull/bear from base via lognormal ±1σ band.
         # At t=0 the band collapses to base (no uncertainty yet).
-        log_std = sigma_annual * math.sqrt(t_years)
+        # Wave 8 v2.3 — σ time-varying: when a SigmaCurve / list is
+        # passed, read σ_t from the curve; otherwise fall back to the
+        # flat sigma_annual scalar (legacy callers).
+        if sigma_curve is not None:
+            if hasattr(sigma_curve, "at"):
+                sigma_t = float(sigma_curve.at(t))  # type: ignore[attr-defined]
+            else:
+                series = list(sigma_curve)  # type: ignore[arg-type]
+                sigma_t = float(series[t] if t < len(series) else series[-1])
+        else:
+            sigma_t = sigma_annual
+        log_std = sigma_t * math.sqrt(t_years)
         portfolio_bull_nis = portfolio_base_nis * math.exp(log_std)
         portfolio_bear_nis = portfolio_base_nis * math.exp(-log_std)
 
         # Step 6: derived series.
-        net_factor = 1.0 - tax_rate
+        # Wave 8 v2.3 — unified tax curve: deterministic + MC now agree
+        # on the age-banded effective rate (was: deterministic used the
+        # flat `tax_rate` slider while MC banded internally). Pass the
+        # flat slider as ``override_flat`` so legacy callers that pin a
+        # specific tax_rate (e.g. via goals_yaml.tax_rate_pct) keep that
+        # behavior; otherwise the age-banded curve applies.
+        effective_tax_t = effective_tax_rate_at_age(age_t, override_flat=tax_rate)
+        net_factor = 1.0 - effective_tax_t
         portfolio_income_base = portfolio_real_return_monthly(
             portfolio_value_nis=portfolio_base_nis, real_return_annual=real_return
         ) * net_factor

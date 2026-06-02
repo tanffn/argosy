@@ -84,6 +84,11 @@ export function HeadlineCard({ recap }: HeadlineCardProps) {
           <SensitivityStrip derivation={recap.derivation} />
         ) : null}
 
+        {recap.derivation?.readiness_by_policy &&
+        recap.derivation.readiness_by_policy.length > 0 ? (
+          <ReadinessByPolicyStrip derivation={recap.derivation} />
+        ) : null}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {/* Tile 1 — accepted deltas */}
           <div
@@ -198,6 +203,59 @@ export function HeadlineCard({ recap }: HeadlineCardProps) {
  * retirement age by 5-15 years, so the user needs to SEE the
  * fragility, not just trust the base-case number.
  */
+/**
+ * Wave 8 v2.3 — per-policy readiness strip.
+ *
+ * Shows the three readings side-by-side so the user can compare:
+ *   - returns_only: portfolio's real return + annuity ≥ expenses
+ *     (capital preservation — never touches principal)
+ *   - swr_3_5: Bengen-style 3.5% Safe Withdrawal Rate
+ *     (matches the user's plan-stated framework)
+ *   - swr_4_0: more aggressive 4% SWR
+ */
+function ReadinessByPolicyStrip({
+  derivation,
+}: {
+  derivation: HeadlineDerivationDTO;
+}) {
+  const labels: Record<string, string> = {
+    returns_only: "Returns-only",
+    swr_3_5: "SWR 3.5% (plan)",
+    swr_4_0: "SWR 4.0%",
+  };
+  return (
+    <div className="rounded-md border border-info/40 bg-info/5 p-3">
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+        Earliest retirement age by readiness policy
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        {(derivation.readiness_by_policy ?? []).map((v) => (
+          <div
+            key={v.policy}
+            className="rounded border border-border/60 p-2"
+            title={v.rationale}
+          >
+            <p className="text-[10px] text-muted-foreground">
+              {labels[v.policy] ?? v.policy}
+            </p>
+            <p className="text-lg font-semibold font-mono">
+              {v.retire_ready_age == null
+                ? "—"
+                : `age ${v.retire_ready_age.toFixed(0)}`}
+            </p>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted-foreground mt-2">
+        Returns-only never touches principal. SWR 3.5% is the Bengen-
+        style reading your plan uses. SWR 4.0% is more aggressive.
+        These ages differ because they answer different questions —
+        hover any tile for the underlying math.
+      </p>
+    </div>
+  );
+}
+
 function SensitivityStrip({
   derivation,
 }: {

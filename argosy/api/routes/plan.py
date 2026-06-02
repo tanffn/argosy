@@ -2664,6 +2664,12 @@ class AuditLineDTO(BaseModel):
     synthesis_trail_link: str | None
 
 
+class ReadinessVerdictSummaryDTO(BaseModel):
+    policy: str
+    retire_ready_age: float | None
+    rationale: str
+
+
 class HeadlineDerivationDTO(BaseModel):
     mu_nominal_annual: float
     sigma_annual: float
@@ -2672,6 +2678,7 @@ class HeadlineDerivationDTO(BaseModel):
     # list of [mu, retire_age | null] pairs.
     sensitivity_by_mu: list[list[float | None]]
     sourced_from: str
+    readiness_by_policy: list[ReadinessVerdictSummaryDTO] = []
 
 
 class RecapSummaryDTO(BaseModel):
@@ -2710,6 +2717,14 @@ def get_current_headline(
                 for (mu, age) in summary.derivation.sensitivity_by_mu
             ],
             sourced_from=summary.derivation.sourced_from,
+            readiness_by_policy=[
+                ReadinessVerdictSummaryDTO(
+                    policy=v.policy,
+                    retire_ready_age=v.retire_ready_age,
+                    rationale=v.rationale,
+                )
+                for v in summary.derivation.readiness_by_policy
+            ],
         )
 
     return RecapSummaryDTO(

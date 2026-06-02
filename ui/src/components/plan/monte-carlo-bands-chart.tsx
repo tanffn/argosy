@@ -95,16 +95,6 @@ function tierHeadline(tier: "green" | "amber" | "red"): string {
   }
 }
 
-// Find the first month-out where the P10 path runs out (portfolio = 0).
-function findP10DepletionAge(
-  series: MonteCarloProjectionResponse["series"],
-): number | null {
-  for (const p of series) {
-    if (p.portfolio_value_p10_usd <= 0) return p.age_years;
-  }
-  return null;
-}
-
 function findP50AtAge(
   series: MonteCarloProjectionResponse["series"],
   targetAge: number,
@@ -321,17 +311,33 @@ export function MonteCarloBandsChart({ response }: MonteCarloBandsChartProps) {
               so a green-light plan doesn't read as alarming. */}
           <p className="text-sm text-foreground">
             {(() => {
-              const p10Depletes = findP10DepletionAge(response.series);
               const median80 = findP50AtAge(response.series, 80);
               const median80Str =
                 median80 != null && Number.isFinite(median80)
                   ? fmtUsd(median80)
                   : "—";
-              if (p10Depletes != null) {
+              const pFail95Pct = response.p_failure_before_age_95 * 100;
+              // Use P(broke) as the truth source — P10 depletion-age is
+              // noisy on a single-tick basis; the bulk failure stat is the
+              // accurate "out of every N paths how many run out" reading.
+              if (pFail95Pct < 0.5) {
                 return (
                   <>
-                    In the worst 10% of paths, the portfolio depletes by{" "}
-                    age {p10Depletes.toFixed(0)}. Median path projects{" "}
+                    Across {response.n_paths.toLocaleString()} simulated
+                    paths, virtually every path stays solvent through
+                    age 95. Median path projects{" "}
+                    <span className="font-mono">{median80Str}</span> at age 80.
+                  </>
+                );
+              }
+              if (pFail95Pct < 5) {
+                return (
+                  <>
+                    Across {response.n_paths.toLocaleString()} simulated
+                    paths, about{" "}
+                    <span className="font-mono">{pFail95Pct.toFixed(1)}%</span>
+                    {" "}deplete before age 95 — these are the bad-luck
+                    sequence-of-returns paths. Median path projects{" "}
                     <span className="font-mono">{median80Str}</span> at age 80.
                   </>
                 );
@@ -339,9 +345,14 @@ export function MonteCarloBandsChart({ response }: MonteCarloBandsChartProps) {
               return (
                 <>
                   Across {response.n_paths.toLocaleString()} simulated
-                  paths, even the worst-10% path stays solvent through
-                  the projection horizon. Median path projects{" "}
-                  <span className="font-mono">{median80Str}</span> at age 80.
+                  paths,{" "}
+                  <span className="font-mono">
+                    {pFail95Pct.toFixed(1)}%
+                  </span>{" "}
+                  deplete before age 95 — that&apos;s meaningful tail
+                  risk worth stress-testing against. Median path
+                  projects <span className="font-mono">{median80Str}</span>{" "}
+                  at age 80.
                 </>
               );
             })()}

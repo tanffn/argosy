@@ -53,6 +53,15 @@ class HeadlineLines:
 
 
 @dataclass(frozen=True)
+class ReadinessVerdictSummary:
+    """One readiness-policy reading distilled for the headline UI."""
+
+    policy: str  # "returns_only" | "swr_3_5" | "swr_4_0"
+    retire_ready_age: float | None
+    rationale: str
+
+
+@dataclass(frozen=True)
 class HeadlineDerivation:
     """The assumptions that drove the retirement-readiness line, plus
     a small μ-sensitivity table so the user can see how fragile the
@@ -71,6 +80,14 @@ class HeadlineDerivation:
     sensitivity_by_mu: list[tuple[float, float | None]]
     # Plain-English explanation of where each number came from.
     sourced_from: str
+    # Wave 8 v2.3 — per-policy retire-ready verdicts. Surfaces
+    # alongside the headline so the user can compare the
+    # capital-preservation reading (returns_only) with the plan's
+    # explicit SWR readings (swr_3_5 = Bengen-style, swr_4_0 = more
+    # aggressive). Empty list when the projection can't run.
+    readiness_by_policy: list[ReadinessVerdictSummary] = field(
+        default_factory=list
+    )
 
 
 @dataclass(frozen=True)
@@ -423,6 +440,59 @@ def _compute_retire_ready_ages(
         return None, None
 
 
+def _compute_readiness_by_policy(
+    db: Session, user_id: str, *, assumptions
+) -> list[ReadinessVerdictSummary]:
+    """Run the deterministic projection once at the user's calibrated
+    assumptions, then evaluate all three readiness policies
+    (returns_only, swr_3_5, swr_4_0) against the same series.
+
+    Pure-function policy module is in
+    argosy.services.retirement.readiness_policy.
+
+    Returns [] on any failure (no plan, calibrator down, etc.) so the
+    headline degrades gracefully.
+    """
+    try:
+        from argosy.services.cashflow_projection import (
+            extract_household_state,
+            extract_pension_state,
+            project_cashflow,
+        )
+        from argosy.services.retirement.readiness_policy import (
+            detect_retire_ready_all_policies,
+        )
+
+        hh = extract_household_state(db, user_id)
+        pen = extract_pension_state(db, user_id)
+        proj = project_cashflow(
+            household=hh,
+            pensions=pen,
+            retirement_age=assumptions.retirement_age.value,
+            years=50,
+            mu_nominal_annual=assumptions.mu_nominal_annual.value,
+            sigma_annual=assumptions.sigma_annual.value,
+            lifestyle_drift_annual=assumptions.lifestyle_drift_annual.value,
+            tax_rate=assumptions.tax_rate.value,
+            life_events=[],
+        )
+        verdicts = detect_retire_ready_all_policies(
+            proj.series,
+            current_portfolio_value_nis=hh.portfolio_value_nis,
+            target_annual_spend_nis=hh.monthly_expenses_nis * 12.0,
+        )
+        return [
+            ReadinessVerdictSummary(
+                policy=v.policy,
+                retire_ready_age=v.retire_ready_age,
+                rationale=v.rationale,
+            )
+            for v in verdicts
+        ]
+    except Exception:  # pragma: no cover - defensive
+        return []
+
+
 def _compute_mu_sensitivity(
     db: Session, user_id: str, *, assumptions
 ) -> list[tuple[float, float | None]]:
@@ -545,6 +615,9 @@ def compute_recap_summary(
         sensitivity = _compute_mu_sensitivity(
             db, user_id, assumptions=assumptions
         )
+        readiness_by_policy = _compute_readiness_by_policy(
+            db, user_id, assumptions=assumptions
+        )
         # Read current age once for the "FI already on paper" framing
         # so the headline doesn't read "retire at 44" when the user
         # is already 44.
@@ -567,6 +640,7 @@ def compute_recap_summary(
                 f"tax from {assumptions.tax_rate.source}, "
                 f"target age from {assumptions.retirement_age.source}."
             ),
+            readiness_by_policy=readiness_by_policy,
         )
     else:
         base_age, bear_age = None, None
