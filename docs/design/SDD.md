@@ -34,11 +34,29 @@
 - MC: P(broke before 95) = 3.4% (was higher); P50 at age 80 ≈ $29.8M (with savings flowing in pre-retirement)
 - 4 new regression tests pin the savings-flow contract; 79/79 backend tests + 14/14 UI vitest green
 
-**Outstanding v2.3 follow-ons (NOT blocking, documented):**
-- **σ time-varying**: codex deep-audit #4. Current model assumes σ_today (NVDA-heavy 34.4%) across the full 50-year horizon even though the plan deconcentrates NVDA over 24 months. Should compute σ_today + σ_planned and interpolate. Substantial refactor — defer to v2.3.
-- **Readiness policy switch**: codex deep-audit #1. Today's `retire_ready` is "returns-only ≥ expenses"; could add a `swr_3_5pct` policy matching the plan's stated 3.5% SWR for an alternative reading. Surface as a UI toggle.
-- **Tax model unification**: codex deep-audit #2. Deterministic uses flat tax; MC uses age-banded internally. Unify behind one helper + expose effective-tax curve in the rationale.
-- **Synth misread (the "single concentrated stock" framing)** — softer fix shipped: the narrative agent now reads the actual portfolio composition, so the regenerated narrative should correctly frame the plan's NVDA-reduction within an already-diversified portfolio. A new synthesis run would address this more cleanly but is heavy (~30 min, $$$); deferred unless next user feedback persists.
+**v2.3 polish (commit `7bad16e`) — all 5 codex deep-audit findings closed.**
+
+| Finding | Fix | File |
+|---|---|---|
+| #1 readiness policy single-mode | New `argosy/services/retirement/readiness_policy.py` with 3 policies (`returns_only` / `swr_3_5` / `swr_4_0`) + per-policy `ReadinessVerdict` with rationale. Surfaced in `HeadlineDerivation.readiness_by_policy`; HeadlineCard renders side-by-side strip. | `readiness_policy.py`, `plan_headline.py`, `headline-card.tsx` |
+| #2 tax model fork (det flat vs MC banded) | New `argosy/services/tax_curve.py` with `effective_tax_rate_at_age(age, override_flat=...)`. Both `project_cashflow` and `project_monte_carlo` now call the same helper. Backward-compatible: passing `tax_rate=0.25` keeps flat semantics; passing nothing yields age-banded. | `tax_curve.py`, `cashflow_projection.py` |
+| #3 μ hardcoded vs plan-stated | Already shipped in v2.2: μ reads from baseline plan's "Real return: X%" pattern. | `cashflow_assumptions.py` |
+| #4 σ single-state across horizon | New `argosy/services/sigma_glidepath.py` with `compute_sigma_curve()` that produces sigma_today → sigma_planned interpolation over the glidepath's months-to-end window. `project_cashflow` accepts `sigma_curve` (legacy `sigma_annual` still works). | `sigma_glidepath.py`, `cashflow_projection.py` |
+| #5 glidepath drops snapshot categories | Already shipped in v2.1: snapshot categories UNION the synth targets; v2.3 adds visual distinction (dashed stroke + reduced opacity + "(unconstrained)" badge). | `allocation_glidepath.py`, `allocation-glidepath-chart.tsx` |
+
+Plus: MC verdict line replaced ("worst-10% stays solvent" was misleading vs P(broke); now three-tier narrative driven by P(broke before 95)). All 3 readiness policies report **age 44** for plan_version=19 — user is FI even at the conservative 3.5% SWR (11.2M NIS portfolio × 0.035 = 392k > 277k spend).
+
+**Tests:** 176/176 backend (added `sigma_glidepath` 25, `readiness_policy` 7, `tax_curve` 22) + 14/14 UI vitest, lint + tsc clean.
+
+**Parallelism note:** v2.3 batch dispatched 4 sub-agents in parallel (σ glidepath / SWR policy / tax curve / UI band distinction). 3 of 4 hit Write-tool denial in their sandbox and returned drafted content inline; orchestrator applied + tested. 1 of 4 (UI band distinction) similarly denied, applied from inline draft. Effective time: ~3-4 min of parallel agent work + ~5 min of orchestrator integration.
+
+**Synth #64 in flight (re-synthesis with corrected framing).** Kicked off after v2.3 ship; will produce a new draft where the synth has explicit grounding context: 8-class diversification snapshot, plan-stated 4.5% real-return + 3.5% SWR + 22M NIS endpoint, explicit "NOT single-concentrated-stock-to-diversified" framing, and the 4 accepted deltas from synth #62 to preserve. ETA ~30 min from kickoff. When draft lands, refresh `docs/handovers/2026-06-01-act-on-current-plan.md` and the cached PlanNarrativeAgent output.
+
+**Outstanding (none modeling-related; pure UX or scope-larger):**
+- **v2.4 follow-ons** — sensitivity sweep in real terms (codex non-blocking #2), excluded targets preserve true horizon instead of defaulting to long (codex non-blocking #2), "why this changed from prior plan" diff snippets in Full Narrative (codex non-blocking #3), side-by-side EN/HE Hebrew layout + finance glossary (codex non-blocking #4).
+- **Wave 7 Piece B v1.5** — post-FM auto-populate. The carry-forward matcher (`objection_carry_forward.py`) is built + tested; missing piece is the post-FM hook in the synthesis pipeline that calls it after a new draft's FM verdict commits, then writes `fm_objection_user_state` rows with the prior stance pre-populated. Bounded backend work; deferred to a focused session.
+- **Wave 7 Piece A** — triage agent (3-4 days).
+- **Wave 6** — enforcement substrate (1.5-2 weeks).
 
 ---
 
