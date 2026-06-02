@@ -2843,10 +2843,88 @@ def post_draft_accept(
     db.commit()
     invalidate_home_brief(user_id)
 
+    # Wave 8 v2.4.2 — auto-regenerate the bilingual plan narrative
+    # against the freshly-accepted plan. Drops the stale cache entry
+    # (keyed on the prior plan_version_id) and kicks a background
+    # task that runs the PlanNarrativeAgent so the recap reads warm
+    # the moment the user navigates back. Fire-and-forget; failure
+    # degrades to "next /plan visit will regen on-demand" (the
+    # original behavior).
+    _auto_regen_narrative(user_id, pv.id)
+
     _publish("plan.draft.accepted", {"user_id": user_id, "draft_id": draft_id})
     _publish("plan.current.changed", {"user_id": user_id, "current_id": pv.id})
 
     return AcceptResponse(status="accepted", new_current_id=pv.id)
+
+
+def _auto_regen_narrative(user_id: str, new_current_plan_version_id: int) -> None:
+    """Fire-and-forget background task that warms the
+    PlanNarrativeAgent cache for the freshly-accepted plan.
+
+    Wave 8 v2.4.2 — without this hook the user had to navigate
+    to /plan and wait ~6 min for the agent to regenerate. Now
+    it warms in the background so the recap reads fresh on the
+    next visit.
+
+    Runs in a fresh sync session created here (the route's `db`
+    session has already committed + will be closed before the task
+    fires). Logs errors but never raises.
+    """
+    import asyncio
+    import logging
+    import threading
+
+    log = logging.getLogger("plan_narrative_auto_regen")
+
+    # Invalidate any stale cache entry up-front so a concurrent
+    # /plan visit doesn't read a pre-accept narrative while the
+    # background regen is still running.
+    try:
+        from argosy.services.plan_narrative import (
+            invalidate_narrative_cache,
+        )
+        invalidate_narrative_cache(user_id, new_current_plan_version_id)
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+    def _worker() -> None:
+        try:
+            from argosy.services.plan_narrative import get_plan_narrative
+
+            global _sync_session_factory
+            if _sync_session_factory is None:
+                # Cold-start path: re-initialise the sync session
+                # factory via get_db so we can spawn a session.
+                next(get_db())
+            assert _sync_session_factory is not None
+            session = _sync_session_factory()
+            try:
+                asyncio.run(
+                    get_plan_narrative(
+                        session, user_id, force_refresh=True
+                    )
+                )
+                log.info(
+                    "plan_narrative_auto_regen.completed user=%s pv=%s",
+                    user_id,
+                    new_current_plan_version_id,
+                )
+            finally:
+                session.close()
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "plan_narrative_auto_regen.failed user=%s pv=%s err=%s",
+                user_id,
+                new_current_plan_version_id,
+                exc,
+            )
+
+    # Spawn in a background thread so the /accept route returns
+    # immediately. The agent call is ~5-15 min; we don't block the
+    # user on it. Daemon=True so the thread doesn't prevent
+    # process shutdown.
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 @router.post("/draft/{draft_id}/reject")
