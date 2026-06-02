@@ -1289,6 +1289,17 @@ def get_draft_cashflow_projection(
             "up with $2.99M'). When omitted, uses the latest portfolio_snapshots row."
         ),
     ),
+    monthly_expenses_nis_override: float | None = Query(
+        None,
+        ge=0.0,
+        le=500_000.0,
+        description=(
+            "Wave 8 v2.4 — replace the household_budget-derived monthly "
+            "expenses with this NIS amount. Useful for stress-tests "
+            "('what if I move to a more expensive city — 35k/mo instead "
+            "of 23k'). When omitted, uses the latest household_budget."
+        ),
+    ),
     mu_nominal_annual: float = Query(
         0.08,
         ge=0.02,
@@ -1341,12 +1352,14 @@ def get_draft_cashflow_projection(
     # ``portfolio_value_nis`` field on the immutable dataclass via
     # ``dataclasses.replace`` so the rest of the household state
     # (expenses, fx, age) is preserved.
+    from dataclasses import replace as _dc_replace
     if portfolio_value_usd_override is not None:
-        from dataclasses import replace as _dc_replace
         hh = _dc_replace(
             hh,
             portfolio_value_nis=portfolio_value_usd_override * hh.fx_usd_nis,
         )
+    if monthly_expenses_nis_override is not None:
+        hh = _dc_replace(hh, monthly_expenses_nis=monthly_expenses_nis_override)
 
     # Spec D commit #3 — load the user's life events so the projected
     # expense series reflects their cashflow-shape deltas (one_shot,
@@ -1460,6 +1473,9 @@ def get_draft_cashflow_monte_carlo(
     sigma_annual: float = Query(0.18, ge=0.05, le=0.60),
     lifestyle_drift_annual: float = Query(0.0, ge=0.0, le=0.10),
     portfolio_value_usd_override: float | None = Query(None, ge=0, le=100_000_000),
+    monthly_expenses_nis_override: float | None = Query(
+        None, ge=0.0, le=500_000.0
+    ),
     n_paths: int = Query(1000, ge=100, le=10_000),
     seed: int | None = Query(None),
     db: Session = Depends(get_db),
@@ -1483,6 +1499,8 @@ def get_draft_cashflow_monte_carlo(
         hh = _dc_replace(
             hh, portfolio_value_nis=portfolio_value_usd_override * hh.fx_usd_nis
         )
+    if monthly_expenses_nis_override is not None:
+        hh = _dc_replace(hh, monthly_expenses_nis=monthly_expenses_nis_override)
 
     proj = project_monte_carlo(
         household=hh, pensions=pen,
@@ -1540,6 +1558,9 @@ def get_current_cashflow_monte_carlo(
     sigma_annual: float = Query(0.18, ge=0.05, le=0.60),
     lifestyle_drift_annual: float = Query(0.0, ge=0.0, le=0.10),
     portfolio_value_usd_override: float | None = Query(None, ge=0, le=100_000_000),
+    monthly_expenses_nis_override: float | None = Query(
+        None, ge=0.0, le=500_000.0
+    ),
     n_paths: int = Query(1000, ge=100, le=10_000),
     seed: int | None = Query(None),
     db: Session = Depends(get_db),
@@ -1560,6 +1581,7 @@ def get_current_cashflow_monte_carlo(
         sigma_annual=sigma_annual,
         lifestyle_drift_annual=lifestyle_drift_annual,
         portfolio_value_usd_override=portfolio_value_usd_override,
+        monthly_expenses_nis_override=monthly_expenses_nis_override,
         n_paths=n_paths,
         seed=seed,
         db=db,

@@ -2148,6 +2148,7 @@ export const api = {
     portfolioValueUsdOverride: number | null = null,
     sigmaAnnual = 0.18,
     lifestyleDriftAnnual = 0.0,
+    monthlyExpensesNisOverride: number | null = null,
   ) => {
     const params = new URLSearchParams({
       user_id: userId,
@@ -2160,6 +2161,12 @@ export const api = {
     });
     if (portfolioValueUsdOverride != null) {
       params.set("portfolio_value_usd_override", String(portfolioValueUsdOverride));
+    }
+    if (monthlyExpensesNisOverride != null) {
+      params.set(
+        "monthly_expenses_nis_override",
+        String(monthlyExpensesNisOverride),
+      );
     }
     return getJSON<CashflowProjectionResponse>(
       `/api/plan/draft/cashflow-projection?${params.toString()}`,
@@ -2175,6 +2182,7 @@ export const api = {
       sigmaAnnual = 0.18,
       lifestyleDriftAnnual = 0.0,
       portfolioValueUsdOverride = null,
+      monthlyExpensesNisOverride = null,
       nPaths = 1000,
       seed = null,
     }: {
@@ -2185,6 +2193,7 @@ export const api = {
       sigmaAnnual?: number;
       lifestyleDriftAnnual?: number;
       portfolioValueUsdOverride?: number | null;
+      monthlyExpensesNisOverride?: number | null;
       nPaths?: number;
       seed?: number | null;
     } = {},
@@ -2201,6 +2210,12 @@ export const api = {
     });
     if (portfolioValueUsdOverride != null) {
       params.set("portfolio_value_usd_override", String(portfolioValueUsdOverride));
+    }
+    if (monthlyExpensesNisOverride != null) {
+      params.set(
+        "monthly_expenses_nis_override",
+        String(monthlyExpensesNisOverride),
+      );
     }
     if (seed != null) {
       params.set("seed", String(seed));
@@ -2389,6 +2404,7 @@ export const api = {
       mu_nominal_annual?: number;
       sigma_annual?: number;
       lifestyle_drift_annual?: number;
+      monthly_expenses_nis_override?: number;
       n_paths?: number;
       seed?: number;
     },
@@ -2404,6 +2420,11 @@ export const api = {
       qs.set("sigma_annual", String(opts.sigma_annual));
     if (opts?.lifestyle_drift_annual != null)
       qs.set("lifestyle_drift_annual", String(opts.lifestyle_drift_annual));
+    if (opts?.monthly_expenses_nis_override != null)
+      qs.set(
+        "monthly_expenses_nis_override",
+        String(opts.monthly_expenses_nis_override),
+      );
     if (opts?.n_paths != null) qs.set("n_paths", String(opts.n_paths));
     if (opts?.seed != null) qs.set("seed", String(opts.seed));
     return getJSON<MonteCarloProjectionResponse>(

@@ -97,6 +97,12 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
   const [portfolioOverrideUsd, setPortfolioOverrideUsd] = useState<number | null>(null);
   const [sigmaAnnual, setSigmaAnnual] = useState<number>(0.18);
   const [lifestyleDriftAnnual, setLifestyleDriftAnnual] = useState<number>(0.0);
+  // Wave 8 v2.4 — monthly expense override. null = use the
+  // household_budget value; numeric = stress-test "what if my
+  // expenses jump to X NIS/mo". Range matches the backend route
+  // validation (0-500k NIS/mo).
+  const [monthlyExpensesNisOverride, setMonthlyExpensesNisOverride] =
+    useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -120,7 +126,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
     setLoading(true);
     setError(null);
     api
-      .planDraftCashflowProjection(userId, 30, retirementAge, taxRate, muNominal, portfolioOverrideUsd, sigmaAnnual, lifestyleDriftAnnual)
+      .planDraftCashflowProjection(userId, 30, retirementAge, taxRate, muNominal, portfolioOverrideUsd, sigmaAnnual, lifestyleDriftAnnual, monthlyExpensesNisOverride)
       .then((d) => {
         if (!cancelled) setData(d);
       })
@@ -133,7 +139,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
     return () => {
       cancelled = true;
     };
-  }, [userId, retirementAge, taxRate, muNominal, portfolioOverrideUsd, sigmaAnnual, lifestyleDriftAnnual]);
+  }, [userId, retirementAge, taxRate, muNominal, portfolioOverrideUsd, sigmaAnnual, lifestyleDriftAnnual, monthlyExpensesNisOverride]);
 
   useEffect(() => {
     if (view !== "monteCarlo") return;
@@ -150,6 +156,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
         sigmaAnnual,
         lifestyleDriftAnnual,
         portfolioValueUsdOverride: portfolioOverrideUsd,
+        monthlyExpensesNisOverride,
         nPaths,
       })
       .then((d) => {
@@ -164,7 +171,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
     return () => {
       cancelled = true;
     };
-  }, [view, userId, retirementAge, taxRate, muNominal, sigmaAnnual, lifestyleDriftAnnual, portfolioOverrideUsd, nPaths]);
+  }, [view, userId, retirementAge, taxRate, muNominal, sigmaAnnual, lifestyleDriftAnnual, portfolioOverrideUsd, monthlyExpensesNisOverride, nPaths]);
 
   const rows = useMemo<ChartRow[]>(() => {
     if (!data) return [];
@@ -647,6 +654,37 @@ Effective expense growth = inflation_annual + lifestyle_drift.`} />
               <button
                 type="button"
                 onClick={() => setPortfolioOverrideUsd(null)}
+                className="text-xs text-primary hover:underline"
+              >
+                reset
+              </button>
+            )}
+          </label>
+          <label className="flex items-center gap-2">
+            <span className="text-muted-foreground">
+              expenses override (NIS/mo)
+              <InfoIcon
+                title={`Replace the household_budget monthly expenses with a what-if amount. Useful for "what if my expenses go up to 35k/mo if we move?" or "what if I cut to 18k/mo in early retirement?". Leave empty (or click reset) to use your actual tracked monthly burn.`}
+              />
+            </span>
+            <input
+              type="number"
+              min={0}
+              max={500000}
+              step={1000}
+              placeholder={data ? `actual: ~${Math.round((data.series[0]?.expenses_monthly_usd ?? 0) * data.fx_usd_nis).toLocaleString()}` : ""}
+              value={monthlyExpensesNisOverride ?? ""}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setMonthlyExpensesNisOverride(v === "" ? null : Number(v));
+              }}
+              className="w-32 px-2 py-0.5 text-xs border border-border/60 rounded bg-background"
+              aria-label="monthly expenses override NIS"
+            />
+            {monthlyExpensesNisOverride != null && (
+              <button
+                type="button"
+                onClick={() => setMonthlyExpensesNisOverride(null)}
                 className="text-xs text-primary hover:underline"
               >
                 reset
