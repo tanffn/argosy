@@ -2540,6 +2540,18 @@ def _run_plan_language_rewriter(
             )
         ]) from exc
 
+    # Defense-in-depth: force-preserve the structured subtrees the
+    # rewriter is supposed to leave alone but practically does touch
+    # under live-LLM conditions (observed in supervised synth #67,
+    # #69: rewriter mutated Target.source_section and
+    # SectionEvidence subtree despite explicit prompt prohibition).
+    # Restoring from `output` before validation guarantees the
+    # validator never sees structural drift from the rewriter — only
+    # genuine prose drift remains, which is the design intent.
+    rewritten = _force_preserve_structured_fields(
+        before=output, after=rewritten
+    )
+
     violations = validate_rewriter_invariants(before=output, after=rewritten)
     if violations:
         # Split: structural drift (count change, preserved-field
@@ -2593,6 +2605,81 @@ def _run_plan_language_rewriter(
             ),
         )
     return rewritten
+
+
+def _force_preserve_structured_fields(
+    *,
+    before: PlanSynthesisOutput,
+    after: PlanSynthesisOutput,
+) -> PlanSynthesisOutput:
+    """Force-restore preserved subtrees from `before` onto `after`.
+
+    The rewriter prompt says "preserve evidence / inputs / deltas /
+    speculative_candidates / source_section bit-for-bit". Under live
+    LLM the model regularly violates these despite explicit prompts
+    (observed: SectionEvidence.facts[N].text being translated;
+    Target.source_section being mutated). Rather than aborting the
+    synth cycle on what is fundamentally a model-discipline issue,
+    we overwrite the rewriter's output with the original values for
+    these specific fields.
+
+    The validator still runs AFTER this restoration so prose drift
+    in legitimately rewritable fields (labels, rationales, posture,
+    body_md) still gets caught. We only restore the fields whose
+    bit-preservation is part of the contract.
+    """
+    # Top-level: inputs (provenance) and the sections list (per-
+    # section evidence + section_id + horizon).
+    updates: dict = {"inputs": before.inputs}
+    if before.sections:
+        # Index by (section_id, horizon) for stable matching even if
+        # the rewriter reordered sections.
+        before_by_key = {
+            (s.section_id, s.horizon): s for s in before.sections
+        }
+        restored_sections = []
+        for s_after in after.sections:
+            key = (s_after.section_id, s_after.horizon)
+            s_before = before_by_key.get(key)
+            if s_before is None:
+                # New section invented by rewriter — keep as-is; the
+                # validator will fail on the unexpected section_id.
+                restored_sections.append(s_after)
+                continue
+            # Preserve evidence subtree bit-for-bit; rewrite title +
+            # body_md from `after` (those are prose-rewritable).
+            restored_sections.append(
+                s_after.model_copy(update={"evidence": s_before.evidence})
+            )
+        updates["sections"] = restored_sections
+
+    # Per-horizon: deltas_from_prior, speculative_candidates,
+    # Target.source_section (the structured pointer; prose label is
+    # still rewritable).
+    for horizon in ("long", "medium", "short"):
+        b = getattr(before, horizon)
+        a = getattr(after, horizon)
+        # Restore deltas_from_prior and speculative_candidates
+        # subtrees (whole-list bit-equality).
+        horizon_updates: dict = {
+            "deltas_from_prior": b.deltas_from_prior,
+            "speculative_candidates": b.speculative_candidates,
+        }
+        # Restore each Target.source_section by positional match
+        # (count is preserved-or-fail-loud elsewhere).
+        if len(b.targets) == len(a.targets):
+            restored_targets = []
+            for bt, at in zip(b.targets, a.targets):
+                if bt.source_section != at.source_section:
+                    restored_targets.append(
+                        at.model_copy(update={"source_section": bt.source_section})
+                    )
+                else:
+                    restored_targets.append(at)
+            horizon_updates["targets"] = restored_targets
+        updates[horizon] = a.model_copy(update=horizon_updates)
+
+    return after.model_copy(update=updates)
 
 
 def _run_phase_4_risk(*, session, user_id, draft_output: PlanSynthesisOutput,

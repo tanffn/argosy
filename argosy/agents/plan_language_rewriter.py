@@ -138,6 +138,24 @@ DO NOT MODIFY (the post-rewrite validator checks bit-equality):
      "underlying inputs") breaks downstream binding-gate citations
      that match on this string.
    - Theme.cited_sources, Action.cited_sources, Section.cited_sources.
+   - **Section.evidence (the entire SectionEvidence subtree —
+     facts, source_span, assumptions, missing_data — is preserved
+     BIT-FOR-BIT.**) This includes:
+       · FactClaim.text — DO NOT translate even if it contains
+         "substrate" / "TaxAnalyst" / agent jargon. The synthesizer is
+         responsible for emitting clean prose here; the rewriter must
+         not touch it because (a) the validator's evidence-content
+         gate verifies citation extracts SUPPORT the fact text, and
+         (b) the binding gate matches on locators that may include
+         fact text fragments. Any translation here would break those
+         downstream checks.
+       · Citation.extract — must remain verbatim from the source
+         document. Translating extracts is a contract violation.
+       · Assumption.text, Assumption.rationale, Assumption.default_value.
+       · missing_data entries.
+     If a section's evidence contains jargon, the bug is in the synth
+     model's section emission, not in the rewriter — flag it upstream,
+     don't fix it here.
    - deltas_from_prior (the field exists for the diff renderer — leave
      all subfields bit-equal).
    - speculative_candidates (the entire subtree).

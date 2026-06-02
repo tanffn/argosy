@@ -72,8 +72,11 @@ def main() -> int:
     parser.add_argument(
         "--fixture",
         default="v20",
-        choices=["v20"],
-        help="Which fixture to load as the rewriter's input.",
+        help=(
+            "Fixture: 'v20' loads plan_versions.id=20; any other "
+            "value is treated as a path to a PlanSynthesisOutput "
+            "JSON file (e.g. decision_phases.phase_output_json)."
+        ),
     )
     parser.add_argument(
         "--save-output",
@@ -99,7 +102,13 @@ def main() -> int:
     if args.fixture == "v20":
         synth_input = _load_v20_synth()
     else:
-        raise SystemExit(f"unknown fixture: {args.fixture}")
+        from argosy.agents.plan_synthesizer_types import PlanSynthesisOutput
+        path = Path(args.fixture)
+        if not path.exists():
+            raise SystemExit(f"fixture file not found: {path}")
+        synth_input = PlanSynthesisOutput.model_validate_json(
+            path.read_text(encoding="utf-8")
+        )
     load_s = time.monotonic() - t0
     print(f"Fixture loaded in {load_s:.2f}s")
     print(f"  long.targets    : {len(synth_input.long.targets)}")
@@ -144,12 +153,19 @@ def main() -> int:
     print()
 
     # ----------------------------------------------------------------
-    # Run the invariant validator.
+    # Mirror the orchestrator's wrapper: force-preserve structured
+    # subtrees before validation. This is what production sees.
     # ----------------------------------------------------------------
+    from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+        _force_preserve_structured_fields,
+    )
     from argosy.quality.rewriter_invariants import (
         validate_rewriter_invariants,
     )
 
+    rewritten = _force_preserve_structured_fields(
+        before=synth_input, after=rewritten
+    )
     violations = validate_rewriter_invariants(
         before=synth_input, after=rewritten
     )
