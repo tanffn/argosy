@@ -159,6 +159,47 @@ def _horizon_from_json(raw: str | None) -> HorizonSection | None:
         return None
 
 
+_SYSTEM_TASK_PREFIXES = (
+    "dispatch ",
+    "schedule domain-refresh",
+    "schedule refresh",
+    "queue refresh",
+    "trigger refresh",
+    "trigger domain",
+    "trigger substrate",
+    "kick off ",
+    "ingest ",
+    "re-ingest",
+    "refresh tax memo",
+    "refresh tax substrate",
+    "refresh domain knowledge",
+)
+
+_SYSTEM_TASK_SUBSTRINGS = (
+    "domain-refresh",
+    "domain refresh",
+    "substrate dispatcher",
+    "kb refresh",
+    "knowledge-base refresh",
+)
+
+
+def _is_system_task(label: str) -> bool:
+    """Mirror of the UI-side ``isSystemTask`` heuristic. Argosy-
+    internal housekeeping actions (refresh KB files, dispatch
+    substrate workers, queue re-ingests) MUST NOT surface as
+    user-facing actions in the headline or timeline. The
+    orchestrator should auto-execute these via the scheduler
+    eventually — surfacing them here was a v2.0 bug.
+    """
+    if not label:
+        return False
+    l = label.strip().lower()
+    if any(l.startswith(p) for p in _SYSTEM_TASK_PREFIXES):
+        return True
+    return any(s in l for s in _SYSTEM_TASK_SUBSTRINGS)
+
+
 def _all_actions_with_dates(
     horizons: Iterable[HorizonSection],
 ) -> list[tuple[date, Action]]:
@@ -168,11 +209,18 @@ def _all_actions_with_dates(
     Non-dated actions (``directional``, ``parameterized``) are skipped —
     only ``horizon_kind == "dated"`` actions surface in the headline's
     next-move / then lines because the headline needs a concrete date.
+
+    Wave 8 v2.4 — Argosy-internal "system tasks" (dispatch domain-
+    refresh, kb refresh, etc.) are filtered OUT so the headline's
+    "Next big move" / "Then" lines don't surface system-internal
+    housekeeping as user actions.
     """
     out: list[tuple[date, Action]] = []
     for h in horizons:
         for a in h.actions:
             if a.horizon_kind != "dated":
+                continue
+            if _is_system_task(a.label):
                 continue
             d = _parse_iso_date(a.trigger_or_date)
             if d is None:

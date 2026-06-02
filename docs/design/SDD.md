@@ -15,7 +15,32 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-06-01 (late evening, wave 8 v2 + v2.1 + v2.2 polish) by Claude — **user-feedback pass on the live recap surfaced FUNDAMENTAL modeling bugs (not just UX issues). Two codex audits + targeted fixes addressed:** (a) cashflow projection ignored pre-retirement salary savings (model treated every user as already retired today; root cause of "depletes by 55" / "P(broke) goes UP when retiring later" complaints); (b) headline conflated `retire_ready_age` ("earliest possible") with `retirement_target_age` ("planned date") — user read "retire at 44" as inconsistent with "target age 49"; (c) glidepath dropped 5 of 8 user portfolio categories (Core Equity, Growth, Defensive, etc.) because they had no synth target; (d) μ hardcoded to 0.08 nominal even though user's plan explicitly states 4.5% real (= 7.0% nominal); (e) σ + tax rationales were engineer-speak; (f) PlanNarrativeAgent didn't read the actual portfolio snapshot so it inherited the synth's "single concentrated stock" framing despite user having 8 asset classes already. Branch `main` @ `9efc993` (12 commits past `cf50509`).
+**Last edit:** 2026-06-02 (morning, wave 8 v2.4 + synth #65 APPROVED → plan_version=20 draft pending acceptance) by Claude. Branch `main` @ `<after-v2.4+filter>` (~20 commits past `cf50509`).
+
+**Big news (2026-06-02 ~05:09 UTC):** **Synthesis #65 returned `approved=True` on first try** with all 9 FM items being confirming statements. The new draft (`plan_version=20`, label `synth-2026-06-02-0509`, run #65) EXPLICITLY retracts the synth-misread framing the user flagged: long horizon now reads *"the household is ALREADY diversified across 8 asset classes ... The work is NOT a transition from a single concentrated position — that framing was incorrect in synth #19 and is retracted."* This is the second APPROVED plan_revision since 2026-05-29 (first was synth #62 → plan_version=19). User to press Accept All on /plan to promote #20 to canonical; until then recap reads against #19.
+
+**v2.4 polish (4 commits): user-feedback round 3.**
+
+| Commit | Summary |
+|---|---|
+| `203a4f3` | (a) System-task filter on ActionsTimeline: synth-emitted "Dispatch domain-refresh" / "schedule refresh" / "kb refresh" actions route to a collapsed-by-default "System tasks (auto-executed by Argosy)" section with explicit "NOT actions for you to take" note. (b) MC chart "What this Monte Carlo actually models" collapsable footer: discloses lump@60 + annuity@67 (deterministic across paths), FX held constant from snapshot (NOT modelled — plan authored at 3.50 vs current ~2.94), verdict thresholds. (c) AssumptionsCard rationales get concrete **Impact:** clauses — e.g. for μ: "Each 1-point increase moves FI-ready age earlier by 2-4 years and roughly DOUBLES median portfolio at age 80." |
+| `fdb60aa` | Monthly expenses override slider on the CashflowProjectionChart. Backend route accepts `monthly_expenses_nis_override` (0-500k NIS/mo) on both `/draft/cashflow-projection` and the recap's `/current/cashflow-monte-carlo` alias. |
+| `<filter-headline>` | **Headline-level filter for system tasks** (fix to incomplete v2.4 — the filter only landed in the UI ActionsTimeline; the headline's "Next big move" / "Then" lines still picked up "Dispatch domain-refresh: Israeli tax substrate" entries because they go through `plan_headline._all_actions_with_dates` BEFORE the UI). Backend now filters at the headline service layer. New regression test pins the contract. |
+| `<resynth-script>` | One-shot resynth helper `tools/codex-tandem/scripts/_resynth_v23.py` that kicked synth #65 with corrected grounding context (8-class diversification, plan-stated 4.5% real-return + 3.5% SWR + 22M NIS endpoint, explicit anti-misframing guidance, 4 preserved accepted deltas from synth #62). |
+
+**v2.3 polish (commit `7bad16e`) — all 5 codex deep-audit findings closed.**
+
+| Finding | Fix | File |
+|---|---|---|
+| #1 readiness policy single-mode | New `argosy/services/retirement/readiness_policy.py` with 3 policies (`returns_only` / `swr_3_5` / `swr_4_0`) + per-policy `ReadinessVerdict` with rationale. Surfaced in `HeadlineDerivation.readiness_by_policy`; HeadlineCard renders side-by-side strip. | `readiness_policy.py`, `plan_headline.py`, `headline-card.tsx` |
+| #2 tax model fork (det flat vs MC banded) | New `argosy/services/tax_curve.py` with `effective_tax_rate_at_age(age, override_flat=...)`. Both `project_cashflow` and `project_monte_carlo` now call the same helper. Backward-compatible: passing `tax_rate=0.25` keeps flat semantics; passing nothing yields age-banded. | `tax_curve.py`, `cashflow_projection.py` |
+| #3 μ hardcoded vs plan-stated | Shipped in v2.2: μ reads from baseline plan's "Real return: X%" pattern. | `cashflow_assumptions.py` |
+| #4 σ single-state across horizon | New `argosy/services/sigma_glidepath.py` with `compute_sigma_curve()` that produces sigma_today → sigma_planned interpolation over the glidepath's months-to-end window. `project_cashflow` accepts `sigma_curve` (legacy `sigma_annual` still works). | `sigma_glidepath.py`, `cashflow_projection.py` |
+| #5 glidepath drops snapshot categories | Shipped in v2.1: snapshot categories UNION the synth targets; v2.3 adds visual distinction (dashed stroke + reduced opacity + "(unconstrained)" badge). | `allocation_glidepath.py`, `allocation-glidepath-chart.tsx` |
+
+Plus the **Monte Carlo verdict line** got a rewrite (removed misleading "worst-10% stays solvent" framing — P10 is a percentile, not a failure indicator; now three-tier narrative driven by P(broke before 95)).
+
+**Original wave-8 v2.1 + v2.2 (still load-bearing):** user-feedback pass surfaced fundamental modeling bugs (cashflow ignoring savings; headline conflating "earliest possible" with "planned"; glidepath dropping 5 of 8 portfolio categories; μ hardcoded vs plan-stated 4.5% real; σ + tax rationales engineer-speak; PlanNarrativeAgent ignoring snapshot composition). Two codex audits + targeted fixes addressed all of them.
 
 **v2.1 + v2.2 fixes (3 polish commits past wave-8 close):**
 

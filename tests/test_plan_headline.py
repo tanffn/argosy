@@ -123,6 +123,43 @@ class TestAllActionsWithDates:
         pairs = _all_actions_with_dates([h])
         assert [a.label for _, a in pairs] == ["Good trigger"]
 
+    def test_filters_system_tasks_from_headline(self) -> None:
+        # Wave 8 v2.4 — Argosy-internal "Dispatch domain-refresh"
+        # / "Schedule refresh" / "Ingest" actions MUST NOT surface
+        # in the headline's next-big-move + then lines. The
+        # orchestrator is supposed to auto-execute these; the
+        # synthesizer emitting them as "actions" was a v2.0 bug.
+        h = _h(
+            "medium",
+            actions=[
+                _a(
+                    "Dispatch domain-refresh: Israeli tax substrate",
+                    kind="dated",
+                    trigger="2026-06-08",
+                ),
+                _a(
+                    "Dispatch domain-refresh: Israeli tax memo",
+                    kind="dated",
+                    trigger="2026-06-08",
+                ),
+                _a(
+                    "Cross-border estate attorney retainer",
+                    kind="dated",
+                    trigger="2026-06-15",
+                ),
+            ],
+        )
+        pairs = _all_actions_with_dates([h])
+        labels = [a.label for _, a in pairs]
+        assert labels == ["Cross-border estate attorney retainer"]
+        # Sanity — system actions tagged correctly.
+        from argosy.services.plan_headline import _is_system_task
+        assert _is_system_task("Dispatch domain-refresh: Israeli tax substrate")
+        assert _is_system_task("schedule refresh on the tax KB")
+        assert _is_system_task("Trigger substrate dispatcher")
+        assert not _is_system_task("Cross-border estate attorney retainer")
+        assert not _is_system_task("NVDA tranche window opens")
+
     def test_sorts_across_horizons_by_date(self) -> None:
         long_h = _h(
             "long", actions=[_a("Long action", kind="dated", trigger="2027-01-01")]
