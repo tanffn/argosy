@@ -339,8 +339,19 @@ def _validate_section_evidence(section: Any) -> list[GateViolation]:
         value = getattr(fact, "value", None)
         text = getattr(fact, "text", "")
         if fkind == "numeric" and value is not None:
-            # Numeric: value must appear as substring of extract
-            if str(value) not in extract:
+            # Numeric: value must appear in extract, tolerant of
+            # locale-style formatting (commas, spaces, narrow no-break
+            # space). Synth prompt explicitly allows "277000" vs
+            # "277,000" interchangeably; gate must accept both so the
+            # contract doesn't trip on formatting that the model was
+            # told is fine.
+            normalized_extract = (
+                extract.replace(",", "")
+                .replace(" ", "")
+                .replace(" ", "")  # NBSP
+                .replace(" ", "")  # narrow NBSP
+            )
+            if str(value) not in normalized_extract:
                 violations.append(
                     GateViolation(
                         check=GateCheck.EVIDENCE_PER_SECTION,
