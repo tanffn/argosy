@@ -15,7 +15,34 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-06-01 (overnight wave-8 close) by Claude — **all 8 wave-8 pieces shipped. /plan recap view is live end-to-end: discriminator-driven state routing + plain-English headline + allocation glidepath chart + Monte Carlo bands + cashflow-assumption defaults with rationale tooltips + cross-horizon actions timeline + formatted per-horizon markdown.** Branch `main` @ `863198c` (eight commits past `cf50509`).
+**Last edit:** 2026-06-01 (late evening, wave 8 v2 + v2.1 + v2.2 polish) by Claude — **user-feedback pass on the live recap surfaced FUNDAMENTAL modeling bugs (not just UX issues). Two codex audits + targeted fixes addressed:** (a) cashflow projection ignored pre-retirement salary savings (model treated every user as already retired today; root cause of "depletes by 55" / "P(broke) goes UP when retiring later" complaints); (b) headline conflated `retire_ready_age` ("earliest possible") with `retirement_target_age` ("planned date") — user read "retire at 44" as inconsistent with "target age 49"; (c) glidepath dropped 5 of 8 user portfolio categories (Core Equity, Growth, Defensive, etc.) because they had no synth target; (d) μ hardcoded to 0.08 nominal even though user's plan explicitly states 4.5% real (= 7.0% nominal); (e) σ + tax rationales were engineer-speak; (f) PlanNarrativeAgent didn't read the actual portfolio snapshot so it inherited the synth's "single concentrated stock" framing despite user having 8 asset classes already. Branch `main` @ `9efc993` (12 commits past `cf50509`).
+
+**v2.1 + v2.2 fixes (3 polish commits past wave-8 close):**
+
+| Commit | Summary |
+|---|---|
+| `02a48b4` | wave 8 v2 polish — recap reorder (codex P3) + headline derivation + μ sensitivity strip + MC narrative verdict + quarter-grouped actions timeline + glidepath alias-map (codex P2 bridge) |
+| `9089f9f` | PlanNarrativeAgent (bilingual EN+HE) — 5-section plain-English Full Plan card with language toggle, replaces engineer-style horizon markdown dump |
+| `58adcfc` | **CRITICAL FIX** — savings-contribution path added to cashflow_projection + MC engine (HouseholdState.monthly_savings_nis, sourced from identity_yaml) + glidepath unions snapshot categories with synth targets (8 bands now render; "Grand Total" / "Total" filtered) + headline "earliest vs planned" semantics (auto-detects "FI on paper" case when earliest ≤ current age) + σ rationale plain-English risk-band + tax rationale explains age-banded model |
+| `9efc993` | μ now reads from baseline plan's "Real return: X%" pattern (4.5% real → 7.0% nominal for plan_version=19, replacing the hardcoded 0.08) + plan_narrative service prepends portfolio_snapshot composition to agent input so future regenerations correctly frame "already diversified, reducing NVDA from 18% → 15%" rather than "single concentrated stock" |
+
+**Verified live against plan_version=19:**
+- Headline: "Financial independence is achieved on paper: at today's portfolio + expense levels, returns + pension already cover spending. Your plan targets retirement at age 49."
+- μ = 7.0% (source=plan_baseline), rationale explains "real 4.5% + inflation 2.5% = nominal 7.0%"
+- σ = 34.4%, rationale: "high — this number reflects heavy concentration … Bad years can lose 30-50% before recovering. The plan's diversification glidepath is designed to bring this down over time"
+- Glidepath: 8 asset-class bands (was 3) — Core Equity 26.2%, Growth 10.9%, Defensive 11.1%, Dividend 18.3%, International 2.4%, Individual Stocks 18.2%, Cash 12.9%, plus the 3 synth-targeted unconstrained labels; untargeted bands flat-line with `alias_source="snapshot (unconstrained — no plan target)"`
+- MC: P(broke before 95) = 3.4% (was higher); P50 at age 80 ≈ $29.8M (with savings flowing in pre-retirement)
+- 4 new regression tests pin the savings-flow contract; 79/79 backend tests + 14/14 UI vitest green
+
+**Outstanding v2.3 follow-ons (NOT blocking, documented):**
+- **σ time-varying**: codex deep-audit #4. Current model assumes σ_today (NVDA-heavy 34.4%) across the full 50-year horizon even though the plan deconcentrates NVDA over 24 months. Should compute σ_today + σ_planned and interpolate. Substantial refactor — defer to v2.3.
+- **Readiness policy switch**: codex deep-audit #1. Today's `retire_ready` is "returns-only ≥ expenses"; could add a `swr_3_5pct` policy matching the plan's stated 3.5% SWR for an alternative reading. Surface as a UI toggle.
+- **Tax model unification**: codex deep-audit #2. Deterministic uses flat tax; MC uses age-banded internally. Unify behind one helper + expose effective-tax curve in the rationale.
+- **Synth misread (the "single concentrated stock" framing)** — softer fix shipped: the narrative agent now reads the actual portfolio composition, so the regenerated narrative should correctly frame the plan's NVDA-reduction within an already-diversified portfolio. A new synthesis run would address this more cleanly but is heavy (~30 min, $$$); deferred unless next user feedback persists.
+
+---
+
+**Previous (overnight wave-8 close):** all 8 wave-8 pieces shipped. /plan recap view is live end-to-end: discriminator-driven state routing + plain-English headline + allocation glidepath chart + Monte Carlo bands + cashflow-assumption defaults with rationale tooltips + cross-horizon actions timeline + formatted per-horizon markdown. Branch `main` @ `863198c` (eight commits past `cf50509`).
 
 | Piece | Commit | Summary |
 |---|---|---|
