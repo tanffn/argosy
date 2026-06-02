@@ -428,6 +428,10 @@ Run in parallel; produce structured reports written to state. Reports are persis
 | **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Sonnet (was Haiku — see §3.8) | 0 | yes |
 | **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Sonnet | 0 | yes |
 | **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Sonnet (was Haiku — see §3.8) | 0 | yes |
+| **Plan coverage** (`PlanCoverageAnalyst`) | Distillate + portfolio snapshot; the 18 canonical section_ids | Baseline `Section` drafts for canonical sections the user's plan didn't author (e.g. healthcare, insurance, cross-border forms calendar); `unfilled_section_ids` list for sections it intentionally skipped (IPS, client goals, capital sufficiency) | `argosy/quality/canonical_sections.py` | Opus | 4000 | yes (`agent_baseline` kind) |
+| **Withdrawal sequencer** (`WithdrawalSequencerAgent`) | Portfolio snapshot + positions + household budget + plan markdown | FI-bridge waterfall (`fi_bridge: list[BridgeRung]`) + year-by-year `withdrawal_schedule: list[WithdrawalYearRow]` — encodes the IL pension stack (keren_hishtalmut → kupot_gemel → executive_insurance → portfolio_drawdown → pensia) | `argosy/agents/plan_distiller_types.py` typed fields | Opus | 4000 | yes |
+
+Both bottom rows are gated behind `ARGOSY_PHASE5_AGENTS` (default off); when on, the Phase 1 analyst fleet has 12 members instead of 10. See `docs/plans/argosy-comprehensive-plan-integration.md` for the integration-plan context.
 
 ### 3.2 Researcher Team
 
@@ -477,7 +481,8 @@ Run on their own cadences; not part of any decision team.
 | **Audit** (`AuditAgent`) | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus | 4000 | yes |
 | **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Sonnet (Opus on RED) | 0 | yes |
 | **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet | 0 | yes |
-| **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts. See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus | 8000 | yes |
+| **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts plus the top-level `sections: list[Section]` (Phase 3 canonical evidence-bearing shape). See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus | 8000 | yes |
+| **Plan language rewriter** (`PlanLanguageRewriter`) | The structured `PlanSynthesisOutput` from the synthesizer. Runs between Phase 3 and the speculation-cap enforcer; translates prose fields (posture, rationale, theme/action/target labels and details) from internal agent phrasing to household-readable English while preserving every structured field (numeric values, units, dates, item_ids, `SectionEvidence` subtree, deltas, speculative candidates, `inputs` provenance) bit-for-bit. Validator at `argosy/quality/rewriter_invariants.py::validate_rewriter_invariants` enforces the preservation contract: structural drift hard-aborts; residual prose drift logs a warning and ships the mostly-scrubbed output (defense-in-depth: the `/accept` gate catches residual). | Per plan_synthesis_flow run | Opus | 4000 | no |
 | **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Sonnet (was Haiku; bumped — see §3.8) | 0 | no |
 | **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions. Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Sonnet | 0 | no |
 
@@ -492,7 +497,7 @@ Run on their own cadences; not part of any decision team.
 
 **Decision-team agents (referenced from §3.1–§3.5) — code names for fresh-agent grep**:
 
-`FundamentalsAnalystAgent`, `TechnicalAnalystAgent`, `NewsAnalystAgent`, `SentimentAnalystAgent`, `MacroAnalystAgent`, `PlanCritiqueAgent`, `ConcentrationAnalystAgent`, `TaxAnalystAgent`, `FXAnalystAgent` (capital `FX`! note that `argosy.orchestrator.flows.plan_synthesis` re-exports it as `FxAnalystAgent` for ergonomic test monkey-patching), `BullResearcherAgent`, `BearResearcherAgent`, `ResearcherFacilitatorAgent`, `TraderAgent`, `RiskOfficerAgent` (single class; `perspective` kwarg in {`aggressive`, `neutral`, `conservative`} selects voice), `RiskFacilitatorAgent`, `FundManagerAgent`.
+`FundamentalsAnalystAgent`, `TechnicalAnalystAgent`, `NewsAnalystAgent`, `SentimentAnalystAgent`, `MacroAnalystAgent`, `PlanCritiqueAgent`, `ConcentrationAnalystAgent`, `TaxAnalystAgent`, `FXAnalystAgent` (capital `FX`! note that `argosy.orchestrator.flows.plan_synthesis` re-exports it as `FxAnalystAgent` for ergonomic test monkey-patching), `BullResearcherAgent`, `BearResearcherAgent`, `ResearcherFacilitatorAgent`, `TraderAgent`, `RiskOfficerAgent` (single class; `perspective` kwarg in {`aggressive`, `neutral`, `conservative`} selects voice), `RiskFacilitatorAgent`, `FundManagerAgent`, `PlanLanguageRewriter`, `PlanCoverageAnalyst` (gated), `WithdrawalSequencerAgent` (gated).
 
 **FundManagerAgent dispatch**. `FundManagerAgent.build_prompt` dispatches on a `decision_kind` kwarg: `"trade_proposal"` (default) builds the per-trade green-light/block prompt, `"plan_revision"` builds the plan-level integrity prompt used by `plan_synthesis_flow` Phase 5. Output schema flips accordingly. Plan-amendment-chat large runs reuse `plan_revision`.
 
@@ -1024,6 +1029,67 @@ guidance prompt and fires another check-in.
 
 See `docs/superpowers/specs/2026-05-05-plan-distillate-design.md` for
 full design.
+
+**Plan-output quality gate** (`argosy/quality/plan_output_gate.py`). Five
+checks composed into a single `gate_plan_output(...)` verdict, run at
+`POST /api/plan/draft/{id}/accept` before the role flip:
+
+1. `history_leak` — regex set against the rendered horizon markdown.
+   Catches `prior`/`previous`/`earlier`/`synth #N`/`wave N`/`v2.X` /
+   `lineage to prior` / `(stated YYYY-MM-DD; revisit YYYY-MM-DD)` /
+   `## Deltas vs. prior current` and other revision-narration surfaces.
+2. `jargon_leak` — regex set against the rendered markdown for
+   internal agent class names (`TaxAnalyst`, `PlanCritique`,
+   `ConcentrationAnalyst`, …), `substrate` jargon, RED/YELLOW/GREEN
+   grading language, raw `=== <Cls> (FAILED) ===` analyst-frame leaks.
+3. `section_coverage` — counts canonical `section_id` values present
+   across the synth output's flat `sections: list[Section]`. Compared
+   against the launch threshold (12/18) and full-ship threshold
+   (18/18) in `argosy/quality/canonical_sections.py`.
+4. `evidence_per_section` — per-`Section.evidence` (Phase 3
+   `SectionEvidence` Pydantic), enforces: facts or missing_data
+   non-empty; every fact has ≥1 citation; concrete-source citations
+   have ≥8-char extract; soft (`inference` / `agent_baseline` /
+   `assumption_register`) citations require a bound `Assumption`;
+   `supports_fact_index` in-range; numeric fact values appear as
+   substring in the citation extract (locale-tolerant for commas +
+   space variants); categorical/policy/qualitative facts share ≥3
+   content tokens with the citation extract.
+5. `distillate_section_binding` — for every non-empty distillate
+   field bound to a `section_id`, the bound section must appear in
+   the synth output AND carry ≥1 citation with `source_locator`
+   starting with `distillate.<field_name>` (proves USE, not just
+   structural presence).
+
+Gate behavior is feature-flagged: `ARGOSY_PLAN_GATE_ENFORCE=true`
+returns `422` on any failure (blocks the role flip); default `false`
+surfaces violations on `AcceptResponse.gate_warning` and proceeds.
+`?override_gate=true` query param bypasses the check in enforce mode
+(audit-logged via `plan.draft.accepted.override`).
+
+**Audit columns.** `plan_versions` carries both user-facing and
+full-fidelity audit variants of the horizon markdown (migration
+`0061`): `horizon_{long,medium,short}_md` get the cleaned
+`_horizon_md_user` render (no status header, no `(stated …; revisit
+…)` parentheticals, no `## Deltas vs. prior current` block);
+`horizon_{long,medium,short}_md_audit` retain the full
+`_horizon_md_audit` render for the `/decisions/<id>` developer pane.
+
+**Pipeline shape** (in order, per `run_synthesis`):
+
+1. Phase 1 analysts (10 default; 12 with `ARGOSY_PHASE5_AGENTS=true`)
+2. Phase 2 per-horizon researcher debates
+3. Phase 3 synthesizer → structured `PlanSynthesisOutput`
+4. `PlanLanguageRewriter` + `validate_rewriter_invariants` (prose
+   translation + bit-equality contract on structured fields)
+5. `_enforce_speculation_cap` (post-filter on speculative candidates)
+6. Phase 4 risk team
+7. Phase 5 fund manager
+
+See `docs/plans/argosy-comprehensive-plan-integration.md` for the
+integration-plan reference. That doc is the planning-and-deliverables
+ledger for the Phase 0-6 work; this section describes the resulting
+runtime shape.
 
 ### 6.12 Speculative candidates
 
