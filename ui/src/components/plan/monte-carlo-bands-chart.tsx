@@ -10,7 +10,7 @@
  * even without inspecting the chart.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Area,
   CartesianGrid,
@@ -117,6 +117,79 @@ function readNumberKey(
 ): number {
   const v = obj?.[key];
   return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+}
+
+function ModelAssumptionsFooter({
+  response,
+}: {
+  response: MonteCarloProjectionResponse;
+}) {
+  const [open, setOpen] = useState(false);
+  const a = (response.assumptions ?? {}) as Record<string, unknown>;
+  const lumpAge = readNumberKey(a, "lump_pension_age", 60);
+  const annuityAge = readNumberKey(a, "annuity_age", 67);
+  const mu = readNumberKey(a, "mu_nominal_annual", 0.07);
+  const inflation = readNumberKey(a, "inflation_annual", 0.025);
+  const mekadem = readNumberKey(a, "mekadem", 200);
+  const fx = response.fx_usd_nis;
+  return (
+    <section className="rounded-md border border-border/40 bg-muted/20 p-2.5 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full text-left flex items-center gap-2"
+      >
+        <span className="font-mono text-muted-foreground">
+          {open ? "▼" : "▸"}
+        </span>
+        <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          What this Monte Carlo actually models
+        </span>
+      </button>
+      {open ? (
+        <div className="mt-2 flex flex-col gap-2 text-muted-foreground">
+          <p>
+            <strong className="text-foreground">Pension money is modelled.</strong>{" "}
+            Lump unlock at age <span className="font-mono">{lumpAge}</span>:
+            {" "}<code className="font-mono">keren_hishtalmut + kupat_gemel</code>{" "}
+            transfer into the portfolio as a one-time deposit (then compound
+            with the rest). Annuity lock at age{" "}
+            <span className="font-mono">{annuityAge}</span>:
+            {" "}<code className="font-mono">kupat_pensia + executive_insurance</code>{" "}
+            convert to a monthly stipend via <code className="font-mono">/ mekadem</code>{" "}
+            (mekadem={mekadem}); the stipend then indexes to inflation
+            forever. Both events are deterministic across all simulated
+            paths.
+          </p>
+          <p>
+            <strong className="text-foreground">FX.</strong> USD ↔ NIS
+            conversion uses the rate from your latest snapshot
+            (<span className="font-mono">{fx?.toFixed(4)}</span>{" "}
+            NIS/USD). All internal math runs in NIS; USD figures in
+            this chart are converted at this single rate (i.e. FX is
+            held constant across the horizon — material FX moves are
+            NOT modelled in this projection). The plan was authored
+            at <span className="font-mono">3.50</span> NIS/USD;
+            shekel appreciation since then has already moved your
+            USD-denominated targets.
+          </p>
+          <p>
+            <strong className="text-foreground">Other knobs.</strong> μ
+            (expected return) = <span className="font-mono">{(mu * 100).toFixed(1)}%</span>{" "}
+            nominal; inflation = <span className="font-mono">{(inflation * 100).toFixed(1)}%</span>;{" "}
+            tax engine is age-banded (25% pre-60 → 15% during 60-67
+            lump window → 12% from 67 onward).
+          </p>
+          <p>
+            <strong className="text-foreground">Verdict thresholds.</strong>{" "}
+            P(broke before 95) &lt; 0.5% → Likely solvent. 0.5-5% →
+            Material variability. 5-20% → Material variability with
+            tail risk worth stress-testing. ≥ 20% → Stress-test fails.
+          </p>
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 export function MonteCarloBandsChart({ response }: MonteCarloBandsChartProps) {
@@ -297,6 +370,8 @@ export function MonteCarloBandsChart({ response }: MonteCarloBandsChartProps) {
             />
           </ComposedChart>
         </ResponsiveContainer>
+
+        <ModelAssumptionsFooter response={response} />
 
         <div
           className={`rounded-md border px-3 py-2 text-sm ${tierBadgeClasses(

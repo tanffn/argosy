@@ -58,6 +58,44 @@ interface TimelineRow {
   detail: string;
   rationale: string;
   citedSources: string[];
+  // Wave 8 v2.4 — flag for Argosy-internal "system tasks" that the
+  // synth emits as actions but that the orchestrator should auto-
+  // execute (e.g. "Dispatch domain-refresh: Israeli tax substrate").
+  // These get routed to a separate collapsable section so they don't
+  // pollute the user's "what to do" view.
+  isSystemTask?: boolean;
+}
+
+const _SYSTEM_TASK_PREFIXES = [
+  "dispatch ",
+  "schedule domain-refresh",
+  "schedule refresh",
+  "queue refresh",
+  "trigger refresh",
+  "trigger domain",
+  "trigger substrate",
+  "kick off ",
+  "ingest ",
+  "re-ingest",
+  "refresh tax memo",
+  "refresh tax substrate",
+  "refresh domain knowledge",
+];
+
+const _SYSTEM_TASK_SUBSTRINGS = [
+  "domain-refresh",
+  "domain refresh",
+  "substrate dispatcher",
+  "kb refresh",
+  "knowledge-base refresh",
+];
+
+function isSystemTask(label: string): boolean {
+  const l = label.trim().toLowerCase();
+  if (!l) return false;
+  if (_SYSTEM_TASK_PREFIXES.some((p) => l.startsWith(p))) return true;
+  if (_SYSTEM_TASK_SUBSTRINGS.some((s) => l.includes(s))) return true;
+  return false;
 }
 
 const ISO_DATE_RE = /^(\d{4})-(\d{2})(?:-(\d{2}))?/;
@@ -102,6 +140,7 @@ function readActionsFromHorizon(
       detail,
       rationale,
       citedSources: cited,
+      isSystemTask: isSystemTask(label),
     });
   }
   return out;
@@ -149,23 +188,35 @@ export function ActionsTimeline({
     return all;
   }, [structured, glidepath]);
 
+  // Wave 8 v2.4 — partition system tasks out so they don't pollute
+  // the "what should I do" timeline. They get a separate collapsable
+  // tile at the bottom.
+  const userRows = useMemo(
+    () => rows.filter((r) => !r.isSystemTask),
+    [rows],
+  );
+  const systemRows = useMemo(
+    () => rows.filter((r) => r.isSystemTask === true),
+    [rows],
+  );
+
   const dated = useMemo(
     () =>
-      rows
+      userRows
         .filter((r) => r.dateIso != null)
         .map((r) => ({ r, d: parseIsoDate(r.dateIso) }))
         .filter((p) => p.d != null)
         .sort((a, b) => (a.d!.getTime() - b.d!.getTime()))
         .map((p) => p.r),
-    [rows],
+    [userRows],
   );
   const parameterized = useMemo(
-    () => rows.filter((r) => r.kind === "parameterized" && !r.dateIso),
-    [rows],
+    () => userRows.filter((r) => r.kind === "parameterized" && !r.dateIso),
+    [userRows],
   );
   const directional = useMemo(
-    () => rows.filter((r) => r.kind === "directional"),
-    [rows],
+    () => userRows.filter((r) => r.kind === "directional"),
+    [userRows],
   );
 
   const isEmpty =
@@ -221,10 +272,48 @@ export function ActionsTimeline({
                 ))}
               </TimelineSection>
             ) : null}
+            {systemRows.length > 0 ? (
+              <SystemTasksSection rows={systemRows} />
+            ) : null}
           </div>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function SystemTasksSection({ rows }: { rows: TimelineRow[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="border-t border-border/40 pt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full text-left flex items-center gap-2"
+      >
+        <span className="text-xs font-mono text-muted-foreground">
+          {open ? "▼" : "▸"}
+        </span>
+        <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          System tasks (auto-executed by Argosy) — {rows.length}
+        </span>
+      </button>
+      {open ? (
+        <>
+          <p className="text-xs text-muted-foreground mt-2 mb-1">
+            These were emitted by the synthesizer but are Argosy&apos;s
+            own housekeeping — refreshing tax memos, dispatching
+            substrate workers, queueing knowledge-base refreshes.
+            They&apos;re NOT actions for you to take.
+          </p>
+          <ul className="flex flex-col gap-2 mt-1">
+            {rows.map((r, i) => (
+              <TimelineRowBlock key={`sys-${i}`} row={r} />
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </section>
   );
 }
 

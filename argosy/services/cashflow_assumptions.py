@@ -40,25 +40,48 @@ DEFAULT_LIFESTYLE_DRIFT_ANNUAL = 0.0
 # Rationale strings — copied verbatim from the wave-8 spec doc.
 RATIONALE_MU = (
     "Long-run real-equity expected return; conservative side of "
-    "7-10% historical range. Override with your own number if you "
-    "have a specific portfolio view."
+    "7-10% historical range. **Impact:** μ is the most sensitive "
+    "knob in the projection. Each 1-point increase in μ moves the "
+    "FI-ready age earlier by 2-4 years and roughly DOUBLES the "
+    "median portfolio at age 80. At μ=4% (deep recession scenario) "
+    "the FI-ready age can move out by 20+ years; at μ=10% you'd "
+    "compound your way to FI in your 30s. Hover the headline's "
+    "sensitivity strip to see your specific numbers."
 )
 RATIONALE_SIGMA_DEFAULT = (
     "Unweighted-equity default; portfolio-specific calibration "
-    "unavailable."
+    "unavailable. **Impact:** σ doesn't change the MEDIAN path much "
+    "(the median is determined by μ); it widens the bear/bull bands "
+    "and increases the tail-risk probability (P(broke before 95)). "
+    "Diversifying from σ=34% to σ=18% can cut P(broke before 95) "
+    "from ~5% to under 1% at the same median path."
 )
 RATIONALE_TAX_DEFAULT = (
-    "Israeli CGT marginal rate at user's bracket. Adjust if your "
-    "effective rate is different."
+    "Israeli CGT marginal rate at user's bracket. **Impact:** every "
+    "1-point of tax shaves about 1% off the after-tax compounding "
+    "rate. The Monte Carlo engine bands the effective rate by age "
+    "internally (25% pre-60 → 15% during 60-67 → 12% from 67) so "
+    "drawdown tax is lower than this single number suggests."
 )
-RATIONALE_INFLATION = "Bank of Israel long-run target."
+RATIONALE_INFLATION = (
+    "Bank of Israel long-run target. **Impact:** inflation eats μ. "
+    "The real return that actually compounds your wealth is μ_nominal "
+    "− inflation. If inflation jumps from 2.5% to 4% but μ stays at "
+    "7%, real return falls from 4.5% to 3% and the FI-ready age "
+    "moves out by ~5 years."
+)
 RATIONALE_RETIREMENT_DEFAULT = (
-    "Default FIRE target. Override to model what-ifs at other ages."
+    "Default FIRE target. **Impact:** working longer adds savings + "
+    "pushes drawdown later. Going from retire-at-49 to retire-at-55 "
+    "typically adds 3-6M NIS to the portfolio for an active saver "
+    "and cuts P(broke before 95) by half or more."
 )
 RATIONALE_LIFESTYLE_DEFAULT = (
     "Conservative default — matches goals_yaml "
     "`lifestyle_aspirations_note` when the user expects flat real "
-    "spend. Override to model gradual spending growth."
+    "spend. **Impact:** lifestyle drift compounds against you. A "
+    "0.5%/yr lifestyle drift over 30 years is a 16% real expense "
+    "increase by age 75 — typically pushes FI age out by 1-2 years."
 )
 
 
