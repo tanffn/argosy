@@ -39,7 +39,8 @@ def test_agent_class_metadata() -> None:
     + no-citations contract the orchestrator wires it up against."""
     assert WithdrawalSequencerAgent.agent_role == "withdrawal_sequencer"
     assert WithdrawalSequencerAgent.output_model is WithdrawalSequencerOutput
-    assert WithdrawalSequencerAgent.use_structured_output is True
+    # Forced False after synth #69 observation — see agent source.
+    assert WithdrawalSequencerAgent.use_structured_output is False
     assert WithdrawalSequencerAgent.require_citations is False
     # Must be a BaseAgent subclass so the orchestrator's _safe_run_agent
     # path can drive it the same way it drives the rest of the fleet.

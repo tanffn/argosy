@@ -36,7 +36,8 @@ def test_agent_class_metadata():
     a = PlanCoverageAnalyst(user_id="ariel")
     assert a.agent_role == "plan_coverage"
     assert a.output_model is PlanCoverageOutput
-    assert a.use_structured_output is True
+    # Forced False after synth #69 observation — see agent source.
+    assert a.use_structured_output is False
     assert a.require_citations is False
 
 

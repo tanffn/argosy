@@ -184,7 +184,16 @@ class PlanCoverageAnalyst(BaseAgent[PlanCoverageOutput]):
 
     agent_role = "plan_coverage"
     output_model = PlanCoverageOutput
-    use_structured_output = True
+    # use_structured_output=True was originally set per Phase 5 spec.
+    # The first supervised synth observation (#69) showed all 3 SDK
+    # retries failing with `exit code 1, [claude.exe stderr was empty]`
+    # under structured-output mode — schema-constrained generation
+    # against the nested Section + SectionEvidence + FactClaim union
+    # types appears to overwhelm claude.exe's schema-handling path.
+    # Falling back to text-mode generation + Pydantic post-call
+    # validation: the contract is identical (output must validate as
+    # PlanCoverageOutput), only the SDK-level enforcement is dropped.
+    use_structured_output = False
     require_citations = False
 
     def build_prompt(

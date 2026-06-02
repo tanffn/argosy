@@ -223,7 +223,13 @@ class WithdrawalSequencerAgent(BaseAgent[WithdrawalSequencerOutput]):
 
     agent_role = "withdrawal_sequencer"
     output_model = WithdrawalSequencerOutput
-    use_structured_output = True
+    # use_structured_output=False — see PlanCoverageAnalyst for the
+    # root cause analysis (synth #69 observation). The complex output
+    # schema (Decimal | str unions in BridgeRung + WithdrawalYearRow
+    # via plan_distiller_types) failed all 3 SDK retries under
+    # structured-output mode. Text-mode + Pydantic post-call
+    # validation gives the same contract.
+    use_structured_output = False
     require_citations = False
 
     def build_prompt(
