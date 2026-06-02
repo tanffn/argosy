@@ -55,6 +55,16 @@ from argosy.agents.sentiment_analyst import SentimentAnalystAgent
 from argosy.agents.tax_analyst import TaxAnalystAgent
 from argosy.agents.technical_analyst import TechnicalAnalystAgent
 
+# Phase 5 — gated behind ARGOSY_PHASE5_AGENTS env var (see
+# argosy.orchestrator.flows.plan_synthesis.orchestrator
+# ::_resolve_phase_1_agent_names). Always imported so the resolver
+# can find the classes via getattr; whether they actually run
+# depends on the flag.
+from argosy.agents.plan_coverage_analyst import PlanCoverageAnalyst
+from argosy.agents.withdrawal_sequencer_agent import (
+    WithdrawalSequencerAgent,
+)
+
 # Orchestration entry point and all monkeypatchable phase helpers.
 from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     run_synthesis,
@@ -177,4 +187,7 @@ __all__ = [
     "SentimentAnalystAgent",
     "TaxAnalystAgent",
     "TechnicalAnalystAgent",
+    # Phase 5 — included in the fleet only when ARGOSY_PHASE5_AGENTS=true
+    "PlanCoverageAnalyst",
+    "WithdrawalSequencerAgent",
 ]

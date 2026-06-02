@@ -1111,7 +1111,7 @@ def _precompute_fm_objection_translations(
 # Capturing the class refs in a tuple at import time would freeze them and
 # bypass the patch.
 # Names are alphabetical for deterministic log output.
-_PHASE_1_AGENT_NAMES = (
+_PHASE_1_AGENT_NAMES_CORE = (
     "ConcentrationAnalystAgent",
     "FxAnalystAgent",
     "FundamentalsAnalystAgent",
@@ -1123,6 +1123,39 @@ _PHASE_1_AGENT_NAMES = (
     "TaxAnalystAgent",
     "TechnicalAnalystAgent",
 )
+
+# Phase 5 — two new topic-owner agents, gated behind the
+# ``ARGOSY_PHASE5_AGENTS`` env var. When False (default), the fleet
+# stays at its 10-member shape. When True, PlanCoverageAnalyst +
+# WithdrawalSequencerAgent join the fleet so they run on every cycle.
+# See docs/plans/argosy-comprehensive-plan-integration.md §8.
+_PHASE_5_AGENT_NAMES = (
+    "PlanCoverageAnalyst",
+    "WithdrawalSequencerAgent",
+)
+
+
+def _resolve_phase_1_agent_names() -> tuple[str, ...]:
+    """Return the active Phase 1 agent class names.
+
+    Includes Phase 5 agents only when ``settings.phase5_agents`` is
+    True so the default fleet shape stays 10-member until live-LLM
+    iteration validates the new agents' output quality.
+    """
+    try:
+        from argosy.config import get_settings
+        if get_settings().phase5_agents:
+            return _PHASE_1_AGENT_NAMES_CORE + _PHASE_5_AGENT_NAMES
+    except Exception:  # pragma: no cover — defensive on import-cycle paths
+        pass
+    return _PHASE_1_AGENT_NAMES_CORE
+
+
+# Back-compat: existing code paths read ``_PHASE_1_AGENT_NAMES``
+# directly; preserve that name as an alias of the resolver result.
+# This is a module-level computation, so toggling the flag at runtime
+# requires a process restart — acceptable for a feature flag.
+_PHASE_1_AGENT_NAMES = _resolve_phase_1_agent_names()
 
 
 _CONTROL_PLANE_KWARGS = frozenset({"decision_id", "turn_id", "intake_session_id"})

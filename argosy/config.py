@@ -115,6 +115,16 @@ class Settings(BaseSettings):
     # then promote to True.
     plan_gate_enforce: bool = Field(default=False)
 
+    # Phase 5 of docs/plans/argosy-comprehensive-plan-integration.md
+    # — when True, PlanCoverageAnalyst and WithdrawalSequencerAgent
+    # run alongside the existing Phase 1 analyst fleet. Default False
+    # because both agents are deferred from MVP — live-LLM iteration
+    # against real distillate output is needed to validate quality.
+    # Loaded from ``ARGOSY_PHASE5_AGENTS`` env var. Recommended:
+    # leave False until at least one supervised real-data run has
+    # been observed and the outputs hand-checked.
+    phase5_agents: bool = Field(default=False)
+
     @property
     def app_log_file(self) -> Path:
         return self.logs_dir / "app" / "application.log"
