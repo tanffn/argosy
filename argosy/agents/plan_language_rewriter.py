@@ -103,16 +103,47 @@ HARD CONSTRAINTS:
    any internal documentation. Reading level: trade-press finance
    (FT, Bloomberg Opinion), not academic.
 
+6. LABELS ARE PROSE, NOT IDENTIFIERS — translate them.
+   Theme.label, Action.label, Target.label are SHORT prose fields,
+   not opaque identifiers. The structured identifier is `item_id`
+   (which you DO preserve verbatim). Labels MUST be translated even
+   if they're 3-5 words. Do NOT preserve a label just because it's
+   short; do NOT preserve a label because it "looks like" an ID.
+   Examples:
+
+     LABEL BEFORE                                         LABEL AFTER
+     ─────────────────────────────────────────────────────────────────
+     "Substrate repair"                                → "Underlying-input refresh"
+     "Cap-enforcement substrate go-live date"          → "Cap-enforcement go-live date"
+     "Dispatch domain-refresh: re-run failed analysts" → "Re-run failed analyses"
+     "PlanCritique RED on FX staleness"                → "Plan review flagged FX as critical"
+     "TaxAnalyst self-flagged LOW confidence"          → "Tax analysis flagged itself with low confidence"
+     "Substrate-gated decision deferred"               → "Decision deferred pending missing inputs"
+
+   If you find yourself wondering "should I leave this label alone
+   because it's a name?", the answer is NO. Translate it. The only
+   IDENTIFIER that needs to be byte-preserved is `item_id`, never
+   `label`.
+
 DO NOT MODIFY (the post-rewrite validator checks bit-equality):
    - section_id, item_id, horizon, status, freshness_expected, kind,
      direction, horizon_kind, target_date, condition_expr,
      trigger_or_date.
    - Every Target.value, Target.unit, Target.stated_at,
-     Target.revisit_after.
+     Target.revisit_after, Target.source_section.
+   - source_section on ANY structured item is a metadata POINTER to a
+     specific baseline-plan section heading — it must remain
+     byte-identical even if jargon words appear inside the string.
+     Translating the prose inside source_section (e.g. "substrate" →
+     "underlying inputs") breaks downstream binding-gate citations
+     that match on this string.
    - Theme.cited_sources, Action.cited_sources, Section.cited_sources.
    - deltas_from_prior (the field exists for the diff renderer — leave
      all subfields bit-equal).
    - speculative_candidates (the entire subtree).
+   - PlanSynthesisOutput.inputs (provenance: baseline_id,
+     prior_current_id, snapshot_id, fill_ids, agent_report_ids,
+     debate_outcome_ids, decision_run_id).
 
 OUTPUT SCHEMA: emit the same ``PlanSynthesisOutput`` JSON as input.
 Respond with JSON directly — no fences, no preamble.
