@@ -146,7 +146,14 @@ def test_plan_synthesizer_prompt_includes_authority_disclaimer_and_inputs():
     assert AUTHORITY_DISCLAIMER in sys
     # Inputs are in the user prompt.
     assert "Distillate" in usr
-    assert "Prior current" in usr
+    # Phase 1 (docs/plans/argosy-comprehensive-plan-integration.md)
+    # dropped the prior-plan body block from the user prompt; the
+    # model paraphrased it into revision narration (Defect 1 root
+    # cause). ID stability is now carried by the PRIOR ITEMS INDEX
+    # block alone.
+    assert "Prior current" not in usr
+    assert "=== PRIOR CURRENT PLAN ===" not in usr
+    assert "PRIOR ITEMS INDEX" in usr
     assert "news: ok" in usr
     assert "tighten" in usr
     assert "NVDA 14%" in usr

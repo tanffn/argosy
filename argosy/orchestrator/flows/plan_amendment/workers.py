@@ -28,7 +28,8 @@ from argosy.config import get_user_agent_settings, load_speculation_cap
 from argosy.logging import get_logger
 from argosy.orchestrator.flows.plan_synthesis import (
     _enforce_speculation_cap,
-    _horizon_md,
+    _horizon_md_audit,
+    _horizon_md_user,
     run_synthesis,
 )
 from argosy.state.models import DecisionRun, PlanVersion
@@ -44,6 +45,7 @@ log = get_logger(__name__)
 def _run_phase_3_synthesizer(*, user_id, baseline_distillate_md, prior_current_md,
                              guidance, portfolio_summary, fills_summary,
                              speculation_cap_pct, speculation_cap_concurrent,
+                             prior_items_index=None,
                              ) -> PlanSynthesisOutput:
     """Direct-invoke PlanSynthesizerAgent; skip Phases 1/2/4/5.
 
@@ -51,11 +53,17 @@ def _run_phase_3_synthesizer(*, user_id, baseline_distillate_md, prior_current_m
 
     Takes already-rendered markdown strings (not the ORM rows) so tests
     can assert on the inputs the synthesizer would actually see.
+
+    ``prior_items_index`` is required for ID-stability across amendments
+    after Phase 1 of the integration plan (the prior-plan body block was
+    dropped from the synth prompt; the items index is the surviving
+    channel through which the model preserves item_ids on revision).
     """
     agent = PlanSynthesizerAgent(user_id=user_id)
     result = agent.run_sync(
         baseline_distillate_md=baseline_distillate_md or "(no distillate available)",
         prior_current_md=prior_current_md,
+        prior_items_index=prior_items_index or [],
         analyst_reports_text=f"(amendment guidance: {guidance})",
         debate_outcomes_text="(skipped — medium-tier amendment)",
         portfolio_snapshot_summary=portfolio_summary,
@@ -129,10 +137,25 @@ def _medium_worker(*, session: Session, user_id: str,
             from argosy.config import SpeculationCap
             cap = SpeculationCap()
 
+        # Phase 1 of the integration plan dropped the prior-plan body
+        # from the synth user-prompt. The amendment path now must
+        # supply ``prior_items_index`` directly so the synthesizer can
+        # still preserve item_ids across revisions (otherwise the
+        # amendment re-synth has no ID-stability signal at all — the
+        # main flow builds this list at plan_synthesis/orchestrator.py
+        # via ``_pkg_build_prior_items_index``; we reuse the helper).
+        from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
+            _pkg_build_prior_items_index,
+        )
+        prior_items_index = _pkg_build_prior_items_index(
+            session, user_id=user_id, prior_current=prior_current,
+        )
+
         output = _run_phase_3_synthesizer(
             user_id=user_id,
             baseline_distillate_md=baseline.distillate_rendered or "",
             prior_current_md=_render_prior_current_md(prior_current),
+            prior_items_index=prior_items_index,
             guidance=guidance,
             portfolio_summary=portfolio_summary, fills_summary=fills_summary,
             speculation_cap_pct=cap.max_pct_of_net_worth,
@@ -180,9 +203,13 @@ def _medium_worker(*, session: Session, user_id: str,
             horizon_long_json=output.long.model_dump_json(),
             horizon_medium_json=output.medium.model_dump_json(),
             horizon_short_json=output.short.model_dump_json(),
-            horizon_long_md=_horizon_md(output.long),
-            horizon_medium_md=_horizon_md(output.medium),
-            horizon_short_md=_horizon_md(output.short),
+            # Phase 1 — user-facing vs audit split. See render.py docstring.
+            horizon_long_md=_horizon_md_user(output.long),
+            horizon_medium_md=_horizon_md_user(output.medium),
+            horizon_short_md=_horizon_md_user(output.short),
+            horizon_long_md_audit=_horizon_md_audit(output.long),
+            horizon_medium_md_audit=_horizon_md_audit(output.medium),
+            horizon_short_md_audit=_horizon_md_audit(output.short),
             synthesis_inputs_json=inputs.model_dump_json(),
         )
         session.add(draft)

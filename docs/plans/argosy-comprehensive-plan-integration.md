@@ -5,14 +5,14 @@
 State markers: `[ ]` not started · `[wip]` in progress · `[done]` shipped
 
 - `[done]` **Phase 0** — Failing CI gate (`argosy/quality/plan_output_gate.py`, 5 checks, v20 fixture). 103 tests; v20 produces 182 violations (75 history + 107 jargon). Codex review: COMMIT AS-IS after 2 rounds.
-- `[wip]` **Phase 1** — Clean synth context + renderer split + audit migration. Design at `tmp_review/phase1_design/spec.md`. Target: `history_leak` check passes on re-synth.
-- `[ ]` **Phase 2** — Publication gate + `PlanLanguageRewriter` + invariant validator. Design at `tmp_review/phase2_design/spec.md`. Target: `jargon_leak` check passes.
+- `[done]` **Phase 1** — Clean synth context + renderer split + audit migration. 7 new tests; v20 horizon JSON re-renders with 0 `history_leak` violations across all 3 horizons. Codex review: 2 rounds (blocker fixed = amendment flow lost `prior_items_index` after `PRIOR CURRENT PLAN` was dropped).
+- `[wip]` **Phase 2** — Publication gate + `PlanLanguageRewriter` + invariant validator. Design at `tmp_review/phase2_design/spec.md`. Target: `jargon_leak` check passes.
 - `[ ]` **Phase 3** — `SectionEvidence` contract + validators + content gate. Design at `tmp_review/phase3_design/spec.md`. Target: `evidence_per_section` passes. **MVP ship.**
 - `[ ]` **Phase 4** — Distillate schema expansion + section-binding gate. Target: `section_coverage` at 18/18.
 - `[ ]` **Phase 5** — `PlanCoverageAnalyst` + `WithdrawalSequencerAgent`. Target: orphan content owned.
 - `[ ]` **Phase 6** — Feature flag + override path. Target: rollout complete. **Full ship.**
 
-**Currently shipping:** Phase 1. Last update: 2026-06-02.
+**Currently shipping:** Phase 2. Last update: 2026-06-02.
 
 ---
 

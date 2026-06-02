@@ -156,6 +156,12 @@ class PlanVersion(Base):
     horizon_long_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     horizon_medium_md: Mapped[str | None] = mapped_column(Text, nullable=True)
     horizon_short_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Migration 0061 — full-fidelity audit variants alongside the
+    # user-facing horizon_*_md (which drops status header, revisit
+    # parentheticals, and the "Deltas vs. prior current" block).
+    horizon_long_md_audit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    horizon_medium_md_audit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    horizon_short_md_audit: Mapped[str | None] = mapped_column(Text, nullable=True)
     synthesis_inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Provenance Wave A (migration 0019) — points back at the catalog row

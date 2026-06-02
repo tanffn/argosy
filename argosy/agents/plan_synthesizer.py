@@ -73,29 +73,28 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "DELTAS: every change vs. the prior current plan must produce a "
             "Delta entry with a stable item_id (e.g. 'medium.targets.nvda'), "
             "rationale, and citations. Per-delta accept/reject relies on these.\n\n"
-            "ITEM_ID LINEAGE CONTRACT (T4.8a — load-bearing for the UI's "
-            "history view): the user's UI shows how a target/action/theme "
-            "EVOLVED across plan iterations using item_id as the join key.\n"
-            "  - If you're REVISING something that existed in the prior "
-            "    draft or prior current plan, KEEP THE SAME item_id. Look "
-            "    at the PRIOR ITEMS INDEX block below; if any item matches "
-            "    your concept (same horizon + same intent + same target "
-            "    variable), reuse its exact item_id verbatim. Do NOT mint "
-            "    a new id for what is conceptually the same target.\n"
-            "  - If you're adding a GENUINELY NEW item that has no prior "
-            "    counterpart, generate a stable kebab-case id following the "
-            "    convention `<horizon>.<kind>.<slug>` (e.g. "
-            "    `medium.targets.nvda_share_of_portfolio_12mo`) — choose a "
-            "    slug that will survive future revisions (don't bake a "
-            "    transient number like '2026' into the slug unless it's "
-            "    truly anchored to that year).\n"
-            "  - If a prior item should be DROPPED, emit a Delta with "
-            "    change_kind='removed' using its original item_id; don't "
-            "    just omit it silently.\n"
-            "Reusing the id when intent is the same is the most common "
-            "case. Missing this contract breaks the history chip on the "
-            "/plan page and forces the user to manually match revisions "
-            "across drafts.\n\n"
+            "ID STABILITY (structural contract — not a narration cue):\n"
+            "  - The PRIOR ITEMS INDEX block in the user message lists "
+            "    item_ids from earlier plan drafts. When you emit a "
+            "    Target / Theme / Action whose intent matches a prior "
+            "    item (same horizon + same intent + same target "
+            "    variable), REUSE its exact item_id.\n"
+            "  - For a genuinely new item, mint a stable kebab-case id "
+            "    `<horizon>.<kind>.<slug>` (e.g. "
+            "    `medium.targets.nvda_share_of_portfolio_12mo`). Don't "
+            "    bake a transient number into the slug unless it is "
+            "    truly anchored to a year.\n"
+            "  - When DROPPING a prior item, emit a Delta with "
+            "    change_kind='removed' using its original item_id; do "
+            "    NOT silently omit it.\n"
+            "  - The item_id is structural plumbing. The prose fields "
+            "    (posture, rationale, theme.rationale, action.rationale) "
+            "    are forward-looking only. Do NOT narrate revisions in "
+            "    prose — no `prior`, `previous`, `earlier`, `revised "
+            "    from`, `preserved from`, `lineage to`, `draft #N`, "
+            "    `synth #N`, `wave N`, `v2.X`, `retracted`, `superseded` "
+            "    — those words are gate-banned and will block "
+            "    publication.\n\n"
             "CITATIONS REQUIRED for every numeric or directional claim. Use "
             "the format `agent_report:<id>` for analyst evidence, "
             "`decision_run:<id>` for prior synthesis lineage, "
@@ -222,13 +221,18 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
                 + user_directive
             )
 
+        # Phase 1 of the integration plan removed the
+        # ``=== PRIOR CURRENT PLAN ===`` block from this user prompt.
+        # That block fed the model the previous draft's prose body and
+        # was the proximate cause of revision-history leakage in v20
+        # (synth dutifully wrote "retracts the prior framing" etc.).
+        # The ID STABILITY contract in the system prompt + the PRIOR
+        # ITEMS INDEX below provide everything the model needs to
+        # preserve item_ids across revisions — without exposing the
+        # prior prose to be paraphrased.
         usr = "\n\n".join(directive_section + [
             "=== BASELINE DISTILLATE ===\n" + (baseline_distillate_md or "(no baseline)"),
-            "=== PRIOR CURRENT PLAN ===\n" + (prior_current_md or "(no prior current — first synthesis)"),
-            # T4.8a lineage payload — placed prominently AFTER the prior
-            # plan markdown so the model has both the narrative + the
-            # structured ids next to each other.
-            "=== PRIOR ITEMS INDEX (T4.8a — preserve item_id across revisions) ===\n"
+            "=== PRIOR ITEMS INDEX (id stability — see ID STABILITY in system prompt) ===\n"
             + prior_items_block,
             "=== ANALYST REPORTS (Phase 1 outputs) ===\n" + analyst_reports_text,
             "=== DEBATE OUTCOMES (Phase 2 outputs, one per horizon) ===\n" + debate_outcomes_text,

@@ -608,9 +608,15 @@ def run_synthesis(
         horizon_long_json=output.long.model_dump_json(),
         horizon_medium_json=output.medium.model_dump_json(),
         horizon_short_json=output.short.model_dump_json(),
-        horizon_long_md=_pkg._horizon_md(output.long),
-        horizon_medium_md=_pkg._horizon_md(output.medium),
-        horizon_short_md=_pkg._horizon_md(output.short),
+        # Phase 1 — user-facing variants strip status header, revisit
+        # parentheticals, and the Deltas-vs-prior block. The audit
+        # variants retain everything for the /decisions/<id> dev pane.
+        horizon_long_md=_pkg._horizon_md_user(output.long),
+        horizon_medium_md=_pkg._horizon_md_user(output.medium),
+        horizon_short_md=_pkg._horizon_md_user(output.short),
+        horizon_long_md_audit=_pkg._horizon_md_audit(output.long),
+        horizon_medium_md_audit=_pkg._horizon_md_audit(output.medium),
+        horizon_short_md_audit=_pkg._horizon_md_audit(output.short),
         synthesis_inputs_json=inputs.model_dump_json(),
     )
     session.add(draft)
