@@ -511,6 +511,14 @@ class DraftResponse(BaseModel):
 class AcceptResponse(BaseModel):
     status: str
     new_current_id: int
+    # Phase 6 of docs/plans/argosy-comprehensive-plan-integration.md.
+    # `gate_warning` is populated when the plan_output_gate found
+    # violations on the draft about to be promoted AND the
+    # `plan_gate_enforce` setting was False (the gate ran as a
+    # warning). It's None on a clean promotion. When the setting is
+    # True, gate failures don't surface here — they raise 422
+    # before reaching this response.
+    gate_warning: dict | None = None
 
 
 class RejectRequest(BaseModel):
@@ -2823,6 +2831,14 @@ def get_current_structured(
 def post_draft_accept(
     draft_id: int,
     user_id: str,
+    override_gate: bool = Query(
+        False,
+        description=(
+            "Phase 6 override: when true AND plan_gate_enforce is on, "
+            "skip the gate check and proceed with promotion. The "
+            "override is audit-logged via plan.draft.accepted.override."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> AcceptResponse:
     from argosy.state.queries import get_current_plan
@@ -2830,6 +2846,59 @@ def post_draft_accept(
     pv = db.get(PlanVersion, draft_id)
     if pv is None or pv.user_id != user_id or pv.role != "draft":
         raise HTTPException(status_code=404, detail="draft not found for user")
+
+    # Phase 6 — run the plan_output_gate against the draft we're about
+    # to promote. When `plan_gate_enforce` is True, a failing gate
+    # raises 422; when False, it logs a warning and surfaces the
+    # violation summary on the AcceptResponse. The `?override_gate=true`
+    # query param bypasses the check (audit-logged).
+    gate_verdict = _run_plan_output_gate(pv)
+    gate_warning: dict | None = None
+    if gate_verdict is not None and not gate_verdict.passes:
+        from argosy.config import get_settings
+        if override_gate:
+            _publish(
+                "plan.draft.accepted.override",
+                {
+                    "user_id": user_id,
+                    "draft_id": draft_id,
+                    "gate_summary": gate_verdict.summary(),
+                },
+            )
+        elif get_settings().plan_gate_enforce:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "plan_output_gate_failed",
+                    "summary": gate_verdict.summary(),
+                    "violations_by_check": {
+                        check.value: [
+                            {"detail": v.detail, "locator": v.locator}
+                            for v in gate_verdict.for_check(check)
+                        ]
+                        for check in gate_verdict.violations
+                        if gate_verdict.violations[check]
+                    },
+                    "hint": (
+                        "Re-run synthesis after addressing the violations, "
+                        "or pass ?override_gate=true to force-accept "
+                        "(audit-logged)."
+                    ),
+                },
+            )
+        else:
+            # Warning mode (default at launch): proceed with accept
+            # but include the violation summary on the response so the
+            # UI can surface a banner.
+            gate_warning = {
+                "summary": gate_verdict.summary(),
+                "total_violations": gate_verdict.total_violations,
+                "violations_by_check": {
+                    check.value: len(gate_verdict.for_check(check))
+                    for check in gate_verdict.violations
+                    if gate_verdict.violations[check]
+                },
+            }
 
     now = datetime.now(timezone.utc)
     prior = get_current_plan(db, user_id)
@@ -2855,7 +2924,71 @@ def post_draft_accept(
     _publish("plan.draft.accepted", {"user_id": user_id, "draft_id": draft_id})
     _publish("plan.current.changed", {"user_id": user_id, "current_id": pv.id})
 
-    return AcceptResponse(status="accepted", new_current_id=pv.id)
+    return AcceptResponse(
+        status="accepted",
+        new_current_id=pv.id,
+        gate_warning=gate_warning,
+    )
+
+
+def _run_plan_output_gate(pv: "PlanVersion"):
+    """Phase 6 helper — run plan_output_gate on a draft PlanVersion.
+
+    Returns a GateVerdict or None when no horizon MD exists yet
+    (in which case the gate is silently skipped — pre-Phase-1 rows
+    have no audit columns to compare against, and a row in this
+    state should not have been a candidate for /accept in the first
+    place). All exceptions are caught and logged; the gate is
+    defense-in-depth and must never break the accept path itself —
+    only its verdict matters.
+    """
+    try:
+        from argosy.quality import gate_plan_output
+        # Reconstruct PlanSynthesisOutput from the persisted JSON
+        # columns so the structured checks (section_coverage,
+        # evidence_per_section, distillate_section_binding) have
+        # something to read.
+        synth = None
+        try:
+            from argosy.agents.plan_synthesizer_types import (
+                HorizonSection,
+                PlanSynthesisOutput,
+                SynthesisInputs,
+            )
+            import json as _json
+            if pv.horizon_long_json and pv.horizon_medium_json and pv.horizon_short_json:
+                synth = PlanSynthesisOutput(
+                    long=HorizonSection.model_validate_json(pv.horizon_long_json),
+                    medium=HorizonSection.model_validate_json(pv.horizon_medium_json),
+                    short=HorizonSection.model_validate_json(pv.horizon_short_json),
+                    inputs=SynthesisInputs.model_validate_json(
+                        pv.synthesis_inputs_json
+                        or '{"baseline_id":null,"prior_current_id":null,'
+                           '"snapshot_id":null,"fill_ids":[],'
+                           '"agent_report_ids":[],"debate_outcome_ids":[],'
+                           '"decision_run_id":null}'
+                    ),
+                )
+        except Exception:
+            synth = None
+        horizon_text = {
+            "long": pv.horizon_long_md or "",
+            "medium": pv.horizon_medium_md or "",
+            "short": pv.horizon_short_md or "",
+        }
+        if not any(horizon_text.values()) and synth is None:
+            return None
+        return gate_plan_output(
+            horizon_text=horizon_text,
+            synth=synth,
+            distillate=None,  # Phase 4 will wire the typed distillate
+        )
+    except Exception:  # pragma: no cover - defense-in-depth
+        import logging
+        logging.getLogger(__name__).exception(
+            "plan_output_gate_check_crashed",
+        )
+        return None
 
 
 def _auto_regen_narrative(user_id: str, new_current_plan_version_id: int) -> None:

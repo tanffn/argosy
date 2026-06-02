@@ -106,6 +106,15 @@ class Settings(BaseSettings):
     # monitoring. See `argosy/api/auth.py::require_admin_token`.
     admin_token: str | None = Field(default=None)
 
+    # Phase 6 of docs/plans/argosy-comprehensive-plan-integration.md
+    # — when True, a failing plan_output_gate blocks /accept; when
+    # False (default), the gate runs as a warning surfaced in the
+    # response body but the accept proceeds. Loaded from
+    # ``ARGOSY_PLAN_GATE_ENFORCE`` env var. Recommended rollout:
+    # ship False, observe gate failures in production for one cycle,
+    # then promote to True.
+    plan_gate_enforce: bool = Field(default=False)
+
     @property
     def app_log_file(self) -> Path:
         return self.logs_dir / "app" / "application.log"
