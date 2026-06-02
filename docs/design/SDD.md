@@ -15,7 +15,7 @@
 
 ## Handover note (point-in-time — read this first if resuming)
 
-**Last edit:** 2026-06-02 (morning, wave 8 v2.4 + synth #65 APPROVED → plan_version=20 draft pending acceptance) by Claude. Branch `main` @ `<after-v2.4+filter>` (~20 commits past `cf50509`).
+**Last edit:** 2026-06-02 (morning, wave 8 v2.4 + synth #65 APPROVED → plan_version=20 draft pending acceptance) by Claude. Branch `main` @ `a0a704a` (~20 commits past `cf50509`).
 
 **Big news (2026-06-02 ~05:09 UTC):** **Synthesis #65 returned `approved=True` on first try** with all 9 FM items being confirming statements. The new draft (`plan_version=20`, label `synth-2026-06-02-0509`, run #65) EXPLICITLY retracts the synth-misread framing the user flagged: long horizon now reads *"the household is ALREADY diversified across 8 asset classes ... The work is NOT a transition from a single concentrated position — that framing was incorrect in synth #19 and is retracted."* This is the second APPROVED plan_revision since 2026-05-29 (first was synth #62 → plan_version=19). User to press Accept All on /plan to promote #20 to canonical; until then recap reads against #19.
 
@@ -25,8 +25,8 @@
 |---|---|
 | `203a4f3` | (a) System-task filter on ActionsTimeline: synth-emitted "Dispatch domain-refresh" / "schedule refresh" / "kb refresh" actions route to a collapsed-by-default "System tasks (auto-executed by Argosy)" section with explicit "NOT actions for you to take" note. (b) MC chart "What this Monte Carlo actually models" collapsable footer: discloses lump@60 + annuity@67 (deterministic across paths), FX held constant from snapshot (NOT modelled — plan authored at 3.50 vs current ~2.94), verdict thresholds. (c) AssumptionsCard rationales get concrete **Impact:** clauses — e.g. for μ: "Each 1-point increase moves FI-ready age earlier by 2-4 years and roughly DOUBLES median portfolio at age 80." |
 | `fdb60aa` | Monthly expenses override slider on the CashflowProjectionChart. Backend route accepts `monthly_expenses_nis_override` (0-500k NIS/mo) on both `/draft/cashflow-projection` and the recap's `/current/cashflow-monte-carlo` alias. |
-| `<filter-headline>` | **Headline-level filter for system tasks** (fix to incomplete v2.4 — the filter only landed in the UI ActionsTimeline; the headline's "Next big move" / "Then" lines still picked up "Dispatch domain-refresh: Israeli tax substrate" entries because they go through `plan_headline._all_actions_with_dates` BEFORE the UI). Backend now filters at the headline service layer. New regression test pins the contract. |
-| `<resynth-script>` | One-shot resynth helper `tools/codex-tandem/scripts/_resynth_v23.py` that kicked synth #65 with corrected grounding context (8-class diversification, plan-stated 4.5% real-return + 3.5% SWR + 22M NIS endpoint, explicit anti-misframing guidance, 4 preserved accepted deltas from synth #62). |
+| `a0a704a` | **Headline-level filter for system tasks** (fix to incomplete v2.4 — the filter only landed in the UI ActionsTimeline; the headline's "Next big move" / "Then" lines still picked up "Dispatch domain-refresh: Israeli tax substrate" entries because they go through `plan_headline._all_actions_with_dates` BEFORE the UI). Backend now filters at the headline service layer. New regression test pins the contract. |
+| (tools/, gitignored) | One-shot resynth helper `tools/codex-tandem/scripts/_resynth_v23.py` that kicked synth #65 with corrected grounding context (8-class diversification, plan-stated 4.5% real-return + 3.5% SWR + 22M NIS endpoint, explicit anti-misframing guidance, 4 preserved accepted deltas from synth #62). |
 
 **v2.3 polish (commit `7bad16e`) — all 5 codex deep-audit findings closed.**
 
