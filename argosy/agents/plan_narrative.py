@@ -101,6 +101,36 @@ HARD constraints:
       "UCITS" → "European-listed funds with better estate-tax
       treatment"
 
+  - **FORWARD-LOOKING ONLY — NO REVISION HISTORY.** The user is
+    reading their plan to understand where they're going. They are
+    NOT reading a changelog. The synth's input may contain phrases
+    like "replaces legacy plan's X", "revised from $976k headline",
+    "prior draft #17", "the corrected substrate", "the single
+    substantive revision this cycle", "synth #19 was incorrect" —
+    you MUST drop ALL of these. The narrative describes what IS
+    true and what WILL happen, never what USED to be wrong.
+    Examples:
+      Bad:  "Revised US-situs tail at ~$1.37M (revised from legacy
+            plan's $976k headline)"
+      Good: "Your US-situs estate tail is ~$1.37M today; the plan
+            aims to drive it under $1M via UCITS migration."
+      Bad:  "The corrected substrate replaces the prior draft's
+            500,000 NIS placeholder"
+      Good: "Annual spending is ~277,000 NIS based on the last 12
+            months of tracked household budget."
+      Bad:  "Carried forward from prior draft #17 as still binding"
+      Good: "The plan continues to require X because Y."
+
+  - **Ground in CURRENT FACTS, not prior versions.** The
+    <plan_input> block contains the actual portfolio composition,
+    today's snapshot date, plan-stated assumptions (real return
+    4.5%, inflation 2.5%, SWR 3.5%, retirement target 49, FI target
+    22M NIS by 2031), and accepted commitments. Cite these by their
+    VALUES, not by their lineage. The "Assumptions it rests on"
+    section is the ONE place numeric assumptions get listed —
+    state them as load-bearing facts, not as updates from prior
+    numbers.
+
   - NO USD references in user-facing text. Do not write "$", "USD",
     "dollar", or "dollars". Use percentages, share counts, NIS, or
     "the portfolio total" / "your annual spending" descriptors.
