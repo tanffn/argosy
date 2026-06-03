@@ -147,6 +147,81 @@ def test_resume_from_phase_reuses_only_phases_below_boundary(session, monkeypatc
     assert ran == [3, 4, 5], f"expected only phases 3-5 to run; got {ran}"
 
 
+def test_critical_roles_match_real_fleet_agents():
+    """Drift guard (codex's #1 risk): every role in the critical set must be
+    a real agent_role on a fleet agent class. A class-name-vs-agent_role
+    mismatch would silently bypass the gate."""
+    import argosy.orchestrator.flows.plan_synthesis as pkg
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch
+
+    all_names = orch._PHASE_1_AGENT_NAMES_CORE + orch._PHASE_5_AGENT_NAMES
+    fleet_roles = {
+        getattr(getattr(pkg, n, None), "agent_role", None) for n in all_names
+    }
+    missing = orch._CRITICAL_AGENT_ROLES - fleet_roles
+    assert not missing, f"critical roles not present in the fleet: {missing}"
+
+
+def test_run_completeness_gate_aborts_when_critical_agent_missing(session, monkeypatch):
+    """A critical analyst that RAN and FAILED ABORTS the run after phase 1
+    (before the expensive phases 2-5), leaves the prior current plan untouched,
+    persists no draft, and stamps the decision_run failed."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis._types import IncompleteFleetError
+
+    # Seed a prior current to assert it is NOT disturbed.
+    session.add(PlanVersion(user_id="ariel", role="current", version_label="prior-current"))
+    session.commit()
+
+    # phase 1 returns (text, reports, failed_roles); 'concentration' is a
+    # critical agent in the active fleet → its failure must trip the gate.
+    monkeypatch.setattr(
+        flow, "_run_phase_1_analysts",
+        lambda **kw: ("(analysts)", [], ["concentration"]),
+    )
+    reached = {"phase2": False}
+
+    def _p2(**kw):
+        reached["phase2"] = True
+        return "(debates)"
+
+    monkeypatch.setattr(flow, "_run_phase_2_debates", _p2)
+    monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+    with pytest.raises(IncompleteFleetError) as exc:
+        flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+
+    assert "concentration" in exc.value.missing_critical
+    assert reached["phase2"] is False, "must abort BEFORE phase 2"
+    # No draft written; prior current intact.
+    session.expire_all()
+    assert session.query(PlanVersion).filter_by(user_id="ariel", role="draft").count() == 0
+    prior = session.query(PlanVersion).filter_by(user_id="ariel", role="current").one()
+    assert prior.version_label == "prior-current"
+
+
+def test_run_completeness_gate_passes_when_only_noncritical_missing(session, monkeypatch):
+    """Failures of NON-critical analysts (sentiment/news/...) do NOT abort —
+    the run completes and the draft is written."""
+    from argosy.orchestrator.flows import plan_synthesis as flow
+
+    # Only non-critical agents failed → gate must NOT fire.
+    monkeypatch.setattr(
+        flow, "_run_phase_1_analysts",
+        lambda **kw: ("(analysts)", [], ["sentiment", "news"]),
+    )
+    monkeypatch.setattr(flow, "_run_phase_2_debates", lambda **kw: "(debates)")
+    monkeypatch.setattr(flow, "_run_phase_3_synthesizer", lambda **kw: _stub_synthesis_output())
+    monkeypatch.setattr(flow, "_run_phase_4_risk", lambda **kw: "(risk)")
+    monkeypatch.setattr(flow, "_run_phase_5_fund_manager", lambda **kw: True)
+    monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+    out = flow.run_synthesis(session, user_id="ariel", trigger="scheduled")
+    assert out.draft_id is not None
+
+
 def test_synthesis_failure_does_not_demote_existing_draft(session, monkeypatch):
     """Regression: pre-emptive demote stranded the prior draft when a
     phase later raised. Real incident: decision_run #43 on 2026-05-30
@@ -772,9 +847,10 @@ def test_phase_1_runs_all_nine_analysts(session, monkeypatch):
         decision_run_id="test-run",
         guidance="",
     )
-    # T0.1 — phase functions now return (text, list[AgentReport]).
-    assert isinstance(result, tuple) and len(result) == 2
-    out, collected = result
+    # phase 1 returns (text, list[AgentReport], failed_roles).
+    assert isinstance(result, tuple) and len(result) == 3
+    out, collected, failed_roles = result
+    assert isinstance(failed_roles, list)
     # All 9 must have been invoked exactly once.
     assert len(invoked) == 9, f"expected 9 analyst calls, got {len(invoked)}: {invoked}"
     assert isinstance(out, str)

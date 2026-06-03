@@ -46,6 +46,7 @@ from argosy.agents.plan_synthesizer_types import (
     SynthesisInputs,
 )
 from argosy.orchestrator.flows.plan_synthesis._types import (
+    IncompleteFleetError,
     NoBaselineError,
     SynthesisResult,
     Trigger,
@@ -294,13 +295,20 @@ def run_synthesis(
             prior_current=prior_current, decision_run_id=decision_audit_token,
             guidance=guidance,
         )
-        # T0.1 — phase functions now return (text, reports). Detect the
+        # T0.1 — phase 1 returns (text, reports, failed_roles). Detect the
         # tuple shape for backwards compat with test stubs that return a
-        # bare string (e.g. ``lambda **kw: "(analyst reports)"``).
-        if isinstance(_phase_1_result, tuple) and len(_phase_1_result) == 2:
+        # 2-tuple (text, reports) or a bare string (``lambda **kw: "..."``).
+        # ``failed_roles`` feeds the run-completeness gate below; legacy
+        # shapes default it to [] (no failure info → gate doesn't fire).
+        if isinstance(_phase_1_result, tuple) and len(_phase_1_result) == 3:
+            analyst_reports_text, _phase_1_reports, _phase_1_failed_roles = _phase_1_result
+        elif isinstance(_phase_1_result, tuple) and len(_phase_1_result) == 2:
             analyst_reports_text, _phase_1_reports = _phase_1_result
+            _phase_1_failed_roles = []
         else:
-            analyst_reports_text, _phase_1_reports = _phase_1_result, []
+            analyst_reports_text, _phase_1_reports, _phase_1_failed_roles = (
+                _phase_1_result, [], [],
+            )
         # T0.3 — collect every adapter outcome recorded during phase 1
         # (analyst agents fan out to data adapters; each adapter call
         # appends to the contextvar buffer reset at the start of this
@@ -326,6 +334,37 @@ def run_synthesis(
         phase="phase_1",
         user_id=user_id,
     )
+
+    # Run-completeness gate (codex-reviewed). Abort BEFORE the expensive
+    # phases 2-5 if a CRITICAL analyst failed to produce a report — we never
+    # build or promote a plan on missing critical data, and the synthesizer
+    # never gets the chance to fabricate the missing headline number (the
+    # made-up ₪21M FI target is exactly this failure mode). Only when phase 1
+    # actually RAN this cycle: on resume the phase-1 data was validated in the
+    # original run and ``_phase_1_reports`` isn't repopulated. On abort the
+    # prior current plan is left untouched (no draft is written) and the
+    # decision_run is stamped 'failed' so the check-in surface can report it.
+    if 1 not in resumed_outputs:
+        missing_critical = _failed_critical_agents(_phase_1_failed_roles)
+        if missing_critical:
+            decision_run.status = "failed"
+            decision_run.finished_at = datetime.now(timezone.utc)
+            session.commit()
+            log.error(
+                "plan_synthesis.run_completeness_gate_failed",
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                missing_critical=missing_critical,
+            )
+            _emit_event(
+                "plan.synthesis.incomplete",
+                {
+                    "user_id": user_id,
+                    "decision_run_id": decision_run_id,
+                    "missing_critical": missing_critical,
+                },
+            )
+            raise IncompleteFleetError(missing_critical)
 
     # Assemble inputs for Phases 2+.
     portfolio_summary = _pkg._assemble_portfolio_summary(session=session, user_id=user_id)
@@ -1195,6 +1234,61 @@ def _resolve_phase_1_agent_names() -> tuple[str, ...]:
 _PHASE_1_AGENT_NAMES = _resolve_phase_1_agent_names()
 
 
+# ----------------------------------------------------------------------
+# Run-completeness gate (codex-reviewed design, 2026-06-03).
+#
+# Tiered by AGENT_ROLE — the runtime identity, NOT the class name. A
+# name/identity mismatch (e.g. "withdrawal_sequencer" vs
+# "WithdrawalSequencerAgent") would silently bypass the gate — codex's #1
+# flagged risk — so ``test_run_completeness_gate`` pins these roles to the
+# active fleet's real agent_role attributes.
+#
+#   CRITICAL  -> failure ABORTS the run after phase 1. The output is a
+#                load-bearing derivation for the plan's headline numbers
+#                (FI target / retirement age, NVDA glide path, spend, tax,
+#                RSU income). Building or promoting a plan without it lets
+#                the synthesizer fabricate the missing number.
+#   REQUIRED_FOR_PROMOTION -> does not abort phase 1, but the adversarial
+#                challenge must have run before /accept can promote.
+#                (Accept-gate enforcement is a follow-up.)
+#   everything else -> degrade-with-disclosure; never blocks.
+# ----------------------------------------------------------------------
+_CRITICAL_AGENT_ROLES = frozenset({
+    "concentration",          # NVDA deconcentration glide path + caps
+    "withdrawal_sequencer",   # FI bridge / retirement-funding sequence
+    "household_budget",       # canonical spend basis
+    "tax",                    # tax treatment driving net figures
+    "equity_comp_analyst",    # RSU income stream
+})
+_REQUIRED_FOR_PROMOTION_ROLES = frozenset({"plan_critique"})
+
+
+def _active_agent_roles() -> set[str]:
+    """The ``agent_role`` of every agent in the currently-active phase-1 fleet."""
+    _pkg_mod = sys.modules["argosy.orchestrator.flows.plan_synthesis"]
+    roles: set[str] = set()
+    for name in _resolve_phase_1_agent_names():
+        cls = getattr(_pkg_mod, name, None)
+        role = getattr(cls, "agent_role", None)
+        if role:
+            roles.add(role)
+    return roles
+
+
+def _failed_critical_agents(failed_roles: list[str]) -> list[str]:
+    """Critical agent_roles that RAN and FAILED this phase-1 cycle.
+
+    ``failed_roles`` is the structured failed-set returned by
+    ``_run_phase_1_analysts`` (agents whose run raised — schema error,
+    crash, citation-gate, or unavailable input). Only critical agents in
+    the ACTIVE fleet count (the phase-5 agents aren't expected when
+    ``ARGOSY_PHASE5_AGENTS`` is off). An agent skipped as 'not applicable'
+    is never in ``failed_roles``, so it doesn't trip the gate (codex's
+    not-applicable nuance, e.g. a user with no RSUs).
+    """
+    return sorted(set(failed_roles) & _CRITICAL_AGENT_ROLES & _active_agent_roles())
+
+
 _CONTROL_PLANE_KWARGS = frozenset({"decision_id", "turn_id", "intake_session_id"})
 
 
@@ -1883,6 +1977,12 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
 
     reports: list[str] = []
     collected: list[AgentReport] = []
+    # Structured failed-set (codex-reviewed run-completeness gate): the
+    # ``agent_role`` of every analyst whose run RAISED this cycle. The
+    # orchestrator gates on the CRITICAL subset of this set after phase 1.
+    # Tracking the role (not just a text "(FAILED)" marker) means the gate
+    # keys on runtime identity and can't be fooled by prose.
+    failed_roles: list[str] = []
     with ThreadPoolExecutor(max_workers=len(phase_1_agents)) as ex:
         futures = {
             ex.submit(_safe_run_agent, AgentCls, user_id, common_kwargs, decision_run_id): AgentCls
@@ -1899,9 +1999,12 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
                 log.error("plan_synthesis.phase_1.agent_failed",
                           agent=cls.__name__, error=str(exc),
                           decision_run_id=decision_run_id)
-                # Failure of one analyst is recoverable — continue with
-                # the others. Note in the concatenated text so the
-                # synthesizer knows.
+                # Failure of one analyst is recoverable at THIS layer — we
+                # continue running the others — but the role is recorded so
+                # the run-completeness gate can abort if it was a CRITICAL
+                # analyst. Note in the concatenated text so the synthesizer
+                # (and audit trail) sees it too.
+                failed_roles.append(getattr(cls, "agent_role", cls.__name__))
                 reports.append(f"=== {cls.__name__} (FAILED) ===\n{exc}")
 
     # W1.C-v2 — single-writer batch persist at phase boundary. Resolved
@@ -1919,7 +2022,12 @@ def _run_phase_1_analysts(*, session, user_id, baseline, prior_current,
     # Existing call sites that stub this function with ``lambda **kw:
     # "text"`` keep working: the orchestrator detects the tuple shape
     # and defaults to ``[]`` when the stub returns a bare string.
-    return "\n\n".join(reports), collected
+    #
+    # Return shape is now (text, collected, failed_roles) — the third
+    # element feeds the run-completeness gate. The orchestrator detects
+    # 3-tuple / 2-tuple / bare-string shapes, so legacy stubs that return
+    # a string or a 2-tuple keep working (failed_roles defaults to []).
+    return "\n\n".join(reports), collected, failed_roles
 
 
 def _safe_run_agent(AgentCls, user_id: str, kwargs: dict,
