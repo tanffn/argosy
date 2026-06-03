@@ -4,10 +4,13 @@ Thin orchestrator around the PlanNarrativeAgent. Reads the user's
 current plan + identity + baseline-voice excerpt, invokes the agent,
 and returns the bilingual narrative.
 
-Caching: results are cached per ``plan_version_id`` so repeat visits
-to /plan don't re-run the LLM on the same content. Cache is in-memory
-+ process-local — adequate for single-user dev; multi-tenant deploy
-will need a DB-backed cache (out of scope for v1 polish).
+Caching: two layers, both keyed by ``plan_version_id``. A process-local
+``_CACHE`` is the hot layer; ``plan_versions.narrative_json`` is the
+DB-persisted warm layer (migration 0062). The narrative is written
+through to the DB on first generation, so it survives a backend restart
+and the /plan recap loads instantly instead of re-running the LLM. The
+LLM only runs on a genuine miss (a newly-accepted plan, or
+``force_refresh``).
 """
 from __future__ import annotations
 
@@ -201,8 +204,17 @@ async def get_plan_narrative(
     if pv is None:
         return None
     cache_key = (user_id, pv.id)
-    if not force_refresh and cache_key in _CACHE:
-        return _CACHE[cache_key]
+    if not force_refresh:
+        # Hot layer: process-local cache.
+        if cache_key in _CACHE:
+            return _CACHE[cache_key]
+        # Warm layer: DB-persisted narrative (migration 0062). Survives
+        # restarts, so the recap loads instantly instead of re-running
+        # the LLM. Populate the hot cache on a DB hit.
+        persisted = _load_persisted_narrative(pv)
+        if persisted is not None:
+            _CACHE[cache_key] = persisted
+            return persisted
 
     plan_input = _assemble_plan_input(pv)
     # Wave 8 v2 polish: include the current portfolio composition so
@@ -244,11 +256,62 @@ async def get_plan_narrative(
         confidence=str(out.confidence),
     )
     _CACHE[cache_key] = result
+    # Write-through to the DB so the narrative survives a backend restart
+    # (the hot _CACHE is process-local). Best-effort: a persistence
+    # failure must not fail the request — the in-memory result still
+    # serves this process; a later load just regenerates.
+    _persist_narrative(session, pv, result)
     return result
+
+
+def _load_persisted_narrative(pv: PlanVersion) -> PlanNarrativeResult | None:
+    """Reconstruct a PlanNarrativeResult from ``pv.narrative_json``.
+    Returns None when the column is empty or malformed."""
+    raw = getattr(pv, "narrative_json", None)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return PlanNarrativeResult(
+            plan_version_id=pv.id,
+            narrative_md_en=data["narrative_md_en"],
+            narrative_md_he=data["narrative_md_he"],
+            confidence=data.get("confidence", "MEDIUM"),
+        )
+    except (json.JSONDecodeError, KeyError, TypeError):  # pragma: no cover
+        return None
+
+
+def _persist_narrative(
+    session: Session, pv: PlanVersion, result: PlanNarrativeResult
+) -> None:
+    """Write the generated narrative onto ``pv.narrative_json`` (commit).
+    Best-effort — swallow + log on failure."""
+    try:
+        pv.narrative_json = json.dumps(
+            {
+                "narrative_md_en": result.narrative_md_en,
+                "narrative_md_he": result.narrative_md_he,
+                "confidence": result.confidence,
+            },
+            ensure_ascii=False,
+        )
+        session.add(pv)
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+        logger.warning(
+            "plan_narrative.persist_failed user_id=%s plan_version_id=%s err=%s",
+            pv.user_id, pv.id, exc,
+        )
+        try:
+            session.rollback()
+        except Exception:  # pragma: no cover — defensive
+            pass
 
 
 def invalidate_narrative_cache(user_id: str, plan_version_id: int) -> None:
     """Drop the cached narrative for ``user_id`` / ``plan_version_id``.
     Called by the /draft/{id}/accept handler when a new plan promotes
-    to current."""
+    to current. Clears both the hot cache and the persisted column so a
+    forced refresh regenerates from scratch."""
     _CACHE.pop((user_id, plan_version_id), None)

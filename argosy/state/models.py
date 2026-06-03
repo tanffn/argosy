@@ -164,6 +164,14 @@ class PlanVersion(Base):
     horizon_short_md_audit: Mapped[str | None] = mapped_column(Text, nullable=True)
     synthesis_inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Persisted bilingual plan narrative (migration 0062). JSON blob of
+    # {narrative_md_en, narrative_md_he, confidence} produced by the
+    # PlanNarrativeAgent. Written through on first generation so the
+    # /plan recap survives a backend restart and loads instantly instead
+    # of re-running the LLM (the prior cache was process-local only).
+    # NULL until the narrative is first generated for this plan version.
+    narrative_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Provenance Wave A (migration 0019) — points back at the catalog row
     # for the bytes this plan was imported from. Optional because synthesized
     # drafts and superseded historical rows have no source file.

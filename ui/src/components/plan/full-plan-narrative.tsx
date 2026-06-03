@@ -136,7 +136,8 @@ export function FullPlanNarrative({
           </article>
         ) : loading ? (
           <p className="text-sm text-muted-foreground">
-            Generating narrative — first request takes a few seconds…
+            Writing the plan narrative — this runs once per plan (can take a
+            minute or two) and is then saved, so future visits load instantly.
           </p>
         ) : fallback ? (
           <>
