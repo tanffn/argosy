@@ -606,6 +606,23 @@ def run_synthesis(
             user_id=user_id,
         )
 
+    # v4 block B1 — assemble the three plan-doc appendices ONCE here
+    # (sections are global, not per-horizon) and append to
+    # ``horizon_long_md`` only. Long is chosen because the strategic
+    # frame anchors the section-by-section evidence + assumption ledger;
+    # duplicating across medium/short would be wrong (sections + ledger
+    # are not horizon-scoped). Schema-change suggestion documented in
+    # ``render_plan_appendices``: a dedicated ``plan_versions.plan_doc_md``
+    # column would be cleaner long-term but is deferred for v1.
+    _long_horizon_md = _pkg._horizon_md_user(output.long)
+    _appendices = _pkg.render_plan_appendices(
+        output,
+        session=session,
+        decision_run_id=decision_run_id,
+    )
+    if _appendices:
+        _long_horizon_md = _long_horizon_md.rstrip() + "\n\n" + _appendices
+
     draft = PlanVersion(
         user_id=user_id,
         role="draft",
@@ -620,10 +637,15 @@ def run_synthesis(
         horizon_long_json=output.long.model_dump_json(),
         horizon_medium_json=output.medium.model_dump_json(),
         horizon_short_json=output.short.model_dump_json(),
-        # Phase 1 — user-facing variants strip status header, revisit
-        # parentheticals, and the Deltas-vs-prior block. The audit
+        # v4 (block B1, 2026-06-02) — user-facing variants now carry the
+        # Deltas block at the TOP (user-requested counter-decision to
+        # Phase 1's strip). They still drop the status-header suffix and
+        # the per-target ``(stated …; revisit …)`` parentheticals. Audit
         # variants retain everything for the /decisions/<id> dev pane.
-        horizon_long_md=_pkg._horizon_md_user(output.long),
+        # ``horizon_long_md`` additionally carries the v4 appendix block
+        # (assumption ledger + section-by-section evidence + fleet
+        # receipts) assembled just above.
+        horizon_long_md=_long_horizon_md,
         horizon_medium_md=_pkg._horizon_md_user(output.medium),
         horizon_short_md=_pkg._horizon_md_user(output.short),
         horizon_long_md_audit=_pkg._horizon_md_audit(output.long),
@@ -1124,14 +1146,16 @@ _PHASE_1_AGENT_NAMES_CORE = (
     "TechnicalAnalystAgent",
 )
 
-# Phase 5 — two new topic-owner agents, gated behind the
+# Phase 5 — topic-owner agents, gated behind the
 # ``ARGOSY_PHASE5_AGENTS`` env var. When False (default), the fleet
 # stays at its 10-member shape. When True, PlanCoverageAnalyst +
-# WithdrawalSequencerAgent join the fleet so they run on every cycle.
-# See docs/plans/argosy-comprehensive-plan-integration.md §8.
+# WithdrawalSequencerAgent + EquityCompAnalystAgent join the fleet so
+# they run on every cycle. See
+# docs/plans/argosy-comprehensive-plan-integration.md §8.
 _PHASE_5_AGENT_NAMES = (
     "PlanCoverageAnalyst",
     "WithdrawalSequencerAgent",
+    "EquityCompAnalystAgent",
 )
 
 

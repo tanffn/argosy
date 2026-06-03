@@ -362,6 +362,30 @@ class Phase1Inputs:
     domain_kb_files: dict[str, str] = field(default_factory=dict)
     recent_events: str = ""
 
+    # EquityCompAnalystAgent (Phase 5 — gated behind
+    # ``ARGOSY_PHASE5_AGENTS`` but the kwargs must always exist on
+    # Phase1Inputs so ``_safe_run_agent``'s signature-based narrowing
+    # routes them whenever the agent is in the active fleet).
+    #
+    # ``tax_payload`` is reserved for the TaxAnalyst's structured
+    # output. Phase 1 runs every analyst in parallel, so TaxAnalyst's
+    # output is NOT available before EquityCompAnalystAgent.build_prompt
+    # is called in the same phase batch. The field stays ``None`` for
+    # v1 — equity_comp_analyst's prompt declares marginal-rate +
+    # surtax assumptions inline + downgrades confidence accordingly.
+    # A later wave can either (a) move equity_comp to a sub-phase that
+    # runs after the tax analyst, or (b) thread the prior cycle's
+    # cached tax_payload through here.
+    #
+    # ``base_salary_usd`` is derived from identity_yaml's
+    # ``user_employment_gross_annual_nis`` (preferred) /
+    # ``user_employment_gross_annual`` (fallback) divided by the
+    # current USD/NIS rate from the FX service. Best-effort: any
+    # parse/FX failure leaves the field None; the agent's prompt
+    # declares an assumption when None.
+    tax_payload: dict | None = None
+    base_salary_usd: float | None = None
+
 
 def assemble_phase1_inputs(
     session: Session,
@@ -673,6 +697,30 @@ def assemble_phase1_inputs(
             user_id=user_id,
             error=str(exc),
         )
+
+    # 11b. Base-salary anchor for EquityCompAnalystAgent (Phase 5).
+    #      Reads identity_yaml's ``user_employment_gross_annual_nis``
+    #      (preferred) or ``user_employment_gross_annual`` (fallback)
+    #      and converts to USD via the FX service. Defensive: missing
+    #      data, parse error, or FX-unavailable all degrade to None and
+    #      the agent's prompt declares an assumption.
+    try:
+        inputs.base_salary_usd = _assemble_base_salary_usd(session, user_id)
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.base_salary_usd_failed",
+            user_id=user_id,
+            error=str(exc),
+        )
+
+    # 11c. ``tax_payload`` stays at its dataclass default (None) for v1.
+    #      TaxAnalyst runs in the SAME Phase 1 parallel batch as
+    #      EquityCompAnalystAgent, so its structured output isn't
+    #      available before equity_comp's build_prompt is called. The
+    #      agent's prompt is tolerant of ``tax_payload=None`` —
+    #      declares marginal-rate + surtax assumptions inline and
+    #      downgrades confidence. Threading the prior cycle's cached
+    #      tax_payload through here is a future refinement.
 
     # 12. Snapshot summary — always source from the package-level
     #     ``_assemble_portfolio_summary`` helper (resolved via the package
@@ -1023,6 +1071,85 @@ def _assemble_rsu_schedule_summary(session: Session, user_id: str) -> str:
                 footer_bits.append(f"implied NVDA price: ${implied_price}")
             lines.append("  " + " · ".join(footer_bits))
     return "\n".join(lines)
+
+
+def _assemble_base_salary_usd(session: Session, user_id: str) -> float | None:
+    """Derive the user's USD-denominated base salary from identity_yaml.
+
+    Reads identity_yaml and looks for either
+    ``user_employment_gross_annual_nis`` (preferred — explicit NIS) or
+    ``user_employment_gross_annual`` (fallback) and converts to USD via
+    the FX service's USD/NIS rate.
+
+    Best-effort: returns ``None`` when
+
+      * the ``UserContext`` row is absent,
+      * the identity YAML cannot be parsed,
+      * neither salary field is present or numeric, OR
+      * the FX service raises ``FXRateUnavailable`` (no cached USD/NIS
+        rate and offline / unreachable BoI).
+
+    Returning ``None`` (not 0.0) lets EquityCompAnalystAgent's prompt
+    declare an explicit assumption and downgrade confidence on the
+    refresh-grant scenarios rather than silently anchoring on a zero
+    salary.
+    """
+    from argosy.state.models import UserContext
+
+    ctx = session.execute(
+        select(UserContext).where(UserContext.user_id == user_id)
+    ).scalar_one_or_none()
+    if ctx is None or not ctx.identity_yaml:
+        return None
+
+    try:
+        import yaml as _yaml
+
+        data = _yaml.safe_load(ctx.identity_yaml) or {}
+    except Exception:  # noqa: BLE001 - defensive
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    # Prefer the explicit ``_nis``-suffixed key. Fall back to the
+    # legacy unsuffixed key which intake also writes as NIS.
+    raw_nis = (
+        data.get("user_employment_gross_annual_nis")
+        or data.get("user_employment_gross_annual")
+    )
+    if raw_nis is None:
+        return None
+    try:
+        salary_nis = float(raw_nis)
+    except (TypeError, ValueError):
+        return None
+    if salary_nis <= 0:
+        return None
+
+    # Convert via the FX service. Defensive: catch every failure mode
+    # so a flaky FX cache never breaks Phase 1 assembly.
+    try:
+        from argosy.services.fx import FXRateUnavailable, rate
+
+        # rate(USD, NIS) = NIS per 1 USD; divide NIS by it to get USD.
+        usd_per_one = float(rate(session, "USD", "NIS", date.today()))
+        if usd_per_one <= 0:
+            return None
+        return salary_nis / usd_per_one
+    except FXRateUnavailable as exc:
+        log.warning(
+            "plan_synthesis.inputs.base_salary_fx_unavailable",
+            user_id=user_id,
+            error=str(exc),
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001 - defensive
+        log.warning(
+            "plan_synthesis.inputs.base_salary_fx_failed",
+            user_id=user_id,
+            error=str(exc),
+        )
+        return None
 
 
 def _summarize_positions(snapshot) -> str:

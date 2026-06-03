@@ -101,6 +101,22 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "`domain_kb:<path>` for jurisdiction rules, "
             "`plan_section:<heading>` for baseline references, "
             "`prior_current:<id>` for diff context.\n\n"
+            # Codex audit drun 71: synth invented the 15% NVDA target on
+            # medium horizon (no analyst report backed the number).
+            # The synthesizer integrates analyst-derived numbers; it does
+            # NOT derive them itself. Hard rule below names every
+            # number-class the synth has been caught inventing.
+            "DERIVATION OWNERSHIP (HARD RULE — gate-enforced):\n"
+            "  You are FORBIDDEN from inventing NVDA concentration target "
+            "percentages, retirement years, FI thresholds, or asset class "
+            "targets. These MUST come from analyst outputs:\n"
+            "    - NVDA cap            ← concentration_analyst.nvda_cap_pct\n"
+            "    - Retirement year     ← WithdrawalSequencerAgent\n"
+            "    - FI threshold        ← WithdrawalSequencerAgent\n"
+            "    - Asset class targets ← the relevant topic-owner agent\n"
+            "  If an analyst hasn't produced the value, write "
+            "`[derivation pending]` rather than picking a number. The "
+            "synthesizer integrates; it does not derive.\n\n"
             # Schema enforcement: the SDK is called with --json-schema
             # (per use_structured_output=True above) so the model emits
             # schema-validated JSON directly. Concise field summary

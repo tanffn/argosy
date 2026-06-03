@@ -1,25 +1,31 @@
 ---
 topic: israel_section_102_rsu_taxation
 jurisdiction: israel
-last_verified: 1900-01-01
-next_refresh_due: 2026-12-31
+last_verified: 2026-06-02
+next_refresh_due: 2027-01-31
+canonical_location: domain_knowledge/tax/israel/section_102.md
+note: This file is superseded by the canonical refreshed version at the path above. Retained for backwards-compatibility with any agent that imports the `retirement/` path. See the canonical file for 2026 rates, sources, and the precise 24-month-from-end-of-tax-year holding-period rule.
 sources:
-  - url: https://www.taxes.gov.il/Pages/default.aspx
-    retrieved: 1900-01-01
+  - url: https://www.naspp.com/blog/hiring-in-israel--how-section-102-shapes-equity-compensation
+    retrieved: 2026-06-02
     tier: 1
-  - url: https://www.kolzchut.org.il/he/%D7%9E%D7%A1_%D7%A2%D7%9C_%D7%90%D7%95%D7%A4%D7%A6%D7%99%D7%95%D7%AA_%D7%9C%D7%A2%D7%95%D7%91%D7%93%D7%99%D7%9D
-    retrieved: 1900-01-01
+  - url: https://www.vestingstrategy.com/guides/israel-equity-compensation-tax-guide
+    retrieved: 2026-06-02
     tier: 2
-  - url: https://home.treasury.gov/policy-issues/tax-policy/international-tax/tax-treaties
-    retrieved: 1900-01-01
+  - url: https://taxsummaries.pwc.com/israel/individual/income-determination
+    retrieved: 2026-06-02
     tier: 1
+---
+
+> **POINTER:** The canonical Section 102 file is now `domain_knowledge/tax/israel/section_102.md`. The content below is preserved for reference but should not be the agent's primary citation. The canonical file carries the verified 2026 rates and the precise "24 months from the end of the tax year of grant" holding-period rule.
+
 ---
 
 # Section 102 — Israeli RSU and Stock-Option Taxation
 
 `Section 102` of the Israeli Income Tax Ordinance governs the taxation of stock-based compensation (RSUs and options) granted to Israeli employees by their employer (or a parent company, e.g., NVIDIA Corporation granting to NVIDIA Israel employees). The section offers two principal tracks; the choice has very material tax-rate consequences.
 
-> **Verification status:** `last_verified: 1900-01-01`. Domain-refresh agent must verify the two-track structure, the 24-month holding period, and the trustee-administration requirement annually.
+> **Verification status:** Frontmatter on this file says `last_verified: 2026-06-02` and points to the canonical refreshed file at `domain_knowledge/tax/israel/section_102.md`. The prose body below was the pre-refresh draft and has NOT been re-edited to incorporate all 2026 corrections (notably: holding period runs from **end of tax year of grant**, not grant date; and the surtax stack on the capital slice is **5%** not 3%). Use the canonical file for any tax-consequential agent reasoning.
 
 ## The two tracks
 

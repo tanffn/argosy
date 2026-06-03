@@ -30,6 +30,7 @@ from argosy.orchestrator.flows.plan_synthesis import (
     _enforce_speculation_cap,
     _horizon_md_audit,
     _horizon_md_user,
+    render_plan_appendices,
     run_synthesis,
 )
 from argosy.state.models import DecisionRun, PlanVersion
@@ -208,6 +209,18 @@ def _medium_worker(*, session: Session, user_id: str,
             "prior_current_id": prior_current.id if prior_current else None,
             "decision_run_id": decision_run.id,
         })
+        # v4 block B1 — assemble the plan-doc appendices once and append
+        # to ``horizon_long_md`` (parity with the synthesis flow at
+        # argosy/orchestrator/flows/plan_synthesis/orchestrator.py).
+        _long_md = _horizon_md_user(output.long)
+        _appendices = render_plan_appendices(
+            output,
+            session=session,
+            decision_run_id=decision_run.id,
+        )
+        if _appendices:
+            _long_md = _long_md.rstrip() + "\n\n" + _appendices
+
         draft = PlanVersion(
             user_id=user_id, role="draft",
             version_label=f"amend-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M')}",
@@ -218,7 +231,8 @@ def _medium_worker(*, session: Session, user_id: str,
             horizon_medium_json=output.medium.model_dump_json(),
             horizon_short_json=output.short.model_dump_json(),
             # Phase 1 — user-facing vs audit split. See render.py docstring.
-            horizon_long_md=_horizon_md_user(output.long),
+            # v4 — long_md additionally carries the appendix block.
+            horizon_long_md=_long_md,
             horizon_medium_md=_horizon_md_user(output.medium),
             horizon_short_md=_horizon_md_user(output.short),
             horizon_long_md_audit=_horizon_md_audit(output.long),

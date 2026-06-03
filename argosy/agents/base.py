@@ -196,6 +196,15 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # the predictions ledger (source='discord_alpha_report') and
     # monitor_flags (kind='alpha_report_caution'). No Haiku fallback.
     "alpha_report_analyst": "claude-opus-4-7",
+    # Equity-comp analyst (Phase 5 topic owner) — owns the RSU /
+    # equity-compensation projection across three scenarios
+    # (known_grants_only / conservative_decay / optimistic_flat).
+    # Opus per binding preference "accuracy over LLM cost" — the agent
+    # replaces the synthesizer's hand-invented flat-RSU-income
+    # assumption with a year-by-year contractual-vs-discretionary
+    # projection. Downstream consequence is large (FI-date sensitivity
+    # + cashflow + concentration cap all read from the output).
+    "equity_comp_analyst": "claude-opus-4-7",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -271,6 +280,12 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     # writes (predictions + monitor_flags) carry the same downstream-
     # consequence weight as the state_observer / action_proposer band.
     "alpha_report_analyst":    "high",
+    # Equity-comp analyst (Phase 5 topic owner) — owns the 3-scenario
+    # RSU projection. High thinking lets the model weigh contractual
+    # vs discretionary refresh grants, marginal + surtax + Section 102
+    # split, NVDA price path, and per-scenario FI-date sensitivity in
+    # one structured pass.
+    "equity_comp_analyst":     "high",
     # Single-ticker analysts + helpers — moderate (data formatting + light reasoning)
     "concentration":        "medium",
     "fx":                   "medium",
@@ -340,6 +355,12 @@ DEFAULT_THINKING_BUDGET_BY_ROLE: dict[str, int] = {
     "plan_distiller":       2000,
     "intake_extractor":     2000,
     "advisor":              2000,
+    # Equity-comp analyst (Phase 5 topic owner) — 4000 fixed-budget
+    # fallback for the legacy path (when an override clears
+    # thinking_effort). The default path uses adaptive thinking at
+    # effort=high; this entry only kicks in if a YAML override sets
+    # thinking_budget without thinking_effort.
+    "equity_comp_analyst":  4000,
 }
 
 # Per-role max_tokens for the Anthropic Messages API call. Drives the
@@ -400,6 +421,12 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     # (real Meet Kevin posts emit ~3-5 KB of JSON) and leaves room for
     # adaptive thinking under the cap.
     "alpha_report_analyst": 12000,
+    # Equity-comp analyst (Phase 5 topic owner) — output is 3
+    # scenarios × 6 years × per-year vest rows + active_grants[] +
+    # nvda_sell_on_vest_policy markdown + per-scenario assumptions_md
+    # + advisor_intake_questions. 32K leaves ample room for adaptive
+    # thinking (effort=high) under the cap.
+    "equity_comp_analyst": 32000,
     # Conversational / categorical roles — no thinking, fallback-sized.
     "intake": 16000,
     "household_categorizer": 16000,
@@ -464,6 +491,17 @@ DEFAULT_CITATIONS_BY_ROLE: dict[str, bool] = {
     # responder cites its prior agent_report and the FM verdict cites
     # both the original objection and the analyst's response.
     "analyst_responder": True, "fund_manager_dialogue_verdict": True,
+    # Equity-comp analyst (Phase 5 topic owner). Citations ON — the
+    # agent cites locators back into its own inputs
+    # (rsu_vest_schedule.active_grants[i], tax_payload.marginal_il_rate,
+    # fx_payload.usd_nis, base_salary.value) plus any external sources
+    # used for the refresh-grant scenario assumptions (e.g. the Blind
+    # 2026 NVIDIA refresh thread). require_citations on the agent is
+    # False because the locators are not Anthropic Citations API
+    # source_ids; this flag just opts the role into the Anthropic
+    # Citations API path on the api_key backend if document blocks are
+    # ever attached.
+    "equity_comp_analyst": True,
 }
 
 # Anthropic pricing (USD per 1M tokens) for cost tracking.

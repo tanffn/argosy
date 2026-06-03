@@ -430,8 +430,9 @@ Run in parallel; produce structured reports written to state. Reports are persis
 | **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Sonnet (was Haiku — see §3.8) | 0 | yes |
 | **Plan coverage** (`PlanCoverageAnalyst`) | Distillate + portfolio snapshot; the 18 canonical section_ids | Baseline `Section` drafts for canonical sections the user's plan didn't author (e.g. healthcare, insurance, cross-border forms calendar); `unfilled_section_ids` list for sections it intentionally skipped (IPS, client goals, capital sufficiency) | `argosy/quality/canonical_sections.py` | Opus | 4000 | yes (`agent_baseline` kind) |
 | **Withdrawal sequencer** (`WithdrawalSequencerAgent`) | Portfolio snapshot + positions + household budget + plan markdown | FI-bridge waterfall (`fi_bridge: list[BridgeRung]`) + year-by-year `withdrawal_schedule: list[WithdrawalYearRow]` — encodes the IL pension stack (keren_hishtalmut → kupot_gemel → executive_insurance → portfolio_drawdown → pensia) | `argosy/agents/plan_distiller_types.py` typed fields | Opus | 4000 | yes |
+| **Equity comp** (`EquityCompAnalystAgent`) | `identity_yaml.rsu_vest_schedule` (active grants + quarterly vests) + portfolio positions + tax payload + FX + base salary USD | 3-scenario RSU projection (`known_grants_only` / `conservative_decay` at 55% of base / `optimistic_flat` at 90% of base) with per-year `YearVestRow` (gross_shares, gross_usd, gross_nis, net_nis, retention_pct, confidence, source); separates contractual vesting from discretionary refresh grants; NVDA-sell-on-vest policy (default defer with cap-band rebalance); FI-date sensitivity per scenario; advisor intake questions when RSU portal pages 2-4 missing | `argosy/agents/equity_comp_analyst_types.py` typed fields with Pydantic `field_validator` coercion of LLM structured citations/questions back to strings | Opus | 4000 | yes |
 
-Both bottom rows are gated behind `ARGOSY_PHASE5_AGENTS` (default off); when on, the Phase 1 analyst fleet has 12 members instead of 10. See `docs/plans/argosy-comprehensive-plan-integration.md` for the integration-plan context.
+Three bottom rows are gated behind `ARGOSY_PHASE5_AGENTS` (default off); when on, the Phase 1 analyst fleet has 13 members instead of 10. See `docs/plans/argosy-comprehensive-plan-integration.md` for the integration-plan context.
 
 ### 3.2 Researcher Team
 
@@ -497,7 +498,19 @@ Run on their own cadences; not part of any decision team.
 
 **Decision-team agents (referenced from §3.1–§3.5) — code names for fresh-agent grep**:
 
-`FundamentalsAnalystAgent`, `TechnicalAnalystAgent`, `NewsAnalystAgent`, `SentimentAnalystAgent`, `MacroAnalystAgent`, `PlanCritiqueAgent`, `ConcentrationAnalystAgent`, `TaxAnalystAgent`, `FXAnalystAgent` (capital `FX`! note that `argosy.orchestrator.flows.plan_synthesis` re-exports it as `FxAnalystAgent` for ergonomic test monkey-patching), `BullResearcherAgent`, `BearResearcherAgent`, `ResearcherFacilitatorAgent`, `TraderAgent`, `RiskOfficerAgent` (single class; `perspective` kwarg in {`aggressive`, `neutral`, `conservative`} selects voice), `RiskFacilitatorAgent`, `FundManagerAgent`, `PlanLanguageRewriter`, `PlanCoverageAnalyst` (gated), `WithdrawalSequencerAgent` (gated).
+`FundamentalsAnalystAgent`, `TechnicalAnalystAgent`, `NewsAnalystAgent`, `SentimentAnalystAgent`, `MacroAnalystAgent`, `PlanCritiqueAgent`, `ConcentrationAnalystAgent`, `TaxAnalystAgent`, `FXAnalystAgent` (capital `FX`! note that `argosy.orchestrator.flows.plan_synthesis` re-exports it as `FxAnalystAgent` for ergonomic test monkey-patching), `BullResearcherAgent`, `BearResearcherAgent`, `ResearcherFacilitatorAgent`, `TraderAgent`, `RiskOfficerAgent` (single class; `perspective` kwarg in {`aggressive`, `neutral`, `conservative`} selects voice), `RiskFacilitatorAgent`, `FundManagerAgent`, `PlanLanguageRewriter`, `PlanCoverageAnalyst` (gated), `WithdrawalSequencerAgent` (gated), `EquityCompAnalystAgent` (gated — owns RSU/equity-comp 3-scenario projection).
+
+**`ConcentrationAnalystAgent` — derivation contract**. The
+concentration analyst is required to DERIVE its NVDA cap, not accept
+target weights from the synthesizer or any other agent. Output
+schema `ConcentrationAnalystOutput` (`argosy/agents/concentration_analyst_types.py`)
+enforces four mandatory `ConstraintRow` entries — `sequence_cap`,
+`tail_loss_cap`, `risk_contribution_cap`, `tax_liquidity_cap` — and
+`nvda_cap_pct = MIN(constraints[*].value_pct)`. Pydantic
+`@field_validator` rejects partial sets, duplicates, and unknown
+names. The agent also emits `delay_sensitivities` at {0, 1, 2}-year
+delay tolerances and a quarterly `sell_down_glidepath_md` checked
+against per-lot Section 102 windows.
 
 **FundManagerAgent dispatch**. `FundManagerAgent.build_prompt` dispatches on a `decision_kind` kwarg: `"trade_proposal"` (default) builds the per-trade green-light/block prompt, `"plan_revision"` builds the plan-level integrity prompt used by `plan_synthesis_flow` Phase 5. Output schema flips accordingly. Plan-amendment-chat large runs reuse `plan_revision`.
 
@@ -1077,11 +1090,17 @@ full-fidelity audit variants of the horizon markdown (migration
 
 **Pipeline shape** (in order, per `run_synthesis`):
 
-1. Phase 1 analysts (10 default; 12 with `ARGOSY_PHASE5_AGENTS=true`).
-   Phase 5 agents (`PlanCoverageAnalyst`, `WithdrawalSequencerAgent`)
-   run with `use_structured_output=False` — the SDK fails on their
-   complex schemas (nested `Decimal | str | None` unions); Pydantic
-   post-call validation enforces the contract.
+1. Phase 1 analysts (10 default; 13 with `ARGOSY_PHASE5_AGENTS=true`).
+   Phase 5 agents (`PlanCoverageAnalyst`, `WithdrawalSequencerAgent`,
+   `EquityCompAnalystAgent`) run with `use_structured_output=False` —
+   the SDK fails on their complex schemas (nested `Decimal | str | None`
+   unions); Pydantic post-call validation enforces the contract.
+   `EquityCompAnalystOutput` additionally carries Pydantic
+   `field_validator(mode="before")` coercion on `cited_sources`,
+   `advisor_intake_questions`, `nvda_sell_on_vest_policy`, and
+   `assumptions_md` to fold LLM's natural structured output
+   (`{"locator": ..., "claim": ...}` dicts) back into the schema's
+   string contract.
 2. Phase 2 per-horizon researcher debates.
 3. Phase 3 synthesizer → structured `PlanSynthesisOutput`.
 4. `PlanLanguageRewriter` → `_force_preserve_structured_fields` →
@@ -1099,6 +1118,42 @@ full-fidelity audit variants of the horizon markdown (migration
 5. `_enforce_speculation_cap` (post-filter on speculative candidates).
 6. Phase 4 risk team.
 7. Phase 5 fund manager.
+8. **Renderer appendices** (`render_plan_appendices`,
+   `argosy/orchestrator/flows/plan_synthesis/render.py`) — appended to
+   `plan_versions.horizon_long_md` on persist. Three blocks always
+   produced:
+   - `## Appendix — Section-by-section evidence` — renders all
+     `PlanSynthesisOutput.sections[]` (`body_md` + collapsible
+     `<details>` for `evidence` subtree: facts, citations,
+     source_span, assumptions, missing_data). Surfaces ~35KB of
+     analyst reasoning that previously lived only in the JSON column.
+   - `## Appendix — Assumption ledger` — 15-row canonical assumption
+     table (A1–A15: spend basis, inflation, μ, σ, FX, IL marginal
+     tax, surtax, Section 102, NVDA price, retirement style,
+     retirement age, pension liquidity age, social security age,
+     education carve-out, data freshness). v1 hard-coded in the
+     renderer; v2 will derive from agent outputs.
+   - `## Appendix — Fleet receipts` — table of every `agent_reports`
+     row for the current `decision_run_id` (role, output size,
+     model, tokens, cost, key finding). Reader sees the data is
+     real without having to read every report.
+   The user-facing `_horizon_md_user` render now preserves the
+   `## Deltas vs. prior current` block at the TOP of each horizon
+   (no longer stripped). The Phase 0 plan-output gate's
+   `history_leak` regex still flags `## Deltas vs. prior current`;
+   gate is warning-mode by default (`ARGOSY_PLAN_GATE_ENFORCE=false`).
+
+**Derivation ownership (HARD rule, enforced by `plan_synthesizer`
+system prompt)**. The synthesizer is FORBIDDEN from inventing NVDA
+concentration target percentages, retirement years, FI thresholds, or
+asset-class targets. These MUST come from analyst outputs:
+- NVDA cap from `ConcentrationAnalystOutput.nvda_cap_pct` (derived as
+  `MIN(sequence_cap, tail_loss_cap, risk_contribution_cap,
+  tax_liquidity_cap)`)
+- Retirement year from `WithdrawalSequencerAgent` MC output
+- FI threshold from `WithdrawalSequencerAgent`
+If an analyst hasn't produced the value, the synthesizer writes
+`[derivation pending]` rather than picking a number.
 
 See `docs/plans/argosy-comprehensive-plan-integration.md` for the
 integration-plan reference. That doc is the planning-and-deliverables

@@ -64,6 +64,7 @@ from argosy.agents.plan_coverage_analyst import PlanCoverageAnalyst
 from argosy.agents.withdrawal_sequencer_agent import (
     WithdrawalSequencerAgent,
 )
+from argosy.agents.equity_comp_analyst import EquityCompAnalystAgent
 
 # Orchestration entry point and all monkeypatchable phase helpers.
 from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
@@ -129,10 +130,17 @@ from argosy.orchestrator.flows.plan_synthesis.inputs import (
 
 # Rendering helpers (Phase 1: user vs audit split; back-compat alias
 # ``_horizon_md`` resolves to the user variant for stale imports).
+# v4 (block B1) appendix builders are exposed on the package namespace
+# so orchestrator + amendment workers + tests can pull them via
+# ``_pkg.render_plan_appendices`` and friends.
 from argosy.orchestrator.flows.plan_synthesis.render import (
     _horizon_md,
     _horizon_md_audit,
     _horizon_md_user,
+    render_assumption_ledger_appendix,
+    render_fleet_receipts_appendix,
+    render_plan_appendices,
+    render_section_evidence_appendix,
 )
 
 __all__ = [
@@ -172,10 +180,14 @@ __all__ = [
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",
     "_load_user_context_yaml",
-    # Rendering helpers (Phase 1 split)
+    # Rendering helpers (Phase 1 split + v4 block B1 appendices)
     "_horizon_md",
     "_horizon_md_audit",
     "_horizon_md_user",
+    "render_assumption_ledger_appendix",
+    "render_fleet_receipts_appendix",
+    "render_plan_appendices",
+    "render_section_evidence_appendix",
     # Agent classes (monkeypatched in phase-1 test)
     "ConcentrationAnalystAgent",
     "FxAnalystAgent",
@@ -190,4 +202,5 @@ __all__ = [
     # Phase 5 — included in the fleet only when ARGOSY_PHASE5_AGENTS=true
     "PlanCoverageAnalyst",
     "WithdrawalSequencerAgent",
+    "EquityCompAnalystAgent",
 ]

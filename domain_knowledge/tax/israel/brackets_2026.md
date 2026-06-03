@@ -1,57 +1,90 @@
 ---
+title: Israeli Personal Income Tax Brackets — 2026
 topic: israel_personal_income_tax_brackets
 jurisdiction: israel
-last_verified: 1900-01-01
-next_refresh_due: 2026-12-31
+applies_to_year: 2026
+applies_to_user: israeli_resident_individual
+last_verified: 2026-06-02
+verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
+next_refresh_due: 2027-01-31
+source_urls:
+  - https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income
+  - https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
+  - https://mysachar.co.il/articles/en/tax-brackets.html
+  - https://www.gov.il/en/pages/sa120426-1
 sources:
-  - url: https://www.taxes.gov.il/IncomeTax/Pages/IncomeTaxBrackets.aspx
-    retrieved: 1900-01-01
+  - url: https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income
+    retrieved: 2026-06-02
     tier: 1
-  - url: https://www.kolzchut.org.il/he/%D7%9E%D7%93%D7%A8%D7%92%D7%95%D7%AA_%D7%9E%D7%A1_%D7%94%D7%9B%D7%A0%D7%A1%D7%94
-    retrieved: 1900-01-01
+  - url: https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
+    retrieved: 2026-06-02
     tier: 2
+  - url: https://mysachar.co.il/articles/en/tax-brackets.html
+    retrieved: 2026-06-02
+    tier: 2
+  - url: https://www.gov.il/en/pages/sa120426-1
+    retrieved: 2026-06-02
+    tier: 1
 ---
 
-# Israeli Personal Income Tax Brackets
+# Israeli Personal Income Tax Brackets — 2026
 
-Israeli personal income tax (`מס הכנסה ליחיד`) is progressive. Brackets apply to *annual* taxable income from labor, self-employment, and most ordinary sources. Passive investment income (capital gains, dividends, interest) generally has flat rates outside this bracket schedule — see `capital_gains.md`.
+## Summary
 
-> **Verification status:** `last_verified: 1900-01-01`. The numerical brackets below are anchored to the user's existing 2026 plan (`Jacobs_Wealth_Plan.md`) and 2025 published rules but have **not** been freshly verified against `taxes.gov.il`. The domain-refresh agent must verify against the Israel Tax Authority before any agent uses these numbers in a live recommendation.
+Israeli personal income tax (`מס הכנסה ליחיד`) is progressive over seven bands from 10% to 50% (the top band is the 47% statutory bracket plus the 3% `mas yesef` surtax). Brackets apply to *annual* taxable income from labor, self-employment, and other "personal-exertion" sources. Passive investment income (capital gains, dividends, interest) is taxed under flat-rate regimes outside this schedule — see `capital_gains.md`. **Tax year 2026 brackets reflect Amendment 288 to the Income Tax Ordinance**, which widened the 20% and 31% bands effective 1 January 2026.
 
-## 2026 brackets — labor and ordinary income
+## Rates / brackets / amounts (2026)
 
-The Israeli Income Tax Ordinance (Section 121) sets bracketed marginal rates. Brackets are quoted in NIS of annual taxable income.
+### Annual taxable income (NIS) — labor / personal-exertion sources
 
-| Bracket (annual taxable NIS) | Marginal rate |
-|---|---|
-| 0 – 84,120 | 10% |
-| 84,121 – 120,720 | 14% |
-| 120,721 – 193,800 | 20% |
-| 193,801 – 269,280 | 31% |
-| 269,281 – 560,280 | 35% |
-| 560,281 – 721,560 | 47% |
-| 721,561 + | 47% (and `surtax.md` adds an additional 3% over the surtax threshold) |
+| Bracket (annual NIS) | Bracket (monthly NIS, ÷12) | Marginal rate |
+|---|---|---|
+| 0 – 84,120 | 0 – 7,010 | 10% |
+| 84,121 – 120,720 | 7,011 – 10,060 | 14% |
+| 120,721 – 228,000 | 10,061 – 19,000 | **20%** (widened from 193,800 in 2025 by Amendment 288) |
+| 228,001 – 301,200 | 19,001 – 25,100 | **31%** (widened from 269,280 in 2025 by Amendment 288) |
+| 301,201 – 560,280 | 25,101 – 46,690 | 35% |
+| 560,281 – 721,560 | 46,691 – 60,130 | 47% |
+| 721,561 + | 60,131 + | **50%** (= 47% + 3% `mas yesef` surtax — see `surtax.md`) |
 
-Notes:
+Source: PwC Israel Individual Tax Summary (last reviewed 1 Jan 2026); CWS Israel 2026 Tax Changes Guide; Mysachar 2026 brackets table; Israel Tax Authority gov.il notice on Amendment 288.
 
-- The **47% top bracket** kicks in around 560k NIS of annual labor income. RSU vesting at NVIDIA Israel typically pushes a senior employee into the 47% bracket on the marginal RSU income.
-- The **surtax** (`tosefet mas`, `מס יסף`) — see `surtax.md` — adds another 3% on the portion of total taxable income above the high-income threshold (~721k NIS in recent years; verify annually).
-- Personal credit points (`נקודות זיכוי`) reduce the gross tax bill and effectively raise the entry point of the schedule. A typical Israeli resident has 2.25 credit points; a married parent has more. Each credit point is worth ~242 NIS/month.
+### Credit point value (`נקודת זיכוי`, 2026)
 
-## How agents should use this file
+- **₪242 per month** = ₪2,904 per year per credit point.
+- Subtracted from gross tax due (not from taxable income).
+- Typical Israeli resident male: 2.25 points; female: 2.75 points; married parent gets additional points per child under 18.
+- Source: Mysachar 2026 guide.
 
-- **Cite this file** for any claim about Israeli marginal tax rates on labor or ordinary income.
-- For **passive investment income** (CGT, dividends, interest), cite `capital_gains.md` instead — those are flat rates.
-- For **RSU taxation**, reference both this file and `retirement/section_102.md`.
-- Numbers are NIS per year; convert at the FX rate on the relevant snapshot (currently ~2.94 USD/NIS per the May 2026 portfolio).
-- If `last_verified` is older than 12 months OR is `1900-01-01`, agents must report `confidence=low` and prompt the domain-refresh agent.
+## Application notes
+
+- **NVIDIA Israel salary band:** A senior employee with NIS ~500k+ annual gross labor income is firmly in the 47% bracket on marginal RSU income; once total income passes ₪721,560, the marginal rate becomes 50% (47% + 3% surtax).
+- **Amendment 288 effect for this user:** The widened 20%/31% bands save ~₪400–800/month at the ₪19k–₪25k/month band but do **not** change the marginal rate on the user's RSU vesting NIS — those marginal NIS land in the 47%/50% bracket regardless.
+- **Capital gains stay separate.** This file does *not* govern CGT/dividend/interest rates — those are flat 25%/30% under the schedule in `capital_gains.md`.
+- **Personal credit points** reduce the tax bill at the bottom of the schedule; they do **not** offset marginal RSU/CG tax for a high-income earner who has already exhausted them.
+- **Confidence:** numbers verified against PwC + Israel Tax Authority publication for tax year 2026. Use `confidence=high` until next annual refresh.
+
+## Stack with related rates
+
+| Income source | Statutory marginal at top | + Surtax (`mas yesef`) | + NI/health | Final marginal |
+|---|---|---|---|---|
+| Labor (RSU vest ordinary slice) | 47% | + 3% above ₪721,560 | Already ceiling-exhausted at this income | **~50%** |
+| Capital gain (NVDA tranche, 102 capital) | 25% | + 3% (general) + 2% (capital-source) above ₪721,560 = **+ 5%** | None (CG exempt) | **~30%** |
+| US-source dividend (Schwab) | 25% Israeli (15% US WHT creditable) | + 5% (3% general + 2% capital) above threshold | None | **~30%** (gap to US WHT paid via tofes 1301) |
+
+## Sources
+
+- [PwC Israel — Individual — Taxes on personal income](https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income) — accessed 2026-06-02
+- [CWS Israel — Israeli Tax Changes 2026: Complete Guide](https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/) — accessed 2026-06-02
+- [Mysachar — How Israeli Tax Brackets Work, A 2026 Guide](https://mysachar.co.il/articles/en/tax-brackets.html) — accessed 2026-06-02
+- [Israel Tax Authority — gov.il — Income Tax Amendment 288 notice](https://www.gov.il/en/pages/sa120426-1) — accessed 2026-06-02
 
 ## Refresh cadence
 
-- **Annual (January)** — Knesset typically updates brackets and credit-point values for the new tax year.
-- **Ad-hoc** — any mid-year amendment (e.g., a budget law) triggers an immediate refresh.
+- **Annual (January)** — Knesset adjusts brackets and credit-point values. Re-verify against `taxes.gov.il` and PwC tax summary.
+- **Ad-hoc** — any mid-year amendment (budget law) triggers immediate refresh.
 
 ## Open issues
 
-- The 2026 bracket boundaries above are the user's Plan v2.0 working numbers. Until the domain-refresh agent verifies against `taxes.gov.il`, treat with caution.
-- Joint filing and married-couple credit-point interactions are not modeled here; covered in a future `married_filing.md` once we verify rules.
+- Joint-filing and married-couple credit-point interactions are not modeled here.
+- Real-estate `Mas Shevach` is out of scope; covered in a future `real_estate.md`.

@@ -31,6 +31,10 @@ def test_phase1_inputs_dataclass_has_all_required_fields():
         "indicators_payload",
         "plan_label", "plan_markdown", "snapshot_label", "snapshot_summary",
         "user_context_yaml", "recent_events",
+        # Phase 5 — EquityCompAnalystAgent. Field names match the
+        # agent's build_prompt kwarg names so _safe_run_agent's
+        # signature-narrowing routes them correctly.
+        "tax_payload", "base_salary_usd",
     }
     actual_fields = set(Phase1Inputs.__dataclass_fields__.keys())
     missing = required_fields - actual_fields
@@ -991,3 +995,226 @@ def test_assemble_phase1_inputs_populates_domain_kb_files_from_tax_dir(
         inputs.domain_kb_files["domain_knowledge/tax/israel/capital_gains.md"]
         == "CG content for test"
     )
+
+
+# ---------------------------------------------------------------------------
+# EquityCompAnalystAgent (Phase 5) wiring — tax_payload + base_salary_usd
+# ---------------------------------------------------------------------------
+
+
+def test_phase1_inputs_defaults_tax_payload_and_base_salary_to_none():
+    """Phase 5 fields default to None on the dataclass (best-effort —
+    Phase 1 cannot fill them in until later phases). EquityCompAnalystAgent
+    handles None gracefully + declares an assumption."""
+    from argosy.orchestrator.flows.plan_synthesis.inputs import Phase1Inputs
+
+    inputs = Phase1Inputs()
+    assert inputs.tax_payload is None
+    assert inputs.base_salary_usd is None
+
+
+def test_assemble_populates_base_salary_usd_from_identity_yaml(
+    tmp_path, monkeypatch,
+):
+    """``assemble_phase1_inputs`` reads
+    identity_yaml.user_employment_gross_annual_nis and converts to USD
+    via the FX service."""
+    from argosy.orchestrator.flows.plan_synthesis import inputs as inputs_mod
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        assemble_phase1_inputs,
+    )
+    from argosy.state.models import UserContext
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    try:
+        from argosy.config import reload_settings
+        reload_settings()
+    except Exception:
+        pass
+
+    # Stub the FX service so the test doesn't depend on the live BoI
+    # cache. Return USD/NIS = 3.65 — same shape the live service emits.
+    from decimal import Decimal
+
+    def _fake_rate(_session, _from_ccy, _to_ccy, _on):
+        return Decimal("3.65")
+
+    import argosy.services.fx as fx_mod
+    monkeypatch.setattr(fx_mod, "rate", _fake_rate)
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+    session.add(UserContext(
+        user_id="ariel",
+        identity_yaml=(
+            "user_employment_employer: NVIDIA\n"
+            "user_employment_gross_annual_nis: 745431\n"
+            "user_employment_gross_annual: 720000\n"
+        ),
+    ))
+    session.commit()
+
+    inputs = assemble_phase1_inputs(
+        session,
+        user_id="ariel",
+        baseline=None,
+        prior_current=None,
+        decision_audit_token="plan-synth-eqc-1",
+    )
+    # 745431 NIS / 3.65 NIS-per-USD ≈ 204,228 USD
+    assert inputs.base_salary_usd is not None
+    assert abs(inputs.base_salary_usd - (745431.0 / 3.65)) < 0.5
+    # tax_payload stays None — Phase 1 parallel batch can't populate it.
+    assert inputs.tax_payload is None
+
+
+def test_assemble_base_salary_usd_falls_back_to_unsuffixed_key(
+    tmp_path, monkeypatch,
+):
+    """When ``user_employment_gross_annual_nis`` is absent the helper
+    falls back to ``user_employment_gross_annual`` (intake also writes
+    that key as NIS)."""
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        assemble_phase1_inputs,
+    )
+    from argosy.state.models import UserContext
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    try:
+        from argosy.config import reload_settings
+        reload_settings()
+    except Exception:
+        pass
+
+    from decimal import Decimal
+
+    def _fake_rate(_session, _from_ccy, _to_ccy, _on):
+        return Decimal("3.65")
+
+    import argosy.services.fx as fx_mod
+    monkeypatch.setattr(fx_mod, "rate", _fake_rate)
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+    session.add(UserContext(
+        user_id="ariel",
+        identity_yaml="user_employment_gross_annual: 720000\n",
+    ))
+    session.commit()
+
+    inputs = assemble_phase1_inputs(
+        session,
+        user_id="ariel",
+        baseline=None,
+        prior_current=None,
+        decision_audit_token="plan-synth-eqc-2",
+    )
+    assert inputs.base_salary_usd is not None
+    assert abs(inputs.base_salary_usd - (720000.0 / 3.65)) < 0.5
+
+
+def test_assemble_base_salary_usd_none_when_no_identity_yaml(
+    tmp_path, monkeypatch,
+):
+    """No UserContext row -> base_salary_usd stays None (agent's prompt
+    declares the assumption)."""
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        assemble_phase1_inputs,
+    )
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    try:
+        from argosy.config import reload_settings
+        reload_settings()
+    except Exception:
+        pass
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+    session.commit()
+
+    inputs = assemble_phase1_inputs(
+        session,
+        user_id="ariel",
+        baseline=None,
+        prior_current=None,
+        decision_audit_token="plan-synth-eqc-3",
+    )
+    assert inputs.base_salary_usd is None
+
+
+def test_assemble_base_salary_usd_none_on_fx_unavailable(
+    tmp_path, monkeypatch,
+):
+    """When the FX service raises FXRateUnavailable (no cached USD/NIS
+    rate) the helper degrades to None rather than propagating."""
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        assemble_phase1_inputs,
+    )
+    from argosy.state.models import UserContext
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    try:
+        from argosy.config import reload_settings
+        reload_settings()
+    except Exception:
+        pass
+
+    import argosy.services.fx as fx_mod
+
+    def _boom(*_a, **_kw):
+        raise fx_mod.FXRateUnavailable("synthetic: no USD/NIS cache")
+
+    monkeypatch.setattr(fx_mod, "rate", _boom)
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+    session.add(UserContext(
+        user_id="ariel",
+        identity_yaml="user_employment_gross_annual_nis: 745431\n",
+    ))
+    session.commit()
+
+    inputs = assemble_phase1_inputs(
+        session,
+        user_id="ariel",
+        baseline=None,
+        prior_current=None,
+        decision_audit_token="plan-synth-eqc-4",
+    )
+    assert inputs.base_salary_usd is None
+
+
+def test_assemble_base_salary_usd_none_on_malformed_yaml(
+    tmp_path, monkeypatch,
+):
+    """Garbage identity_yaml degrades to None — never raises."""
+    from argosy.orchestrator.flows.plan_synthesis.inputs import (
+        assemble_phase1_inputs,
+    )
+    from argosy.state.models import UserContext
+
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    try:
+        from argosy.config import reload_settings
+        reload_settings()
+    except Exception:
+        pass
+
+    session = _make_session()
+    session.add(User(id="ariel", plan="free"))
+    session.add(UserContext(
+        user_id="ariel",
+        # Invalid YAML — a tab + mismatched indent.
+        identity_yaml="\tnot: valid\n  yaml: -",
+    ))
+    session.commit()
+
+    inputs = assemble_phase1_inputs(
+        session,
+        user_id="ariel",
+        baseline=None,
+        prior_current=None,
+        decision_audit_token="plan-synth-eqc-5",
+    )
+    assert inputs.base_salary_usd is None

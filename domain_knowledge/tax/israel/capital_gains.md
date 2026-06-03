@@ -1,70 +1,112 @@
 ---
+title: Israeli Capital Gains, Dividends, and Interest — 2026
 topic: israel_capital_gains_and_investment_income
 jurisdiction: israel
-last_verified: 1900-01-01
-next_refresh_due: 2026-12-31
+applies_to_year: 2026
+applies_to_user: israeli_resident_individual
+last_verified: 2026-06-02
+verified_by: argosy-domain-refresh-agent (claude-opus-4-7) + web-search verification
+next_refresh_due: 2027-01-31
+source_urls:
+  - https://taxsummaries.pwc.com/israel/individual/income-determination
+  - https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income
+  - https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
 sources:
-  - url: https://www.taxes.gov.il/Pages/default.aspx
-    retrieved: 1900-01-01
+  - url: https://taxsummaries.pwc.com/israel/individual/income-determination
+    retrieved: 2026-06-02
     tier: 1
-  - url: https://www.kolzchut.org.il/he/%D7%9E%D7%A1_%D7%A8%D7%95%D7%95%D7%97%D7%99_%D7%94%D7%95%D7%9F
-    retrieved: 1900-01-01
+  - url: https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income
+    retrieved: 2026-06-02
+    tier: 1
+  - url: https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/
+    retrieved: 2026-06-02
     tier: 2
 ---
 
 # Israeli Capital Gains, Dividends, and Interest
 
-Israel taxes most passive investment income at **flat statutory rates**, separate from the labor-income brackets (`brackets_2026.md`). Different rates apply to *real* (inflation-adjusted) gains versus nominal gains for assets acquired before specific historical dates; for assets acquired after 2003 the simpler "real-gain at 25%" rule generally governs.
+## Summary
 
-> **Verification status:** `last_verified: 1900-01-01`. Numbers below are the long-standing post-2003 statutory regime as cited in `Jacobs_Wealth_Plan.md` and Bogleheads-Israel community guidance. Domain-refresh agent must verify against the Israel Tax Authority before any agent uses these numbers in a live recommendation.
+Israel taxes investment income for individual residents at **flat statutory rates**, separate from the labor-income progressive schedule (`brackets_2026.md`). The standard rate is **25%** on the *real* (inflation-adjusted) capital gain for securities purchased on or after 1 January 2003. A **30%** rate applies to "substantial shareholders" (≥10% holding) on both capital gains and dividends. The 2026 surtax overlay (`surtax.md`) can add up to **5%** (3% general + 2% capital-source) on the portion of capital income above ₪721,560/year, taking the effective marginal CGT to **30%** in the surtax zone.
 
-## Headline rates (post-2003 acquisitions, individual residents)
+## Rates / brackets / amounts (2026)
 
-| Income type | Statutory rate | Notes |
+### Statutory rates — individual residents, post-2003 acquisitions
+
+| Income type | Statutory rate | Source / notes |
 |---|---|---|
-| Capital gains on securities (real gain) | **25%** | Long- and short-term treated identically; computed on inflation-adjusted basis |
-| Capital gains for "substantial shareholder" (≥10% holding) | 30% | Flagged here; not relevant for the user's portfolio of public ETFs/stocks |
-| Dividends from publicly-traded shares | **25%** | 30% if "substantial shareholder" |
-| Interest on shekel deposits / NIS bonds | **15%** (real) or 25% (nominal) | Flat regardless of bracket |
-| Interest on foreign-currency / linked instruments | **25%** | Flat |
+| Capital gains on securities — real gain | **25%** | PwC: "real gain ... is generally taxed at a rate of 25% for individuals" |
+| Capital gains — "substantial shareholder" (≥10% stake at sale or in prior 12 months) | **30%** | PwC; not relevant for ETF/public-stock retail portfolio |
+| Dividends — publicly-traded shares (individual) | **25%** | PwC: "Dividends shall generally be subject to tax at the rate of 25%" |
+| Dividends — substantial shareholder | **30%** | PwC |
+| Interest — general (capital-source) | **25%** | PwC |
+| Interest — traded securities / financial-institution deposits not CPI-linked | **15%** | PwC preferential rate |
+| **Inflationary component of pre-1994 gains** | 10% | Pre-1994 portion taxed at 10%; post-1994 inflationary component is exempt |
 
-The **`tosefet mas` / surtax** (see `surtax.md`) adds an additional 3% on top of investment income above the surtax threshold. So an NVDA-share sale that pushes total income above the surtax threshold faces an effective 28% marginal CGT, not 25%.
+Source: PwC Israel — Individual — Income determination (last reviewed 1 January 2026).
 
-## Withholding at source
+### Surtax overlay on top of the above (2026)
 
-- Israeli broker/bank custodians (e.g., Leumi) withhold 25% on capital gains and dividends from securities held in Israeli accounts.
-- Foreign-broker accounts (e.g., Schwab) do *not* automatically withhold Israeli tax; the resident must file and pay via annual `דוח שנתי` (`tofes 1301`) and pay the gap.
-- US-source dividends at Schwab are subject to 15% US withholding under the US-Israel treaty (W-8BEN required) — see `treaties/us_israel.md`. The Israeli resident then pays the *difference* up to 25% on the Israeli return (10% additional on top of the 15% already withheld in the US), plus surtax if applicable.
+| Layer | Rate | Threshold | Effective marginal CGT in surtax zone |
+|---|---|---|---|
+| `mas yesef` general | +3% | ₪721,560/yr total income | 25% + 3% = 28% |
+| Additional capital-source surtax | +2% | ₪721,560/yr capital-source income | 25% + 3% + 2% = **30%** |
 
-## Loss netting and carryforward
+See `surtax.md` for full mechanics.
 
-- Realized capital losses can be netted against capital gains in the same year.
-- Net realized losses can be carried forward indefinitely until offset against future capital gains (verify against current ITA guidance).
-- Losses **cannot** be netted against ordinary income (labor, business). Losses on a stock sale at Schwab cannot reduce the user's salary tax bill.
-- **Tax-loss harvesting** is therefore a useful tool to stockpile carryforwards before a future large NVDA tranche.
+## Application notes
 
-## Real vs nominal gain mechanics
+### Real vs nominal gain mechanics
 
-For securities in shekel:
-- **Real gain** = (sale price - purchase price) - inflation adjustment of cost basis (CPI between purchase and sale dates).
-- For foreign-currency securities, the FX-related gain may be partially exempt as a `שינוי שער חליפין` (exchange-rate change) component depending on the asset class and the exact rule path; rules are intricate and the user should rely on `Resources/Jacobs_Wealth_Plan.md` Appendix B and a tax advisor for actual filings.
+- Real gain = sale price − (cost basis × (CPI at sale ÷ CPI at purchase)).
+- The inflationary component accrued **after 1 January 1994** is **exempt**.
+- The inflationary component accrued **before 1 January 1994** is taxed at 10%.
+- Foreign-currency securities (e.g., NVDA at Schwab): rules treat FX-related component specially; consult a tax advisor for any high-stakes filing. The user's Plan v2.0 Appendix B covers the practical Schwab→Israeli-return reconciliation.
 
-## Mas Shevach and Mas Rechisha (real estate)
+### Withholding at source
 
-Capital gains on **Israeli real estate** are *not* taxed at the 25% securities rate; they fall under `Mas Shevach` (`מס שבח`). This file does **not** cover real-estate gains; that lives in a future `real_estate.md`.
+- **Israeli custodians** (Leumi, Discount, Mizrahi-Tfahot): withhold 25% on capital gains and dividends from securities held in Israeli accounts at the time of realization.
+- **Foreign custodians** (Schwab, Interactive Brokers, etc.): do **not** withhold Israeli tax. The Israeli resident files annually (`דוח שנתי` / tofes 1301) and pays the gap.
+- **US-source dividends at Schwab:** 15% US WHT under the US-Israel treaty (W-8BEN required — `treaties/us_israel.md`). Israeli resident credits the 15% against the 25% Israeli liability and pays the 10% gap on the Israeli return; surtax (+3% / +2%) is paid on top with no US credit because the surtax sits above the 25%.
 
-## How agents should use this file
+### Loss netting and carryforward
 
-- **Cite this file** for every claim about CGT, dividend tax, or interest tax for the user's securities portfolio.
-- For the Israeli surtax overlay, also cite `surtax.md`.
-- For US-source dividends specifically, also cite `treaties/us_israel.md` for the 15% US WHT layer.
-- If `last_verified` is older than 12 months OR is `1900-01-01`, report `confidence=low`.
+- Realized capital losses net against capital gains in the **same year** (across securities).
+- Net realized losses carry forward **indefinitely** until offset against future capital gains.
+- **Capital losses cannot offset ordinary income** (salary, business, RSU ordinary slice).
+- Tax-loss harvesting is a useful tool to bank carryforwards before a planned large NVDA tranche.
+
+### US-domiciled vs UCITS (Ireland-domiciled) ETFs — dividend layering
+
+- US-domiciled ETFs (e.g., VOO, VTI): 15% US WHT on dividend → 25% Israeli (credit 15%) → ~25% all-in for dividend tax (plus surtax above threshold).
+- UCITS (Ireland-domiciled) ETFs (e.g., CSPX, VWRA): Irish-internal 15% treaty WHT on the underlying US dividends; the Israeli investor receives the *fund's* distribution with **0% additional WHT at the Israeli level externally** but the fund-internal WHT is already a 15% drag. Net effective Israeli external tax remains 25% on the distribution received.
+- **The estate-tax angle** (`treaties/us_israel.md`) is the dominant reason Plan v2.0 prefers UCITS for non-NVDA US exposure — not the income-tax angle, which roughly washes out.
+
+### Mas Shevach (real estate)
+
+- Capital gains on **Israeli real estate** are **not** taxed under this 25% securities regime. They fall under `Mas Shevach` (`מס שבח`) with its own bracketing and indexation rules. Out of scope here.
+
+## Stack with related rates
+
+| Scenario | Israeli statutory | US WHT | Surtax stack | Net effective |
+|---|---|---|---|---|
+| NVDA tranche sale (102 Capital, post-24-mo) | 25% | 0% (NRA capital gain) | +3% +2% above threshold | **~30%** marginal in surtax zone |
+| US-listed ETF dividend at Schwab | 25% (15% US WHT creditable) | 15% withheld | +3% +2% on Israeli return | **~30%** marginal in surtax zone |
+| UCITS distribution (CSPX) | 25% | 0% external (15% internal drag) | +3% +2% | **~30%** marginal in surtax zone |
+| Substantial-shareholder dividend | 30% | varies | +3% +2% | up to 35% in surtax zone |
+
+## Sources
+
+- [PwC Israel — Individual — Income determination](https://taxsummaries.pwc.com/israel/individual/income-determination) — accessed 2026-06-02
+- [PwC Israel — Individual — Taxes on personal income](https://taxsummaries.pwc.com/israel/individual/taxes-on-personal-income) — accessed 2026-06-02
+- [CWS Israel — Israeli Tax Changes 2026: Complete Guide](https://www.cwsisrael.com/israeli-tax-changes-2026-complete-guide/) — accessed 2026-06-02
 
 ## Refresh cadence
 
-- **Annual (January)** — verify rate persists; Israeli budget laws have historically tweaked these (e.g., the "single-tier" rate replaced the older bifurcated long/short scheme in 2003).
-- **On legislation** — any Knesset bill touching CGT triggers refresh.
+- **Annual (January)** — re-verify the 25% / 30% / 15% / 5% surtax stack against PwC + Israel Tax Authority.
+- **On legislation** — any Knesset bill touching CGT or surtax triggers refresh.
 
 ## Open issues
 
-- The user's CSPX/UCITS holdings (Ireland-domiciled) experience the Irish 15% treaty WHT internally rather than US WHT — but the Israeli investor's *outside* WHT is zero on the UCITS distribution itself. Net Israeli tax remains 25% on dividends. This subtle layering is the reason Plan v2.0 prefers UCITS for non-NVDA US exposure.
+- Edge-case FX treatment on Schwab-sourced gains where USD strengthens between vest and sale: the FX component allocation between "real gain" and "exchange-rate adjustment" is intricate; defer to a tax advisor for any tranche > $100k of gain.
+- The user's CSPX (UCITS) basis tracking through migration events (provider changes, share-class conversions) is not modeled here.
