@@ -17,6 +17,11 @@ interface Retirement {
   bull: number | null;
   assumed: number;
   todayAge: number;
+  // Sourced from the projection's `assumptions` so the scenario labels
+  // describe what the engine actually computes (a ±1σ portfolio-value
+  // band at the base real return) rather than fabricated return rates.
+  realReturn: number; // real_return_annual, e.g. 0.055
+  sigma: number; // sigma_annual, e.g. 0.18
 }
 
 /**
@@ -52,6 +57,8 @@ export function ExpectedRetirementAgeCard({ userId }: Props) {
           bull: d.retire_ready_age_bull,
           assumed: d.retirement_age_assumed,
           todayAge: d.today_age_years,
+          realReturn: d.assumptions.real_return_annual,
+          sigma: d.assumptions.sigma_annual,
         });
       })
       .catch((e: unknown) => {
@@ -116,41 +123,59 @@ export function ExpectedRetirementAgeCard({ userId }: Props) {
           </StatusPill>
         </CardTitle>
         <CardDescription>
-          Earliest month where projected total monthly income (portfolio real
-          return + pension annuity) covers inflated expenses, under three
-          return scenarios. Driven by the cashflow projection on the
-          current plan draft.
+          Earliest month where projected monthly income (portfolio real-return
+          drawdown + pension annuity) covers inflated expenses. The base case
+          uses the plan&apos;s {(data.realReturn * 100).toFixed(1)}% real return;
+          the downside / upside columns apply a ±1σ (σ={(data.sigma * 100).toFixed(0)}%)
+          portfolio-value band around it — they are not separate return
+          assumptions. Driven by the cashflow projection on the current plan.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <AgeBlock label="Base (4.5% real)" age={base} todayAge={data.todayAge} prominent />
-          <AgeBlock label="Bear (0% real)" age={data.bear} todayAge={data.todayAge} />
-          <AgeBlock label="Bull (6% real)" age={data.bull} todayAge={data.todayAge} />
+          <AgeBlock
+            label={`Base case (${(data.realReturn * 100).toFixed(1)}% real)`}
+            age={base}
+            todayAge={data.todayAge}
+            prominent
+          />
+          <AgeBlock label="Downside (−1σ band)" age={data.bear} todayAge={data.todayAge} />
+          <AgeBlock label="Upside (+1σ band)" age={data.bull} todayAge={data.todayAge} />
         </div>
-        <div className="mt-3 text-[11px] text-muted-foreground">
-          Plan&apos;s assumed retirement age: <span className="font-mono">{data.assumed}</span>{" "}
-          (vs base feasibility{" "}
+        <div className="mt-3 rounded-md border border-border/60 bg-muted/30 p-3 text-[11px] leading-relaxed text-muted-foreground">
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-foreground/80">
+            Reconciling this with the plan&apos;s age {data.assumed}
+          </div>
           {base !== null ? (
-            <span
-              className={
-                base <= data.assumed
-                  ? "font-mono text-emerald-400"
-                  : "font-mono text-amber-400"
-              }
-            >
-              {base.toFixed(1)}
-            </span>
+            <>
+              The plan targets retirement at{" "}
+              <span className="font-mono text-foreground">{data.assumed}</span>,
+              but the projection says the base case is already feasible at{" "}
+              <span className="font-mono text-emerald-400">{base.toFixed(1)}</span>
+              {base <= data.todayAge + 0.25 ? " — i.e. today" : ""}.{" "}
+              {base <= data.todayAge + 0.25 ? (
+                <>
+                  Portfolio real-return income plus pension annuity already
+                  covers projected expenses at the current balance, so you clear
+                  the feasibility bar now. The three columns read the same age
+                  because the ±1σ band has zero spread at t=0 and the base case
+                  is already past the threshold — not a display bug.{" "}
+                </>
+              ) : null}
+              The ~{Math.max(0, data.assumed - base).toFixed(0)}-year gap between{" "}
+              <span className="font-mono">{base.toFixed(1)}</span> and the
+              plan&apos;s <span className="font-mono">{data.assumed}</span> is a
+              margin, not a constraint — see{" "}
+              <Link href="/plan" className="text-info hover:underline">/plan</Link>{" "}
+              for the assumptions behind the target age.
+            </>
           ) : (
-            <span className="font-mono">—</span>
-          )}
-          ).{" "}
-          {base !== null && base <= data.assumed ? (
-            <>The plan&apos;s target age is reachable under the base scenario.</>
-          ) : base !== null ? (
-            <>The plan&apos;s target is earlier than what the base scenario supports — either delay retirement or push the savings rate.</>
-          ) : (
-            <>No base-scenario crossing inside the 40-year projection horizon — see /plan for the assumptions feeding this.</>
+            <>
+              No base-case feasibility crossing inside the projection horizon —
+              see{" "}
+              <Link href="/plan" className="text-info hover:underline">/plan</Link>{" "}
+              for the assumptions feeding this.
+            </>
           )}
         </div>
       </CardContent>
