@@ -2518,6 +2518,102 @@ class RewriterInvariantError(RuntimeError):
         self.violations = violations
 
 
+_REWRITER_FRESHNESS = {"long": "annual", "medium": "quarterly", "short": "monthly"}
+
+
+def _rewriter_stub_horizon(name: str):
+    """A minimal valid HorizonSection used to pad the slices the rewriter
+    isn't rewriting on a given call. Carries no prose, so the model has
+    nothing to translate for it; it exists only to satisfy
+    PlanSynthesisOutput's required long/medium/short fields."""
+    from argosy.agents.plan_synthesizer_types import HorizonSection
+
+    return HorizonSection(
+        horizon=name,  # type: ignore[arg-type]
+        freshness_expected=_REWRITER_FRESHNESS[name],  # type: ignore[arg-type]
+        status="no_change",
+        posture="",
+    )
+
+
+def _rewrite_output_parallel(
+    *,
+    output: PlanSynthesisOutput,
+    user_id: str,
+    decision_id: int | None,
+) -> PlanSynthesisOutput:
+    """Rewrite the four prose-bearing slices concurrently and merge.
+
+    The four slices — the ``long`` / ``medium`` / ``short`` horizons and
+    the flat ``sections`` list — carry independent prose (the rewriter is
+    a per-field jargon→plain-English translator; it never cross-references
+    horizons). So each can be rewritten in its own smaller call. For each
+    horizon slice we send a PlanSynthesisOutput carrying the REAL horizon
+    plus empty stub horizons and ``sections=[]``; for the sections slice
+    we send stub horizons plus the real ``sections``. We then take each
+    rewritten piece back out and merge onto the original ``output`` (which
+    keeps ``inputs`` and every structured field; the caller's
+    force-preserve + invariant validator still run on the merged result).
+
+    Any slice that raises propagates (fail-loud) — a partial rewrite must
+    not be published, matching the single-call behaviour it replaces.
+    """
+    from argosy.agents.plan_language_rewriter import PlanLanguageRewriter
+
+    rewriter = PlanLanguageRewriter(user_id=user_id)
+
+    def _horizon_slice(hz: str) -> PlanSynthesisOutput:
+        fields = {
+            "long": _rewriter_stub_horizon("long"),
+            "medium": _rewriter_stub_horizon("medium"),
+            "short": _rewriter_stub_horizon("short"),
+            "inputs": output.inputs,
+            "sections": [],
+            hz: getattr(output, hz),
+        }
+        return PlanSynthesisOutput(**fields)
+
+    def _sections_slice() -> PlanSynthesisOutput:
+        return PlanSynthesisOutput(
+            long=_rewriter_stub_horizon("long"),
+            medium=_rewriter_stub_horizon("medium"),
+            short=_rewriter_stub_horizon("short"),
+            inputs=output.inputs,
+            sections=list(output.sections),
+        )
+
+    slices: dict[str, PlanSynthesisOutput] = {
+        "long": _horizon_slice("long"),
+        "medium": _horizon_slice("medium"),
+        "short": _horizon_slice("short"),
+        "sections": _sections_slice(),
+    }
+
+    results: dict[str, PlanSynthesisOutput] = {}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futures = {
+            ex.submit(rewriter.run_sync, synth_output=mini, decision_id=decision_id): key
+            for key, mini in slices.items()
+        }
+        for fut in as_completed(futures):
+            key = futures[fut]
+            results[key] = fut.result().output  # re-raises on slice failure
+
+    merged = output.model_copy(update={
+        "long": results["long"].long,
+        "medium": results["medium"].medium,
+        "short": results["short"].short,
+        "sections": results["sections"].sections,
+    })
+    log.info(
+        "plan_synthesis.rewriter_parallel_merged",
+        user_id=user_id,
+        decision_run_id=decision_id,
+        slices=sorted(slices.keys()),
+    )
+    return merged
+
+
 def _run_plan_language_rewriter(
     *,
     output: PlanSynthesisOutput,
@@ -2545,17 +2641,20 @@ def _run_plan_language_rewriter(
     # Late import keeps the agent module out of the eager import graph
     # (PlanLanguageRewriter pulls the SDK, which the orchestrator
     # doesn't otherwise need to load until synthesis runs).
-    from argosy.agents.plan_language_rewriter import PlanLanguageRewriter
     from argosy.quality.rewriter_invariants import validate_rewriter_invariants
     from argosy.quality.gate_types import GateCheck, GateViolation
 
     try:
-        rewriter = PlanLanguageRewriter(user_id=user_id)
-        result = rewriter.run_sync(
-            synth_output=output,
-            decision_id=decision_run_id,
+        # Rewrite the four prose-bearing slices (the three horizons +
+        # the sections list) in PARALLEL rather than one giant call.
+        # A single full-output rewrite re-emits ~40-50k tokens and
+        # routinely hits the 600s SDK timeout (live: supervised re-synth
+        # of drun 73 — attempt 1 timed out at 10 min, attempt 2 took ~9).
+        # Each slice is ~1/4 the size, so the calls finish well inside
+        # the timeout and the wall-clock is the slowest single slice.
+        rewritten = _rewrite_output_parallel(
+            output=output, user_id=user_id, decision_id=decision_run_id,
         )
-        rewritten = result.output
     except Exception as exc:  # noqa: BLE001
         log.error(
             "plan_synthesis.rewriter_crashed",

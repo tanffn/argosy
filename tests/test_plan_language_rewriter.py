@@ -381,6 +381,54 @@ def test_orchestrator_uses_rewriter_output(monkeypatch):
     assert out.medium.posture == "Cleaned medium posture."
 
 
+def test_rewriter_splits_into_four_parallel_slices_and_merges(monkeypatch):
+    """The rewriter runs as 4 concurrent slice-calls (long/medium/short +
+    sections); each slice's rewrite must merge back into its own field,
+    and the structured fields must survive the invariant validator."""
+    before = _make_baseline_plan()
+    calls: list[PlanSynthesisOutput] = []
+
+    class _Stub:
+        def __init__(self, *, user_id: str) -> None:
+            self.user_id = user_id
+
+        def run_sync(self, *, synth_output, decision_id=None, **kw):
+            calls.append(synth_output)
+            echo = synth_output.model_copy(deep=True)
+            # Mark only the REAL (non-stub) horizons — stub horizons carry
+            # posture="". This lets the assertions prove each horizon's
+            # rewrite came from its own slice-call, not a sibling's.
+            for hz in ("long", "medium", "short"):
+                sec = getattr(echo, hz)
+                if sec.posture:
+                    sec.posture = "[RW] " + sec.posture
+            return _StubResult(echo)
+
+    monkeypatch.setattr(
+        "argosy.agents.plan_language_rewriter.PlanLanguageRewriter", _Stub,
+    )
+    out = _run_plan_language_rewriter(
+        output=before, user_id="ariel", decision_run_id=7,
+    )
+
+    # Four slice-calls were dispatched (3 horizons + sections).
+    assert len(calls) == 4
+    # Each horizon-slice call carried exactly ONE real horizon (the other
+    # two are empty stubs) — i.e. the work really was sliced, not duplicated.
+    real_per_call = [
+        sum(1 for hz in ("long", "medium", "short") if getattr(c, hz).posture)
+        for c in calls
+    ]
+    assert sorted(real_per_call) == [0, 1, 1, 1]  # sections-slice has 0 real horizons
+    # Every horizon's rewrite merged back into its own field.
+    assert out.long.posture.startswith("[RW] ")
+    assert out.medium.posture.startswith("[RW] ")
+    assert out.short.posture.startswith("[RW] ")
+    # Structured fields preserved through the merge + validator (no raise),
+    # and provenance kept from the original output.
+    assert out.inputs == before.inputs
+
+
 def test_orchestrator_aborts_on_invariant_violation(monkeypatch):
     """When the rewriter returns a drifted output, validator raises
     RewriterInvariantError and the synth cycle aborts."""
