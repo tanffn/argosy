@@ -42,6 +42,12 @@ export function SynthesisHealthBanner({
   // the line still renders.
   const agentsSkipped = health.agents_skipped ?? 0;
 
+  // "unavailable" adapters (auth/tier-blocked sources, Cloudflare
+  // challenges, instruments a source structurally doesn't cover) are a
+  // known, non-actionable gap — shown separately so they don't read as
+  // failures. `?? 0` for older backends that don't send the field.
+  const adaptersUnavailable = health.adapters_unavailable ?? 0;
+
   return (
     <Banner
       tone={tone}
@@ -56,6 +62,9 @@ export function SynthesisHealthBanner({
           {" · "}
           {health.adapters_ok} adapters OK · {health.adapters_failed} adapter
           failures
+          {adaptersUnavailable > 0
+            ? ` · ${adaptersUnavailable} unavailable (tier/coverage)`
+            : ""}
         </span>
         <Link
           href={drillHref}

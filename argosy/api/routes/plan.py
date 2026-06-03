@@ -458,6 +458,11 @@ class SynthesisHealth(BaseModel):
     agents_skipped: int
     adapters_ok: int
     adapters_failed: int
+    # Known, non-actionable adapter gaps (auth/tier-blocked sources,
+    # Cloudflare challenges, instruments a source structurally doesn't
+    # cover). Split out from adapters_failed so the chip alarms only on
+    # genuinely actionable failures. Defaults to 0 for legacy payloads.
+    adapters_unavailable: int = 0
     decision_run_id: int
 
 
@@ -727,6 +732,7 @@ def _build_synthesis_health(
         agents_skipped=int(summary.get("agents_skipped", 0)),
         adapters_ok=int(summary.get("adapters_ok", 0)),
         adapters_failed=int(summary.get("adapters_failed", 0)),
+        adapters_unavailable=int(summary.get("adapters_unavailable", 0)),
         decision_run_id=decision_run_id,
     )
 

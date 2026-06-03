@@ -347,6 +347,61 @@ def test_build_agent_tree_happy_path_with_adapters(inmem_session) -> None:
     assert summary["adapters_failed"] == 1
 
 
+def test_adapter_unavailable_classification() -> None:
+    """Auth/tier blocks, Cloudflare challenges, and structural no-coverage
+    are classified 'unavailable' (not a failure); transient errors, plain
+    404s, and config bugs ('series does not exist') stay 'failed'."""
+    from argosy.services.agent_tree_builder import (
+        AdapterNode,
+        _adapter_is_unavailable,
+        _summarize,
+    )
+
+    def node(name, status, code=None, err=None):
+        return AdapterNode(
+            adapter_name=name, target="X", status=status, latency_ms=0,
+            payload_size_bytes=0, http_status_code=code, error_text=err,
+        )
+
+    # Unavailable (known, non-actionable):
+    assert _adapter_is_unavailable(node("tipranks", "http_error", 403,
+        "<!DOCTYPE html>Just a moment</html>"))
+    assert _adapter_is_unavailable(node("finnhub_social", "exception", None,
+        "FinnhubAPIException(status_code: 403):"))
+    assert _adapter_is_unavailable(node("finnhub_financials", "exception", None,
+        "MissingDataSourceError: finnhub: empty metrics for CSPX"))
+    assert _adapter_is_unavailable(node("yfinance", "exception", None,
+        "MissingDataSourceError: yfinance returned no history for ACWD"))
+
+    # Real failures (actionable) — must NOT be reclassified:
+    assert not _adapter_is_unavailable(node("sec_13f", "http_error", 404,
+        "Not Found"))
+    assert not _adapter_is_unavailable(node("fred", "exception", None,
+        "ValueError: Bad Request. The series does not exist."))
+    assert not _adapter_is_unavailable(node("x", "http_error", 503,
+        "Service Unavailable"))
+    assert not _adapter_is_unavailable(node("ok_one", "ok"))
+
+    # _summarize splits the buckets and keeps the real failure visible.
+    root = AgentNode(
+        agent_role="fund_manager", agent_report_id=1, status="ok",
+        confidence=None, model=None, tokens_in=0, tokens_out=0,
+        cost_usd=0.0, side=None, perspective=None, response_excerpt="",
+        failure_reason=None, children=[],
+    )
+    outcomes = [
+        node("ok_one", "ok"),
+        node("tipranks", "http_error", 403, "Just a moment"),
+        node("finnhub_social", "exception", None, "(status_code: 403)"),
+        node("yf", "exception", None, "MissingDataSourceError: no history"),
+        node("fred", "exception", None, "ValueError: series does not exist"),
+    ]
+    s = _summarize(root, outcomes)
+    assert s["adapters_ok"] == 1
+    assert s["adapters_unavailable"] == 3
+    assert s["adapters_failed"] == 1  # only the fred config bug
+
+
 def test_build_agent_tree_skipped_nodes_for_old_run(inmem_session) -> None:
     """When researcher rows are missing, the facilitator subtree's bull
     and bear come back as ``skipped`` and propagate ``failure_reason``."""

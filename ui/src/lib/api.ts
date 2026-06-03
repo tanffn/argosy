@@ -967,6 +967,10 @@ export interface AgentTreeStatusSummary {
   agents_skipped: number;
   adapters_ok: number;
   adapters_failed: number;
+  // Known, non-actionable adapter gaps (auth/tier-blocked sources,
+  // Cloudflare challenges, instruments a source structurally doesn't
+  // cover). Split out from adapters_failed; optional for legacy payloads.
+  adapters_unavailable?: number;
 }
 
 // Per-run cost rollup surfaced under the agent tree. Mirrors the
@@ -3813,6 +3817,10 @@ export interface SynthesisHealth {
   agents_skipped: number;
   adapters_ok: number;
   adapters_failed: number;
+  // Known, non-actionable adapter gaps (auth/tier-blocked sources,
+  // Cloudflare challenges, instruments a source structurally doesn't
+  // cover). Split out from adapters_failed; optional for legacy payloads.
+  adapters_unavailable?: number;
   decision_run_id: number;
 }
 

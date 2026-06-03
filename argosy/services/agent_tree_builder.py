@@ -358,6 +358,7 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
                 "agents_skipped": 0,
                 "adapters_ok": 0,
                 "adapters_failed": 0,
+                "adapters_unavailable": 0,
             },
             root=None,
             unsupported_reason=(
@@ -979,8 +980,25 @@ def _summarize(
     walk(root)
 
     adapters_ok = sum(1 for a in adapter_outcomes if a.status == "ok")
+    # Split non-ok adapter outcomes into "unavailable" (a known, structural,
+    # non-actionable state — the source is auth/tier-blocked, Cloudflare-
+    # challenged, or simply doesn't cover this instrument) vs "failed" (an
+    # actionable error — a transient 5xx, a timeout, or a config bug like a
+    # wrong series id). Before this split EVERY non-ok outcome counted as a
+    # "failure", so the user's synthesis-health chip alarmed with ~34
+    # failures on every run — almost all of them the same two blocked
+    # sources (finnhub social tier, tipranks Cloudflare) and the same
+    # foreign-listed UCITS ETFs that US data providers don't carry. Those
+    # are coverage facts, not failures; conflating them buries the one or
+    # two genuinely actionable problems in the noise.
+    adapters_unavailable = sum(
+        1 for a in adapter_outcomes if _adapter_is_unavailable(a)
+    )
     adapters_failed = sum(
-        1 for a in adapter_outcomes if a.status in ("http_error", "exception")
+        1
+        for a in adapter_outcomes
+        if a.status in ("http_error", "exception")
+        and not _adapter_is_unavailable(a)
     )
     return {
         "agents_ok": agents_ok,
@@ -988,4 +1006,44 @@ def _summarize(
         "agents_skipped": agents_skipped,
         "adapters_ok": adapters_ok,
         "adapters_failed": adapters_failed,
+        "adapters_unavailable": adapters_unavailable,
     }
+
+
+def _adapter_is_unavailable(a: "AdapterNode") -> bool:
+    """True when a non-ok adapter outcome reflects a KNOWN, structural,
+    non-actionable gap rather than a real failure.
+
+    General signatures only — no per-source / per-symptom special-casing:
+
+    * **Auth / tier block** — HTTP 401/403 (the source is paywalled or
+      our key lacks the tier). Caught both on ``http_status_code`` and in
+      the error text, because exception-wrapped client errors (e.g.
+      ``FinnhubAPIException(status_code: 403)``) don't surface a status
+      code on the outcome.
+    * **Bot challenge** — a Cloudflare "Just a moment" interstitial.
+    * **No coverage** — ``MissingDataSourceError`` (the data source
+      structurally doesn't carry this instrument, e.g. London/Xetra-listed
+      UCITS ETFs on US-equity providers).
+
+    Everything else (5xx, timeouts, parse errors, "series does not exist"
+    config bugs, plain 404s) stays classified as a real, actionable
+    failure so it remains visible.
+    """
+    if a.status == "ok":
+        return False
+    if a.http_status_code in (401, 403):
+        return True
+    text = (a.error_text or "").lower()
+    if not text:
+        return False
+    if "just a moment" in text:  # Cloudflare challenge
+        return True
+    if "missingdatasourceerror" in text:  # structural no-coverage
+        return True
+    # Auth/tier failures wrapped inside an exception string.
+    if re.search(r"status[_ ]?code[:=]?\s*40[13]\b", text):
+        return True
+    if "403 forbidden" in text or "401 unauthorized" in text:
+        return True
+    return False
