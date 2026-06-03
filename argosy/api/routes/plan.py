@@ -749,29 +749,43 @@ def get_draft(user_id: str, db: Session = Depends(get_db)) -> DraftResponse:
     accept/reject CTAs should fire or whether to show a "press Run
     synthesis to refresh" banner.
     """
-    from argosy.state.queries import get_pending_draft
+    from argosy.state.queries import get_current_plan, get_pending_draft
 
     pv = get_pending_draft(db, user_id)
     effective_role = "draft"
     if pv is None:
-        pv = (
-            db.execute(
-                select(PlanVersion)
-                .where(
-                    PlanVersion.user_id == user_id,
-                    PlanVersion.role.notin_(("baseline", "current")),
-                    # Draft-shaped rows carry horizon JSON; baselines
-                    # don't. Defensive filter so a malformed row can't
-                    # masquerade as a draft.
-                    PlanVersion.horizon_long_json.is_not(None),
+        # v4 #25 — no pending draft. Prefer the CURRENT plan so the
+        # synthesis-health chip reflects the accepted plan's decision_run
+        # (drun), not a stale superseded draft's. Before this fix the
+        # fallback excluded 'current' and picked the most-recent
+        # superseded draft, so the health chip showed an OLD drun (e.g.
+        # 71) while the live plan was a newer run (73). The UI treats
+        # effective_role != "draft" as a non-pending/stale surface
+        # (plan-view-state.isPendingDraft), so returning the current plan
+        # here does not surface accept/reject CTAs.
+        current = get_current_plan(db, user_id)
+        if current is not None and current.horizon_long_json is not None:
+            pv = current
+            effective_role = "current"
+        else:
+            pv = (
+                db.execute(
+                    select(PlanVersion)
+                    .where(
+                        PlanVersion.user_id == user_id,
+                        PlanVersion.role.notin_(("baseline", "current")),
+                        # Draft-shaped rows carry horizon JSON; baselines
+                        # don't. Defensive filter so a malformed row can't
+                        # masquerade as a draft.
+                        PlanVersion.horizon_long_json.is_not(None),
+                    )
+                    .order_by(desc(PlanVersion.id))
+                    .limit(1)
                 )
-                .order_by(desc(PlanVersion.id))
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if pv is None:
-            raise HTTPException(status_code=404, detail="no draft for user")
-        effective_role = pv.role or "superseded"
+            ).scalar_one_or_none()
+            if pv is None:
+                raise HTTPException(status_code=404, detail="no draft for user")
+            effective_role = pv.role or "superseded"
     return DraftResponse(
         plan_version_id=pv.id,
         version_label=pv.version_label or None,
@@ -2839,6 +2853,16 @@ def post_draft_accept(
             "override is audit-logged via plan.draft.accepted.override."
         ),
     ),
+    override_fm_rejection: bool = Query(
+        False,
+        description=(
+            "v4 #20 override: when true, promote a draft whose synthesis "
+            "run was rejected by the fund_manager. The user remains the "
+            "final gate (the FM is advisory), so an explicit override is "
+            "honoured — and audit-logged via "
+            "plan.draft.accepted.fm_override."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> AcceptResponse:
     from argosy.state.queries import get_current_plan
@@ -2846,6 +2870,33 @@ def post_draft_accept(
     pv = db.get(PlanVersion, draft_id)
     if pv is None or pv.user_id != user_id or pv.role != "draft":
         raise HTTPException(status_code=404, detail="draft not found for user")
+
+    # v4 #20 — FM-rejection blocks auto-promotion. The fund_manager is an
+    # advisory integrity check, not the final gate (the user is). But a
+    # draft the FM REJECTED must never silently become 'current': drun 73
+    # was promoted with an inverted-math claim the FM had caught. So a
+    # plain /accept on an FM-rejected draft returns 422 with the FM's
+    # reasons; promotion requires an explicit ?override_fm_rejection=true.
+    # The verdict lives on the backing decision_run (set at synthesis end
+    # in orchestrator.run_synthesis: decision_run.fund_manager_decision).
+    if pv.decision_run_id is not None and not override_fm_rejection:
+        run = db.get(DecisionRun, pv.decision_run_id)
+        if run is not None and run.fund_manager_decision == "rejected":
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "fund_manager_rejected",
+                    "decision_run_id": pv.decision_run_id,
+                    "hint": (
+                        "The fund_manager rejected this draft's synthesis. "
+                        "Review the objections at "
+                        "/api/plan/draft/objections, re-run synthesis after "
+                        "addressing them, or pass "
+                        "?override_fm_rejection=true to promote anyway "
+                        "(audit-logged)."
+                    ),
+                },
+            )
 
     # Phase 6 — run the plan_output_gate against the draft we're about
     # to promote. When `plan_gate_enforce` is True, a failing gate
@@ -2899,6 +2950,21 @@ def post_draft_accept(
                     if gate_verdict.violations[check]
                 },
             }
+
+    # v4 #20 — audit the explicit override of an FM rejection so the
+    # decision trail records that the user knowingly promoted a draft the
+    # fund_manager had rejected.
+    if override_fm_rejection and pv.decision_run_id is not None:
+        _run = db.get(DecisionRun, pv.decision_run_id)
+        if _run is not None and _run.fund_manager_decision == "rejected":
+            _publish(
+                "plan.draft.accepted.fm_override",
+                {
+                    "user_id": user_id,
+                    "draft_id": draft_id,
+                    "decision_run_id": pv.decision_run_id,
+                },
+            )
 
     now = datetime.now(timezone.utc)
     prior = get_current_plan(db, user_id)

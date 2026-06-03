@@ -853,6 +853,137 @@ def test_post_draft_reject_marks_superseded(app_with_draft):
         sess.close()
 
 
+def _wire_draft_to_fm_rejected_run(app_with_draft):
+    """Wire the fixture's draft to a completed DecisionRun whose
+    fund_manager_decision is 'rejected'. Returns (draft_id, run_id)."""
+    from datetime import datetime, timezone
+    from argosy.state.models import DecisionRun, PlanVersion
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        now = datetime.now(timezone.utc)
+        run = DecisionRun(
+            user_id="ariel", ticker="(plan)", tier="T3",
+            decision_kind="plan_revision", status="completed",
+            started_at=now, finished_at=now,
+            fund_manager_decision="rejected",
+        )
+        sess.add(run)
+        sess.commit()
+        sess.refresh(run)
+        rid = run.id
+        draft = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="draft"
+        ).one()
+        draft.decision_run_id = rid
+        sess.commit()
+        return draft.id, rid
+    finally:
+        sess.close()
+
+
+def test_post_draft_accept_blocked_when_fm_rejected(app_with_draft):
+    """#20: a draft whose synthesis run was FM-rejected must NOT promote
+    to current on a plain /accept. Returns 422; draft stays 'draft' and
+    the prior 'current' is untouched."""
+    from argosy.state.models import PlanVersion
+
+    # Seed a prior current so we can assert it is NOT superseded.
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        sess.add(PlanVersion(user_id="ariel", role="current", version_label="prior"))
+        sess.commit()
+        prior_id = sess.query(PlanVersion).filter_by(
+            user_id="ariel", role="current"
+        ).one().id
+    finally:
+        sess.close()
+
+    draft_id, _ = _wire_draft_to_fm_rejected_run(app_with_draft)
+
+    r = app_with_draft.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    assert r.status_code == 422, r.text
+    assert "fund_manager" in r.text.lower() or "fm" in r.text.lower()
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.get(PlanVersion, draft_id)
+        prior = sess.get(PlanVersion, prior_id)
+        assert draft.role == "draft"  # stays draft
+        assert draft.accepted_at is None
+        assert prior.role == "current"  # prior current untouched
+        assert prior.superseded_at is None
+    finally:
+        sess.close()
+
+
+def test_post_draft_accept_fm_rejected_override_promotes(app_with_draft, monkeypatch):
+    """#20: the FM-rejection block is overridable by an explicit user
+    decision (override_fm_rejection=true), preserving 'user is the final
+    gate'. Override promotes and is audit-logged."""
+    import argosy.api.routes.plan as plan_routes
+    from argosy.state.models import PlanVersion
+
+    # Stub the fire-and-forget narrative regen so the test doesn't make a
+    # live LLM call on the accept path.
+    monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
+
+    draft_id, _ = _wire_draft_to_fm_rejected_run(app_with_draft)
+
+    r = app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/accept"
+        f"?user_id=ariel&override_fm_rejection=true"
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "accepted"
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        draft = sess.get(PlanVersion, draft_id)
+        assert draft.role == "current"
+    finally:
+        sess.close()
+
+
+def test_get_draft_health_uses_current_when_no_pending_draft(client_with_db):
+    """#25: when no pending draft exists, /api/plan/draft surfaces the
+    CURRENT plan's decision_run_id (so the health chip reflects the
+    accepted plan), NOT the most-recent superseded draft's run."""
+    from argosy.state.models import PlanVersion, User
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, "ariel") is None:
+            sess.add(User(id="ariel", plan="free"))
+        # A superseded prior draft with an OLD decision_run_id.
+        sess.add(PlanVersion(
+            user_id="ariel", role="superseded", version_label="old-draft",
+            decision_run_id=71,
+            horizon_long_json='{"horizon":"long","freshness_expected":"annual","status":"no_change","posture":"x"}',
+            horizon_medium_json='{"horizon":"medium","freshness_expected":"quarterly","status":"no_change","posture":"x"}',
+            horizon_short_json='{"horizon":"short","freshness_expected":"monthly","status":"no_change","posture":"x"}',
+        ))
+        # The accepted current plan with a NEWER decision_run_id.
+        sess.add(PlanVersion(
+            user_id="ariel", role="current", version_label="accepted",
+            decision_run_id=73,
+            horizon_long_json='{"horizon":"long","freshness_expected":"annual","status":"no_change","posture":"x"}',
+            horizon_medium_json='{"horizon":"medium","freshness_expected":"quarterly","status":"no_change","posture":"x"}',
+            horizon_short_json='{"horizon":"short","freshness_expected":"monthly","status":"no_change","posture":"x"}',
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.get("/api/plan/draft?user_id=ariel")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # The route must surface the CURRENT plan's run (73), not the
+    # superseded draft's (71).
+    assert body["decision_run_id"] == 73
+    assert body["effective_role"] == "current"
+
+
 def test_post_delta_accept_marks_item_accepted(app_with_draft):
     """Per-delta accept flips the `accepted` flag on a Delta within a horizon."""
     sess = app_with_draft.app.state.session_factory()
