@@ -88,6 +88,65 @@ def test_synthesis_flow_writes_role_draft(session, monkeypatch):
     assert parsed["status"] == "minor_revision"
 
 
+def test_resume_from_phase_reuses_only_phases_below_boundary(session, monkeypatch):
+    """``resume_from_phase=3`` must REUSE phases 1-2 (the expensive
+    analysts + debates) and RE-RUN phases 3-5 with the new guidance —
+    even when ALL five phases previously completed (the FM-objection
+    fold-back case). Before the boundary filter, every completed phase
+    was reused, so resuming a fully-completed run re-ran nothing.
+    """
+    from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.state.models import DecisionRun
+    from datetime import datetime, timezone
+
+    # A completed run to resume.
+    run = DecisionRun(
+        user_id="ariel", ticker="(plan)", tier="T3",
+        decision_kind="plan_revision", status="completed",
+        started_at=datetime.now(timezone.utc),
+    )
+    session.add(run)
+    session.commit()
+    rid = run.id
+
+    # Pretend all 5 phases completed previously.
+    monkeypatch.setattr(
+        flow, "_load_completed_phase_outputs",
+        lambda *a, **k: {
+            1: '{"analyst_reports_text": "(reused analysts)", "adapter_outcomes": []}',
+            2: "(reused debates)",
+            3: _stub_synthesis_output().model_dump_json(),
+            4: "(reused risk)",
+            5: "approved",
+        },
+    )
+
+    ran: list[int] = []
+
+    def _p1(**kw): ran.append(1); return "(fresh analysts)"
+    def _p2(**kw): ran.append(2); return "(fresh debates)"
+    def _p3(**kw): ran.append(3); return _stub_synthesis_output()
+    def _p4(**kw): ran.append(4); return "(fresh risk)"
+    def _p5(**kw): ran.append(5); return True
+
+    monkeypatch.setattr(flow, "_run_phase_1_analysts", _p1)
+    monkeypatch.setattr(flow, "_run_phase_2_debates", _p2)
+    monkeypatch.setattr(flow, "_run_phase_3_synthesizer", _p3)
+    monkeypatch.setattr(flow, "_run_phase_4_risk", _p4)
+    monkeypatch.setattr(flow, "_run_phase_5_fund_manager", _p5)
+    monkeypatch.setattr(flow, "_assemble_portfolio_summary", lambda **kw: "x")
+    monkeypatch.setattr(flow, "_assemble_fills_summary", lambda **kw: "x")
+
+    out = flow.run_synthesis(
+        session, user_id="ariel", trigger="check_in",
+        existing_decision_run_id=rid, resume_from_phase=3,
+        guidance="address FM objection 1",
+    )
+    assert out.draft_id is not None
+    # Phases 1-2 reused (not run); 3-5 re-ran with the new guidance.
+    assert ran == [3, 4, 5], f"expected only phases 3-5 to run; got {ran}"
+
+
 def test_synthesis_failure_does_not_demote_existing_draft(session, monkeypatch):
     """Regression: pre-emptive demote stranded the prior draft when a
     phase later raised. Real incident: decision_run #43 on 2026-05-30

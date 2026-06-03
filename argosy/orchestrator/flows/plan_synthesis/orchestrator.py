@@ -243,6 +243,19 @@ def run_synthesis(
         resumed_outputs = _pkg._load_completed_phase_outputs(
             session, decision_run_id=decision_run_id
         )
+        # Treat ``resume_from_phase`` as a true "re-run from here" boundary:
+        # only REUSE phases strictly below it; everything at/after re-runs
+        # with the (possibly new) guidance. Without this filter every
+        # already-completed phase was reused regardless, so resuming a
+        # FULLY-completed run (e.g. to fold the Fund Manager's objections
+        # back in from phase 3 — reusing the expensive phase-1 analysts +
+        # phase-2 debates) re-ran nothing. For crash-recovery the route
+        # passes resume_from_phase = max(completed)+1, so every completed
+        # phase is already below the boundary → this filter is a no-op
+        # there. See post_check_in_resume.
+        resumed_outputs = {
+            k: v for k, v in resumed_outputs.items() if k < resume_from_phase
+        }
         log.info(
             "plan_synthesis.resume_loaded",
             user_id=user_id,
