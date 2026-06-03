@@ -30,6 +30,27 @@ def _coerce_to_string(v: Any) -> str:
     return str(v)
 
 
+def _normalize_fraction(v: Any) -> Any:
+    """Normalize a 0–100 percentage into a 0.0–1.0 fraction.
+
+    The schema's concentration / cap / tail-loss fields are defined as
+    fractions (0.0–1.0), but live runs frequently emit the same real
+    value as a percentage (e.g. ``67.08`` for 67.08%). A value strictly
+    greater than 1.0 (and ≤ 100) is unambiguously a percentage in a
+    fraction-domain field, so divide by 100. This is a representation
+    rename of a REAL value (67.08% == 0.6708), never a fabricated
+    default — values already ≤ 1.0 pass through untouched, and
+    non-numerics / out-of-range values fall through to Pydantic's bound
+    check so a genuinely bad number still fails loudly.
+    """
+    if isinstance(v, bool):  # bool is an int subclass — never a percent
+        return v
+    if isinstance(v, (int, float)):
+        if 1.0 < v <= 100.0:
+            return v / 100.0
+    return v
+
+
 def _coerce_confidence(v: Any) -> str:
     """Normalize free-form confidence indicators back into HIGH/MEDIUM/LOW.
 
@@ -88,23 +109,30 @@ class ConstraintRow(BaseModel):
         ),
     )
     derivation_md: str = Field(
-        default="",
         description=(
-            "Markdown explanation of how this constraint was derived: "
-            "inputs (σ_NVDA, correlation, tax rates, FI date, etc.), "
-            "the math, and the value that fell out. Must be specific "
-            "enough that a human can re-derive the row."
+            "REQUIRED. Markdown explanation of how this constraint was "
+            "derived: inputs (σ_NVDA, correlation, tax rates, FI date, "
+            "etc.), the math, and the value that fell out. Must be "
+            "specific enough that a human can re-derive the row. No "
+            "default — the model MUST emit it; an absent key is a "
+            "schema-validation failure (we never invent a derivation)."
         ),
     )
     confidence: Literal["HIGH", "MEDIUM", "LOW"] = Field(
-        default="MEDIUM",
         description=(
-            "Confidence band for this constraint's inputs. LOW when a "
-            "critical input (e.g. user delay tolerance) had to be "
+            "REQUIRED. Confidence band for this constraint's inputs. LOW "
+            "when a critical input (e.g. user delay tolerance) had to be "
             "assumed; HIGH when every input is sourced from a live "
-            "analyst report or the portfolio snapshot."
+            "analyst report or the portfolio snapshot. No default — the "
+            "model MUST emit it per constraint; a fabricated default "
+            "would hide which constraint rests on assumed inputs."
         ),
     )
+
+    @field_validator("value_pct", mode="before")
+    @classmethod
+    def _normalize_value_pct(cls, v: Any) -> Any:
+        return _normalize_fraction(v)
 
     @field_validator("derivation_md", mode="before")
     @classmethod
@@ -134,22 +162,30 @@ class DelaySensitivityRow(BaseModel):
         ),
     )
     nvda_cap_pct: float = Field(
-        default=0.0,
         ge=0.0,
         le=1.0,
         description=(
-            "Derived NVDA cap (0.0–1.0) at this delay tolerance. Same "
-            "MIN-over-four-constraints derivation as the headline cap; "
-            "the only thing changing is the sequence_cap input."
+            "REQUIRED. Derived NVDA cap (0.0–1.0) at this delay "
+            "tolerance. Same MIN-over-four-constraints derivation as the "
+            "headline cap; the only thing changing is the sequence_cap "
+            "input. No default — the model MUST emit a derived cap for "
+            "each tolerance row; defaulting to 0.0 would fabricate a "
+            "force-liquidation cap the analyst never derived."
         ),
     )
     rationale_md: str = Field(
-        default="",
         description=(
-            "Markdown: which constraint binds at this tolerance, and "
-            "the rough math that puts the cap where it landed."
+            "REQUIRED. Markdown: which constraint binds at this "
+            "tolerance, and the rough math that puts the cap where it "
+            "landed. No default — an absent key is a schema-validation "
+            "failure."
         ),
     )
+
+    @field_validator("nvda_cap_pct", mode="before")
+    @classmethod
+    def _normalize_nvda_cap_pct(cls, v: Any) -> Any:
+        return _normalize_fraction(v)
 
     @field_validator("rationale_md", mode="before")
     @classmethod
@@ -265,6 +301,17 @@ class ConcentrationAnalystOutput(BaseModel):
         ),
     )
 
+    @field_validator(
+        "current_nvda_pct",
+        "current_risk_contribution_pct",
+        "tail_loss_p5_1y_pct",
+        "nvda_cap_pct",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_fraction_fields(cls, v: Any) -> Any:
+        return _normalize_fraction(v)
+
     @field_validator("constraints")
     @classmethod
     def _all_four_constraints_required(
@@ -336,4 +383,5 @@ __all__ = [
     "ConstraintRow",
     "DelaySensitivityRow",
     "ConcentrationAnalystOutput",
+    "_normalize_fraction",
 ]

@@ -80,7 +80,13 @@ class WithdrawalSequencerOutput(BaseModel):
             "source_account); do NOT emit one rung per year — that's "
             "what ``withdrawal_schedule`` is for. Cover the span from "
             "early retirement (or today, whichever comes first) "
-            "through statutory pension age (67) at minimum."
+            "through statutory pension age (67) at minimum. Each rung "
+            "MUST carry rung_label (string), start_age (int), end_age "
+            "(int|null), source_account (enum), annual_nis (number — "
+            "the annual net draw this phase funds), tax_status (one of "
+            "tax_free|ordinary_income|capital_gains|mixed), and notes. "
+            "Do NOT substitute rung_id for rung_label or tax_treatment "
+            "for tax_status, and never omit annual_nis."
         ),
     )
     withdrawal_schedule: list[WithdrawalYearRow] = Field(
@@ -163,6 +169,42 @@ OUTPUT RULES:
     of years drawing primarily from one source_account. Typical output:
     4–6 rungs (one per bucket plus possibly a portfolio_drawdown gap-
     filler). Do NOT emit one rung per year.
+
+  - Each fi_bridge rung is an object with EXACTLY these keys — every one
+    is REQUIRED (do not rename, omit, or substitute):
+      * ``rung_label``     (string) — a short human label for the phase,
+        e.g. "Keren-hishtalmut tax-free draw" or "Portfolio bridge to
+        age 60". Always emit it; do NOT emit ``rung_id`` instead.
+      * ``start_age``      (integer)
+      * ``end_age``        (integer or null)
+      * ``source_account`` (string) — one of exactly:
+        keren_hishtalmut | kupot_gemel | executive_insurance | pensia |
+        portfolio_drawdown | employment | other.
+      * ``annual_nis``     (number) — the ANNUAL net draw from this rung
+        in NIS, i.e. the household's annual budget this phase funds
+        (typically the inflation-indexed household_budget for the
+        phase). This is a REQUIRED money field — you MUST compute and
+        emit it from the budget + withdrawal_schedule; never leave it
+        out and never emit 0 as a placeholder.
+      * ``tax_status``     (string) — one of exactly:
+        tax_free | ordinary_income | capital_gains | mixed.
+        Pick the dominant treatment for the phase (use ``mixed`` when a
+        phase blends tax-free basis + taxable gains). Do NOT emit a
+        free-form ``tax_treatment`` string.
+      * ``notes``          (string, optional) — the detailed mechanics,
+        clocks, vintages, and any blended-rate explanation.
+
+    Example of ONE well-formed rung (values illustrative — compute your
+    own from the inputs):
+      {
+        "rung_label": "Keren-hishtalmut tax-free draw",
+        "start_age": 49,
+        "end_age": 50,
+        "source_account": "keren_hishtalmut",
+        "annual_nis": 277000,
+        "tax_status": "tax_free",
+        "notes": "6y clock matured 2024; full balance withdrawable tax-free up to the contribution cap."
+      }
 
   - Emit ONE WithdrawalYearRow per year from the household's current
     age through age 95 inclusive. Every row must carry:

@@ -12,9 +12,9 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Phase 4 — re-use the Phase 3 Assumption type rather than redefining
 # it. The distillate's ``plan_assumptions`` records assumptions the
@@ -171,6 +171,64 @@ class GrantRow(BaseModel):
     holding_clock_end: date | None = None
 
 
+# Default human labels for a rung when the model emitted only a numeric
+# ``rung_id``. Keyed by ``source_account`` so the derived label still
+# carries the account provenance.
+_RUNG_LABEL_BY_ACCOUNT: dict[str, str] = {
+    "keren_hishtalmut": "Keren-hishtalmut draw",
+    "kupot_gemel": "Kupot-gemel draw",
+    "executive_insurance": "Executive-insurance draw",
+    "pensia": "Pensia annuity",
+    "portfolio_drawdown": "Portfolio bridge drawdown",
+    "employment": "Employment income",
+    "other": "Other source",
+}
+
+
+def _map_tax_treatment(value: Any) -> Any:
+    """Map a free-form ``tax_treatment`` string onto the ``tax_status``
+    Literal set via deterministic keyword matching.
+
+    Returns the canonical Literal value when a keyword matches; otherwise
+    returns the original value unchanged so pydantic raises a normal
+    enum-mismatch error (we never silently swallow an unmappable value).
+    """
+    if not isinstance(value, str):
+        return value
+    v = value.strip().lower()
+    if not v:
+        return value
+    # Order matters: check the more specific signals first. "mixed" wins
+    # only when no single dominant treatment is named.
+    has_free = "tax_free" in v or "tax-free" in v or "exempt" in v
+    has_ordinary = "ordinary" in v or "ordinary_income" in v
+    has_capital = (
+        "capital" in v
+        or "cap_gain" in v
+        or "capital_gain" in v
+        or "section_102" in v
+        or "§102" in v
+        or "102_capital" in v
+    )
+    # A value naming BOTH an exempt portion AND a taxable portion is mixed
+    # (e.g. kitzbat-zikna: first slice exempt, balance ordinary income).
+    if has_free and (has_ordinary or has_capital):
+        return "mixed"
+    # Only an explicit "mixed" token forces mixed; "blended" alone often
+    # describes an effective RATE on a single-treatment phase (e.g.
+    # "capital_gains ... ~15pct blended on gross") and must not override
+    # the dominant treatment named alongside it.
+    if "mixed" in v:
+        return "mixed"
+    if has_free:
+        return "tax_free"
+    if has_ordinary:
+        return "ordinary_income"
+    if has_capital:
+        return "capital_gains"
+    return value
+
+
 class BridgeRung(BaseModel):
     """One rung of the FI-bridge waterfall — the sequence of accounts
     drawn on between early retirement and statutory pension age."""
@@ -192,6 +250,47 @@ class BridgeRung(BaseModel):
     annual_nis: Decimal
     tax_status: Literal["tax_free", "ordinary_income", "capital_gains", "mixed"]
     notes: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_alternate_rung_shape(cls, data: Any) -> Any:
+        """Deterministic shape-mapping of the alternate rung shape the
+        WithdrawalSequencer model sometimes emits.
+
+        SCOPE: this maps REAL data the model produced under a different
+        key/value into the canonical schema. It never invents a money
+        value — ``annual_nis`` is intentionally NOT defaulted here, so a
+        rung that genuinely omits the annual draw still fails validation
+        loudly (a fabricated 0 would be worse than a hard failure). Two
+        non-money fixes only:
+
+          * ``tax_treatment`` (free-form string) -> ``tax_status``
+            (Literal set), via keyword matching on the descriptive value
+            the model emits (e.g. "tax_free_within_cap" -> "tax_free",
+            "section_102_capital_track_25pct_real" -> "capital_gains",
+            "kitzbat_zikna_..._ordinary_income" -> "ordinary_income").
+          * ``rung_label`` derived from ``source_account`` when the model
+            emitted ``rung_id`` (an int) instead of a label. The label is
+            a presentational field, not data — deriving it from the
+            account name preserves provenance without inventing a number.
+        """
+        if not isinstance(data, dict):
+            return data
+        # Work on a shallow copy so we don't mutate the caller's dict.
+        out = dict(data)
+
+        # --- tax_treatment (free-form) -> tax_status (Literal) ----------
+        if "tax_status" not in out and "tax_treatment" in out:
+            out["tax_status"] = _map_tax_treatment(out.get("tax_treatment"))
+
+        # --- rung_label derivation when only rung_id was emitted --------
+        if not out.get("rung_label"):
+            src = out.get("source_account")
+            if isinstance(src, str) and src:
+                out["rung_label"] = _RUNG_LABEL_BY_ACCOUNT.get(
+                    src, src.replace("_", " ").title()
+                )
+        return out
 
 
 class WithdrawalYearRow(BaseModel):

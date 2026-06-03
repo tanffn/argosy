@@ -401,14 +401,27 @@ def test_concentration_analyst_output_rejects_duplicate_constraints() -> None:
 
 
 def test_constraint_row_value_pct_bounded_0_to_1() -> None:
-    """ConstraintRow.value_pct is bounded [0.0, 1.0]."""
+    """ConstraintRow.value_pct is bounded [0.0, 1.0] after normalization.
+
+    A value in (1.0, 100] is read as a percentage and scaled down (so
+    1.5 -> 0.015, a valid 1.5% cap). Genuinely out-of-range values —
+    above 100 or negative — still fail the bound check loudly; we never
+    clamp or fabricate.
+    """
+    # 1.5 is now interpreted as 1.5% -> 0.015 (valid), NOT rejected.
+    row = ConstraintRow(
+        name="sequence_cap", value_pct=1.5, derivation_md="x", confidence="HIGH"
+    )
+    assert row.value_pct == 0.015
+    # > 100 is unambiguously out of range -> still rejected.
     with pytest.raises(ValidationError):
         ConstraintRow(
             name="sequence_cap",
-            value_pct=1.5,
+            value_pct=150.0,
             derivation_md="x",
             confidence="HIGH",
         )
+    # Negative -> rejected.
     with pytest.raises(ValidationError):
         ConstraintRow(
             name="sequence_cap",
@@ -480,6 +493,200 @@ def test_concentration_report_extends_with_derivation_fields() -> None:
     })
     assert full.nvda_cap_pct == 0.18
     assert len(full.constraints) == 4
+
+
+# ---------------------------------------------------------------------------
+# drun-73 regression — schema must match the model's real output shape and
+# must NOT fabricate per-row data to limp past validation.
+# ---------------------------------------------------------------------------
+
+
+def test_concentration_report_accepts_real_llm_output_shape() -> None:
+    """The exact shape live runs (drun 73) emitted now validates.
+
+    Two things the live model did that earlier broke validation:
+      1. ``deltas_vs_target`` came as a LIST of
+         ``{category, actual_pct, delta_pp}`` rows, not the canonical
+         ``{category: delta_pp}`` mapping.
+      2. Every constraint row carried ``derivation_md`` + ``confidence``
+         and every delay row carried ``nvda_cap_pct`` + ``rationale_md``
+         (the model DOES emit them when prompted).
+
+    The list form is coerced to a by-category dict — including a 0.0
+    on-target row (must not be dropped) — and the full payload validates.
+    """
+    payload = {
+        "breaches": [],
+        "deltas_vs_target": [
+            {"category": "NVDA", "actual_pct": 65.0, "target_pct": 15.14,
+             "delta_pp": 49.86},
+            # On-target row: delta_pp == 0.0 must survive coercion.
+            {"category": "Cash", "actual_pct": 5.0, "delta_pp": 0.0},
+        ],
+        "summary": "NVDA 65% vs an 18% derived cap; sell-down required.",
+        "confidence": "HIGH",
+        "cited_sources": ["portfolio/holdings", "sigma_calibrator.NVDA"],
+        "current_nvda_pct": 0.65,
+        "current_risk_contribution_pct": 0.81,
+        "tail_loss_p5_1y_pct": 0.29,
+        "constraints": [
+            {"name": "sequence_cap", "value_pct": 0.18,
+             "derivation_md": "p5 NVDA shock pushes FI 2031->2032 at 18%.",
+             "confidence": "HIGH"},
+            {"name": "tail_loss_cap", "value_pct": 0.22,
+             "derivation_md": "p5 portfolio loss hits 25% DD at 22%.",
+             "confidence": "MEDIUM"},
+            {"name": "risk_contribution_cap", "value_pct": 0.25,
+             "derivation_md": "MVC hits 30% single-name limit at 25%.",
+             "confidence": "MEDIUM"},
+            {"name": "tax_liquidity_cap", "value_pct": 0.35,
+             "derivation_md": "Section-102 windows cap net sell-down ~35%.",
+             "confidence": "LOW"},
+        ],
+        "nvda_cap_pct": 0.18,
+        "delay_sensitivities": [
+            {"delay_tolerance_years": 0.0, "nvda_cap_pct": 0.0,
+             "rationale_md": "Zero tolerance -> force-liquidate."},
+            {"delay_tolerance_years": 1.0, "nvda_cap_pct": 0.18,
+             "rationale_md": "sequence_cap binds at 18%."},
+            {"delay_tolerance_years": 2.0, "nvda_cap_pct": 0.25,
+             "rationale_md": "risk_contribution_cap binds at 25%."},
+        ],
+        "sell_down_glidepath_md": "Q1-Q4 2026: 750 sh/quarter.",
+        "advisor_intake_questions": [],
+    }
+    out = ConcentrationReport.model_validate(payload)
+    # List -> by-category dict, on-target row kept.
+    assert out.deltas_vs_target == {"NVDA": 49.86, "Cash": 0.0}
+    assert len(out.constraints) == 4
+    assert out.constraints[0].confidence == "HIGH"
+    assert out.constraints[3].confidence == "LOW"
+    assert len(out.delay_sensitivities) == 3
+    assert out.delay_sensitivities[1].nvda_cap_pct == 0.18
+
+
+def test_concentration_report_rejects_fabricated_row_defaults() -> None:
+    """A present row MUST carry its required derivation fields.
+
+    HARD GUARDRAIL: we never default ``derivation_md`` / ``confidence``
+    (constraints) or ``nvda_cap_pct`` / ``rationale_md`` (delay rows).
+    Fabricating a MEDIUM confidence or a 0% cap the analyst never derived
+    is strictly worse than a loud validation failure, so a row missing
+    those keys must raise — exactly the four drun-73 errors, now caught
+    deterministically instead of silently filled.
+    """
+    payload = {
+        "deltas_vs_target": [
+            {"category": "NVDA", "actual_pct": 65.0, "delta_pp": 49.86}
+        ],
+        "constraints": [
+            # Missing derivation_md + confidence.
+            {"name": "sequence_cap", "value_pct": 0.18},
+        ],
+        "nvda_cap_pct": 0.18,
+        "delay_sensitivities": [
+            # Missing nvda_cap_pct + rationale_md.
+            {"delay_tolerance_years": 0.0},
+        ],
+        "cited_sources": ["portfolio/holdings"],
+    }
+    with pytest.raises(ValidationError) as exc:
+        ConcentrationReport.model_validate(payload)
+    missing = {
+        tuple(e["loc"]) for e in exc.value.errors() if e["type"] == "missing"
+    }
+    assert ("constraints", 0, "derivation_md") in missing
+    assert ("constraints", 0, "confidence") in missing
+    assert ("delay_sensitivities", 0, "nvda_cap_pct") in missing
+    assert ("delay_sensitivities", 0, "rationale_md") in missing
+
+
+def test_concentration_report_breach_name_alias_and_optional_pcts() -> None:
+    """Legacy ``breaches`` rows tolerate the model's real shape.
+
+    Live runs key the breach by ``name`` (not ``category``) and
+    sometimes omit ``actual_pct`` / ``cap_pct``. The report maps
+    ``name`` -> ``category`` and leaves missing percentages as ``None``
+    (never fabricated to 0) so a legacy display row can't sink the whole
+    money-math report.
+    """
+    out = ConcentrationReport.model_validate({
+        "breaches": [
+            # name instead of category; cap_pct omitted.
+            {"name": "NVDA", "actual_pct": 65.0, "severity": "breach",
+             "note": "over the derived cap"},
+        ],
+        "deltas_vs_target": {"NVDA": 47.0},
+        "cited_sources": ["portfolio/holdings"],
+    })
+    assert len(out.breaches) == 1
+    assert out.breaches[0].category == "NVDA"
+    assert out.breaches[0].actual_pct == 65.0
+    # Omitted cap_pct stays None — NOT fabricated to 0.0.
+    assert out.breaches[0].cap_pct is None
+
+
+def test_concentration_report_normalizes_percentage_fraction_fields() -> None:
+    """Fraction-domain fields accept the model's 0–100 percentage form.
+
+    Live runs emit ``current_nvda_pct`` etc. as percentages (67.08)
+    where the schema wants a fraction (0.6708). A value in (1.0, 100]
+    is scaled down — a representation rename of a REAL value, never a
+    fabricated default. The MIN-over-constraints relationship is
+    preserved because cap + value_pct scale together.
+    """
+    out = ConcentrationReport.model_validate({
+        "current_nvda_pct": 67.08,
+        "current_risk_contribution_pct": 81.0,
+        "tail_loss_p5_1y_pct": 29.0,
+        "constraints": [
+            {"name": "sequence_cap", "value_pct": 18.0,
+             "derivation_md": "x", "confidence": "HIGH"},
+            {"name": "tail_loss_cap", "value_pct": 22.0,
+             "derivation_md": "x", "confidence": "MEDIUM"},
+            {"name": "risk_contribution_cap", "value_pct": 25.0,
+             "derivation_md": "x", "confidence": "MEDIUM"},
+            {"name": "tax_liquidity_cap", "value_pct": 35.0,
+             "derivation_md": "x", "confidence": "LOW"},
+        ],
+        "nvda_cap_pct": 18.0,
+        "delay_sensitivities": [
+            {"delay_tolerance_years": 1.0, "nvda_cap_pct": 18.0,
+             "rationale_md": "x"},
+        ],
+        "cited_sources": ["portfolio/holdings"],
+    })
+    assert out.current_nvda_pct == 0.6708
+    assert out.nvda_cap_pct == 0.18
+    assert out.constraints[0].value_pct == 0.18
+    assert out.delay_sensitivities[0].nvda_cap_pct == 0.18
+
+    # A value already in [0,1] passes through untouched.
+    frac = ConcentrationReport.model_validate(
+        {"current_nvda_pct": 0.65, "cited_sources": ["x"]}
+    )
+    assert frac.current_nvda_pct == 0.65
+
+    # The output-model variant normalizes too AND keeps the MIN identity.
+    out2 = ConcentrationAnalystOutput.model_validate({
+        "current_nvda_pct": 67.0,
+        "current_risk_contribution_pct": 81.0,
+        "tail_loss_p5_1y_pct": 29.0,
+        "constraints": [
+            {"name": "sequence_cap", "value_pct": 18.0,
+             "derivation_md": "x", "confidence": "HIGH"},
+            {"name": "tail_loss_cap", "value_pct": 22.0,
+             "derivation_md": "x", "confidence": "MEDIUM"},
+            {"name": "risk_contribution_cap", "value_pct": 25.0,
+             "derivation_md": "x", "confidence": "MEDIUM"},
+            {"name": "tax_liquidity_cap", "value_pct": 35.0,
+             "derivation_md": "x", "confidence": "LOW"},
+        ],
+        "nvda_cap_pct": 18.0,  # == MIN(value_pct) after both scale by 1/100
+        "delay_sensitivities": [],
+        "cited_sources": ["x"],
+    })
+    assert out2.nvda_cap_pct == 0.18
 
 
 # ---------------------------------------------------------------------------

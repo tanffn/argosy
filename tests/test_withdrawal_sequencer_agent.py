@@ -19,6 +19,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from argosy.agents.base import AgentReport, BaseAgent, ConfidenceBand
 from argosy.agents.plan_distiller_types import BridgeRung, WithdrawalYearRow
@@ -186,6 +187,135 @@ def test_output_model_defaults_are_safe() -> None:
     assert output.withdrawal_schedule == []
     assert output.confidence is ConfidenceBand.MEDIUM
     assert output.cited_sources == []
+
+
+# ---------------------------------------------------------------------------
+# 4b. Real-model-shape coercion — regression for the 15-validation-error
+#     synthesis failure (drun 73). The model emits the FI-bridge rungs with
+#     ``tax_treatment`` (free-form) instead of ``tax_status`` (Literal) and
+#     sometimes a numeric ``rung_id`` instead of ``rung_label``. The
+#     before-validator on BridgeRung maps those REAL alternate shapes onto
+#     the schema deterministically — WITHOUT inventing the ``annual_nis``
+#     money field.
+# ---------------------------------------------------------------------------
+
+
+# A rung exactly as the live model emits it (captured from a real run),
+# but WITH the annual_nis money field the tightened prompt now produces.
+_REAL_MODEL_RUNG_WITH_ANNUAL = {
+    "rung_id": 1,
+    "source_account": "keren_hishtalmut",
+    "start_age": 49,
+    "end_age": 50,
+    "start_year": 2031,
+    "end_year": 2032,
+    "starting_balance_nis": 598000,
+    "expected_drain_age": 51,
+    "tax_treatment": "tax_free_within_cap",
+    "annual_nis": 277000,
+    "notes": "Vested 2018-01 — 6y clock matured. Tax-free up to cap.",
+}
+
+
+def test_real_model_shape_coerces_and_validates() -> None:
+    """The agent's real output shape (rung_id + tax_treatment + extra
+    keys, but with annual_nis present) must validate after coercion."""
+    rungs = [
+        dict(_REAL_MODEL_RUNG_WITH_ANNUAL),
+        {
+            "rung_id": 2,
+            "source_account": "portfolio_drawdown",
+            "start_age": 51,
+            "end_age": 59,
+            "starting_balance_nis": 19492000,
+            "tax_treatment": "capital_gains_25pct_on_gains_portion (~15pct blended)",
+            "annual_nis": 326000,
+            "notes": "Bridges KH exhaustion to age-60 unlocks.",
+        },
+        {
+            "rung_id": 3,
+            "source_account": "kupot_gemel",
+            "start_age": 60,
+            "end_age": 63,
+            "tax_treatment": "section_102_capital_track_25pct_real",
+            "annual_nis": 369000,
+            "notes": "Pre-2008 tranche unlocks at 60.",
+        },
+        {
+            "rung_id": 4,
+            "source_account": "pensia",
+            "start_age": 67,
+            "end_age": 95,
+            "tax_treatment": "kitzbat_zikna_first_~9430nis_mo_exempt_balance_ordinary_income",
+            "annual_nis": 385000,
+            "notes": "Statutory annuity; first slice exempt, balance ordinary.",
+        },
+    ]
+    output = WithdrawalSequencerOutput.model_validate({"fi_bridge": rungs})
+    assert len(output.fi_bridge) == 4
+    # rung_id -> rung_label derived from source_account (no rung_label given).
+    assert output.fi_bridge[0].rung_label  # non-empty
+    assert "keren" in output.fi_bridge[0].rung_label.lower()
+    # tax_treatment free-form -> tax_status Literal, deterministic mapping.
+    assert output.fi_bridge[0].tax_status == "tax_free"
+    assert output.fi_bridge[1].tax_status == "capital_gains"  # "blended" != mixed
+    assert output.fi_bridge[2].tax_status == "capital_gains"  # §102 capital track
+    assert output.fi_bridge[3].tax_status == "mixed"  # exempt + ordinary
+    # The money field is preserved verbatim — never fabricated.
+    assert output.fi_bridge[0].annual_nis == Decimal("277000")
+    assert output.fi_bridge[2].annual_nis == Decimal("369000")
+    # Extra keys (rung_id, start_year, starting_balance_nis, ...) ignored.
+
+
+def test_explicit_rung_label_not_overwritten() -> None:
+    """When the model DOES emit a proper rung_label, the coercion must
+    leave it untouched (only derive when absent/empty)."""
+    rung = dict(_REAL_MODEL_RUNG_WITH_ANNUAL)
+    rung["rung_label"] = "My custom KH phase"
+    out = WithdrawalSequencerOutput.model_validate({"fi_bridge": [rung]})
+    assert out.fi_bridge[0].rung_label == "My custom KH phase"
+
+
+def test_canonical_tax_status_not_remapped() -> None:
+    """A rung already carrying a canonical tax_status must pass through
+    unchanged (the tax_treatment->tax_status map only fires when
+    tax_status is absent)."""
+    rung = {
+        "rung_label": "Pensia annuity",
+        "source_account": "pensia",
+        "start_age": 67,
+        "end_age": 95,
+        "annual_nis": 385000,
+        "tax_status": "ordinary_income",
+        # A stray tax_treatment must NOT override the explicit tax_status.
+        "tax_treatment": "tax_free_within_cap",
+    }
+    out = WithdrawalSequencerOutput.model_validate({"fi_bridge": [rung]})
+    assert out.fi_bridge[0].tax_status == "ordinary_income"
+
+
+def test_missing_annual_nis_still_fails_no_fabrication() -> None:
+    """HARD GUARDRAIL: a rung that omits the annual_nis money field must
+    STILL fail validation. Coercion fixes shape (label, tax_status) but
+    must never invent a money value — a fabricated 0 is worse than a
+    loud failure. This is the exact drun-73 shape (no annual_nis)."""
+    rung_no_money = {
+        "rung_id": 1,
+        "source_account": "keren_hishtalmut",
+        "start_age": 49,
+        "end_age": 50,
+        "tax_treatment": "tax_free_within_cap",
+        "notes": "no annual_nis emitted",
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        WithdrawalSequencerOutput.model_validate({"fi_bridge": [rung_no_money]})
+    errors = exc_info.value.errors()
+    # The ONLY remaining error is the money field — label + tax_status
+    # were repaired by the coercion, proving we don't fabricate money.
+    missing_fields = {
+        e["loc"][-1] for e in errors if e["type"] == "missing"
+    }
+    assert missing_fields == {"annual_nis"}
 
 
 # ---------------------------------------------------------------------------
