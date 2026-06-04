@@ -640,6 +640,7 @@ export interface DerivedInputsResponse {
   fi_target_nis: DerivedInputField;
   fi_total_capital_nis: DerivedInputField;
   liquidity_reserve_nis: DerivedInputField;
+  fire_bridge_requirement_nis: DerivedInputField;
   required_real_yield_pct: DerivedInputField;
   expected_real_return_pct: DerivedInputField;
   nvda_cap_pct: DerivedInputField;

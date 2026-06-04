@@ -199,6 +199,30 @@ def compute_derived_inputs(session, *, user_id: str, today: date | None = None) 
     put("fi_target_nis", fld_from_rv("retirement.fi_target_nis", "nis"))
     put("fi_total_capital_nis", fld_from_rv("retirement.fi_total_capital_nis", "nis"))
     put("liquidity_reserve_nis", fld_from_rv("retirement.liquidity_reserve_nis", "nis"))
+
+    # FIRE bridge: from retirement to the first pension unlock (age 60), spend
+    # is funded entirely from liquid assets. Requirement = bridge years ×
+    # permanent-equivalent annual spend — NOT the lower T12 burn the plan doc
+    # previously used (codex residual). Derived; pending until the retirement
+    # age resolves (never fabricated).
+    from argosy.services.cashflow_projection import LUMP_PENSION_AGE
+    ret_v = rv("retirement.fi_age")
+    ret_age = (
+        float(ret_v.value)
+        if (ret_v is not None and ret_v.status == "resolved" and ret_v.value is not None)
+        else None
+    )
+    perm_annual = (m.permanent_annual_spend_nis if m else None)
+    bridge_src = (
+        f"({LUMP_PENSION_AGE} − retirement.fi_age) yrs × "
+        "fi_methodology.permanent_annual_spend_nis"
+    )
+    if ret_age is not None and perm_annual:
+        bridge_years = max(0.0, float(LUMP_PENSION_AGE) - ret_age)
+        put("fire_bridge_requirement_nis", DerivedField(
+            bridge_years * float(perm_annual), "nis", bridge_src, "MEDIUM"))
+    else:
+        put("fire_bridge_requirement_nis", DerivedField.pending("nis", bridge_src))
     put("required_real_yield_pct", fld_from_rv("retirement.required_real_yield_pct", "pct"))
     put("expected_real_return_pct", fld_from_rv("retirement.return_assumption_pct", "pct"))
     put("nvda_cap_pct", fld_from_rv("concentration.nvda_cap_pct", "pct"))

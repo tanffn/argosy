@@ -28,6 +28,7 @@ const LABELS: Record<string, string> = {
   fi_target_nis: "FI perpetuity target",
   fi_total_capital_nis: "FI total capital",
   liquidity_reserve_nis: "Liquidity reserve",
+  fire_bridge_requirement_nis: "FIRE bridge (49→60)",
   required_real_yield_pct: "Required real yield",
   expected_real_return_pct: "Expected real return",
   nvda_cap_pct: "NVDA cap",

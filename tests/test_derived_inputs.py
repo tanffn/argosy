@@ -69,6 +69,18 @@ def test_missing_datum_is_pending_not_guessed(session):
     assert d["residence_value_nis"]["value"] is None
 
 
+def test_fire_bridge_is_present_and_uses_permanent_spend_basis(session):
+    """The FIRE-bridge requirement must be DERIVED (codex residual: it was
+    sized at the T12 burn, not the ₪311.6k permanent-equivalent). With no plan
+    run the retirement age is unresolved, so the bridge is pending — never a
+    fabricated figure — but the field + source locator must exist."""
+    d = compute_derived_inputs(session, user_id="ariel", today=date(2026, 6, 4))
+    assert "fire_bridge_requirement_nis" in d
+    fld = d["fire_bridge_requirement_nis"]
+    assert fld["status"] == "pending"  # no plan run → retirement age unresolved
+    assert "permanent_annual_spend_nis" in fld["source"]
+
+
 def test_every_field_carries_source(session):
     d = compute_derived_inputs(session, user_id="ariel", today=date(2026, 6, 4))
     for k, v in d.items():
