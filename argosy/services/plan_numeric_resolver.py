@@ -128,6 +128,7 @@ _KEY_UNITS: dict[str, str] = {
     "spend.annual_t12_nis": "nis",
     "concentration.nvda_cap_pct": "pct",
     "concentration.nvda_current_pct": "pct",
+    "retirement.liquidity_reserve_nis": "nis",
 }
 
 
@@ -556,7 +557,97 @@ def resolve_plan_numbers(
         for rv in resolved:
             values[rv.key] = rv
 
+    # ------------------------------------------------------------------
+    # Deterministic FI methodology — the SINGLE SOURCE OF TRUTH for the FI
+    # capital target, spend basis, and required yield. These OVERRIDE the
+    # LLM withdrawal_sequencer's fi_base values: the headline FI number must
+    # be DERIVED deterministically (permanent-equivalent spend ÷ a defensible
+    # after-tax perpetual SWR), never invented by the model. The agent keeps
+    # only ``retirement.fi_age`` (the trajectory-feasibility number it
+    # genuinely derives). See argosy.services.fi_methodology.
+    # ------------------------------------------------------------------
+    _apply_fi_methodology(session, user_id, values)
+
     return ResolvedPlanNumbers(values=values)
+
+
+def _apply_fi_methodology(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Override the FI capital/spend/yield keys with the deterministic
+    methodology. The tracked T12 (already resolved from household_budget) is
+    fed in as the spend basis when available; otherwise the service reads it
+    from identity_yaml. A failure leaves whatever the agent produced (the
+    agent values are still derived, just not methodology-corrected) — never
+    raises.
+    """
+    try:
+        from argosy.services.fi_methodology import compute_fi_target
+
+        t12_rv = values.get("spend.annual_t12_nis")
+        t12 = (
+            float(t12_rv.value)
+            if t12_rv is not None and t12_rv.status == "resolved" and t12_rv.value
+            else None
+        )
+        m = compute_fi_target(session, user_id=user_id, spend_t12_nis=t12)
+    except Exception as exc:  # noqa: BLE001 — defensive; agent values stand
+        log.warning("plan_numeric_resolver.fi_methodology_failed err=%s", exc)
+        return
+    if m is None:
+        return
+
+    conf = m.confidence
+    values["retirement.fi_target_nis"] = ResolvedValue(
+        key="retirement.fi_target_nis",
+        value=float(m.fi_perpetuity_nis),
+        unit="nis",
+        status="resolved",
+        source_locator="fi_methodology.fi_perpetuity_nis (permanent_spend / SWR)",
+        agent_report_id=None,
+        confidence=conf,
+        formula=m.method,
+    )
+    values["spend.fi_basis_nis"] = ResolvedValue(
+        key="spend.fi_basis_nis",
+        value=float(m.permanent_annual_spend_nis),
+        unit="nis",
+        status="resolved",
+        source_locator="fi_methodology.permanent_annual_spend_nis",
+        agent_report_id=None,
+        confidence=conf,
+        formula="tracked baseline (ex-mortgage) + amortized life-event spend",
+    )
+    values["retirement.required_real_yield_pct"] = ResolvedValue(
+        key="retirement.required_real_yield_pct",
+        value=float(m.swr_real_pct),
+        unit="pct",
+        status="resolved",
+        source_locator="fi_methodology.swr_real_pct (perpetual real after-tax SWR)",
+        agent_report_id=None,
+        confidence=conf,
+        formula=f"defensible perpetual SWR; band {m.swr_band[0]*100:.1f}-{m.swr_band[1]*100:.1f}%",
+    )
+    values["retirement.return_assumption_pct"] = ResolvedValue(
+        key="retirement.return_assumption_pct",
+        value=float(m.return_assumption_real_pct),
+        unit="pct",
+        status="resolved",
+        source_locator="fi_methodology.return_assumption_real_pct",
+        agent_report_id=None,
+        confidence=conf,
+        formula="expected real return for the trajectory (decoupled from the SWR)",
+    )
+    values["retirement.liquidity_reserve_nis"] = ResolvedValue(
+        key="retirement.liquidity_reserve_nis",
+        value=float(m.finite_liability_reserve_nis),
+        unit="nis",
+        status="resolved",
+        source_locator="fi_methodology.finite_liability_reserve_nis",
+        agent_report_id=None,
+        confidence=conf,
+        formula="education + mortgage runoff + wedding lumps (NOT capitalized into perpetuity)",
+    )
 
 
 __all__ = [

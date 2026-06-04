@@ -233,29 +233,41 @@ def test_fully_seeded_resolves_every_key(session):
     assert nw.agent_report_id is None
     assert "total_usd_value_k" in nw.source_locator
 
+    # FI capital target, spend basis, and required yield now come from the
+    # DETERMINISTIC fi_methodology (single source of truth), NOT the LLM
+    # withdrawal_sequencer agent. With no UserContext seeded here, the
+    # methodology is fed the household_budget T12 (23,083*12 = 276,996),
+    # adds the amortized life-event params (car 40k + healthcare 15k +
+    # home 15k = +70k), and divides the permanent spend by the 3.0% SWR.
+    perm_spend = 276_996.0 + 70_000.0  # 346,996
     fi_target = resolved.get("retirement.fi_target_nis")
     assert fi_target.status == "resolved"
-    assert fi_target.value == pytest.approx(8_000_000.0)
-    assert fi_target.source_locator == "withdrawal_sequencer.fi_base.fi_target_nis"
-    assert fi_target.agent_report_id == ids["withdrawal_sequencer"]
-    assert fi_target.confidence == "MEDIUM"
+    assert fi_target.value == pytest.approx(perm_spend / 0.03, rel=1e-6)
+    assert fi_target.source_locator.startswith("fi_methodology")
     assert fi_target.unit == "nis"
 
+    # fi_age is the ONE FI key still derived by the agent (trajectory
+    # feasibility) — the methodology does not own it.
     fi_age = resolved.get("retirement.fi_age")
     assert fi_age.value == pytest.approx(51.7)
     assert fi_age.unit == "age"
     assert fi_age.source_locator == "withdrawal_sequencer.fi_base.retirement_age"
 
     req = resolved.get("retirement.required_real_yield_pct")
-    assert req.value == pytest.approx(0.045)
+    assert req.value == pytest.approx(0.030)  # the defensible perpetual SWR
     assert req.unit == "pct"
+    assert req.source_locator.startswith("fi_methodology")
 
     ret = resolved.get("retirement.return_assumption_pct")
-    assert ret.value == pytest.approx(0.045)
+    assert ret.value == pytest.approx(0.05)  # decoupled expected real return
 
     fi_spend = resolved.get("spend.fi_basis_nis")
-    assert fi_spend.value == pytest.approx(360_000.0)
-    assert fi_spend.source_locator == "withdrawal_sequencer.fi_base.annual_spend_nis"
+    assert fi_spend.value == pytest.approx(perm_spend, rel=1e-6)
+    assert fi_spend.source_locator.startswith("fi_methodology")
+
+    reserve = resolved.get("retirement.liquidity_reserve_nis")
+    assert reserve.status == "resolved"
+    assert reserve.value == pytest.approx(100_000.0)  # wedding buffer only (no edu/mortgage seeded)
 
     savings = resolved.get("savings.annual_net_nis")
     assert savings.status == "resolved"
@@ -298,8 +310,12 @@ def test_equity_scenario_disagreement_downgrades_confidence(session):
 # ---------------------------------------------------------------------------
 
 
-def test_missing_role_row_is_pending_not_fabricated(session):
-    # Seed everything EXCEPT withdrawal_sequencer.
+def test_missing_withdrawal_sequencer_only_drops_fi_age(session):
+    # Seed everything EXCEPT withdrawal_sequencer. The FI capital target /
+    # spend basis / yield are now DETERMINISTIC (fed by household_budget's
+    # T12), so they STILL resolve without the agent — that is the whole point
+    # (the headline number no longer depends on a flaky LLM agent). Only
+    # fi_age (the agent's trajectory-feasibility number) goes pending.
     _seed_snapshot(session)
     _seed_report(session, "equity_comp_analyst", _equity_comp_json())
     _seed_report(session, "household_budget", _household_budget_json())
@@ -307,18 +323,33 @@ def test_missing_role_row_is_pending_not_fabricated(session):
     session.commit()
 
     resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    # Deterministic FI keys still resolve.
     for key in (
         "retirement.fi_target_nis",
-        "retirement.fi_age",
         "retirement.required_real_yield_pct",
-        "retirement.return_assumption_pct",
         "spend.fi_basis_nis",
     ):
         rv = resolved.get(key)
-        assert rv.status == "pending", key
-        assert rv.value is None, key  # NEVER a constant
+        assert rv.status == "resolved", key
+        assert rv.source_locator.startswith("fi_methodology"), key
+    # fi_age is agent-owned → pending, never a fabricated constant.
+    fi_age = resolved.get("retirement.fi_age")
+    assert fi_age.status == "pending"
+    assert fi_age.value is None
     # Other roles still resolve.
     assert resolved.get("savings.annual_net_nis").status == "resolved"
+
+
+def test_fi_target_pending_when_no_spend_basis_at_all(session):
+    # No household_budget AND no UserContext → the methodology cannot source
+    # a baseline spend → FI target is pending (NEVER a fabricated constant).
+    _seed_snapshot(session)
+    _seed_report(session, "concentration", _concentration_json())
+    session.commit()
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    fi = resolved.get("retirement.fi_target_nis")
+    assert fi.status == "pending"
+    assert fi.value is None
 
 
 def test_missing_snapshot_net_worth_pending(session):
