@@ -16,6 +16,7 @@ import { AssumptionsCard } from "@/components/plan/assumptions-card";
 import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { FullPlanNarrative } from "@/components/plan/full-plan-narrative";
+import { PlanFullDetailCard } from "@/components/plan/plan-full-detail";
 import { HeadlineCard } from "@/components/plan/headline-card";
 import { MonteCarloBandsChart } from "@/components/plan/monte-carlo-bands-chart";
 import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
@@ -1024,6 +1025,7 @@ export default function PlanPage() {
             structured={planStructured}
             rawMarkdown={plan.raw_markdown}
           />
+          <PlanFullDetailCard structured={planStructured} />
           <ActionsTimeline
             structured={planStructured}
             glidepath={glidepath}
