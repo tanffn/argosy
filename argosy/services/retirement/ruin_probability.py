@@ -145,6 +145,12 @@ def compute_ruin_probability(
     household = extract_household_state(session, user_id=user_id, today=today)
     pensions = extract_pension_state(session, user_id=user_id)
 
+    # Horizon must actually REACH age 95, regardless of the route's `years`
+    # default. Otherwise p_solvent_at_95 silently clamps to the last simulated
+    # age (codex MC review 2026-06-04: years=40 from age ~44 ended ~84, and
+    # both the 85- and 95-year ticks reported that age-84 figure).
+    years = max(years, math.ceil(95.0 - household.current_age_years) + 1)
+
     # Stochastic FX uplift: combine portfolio σ with σ_fx on the USD portion
     # in quadrature. For Ariel's 65% USD with σ_fx=0.08:
     #   effective σ = sqrt(σ² + (usd_fraction × σ_fx)²) ≈ sqrt(0.18² + 0.052²) ≈ 0.187

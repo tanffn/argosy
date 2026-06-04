@@ -130,7 +130,9 @@ def simulate_regime_switch(
     log-returns conditional on the current regime.
     """
     today = today or date.today()
-    months = max(1, min(years, 50)) * 12
+    # Cap raised 50→60 so a horizon that reaches age 95 from the mid-40s
+    # (~51 years) isn't truncated (codex MC review 2026-06-04).
+    months = max(1, min(years, 60)) * 12
     if regime_params is None:
         regime_params = DEFAULT_REGIME_PARAMS
     if transition_matrix is None:
@@ -216,18 +218,26 @@ def simulate_regime_switch(
         else:
             annuity_nominal_t = 0.0
 
-        expenses_t = household.monthly_expenses_nis * (
-            (1.0 + expense_growth) ** (t / 12.0)
-        )
-        shortfall = max(0.0, expenses_t - annuity_nominal_t)
-        denom = max(1.0 - tax_rate, 0.01)
-        withdraw_pretax = shortfall / denom
-
-        # Withdraw + clip
-        portfolio[~failed] = portfolio[~failed] - withdraw_pretax
-        new_failures = (~failed) & (portfolio <= 0)
-        failed = failed | new_failures
-        portfolio = np.maximum(portfolio, 0.0)
+        if age_t < retirement_age:
+            # WORKING YEARS: income funds living expenses — the portfolio is
+            # NOT drawn down; it ACCUMULATES the household's monthly savings.
+            # The prior code withdrew full expenses every month from the
+            # current age, phantom-depleting the portfolio for the pre-
+            # retirement years and badly understating solvency (codex MC
+            # review 2026-06-04; mirrors the lognormal MC's working-years
+            # gate in cashflow_projection.py).
+            portfolio[~failed] = portfolio[~failed] + household.monthly_savings_nis
+        else:
+            expenses_t = household.monthly_expenses_nis * (
+                (1.0 + expense_growth) ** (t / 12.0)
+            )
+            shortfall = max(0.0, expenses_t - annuity_nominal_t)
+            denom = max(1.0 - tax_rate, 0.01)
+            withdraw_pretax = shortfall / denom
+            portfolio[~failed] = portfolio[~failed] - withdraw_pretax
+            new_failures = (~failed) & (portfolio <= 0)
+            failed = failed | new_failures
+            portfolio = np.maximum(portfolio, 0.0)
 
         portfolio_history[t] = portfolio
         solvent_history[t] = ~failed
