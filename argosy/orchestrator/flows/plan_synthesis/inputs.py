@@ -1553,7 +1553,11 @@ def _gather_macro_snapshot() -> dict[str, float]:
         for label, series in (
             ("vix", "VIXCLS"),
             ("fred_10y", "DGS10"),
-            ("usd_nis", "DEXISUS"),
+            # FRED has no DAILY USD/ILS series (Israel isn't in the H.10
+            # daily release); DEXISUS does not exist. CCUSMA02ILM618N is the
+            # OECD monthly average-of-daily USD/ILS rate — valid + current,
+            # the right grain for a macro snapshot.
+            ("usd_nis", "CCUSMA02ILM618N"),
             ("oil_wti", "DCOILWTICO"),
         ):
             try:

@@ -5,7 +5,8 @@ JSON API (no auth required) at https://www.boi.org.il/PublicApi/. As a
 resilience strategy the adapter falls back to:
 
   1. BoI public API (no key needed)
-  2. FRED `DEXISUS` series (USD/ILS)
+  2. FRED `CCUSMA02ILM618N` series (OECD monthly avg USD/ILS — FRED has no
+     daily ILS series, so this is a coarse month-grain fallback)
   3. yfinance `USDILS=X`
 
 If all three are unavailable the adapter raises `MissingDataSourceError`.
@@ -100,18 +101,19 @@ class BoiAdapter:
                 except Exception as exc:  # pragma: no cover - resilience
                     _log.warning("boi.fallback", reason=str(exc))
 
-            # 2. FRED DEXISUS
+            # 2. FRED CCUSMA02ILM618N (OECD monthly avg USD/ILS). FRED has no
+            #    DAILY ILS series — DEXISUS never existed — so this is a
+            #    coarse month-grain fallback; the latest observation is taken
+            #    (no single-day window, which a monthly series wouldn't fill).
             if self._fred is not None:
                 try:
-                    series = await self._fred.get_series(
-                        "DEXISUS", start=target, end=target
-                    )
+                    series = await self._fred.get_series("CCUSMA02ILM618N")
                     for row in reversed(series):
                         v = row.get("value")
                         if v is not None:
                             return {
                                 "rate": float(v),
-                                "source": "fred:DEXISUS",
+                                "source": "fred:CCUSMA02ILM618N",
                                 "as_of": row.get("date") or target.isoformat(),
                             }
                 except Exception as exc:  # pragma: no cover - resilience

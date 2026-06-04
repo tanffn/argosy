@@ -337,7 +337,9 @@ async def _default_gather_inputs(user_id: str) -> DailyBriefInputs:
         for label, series in (
             ("vix", "VIXCLS"),
             ("ust_10y", "DGS10"),
-            ("usd_nis", "DEXISUS"),
+            # FRED has no daily USD/ILS series (DEXISUS doesn't exist);
+            # CCUSMA02ILM618N is the OECD monthly avg-of-daily rate.
+            ("usd_nis", "CCUSMA02ILM618N"),
             ("oil_wti", "DCOILWTICO"),
         ):
             try:
