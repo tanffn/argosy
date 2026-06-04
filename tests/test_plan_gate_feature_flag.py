@@ -24,6 +24,23 @@ from argosy.state.models import PlanVersion, User
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "plan_v20_horizons"
 
 
+@pytest.fixture(autouse=True)
+def _restore_gate_settings():
+    """Restore the cached Settings after each test in this module.
+
+    These tests flip ``ARGOSY_PLAN_GATE_ENFORCE`` and call
+    ``reload_settings()`` to populate the lru_cache. monkeypatch reverts
+    the env var on teardown, but the *cached* Settings object keeps the
+    flipped value — leaking enforce-mode into unrelated tests that run
+    later in the same process. Re-reading the (now-reverted) env on
+    teardown restores the default (enforce=False) so the leak can't
+    cross module boundaries.
+    """
+    yield
+    from argosy.config import reload_settings
+    reload_settings()
+
+
 # ---------------------------------------------------------------------------
 # Settings — env var default + override
 # ---------------------------------------------------------------------------
@@ -243,6 +260,246 @@ def test_accept_v20_draft_override_gate_force_accepts(
 # ---------------------------------------------------------------------------
 # Defensive — gate failure does not break /accept
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# #24 — headline_numeric_source gate at /accept
+# ---------------------------------------------------------------------------
+
+# A self-consistent fi_base: spend / target == required_real_yield.
+# fi_target = 17.3M, spend = 778,500 → required_real_yield = 0.045.
+_WS_FI_BASE = {
+    "fi_target_nis": 17_300_000,
+    "retirement_age": 49,
+    "annual_spend_nis": 778_500,
+    "return_assumption_pct": 0.045,
+    "required_real_yield_pct": 0.045,
+    "method": "annual_spend / required real yield",
+}
+
+
+def _seed_ws_report(client_with_db, decision_run_id: int) -> None:
+    """Persist a withdrawal_sequencer AgentReport for the run so the
+    resolver resolves retirement.fi_target_nis = ₪17.3M."""
+    import json as _json
+    from argosy.state.models import AgentReport
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        sess.add(
+            AgentReport(
+                user_id="ariel",
+                agent_role="withdrawal_sequencer",
+                decision_id=f"plan-synth-{decision_run_id}",
+                response_text=_json.dumps({"fi_base": _WS_FI_BASE}),
+            )
+        )
+        sess.commit()
+    finally:
+        sess.close()
+
+
+def _make_run(client_with_db) -> int:
+    from datetime import datetime, timezone
+    from argosy.state.models import DecisionRun
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        now = datetime.now(timezone.utc)
+        run = DecisionRun(
+            user_id="ariel", ticker="(plan)", tier="T3",
+            decision_kind="plan_revision", status="completed",
+            started_at=now, finished_at=now,
+        )
+        sess.add(run)
+        sess.commit()
+        sess.refresh(run)
+        return run.id
+    finally:
+        sess.close()
+
+
+def test_accept_fabricated_headline_number_returns_422(client_with_db, monkeypatch):
+    """#24: a draft whose user-facing markdown states a headline ₪21M FI
+    target while the resolver resolved ₪17.3M is blocked at /accept (422)
+    in enforce mode."""
+    import argosy.api.routes.plan as plan_routes
+    monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    from argosy.config import reload_settings
+    reload_settings()
+
+    run_id = _make_run(client_with_db)
+    _seed_ws_report(client_with_db, run_id)
+    draft_id = _insert_draft(
+        client_with_db,
+        # CLEAN of history/jargon; the ONLY violation should be numeric.
+        horizon_long_md="Derived FI target net worth: **₪21.00M**.\n",
+        horizon_medium_md="Steady growth.\n",
+        horizon_short_md="Park RSU proceeds.\n",
+    )
+    # Wire the draft to the run.
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        pv.decision_run_id = run_id
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "plan_output_gate_failed"
+    assert "headline_numeric_source" in detail["violations_by_check"]
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        assert pv.role == "draft"  # not promoted
+    finally:
+        sess.close()
+
+
+def test_accept_matching_headline_number_passes_numeric_gate(client_with_db, monkeypatch):
+    """#24: a draft whose markdown matches the resolved ₪17.3M FI target and
+    age 49 does NOT raise a headline_numeric_source violation."""
+    import argosy.api.routes.plan as plan_routes
+    monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    from argosy.config import reload_settings
+    reload_settings()
+
+    run_id = _make_run(client_with_db)
+    _seed_ws_report(client_with_db, run_id)
+    draft_id = _insert_draft(
+        client_with_db,
+        horizon_long_md="Derived FI target: **₪17.30M**; you could retire at age 49.\n",
+        horizon_medium_md="Steady growth.\n",
+        horizon_short_md="Park RSU proceeds.\n",
+    )
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        pv.decision_run_id = run_id
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    # No numeric violation. (Section/evidence checks are skipped because the
+    # json columns are '{}', so the only enforced surface is the markdown
+    # checks + numeric gate; markdown is clean and numbers match → 200.)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "accepted"
+
+
+def test_accept_derivation_pending_passes_numeric_gate(client_with_db, monkeypatch):
+    """#24: a draft that renders '[derivation pending]' for an un-derived
+    number is NOT flagged (the sanctioned escape hatch)."""
+    import argosy.api.routes.plan as plan_routes
+    monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    from argosy.config import reload_settings
+    reload_settings()
+
+    run_id = _make_run(client_with_db)
+    _seed_ws_report(client_with_db, run_id)
+    draft_id = _insert_draft(
+        client_with_db,
+        horizon_long_md="Derived FI target net worth: **[derivation pending]**.\n",
+        horizon_medium_md="Steady growth.\n",
+        horizon_short_md="Park RSU proceeds.\n",
+    )
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        pv.decision_run_id = run_id
+        sess.commit()
+    finally:
+        sess.close()
+
+    r = client_with_db.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "accepted"
+
+
+def test_accept_fail_closed_when_no_decision_run_id_in_enforce(client_with_db, monkeypatch):
+    """#24: in enforce mode, a draft with NO decision_run_id (resolver can't
+    run) fails closed — the numeric gate records a violation and the accept
+    is blocked."""
+    import argosy.api.routes.plan as plan_routes
+    monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    from argosy.config import reload_settings
+    reload_settings()
+
+    draft_id = _insert_draft(
+        client_with_db,
+        horizon_long_md="Steady growth across diversified holdings.\n",
+        horizon_medium_md="Steady growth.\n",
+        horizon_short_md="Park RSU proceeds.\n",
+    )
+    # No decision_run_id wired.
+    r = client_with_db.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "plan_output_gate_failed"
+    assert "headline_numeric_source" in detail["violations_by_check"]
+
+
+def test_override_fm_rejection_does_not_bypass_numeric_gate(client_with_db, monkeypatch):
+    """#24 composition: override_fm_rejection=true skips the FM-rejection
+    block (orthogonal) but must STILL 422 on the numeric-source gate."""
+    import argosy.api.routes.plan as plan_routes
+    from argosy.state.models import DecisionRun
+
+    monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    from argosy.config import reload_settings
+    reload_settings()
+
+    run_id = _make_run(client_with_db)
+    _seed_ws_report(client_with_db, run_id)
+    # Mark the run FM-rejected so override_fm_rejection is meaningful.
+    sess = client_with_db.app.state.session_factory()
+    try:
+        run = sess.get(DecisionRun, run_id)
+        run.fund_manager_decision = "rejected"
+        sess.commit()
+    finally:
+        sess.close()
+
+    draft_id = _insert_draft(
+        client_with_db,
+        horizon_long_md="Derived FI target net worth: **₪21.00M**.\n",
+        horizon_medium_md="Steady growth.\n",
+        horizon_short_md="Park RSU proceeds.\n",
+    )
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        pv.decision_run_id = run_id
+        sess.commit()
+    finally:
+        sess.close()
+
+    # override_fm_rejection clears the FM block, but the numeric gate still bites.
+    r = client_with_db.post(
+        f"/api/plan/draft/{draft_id}/accept"
+        f"?user_id=ariel&override_fm_rejection=true"
+    )
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "plan_output_gate_failed"
+    assert "headline_numeric_source" in detail["violations_by_check"]
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        assert pv.role == "draft"  # not promoted
+    finally:
+        sess.close()
+
 
 def test_accept_skips_gate_when_no_horizon_data(
     client_with_db, monkeypatch,

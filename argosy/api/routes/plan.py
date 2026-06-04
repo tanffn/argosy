@@ -2909,7 +2909,7 @@ def post_draft_accept(
     # raises 422; when False, it logs a warning and surfaces the
     # violation summary on the AcceptResponse. The `?override_gate=true`
     # query param bypasses the check (audit-logged).
-    gate_verdict = _run_plan_output_gate(pv)
+    gate_verdict = _run_plan_output_gate(pv, db)
     gate_warning: dict | None = None
     if gate_verdict is not None and not gate_verdict.passes:
         from argosy.config import get_settings
@@ -3003,7 +3003,7 @@ def post_draft_accept(
     )
 
 
-def _run_plan_output_gate(pv: "PlanVersion"):
+def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
     """Phase 6 helper — run plan_output_gate on a draft PlanVersion.
 
     Returns a GateVerdict or None when no horizon MD exists yet
@@ -3013,9 +3013,19 @@ def _run_plan_output_gate(pv: "PlanVersion"):
     place). All exceptions are caught and logged; the gate is
     defense-in-depth and must never break the accept path itself —
     only its verdict matters.
+
+    #24 — when `db` is supplied, the headline_numeric_source check runs:
+    we rebuild the deterministic resolver manifest from `pv.decision_run_id`
+    and validate every headline number in the user-facing markdown against
+    it. If the manifest CANNOT be rebuilt (no decision_run_id, or the
+    resolver raised) we FAIL CLOSED *only when `plan_gate_enforce` is on* —
+    a synthetic HEADLINE_NUMERIC_SOURCE violation is recorded so the accept
+    is blocked rather than silently passing an unvalidated draft. In warn
+    mode an un-runnable resolver just skips the check (no false alarm).
     """
     try:
         from argosy.quality import gate_plan_output
+        from argosy.quality.gate_types import GateCheck, GateViolation
         # Reconstruct PlanSynthesisOutput from the persisted JSON
         # columns so the structured checks (section_coverage,
         # evidence_per_section, distillate_section_binding) have
@@ -3050,11 +3060,59 @@ def _run_plan_output_gate(pv: "PlanVersion"):
         }
         if not any(horizon_text.values()) and synth is None:
             return None
-        return gate_plan_output(
+
+        # #24 — rebuild the resolver manifest for the numeric-source check.
+        # `resolved is None` means "couldn't run"; the fail-closed branch
+        # below decides whether that blocks (enforce) or is tolerated (warn).
+        resolved = None
+        resolver_error: str | None = None
+        if db is not None:
+            if pv.decision_run_id is None:
+                resolver_error = "draft has no decision_run_id"
+            else:
+                try:
+                    from argosy.services.plan_numeric_resolver import (
+                        resolve_plan_numbers,
+                    )
+                    resolved = resolve_plan_numbers(
+                        db,
+                        user_id=pv.user_id,
+                        decision_run_id=pv.decision_run_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    resolver_error = f"resolver raised: {exc}"
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "headline_numeric_resolver_failed pv=%s err=%s",
+                        pv.id, exc,
+                    )
+
+        verdict = gate_plan_output(
             horizon_text=horizon_text,
             synth=synth,
             distillate=None,  # Phase 4 will wire the typed distillate
+            resolved=resolved,
         )
+
+        # Fail closed: if the numeric manifest could not be rebuilt and the
+        # gate is in ENFORCE mode, record a violation so the draft cannot
+        # promote unvalidated. In warn mode we don't manufacture a false
+        # alarm — the check simply did not run.
+        if resolved is None and db is not None:
+            from argosy.config import get_settings
+            if get_settings().plan_gate_enforce:
+                verdict.add(
+                    GateViolation(
+                        check=GateCheck.HEADLINE_NUMERIC_SOURCE,
+                        detail=(
+                            "numeric-source gate could not run "
+                            f"({resolver_error or 'no resolver manifest'}); "
+                            "failing closed in enforce mode"
+                        ),
+                        locator=f"plan_version_id={pv.id}",
+                    )
+                )
+        return verdict
     except Exception:  # pragma: no cover - defense-in-depth
         import logging
         logging.getLogger(__name__).exception(

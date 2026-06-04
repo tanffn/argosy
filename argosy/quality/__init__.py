@@ -20,6 +20,7 @@ from argosy.quality.gate_types import (
     GateVerdict,
     GateViolation,
 )
+from argosy.quality.numeric_source_gate import check_headline_numeric_source
 from argosy.quality.plan_output_gate import (
     check_distillate_section_binding,
     check_evidence_per_section,
@@ -35,6 +36,7 @@ __all__ = [
     "GateViolation",
     "check_distillate_section_binding",
     "check_evidence_per_section",
+    "check_headline_numeric_source",
     "check_history_leak",
     "check_jargon_leak",
     "check_section_coverage",

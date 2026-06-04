@@ -11,13 +11,17 @@ from enum import Enum
 
 
 class GateCheck(str, Enum):
-    """The five canonical checks."""
+    """The canonical output-gate checks."""
 
     HISTORY_LEAK = "history_leak"
     JARGON_LEAK = "jargon_leak"
     SECTION_COVERAGE = "section_coverage"
     EVIDENCE_PER_SECTION = "evidence_per_section"
     DISTILLATE_SECTION_BINDING = "distillate_section_binding"
+    # #24 — every user-facing headline number must trace to a RESOLVED
+    # value from the deterministic resolver, or be rendered
+    # "[derivation pending]". Kills the synth-fabricated-number reject.
+    HEADLINE_NUMERIC_SOURCE = "headline_numeric_source"
 
 
 @dataclass(frozen=True)
@@ -72,7 +76,7 @@ class GateVerdict:
     def summary(self) -> str:
         """One-line summary for logs and CI output."""
         if self.passes:
-            return "GATE PASS — all 5 checks clean."
+            return f"GATE PASS — all {len(GateCheck)} checks clean."
         bits = []
         for check in GateCheck:
             n = len(self.violations[check])

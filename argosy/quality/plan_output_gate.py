@@ -26,6 +26,7 @@ from argosy.quality.canonical_sections import (
     MVP_COVERAGE_THRESHOLD,
 )
 from argosy.quality.gate_types import GateCheck, GateVerdict, GateViolation
+from argosy.quality.numeric_source_gate import check_headline_numeric_source
 from argosy.quality.regex_patterns import (
     HISTORY_LEAK_PATTERNS,
     JARGON_LEAK_PATTERNS,
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
         HorizonSection,
         PlanSynthesisOutput,
     )
+    from argosy.services.plan_numeric_resolver import ResolvedPlanNumbers
 
 
 # ---------------------------------------------------------------------------
@@ -513,8 +515,9 @@ def gate_plan_output(
     distillate: PlanDistillate | None = None,
     *,
     coverage_threshold: int = MVP_COVERAGE_THRESHOLD,
+    resolved: "ResolvedPlanNumbers | None" = None,
 ) -> GateVerdict:
-    """Run all 5 checks and return an aggregate verdict.
+    """Run all gate checks and return an aggregate verdict.
 
     Args:
         horizon_text: dict mapping horizon name -> raw markdown text.
@@ -526,6 +529,11 @@ def gate_plan_output(
             Required for check 5. If None, check 5 is skipped.
         coverage_threshold: section_coverage threshold (defaults to
             MVP launch target of 12/18; promote to 18 at full ship).
+        resolved: the deterministic resolver manifest for this plan's
+            decision run. Required for check 6 (headline_numeric_source).
+            If None, check 6 is skipped here — the caller is responsible
+            for fail-closed handling in enforce mode (see
+            `plan._run_plan_output_gate`).
 
     Returns:
         GateVerdict with violations grouped by check.
@@ -542,5 +550,13 @@ def gate_plan_output(
         verdict.extend(check_section_coverage(synth, threshold=coverage_threshold))
         verdict.extend(check_evidence_per_section(synth))
         verdict.extend(check_distillate_section_binding(synth, distillate))
+
+    # Check 6 — headline numeric source (#24). Only runs when the resolver
+    # manifest is supplied. Fail-closed for a *missing* manifest in enforce
+    # mode is the caller's responsibility (it owns the decision_run_id and
+    # the enforce setting); here we simply skip when there is nothing to
+    # validate against.
+    if resolved is not None:
+        verdict.extend(check_headline_numeric_source(horizon_text, resolved))
 
     return verdict
