@@ -423,6 +423,33 @@ def _make_analyst_stub(role: str, output: Any):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _reset_global_state_after_each_test():
+    """Test-isolation guard for this file.
+
+    Two pieces of global state this file mutates would otherwise leak into
+    later test files (observed: it broke
+    test_plan_synthesis_decision_id_propagation's trail tests, which assert
+    a fixed phase-1 agent count and write to ``settings.home/logs/synthesis``):
+
+      1. ``orchestrator._PHASE_1_AGENT_NAMES`` — the phase-5 test patches it
+         to the 13-member fleet. monkeypatch *should* revert it, but the
+         leak was observed empirically, so we snapshot + force-restore the
+         module global here as belt-and-suspenders.
+      2. The settings lru cache (ARGOSY_HOME + ARGOSY_PHASE5_AGENTS) — rebuilt
+         from the clean env after monkeypatch reverts it.
+
+    This fixture is set up before ``v4_db`` requests monkeypatch, so its
+    teardown runs AFTER monkeypatch has reverted everything.
+    """
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as _orch
+    _saved_names = _orch._PHASE_1_AGENT_NAMES
+    yield
+    _orch._PHASE_1_AGENT_NAMES = _saved_names
+    from argosy.config import reload_settings
+    reload_settings()
+
+
 @pytest.fixture
 def v4_db(tmp_path, monkeypatch):
     """Per-test file-backed DB at alembic head + both engines bound.
