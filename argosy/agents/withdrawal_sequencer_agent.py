@@ -452,6 +452,10 @@ class WithdrawalSequencerAgent(BaseAgent[WithdrawalSequencerOutput]):
     """
 
     agent_role = "withdrawal_sequencer"
+    # Critical agent: feed schema-validation errors back to the model and
+    # retry, so LLM output-shape variance self-heals instead of aborting the
+    # synthesis at the run-completeness gate (BaseAgent.schema_retry_attempts).
+    schema_retry_attempts = 2
     output_model = WithdrawalSequencerOutput
     # use_structured_output=False — see PlanCoverageAnalyst for the
     # root cause analysis (synth #69 observation). The complex output

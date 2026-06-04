@@ -78,6 +78,10 @@ class HouseholdBudgetAnalystAgent(BaseAgent[HouseholdBudgetReport]):
     """
 
     agent_role = "household_budget"
+    # Critical agent: feed schema-validation errors back to the model and
+    # retry, so LLM output-shape variance self-heals instead of aborting the
+    # synthesis at the run-completeness gate (BaseAgent.schema_retry_attempts).
+    schema_retry_attempts = 2
     output_model = HouseholdBudgetReport
     require_citations = True
     # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).

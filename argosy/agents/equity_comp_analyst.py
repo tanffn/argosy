@@ -166,6 +166,10 @@ class EquityCompAnalystAgent(BaseAgent[EquityCompAnalystOutput]):
     """
 
     agent_role = "equity_comp_analyst"
+    # Critical agent: feed schema-validation errors back to the model and
+    # retry, so LLM output-shape variance self-heals instead of aborting the
+    # synthesis at the run-completeness gate (BaseAgent.schema_retry_attempts).
+    schema_retry_attempts = 2
     output_model = EquityCompAnalystOutput
     # use_structured_output=False mirrors PlanCoverageAnalyst /
     # WithdrawalSequencerAgent — the nested scenarios x years x grants

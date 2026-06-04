@@ -117,3 +117,67 @@ def test_parse_output_fence_only_with_no_body_raises():
     a = _agent()
     with pytest.raises(json.JSONDecodeError):
         a._parse_output("```json\n```")
+
+
+# ---------------------------------------------------------------------------
+# Schema-validation retry (opt-in via schema_retry_attempts).
+# ---------------------------------------------------------------------------
+from types import SimpleNamespace
+
+
+def _fake_call(text: str):
+    return SimpleNamespace(
+        text=text, tokens_in=1, tokens_out=1, cache_input_tokens=0,
+        cache_creation_tokens=0, thinking_tokens=0, model="stub",
+        citations_json=None,
+    )
+
+
+class _RetryAgent(BaseAgent):
+    agent_role = "trader"
+    output_model = _Out
+    require_citations = False
+    schema_retry_attempts = 2
+
+    def build_prompt(self, **_):
+        return ("sys", "usr")
+
+
+class _NoRetryAgent(_RetryAgent):
+    schema_retry_attempts = 0
+
+
+async def test_schema_retry_self_heals_then_succeeds(monkeypatch):
+    """A critical agent (schema_retry_attempts>0) re-calls the model with the
+    validation error fed back, and succeeds when a later attempt is valid."""
+    a = _RetryAgent(user_id="ariel")
+    calls = {"n": 0, "users": []}
+
+    async def _mock(**kw):
+        calls["n"] += 1
+        calls["users"].append(kw.get("user", ""))
+        # 1st attempt: invalid (count is a string); 2nd: valid.
+        return _fake_call('{"name":"x","count":"NaN"}') if calls["n"] == 1 \
+            else _fake_call('{"name":"x","count":2}')
+
+    monkeypatch.setattr(a, "_call_model", _mock)
+    report = await a.run()
+    assert report.output.count == 2
+    assert calls["n"] == 2  # retried once
+    assert "validation_feedback" in calls["users"][1]  # error fed back
+
+
+async def test_no_retry_by_default_raises_on_first(monkeypatch):
+    """Default schema_retry_attempts==0 → one attempt, raises as before."""
+    from argosy.agents.errors import AgentRunError
+    a = _NoRetryAgent(user_id="ariel")
+    calls = {"n": 0}
+
+    async def _mock(**kw):
+        calls["n"] += 1
+        return _fake_call('{"name":"x","count":"NaN"}')
+
+    monkeypatch.setattr(a, "_call_model", _mock)
+    with pytest.raises(AgentRunError):
+        await a.run()
+    assert calls["n"] == 1  # no retry

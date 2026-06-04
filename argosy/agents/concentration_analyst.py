@@ -482,6 +482,10 @@ class ConcentrationAnalystAgent(BaseAgent[ConcentrationReport]):
     """
 
     agent_role = "concentration"
+    # Critical agent: feed schema-validation errors back to the model and
+    # retry, so LLM output-shape variance self-heals instead of aborting the
+    # synthesis at the run-completeness gate (BaseAgent.schema_retry_attempts).
+    schema_retry_attempts = 2
     output_model = ConcentrationReport
     require_citations = True
     # Mirror EquityCompAnalystAgent / WithdrawalSequencerAgent: complex

@@ -75,6 +75,10 @@ class TaxAnalystAgent(BaseAgent[TaxReport]):
     """
 
     agent_role = "tax"
+    # Critical agent: feed schema-validation errors back to the model and
+    # retry, so LLM output-shape variance self-heals instead of aborting the
+    # synthesis at the run-completeness gate (BaseAgent.schema_retry_attempts).
+    schema_retry_attempts = 2
     output_model = TaxReport
     require_citations = True
     # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (8000).

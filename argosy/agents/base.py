@@ -832,6 +832,18 @@ class BaseAgent(Generic[T]):
     #: claude.exe doesn't understand keep the legacy free-form path.
     use_structured_output: ClassVar[bool] = False
 
+    # Number of EXTRA attempts to make when the model's output fails
+    # schema validation (ValidationError / not-valid-JSON). 0 (default)
+    # preserves the original behavior exactly — one attempt, then raise —
+    # so existing agents/tests are unaffected. Critical agents that feed
+    # load-bearing plan numbers set this > 0: on a validation failure the
+    # validation error is fed BACK into the prompt and the model is asked
+    # to emit corrected JSON. This self-heals the LLM output-shape variance
+    # (extra fields, missing labels, key renames) that otherwise aborts the
+    # whole synthesis at the run-completeness gate. Citation failures are
+    # NOT retried here (those are usually data-availability, not shape).
+    schema_retry_attempts: ClassVar[int] = 0
+
     # Wave A.5 — XML markup used to inline citation sources into the user
     # prompt on the claude_code backend, which has no equivalent of
     # Anthropic's document blocks / Citations API. The model can self-cite
@@ -1105,18 +1117,45 @@ class BaseAgent(Generic[T]):
             call_kwargs["sources"] = sources
 
         try:
-            call = await self._call_model(**call_kwargs)
-
-            try:
-                output = self._parse_output(call.text)
-            except ValidationError as exc:
-                raise AgentRunError(
-                    f"{self.agent_role}: model output failed schema validation: {exc}"
-                ) from exc
-            except ValueError as exc:
-                raise AgentRunError(
-                    f"{self.agent_role}: model output not valid JSON: {exc}"
-                ) from exc
+            # Schema-validation retry envelope. When schema_retry_attempts==0
+            # (default) this is a single attempt that re-raises exactly as
+            # before. When > 0 (critical agents), a ValidationError / bad-JSON
+            # failure feeds the error back into the prompt and re-calls the
+            # model, up to N extra attempts, so it can self-correct LLM
+            # output-shape variance instead of aborting the synthesis.
+            _max_attempts = max(0, self.schema_retry_attempts) + 1
+            _attempt_kwargs = dict(call_kwargs)
+            call = None  # type: ignore[assignment]
+            output = None
+            for _attempt in range(_max_attempts):
+                call = await self._call_model(**_attempt_kwargs)
+                try:
+                    output = self._parse_output(call.text)
+                    break
+                except (ValidationError, ValueError) as exc:
+                    _is_last = _attempt + 1 >= _max_attempts
+                    if _is_last:
+                        if isinstance(exc, ValidationError):
+                            raise AgentRunError(
+                                f"{self.agent_role}: model output failed schema validation: {exc}"
+                            ) from exc
+                        raise AgentRunError(
+                            f"{self.agent_role}: model output not valid JSON: {exc}"
+                        ) from exc
+                    self._log.warning(
+                        "agent.schema_retry",
+                        agent_role=self.agent_role,
+                        attempt=_attempt + 1,
+                        max_attempts=_max_attempts,
+                        error=str(exc)[:300],
+                    )
+                    _attempt_kwargs["user"] = call_kwargs["user"] + (
+                        "\n\n<validation_feedback>\nYour previous response failed "
+                        f"output-schema validation:\n{exc}\n\nReturn a CORRECTED "
+                        "JSON object that satisfies the output schema EXACTLY. "
+                        "Keep all real analytic values; only fix the structure / "
+                        "required fields / types named above.\n</validation_feedback>"
+                    )
 
             if self.require_citations:
                 self._validate_citations(output)
