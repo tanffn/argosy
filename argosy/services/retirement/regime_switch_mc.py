@@ -38,6 +38,7 @@ from argosy.services.cashflow_projection import (
     DEFAULT_LIFESTYLE_DRIFT_ANNUAL,
     DEFAULT_MEKADEM,
     DEFAULT_TAX_RATE,
+    DEFAULT_TAXABLE_GAIN_FRACTION,
     HouseholdState,
     PensionState,
 )
@@ -232,7 +233,12 @@ def simulate_regime_switch(
                 (1.0 + expense_growth) ** (t / 12.0)
             )
             shortfall = max(0.0, expenses_t - annuity_nominal_t)
-            denom = max(1.0 - tax_rate, 0.01)
+            # Gross up only the TAXABLE-GAIN portion of the sale, not the whole
+            # withdrawal (codex MC review: the flat 1/(1-tax) assumed 100% of
+            # each sale is taxable real gain — no cost basis / cash / dividend
+            # return-of-capital). effective ≈ 25% × 0.6 = 15%.
+            effective_tax = tax_rate * DEFAULT_TAXABLE_GAIN_FRACTION
+            denom = max(1.0 - effective_tax, 0.01)
             withdraw_pretax = shortfall / denom
             portfolio[~failed] = portfolio[~failed] - withdraw_pretax
             new_failures = (~failed) & (portfolio <= 0)

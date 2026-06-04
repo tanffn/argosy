@@ -37,6 +37,15 @@ DEFAULT_SIGMA_ANNUAL = 0.18
 DEFAULT_INFLATION_ANNUAL = 0.025
 DEFAULT_MEKADEM = 200.0
 DEFAULT_TAX_RATE = 0.25
+# Fraction of a funding withdrawal that is actually a TAXABLE real gain.
+# Grossing up the full net spend by 1/(1-0.25) assumes every shekel sold is
+# taxable gain with zero cost basis / cash / return-of-capital — codex MC
+# review (2026-06-04) flagged this as too harsh (it inflated the effective
+# draw ~33%). A long-held, partly-deconcentrated, dividend-yielding portfolio
+# realizes gain on only a portion of each sale. 0.6 is a deliberately
+# CONSERVATIVE blend (errs toward more tax); effective withdrawal tax ≈
+# tax_rate × 0.6 = 15%. Documented + tunable, never a hidden constant.
+DEFAULT_TAXABLE_GAIN_FRACTION = 0.6
 DEFAULT_LIFESTYLE_DRIFT_ANNUAL = 0.0
 LUMP_PENSION_AGE = 60
 ANNUITY_AGE = 67
