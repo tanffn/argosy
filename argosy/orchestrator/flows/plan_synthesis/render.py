@@ -715,6 +715,8 @@ def render_trajectory_reconciliation_appendix(
     # All headline values come from the resolver — single source of truth.
     nw = resolved.get("portfolio.net_worth_nis")
     fi_target = resolved.get("retirement.fi_target_nis")
+    fi_total = resolved.get("retirement.fi_total_capital_nis")
+    fi_reserve = resolved.get("retirement.liquidity_reserve_nis")
     fi_age = resolved.get("retirement.fi_age")
     req_yield = resolved.get("retirement.required_real_yield_pct")
     ret_assumption = resolved.get("retirement.return_assumption_pct")
@@ -838,13 +840,19 @@ def render_trajectory_reconciliation_appendix(
         f"(`spend.annual_t12_nis` — monthly_burn × 12)."
     )
     lines.append(
-        f"- Net annual savings (salary surplus + RSU net): "
-        f"**{_fmt_nis(savings)}/yr** steady-state "
+        f"- Net annual savings (RSU known-grants-only conservative floor): "
+        f"**{_fmt_nis(savings)}/yr** "
         f"(`savings.annual_net_nis`)."
     )
     lines.append(
-        f"- Derived FI target: **{_fmt_nis_m(fi_target)}** "
+        f"- FI perpetuity base: **{_fmt_nis_m(fi_target)}** "
         f"(`retirement.fi_target_nis` — {fi_target.formula or fi_target.source_locator})."
+    )
+    lines.append(
+        f"- FI total capital target: **{_fmt_nis_m(fi_total)}** = perpetuity "
+        f"base + finite-liability reserve **{_fmt_nis_m(fi_reserve)}** "
+        f"(`retirement.fi_total_capital_nis`). Full capital sufficiency is "
+        f"this total, NOT the perpetuity base alone."
     )
     lines.append("")
 
@@ -882,15 +890,58 @@ def render_trajectory_reconciliation_appendix(
         )
     lines.append("")
 
+    # Total-capital crossing (perpetuity + reserve) — the FULL sufficiency
+    # bar, distinct from the perpetuity base. Net worth can clear the base
+    # while still short of the total; say so honestly rather than "past FI".
+    fi_total_m: float | None = (
+        fi_total.value / 1_000_000.0
+        if fi_total.status == "resolved" and fi_total.value is not None
+        else None
+    )
+    n_to_total: float | None = None
+    if savings_m is not None and r_real is not None and fi_total_m is not None:
+        n_to_total = years_to(a0_nis_m, fi_total_m, savings_m, r_real)
+
     lines.append("### When does the portfolio cross the FI target?")
     lines.append("")
     lines.append("| Anchor | Threshold (₪M) | Crossed at | Source |")
     lines.append("|---|---|---|---|")
     lines.append(
-        f"| Derived FI target | {_fmt_nis_m(fi_target).lstrip('₪')} | "
+        f"| FI perpetuity base | {_fmt_nis_m(fi_target).lstrip('₪')} | "
         f"{year_of(n_to_fi)} | `retirement.fi_target_nis` "
         f"({fi_target.source_locator}) |"
     )
+    lines.append(
+        f"| FI total capital (base + reserve) | "
+        f"{_fmt_nis_m(fi_total).lstrip('₪')} | {year_of(n_to_total)} | "
+        f"`retirement.fi_total_capital_nis` |"
+    )
+    lines.append("")
+    # Honest reconciliation of which bar net worth currently clears.
+    if (
+        nw.status == "resolved" and nw.value is not None
+        and fi_target.status == "resolved" and fi_target.value is not None
+        and fi_total.status == "resolved" and fi_total.value is not None
+    ):
+        if nw.value >= fi_total.value:
+            lines.append(
+                "Net worth already covers the FULL total capital target "
+                "(perpetuity base + reserve) — capital sufficiency reached."
+            )
+        elif nw.value >= fi_target.value:
+            short = fi_total.value - nw.value
+            lines.append(
+                f"Net worth clears the PERPETUITY BASE today, but full "
+                f"capital sufficiency (total {_fmt_nis_m(fi_total)}) is NOT "
+                f"yet reached — short by **₪{short:,.0f}** "
+                f"(the finite-liability reserve). This is not 'past FI'."
+            )
+        else:
+            short = fi_target.value - nw.value
+            lines.append(
+                f"Net worth is below even the perpetuity base — short by "
+                f"**₪{short:,.0f}** before any reserve."
+            )
     lines.append("")
 
     lines.append("### How the math-feasible age relates to the plan's FI age")
