@@ -63,6 +63,29 @@ DEFAULT_TRANSITION_MATRIX = np.array([
 ])
 
 
+def stationary_real_return(
+    regime_params: dict[RegimeId, tuple[float, float]],
+    transition_matrix: np.ndarray,
+    inflation_annual: float,
+) -> float:
+    """Long-run expected REAL annual return of the regime chain.
+
+    The chain spends most of its time in ``calm`` (the stationary distribution
+    is calm-dominated), so the long-run expected drift is the stationary-weighted
+    average of the per-regime μ — NOT the unweighted mean of the three, which is
+    dragged negative by the rare crisis regime. Used to grow the market-exposed
+    pension buckets at a defensible expected rate.
+    """
+    order: list[RegimeId] = ["calm", "turbulent", "crisis"]
+    P = np.asarray(transition_matrix, dtype=np.float64)
+    evals, evecs = np.linalg.eig(P.T)
+    idx = int(np.argmin(np.abs(evals - 1.0)))
+    pi = np.real(evecs[:, idx])
+    pi = pi / pi.sum()
+    long_run_mu = float(sum(pi[j] * regime_params[order[j]][0] for j in range(len(order))))
+    return long_run_mu - inflation_annual
+
+
 @dataclass(frozen=True)
 class RegimeSwitchResult:
     """Per-tick percentile + fraction_solvent + age-stratified failure probs.
@@ -124,6 +147,9 @@ def simulate_regime_switch(
     transition_matrix: np.ndarray | None = None,
     seed: int | None = None,
     today: date | None = None,
+    bl_annuity_monthly_nis: float = 0.0,
+    bl_start_age: float = float(ANNUITY_AGE),
+    annuity_tax_rate: float = 0.0,
 ) -> RegimeSwitchResult:
     """Run a regime-switching MC and return the result.
 
@@ -170,10 +196,20 @@ def simulate_regime_switch(
     annuity_locked = False
     annuity_real_monthly = 0.0
     annuity_lock_t = 0
+    # Bituach Leumi old-age stipend — statutory income netted against spend from
+    # bl_start_age (default 67), alongside the private pension annuity, so the
+    # fat-tail readout shares the scenario table's spend basis (codex MC review
+    # 2026-06-04 Q1 #5). Real 2026 figure, inflated from t=0 (BLOCKER 1).
     expense_growth = inflation_annual + lifestyle_drift_annual
-    real_return = sum(
-        regime_params[r][0] for r in regimes_order
-    ) / len(regimes_order) - inflation_annual
+    # Pension/hishtalmut/gemel buckets grow at the LONG-RUN expected real return
+    # of the regime chain — the stationary-distribution-weighted μ, NOT the
+    # simple average of the three regime drifts. The simple average is ≈ −7.8%
+    # real (crisis's −30% drags it negative) and made the pension buckets SHRINK
+    # over the accumulation years, badly depressing fat-tail solvency (codex
+    # review 2026-06-04 BLOCKER 3).
+    real_return = stationary_real_return(
+        regime_params, transition_matrix, inflation_annual,
+    )
     real_monthly = 1.0 + real_return / 12.0
 
     portfolio_history = np.zeros((months + 1, n_paths), dtype=np.float64)
@@ -201,7 +237,10 @@ def simulate_regime_switch(
             gemel_bal = gemel_bal * real_monthly
 
         if age_t >= LUMP_PENSION_AGE and not lump_unlocked:
-            lump_total = hisht_bal[0] + gemel_bal[0]
+            # Real-grown balances → nominalize to the unlock date before adding
+            # to the nominal portfolio (codex review 2026-06-04 re-block).
+            lump_real = hisht_bal[0] + gemel_bal[0]
+            lump_total = lump_real * ((1.0 + inflation_annual) ** (t / 12.0))
             portfolio[~failed] = portfolio[~failed] + lump_total
             hisht_bal[:] = 0.0
             gemel_bal[:] = 0.0
@@ -212,12 +251,24 @@ def simulate_regime_switch(
             annuity_locked = True
             annuity_lock_t = t
 
+        # Nominalize the real-grown annuity from t=0 (not the lock tick), so it
+        # tracks nominal expenses (codex review 2026-06-04 re-block).
         if annuity_locked:
             annuity_nominal_t = annuity_real_monthly * (
-                (1.0 + inflation_annual) ** ((t - annuity_lock_t) / 12.0)
+                (1.0 + inflation_annual) ** (t / 12.0)
             )
         else:
             annuity_nominal_t = 0.0
+
+        # BL is a CPI-indexed real 2026 stipend → nominal value at tick t is the
+        # 2026 figure inflated from t=0, tracking the nominal expense path
+        # (codex review 2026-06-04 BLOCKER 1).
+        if bl_annuity_monthly_nis > 0.0 and age_t >= bl_start_age:
+            bl_nominal_t = bl_annuity_monthly_nis * (
+                (1.0 + inflation_annual) ** (t / 12.0)
+            )
+        else:
+            bl_nominal_t = 0.0
 
         if age_t < retirement_age:
             # WORKING YEARS: income funds living expenses — the portfolio is
@@ -232,7 +283,10 @@ def simulate_regime_switch(
             expenses_t = household.monthly_expenses_nis * (
                 (1.0 + expense_growth) ** (t / 12.0)
             )
-            shortfall = max(0.0, expenses_t - annuity_nominal_t)
+            # Private pension annuity credited NET of its effective tax; BL is
+            # income-tax-exempt → gross (codex review 2026-06-04).
+            annuity_net_t = annuity_nominal_t * (1.0 - annuity_tax_rate)
+            shortfall = max(0.0, expenses_t - annuity_net_t - bl_nominal_t)
             # Gross up only the TAXABLE-GAIN portion of the sale, not the whole
             # withdrawal (codex MC review: the flat 1/(1-tax) assumed 100% of
             # each sale is taxable real gain — no cost basis / cash / dividend

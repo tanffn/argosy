@@ -21,6 +21,7 @@ import { RealEstateMortgageCard } from "@/components/retirement/RealEstateMortga
 import { RebalancingAlertsCard } from "@/components/retirement/RebalancingAlertsCard";
 import { RuinProbabilityHero } from "@/components/retirement/RuinProbabilityHero";
 import { SafetyGatesPanel } from "@/components/retirement/SafetyGatesPanel";
+import { ScenarioGridCard } from "@/components/retirement/ScenarioGridCard";
 import { SigmaCalibrationCard } from "@/components/retirement/SigmaCalibrationCard";
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
 import { StochasticFxCard } from "@/components/retirement/StochasticFxCard";
@@ -174,7 +175,15 @@ export default function RetirementPage() {
           <UpcomingVestCard userId={USER_ID} />
         </section>
 
-        <section id="verdict" className="scroll-mt-6">
+        <section id="verdict" className="scroll-mt-6 space-y-4">
+          {/* Decision-surface scenario table — base/bull/bear at the
+              permanent-equivalent spend basis with BL credited (codex MC
+              review 2026-06-04). The single-number hero below is kept as the
+              CI-gated point estimate. */}
+          <ScenarioGridCard
+            userId={USER_ID}
+            retirementAge={numOf("retirement_age")}
+          />
           <RuinProbabilityHero
             userId={USER_ID}
             retirementAge={numOf("retirement_age")}

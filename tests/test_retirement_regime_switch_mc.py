@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 
 from argosy.services.cashflow_projection import (
+    HouseholdState,
+    PensionState,
     extract_household_state,
     extract_pension_state,
 )
@@ -149,3 +151,80 @@ class TestRegimeSwitch:
         # Crisis sigma > turbulent > calm
         assert params["crisis"][1] > params["turbulent"][1]
         assert params["turbulent"][1] > params["calm"][1]
+
+
+def _direct_household(spend: float, age: float = 44.0) -> HouseholdState:
+    return HouseholdState(
+        monthly_expenses_nis=spend,
+        portfolio_value_nis=5_000_000.0,
+        fx_usd_nis=3.7,
+        current_age_years=age,
+        monthly_savings_nis=0.0,
+    )
+
+
+def _direct_pensions() -> PensionState:
+    return PensionState(
+        kupat_pensia_balance_nis=800_000.0,
+        kupat_pensia_contribution_monthly_nis=3_400.0,
+        executive_insurance_balance_nis=750_000.0,
+        keren_hishtalmut_balance_nis=380_000.0,
+        keren_hishtalmut_contribution_monthly_nis=2_700.0,
+        kupat_gemel_balance_nis=75_000.0,
+    )
+
+
+class TestStationaryPensionGrowth:
+    """Codex review BLOCKER 3: pension/hishtalmut/gemel balances must grow at
+    the stationary-distribution-weighted regime return (calm dominates ~75%),
+    NOT the simple average of the three regime μs — that average is ~−7.8% real
+    and made pensions SHRINK, contaminating the fat-tail solvency."""
+
+    def test_long_run_real_return_is_positive(self):
+        from argosy.services.retirement.regime_switch_mc import (
+            DEFAULT_REGIME_PARAMS,
+            DEFAULT_TRANSITION_MATRIX,
+            stationary_real_return,
+        )
+        r = stationary_real_return(
+            DEFAULT_REGIME_PARAMS, DEFAULT_TRANSITION_MATRIX, inflation_annual=0.025,
+        )
+        # Calm-dominated chain → ~5% real, decisively positive — not the
+        # −7.8% simple-average artifact.
+        assert r > 0.02
+
+    def test_simple_average_would_have_been_negative(self):
+        """Guards the regression: the OLD simple-average real return was
+        negative, which is exactly the artifact we removed."""
+        from argosy.services.retirement.regime_switch_mc import DEFAULT_REGIME_PARAMS
+        simple_avg = sum(v[0] for v in DEFAULT_REGIME_PARAMS.values()) / 3.0 - 0.025
+        assert simple_avg < 0.0
+
+
+class TestRegimeBituachLeumi:
+    """BL income must be creditable in the regime engine too, so the fat-tail
+    readout uses the same basis as the scenario table (codex MC review Q1 #5)."""
+
+    COMMON = dict(retirement_age=49.0, years=52, n_paths=400, seed=7)
+
+    def test_bl_income_reduces_failure(self):
+        h = _direct_household(spend=40_000.0)
+        base = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(), **self.COMMON,
+        )
+        with_bl = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(),
+            bl_annuity_monthly_nis=8_000.0, **self.COMMON,
+        )
+        assert with_bl.p_failure_before_age[95] < base.p_failure_before_age[95]
+
+    def test_bl_default_zero_is_unchanged(self):
+        h = _direct_household(spend=40_000.0)
+        base = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(), **self.COMMON,
+        )
+        explicit_zero = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(),
+            bl_annuity_monthly_nis=0.0, **self.COMMON,
+        )
+        assert explicit_zero.p_failure_before_age[95] == base.p_failure_before_age[95]

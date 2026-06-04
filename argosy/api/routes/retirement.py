@@ -26,6 +26,7 @@ from argosy.services.retirement.mekadem import (
 )
 from argosy.services.retirement.reference import ResolveError, resolve
 from argosy.services.retirement.ruin_probability import compute_ruin_probability
+from argosy.services.retirement.scenario_mc import run_retirement_scenarios
 from argosy.services.retirement.safety_gates import compute_safety_gates
 from argosy.services.retirement.glide_path import compute_glide_path
 from argosy.services.retirement.healthcare import (
@@ -268,6 +269,73 @@ def get_ruin_probability(
         "target_p_solvent": as_dict(v.target_p_solvent),
         "verdict": v.verdict,
         "suggested_action": as_dict(v.suggested_action),
+    }
+
+
+@router.get("/projection/scenarios")
+def get_projection_scenarios(
+    user_id: str,
+    retirement_age: float = 49.0,
+    n_paths: int = 2000,
+    seed: int | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Scenario-grid retirement-readiness table (codex MC review 2026-06-04).
+
+    Base / bull / bear scenarios + a μ-grid sensitivity + a T12 sensitivity +
+    the regime-switch fat-tail readout — ALL at the permanent-equivalent spend
+    basis with Bituach Leumi income credited, so the numbers reconcile. Returns
+    P(solvent) by scenario plus the spend/BL provenance the UI renders as
+    auditable chips. 404 when the FI spend basis cannot be sourced (never a
+    fabricated headline)."""
+    try:
+        g = run_retirement_scenarios(
+            user_id=user_id,
+            session=db,
+            retirement_age=retirement_age,
+            n_paths=n_paths,
+            seed=seed,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {
+        "spend_basis_annual_nis": g.spend_basis_annual_nis,
+        "spend_basis_source": g.spend_basis_source,
+        "spend_t12_annual_nis": g.spend_t12_annual_nis,
+        "bl_monthly_nis": g.bl_monthly_nis,
+        "bl_source": g.bl_source,
+        "annuity_tax_rate": g.annuity_tax_rate,
+        "annuity_tax_source": g.annuity_tax_source,
+        "inflation_annual": g.inflation_annual,
+        "sigma_annual": g.sigma_annual,
+        "retirement_age": g.retirement_age,
+        "current_age": g.current_age,
+        "horizon_years": g.horizon_years,
+        "n_paths": g.n_paths,
+        "scenarios": [
+            {
+                "name": s.name,
+                "label": s.label,
+                "mu_real_pct": s.mu_real_pct,
+                "mu_nominal_pct": s.mu_nominal_pct,
+                "initial_shock_pct": s.initial_shock_pct,
+                "p_solvent_75": s.p_solvent_75,
+                "p_solvent_85": s.p_solvent_85,
+                "p_solvent_95": s.p_solvent_95,
+            }
+            for s in g.scenarios
+        ],
+        "mu_grid": [
+            {
+                "mu_real_pct": p.mu_real_pct,
+                "mu_nominal_pct": p.mu_nominal_pct,
+                "p_solvent_95": p.p_solvent_95,
+            }
+            for p in g.mu_grid
+        ],
+        "fat_tail_p_solvent_95": g.fat_tail_p_solvent_95,
+        "t12_sensitivity_p_solvent_95": g.t12_sensitivity_p_solvent_95,
+        "assumptions": g.assumptions,
     }
 
 

@@ -560,7 +560,12 @@ def project_cashflow(
         # portfolio, zero the sources. Subsequent ticks will compound
         # the lump along with the rest of the portfolio.
         if age_t >= LUMP_PENSION_AGE and not lump_unlocked:
-            lump_amount_nis = hishtalmut_balance + kupat_gemel_balance
+            # Balances grew at the REAL rate → nominalize to the unlock date
+            # before adding to the (nominal-growth) portfolio, else the lump is
+            # undercredited by the CPI factor to age 60 (codex review
+            # 2026-06-04; mirrors the MC fix).
+            lump_real = hishtalmut_balance + kupat_gemel_balance
+            lump_amount_nis = lump_real * ((1.0 + inflation_annual) ** (t / 12.0))
             portfolio_base_nis += lump_amount_nis
             hishtalmut_balance = 0.0
             kupat_gemel_balance = 0.0
@@ -616,11 +621,13 @@ def project_cashflow(
         # than recomputing inflate_expenses() inline.  Identical
         # arithmetic to the old inline path when life_events is empty.
         expenses_t = expense_series[t]
-        # Inflate the real-at-lock annuity to nominal NIS at time t so it's
-        # directly comparable with expenses_t (which is also nominal at t).
+        # Nominalize the real-grown annuity from t=0 (not the lock tick) so it
+        # tracks the nominal expense path. Inflating only from lock froze the
+        # annuity at its 2026 level for the ~23 years to 67, undercrediting it
+        # ~1.77× (codex review 2026-06-04; mirrors the MC fix).
         if annuity_locked and annuity_lock_t is not None:
             annuity_nominal_t = annuity_monthly_nis * (
-                (1.0 + inflation_annual) ** ((t - annuity_lock_t) / 12.0)
+                (1.0 + inflation_annual) ** (t / 12.0)
             )
         else:
             annuity_nominal_t = 0.0
@@ -723,6 +730,11 @@ def project_monte_carlo(
     today: date | None = None,
     withdrawal_policy_id: str = "bengen_4pct",
     apply_age_aware_tax: bool = True,
+    bl_annuity_monthly_nis: float = 0.0,
+    bl_start_age: float = float(ANNUITY_AGE),
+    initial_shock_pct: float = 0.0,
+    mu_nominal_path: "object | None" = None,
+    annuity_tax_rate: float = 0.0,
 ) -> MonteCarloProjection:
     """Random-walk Monte Carlo of consumption-tracking retirement paths.
 
@@ -738,15 +750,37 @@ def project_monte_carlo(
     import numpy as np
 
     today = today or date.today()
-    months = max(1, min(years, 50)) * 12
+    # Cap raised 50→60 so a horizon that reaches age 95 from the mid-40s
+    # (~52 years) isn't truncated — the age-95 failure tick was silently
+    # clamping to ~age-94 (codex MC review 2026-06-04, mirrors the same fix
+    # in regime_switch_mc.py).
+    months = max(1, min(years, 60)) * 12
     log_drift = mu_nominal_annual / 12.0 - sigma_annual ** 2 / 24.0
     log_std = sigma_annual / math.sqrt(12)
     real_return = mu_nominal_annual - inflation_annual
     expense_growth = inflation_annual + lifestyle_drift_annual
 
     rng = np.random.default_rng(seed)
-    # Pre-generate all random returns: shape (n_paths, months)
-    log_returns = rng.normal(loc=log_drift, scale=log_std, size=(n_paths, months))
+    # Pre-generate all random returns: shape (n_paths, months).
+    # ``mu_nominal_path`` (length ``months``) lets a scenario run a TIME-VARYING
+    # nominal drift — e.g. the bear case's low-return first decade then recovery
+    # (codex MC review 2026-06-04 Q4). When None, behave exactly as before: a
+    # single scalar drift. The path branch draws zero-mean normals and adds the
+    # per-month drift; this is bit-identical to ``normal(loc=drift, ...)`` for a
+    # constant path because the underlying standard-normal stream is unchanged.
+    if mu_nominal_path is None:
+        log_returns = rng.normal(loc=log_drift, scale=log_std, size=(n_paths, months))
+    else:
+        mu_path = np.asarray(mu_nominal_path, dtype=np.float64)
+        if mu_path.shape != (months,):
+            raise ValueError(
+                f"mu_nominal_path must have shape ({months},) to match the "
+                f"horizon; got {mu_path.shape}."
+            )
+        drift_row = mu_path / 12.0 - sigma_annual ** 2 / 24.0  # shape (months,)
+        log_returns = (
+            rng.normal(loc=0.0, scale=log_std, size=(n_paths, months)) + drift_row
+        )
 
     # Per-path state, kept in numpy arrays for vectorization.
     portfolio = np.full(n_paths, household.portfolio_value_nis, dtype=np.float64)
@@ -759,6 +793,27 @@ def project_monte_carlo(
     annuity_locked = False
     annuity_real_monthly = 0.0
     annuity_lock_t = 0
+
+    # Bituach Leumi old-age stipend: a statutory income stream credited from
+    # ``bl_start_age`` (default 67), netted against retirement spend alongside
+    # the private pension annuity (codex MC review 2026-06-04 Q1 #5 — BL was
+    # modeled only in a separate card, never in the MC cashflows). It is a REAL
+    # 2026 figure, nominalized from t=0 in the loop so it tracks nominal
+    # expenses (codex review BLOCKER 1).
+    # One-time sequence-risk shock applied at the retirement crossing (codex Q4
+    # bear case). Applied once, to solvent paths only.
+    shock_applied = False
+
+    # Per-month real pension-bucket growth. When a scenario supplies a nominal
+    # return PATH (e.g. the bear's low-return decade), the market-exposed
+    # pension buckets must follow it too — not grow at a single central rate
+    # (codex review BLOCKER 2). Falls back to the scalar real_return otherwise.
+    if mu_nominal_path is None:
+        real_path_monthly = None
+    else:
+        real_path_monthly = 1.0 + (
+            np.asarray(mu_nominal_path, dtype=np.float64) - inflation_annual
+        ) / 12.0
 
     # Track which paths have permanently failed (hit 0 and been clipped).
     # Once failed, a path stays at 0 for all subsequent ticks — lump unlock
@@ -780,6 +835,30 @@ def project_monte_carlo(
         # Portfolio: stochastic step (only for non-failed paths)
         portfolio[~failed] = portfolio[~failed] * np.exp(log_returns[~failed, t - 1])
 
+        # Per-tick real growth for the market-exposed pension buckets.
+        rm = real_monthly if real_path_monthly is None else float(real_path_monthly[t - 1])
+
+        # Sequence-risk shock: a one-time multiplicative hit at the retirement
+        # crossing (codex Q4 bear scenario). Applied once, after that tick's
+        # market move, to solvent paths only. The hit lands on ALL market-
+        # exposed capital — the liquid portfolio AND the not-yet-unlocked
+        # pension/hishtalmut/gemel balances (codex review BLOCKER 2; a market
+        # crash doesn't spare equity held in pension wrappers).
+        if (
+            initial_shock_pct > 0.0
+            and not shock_applied
+            and age_t >= retirement_age
+        ):
+            keep = 1.0 - initial_shock_pct
+            portfolio[~failed] = portfolio[~failed] * keep
+            if not annuity_locked:
+                pensia_bal = pensia_bal * keep
+                exec_bal = exec_bal * keep
+            if not lump_unlocked:
+                hisht_bal = hisht_bal * keep
+                gemel_bal = gemel_bal * keep
+            shock_applied = True
+
         # Pre-retirement accumulation: add the household's net
         # discretionary savings to every solvent path. Deterministic
         # cashflow → same value across paths, inflated to hold
@@ -800,19 +879,25 @@ def project_monte_carlo(
                 pensions.kupat_pensia_contribution_monthly_nis
                 if age_t < retirement_age else 0.0
             )
-            pensia_bal = pensia_bal * real_monthly + contrib_pensia
-            exec_bal = exec_bal * real_monthly
+            pensia_bal = pensia_bal * rm + contrib_pensia
+            exec_bal = exec_bal * rm
         if not lump_unlocked:
             contrib_hisht = (
                 pensions.keren_hishtalmut_contribution_monthly_nis
                 if age_t < retirement_age else 0.0
             )
-            hisht_bal = hisht_bal * real_monthly + contrib_hisht
-            gemel_bal = gemel_bal * real_monthly
+            hisht_bal = hisht_bal * rm + contrib_hisht
+            gemel_bal = gemel_bal * rm
 
-        # Lump unlock (deterministic timing; only applied to solvent paths)
+        # Lump unlock (deterministic timing; only applied to solvent paths).
+        # The hisht/gemel balances grew at the REAL rate, so they are in
+        # 2026-purchasing-power terms; nominalize to the unlock date before
+        # adding to the (nominal) portfolio, else the lump is undercredited by
+        # the CPI factor to age 60 (codex review 2026-06-04 re-block — same
+        # real/nominal unit bug as the annuity).
         if age_t >= LUMP_PENSION_AGE and not lump_unlocked:
-            lump_total = hisht_bal[0] + gemel_bal[0]  # same on all paths
+            lump_real = hisht_bal[0] + gemel_bal[0]  # same on all paths
+            lump_total = lump_real * ((1.0 + inflation_annual) ** (t / 12.0))
             portfolio[~failed] = portfolio[~failed] + lump_total
             hisht_bal[:] = 0.0
             gemel_bal[:] = 0.0
@@ -824,13 +909,33 @@ def project_monte_carlo(
             annuity_locked = True
             annuity_lock_t = t
 
-        # Nominal annuity at this tick
+        # Nominal annuity at this tick. annuity_real_monthly is the
+        # real-grown balance ÷ mekadem (2026 purchasing power); nominalize from
+        # t=0 so it tracks the (from-t=0) nominal expense path — NOT from the
+        # lock tick, which froze it at its 2026 level for the ~23 years to 67
+        # and undercredited it ~1.77× (codex review 2026-06-04 re-block).
         if annuity_locked:
             annuity_nominal_t = annuity_real_monthly * (
-                (1.0 + inflation_annual) ** ((t - annuity_lock_t) / 12.0)
+                (1.0 + inflation_annual) ** (t / 12.0)
             )
         else:
             annuity_nominal_t = 0.0
+
+        # Bituach Leumi stipend: locks at bl_start_age, then inflates forward
+        # from its own start tick (statutory stipends are CPI-indexed in
+        # reality, so the real-2026 estimate is held real and re-nominalized).
+        # BL is a CPI-indexed REAL 2026 stipend: its nominal value at tick t is
+        # the 2026 figure inflated from t=0 (the sim start), so it keeps pace
+        # with the (also-from-t=0) nominal expense path. Inflating only from the
+        # age-67 lock tick would freeze BL at its 2026 nominal value for the ~23
+        # years to claim and undercredit it vs nominal expenses (codex review
+        # 2026-06-04 BLOCKER 1).
+        if bl_annuity_monthly_nis > 0.0 and age_t >= bl_start_age:
+            bl_nominal_t = bl_annuity_monthly_nis * (
+                (1.0 + inflation_annual) ** (t / 12.0)
+            )
+        else:
+            bl_nominal_t = 0.0
 
         # Expenses
         expenses_t = household.monthly_expenses_nis * (
@@ -860,7 +965,11 @@ def project_monte_carlo(
         if age_t < retirement_age:
             shortfall = 0.0
         else:
-            shortfall = max(0.0, expenses_t - annuity_nominal_t)
+            # The private pension annuity is partly taxable income (codex review
+            # 2026-06-04); credit it NET of the effective annuity tax. BL old-age
+            # pension is income-tax-exempt → credited gross.
+            annuity_net_t = annuity_nominal_t * (1.0 - annuity_tax_rate)
+            shortfall = max(0.0, expenses_t - annuity_net_t - bl_nominal_t)
 
         # Tax engine integration: age-aware effective rate captures the
         # life-stage mix of taxable / hishtalmut / annuity sources without
@@ -940,7 +1049,7 @@ def project_monte_carlo(
         ann_t = 0.0
         if annuity_locked and t >= annuity_lock_t:
             ann_t = annuity_real_monthly * (
-                (1.0 + inflation_annual) ** ((t - annuity_lock_t) / 12.0)
+                (1.0 + inflation_annual) ** (t / 12.0)
             )
         exp_t = household.monthly_expenses_nis * (
             (1.0 + expense_growth) ** (t / 12.0)

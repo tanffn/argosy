@@ -1274,3 +1274,45 @@ class TestPreRetirementSavingsContribution:
             retire_67.p_failure_before_age_95
             <= retire_49.p_failure_before_age_95
         )
+
+
+class TestProjectCashflowAnnuityNominalization:
+    """Codex review 2026-06-04: the deterministic /plan cashflow engine must
+    nominalize the real-grown annuity + age-60 lump from t=0 (the same fix
+    applied to the MC), so /plan and /retirement agree on pension income."""
+
+    def test_annuity_at_68_nominalized_from_t0(self):
+        from datetime import date
+
+        from argosy.services.cashflow_projection import (
+            HouseholdState,
+            PensionState,
+            project_cashflow,
+        )
+
+        current_age, mekadem = 44.0, 200.0
+        mu, infl = 0.07, 0.025
+        real_monthly = 1.0 + (mu - infl) / 12.0
+        p = PensionState(
+            kupat_pensia_balance_nis=800_000.0,
+            kupat_pensia_contribution_monthly_nis=0.0,
+            executive_insurance_balance_nis=750_000.0,
+            keren_hishtalmut_balance_nis=0.0,
+            keren_hishtalmut_contribution_monthly_nis=0.0,
+            kupat_gemel_balance_nis=0.0,
+        )
+        h = HouseholdState(
+            monthly_expenses_nis=20_000.0, portfolio_value_nis=10_000_000.0,
+            fx_usd_nis=3.7, current_age_years=current_age, monthly_savings_nis=0.0,
+        )
+        proj = project_cashflow(
+            household=h, pensions=p, retirement_age=49.0, years=30,
+            mu_nominal_annual=mu, inflation_annual=infl, mekadem=mekadem,
+            today=date(2026, 1, 1),
+        )
+        t_lock = round((67.0 - current_age) * 12)
+        bal_at_lock = (800_000.0 + 750_000.0) * (real_monthly ** t_lock)
+        annuity_real = bal_at_lock / mekadem
+        t68 = round((68.0 - current_age) * 12)
+        expected = annuity_real * ((1.0 + infl) ** (t68 / 12.0))
+        assert proj.series[t68].pension_annuity_monthly_nis == pytest.approx(expected, rel=1e-6)

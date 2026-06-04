@@ -60,6 +60,44 @@ export interface RuinProbabilityResponse {
   suggested_action: ValueWithRationale;
 }
 
+export interface ScenarioOutcome {
+  name: "bear" | "base" | "bull";
+  label: string;
+  mu_real_pct: number;
+  mu_nominal_pct: number;
+  initial_shock_pct: number;
+  p_solvent_75: number;
+  p_solvent_85: number;
+  p_solvent_95: number;
+}
+
+export interface ScenarioGridPoint {
+  mu_real_pct: number;
+  mu_nominal_pct: number;
+  p_solvent_95: number;
+}
+
+export interface ScenarioGridResponse {
+  spend_basis_annual_nis: number;
+  spend_basis_source: string;
+  spend_t12_annual_nis: number;
+  bl_monthly_nis: number;
+  bl_source: string;
+  annuity_tax_rate: number;
+  annuity_tax_source: string;
+  inflation_annual: number;
+  sigma_annual: number;
+  retirement_age: number;
+  current_age: number;
+  horizon_years: number;
+  n_paths: number;
+  scenarios: ScenarioOutcome[];
+  mu_grid: ScenarioGridPoint[];
+  fat_tail_p_solvent_95: number;
+  t12_sensitivity_p_solvent_95: number;
+  assumptions: Record<string, unknown>;
+}
+
 export interface SigmaCalibrationResponse {
   sigma_annual: ValueWithRationale;
   portfolio_total_usd: ValueWithRationale;

@@ -31,6 +31,7 @@ export type {
   MekademBandResponse,
   RuinProbabilityResponse,
   SafetyGatesResponse,
+  ScenarioGridResponse,
   SigmaCalibrationResponse,
   Source,
   SourcesResponse,
@@ -46,6 +47,7 @@ import type {
   MekademBandResponse,
   RuinProbabilityResponse,
   SafetyGatesResponse,
+  ScenarioGridResponse,
   SigmaCalibrationResponse,
   Source,
   SourcesResponse,
@@ -1413,6 +1415,18 @@ export const api = {
       if (opts?.sigmaAnnual !== undefined) params.set("sigma_annual", String(opts.sigmaAnnual));
       return getJSON<RuinProbabilityResponse>(
         `/api/retirement/projection/ruin-probability?${params.toString()}`,
+      );
+    },
+    projectionScenarios: (
+      userId: string,
+      opts?: { retirementAge?: number; nPaths?: number; seed?: number },
+    ) => {
+      const params = new URLSearchParams({ user_id: userId });
+      if (opts?.retirementAge !== undefined) params.set("retirement_age", String(opts.retirementAge));
+      if (opts?.nPaths !== undefined) params.set("n_paths", String(opts.nPaths));
+      if (opts?.seed !== undefined) params.set("seed", String(opts.seed));
+      return getJSON<ScenarioGridResponse>(
+        `/api/retirement/projection/scenarios?${params.toString()}`,
       );
     },
     bituachLeumi: (

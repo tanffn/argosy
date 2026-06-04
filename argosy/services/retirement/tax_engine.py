@@ -258,3 +258,22 @@ def _marginal_rate(user_id: str, session: Session) -> float:
     except Exception:  # noqa: BLE001
         pass
     return DEFAULT_MARGINAL_TOP_RATE
+
+
+def effective_pension_annuity_tax(
+    *, user_id: str, session: Session, year: int = 2031,
+) -> float:
+    """Effective income-tax rate on a post-67 private pension annuity.
+
+    The non-exempt (taxable) fraction of the annuity × the household marginal
+    rate, under the ITA rights-fixation exemption phasing. Sourced from
+    :func:`_pension_exemption_rate` (ITA exemption schedule) and
+    :func:`_marginal_rate` (household marginal, default top 47% — conservative,
+    overstates tax slightly, which is the safe direction for a retirement
+    GO/NO-GO). Used to net the annuity income credited in the retirement MC,
+    instead of crediting it gross (codex review 2026-06-04). Bituach Leumi
+    old-age pension is income-tax-exempt and is NOT subject to this.
+    """
+    exemption = _pension_exemption_rate(year)
+    marginal = _marginal_rate(user_id, session)
+    return max(0.0, min(1.0, (1.0 - exemption) * marginal))
