@@ -36,6 +36,12 @@ class SynthTarget(BaseModel):
         "pct_of_portfolio",
         "pct_of_net_worth",
         "pct_of_liquid",
+        # Generic percentage for RATES (SWR, expected return, yield, marginal
+        # tax) where the value IS the percent — e.g. a 3% SWR is value=3.0
+        # unit='pct'. Without this, rates were mis-tagged unit='ratio' value=3.0
+        # and rendered as the nonsensical "3.0 ratio" (codex residual). 'ratio'
+        # is reserved for true multiples (coverage 2.5×), NOT for percentages.
+        "pct",
         "usd",
         "nis",
         "shares",

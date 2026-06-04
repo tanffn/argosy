@@ -69,6 +69,38 @@ if TYPE_CHECKING:  # pragma: no cover — type-checker hint only
 # ----------------------------------------------------------------------
 
 
+def _fmt_target_value(t) -> str:
+    """Human-readable ``value + unit`` for a SynthTarget.
+
+    Renders rates as ``3%`` (unit 'pct'), allocation weights as ``15% of net
+    worth``, true multiples as ``2.5×`` (unit 'ratio'), and currency/time/share
+    units sensibly — so a rate never shows as the raw "3.0 ratio" (codex
+    residual). Unknown units fall back to the raw ``value unit`` form.
+    """
+    v = t.value
+    u = t.unit
+    if u == "pct":
+        return f"{v:g}%"
+    if u in ("pct_of_portfolio", "pct_of_net_worth", "pct_of_liquid"):
+        scope = {
+            "pct_of_portfolio": "of portfolio",
+            "pct_of_net_worth": "of net worth",
+            "pct_of_liquid": "of liquid",
+        }[u]
+        return f"{v:g}% {scope}"
+    if u == "ratio":
+        return f"{v:g}×"
+    if u == "nis":
+        return f"₪{v:,.0f}"
+    if u == "usd":
+        return f"${v:,.0f}"
+    if u == "shares":
+        return f"{v:g} sh"
+    if u in ("years", "months", "days"):
+        return f"{v:g} {u}"
+    return f"{v} {u}"
+
+
 def _emit_themes_actions_specs(section, lines: list[str]) -> None:
     """Shared body section emit — themes / actions /
     speculative_candidates render identically in both variants."""
@@ -181,7 +213,7 @@ def _horizon_md_user(section) -> str:
         lines.append("## Targets")
         for t in section.targets:
             suffix = f" — {t.rationale}" if t.rationale else ""
-            lines.append(f"- **{t.label}**: {t.value} {t.unit}{suffix}")
+            lines.append(f"- **{t.label}**: {_fmt_target_value(t)}{suffix}")
         lines.append("")
     _emit_themes_actions_specs(section, lines)
     if section.rationale:
@@ -209,7 +241,7 @@ def _horizon_md_audit(section) -> str:
         for t in section.targets:
             suffix = f" — {t.rationale}" if t.rationale else ""
             lines.append(
-                f"- **{t.label}**: {t.value} {t.unit} "
+                f"- **{t.label}**: {_fmt_target_value(t)} "
                 f"(stated {t.stated_at.isoformat()}; "
                 f"revisit {t.revisit_after.isoformat()})"
                 f"{suffix}"
@@ -1099,6 +1131,29 @@ def render_number_derivations_appendix(
         f"{_n(m.finite_liability_reserve_nis)} = **{_n(m.fi_total_capital_nis)}**."
     )
     lines.append("")
+
+    # --- FIRE bridge: retirement → first pension unlock (age 60). -----------
+    # Derived here from the permanent-equivalent spend (NOT the lower tracked
+    # T12 burn) so the plan never states a fabricated bridge figure.
+    ret_rv = resolved.get("retirement.fi_age") if resolved is not None else None
+    if ret_rv is not None and ret_rv.status == "resolved" and ret_rv.value is not None:
+        from argosy.services.cashflow_projection import LUMP_PENSION_AGE
+        ret_age = float(ret_rv.value)
+        bridge_years = max(0.0, float(LUMP_PENSION_AGE) - ret_age)
+        bridge_nis = bridge_years * m.permanent_annual_spend_nis
+        lines.append(
+            f"### FIRE bridge — {_n(bridge_nis)} liquid drawdown "
+            f"(age {ret_age:.0f}→{LUMP_PENSION_AGE})"
+        )
+        lines.append("")
+        lines.append(
+            f"- **Bridge requirement** = ({LUMP_PENSION_AGE} − {ret_age:.0f}) "
+            f"= {bridge_years:.0f} yrs × permanent-equivalent spend "
+            f"{_n(m.permanent_annual_spend_nis)}/yr = **{_n(bridge_nis)}** — the liquid "
+            "capital that must fund spend BEFORE the age-60 partial pension unlock. "
+            "Sized on the permanent-equivalent basis, not the lower tracked T12 burn."
+        )
+        lines.append("")
 
     # --- Other headline numbers from the resolver (formula + source). -------
     if resolved is not None:

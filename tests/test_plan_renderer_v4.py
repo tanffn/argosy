@@ -511,3 +511,22 @@ def test_section_evidence_appendix_render_size_meets_spec_minimum():
         f"section-evidence appendix is too small ({len(appendix)} bytes) "
         "— suggests sections are being skipped or evidence is missing"
     )
+
+
+def test_fmt_target_value_units():
+    """Rates render as N% (unit 'pct'), true multiples as N× (unit 'ratio') —
+    a rate never shows as the raw '3.0 ratio' (codex residual)."""
+    from datetime import date as _d
+    from types import SimpleNamespace as _NS
+    from argosy.orchestrator.flows.plan_synthesis.render import _fmt_target_value
+
+    def _t(value, unit):
+        return _NS(value=value, unit=unit, label="x", stated_at=_d(2026, 1, 1),
+                   revisit_after=_d(2026, 6, 1), rationale="")
+
+    assert _fmt_target_value(_t(3.0, "pct")) == "3%"
+    assert _fmt_target_value(_t(5.0, "pct")) == "5%"
+    assert _fmt_target_value(_t(2.5, "ratio")) == "2.5×"
+    assert _fmt_target_value(_t(15.0, "pct_of_net_worth")) == "15% of net worth"
+    assert _fmt_target_value(_t(350000, "nis")) == "₪350,000"
+    assert _fmt_target_value(_t(12, "months")) == "12 months"
