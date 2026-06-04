@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { api, type WithdrawalPolicy } from "@/lib/api";
+import { api, type DerivedInputsResponse, type WithdrawalPolicy } from "@/lib/api";
 
 import { BituachLeumiCard } from "@/components/retirement/BituachLeumiCard";
 import { DecumulationOrderCard } from "@/components/retirement/DecumulationOrderCard";
@@ -66,6 +66,12 @@ export default function RetirementPage() {
   const [policy, setPolicy] = useState<WithdrawalPolicy["id"]>("guyton_klinger");
   const [calibratedSigma, setCalibratedSigma] = useState<number | undefined>(undefined);
 
+  // Output-trust doctrine: every numeric/age/balance prop the cards consume
+  // comes from this single backend payload — the page carries ZERO hardcoded
+  // financial magic numbers. Fields are {value, unit, source, confidence,
+  // status}; a "pending" field has value:null and must NOT be faked.
+  const [derived, setDerived] = useState<DerivedInputsResponse | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     api.retirement
@@ -82,6 +88,49 @@ export default function RetirementPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.retirement
+      .derivedInputs(USER_ID)
+      .then((d) => {
+        if (!cancelled) setDerived(d);
+      })
+      .catch(() => {
+        // Leave `derived` null — derived-dependent cards stay in their
+        // loading placeholder rather than rendering invented numbers.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Helpers that pull a value out of the derived payload. They return
+  // `undefined` until the fetch resolves so callers can gate rendering;
+  // a "pending" field (value:null) also reads as undefined → no fake number.
+  const numOf = (key: keyof DerivedInputsResponse): number | undefined => {
+    if (!derived) return undefined;
+    const field = derived[key];
+    if (typeof field !== "object" || field === null) return undefined;
+    const v = field.value;
+    return typeof v === "number" ? v : undefined;
+  };
+  const boolOf = (key: keyof DerivedInputsResponse): boolean | undefined => {
+    if (!derived) return undefined;
+    const field = derived[key];
+    if (typeof field !== "object" || field === null) return undefined;
+    const v = field.value;
+    return typeof v === "boolean" ? v : undefined;
+  };
+
+  // A tiny placeholder for sections that depend on derived inputs while the
+  // fetch is in flight. Matches the cards' own "Loading…" affordance.
+  const loadingCard = (title: string) => (
+    <div className="rounded-lg border border-border bg-card p-4">
+      <div className="text-base font-semibold">{title}</div>
+      <div className="text-sm text-muted-foreground mt-1">Loading…</div>
+    </div>
+  );
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-6xl grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-6">
@@ -128,7 +177,7 @@ export default function RetirementPage() {
         <section id="verdict" className="scroll-mt-6">
           <RuinProbabilityHero
             userId={USER_ID}
-            retirementAge={49}
+            retirementAge={numOf("retirement_age")}
             targetPSolvent={0.9}
             withdrawalPolicyId={policy}
             sigmaAnnual={calibratedSigma}
@@ -145,72 +194,178 @@ export default function RetirementPage() {
             initialPolicyId="guyton_klinger"
             onChange={(id) => setPolicy(id)}
           />
+          {/* TODO: derive initialFx — FX spot not yet in derived-inputs endpoint */}
           <StochasticFxCard initialFx={3.4} horizonMonths={360} />
         </section>
 
         <section id="decision" className="scroll-mt-6 space-y-4">
-          <GlidePathCard currentAge={43} policy="vanguard_target_date" />
-          <RebalancingAlertsCard userId={USER_ID} currentAge={43} />
+          {(() => {
+            const age = numOf("current_age");
+            return (
+              <>
+                <GlidePathCard
+                  currentAge={age === undefined ? undefined : Math.round(age)}
+                  policy="vanguard_target_date"
+                />
+                {age === undefined ? (
+                  loadingCard("Rebalancing alerts")
+                ) : (
+                  <RebalancingAlertsCard userId={USER_ID} currentAge={Math.round(age)} />
+                )}
+              </>
+            );
+          })()}
         </section>
 
         <section id="expenses" className="scroll-mt-6 space-y-4">
-          <PhaseExpenseCard hasKids={true} />
-          <HealthcareCurveCard monthlyBurnNis={23000} />
+          <PhaseExpenseCard hasKids={boolOf("has_kids_under_18") ?? false} />
+          {numOf("monthly_burn_nis") === undefined ? (
+            loadingCard("Healthcare cost curve")
+          ) : (
+            <HealthcareCurveCard monthlyBurnNis={numOf("monthly_burn_nis")} />
+          )}
         </section>
 
         <section id="tax" className="scroll-mt-6 space-y-4">
           <TaxBreakdownCard userId={USER_ID} />
-          <HishtalmutTimerCard
-            userId={USER_ID}
-            firstDepositDate="2018-01-01"
-            currentAge={43}
-          />
+          {numOf("current_age") === undefined ? (
+            loadingCard("Hishtalmut eligibility timer")
+          ) : (
+            // TODO: derive firstDepositDate — not yet in derived-inputs
+            <HishtalmutTimerCard
+              userId={USER_ID}
+              firstDepositDate="2018-01-01"
+              currentAge={Math.round(numOf("current_age")!)}
+            />
+          )}
         </section>
 
         <section id="decumulation" className="scroll-mt-6 space-y-4">
-          <DecumulationOrderCard
-            monthlyNeedNis={25000}
-            taxableBalanceNis={3_000_000}
-            hishtalmutBalanceNis={500_000}
-            kupatGemelBalanceNis={75_000}
-          />
-          <LumpVsAnnuityCard
-            pensionBalanceNis={1_500_000}
-            mekademTypical={200}
-            monthlyExpenseNeedNis={25_000}
-          />
+          {(() => {
+            const monthlyNeed = numOf("monthly_need_nis");
+            const taxable = numOf("taxable_balance_nis");
+            const hishtalmut = numOf("hishtalmut_balance_nis");
+            const kupatGemel = numOf("kupat_gemel_balance_nis");
+            const pension = numOf("pension_balance_nis");
+            const decReady =
+              monthlyNeed !== undefined &&
+              taxable !== undefined &&
+              hishtalmut !== undefined;
+            return (
+              <>
+                {decReady ? (
+                  <DecumulationOrderCard
+                    monthlyNeedNis={monthlyNeed!}
+                    taxableBalanceNis={taxable!}
+                    hishtalmutBalanceNis={hishtalmut!}
+                    kupatGemelBalanceNis={kupatGemel}
+                  />
+                ) : (
+                  loadingCard("Decumulation order")
+                )}
+                {pension !== undefined && monthlyNeed !== undefined ? (
+                  <LumpVsAnnuityCard
+                    pensionBalanceNis={pension}
+                    /* TODO: derive mekademTypical — not yet in derived-inputs */
+                    mekademTypical={200}
+                    monthlyExpenseNeedNis={monthlyNeed}
+                  />
+                ) : (
+                  loadingCard("Lump sum vs annuity")
+                )}
+              </>
+            );
+          })()}
         </section>
 
         <section id="balance" className="scroll-mt-6">
-          <RealEstateMortgageCard
-            primaryResidenceValueNis={3_500_000}
-            mortgageBalanceNis={1_200_000}
-            annualRate={0.045}
-            termMonths={240}
-          />
+          {(() => {
+            const residence = numOf("residence_value_nis");
+            const mortgage = numOf("mortgage_balance_nis");
+            // residence_value_nis is PENDING (no intake yet) → value:null.
+            // Do NOT invent a residence value: show a needs-intake note so
+            // equity (value − mortgage) is never computed off a fake number.
+            const residencePending =
+              derived !== null && derived.residence_value_nis.status === "pending";
+            if (residencePending || (derived !== null && residence === undefined)) {
+              return (
+                <div className="rounded-lg border border-border bg-card p-4">
+                  <div className="text-base font-semibold">Real estate + mortgage</div>
+                  <div className="text-sm text-muted-foreground mt-1">
+                    Primary-residence value needs intake — add it on the intake
+                    page to compute home equity. Mortgage balance:{" "}
+                    {mortgage === undefined
+                      ? "—"
+                      : `₪${mortgage.toLocaleString()}`}
+                    .
+                  </div>
+                </div>
+              );
+            }
+            if (residence === undefined || mortgage === undefined) {
+              return loadingCard("Real estate + mortgage");
+            }
+            return (
+              <RealEstateMortgageCard
+                primaryResidenceValueNis={residence}
+                mortgageBalanceNis={mortgage}
+                /* TODO: derive annualRate — not yet in derived-inputs */
+                annualRate={0.045}
+                /* TODO: derive termMonths — not yet in derived-inputs */
+                termMonths={240}
+              />
+            );
+          })()}
         </section>
 
         <section id="risk-transfer" className="scroll-mt-6">
-          <InsuranceGapsCard
-            monthlyIncomeNis={55_000}
-            monthlyExpensesNis={23_000}
-            dependentsCount={2}
-            hasKidsUnder18={true}
-            assetsNis={3_500_000}
-          />
+          {(() => {
+            const income = numOf("monthly_income_nis");
+            const expenses = numOf("monthly_burn_nis");
+            const dependents = numOf("dependents_count");
+            const kids = boolOf("has_kids_under_18");
+            const assets = numOf("net_worth_nis");
+            const ready =
+              income !== undefined &&
+              expenses !== undefined &&
+              dependents !== undefined &&
+              kids !== undefined &&
+              assets !== undefined;
+            return ready ? (
+              <InsuranceGapsCard
+                monthlyIncomeNis={income!}
+                monthlyExpensesNis={expenses!}
+                dependentsCount={dependents!}
+                hasKidsUnder18={kids!}
+                assetsNis={assets!}
+              />
+            ) : (
+              loadingCard("Insurance gaps")
+            );
+          })()}
         </section>
 
         <section id="israeli" className="scroll-mt-6 space-y-4">
-          <BituachLeumiCard
-            userId={USER_ID}
-            currentAge={43}
-            contributionHistoryYears={21}
-            spouseEligible={false}
-          />
+          {(() => {
+            const age = numOf("current_age");
+            return age === undefined ? (
+              loadingCard("Bituach Leumi (National Insurance)")
+            ) : (
+              <BituachLeumiCard
+                userId={USER_ID}
+                currentAge={Math.round(age)}
+                /* TODO: derive contributionHistoryYears — not yet in derived-inputs */
+                contributionHistoryYears={21}
+                /* TODO: derive spouseEligible — not yet in derived-inputs */
+                spouseEligible={false}
+              />
+            );
+          })()}
           <MekademBand
             userId={USER_ID}
+            /* TODO: derive fundId — not yet in derived-inputs */
             fundId="clal_pensia"
-            balanceNis={1_500_000}
+            balanceNis={numOf("pension_balance_nis")}
           />
         </section>
 

@@ -604,6 +604,46 @@ export interface DefaultAssumptionsResponseDTO {
   lifestyle_drift_annual: AssumptionFieldDTO;
 }
 
+// Backend: GET /api/retirement/derived-inputs?user_id=… — every numeric
+// input the /retirement cards need, resolved from the plan + resolver +
+// portfolio/identity so the page carries ZERO hardcoded magic numbers.
+// pct values are FRACTIONS (0.03), nis are raw NIS, current_age is a float,
+// has_kids_under_18 is bool. ``status`` is "resolved" | "pending"; a pending
+// field has ``value: null`` and the card must render its own intake state.
+export interface DerivedInputField<T = number> {
+  value: T | null;
+  unit: string;
+  source: string;
+  confidence: "HIGH" | "MEDIUM" | "LOW" | string;
+  status: "resolved" | "pending" | string;
+}
+
+export interface DerivedInputsResponse {
+  decision_run_id: number;
+  current_age: DerivedInputField;
+  retirement_age: DerivedInputField;
+  monthly_need_nis: DerivedInputField;
+  monthly_burn_nis: DerivedInputField;
+  monthly_income_nis: DerivedInputField;
+  hishtalmut_balance_nis: DerivedInputField;
+  kupat_gemel_balance_nis: DerivedInputField;
+  pension_balance_nis: DerivedInputField;
+  executive_insurance_nis: DerivedInputField;
+  taxable_balance_nis: DerivedInputField;
+  net_worth_nis: DerivedInputField;
+  mortgage_balance_nis: DerivedInputField;
+  residence_value_nis: DerivedInputField;
+  dependents_count: DerivedInputField;
+  has_kids_under_18: DerivedInputField<boolean>;
+  fi_target_nis: DerivedInputField;
+  fi_total_capital_nis: DerivedInputField;
+  liquidity_reserve_nis: DerivedInputField;
+  required_real_yield_pct: DerivedInputField;
+  expected_real_return_pct: DerivedInputField;
+  nvda_cap_pct: DerivedInputField;
+  nvda_current_pct: DerivedInputField;
+}
+
 export interface DailyBriefDTO {
   id: number;
   user_id: string;
@@ -1199,6 +1239,13 @@ export const api = {
     safetyGates: (userId: string) =>
       getJSON<SafetyGatesResponse>(
         `/api/retirement/safety-gates?user_id=${encodeURIComponent(userId)}`,
+      ),
+    // Single source of truth for every numeric prop the /retirement cards
+    // consume — keeps the page free of hardcoded financial/age/balance magic
+    // numbers (output-trust doctrine). See DerivedInputsResponse.
+    derivedInputs: (userId: string) =>
+      getJSON<DerivedInputsResponse>(
+        `/api/retirement/derived-inputs?user_id=${encodeURIComponent(userId)}`,
       ),
     sigmaCalibration: (userId: string) =>
       getJSON<SigmaCalibrationResponse>(
