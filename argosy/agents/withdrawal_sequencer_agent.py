@@ -50,10 +50,121 @@ permits to maximise actuarial coefficients).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from decimal import Decimal
+
+from pydantic import BaseModel, Field, model_validator
 
 from argosy.agents.base import BaseAgent, ConfidenceBand
 from argosy.agents.plan_distiller_types import BridgeRung, WithdrawalYearRow
+
+
+# ---------------------------------------------------------------------------
+# FI-base — the canonical, DERIVED financial-independence target.
+# ---------------------------------------------------------------------------
+
+
+class FiBase(BaseModel):
+    """The canonical FI (financial-independence) target the whole plan binds to.
+
+    This field closes the gap that let the synthesizer FABRICATE a round
+    ₪21M target and an arbitrary retirement age — the #1 user complaint.
+    Every field here is DERIVED by the WithdrawalSequencerAgent from its
+    own analysis (spend basis, return assumption, bucket balances); nothing
+    is a round guess and nothing is defaulted to a constant to pass
+    validation.
+
+    Consistency invariant (enforced below): ``required_real_yield_pct`` must
+    equal ``annual_spend_nis / fi_target_nis`` within a small rounding
+    tolerance. The validator is lenient ONLY on rounding — it recomputes
+    the yield from the spend + target rather than trusting a value the model
+    might have fabricated independently.
+    """
+
+    fi_target_nis: Decimal = Field(
+        ...,
+        description=(
+            "The FI capital target in NIS — the portfolio/net-worth level "
+            "that sustainably funds annual_spend_nis at the real-return "
+            "assumption. DERIVED (e.g. annual_spend / required_real_yield), "
+            "never a round guess. REQUIRED — no fabricated default."
+        ),
+    )
+    retirement_age: float = Field(
+        ...,
+        description=(
+            "Earliest feasible retirement age the analysis supports, given "
+            "the bridge ladder + bucket unlock schedule. REQUIRED — no "
+            "fabricated default."
+        ),
+    )
+    annual_spend_nis: Decimal = Field(
+        ...,
+        description=(
+            "The annual household spend basis (NIS) the FI target funds — "
+            "the inflation-real spend the plan must cover in retirement."
+        ),
+    )
+    return_assumption_pct: float = Field(
+        ...,
+        description=(
+            "The real (after-inflation) return assumption used to size the "
+            "target, expressed as a fraction (e.g. 0.045 for 4.5%)."
+        ),
+    )
+    required_real_yield_pct: float = Field(
+        ...,
+        description=(
+            "annual_spend_nis / fi_target_nis, expressed as a fraction. The "
+            "consistency validator recomputes this from the spend + target "
+            "and overwrites a model-supplied value that disagrees beyond a "
+            "rounding tolerance."
+        ),
+    )
+    method: str = Field(
+        ...,
+        description=(
+            "Short text describing how fi_target was derived, e.g. "
+            "'annual_spend / required real yield' or 'capital that sustains "
+            "spend at the real-return assumption'."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _check_internal_consistency(self) -> "FiBase":
+        """Enforce required_real_yield ≈ annual_spend / fi_target.
+
+        LENIENT ONLY ON ROUNDING: we recompute the yield from the two
+        load-bearing money figures and, if the model-supplied value is off
+        by more than a small relative tolerance, OVERWRITE it with the
+        recomputed value rather than trust a possibly-fabricated number.
+        A non-positive fi_target / annual_spend is a hard failure — those
+        are the values the synthesizer used to fabricate from, so they must
+        be real and positive.
+        """
+        target = self.fi_target_nis
+        spend = self.annual_spend_nis
+        if target <= 0:
+            raise ValueError(
+                "fi_target_nis must be > 0 (got "
+                f"{target!r}); the FI target is the load-bearing capital "
+                "figure and must be a real derived value, never a "
+                "placeholder."
+            )
+        if spend <= 0:
+            raise ValueError(
+                "annual_spend_nis must be > 0 (got "
+                f"{spend!r}); the spend basis sizes the FI target and must "
+                "be real."
+            )
+        recomputed = float(spend) / float(target)
+        supplied = self.required_real_yield_pct
+        # Lenient on rounding: 1% relative tolerance (or 1e-4 absolute for
+        # tiny yields). Outside that, the supplied value disagrees with the
+        # math — trust the math, not the model.
+        tol = max(abs(recomputed) * 0.01, 1e-4)
+        if supplied is None or abs(supplied - recomputed) > tol:
+            self.required_real_yield_pct = recomputed
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +212,19 @@ class WithdrawalSequencerOutput(BaseModel):
             "``fi_bridge``."
         ),
     )
+    fi_base: FiBase = Field(
+        ...,
+        description=(
+            "The canonical, DERIVED FI target the whole plan binds to: the "
+            "FI capital target (fi_target_nis), the earliest feasible "
+            "retirement age, the spend basis, the real-return assumption, "
+            "and the implied required real yield. This is the single source "
+            "of truth for 'the retirement number' — downstream synthesis "
+            "MUST bind to it rather than invent a round figure. REQUIRED — "
+            "if the model cannot derive it, validation fails loudly (no "
+            "fabricated constant)."
+        ),
+    )
     confidence: ConfidenceBand = ConfidenceBand.MEDIUM
     cited_sources: list[str] = Field(default_factory=list)
 
@@ -121,6 +245,70 @@ verbatim by two downstream sections of the comprehensive plan:
     table.
   - The "FI Bridge (pre-statutory-age)" section (section_id
     ``fi_bridge``) renders your ``fi_bridge`` rung-by-rung ladder.
+
+THE FI TARGET IS YOURS TO DERIVE — DO NOT LET ANYONE FABRICATE IT:
+
+  You MUST emit a ``fi_base`` object. This is the CANONICAL financial-
+  independence target the ENTIRE plan binds to. Historically nothing in
+  the system derived it, so downstream synthesis FABRICATED a round
+  ₪21M number and an arbitrary retirement age — the user's #1 complaint.
+  Your job is to make that number REAL and DERIVED.
+
+  ``fi_base`` has EXACTLY these keys, all REQUIRED:
+    * ``annual_spend_nis``      (number) — the annual household spend, in
+      today's real NIS, that the FI target must fund. Take this from the
+      <household_budget> (monthly_burn × 12, or the stated annual spend);
+      if you must extrapolate, say so in ``method`` and lower confidence.
+    * ``return_assumption_pct`` (number) — the REAL (after-inflation)
+      return you assume the FI capital earns, as a FRACTION (0.045 = 4.5%).
+      Use the <assumptions> block's real-return figure; default 0.045 if
+      absent (and flag it).
+    * ``required_real_yield_pct`` (number) — annual_spend_nis / fi_target_nis,
+      as a fraction. For an indefinite (perpetual) drawdown this equals
+      the safe real withdrawal rate you can sustain — typically ≈ the
+      real-return assumption, NOT higher.
+    * ``fi_target_nis``         (number) — the FI capital target. DERIVE
+      it: ``fi_target_nis = annual_spend_nis / required_real_yield_pct``.
+      Equivalently it is the capital whose sustainable real draw covers
+      the spend. NEVER round to a marketing figure (no "₪20M",
+      "₪21M") — emit the computed value.
+    * ``retirement_age``        (number) — the EARLIEST feasible
+      retirement age your bridge ladder + bucket-unlock schedule actually
+      supports (i.e. the age at which accumulated capital reaches
+      fi_target_nis AND the bridge can fund spend until the statutory
+      buckets unlock). Derive it from the trajectory, do not pick a round
+      age.
+    * ``method``                (string) — one short sentence on HOW you
+      derived fi_target (e.g. "annual_spend / required real yield at the
+      real-return assumption").
+
+  WORKED EXAMPLE (illustrative — compute your own from the inputs):
+    Given annual_spend_nis = 360000 and a sustainable real yield equal to
+    the 4.5% real-return assumption:
+      required_real_yield_pct = 0.045
+      fi_target_nis = 360000 / 0.045 = 8000000   (₪8.0M, the DERIVED target)
+      return_assumption_pct = 0.045
+    Then check the trajectory: the earliest age at which projected capital
+    first reaches ₪8.0M (and the bridge can carry spend to the age-60/67
+    unlocks) is the retirement_age you emit — say 51.7, not a round 50.
+    fi_base = {
+      "fi_target_nis": 8000000,
+      "retirement_age": 51.7,
+      "annual_spend_nis": 360000,
+      "return_assumption_pct": 0.045,
+      "required_real_yield_pct": 0.045,
+      "method": "annual_spend / required real yield at the 4.5% real-return assumption"
+    }
+
+  CONSISTENCY: required_real_yield_pct MUST equal annual_spend_nis /
+  fi_target_nis. Emit a self-consistent triple; a downstream validator
+  recomputes the yield and will overwrite an inconsistent value.
+
+  HARD RULE: every fi_base number must trace to the inputs + your own
+  arithmetic. If you genuinely cannot derive fi_target_nis or
+  retirement_age, DO NOT invent a placeholder — emit your best derived
+  value and set confidence=LOW. A fabricated round number is the exact
+  failure this field exists to kill.
 
 ISRAELI-PENSION CONTEXT — you must respect these mechanics:
 
@@ -412,6 +600,7 @@ def _escape_data_block(text: str) -> str:
 
 
 __all__ = [
+    "FiBase",
     "WithdrawalSequencerAgent",
     "WithdrawalSequencerOutput",
 ]

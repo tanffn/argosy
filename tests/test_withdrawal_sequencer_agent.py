@@ -24,10 +24,24 @@ from pydantic import ValidationError
 from argosy.agents.base import AgentReport, BaseAgent, ConfidenceBand
 from argosy.agents.plan_distiller_types import BridgeRung, WithdrawalYearRow
 from argosy.agents.withdrawal_sequencer_agent import (
+    FiBase,
     WithdrawalSequencerAgent,
     WithdrawalSequencerOutput,
     _escape_data_block,
 )
+
+
+# A realistic, internally-consistent fi_base used to satisfy the now-
+# REQUIRED field on WithdrawalSequencerOutput in the rung-focused tests
+# below. fi_target = annual_spend / required_real_yield = 360000 / 0.045.
+_VALID_FI_BASE = {
+    "fi_target_nis": "8000000",
+    "retirement_age": 51.7,
+    "annual_spend_nis": "360000",
+    "return_assumption_pct": 0.045,
+    "required_real_yield_pct": 0.045,
+    "method": "annual_spend / required real yield at 4.5% real return",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +184,7 @@ def test_output_model_validates_fi_bridge_rung() -> None:
     output = WithdrawalSequencerOutput(
         fi_bridge=[rung],
         withdrawal_schedule=[year],
+        fi_base=FiBase.model_validate(_VALID_FI_BASE),
         confidence=ConfidenceBand.HIGH,
         cited_sources=["assumption_register.retire_age"],
     )
@@ -178,15 +193,107 @@ def test_output_model_validates_fi_bridge_rung() -> None:
     assert output.confidence is ConfidenceBand.HIGH
 
 
-def test_output_model_defaults_are_safe() -> None:
-    """Constructing with no arguments must produce a structurally-valid
-    empty output (the LLM may legitimately decline to schedule on a
-    LOW-confidence run)."""
-    output = WithdrawalSequencerOutput()
-    assert output.fi_bridge == []
-    assert output.withdrawal_schedule == []
-    assert output.confidence is ConfidenceBand.MEDIUM
-    assert output.cited_sources == []
+def test_output_model_requires_fi_base_no_fabrication() -> None:
+    """HARD GUARDRAIL: fi_base is REQUIRED — constructing without it must
+    fail loudly rather than default to a fabricated retirement number.
+    The lists may be empty (the LLM can decline to schedule), but the
+    canonical FI target the whole plan binds to must always be derived."""
+    with pytest.raises(ValidationError) as exc_info:
+        WithdrawalSequencerOutput()
+    missing = {e["loc"][-1] for e in exc_info.value.errors() if e["type"] == "missing"}
+    assert "fi_base" in missing
+
+
+# ---------------------------------------------------------------------------
+# 4c. fi_base — the DERIVED canonical FI target (anti-fabrication field).
+# ---------------------------------------------------------------------------
+
+
+def test_fi_base_validates_through_output_model() -> None:
+    """A realistic model-output dict including fi_base validates cleanly,
+    and the derived figures survive round-trip with the consistency
+    invariant holding (required_real_yield ≈ spend / target)."""
+    rung = {
+        "rung_label": "Portfolio bridge",
+        "source_account": "portfolio_drawdown",
+        "start_age": 52,
+        "end_age": 59,
+        "annual_nis": 360000,
+        "tax_status": "capital_gains",
+    }
+    out = WithdrawalSequencerOutput.model_validate(
+        {"fi_bridge": [rung], "fi_base": dict(_VALID_FI_BASE)}
+    )
+    fb = out.fi_base
+    assert fb.fi_target_nis == Decimal("8000000")
+    assert 40 <= fb.retirement_age <= 75
+    assert fb.annual_spend_nis == Decimal("360000")
+    # required_real_yield ≈ annual_spend / fi_target.
+    recomputed = float(fb.annual_spend_nis) / float(fb.fi_target_nis)
+    assert abs(fb.required_real_yield_pct - recomputed) < 1e-6
+
+
+def test_fi_base_consistency_recomputes_inconsistent_yield() -> None:
+    """LENIENT-ON-ROUNDING guardrail: a fabricated required_real_yield
+    that disagrees with annual_spend / fi_target is OVERWRITTEN with the
+    recomputed value rather than trusted. spend=360000, target=8_000_000
+    -> 0.045, regardless of the bogus 0.09 the 'model' emitted."""
+    payload = dict(_VALID_FI_BASE)
+    payload["required_real_yield_pct"] = 0.09  # double the truth — bogus
+    fb = FiBase.model_validate(payload)
+    assert abs(fb.required_real_yield_pct - 0.045) < 1e-6
+
+
+def test_fi_base_rounding_tolerance_preserves_supplied() -> None:
+    """A required_real_yield within the rounding tolerance is kept as-is
+    (we only overwrite on genuine disagreement, not on harmless rounding)."""
+    payload = dict(_VALID_FI_BASE)
+    # 360000 / 8_000_000 = 0.045; supply 0.0451 (within 1% relative tol).
+    payload["required_real_yield_pct"] = 0.0451
+    fb = FiBase.model_validate(payload)
+    assert fb.required_real_yield_pct == 0.0451
+
+
+def test_fi_base_missing_fi_target_fails_loudly() -> None:
+    """HARD GUARDRAIL: a fi_base that omits fi_target_nis must FAIL — never
+    default to a constant. This is the exact fabrication this field kills."""
+    payload = dict(_VALID_FI_BASE)
+    del payload["fi_target_nis"]
+    with pytest.raises(ValidationError) as exc_info:
+        FiBase.model_validate(payload)
+    missing = {e["loc"][-1] for e in exc_info.value.errors() if e["type"] == "missing"}
+    assert "fi_target_nis" in missing
+
+
+def test_fi_base_zero_fi_target_fails_loudly() -> None:
+    """A non-positive fi_target is a hard failure — a placeholder 0 is the
+    fabrication-via-default this field exists to prevent."""
+    payload = dict(_VALID_FI_BASE)
+    payload["fi_target_nis"] = "0"
+    with pytest.raises(ValidationError, match="fi_target_nis must be > 0"):
+        FiBase.model_validate(payload)
+
+
+def test_fi_base_missing_retirement_age_fails_loudly() -> None:
+    """retirement_age is required — no fabricated default age."""
+    payload = dict(_VALID_FI_BASE)
+    del payload["retirement_age"]
+    with pytest.raises(ValidationError) as exc_info:
+        FiBase.model_validate(payload)
+    missing = {e["loc"][-1] for e in exc_info.value.errors() if e["type"] == "missing"}
+    assert "retirement_age" in missing
+
+
+def test_build_prompt_system_carries_fi_base_directive() -> None:
+    """System prompt must instruct the model to DERIVE and emit fi_base
+    with the worked example, so the FI target is computed not fabricated."""
+    system, _ = _build()
+    assert "fi_base" in system
+    assert "fi_target_nis" in system
+    assert "required_real_yield_pct" in system
+    assert "retirement_age" in system
+    # The anti-fabrication framing + a worked derivation must be present.
+    assert "annual_spend / required real yield" in system or "annual_spend_nis / required_real_yield_pct" in system
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +358,9 @@ def test_real_model_shape_coerces_and_validates() -> None:
             "notes": "Statutory annuity; first slice exempt, balance ordinary.",
         },
     ]
-    output = WithdrawalSequencerOutput.model_validate({"fi_bridge": rungs})
+    output = WithdrawalSequencerOutput.model_validate(
+        {"fi_bridge": rungs, "fi_base": _VALID_FI_BASE}
+    )
     assert len(output.fi_bridge) == 4
     # rung_id -> rung_label derived from source_account (no rung_label given).
     assert output.fi_bridge[0].rung_label  # non-empty
@@ -272,7 +381,9 @@ def test_explicit_rung_label_not_overwritten() -> None:
     leave it untouched (only derive when absent/empty)."""
     rung = dict(_REAL_MODEL_RUNG_WITH_ANNUAL)
     rung["rung_label"] = "My custom KH phase"
-    out = WithdrawalSequencerOutput.model_validate({"fi_bridge": [rung]})
+    out = WithdrawalSequencerOutput.model_validate(
+        {"fi_bridge": [rung], "fi_base": _VALID_FI_BASE}
+    )
     assert out.fi_bridge[0].rung_label == "My custom KH phase"
 
 
@@ -290,7 +401,9 @@ def test_canonical_tax_status_not_remapped() -> None:
         # A stray tax_treatment must NOT override the explicit tax_status.
         "tax_treatment": "tax_free_within_cap",
     }
-    out = WithdrawalSequencerOutput.model_validate({"fi_bridge": [rung]})
+    out = WithdrawalSequencerOutput.model_validate(
+        {"fi_bridge": [rung], "fi_base": _VALID_FI_BASE}
+    )
     assert out.fi_bridge[0].tax_status == "ordinary_income"
 
 
@@ -308,7 +421,9 @@ def test_missing_annual_nis_still_fails_no_fabrication() -> None:
         "notes": "no annual_nis emitted",
     }
     with pytest.raises(ValidationError) as exc_info:
-        WithdrawalSequencerOutput.model_validate({"fi_bridge": [rung_no_money]})
+        WithdrawalSequencerOutput.model_validate(
+            {"fi_bridge": [rung_no_money], "fi_base": _VALID_FI_BASE}
+        )
     errors = exc_info.value.errors()
     # The ONLY remaining error is the money field — label + tax_status
     # were repaired by the coercion, proving we don't fabricate money.
@@ -349,6 +464,7 @@ def test_run_sync_returns_agentreport_with_output(monkeypatch: pytest.MonkeyPatc
                 running_balance_nis=Decimal("21500000"),
             ),
         ],
+        fi_base=FiBase.model_validate(_VALID_FI_BASE),
         confidence=ConfidenceBand.MEDIUM,
     )
     stub_report = AgentReport(
