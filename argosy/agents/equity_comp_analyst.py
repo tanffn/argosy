@@ -89,7 +89,12 @@ carries a ``source`` field ('contractual' or 'modeled_refresh') so
 downstream consumers don't double-count discretionary income against
 high-confidence cashflow.
 
-OUTPUT PER YEAR PER SCENARIO:
+OUTPUT PER YEAR PER SCENARIO — each scenario object MUST carry a field
+named EXACTLY ``years`` (not ``yearly_projections`` / ``year_rows`` /
+``projections``): a list with one object per calendar year 2026-2031.
+Each scenario MUST also carry ``five_year_avg_net_nis`` = the mean of
+the per-year ``net_nis`` values (the synthesizer binds to this headline
+number; do NOT omit it). Each year object:
 
   - gross_shares          — total NVDA shares vesting that year
   - gross_usd             — gross USD value at the assumed NVDA price
@@ -140,6 +145,13 @@ DISCIPLINE:
 
   - Output strictly conforms to the EquityCompAnalystOutput JSON
     schema. Respond with JSON directly — no fences, no preamble.
+
+  - You MAY include these optional provenance fields and they will be
+    captured: ``confidence_rationale`` (a string justifying the
+    top-level confidence band), ``assumptions`` (a list of
+    {id, statement, confidence} objects), and ``sanity_checks`` (a list
+    of {check, result} objects). Do NOT emit an ``agent`` field or echo
+    your own name — the consumer already knows which agent ran.
 """
 
 

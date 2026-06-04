@@ -41,6 +41,69 @@ def _coerce_to_string(v: Any) -> str:
     return str(v)
 
 
+class AnalystAssumption(BaseModel):
+    """One declared assumption the projection rests on.
+
+    Lenient by design: the LLM emits these as provenance
+    (``{id, statement/text, confidence}``) and the exact shape varies
+    run-to-run. We capture the common fields explicitly and ``allow``
+    any extras so nothing useful is dropped, but we never *require* a
+    shape the model might not produce — this is non-load-bearing
+    provenance, not a money field.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = ""
+    statement: str = ""
+    confidence: str = ""
+
+    @field_validator("id", "statement", "confidence", mode="before")
+    @classmethod
+    def _stringify(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return v if isinstance(v, str) else _coerce_to_string(v)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_text_to_statement(cls, data: Any) -> Any:
+        """The model sometimes emits ``text`` instead of ``statement``;
+        fold it in so the canonical field is populated without losing
+        the original (extra='allow' keeps ``text`` too)."""
+        if isinstance(data, dict) and not data.get("statement") and data.get("text"):
+            data = {**data, "statement": data["text"]}
+        return data
+
+
+class AnalystSanityCheck(BaseModel):
+    """One self-reported sanity check the agent ran on its projection.
+
+    Same lenient posture as :class:`AnalystAssumption` — useful
+    provenance (``{check, result/note}``), captured not discarded, but
+    never load-bearing.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    check: str = ""
+    result: str = ""
+
+    @field_validator("check", "result", mode="before")
+    @classmethod
+    def _stringify(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return v if isinstance(v, str) else _coerce_to_string(v)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_note_to_result(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("result") and data.get("note"):
+            data = {**data, "result": data["note"]}
+        return data
+
+
 class GrantRow(BaseModel):
     """A single RSU grant on the household's books.
 
@@ -132,6 +195,16 @@ class YearVestRow(BaseModel):
     )
 
 
+# Known LLM key-name variants for the per-year vesting array. Folded
+# into the canonical ``years`` field by ScenarioProjection._alias_year_rows.
+_YEAR_ROW_KEY_ALIASES = (
+    "yearly_projections",
+    "year_rows",
+    "yearly",
+    "projection_years",
+)
+
+
 class ScenarioProjection(BaseModel):
     """One of the three RSU-projection scenarios.
 
@@ -168,6 +241,28 @@ class ScenarioProjection(BaseModel):
         if v is None:
             return ""
         return _coerce_to_string(v)
+
+    # The model emits the per-year array under a varying key across runs
+    # (observed: ``years``, ``yearly_projections``, ``year_rows``). With
+    # the top-level ``extra="ignore"`` a mis-keyed array would be SILENTLY
+    # DROPPED, shipping five_year_avg_net_nis=0 for a number the plan
+    # binds to — strictly worse than a crash. Fold the known aliases into
+    # the canonical ``years`` field before validation so the load-bearing
+    # data survives LLM key-naming variance. (Module-level constant —
+    # a leading-underscore class attr would be swallowed as a Pydantic
+    # private attr.)
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_year_rows(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if not data.get("years"):
+            for alias in _YEAR_ROW_KEY_ALIASES:
+                if data.get(alias):
+                    data = {**data, "years": data[alias]}
+                    break
+        return data
+
     years: list[YearVestRow] = Field(
         default_factory=list,
         description=(
@@ -199,6 +294,24 @@ class ScenarioProjection(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _derive_five_year_avg(self) -> "ScenarioProjection":
+        """Backfill ``five_year_avg_net_nis`` from the per-year rows when
+        the model omitted it (came back 0 while ``years`` is populated).
+
+        This is NOT a fabricated default — the field's own definition is
+        "mean of net_nis across years[]", so we compute exactly that from
+        the model's emitted per-year ``net_nis`` figures. We only fill the
+        gap; a model-supplied non-zero value is left untouched. If there
+        are no year rows we leave it at 0.0 (the missing-data signal the
+        synthesizer / FM already handle).
+        """
+        if not self.five_year_avg_net_nis and self.years:
+            self.five_year_avg_net_nis = round(
+                sum(y.net_nis for y in self.years) / len(self.years), 2
+            )
+        return self
+
 
 class EquityCompAnalystOutput(BaseModel):
     """Structured output of EquityCompAnalystAgent.
@@ -210,7 +323,16 @@ class EquityCompAnalystOutput(BaseModel):
     verified).
     """
 
-    model_config = ConfigDict(extra="forbid", validate_default=True)
+    # extra="ignore" (not "forbid"): the model intermittently volunteers
+    # stray scalar echoes — most notably an ``agent`` field echoing its
+    # own name — that carry no information. Forbidding them aborted the
+    # whole agent (and, at the run-completeness gate, the whole synthesis)
+    # on pure LLM variance. We instead model the *useful* volunteered
+    # fields explicitly below (confidence_rationale / assumptions /
+    # sanity_checks) and silently drop the junk. The load-bearing fields
+    # (scenarios, five_year_avg_net_nis) stay required/typed — see the
+    # ScenarioProjection schema + _exactly_three_canonical_scenarios.
+    model_config = ConfigDict(extra="ignore", validate_default=True)
 
     active_grants: list[GrantRow] = Field(
         default_factory=list,
@@ -270,6 +392,48 @@ class EquityCompAnalystOutput(BaseModel):
         ),
     )
 
+    confidence_rationale: str = Field(
+        default="",
+        description=(
+            "Free-text justification for the top-level ``confidence`` "
+            "band. Volunteered provenance — captured for the synthesizer "
+            "/ audit trail, not load-bearing on any money figure."
+        ),
+    )
+    assumptions: list[AnalystAssumption] = Field(
+        default_factory=list,
+        description=(
+            "Declared assumptions the projection rests on "
+            "(``{id, statement, confidence}``). Provenance only; the "
+            "scenario-level ``assumptions_md`` remains the rendered "
+            "surface the synthesizer reads."
+        ),
+    )
+    sanity_checks: list[AnalystSanityCheck] = Field(
+        default_factory=list,
+        description=(
+            "Self-reported sanity checks the agent ran on its own "
+            "projection (``{check, result}``). Provenance only."
+        ),
+    )
+
+    @field_validator("confidence_rationale", mode="before")
+    @classmethod
+    def _coerce_confidence_rationale(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return _coerce_to_string(v)
+
+    @field_validator("assumptions", "sanity_checks", mode="before")
+    @classmethod
+    def _wrap_provenance_list(cls, v: Any) -> Any:
+        """Tolerate a bare object instead of a list (LLM variance)."""
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        return [v]
+
     @field_validator("nvda_sell_on_vest_policy", mode="before")
     @classmethod
     def _coerce_sell_policy(cls, v: Any) -> str:
@@ -328,6 +492,8 @@ class EquityCompAnalystOutput(BaseModel):
 
 
 __all__ = [
+    "AnalystAssumption",
+    "AnalystSanityCheck",
     "EquityCompAnalystOutput",
     "GrantRow",
     "ScenarioProjection",

@@ -335,6 +335,173 @@ def test_output_model_rejects_missing_scenarios() -> None:
         )
 
 
+def _drun74_scenarios() -> list[dict]:
+    """Minimal but valid 3-scenario payload (dict form) so the
+    canonical-scenarios validator passes; mirrors what the LLM emits."""
+    return [
+        {
+            "name": name,
+            "assumptions_md": "stub",
+            "years": [
+                {
+                    "year": 2026,
+                    "gross_shares": 1720.0,
+                    "gross_usd": 249_400.0,
+                    "gross_nis": 910_310.0,
+                    "net_nis": 482_464.0,
+                    "net_retention_pct": 53.0,
+                    "confidence": "HIGH",
+                    "source": "contractual",
+                }
+            ],
+            "five_year_avg_net_nis": 482_464.0,
+            "fi_date_impact_years": 0.5,
+            "confidence": "LOW",
+        }
+        for name in ("known_grants_only", "conservative_decay", "optimistic_flat")
+    ]
+
+
+def test_output_model_accepts_exact_drun74_failing_shape() -> None:
+    """ROOT-CAUSE REGRESSION: drun-74 the model volunteered four fields
+    the old extra='forbid' schema rejected (extra_forbidden), aborting
+    the agent + the whole synthesis. The three USEFUL ones must now be
+    captured; the junk ``agent`` echo must be silently dropped."""
+    payload = {
+        "scenarios": _drun74_scenarios(),
+        "five_year_avg_net_nis": 482_464.0,  # tolerated extra at top level
+        # The exact four previously-rejected fields:
+        "agent": "EquityCompAnalystAgent",  # junk echo — must be dropped
+        "confidence_rationale": (
+            "Active-grant list verified (pages 2-4 PRESENT); refresh "
+            "policy unverified so scenarios 2+3 are LOW."
+        ),
+        "assumptions": [
+            {"id": "A1", "statement": "NVDA flat at $145", "confidence": "MEDIUM"},
+            # ``text`` alias instead of ``statement``:
+            {"id": "A2", "text": "USD/NIS 3.65", "confidence": "HIGH"},
+        ],
+        "sanity_checks": [
+            {"check": "net_retention within 50-55%", "result": "PASS"},
+            {"check": "gross_nis = gross_usd * fx", "note": "PASS"},
+        ],
+    }
+
+    out = EquityCompAnalystOutput.model_validate(payload)
+
+    # Useful fields captured.
+    assert out.confidence_rationale.startswith("Active-grant list verified")
+    assert len(out.assumptions) == 2
+    assert out.assumptions[0].id == "A1"
+    assert out.assumptions[0].statement == "NVDA flat at $145"
+    # ``text`` alias folded into the canonical ``statement`` field.
+    assert out.assumptions[1].statement == "USD/NIS 3.65"
+    assert len(out.sanity_checks) == 2
+    assert out.sanity_checks[0].check.startswith("net_retention")
+    assert out.sanity_checks[0].result == "PASS"
+    # ``note`` alias folded into ``result``.
+    assert out.sanity_checks[1].result == "PASS"
+
+    # Junk ``agent`` echo dropped — NOT promoted to an attribute.
+    assert not hasattr(out, "agent")
+
+    # Load-bearing fields intact.
+    assert {s.name for s in out.scenarios} == {
+        "known_grants_only", "conservative_decay", "optimistic_flat",
+    }
+    assert out.scenarios[0].five_year_avg_net_nis == 482_464.0
+
+
+def test_output_model_still_rejects_missing_scenarios_after_extra_ignore() -> None:
+    """HARD GUARDRAIL: relaxing extra=forbid→ignore must NOT weaken the
+    load-bearing scenarios contract. A payload with the useful provenance
+    fields but no scenarios must still fail loudly."""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="scenarios is missing required names"):
+        EquityCompAnalystOutput.model_validate(
+            {
+                "confidence_rationale": "x",
+                "assumptions": [{"id": "A1", "statement": "y"}],
+                "sanity_checks": [{"check": "z"}],
+            }
+        )
+
+
+def test_output_model_still_rejects_non_numeric_money_field() -> None:
+    """HARD GUARDRAIL: extra='ignore' must not make money fields lenient.
+    A non-numeric five_year_avg_net_nis on a scenario must still fail."""
+    from pydantic import ValidationError
+
+    scenarios = _drun74_scenarios()
+    scenarios[0]["five_year_avg_net_nis"] = "not a number"
+    with pytest.raises(ValidationError):
+        EquityCompAnalystOutput.model_validate({"scenarios": scenarios})
+
+
+def test_scenario_aliases_year_rows_key() -> None:
+    """LLM-variance: the per-year array arrives under a varying key
+    (``yearly_projections`` observed live). With extra='ignore' a
+    mis-keyed array would be silently dropped, zeroing the load-bearing
+    five_year_avg_net_nis. The alias folds it into ``years``."""
+    s = ScenarioProjection.model_validate(
+        {
+            "name": "known_grants_only",
+            "confidence": "HIGH",
+            "yearly_projections": [
+                {
+                    "year": 2026,
+                    "gross_shares": 1720.0,
+                    "gross_usd": 249_400.0,
+                    "gross_nis": 910_310.0,
+                    "net_nis": 500_000.0,
+                    "net_retention_pct": 55.0,
+                    "confidence": "HIGH",
+                    "source": "contractual",
+                },
+                {
+                    "year": 2027,
+                    "gross_shares": 1180.0,
+                    "gross_usd": 171_100.0,
+                    "gross_nis": 624_515.0,
+                    "net_nis": 300_000.0,
+                    "net_retention_pct": 55.0,
+                    "confidence": "HIGH",
+                    "source": "contractual",
+                },
+            ],
+        }
+    )
+    assert len(s.years) == 2
+    # five_year_avg_net_nis omitted by the model → derived from net_nis.
+    assert s.five_year_avg_net_nis == 400_000.0
+
+
+def test_scenario_does_not_override_model_supplied_avg() -> None:
+    """When the model DOES supply five_year_avg_net_nis we keep it —
+    the derivation only backfills the gap, never overrides."""
+    s = ScenarioProjection.model_validate(
+        {
+            "name": "known_grants_only",
+            "confidence": "HIGH",
+            "five_year_avg_net_nis": 482_464.0,
+            "years": [
+                {
+                    "year": 2026,
+                    "gross_shares": 1720.0,
+                    "gross_usd": 249_400.0,
+                    "gross_nis": 910_310.0,
+                    "net_nis": 999_999.0,  # deliberately != the supplied avg
+                    "net_retention_pct": 55.0,
+                    "confidence": "HIGH",
+                    "source": "contractual",
+                }
+            ],
+        }
+    )
+    assert s.five_year_avg_net_nis == 482_464.0
+
+
 def test_output_model_rejects_unknown_scenario_name() -> None:
     """ScenarioProjection.name is a Literal — typos must fail
     validation so the agent can't emit an off-contract scenario."""
