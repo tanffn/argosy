@@ -137,6 +137,27 @@ def compute_derived_inputs(session, *, user_id: str, today: date | None = None) 
         if age is not None else DerivedField.pending("age", "identity_yaml.user_date_of_birth"))
     put("retirement_age", fld_from_rv("retirement.fi_age", "age"))
 
+    # FX spot — derive from identity_yaml.fx_rate.usd_nis (kills the hardcoded
+    # 3.4 the StochasticFxCard fell back to). Pending, never faked, if absent.
+    fx_rate = idy.get("fx_rate") if isinstance(idy.get("fx_rate"), dict) else {}
+    fx = _f(fx_rate.get("usd_nis"))
+    put("fx_usd_nis", DerivedField(fx, "fx", "identity_yaml.fx_rate.usd_nis", "HIGH")
+        if fx else DerivedField.pending("fx", "identity_yaml.fx_rate.usd_nis"))
+
+    # Mekadem (annuity divisor) — the documented planning default until a
+    # fund-specific value is provided. An auditable default, not a bare magic
+    # number in the UI.
+    from argosy.services.cashflow_projection import DEFAULT_MEKADEM
+    put("mekadem_typical", DerivedField(
+        float(DEFAULT_MEKADEM), "count", "planning_parameter:DEFAULT_MEKADEM", "MEDIUM"))
+
+    # Bituach Leumi insured-years — the standard convention (full-time work
+    # from ~age 22), the same the BL card uses. Derived from age, not hardcoded.
+    bl_years = max(0, int(round(age)) - 22) if age is not None else None
+    put("bl_contribution_history_years", DerivedField(
+        bl_years, "count", "convention: insured since age 22 (current_age − 22)", "MEDIUM")
+        if bl_years is not None else DerivedField.pending("count", "needs current_age"))
+
     # Spend / income (monthly).
     monthly_need = (m.permanent_annual_spend_nis / 12.0) if m else None
     put("monthly_need_nis", DerivedField(monthly_need, "nis",

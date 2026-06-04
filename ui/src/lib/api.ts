@@ -624,6 +624,9 @@ export interface DerivedInputsResponse {
   decision_run_id: number;
   current_age: DerivedInputField;
   retirement_age: DerivedInputField;
+  fx_usd_nis: DerivedInputField;
+  mekadem_typical: DerivedInputField;
+  bl_contribution_history_years: DerivedInputField;
   monthly_need_nis: DerivedInputField;
   monthly_burn_nis: DerivedInputField;
   monthly_income_nis: DerivedInputField;

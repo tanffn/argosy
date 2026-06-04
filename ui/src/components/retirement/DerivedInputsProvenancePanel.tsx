@@ -12,6 +12,9 @@ interface Props {
 const LABELS: Record<string, string> = {
   current_age: "Current age",
   retirement_age: "Retirement age",
+  fx_usd_nis: "FX (USD→NIS)",
+  mekadem_typical: "Mekadem (annuity divisor)",
+  bl_contribution_history_years: "BL insured years",
   monthly_need_nis: "Monthly need (permanent-equiv)",
   monthly_burn_nis: "Monthly burn (T12)",
   monthly_income_nis: "Monthly income",

@@ -204,8 +204,11 @@ export default function RetirementPage() {
             initialPolicyId="guyton_klinger"
             onChange={(id) => setPolicy(id)}
           />
-          {/* TODO: derive initialFx — FX spot not yet in derived-inputs endpoint */}
-          <StochasticFxCard initialFx={3.4} horizonMonths={360} />
+          {numOf("fx_usd_nis") === undefined ? (
+            loadingCard("Stochastic FX")
+          ) : (
+            <StochasticFxCard initialFx={numOf("fx_usd_nis")!} horizonMonths={360} />
+          )}
         </section>
 
         <section id="decision" className="scroll-mt-6 space-y-4">
@@ -276,8 +279,7 @@ export default function RetirementPage() {
                 {pension !== undefined && monthlyNeed !== undefined ? (
                   <LumpVsAnnuityCard
                     pensionBalanceNis={pension}
-                    /* TODO: derive mekademTypical — not yet in derived-inputs */
-                    mekademTypical={200}
+                    mekademTypical={numOf("mekadem_typical")!}
                     monthlyExpenseNeedNis={monthlyNeed}
                   />
                 ) : (
@@ -364,9 +366,8 @@ export default function RetirementPage() {
               <BituachLeumiCard
                 userId={USER_ID}
                 currentAge={Math.round(age)}
-                /* TODO: derive contributionHistoryYears — not yet in derived-inputs */
-                contributionHistoryYears={21}
-                /* TODO: derive spouseEligible — not yet in derived-inputs */
+                contributionHistoryYears={numOf("bl_contribution_history_years")}
+                /* spouseEligible: needs intake — defaults false (conservative) */
                 spouseEligible={false}
               />
             );
