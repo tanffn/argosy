@@ -338,6 +338,15 @@ def extract_household_state(
     budget = _latest_household_budget_report(session, user_id) or {}
     snapshot = _latest_snapshot(session, user_id)
     fx_usd_nis, _ = _resolve_fx_usd_nis(snapshot=snapshot, user_ctx=ctx)
+    # Prefer the CURRENT Bank-of-Israel rate (cache) over the snapshot's stored
+    # fx so the MC starting portfolio reflects current NIS purchasing power —
+    # the snapshot fx (2.94) was an erroneous value (codex FX review 2026-06-04).
+    # Falls back to _resolve_fx_usd_nis when BOI is uncached.
+    try:
+        from argosy.services.fx import cache as _fxcache
+        fx_usd_nis = float(_fxcache.find_walkback(session, today, "USD", max_days=10))
+    except Exception:  # noqa: BLE001 — keep the snapshot/ctx fallback
+        pass
 
     monthly_expenses_nis = _safe_float(budget, "monthly_burn_nis")
 

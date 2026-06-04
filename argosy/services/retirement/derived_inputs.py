@@ -137,18 +137,23 @@ def compute_derived_inputs(session, *, user_id: str, today: date | None = None) 
         if age is not None else DerivedField.pending("age", "identity_yaml.user_date_of_birth"))
     put("retirement_age", fld_from_rv("retirement.fi_age", "age"))
 
-    # FX spot — derive from the same resolver the cashflow engine uses (latest
-    # snapshot's totals_json, falling back to identity_yaml.fx_rate.usd_nis),
-    # killing the hardcoded 3.4 the StochasticFxCard fell back to.
+    # FX spot — the current Bank-of-Israel rate (cache), the FX source of truth
+    # (codex FX review). Falls back to the snapshot/identity fx only if BOI is
+    # uncached. Kills both the hardcoded 3.4 the StochasticFxCard used and the
+    # erroneous snapshot 2.94.
     fx = None
-    fx_src = "portfolio_snapshot.totals_json.fx_usd_nis / identity_yaml.fx_rate.usd_nis"
+    fx_src = "boi USD/NIS current (FxRate cache)"
     try:
-        from argosy.services.cashflow_projection import _latest_snapshot, _resolve_fx_usd_nis
-        snap = _latest_snapshot(session, user_id)
-        fx_val, _ = _resolve_fx_usd_nis(snapshot=snap, user_ctx=idy)
-        fx = float(fx_val) if fx_val else None
+        from argosy.services.fx import cache as _fxcache
+        fx = float(_fxcache.find_walkback(session, today, "USD", max_days=10))
     except Exception:  # noqa: BLE001
-        fx = _f((idy.get("fx_rate") or {}).get("usd_nis")) if isinstance(idy.get("fx_rate"), dict) else None
+        try:
+            from argosy.services.cashflow_projection import _latest_snapshot, _resolve_fx_usd_nis
+            fx_val, _ = _resolve_fx_usd_nis(snapshot=_latest_snapshot(session, user_id), user_ctx=idy)
+            fx = float(fx_val) if fx_val else None
+            fx_src = "portfolio_snapshot fx (BOI uncached)"
+        except Exception:  # noqa: BLE001
+            fx = None
     put("fx_usd_nis", DerivedField(fx, "fx", fx_src, "HIGH")
         if fx else DerivedField.pending("fx", fx_src))
 

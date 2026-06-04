@@ -469,3 +469,31 @@ def test_fx_usd_nis_pending_when_cache_cold(session):
     fx = res.get("fx.usd_nis")
     assert fx is not None and fx.status == "pending"
     assert fx.value is None
+
+
+def test_net_worth_marks_to_boi_current_fx(session):
+    """Net worth = USD assets × CURRENT BOI FX + NIS-native cash (codex FX
+    review) — not the erroneous stored snapshot FX. NIS cash kept in native
+    shekels, not re-translated as USD exposure."""
+    from datetime import date as _date
+    from decimal import Decimal
+    import json as _json
+    from argosy.state.models import FxRate, PortfolioSnapshotRow
+
+    session.add(PortfolioSnapshotRow(
+        user_id="ariel", imported_at=datetime(2026, 3, 24),
+        snapshot_date=_date(2026, 3, 24), fx_usd_nis=2.94,
+        totals_json=_json.dumps({"total_usd_value_k": 1100.0}),
+        positions_json=_json.dumps([
+            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
+            {"symbol": None, "currency": "NIS", "usd_value_k": 100.0},  # native ₪294k @2.94
+        ]),
+    ))
+    session.add(FxRate(date=_date(2026, 6, 2), currency="USD", rate=Decimal("2.80"), source="boi"))
+    session.flush()
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    nw = res.get("portfolio.net_worth_nis")
+    # USD 1000k × 2.80 + NIS native (100k × 2.94 = ₪294k) = ₪3,094,000
+    assert nw.status == "resolved"
+    assert abs(float(nw.value) - 3_094_000) < 2_000, f"got {nw.value}"
+    assert "2.80" in nw.source_locator or "boi" in nw.source_locator.lower() or "current" in nw.source_locator.lower()

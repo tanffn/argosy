@@ -422,15 +422,20 @@ _RESOLVERS: dict[str, tuple[tuple[str, ...], Callable[[dict, int | None], list[R
 def _resolve_net_worth(
     session: "Session", user_id: str
 ) -> ResolvedValue:
-    """Net worth in NIS from the latest portfolio snapshot.
+    """Net worth in NIS, marked to the CURRENT BOI USD/NIS rate.
 
-    ``totals_json.total_usd_value_k`` is in THOUSANDS of USD, so
-    net_worth_nis = total_usd_value_k * 1000 * fx_usd_nis. Pending when no
-    snapshot exists or either factor is non-positive (a guess would be the
-    exact fabrication this resolver kills).
+    The household holds ~USD assets but spends NIS, so the decision-relevant
+    figure is current NIS purchasing power: USD-denominated holdings × the
+    latest BOI USD/NIS + NIS-origin cash in native shekels (NOT re-translated as
+    USD exposure). This replaces using the snapshot's stored fx_usd_nis, which
+    for the dev snapshot was 2.94 — an erroneous value matching neither its date
+    nor current BOI (codex FX review 2026-06-04). Falls back to the snapshot fx
+    only if BOI is uncached. Holdings remain as-of the snapshot date (provisional
+    until refreshed). Pending when no snapshot/value exists — never fabricated.
     """
+    from datetime import date
+
     key = "portfolio.net_worth_nis"
-    loc = "portfolio_snapshot.totals_json.total_usd_value_k * fx_usd_nis"
     try:
         snap = session.execute(
             select(PortfolioSnapshotRow)
@@ -442,24 +447,60 @@ def _resolve_net_worth(
         log.warning("plan_numeric_resolver.snapshot_query_failed err=%s", exc)
         snap = None
     if snap is None:
-        return ResolvedValue.pending(key, "nis", loc)
+        return ResolvedValue.pending(key, "nis", "portfolio_snapshot (none)")
+
+    snap_fx = _to_float(snap.fx_usd_nis) or 0.0
+    # Current BOI rate (cache-only walkback); fall back to the snapshot fx.
+    fx = None
+    fx_src = "snapshot fx (BOI uncached)"
     try:
-        totals = json.loads(snap.totals_json or "{}")
+        from argosy.services.fx import cache as _fxcache
+        fx = float(_fxcache.find_walkback(session, date.today(), "USD", max_days=10))
+        fx_src = "BOI current USD/NIS"
+    except Exception:  # noqa: BLE001
+        fx = snap_fx if snap_fx > 0 else None
+    if not fx or fx <= 0:
+        return ResolvedValue.pending(key, "nis", "no FX available")
+
+    # Currency split from positions: USD assets × current FX + NIS native.
+    usd_assets_usd = 0.0
+    nis_native_nis = 0.0
+    try:
+        positions = json.loads(snap.positions_json or "[]")
     except (json.JSONDecodeError, ValueError, TypeError):
-        totals = {}
-    total_usd_k = _to_float(totals.get("total_usd_value_k"))
-    fx = _to_float(snap.fx_usd_nis)
-    if not total_usd_k or not fx or total_usd_k <= 0 or fx <= 0:
-        return ResolvedValue.pending(key, "nis", loc)
+        positions = []
+    for p in positions:
+        v = _to_float(p.get("usd_value_k")) or 0.0
+        if (p.get("currency") or "").upper() == "USD":
+            usd_assets_usd += v * 1000.0
+        else:
+            nis_native_nis += v * 1000.0 * (snap_fx if snap_fx > 0 else fx)
+
+    holdings_as_of = getattr(snap, "snapshot_date", None)
+    as_of = holdings_as_of.isoformat() if holdings_as_of else f"snapshot id={snap.id}"
+    if usd_assets_usd > 0 or nis_native_nis > 0:
+        value = usd_assets_usd * fx + nis_native_nis
+        loc = (
+            f"USD assets ${usd_assets_usd/1e6:.2f}M × {fx_src} {fx:.3f} + "
+            f"NIS-native ₪{nis_native_nis:,.0f}; holdings as of {as_of} (provisional)"
+        )
+        formula = "USD-denominated assets × current BOI USD/NIS + NIS-native cash"
+    else:
+        # No per-position currencies → fall back to totals × current FX.
+        try:
+            totals = json.loads(snap.totals_json or "{}")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            totals = {}
+        total_usd_k = _to_float(totals.get("total_usd_value_k"))
+        if not total_usd_k or total_usd_k <= 0:
+            return ResolvedValue.pending(key, "nis", "snapshot has no positions/totals")
+        value = total_usd_k * 1000.0 * fx
+        loc = f"total_usd_value_k ${total_usd_k/1e3:.2f}M × {fx_src} {fx:.3f}; holdings as of {as_of} (provisional)"
+        formula = "total_usd_value_k * 1000 * current BOI USD/NIS"
+
     return ResolvedValue(
-        key=key,
-        value=total_usd_k * 1000.0 * fx,
-        unit="nis",
-        status="resolved",
-        source_locator=f"{loc} (snapshot id={snap.id})",
-        agent_report_id=None,
-        confidence="HIGH",
-        formula="total_usd_value_k * 1000 * fx_usd_nis",
+        key=key, value=value, unit="nis", status="resolved",
+        source_locator=loc, agent_report_id=None, confidence="HIGH", formula=formula,
     )
 
 
