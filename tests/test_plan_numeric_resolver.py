@@ -374,6 +374,24 @@ def test_schema_invalid_payload_is_pending_no_crash(session):
     assert rv.value is None
 
 
+def test_fenced_response_text_still_resolves(session):
+    # Regression: the ``concentration`` role persists its JSON inside a
+    # ```json markdown fence. A bare ``json.loads`` in the resolver choked
+    # on the fence and degraded the NVDA cap to pending; the lenient parser
+    # (shared with BaseAgent._parse_output) must recover it.
+    _seed_snapshot(session)
+    fenced = "```json\n" + _concentration_json() + "\n```"
+    _seed_report(session, "concentration", fenced)
+    session.commit()
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    cap = resolved.get("concentration.nvda_cap_pct")
+    assert cap.status == "resolved"
+    assert cap.value == pytest.approx(0.20)
+    cur = resolved.get("concentration.nvda_current_pct")
+    assert cur.status == "resolved"
+    assert cur.value == pytest.approx(0.6708)
+
+
 def test_household_zero_burn_is_pending(session):
     _seed_snapshot(session)
     _seed_report(session, "household_budget", _household_budget_json(monthly=0.0))

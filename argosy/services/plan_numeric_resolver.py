@@ -509,8 +509,15 @@ def resolve_plan_numbers(
             continue
 
         # Parse response_text JSON. Bad JSON → role's keys pending.
+        # Use the same lenient parser the live agent uses
+        # (``BaseAgent._parse_output``): the persisted ``response_text``
+        # is the model's verbatim output, which several roles (e.g.
+        # ``concentration``, ``fund_manager``) wrap in a ```json fence.
+        # Bare ``json.loads`` chokes on the fence and silently degraded
+        # those keys to pending (the NVDA cap never resolved).
         try:
-            parsed = json.loads(report.response_text or "")
+            from argosy.agents._json_parse import lenient_json_loads
+            parsed = lenient_json_loads(report.response_text or "")
         except (json.JSONDecodeError, ValueError, TypeError):
             log.warning(
                 "plan_numeric_resolver.response_text_not_json role=%s report_id=%s",
