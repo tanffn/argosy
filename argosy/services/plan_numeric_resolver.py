@@ -568,8 +568,60 @@ def resolve_plan_numbers(
     # genuinely derives). See argosy.services.fi_methodology.
     # ------------------------------------------------------------------
     _apply_fi_methodology(session, user_id, values)
+    _apply_us_situs_estate(session, user_id, values)
 
     return ResolvedPlanNumbers(values=values)
+
+
+def _apply_us_situs_estate(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Derive US-situs estate exposure from the snapshot positions via the
+    canonical IRS-NRA classifier (safety_gates._us_situs_assets_usd: Schwab USD
+    non-cash US-domiciled holdings — NVDA + US ETFs; UCITS + cash excluded),
+    converted to NIS. The synth previously AUTHORED this number (FM caught a
+    ~$926k understatement); feeding the derived value kills the fabrication.
+    Pending (never guessed) when the snapshot is missing or empty.
+    """
+    key = "concentration.us_situs_estate_exposure_nis"
+    loc = "safety_gates._us_situs_assets_usd(snapshot positions) × fx_usd_nis"
+    try:
+        from argosy.services.retirement.safety_gates import _us_situs_assets_usd
+
+        snap = session.execute(
+            select(PortfolioSnapshotRow)
+            .where(PortfolioSnapshotRow.user_id == user_id)
+            .order_by(PortfolioSnapshotRow.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if snap is None:
+            values[key] = ResolvedValue.pending(key, "nis", loc)
+            return
+        try:
+            positions = json.loads(snap.positions_json or "[]")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            positions = []
+        usd = _us_situs_assets_usd(positions)
+        fx = _to_float(snap.fx_usd_nis)
+        if not usd or not fx or usd <= 0 or fx <= 0:
+            values[key] = ResolvedValue.pending(key, "nis", loc)
+            return
+        values[key] = ResolvedValue(
+            key=key,
+            value=usd * fx,
+            unit="nis",
+            status="resolved",
+            source_locator=f"{loc} (snapshot id={snap.id})",
+            agent_report_id=None,
+            confidence="HIGH",
+            formula=(
+                "Σ Schwab USD non-cash US-domiciled positions (NVDA + US ETFs; "
+                "UCITS + cash excluded) per IRS NRA estate-tax rules, × fx"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive; leave pending
+        log.warning("plan_numeric_resolver.us_situs_failed err=%s", exc)
+        values[key] = ResolvedValue.pending(key, "nis", loc)
 
 
 def _apply_fi_methodology(
@@ -660,6 +712,38 @@ def _apply_fi_methodology(
         formula="education + mortgage runoff + wedding lumps (NOT capitalized into perpetuity)",
     )
 
+    # FIRE bridge — the liquid capital that funds the permanent-equivalent spend
+    # from retirement to the age-60 pension unlock. DERIVED here (not authored by
+    # the LLM) and at the permanent-equivalent basis, so the synth is fed it +
+    # the scrub can source it (codex residual: it was LLM-stated at the T12 burn).
+    bridge_key = "retirement.fire_bridge_nis"
+    fi_age_rv = values.get("retirement.fi_age")
+    fi_age = (
+        float(fi_age_rv.value)
+        if (fi_age_rv is not None and fi_age_rv.status == "resolved" and fi_age_rv.value is not None)
+        else None
+    )
+    if fi_age is not None:
+        from argosy.services.cashflow_projection import LUMP_PENSION_AGE
+        bridge_years = max(0.0, float(LUMP_PENSION_AGE) - fi_age)
+        values[bridge_key] = ResolvedValue(
+            key=bridge_key,
+            value=bridge_years * float(m.permanent_annual_spend_nis),
+            unit="nis",
+            status="resolved",
+            source_locator=(
+                f"({LUMP_PENSION_AGE} − retirement.fi_age) yrs × "
+                "fi_methodology.permanent_annual_spend_nis"
+            ),
+            agent_report_id=None,
+            confidence=conf,
+            formula="liquid drawdown to fund permanent-equivalent spend from retirement to the age-60 unlock",
+        )
+    else:
+        values[bridge_key] = ResolvedValue.pending(
+            bridge_key, "nis", "needs retirement.fi_age + permanent spend",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Synth-prompt rendering — feed the derived headline numbers INTO the
@@ -674,6 +758,8 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
     ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
     ("retirement.liquidity_reserve_nis", "Liquidity reserve (finite liabilities, held separately)"),
+    ("retirement.fire_bridge_nis", "FIRE bridge (retirement→60 liquid drawdown, permanent-equivalent)"),
+    ("concentration.us_situs_estate_exposure_nis", "US-situs estate exposure (IRS NRA — NVDA + US ETFs)"),
     ("spend.fi_basis_nis", "FI spend basis (permanent-equivalent, real)"),
     ("retirement.required_real_yield_pct", "Required real yield (perpetual safe-withdrawal rate)"),
     ("retirement.return_assumption_pct", "Expected real return (trajectory only)"),
