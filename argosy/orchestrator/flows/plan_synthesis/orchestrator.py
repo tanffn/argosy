@@ -550,26 +550,128 @@ def run_synthesis(
     # idempotency check live inside ``run_codex_second_opinion``.
     import asyncio as _asyncio
 
-    codex_opinion = None
-    codex_row = None
-    try:
-        codex_opinion, codex_row = _asyncio.run(
+    # Derived-numbers manifest codex audits the headline figures against.
+    # Computed once from the already-persisted phase-1 reports + the
+    # deterministic methodology; reused for the reconcile re-review.
+    def _build_numbers_block() -> str:
+        try:
+            from argosy.services.plan_numeric_resolver import (
+                render_numbers_for_synth,
+                resolve_plan_numbers,
+            )
+            _drun = _decision_run_int(decision_run_id)
+            if _drun is None:
+                return ""
+            return render_numbers_for_synth(
+                resolve_plan_numbers(session, user_id=user_id, decision_run_id=_drun)
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("plan_synthesis.codex_numbers_block_failed", error=str(exc))
+            return ""
+
+    _numbers_block = _build_numbers_block()
+
+    def _run_codex(draft):
+        return _asyncio.run(
             _pkg.run_codex_second_opinion(
-                synth_draft_json=output.model_dump_json(),
+                synth_draft_json=draft.model_dump_json(),
                 analyst_reports_text=analyst_reports_text,
                 debate_outcomes_text=debate_outcomes_text,
                 risk_verdict_text=risk_verdict,
                 user_directive=guidance,
                 decision_run_id=decision_run_id,
                 user_id=user_id,
+                derived_numbers_block=_numbers_block,
             )
         )
+
+    codex_opinion = None
+    codex_row = None
+    try:
+        codex_opinion, codex_row = _run_codex(output)
     except Exception as exc:  # noqa: BLE001 — fail-soft
         log.warning(
             "codex_second_opinion.run_failed",
             user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
         )
         codex_opinion, codex_row = None, None
+
+    # ------------------------------------------------------------------
+    # FORCING LOOP (codex-recommended, bounded to ONE reconcile round):
+    # when codex BLOCKS on a numeric/methodology finding (a fabricated /
+    # uncited / contradictory headline number, or an indefensible FI
+    # methodology), re-run the synthesizer ONCE with the objection folded
+    # into guidance, then re-review. Fail-closed: if codex still BLOCKS the
+    # draft does NOT auto-promote (the FM gate + #20 already enforce that)
+    # and the persisted draft carries the unresolved objection. Disabled
+    # under ARGOSY_NUMERIC_RECONCILE=0; never fires under pytest (codex is
+    # skipped there, so codex_opinion is None).
+    import os as _os
+    if _os.environ.get("ARGOSY_NUMERIC_RECONCILE", "1") == "1":
+        _reconcile_guidance = _codex_numeric_reconcile_guidance(codex_opinion)
+        if _reconcile_guidance:
+            log.warning(
+                "plan_synthesis.numeric_reconcile_triggered",
+                user_id=user_id, decision_run_id=decision_run_id,
+            )
+            try:
+                _augmented = (guidance + "\n\n" + _reconcile_guidance).strip()
+                _recon_started = datetime.now(timezone.utc)
+                _recon_result = _pkg._run_phase_3_synthesizer(
+                    session=session, user_id=user_id,
+                    baseline=baseline, prior_current=prior_current,
+                    analyst_reports_text=analyst_reports_text,
+                    debate_outcomes_text=debate_outcomes_text,
+                    portfolio_summary=portfolio_summary,
+                    fills_summary=fills_summary,
+                    decision_run_id=decision_audit_token,
+                    speculation_cap_pct=cap.max_pct_of_net_worth,
+                    speculation_cap_concurrent=cap.max_concurrent_positions,
+                    guidance=_augmented,
+                )
+                if (
+                    isinstance(_recon_result, tuple) and len(_recon_result) == 2
+                    and not isinstance(_recon_result, PlanSynthesisOutput)
+                ):
+                    output, _recon_reports = _recon_result
+                else:
+                    output, _recon_reports = _recon_result, []
+                # Re-run the household-English rewriter + speculation cap on
+                # the reconciled draft so it matches the normal pipeline.
+                output = _pkg._run_plan_language_rewriter(
+                    output=output, user_id=user_id, decision_run_id=decision_run_id,
+                )
+                output = _pkg._enforce_speculation_cap(
+                    output,
+                    max_pct_of_net_worth=cap.max_pct_of_net_worth,
+                    max_concurrent_positions=cap.max_concurrent_positions,
+                )
+                # Re-record phase 3 with the reconciled output (higher seq
+                # wins in _load_completed_phase_outputs → resume-safe) so the
+                # audit trail + any crash-resume reflect the reconciled draft.
+                _pkg._record_phase_completion(
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    phase_n=3, started_at=_recon_started,
+                    phase_output=output.model_dump_json(),
+                    agent_report_rows=_recon_reports,
+                )
+                # Refresh the manifest (the reconciled synth report is now the
+                # latest for its role) + re-review.
+                _numbers_block = _build_numbers_block()
+                codex_opinion, codex_row = _run_codex(output)
+                log.warning(
+                    "plan_synthesis.numeric_reconcile_done",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    still_blocking=(
+                        getattr(codex_opinion, "overall_assessment", None) == "BLOCK"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 — reconcile is best-effort
+                log.warning(
+                    "plan_synthesis.numeric_reconcile_failed",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    error=str(exc),
+                )
 
     # Persist the codex row through the same recorder pipeline as
     # every other phase so it appears in agent_reports + the phase
@@ -2515,6 +2617,65 @@ def _build_source_reliability_preamble(
         "NOT re-apply these weights."
     )
     return "\n".join(lines) + "\n\n"
+
+
+_NUMERIC_METHODOLOGY_TOPICS = (
+    "fabricat", "headline", "fi target", "fi_target", "methodolog", "yield",
+    "swr", "withdrawal rate", "spend basis", "spend_basis", "net worth",
+    "retirement age", "uncited", "contradict", "21m", "₪21", "derivation",
+)
+
+
+def _codex_numeric_reconcile_guidance(codex_opinion) -> str | None:
+    """Return reconcile guidance when codex BLOCKED on a numeric/methodology
+    finding, else None.
+
+    The forcing loop only re-runs synthesis for findings the synthesizer can
+    actually act on: a fabricated/uncited/contradictory headline number or an
+    indefensible FI methodology. A BLOCKER on an unrelated topic (e.g. a tax-
+    sequencing concern) is left to the Fund Manager — re-running synth would
+    not address it and would just burn a round.
+    """
+    if codex_opinion is None:
+        return None
+    findings = getattr(codex_opinion, "findings", None) or []
+    hits: list[str] = []
+    for f in findings:
+        sev = getattr(f, "severity", "")
+        if sev not in ("BLOCKER", "AMBER"):
+            continue
+        topic = (getattr(f, "topic", "") or "").lower()
+        detail = (getattr(f, "detail", "") or "").lower()
+        blob = f"{topic} {detail}"
+        if any(t in blob for t in _NUMERIC_METHODOLOGY_TOPICS):
+            fix = getattr(f, "suggested_fix", "") or ""
+            hits.append(
+                f"- [{sev}] {getattr(f, 'topic', '')}: "
+                f"{getattr(f, 'detail', '')}"
+                + (f"  FIX: {fix}" if fix else "")
+            )
+    # Only force a reconcile when the overall verdict is a hard BLOCK and at
+    # least one finding is numeric/methodology (AMBER-only → advisory, the FM
+    # handles it).
+    overall = getattr(codex_opinion, "overall_assessment", "")
+    has_blocker = any(
+        getattr(f, "severity", "") == "BLOCKER" for f in findings
+        if any(
+            t in f"{(getattr(f, 'topic', '') or '').lower()} "
+            f"{(getattr(f, 'detail', '') or '').lower()}"
+            for t in _NUMERIC_METHODOLOGY_TOPICS
+        )
+    )
+    if overall == "BLOCK" and has_blocker and hits:
+        return (
+            "ADVERSARIAL REVIEW — numeric/methodology objections you MUST "
+            "resolve in this revision. Every headline number must match the "
+            "DERIVED HEADLINE NUMBERS block exactly (or be written "
+            "`[derivation pending]`), and the FI framing must be consistent "
+            "with the derived target + methodology. Objections:\n"
+            + "\n".join(hits)
+        )
+    return None
 
 
 def _decision_run_int(decision_run_id) -> int | None:

@@ -146,6 +146,31 @@ response, not the original concern; DEFERRED items are open for fresh \
 evaluation. Set ``user_directive_respected=false`` ONLY if the \
 synthesizer has clearly ignored or violated a load-bearing user stance.
 
+HEADLINE-NUMBER + METHODOLOGY AUDIT (your most important job — this plan \
+drives a REAL retirement decision, so be adversarial about the math):
+
+  1. The DERIVED HEADLINE NUMBERS block below is the deterministic single \
+     source of truth (every value traced to an analyst field or a reviewed \
+     methodology). Check EVERY headline figure the synthesizer states (FI \
+     target, spend basis, required yield, retirement age, net worth, savings, \
+     NVDA cap/weight) against it. A headline number that does NOT match the \
+     derived value, OR that is carried forward from a stale/prior draft (e.g. \
+     a ₪21M FI target sized off a retired ₪500k spend floor), is a BLOCKER — \
+     it must be a fabrication finding, citing the offending paragraph.
+  2. Critique the FI METHODOLOGY itself, not just the arithmetic. Is the \
+     spend basis the permanent-equivalent spend (incl. amortized life events \
+     — car cadence, healthcare ramp, home upgrades), or just the current \
+     tracked burn? Is the yield a defensible perpetual real safe-withdrawal \
+     rate (~2.4–3.5% after-tax for a 90+yr 0%-principal-drawdown mandate), or \
+     is it the aggressive expected RETURN? An indefensible or internally \
+     inconsistent methodology is at least an AMBER, a BLOCKER if it would \
+     materially mis-state the FI date.
+  3. Flag any headline claim that cites NO source, or whose prose contradicts \
+     the derived numbers (e.g. \"comfortably past FI\" when the derived target \
+     exceeds current net worth).
+  If all headline numbers trace to the manifest and the methodology is \
+  defensible, say so explicitly in agreement_with_argosy.
+
 === SYNTHESIZER DRAFT (Phase 3 output) ===
 {synth_draft_json}
 
@@ -161,6 +186,9 @@ synthesizer has clearly ignored or violated a load-bearing user stance.
 === USER DIRECTIVE ===
 {user_directive_block}
 
+=== DERIVED HEADLINE NUMBERS (deterministic single source of truth) ===
+{derived_numbers_block}
+
 Produce the JSON now. No prose, no markdown fences — just the JSON object.
 """
 
@@ -172,16 +200,25 @@ def _build_prompt(
     debate_outcomes_text: str,
     risk_verdict_text: str,
     user_directive: str,
+    derived_numbers_block: str = "",
 ) -> str:
     """Render the full codex prompt with all evidence blocks inlined.
 
     The user_directive block is either the verbatim directive or a
     sentinel string when none was passed — so the model never gets a
-    bare placeholder it has to ignore.
+    bare placeholder it has to ignore. ``derived_numbers_block`` is the
+    deterministic resolver manifest codex audits the headline numbers
+    against; a sentinel is used when it could not be built.
     """
     user_directive_block = (
         user_directive.strip() if user_directive and user_directive.strip()
         else "(no user directive on this run)"
+    )
+    numbers_block = (
+        derived_numbers_block.strip()
+        if derived_numbers_block and derived_numbers_block.strip()
+        else "(derived-numbers manifest unavailable on this run — audit the "
+        "math against the analyst reports directly)"
     )
     return _PROMPT_TEMPLATE.format(
         synth_draft_json=synth_draft_json,
@@ -189,6 +226,7 @@ def _build_prompt(
         debate_outcomes_text=debate_outcomes_text,
         risk_verdict_text=risk_verdict_text,
         user_directive_block=user_directive_block,
+        derived_numbers_block=numbers_block,
     )
 
 
@@ -341,6 +379,7 @@ async def run_codex_second_opinion(
     user_directive: str,
     decision_run_id: int,
     user_id: str,
+    derived_numbers_block: str = "",
 ) -> tuple[CodexSecondOpinion | None, AgentReport | None]:
     """Dispatch codex as an independent second opinion. Fail-soft.
 
@@ -416,6 +455,7 @@ async def run_codex_second_opinion(
         debate_outcomes_text=debate_outcomes_text,
         risk_verdict_text=risk_verdict_text,
         user_directive=user_directive,
+        derived_numbers_block=derived_numbers_block,
     )
 
     # ------------------------------------------------------------------
