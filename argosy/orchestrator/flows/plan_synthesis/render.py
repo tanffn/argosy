@@ -343,22 +343,22 @@ def render_section_evidence_appendix(output: PlanSynthesisOutput) -> str:
 # safely parse).
 _ASSUMPTION_LEDGER_V1: list[dict[str, str]] = [
     {
-        "id": "A1", "name": "Real return (high-equity post-deconcentration)",
+        "id": "A1", "name": "Expected real return (trajectory growth only)",
         "value": "5.0% real", "source": "macro_analyst + plan_critique",
         "year": "2026", "confidence": "MEDIUM",
-        "affects": "FI threshold @ 6.82M; earliest-FI year",
+        "affects": "Trajectory growth + earliest-feasible-FI year (does NOT size the FI target)",
     },
     {
-        "id": "A2", "name": "Real return (conservative bond-tilted mix)",
-        "value": "2.4% real", "source": "withdrawal_sequencer baseline",
+        "id": "A2", "name": "Perpetual real after-tax SWR (FI target sizing)",
+        "value": "3.0% real", "source": "fi_methodology (codex-reviewed; band 2.4-3.5%)",
         "year": "2026", "confidence": "MEDIUM",
-        "affects": "Bare-FI threshold @ 14.21M; deterministic earliest year",
+        "affects": "FI perpetuity ₪10.39M = permanent-equivalent spend ₪311,584 / 3.0%",
     },
     {
-        "id": "A3", "name": "Capital-preservation required yield",
-        "value": "1.32% real", "source": "fund_manager risk floor",
+        "id": "A3", "name": "FI total capital target (perpetuity + reserve)",
+        "value": "₪11.84M", "source": "fi_methodology",
         "year": "2026", "confidence": "MEDIUM",
-        "affects": "Cushion target @ 25.83M; late-2034 year",
+        "affects": "Full capital sufficiency = perpetuity ₪10.39M + finite-liability reserve ₪1.45M",
     },
     {
         "id": "A4", "name": "Inflation (IL CPI, long-run)",
@@ -382,13 +382,13 @@ _ASSUMPTION_LEDGER_V1: list[dict[str, str]] = [
         "id": "A7", "name": "RSU net retention (after IL Section 102 + US)",
         "value": "47%", "source": "tax_analyst + equity_comp_analyst",
         "year": "2026", "confidence": "MEDIUM-HIGH",
-        "affects": "Active-grant net stream; ₪500k/yr line",
+        "affects": "Active-grant net stream; the ₪307,852/yr net savings floor (A8)",
     },
     {
-        "id": "A8", "name": "RSU continuation level (steady-state)",
-        "value": "₪500k/yr net", "source": "user S2 + equity_comp_analyst",
+        "id": "A8", "name": "RSU net savings (conservative known-grants floor)",
+        "value": "₪307,852/yr net", "source": "equity_comp_analyst (known_grants_only)",
         "year": "2026-2029", "confidence": "MEDIUM-HIGH",
-        "affects": "Working-years savings; FI bridge",
+        "affects": "Working-years savings; FI bridge (conservative floor, not optimistic steady-state)",
     },
     {
         "id": "A9", "name": "NVIDIA refresh-grant cut scenario",
@@ -399,7 +399,7 @@ _ASSUMPTION_LEDGER_V1: list[dict[str, str]] = [
     },
     {
         "id": "A10", "name": "NVDA cap (single-stock concentration)",
-        "value": "20% of portfolio",
+        "value": "13% of portfolio",
         "source": "concentration_analyst (1-yr delay tolerance)",
         "year": "2026", "confidence": "MEDIUM",
         "affects": "Deconcentration plan; ~$1.7M USD glidepath",
@@ -417,11 +417,11 @@ _ASSUMPTION_LEDGER_V1: list[dict[str, str]] = [
         "affects": "Phase-1 spend; baseline for all forward phases",
     },
     {
-        "id": "A13", "name": "Phase-2 binding spend (active retire)",
+        "id": "A13", "name": "Phase-2 active-retirement spend (stress only)",
         "value": "₪341k/yr",
         "source": "household_budget_analyst + life_events smoothing",
         "year": "2033-2055", "confidence": "MEDIUM-HIGH",
-        "affects": "FI threshold; the number all targets bind against",
+        "affects": "Conservative FI stress check (₪341k/3.0% ≈ ₪11.4M); the BINDING FI basis is the permanent-equivalent ₪311,584 (A2), NOT this peak",
     },
     {
         "id": "A14", "name": "MC success threshold",
@@ -438,7 +438,58 @@ _ASSUMPTION_LEDGER_V1: list[dict[str, str]] = [
 ]
 
 
-def render_assumption_ledger_appendix() -> str:
+def _ledger_rows_with_manifest(resolved) -> list[dict[str, str]]:
+    """Return the ledger rows with FI/cap/savings values overridden from the
+    resolver manifest when available — so the ledger can't drift from the
+    deterministic single source of truth (the stale-FI-threshold defect codex
+    caught). Falls back to the methodology-consistent static values when a key
+    is pending / no manifest is supplied.
+    """
+    import copy
+
+    rows = copy.deepcopy(_ASSUMPTION_LEDGER_V1)
+    if resolved is None:
+        return rows
+
+    def _rv(key: str):
+        v = resolved.get(key)
+        return v.value if (v is not None and v.status == "resolved" and v.value is not None) else None
+
+    def _nis(x: float) -> str:
+        return f"₪{x/1e6:.2f}M" if abs(x) >= 1e6 else f"₪{x:,.0f}"
+
+    by_id = {r["id"]: r for r in rows}
+    swr = _rv("retirement.required_real_yield_pct")
+    perp = _rv("retirement.fi_target_nis")
+    total = _rv("retirement.fi_total_capital_nis")
+    reserve = _rv("retirement.liquidity_reserve_nis")
+    spend = _rv("spend.fi_basis_nis")
+    ret = _rv("retirement.return_assumption_pct")
+    cap = _rv("concentration.nvda_cap_pct")
+    savings = _rv("savings.annual_net_nis")
+
+    if ret is not None and "A1" in by_id:
+        by_id["A1"]["value"] = f"{ret*100:.1f}% real"
+    if swr is not None and perp is not None and spend is not None and "A2" in by_id:
+        by_id["A2"]["value"] = f"{swr*100:.1f}% real"
+        by_id["A2"]["affects"] = (
+            f"FI perpetuity {_nis(perp)} = permanent-equivalent spend "
+            f"{_nis(spend)} / {swr*100:.1f}%"
+        )
+    if total is not None and perp is not None and reserve is not None and "A3" in by_id:
+        by_id["A3"]["value"] = _nis(total)
+        by_id["A3"]["affects"] = (
+            f"Full capital sufficiency = perpetuity {_nis(perp)} + "
+            f"finite-liability reserve {_nis(reserve)}"
+        )
+    if savings is not None and "A8" in by_id:
+        by_id["A8"]["value"] = f"{_nis(savings)}/yr net"
+    if cap is not None and "A10" in by_id:
+        by_id["A10"]["value"] = f"{cap*100:.0f}% of portfolio"
+    return rows
+
+
+def render_assumption_ledger_appendix(resolved=None) -> str:
     """Render the v1 ``Appendix — Assumption ledger`` table.
 
     Hard-coded 15-row table sourced from
@@ -456,7 +507,7 @@ def render_assumption_ledger_appendix() -> str:
     ``plan_synthesizer_types.py`` and have each Phase-1 analyst emit
     its own rows.
     """
-    rows = _ASSUMPTION_LEDGER_V1
+    rows = _ledger_rows_with_manifest(resolved)
     lines = ["## Appendix — Assumption ledger", ""]
     lines.append(
         f"{len(rows)} canonical plan assumptions, sourced from the "
@@ -930,7 +981,18 @@ def render_plan_appendices(
     )
     if trajectory:
         parts.append(trajectory)
-    ledger = render_assumption_ledger_appendix()
+    # Source the ledger's FI/cap/savings rows from the resolver manifest so
+    # they can't drift from the deterministic single source of truth.
+    _resolved = None
+    if session is not None and decision_run_id is not None:
+        try:
+            from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+            _resolved = resolve_plan_numbers(
+                session, user_id=user_id, decision_run_id=decision_run_id,
+            )
+        except Exception:  # noqa: BLE001 — ledger falls back to static values
+            _resolved = None
+    ledger = render_assumption_ledger_appendix(_resolved)
     if ledger:
         parts.append(ledger)
     sections = render_section_evidence_appendix(output)

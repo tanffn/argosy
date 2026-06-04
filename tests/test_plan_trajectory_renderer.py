@@ -113,15 +113,20 @@ def test_appendix_shows_derived_figures(session):
     )
     # Derived net worth = 3096 * 1000 * 3.45 = 10,681,200 → ₪10.68M.
     assert "₪10.68M" in md
-    # Derived FI target ₪8.0M and FI age 52 (51.7 rounded).
-    assert "₪8.00M" in md
+    # FI target now comes from the deterministic fi_methodology, not the
+    # agent's fi_base: permanent-equivalent spend (T12 276,996 + life-event
+    # params 70,000 = 346,996) ÷ 3.0% SWR = ₪11.57M. FI age 52 (51.7) still
+    # from the withdrawal_sequencer.
+    assert "₪11.57M" in md
     assert "age 52" in md
     # Resolver source keys are surfaced for traceability.
     assert "retirement.fi_target_nis" in md
     assert "savings.annual_net_nis" in md
     assert "portfolio.net_worth_nis" in md
-    # Real-return assumption rendered from the resolver (4.5%).
-    assert "4.5% real" in md
+    # The trajectory grows at the 5.0% real return; the FI target is sized on
+    # the decoupled 3.0% perpetual SWR — both surfaced from the resolver.
+    assert "5.0% real" in md
+    assert "3.00%" in md
     # No pending FIGURE when everything is seeded. The intro paragraph
     # mentions the convention `[derivation pending]` once as documentation;
     # strip that single explanatory mention before asserting no figure is
@@ -136,10 +141,13 @@ def test_appendix_shows_derived_figures(session):
 
 
 def test_pending_fi_target_renders_derivation_pending(session):
-    # Seed everything EXCEPT withdrawal_sequencer (owns fi_target + return).
+    # FI target/spend/yield/return now come from the deterministic
+    # fi_methodology, fed by the tracked baseline spend. To make the FI
+    # target PENDING we must deny it any baseline: NO household_budget AND no
+    # UserContext (this in-memory DB has none). withdrawal_sequencer is also
+    # absent so fi_age is pending too.
     _seed_snapshot(session)
     _seed_report(session, "equity_comp_analyst", _equity_comp_json())
-    _seed_report(session, "household_budget", _household_budget_json())
     _seed_report(session, "concentration", _concentration_json())
     session.commit()
 
@@ -166,8 +174,9 @@ def test_pending_savings_blocks_trajectory_rows(session):
     md = render_trajectory_reconciliation_appendix(
         session=session, user_id="ariel", decision_run_id=DRUN
     )
-    # FI target + age still derived (withdrawal_sequencer present).
-    assert "₪8.00M" in md
+    # FI target now from fi_methodology (household_budget seeded) = ₪11.57M;
+    # FI age 52 still from the withdrawal_sequencer.
+    assert "₪11.57M" in md
     assert "age 52" in md
     # But the savings line + forward trajectory are pending.
     assert "[derivation pending]" in md

@@ -399,11 +399,16 @@ def test_assumption_ledger_appendix_renders_15_rows():
     # All 15 rows referenced by ID.
     for i in range(1, 16):
         assert f"| A{i} " in md, f"row A{i} missing from ledger"
-    # Key locked values from v4 spec §2 surface verbatim.
-    assert "5.0% real" in md
-    assert "2.4% real" in md
-    assert "20% of portfolio" in md
-    assert "₪341k/yr" in md
+    # Methodology-consistent values surface (the stale FI thresholds —
+    # 2.4% return, 20% cap, 6.82M/14.21M/25.83M — were reconciled to the
+    # single fi_methodology: 3.0% SWR, 13% cap, ₪341k as Phase-2 stress only).
+    assert "5.0% real" in md       # A1 expected real return (trajectory)
+    assert "3.0% real" in md       # A2 perpetual SWR (FI sizing)
+    assert "13% of portfolio" in md  # A10 NVDA cap
+    assert "₪341k/yr" in md         # A13 Phase-2 stress (now labelled as such)
+    # The stale conflicting FI thresholds must be gone.
+    for stale in ("6.82M", "14.21M", "25.83M", "1.32%", "2.4% real"):
+        assert stale not in md, f"stale ledger value {stale!r} still present"
     # Header row.
     assert "| ID | Assumption | Value | Source | Year | Confidence | Affects |" in md
 
