@@ -603,87 +603,79 @@ def render_fleet_receipts_appendix(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _pending_label() -> str:
+    """The single literal the renderer emits for any un-derived figure."""
+    return "[derivation pending]"
+
+
+def _fmt_nis_m(rv) -> str:
+    """Format a resolver NIS value in ₪M, or the pending label."""
+    if rv is None or rv.status != "resolved" or rv.value is None:
+        return _pending_label()
+    return f"₪{rv.value / 1_000_000.0:.2f}M"
+
+
+def _fmt_nis(rv) -> str:
+    """Format a resolver NIS value as ``₪123,456``, or the pending label."""
+    if rv is None or rv.status != "resolved" or rv.value is None:
+        return _pending_label()
+    return f"₪{rv.value:,.0f}"
+
+
 def render_trajectory_reconciliation_appendix(
     *,
     session: "Session | None" = None,
     user_id: str = "ariel",
+    decision_run_id: int | None = None,
 ) -> str:
     """Render the "How we get from today → target" reconciliation block.
 
     This block answers two questions the user asked explicitly:
-      1. How does the plan explain getting from current ₪10.68M → ₪21M?
-      2. Why does the UI show retire-age 44 while the synth targets 49?
+      1. How does the plan explain getting from today's portfolio to the
+         derived FI target?
+      2. Why does the UI show one retire-age while the plan targets the
+         derived FI age?
 
-    Both are math/assumption questions. The renderer computes the
-    trajectory deterministically from the latest portfolio_snapshot +
-    goals_yaml + the canonical assumption ledger — no LLM, no synth
-    hallucination. The reconciliation table makes the assumption
-    differences explicit so the two surfaces stop looking detached.
+    Both are math/assumption questions. Every headline figure here is
+    pulled from :func:`resolve_plan_numbers` — the shared deterministic
+    resolver the synth, renderer, and UI all read — so NOTHING is a
+    hardcoded constant. The renderer keeps only the deterministic FV math
+    (``fv()``) and the snapshot-derived starting point; each input number
+    traces to a resolver key + source_locator. Any input that resolves to
+    ``pending`` renders ``[derivation pending]`` and the dependent
+    trajectory rows are annotated/skipped rather than fabricated.
 
-    Pure function on data: returns ``""`` when no snapshot exists or
-    when the DB session is missing (e.g. dry-run tests).
+    Returns ``""`` when no snapshot exists, when the DB session is missing
+    (dry-run tests), or when ``decision_run_id`` is absent (no run to
+    resolve agent-derived numbers against).
     """
-    if session is None:
-        return ""
-    try:
-        from argosy.state.models import PortfolioSnapshotRow, UserContext
-        from sqlalchemy import select
-    except Exception:  # pragma: no cover - defensive import guard
+    if session is None or decision_run_id is None:
         return ""
 
+    from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
     try:
-        snap = session.execute(
-            select(PortfolioSnapshotRow)
-            .where(PortfolioSnapshotRow.user_id == user_id)
-            .order_by(PortfolioSnapshotRow.id.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-    except Exception:  # pragma: no cover - defensive
-        snap = None
-    if snap is None:
+        resolved = resolve_plan_numbers(
+            session, user_id=user_id, decision_run_id=decision_run_id
+        )
+    except Exception:  # pragma: no cover - resolver is itself defensive
         return ""
 
-    try:
-        totals = json.loads(snap.totals_json or "{}")
-    except (json.JSONDecodeError, ValueError, TypeError):
-        totals = {}
-    total_usd_k = float(totals.get("total_usd_value_k") or 0.0)
-    fx = float(snap.fx_usd_nis or 0.0)
-    if total_usd_k <= 0 or fx <= 0:
+    # All headline values come from the resolver — single source of truth.
+    nw = resolved.get("portfolio.net_worth_nis")
+    fi_target = resolved.get("retirement.fi_target_nis")
+    fi_age = resolved.get("retirement.fi_age")
+    req_yield = resolved.get("retirement.required_real_yield_pct")
+    ret_assumption = resolved.get("retirement.return_assumption_pct")
+    fi_spend = resolved.get("spend.fi_basis_nis")
+    savings = resolved.get("savings.annual_net_nis")
+    t12_spend = resolved.get("spend.annual_t12_nis")
+
+    # Starting point: the snapshot-derived net worth, in ₪M. When net
+    # worth is pending we cannot draw any trajectory at all.
+    if nw.status != "resolved" or nw.value is None:
         return ""
-    a0_nis_m = total_usd_k * fx / 1000.0  # portfolio in millions of NIS
-
-    # Goals: target_year + canonical spend.
-    try:
-        ctx = session.execute(
-            select(UserContext).where(UserContext.user_id == user_id)
-        ).scalar_one_or_none()
-        goals_yaml = (ctx.goals_yaml if ctx else "") or ""
-    except Exception:  # pragma: no cover - defensive
-        goals_yaml = ""
-    target_year = 2031
-    aspirational_age = 49
-    spend_nis = 277_004
-    if "retirement_target_year:" in goals_yaml:
-        # Parse the line ``retirement_target_year: 2031 (estimated; ...)``
-        m = re.search(r"retirement_target_year:\s*(\d{4})", goals_yaml)
-        if m:
-            target_year = int(m.group(1))
-    if "near_term_spending:" in goals_yaml:
-        m = re.search(r"near_term_spending:\s*(\d[\d,]*)", goals_yaml)
-        if m:
-            try:
-                spend_nis = int(m.group(1).replace(",", ""))
-            except ValueError:
-                pass
-
-    # Canonical anchor values (match Assumption Ledger A1-A3).
-    annual_savings_nis_m = 0.821  # ₪821k/yr — salary surplus + ₪500k RSU net
-    spend_phase2_binding_nis = 341_000  # S5 agent finding
-    bare_fi_24 = spend_nis / 0.024 / 1_000_000.0           # bare-FI at 2.4% real
-    bare_fi_24_phase2 = spend_phase2_binding_nis / 0.024 / 1_000_000.0
-    cushion_target_132 = spend_phase2_binding_nis / 0.0132 / 1_000_000.0
-    synth_target = 21.0                                    # ₪21M (synth headline)
+    a0_nis_m = nw.value / 1_000_000.0  # portfolio in millions of NIS
 
     # FV at r real, annuity contribution C, starting P0, over n yrs:
     #   FV(n) = P0·(1+r)^n + C·((1+r)^n - 1)/r
@@ -707,169 +699,197 @@ def render_trajectory_reconciliation_appendix(
             return 0.0
         return math.log(num / den) / math.log(1 + r)
 
-    def year_of(n: float | None, base_year: int = 2026) -> str:
+    # Derived inputs for the FV math. The contribution (annual savings)
+    # and the FI target are the load-bearing values; both are resolver-
+    # sourced. When savings is pending the forward trajectory cannot be
+    # drawn (no annuity term) — we render the table header but mark every
+    # forward row pending. The real-return assumption used to project is
+    # the resolver's ``return_assumption_pct`` when present, else the
+    # trajectory rows that depend on it are marked pending.
+    savings_m: float | None = (
+        savings.value / 1_000_000.0
+        if savings.status == "resolved" and savings.value is not None
+        else None
+    )
+    r_real: float | None = (
+        ret_assumption.value
+        if ret_assumption.status == "resolved" and ret_assumption.value is not None
+        else None
+    )
+    fi_target_m: float | None = (
+        fi_target.value / 1_000_000.0
+        if fi_target.status == "resolved" and fi_target.value is not None
+        else None
+    )
+    # Current age = derived FI age minus the years the FV math says it
+    # takes to reach the FI target. Only computable when every input is
+    # resolved; otherwise the per-year age annotation is suppressed.
+    n_to_fi: float | None = None
+    if (
+        savings_m is not None
+        and r_real is not None
+        and fi_target_m is not None
+    ):
+        n_to_fi = years_to(a0_nis_m, fi_target_m, savings_m, r_real)
+    current_age: float | None = None
+    if (
+        n_to_fi is not None
+        and fi_age.status == "resolved"
+        and fi_age.value is not None
+    ):
+        current_age = fi_age.value - n_to_fi
+
+    base_year = 2026
+
+    def year_of(n: float | None) -> str:
         if n is None:
-            return "—"
+            return _pending_label()
         if n <= 0:
             return "today"
-        return f"{base_year + int(round(n))} (~age {44 + int(round(n))})"
-
-    # Year-by-year trajectory at 5% real, 2026-2031.
-    rows = []
-    bal = a0_nis_m
-    for offset in range(0, 6):
-        year_label = 2026 + offset
-        end_bal = fv(a0_nis_m, annual_savings_nis_m, 0.05, offset)
-        rows.append((year_label, end_bal))
-
-    # When does each anchor get crossed?
-    n_bare_24 = years_to(a0_nis_m, bare_fi_24, annual_savings_nis_m, 0.024)
-    n_bare_24_p2 = years_to(a0_nis_m, bare_fi_24_phase2, annual_savings_nis_m, 0.024)
-    n_synth = years_to(a0_nis_m, synth_target, annual_savings_nis_m, 0.05)
-    n_cushion = years_to(a0_nis_m, cushion_target_132, annual_savings_nis_m, 0.05)
+        yr = base_year + int(round(n))
+        if current_age is None:
+            return f"{yr}"
+        return f"{yr} (~age {int(round(current_age + n))})"
 
     lines: list[str] = []
     lines.append("## Appendix — Trajectory & Retirement-Age Reconciliation")
     lines.append("")
+    fi_age_disp = (
+        f"age {fi_age.value:.0f}"
+        if fi_age.status == "resolved" and fi_age.value is not None
+        else _pending_label()
+    )
     lines.append(
         "This block answers two questions the plan must own: (1) how do "
-        "we get from today's portfolio to the FI target, and (2) why does "
-        "the `/retirement` page show *age 44* while this plan targets "
-        f"*age {aspirational_age}* in *{target_year}*? Both are pure-math "
-        "answers under stated assumptions. The numbers below are computed "
-        "by the renderer from the latest snapshot + goals — no agent "
-        "judgement, no LLM."
+        "we get from today's portfolio to the FI target, and (2) how the "
+        "earliest math-feasible retire age relates to the plan's derived "
+        f"FI age (**{fi_age_disp}**). Both are pure-math answers under the "
+        "DERIVED assumptions. Every headline number below is pulled from "
+        "the shared plan-numeric resolver (single source of truth across "
+        "the synth, this appendix, and the UI) — no hardcoded constants, "
+        "no LLM judgement. Any figure the fleet has not yet derived shows "
+        f"as `{_pending_label()}`."
     )
     lines.append("")
 
     lines.append("### Where you are today")
     lines.append("")
     lines.append(
-        f"- Current portfolio: **${total_usd_k:,.0f}k** "
-        f"≈ **₪{a0_nis_m:.2f}M** at FX {fx:.4f} (snapshot id={snap.id}, "
-        f"dated {snap.snapshot_date})."
+        f"- Current portfolio (net worth): **{_fmt_nis_m(nw)}** "
+        f"(`portfolio.net_worth_nis` — {nw.source_locator})."
     )
     lines.append(
-        f"- Canonical spend basis: **₪{spend_nis:,}/yr** "
-        f"(tracked T12 from `expense_transactions`)."
+        f"- FI spend basis: **{_fmt_nis(fi_spend)}/yr** "
+        f"(`spend.fi_basis_nis` — the spend the FI target funds)."
     )
     lines.append(
-        f"- Phase-2 binding spend (S5 cashflow-phases agent): "
-        f"**₪{spend_phase2_binding_nis:,}/yr** — adds car cycle, "
-        f"weddings, life-event spikes (see S5 agent report)."
+        f"- Tracked T12 household burn: **{_fmt_nis(t12_spend)}/yr** "
+        f"(`spend.annual_t12_nis` — monthly_burn × 12)."
     )
     lines.append(
         f"- Net annual savings (salary surplus + RSU net): "
-        f"**₪{annual_savings_nis_m * 1000:.0f}k/yr** steady-state."
+        f"**{_fmt_nis(savings)}/yr** steady-state "
+        f"(`savings.annual_net_nis`)."
+    )
+    lines.append(
+        f"- Derived FI target: **{_fmt_nis_m(fi_target)}** "
+        f"(`retirement.fi_target_nis` — {fi_target.formula or fi_target.source_locator})."
     )
     lines.append("")
 
-    lines.append("### Year-by-year trajectory (deterministic, μ=7% nominal ≈ 5% real)")
+    # Year-by-year trajectory. Requires savings + return assumption.
+    r_disp = f"{r_real * 100:.1f}% real" if r_real is not None else _pending_label()
+    lines.append(
+        f"### Year-by-year trajectory (deterministic, r = {r_disp})"
+    )
     lines.append("")
     lines.append("| Year | End-of-year balance (₪M, real) |")
     lines.append("|---|---|")
-    for y, b in rows:
-        lines.append(f"| {y} | {b:.2f} |")
-    lines.append("")
-    lines.append(
-        f"Formula: `FV(n) = P0·(1+r)^n + C·((1+r)^n - 1)/r` with "
-        f"P0 = ₪{a0_nis_m:.2f}M, C = ₪{annual_savings_nis_m * 1000:.0f}k/yr, "
-        "r = 5% real. Same formula at other return assumptions in the "
-        "Reconciliation table below."
-    )
+    if savings_m is not None and r_real is not None:
+        for offset in range(0, 6):
+            year_label = base_year + offset
+            end_bal = fv(a0_nis_m, savings_m, r_real, offset)
+            lines.append(f"| {year_label} | {end_bal:.2f} |")
+        c_disp = _fmt_nis(savings)
+        lines.append("")
+        lines.append(
+            f"Formula: `FV(n) = P0·(1+r)^n + C·((1+r)^n - 1)/r` with "
+            f"P0 = {_fmt_nis_m(nw)}, C = {c_disp}/yr, r = {r_disp}. All "
+            "inputs resolver-sourced."
+        )
+    else:
+        # Cannot project without both savings (C) and the return rate (r).
+        for offset in range(0, 6):
+            lines.append(f"| {base_year + offset} | {_pending_label()} |")
+        lines.append("")
+        lines.append(
+            f"Trajectory rows are `{_pending_label()}` because at least one "
+            "FV input is unresolved: net annual savings "
+            f"(`savings.annual_net_nis`, status={savings.status}) and/or the "
+            "real-return assumption "
+            f"(`retirement.return_assumption_pct`, status={ret_assumption.status})."
+        )
     lines.append("")
 
-    lines.append("### When does the portfolio cross each FI anchor?")
+    lines.append("### When does the portfolio cross the FI target?")
     lines.append("")
-    lines.append("| Anchor | Threshold (₪M) | Crossed at | Note |")
+    lines.append("| Anchor | Threshold (₪M) | Crossed at | Source |")
     lines.append("|---|---|---|---|")
     lines.append(
-        f"| Bare-FI @ 2.4% real, canonical ₪{spend_nis:,} | "
-        f"{bare_fi_24:.2f} | {year_of(n_bare_24)} | "
-        "low-equity capital-preservation mix; 2.4% real assumption |"
-    )
-    lines.append(
-        f"| Bare-FI @ 2.4% real, Phase-2 ₪{spend_phase2_binding_nis:,} | "
-        f"{bare_fi_24_phase2:.2f} | {year_of(n_bare_24_p2)} | "
-        "same assumption against realistic Phase-2 spend |"
-    )
-    lines.append(
-        f"| Synth headline target | {synth_target:.2f} | "
-        f"{year_of(n_synth)} | at 5% real with steady savings; "
-        "synth-picked, not analyst-derived |"
-    )
-    lines.append(
-        f"| Cushion @ 1.32% required yield, Phase-2 spend | "
-        f"{cushion_target_132:.2f} | {year_of(n_cushion)} | "
-        "high-margin target; capital-preservation framing |"
+        f"| Derived FI target | {_fmt_nis_m(fi_target).lstrip('₪')} | "
+        f"{year_of(n_to_fi)} | `retirement.fi_target_nis` "
+        f"({fi_target.source_locator}) |"
     )
     lines.append("")
 
-    lines.append("### Why /retirement shows age 44 while this plan targets age "
-                 f"{aspirational_age}")
+    lines.append("### How the math-feasible age relates to the plan's FI age")
     lines.append("")
     lines.append(
-        "Different surfaces ask different questions. Each is math-correct "
-        "at its inputs. The discrepancy is honest — they use different "
-        "assumptions about future returns. See the Assumption Ledger "
-        "appendix for the canonical values (A1-A3 are the return "
-        "assumptions that drive this table):"
+        "Different surfaces answer different questions; each is math-"
+        "correct at its inputs. The numbers here are the resolver's "
+        "derived values, not constants:"
     )
     lines.append("")
     lines.append(
-        "| Surface | Question it answers | μ used | Spend basis | Verdict |"
+        "| Quantity | Value | Source key |"
     )
     lines.append(
-        "|---|---|---|---|---|"
+        "|---|---|---|"
     )
     lines.append(
-        "| `/retirement` sweep at μ=6/8/10% | At what age does expected "
-        "real yield cover spend on returns-only? | 6-10% nominal "
-        f"(~4-8% real) | ₪{spend_nis:,} canonical | **age 44 today** "
-        "(cleared at any μ ≥ 6%) |"
+        f"| Derived FI age | {fi_age_disp} | `retirement.fi_age` |"
+    )
+    req_disp = (
+        f"{req_yield.value * 100:.2f}%"
+        if req_yield.status == "resolved" and req_yield.value is not None
+        else _pending_label()
+    )
+    ret_disp = (
+        f"{ret_assumption.value * 100:.2f}%"
+        if ret_assumption.status == "resolved" and ret_assumption.value is not None
+        else _pending_label()
     )
     lines.append(
-        "| `/retirement` sweep at μ=4% | Same question, conservative μ "
-        "| 4% nominal (~2% real) | "
-        f"₪{spend_nis:,} canonical | age 67 (waits for SS bridge) |"
+        f"| Required real yield (spend / target) | {req_disp} | "
+        "`retirement.required_real_yield_pct` |"
     )
     lines.append(
-        "| This plan's long-horizon target | When does the portfolio "
-        "reach the synth's ₪21M cushion number? | 5% real | "
-        f"₪{spend_nis:,} canonical | "
-        f"{year_of(n_synth)} (≈ user-aspirational {target_year}/age {aspirational_age}) |"
+        f"| Real-return assumption | {ret_disp} | "
+        "`retirement.return_assumption_pct` |"
     )
     lines.append(
-        "| This plan, corrected for Phase-2 spend | Same, but against "
-        f"realistic ₪{spend_phase2_binding_nis:,}/yr lifetime average | "
-        f"5% real | ₪{spend_phase2_binding_nis:,} Phase-2 | "
-        f"{year_of(n_cushion)} (cushion target shifts up) |"
-    )
-    lines.append(
-        "| MC engine (`WithdrawalSequencerAgent` planned) | "
-        "P(success) over 50-yr drawdown at retire-age | μ=7%, "
-        f"σ=34.4% | ₪{spend_nis:,} canonical | "
-        "97-98% (engine excludes NVDA-specific tail) |"
+        f"| Earliest math-feasible year (FV) | {year_of(n_to_fi)} | "
+        "derived: years_to(net_worth, fi_target, savings, r) |"
     )
     lines.append("")
     lines.append(
-        "**Honest reconciliation**: "
-        f"under the conservative ₪{spend_phase2_binding_nis:,}/yr "
-        "Phase-2 spend basis, at 2.4% real, the bare-FI floor is "
-        f"₪{bare_fi_24_phase2:.2f}M — *not yet cleared today*. At 5% "
-        f"real the floor is ₪{spend_phase2_binding_nis / 0.05 / 1_000_000:.2f}M "
-        "— *cleared today on returns-only*. The age-44 verdict "
-        "trusts the 5%+ real return assumption; the age-49 target "
-        "encodes margin against return-rate uncertainty + sequence "
-        "risk + NVDA concentration crash + life-event spend spikes."
-    )
-    lines.append("")
-    lines.append(
-        f"> The plan recommends planning toward age {aspirational_age} "
-        f"({target_year}) as the **operational** retire date and "
-        "treating the `/retirement` UI's age-44 verdict as the "
-        "**math floor** — what's mathematically possible today before "
-        "applying any safety margin."
+        "**Honest reconciliation**: the FI age is the earliest age at "
+        "which the projected portfolio first reaches the derived FI "
+        "target under the resolver's return assumption. It already "
+        "encodes margin against return-rate uncertainty, sequence risk, "
+        "NVDA concentration, and life-event spend spikes via the spend "
+        "basis the withdrawal sequencer used — it is not a round "
+        "marketing number."
     )
     return "\n".join(lines).rstrip() + "\n"
 
@@ -906,7 +926,7 @@ def render_plan_appendices(
     # Trajectory & retire-age reconciliation FIRST — answers the two
     # questions the user asks before drilling into anything else.
     trajectory = render_trajectory_reconciliation_appendix(
-        session=session, user_id=user_id,
+        session=session, user_id=user_id, decision_run_id=decision_run_id,
     )
     if trajectory:
         parts.append(trajectory)
