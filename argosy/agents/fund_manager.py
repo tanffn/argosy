@@ -86,6 +86,13 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
     output_model = FundManagerDecision
     require_citations = True
     # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (32000).
+    # The FM is the LAST step of a ~25-min pipeline; it has two transient
+    # flake modes — exit-1 (handled by the orchestrator-level retry in
+    # _run_phase_5_fund_manager) and empty/malformed-JSON output ("Expecting
+    # value: line 1 col 1", observed drun 79). schema_retry_attempts covers
+    # the latter: a fresh re-call (with the parse error fed back) recovers an
+    # empty/garbled response instead of throwing away the whole run.
+    schema_retry_attempts = 2
 
     def __init__(
         self,
