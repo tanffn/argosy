@@ -123,6 +123,11 @@ class FiMethodology:
     finite_liability_reserve_nis: float
     fi_total_capital_nis: float        # perpetuity + reserve
     components: list[FiComponent] = field(default_factory=list)
+    # Raw T12 category rollup that sums to baseline_annual_nis — the audit
+    # trail behind the tracked-spend figure. (category_label, annual_nis),
+    # sorted descending. Empty when the breakdown isn't in identity_yaml.
+    baseline_breakdown: list[tuple[str, float]] = field(default_factory=list)
+    baseline_source: str = ""
     method: str = ""
     confidence: str = "MEDIUM"
 
@@ -148,6 +153,45 @@ def _load_yaml(text: str | None) -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001 — defensive
         return {}
+
+
+# Map the tracked budget's fine-grained lines → readable parent categories.
+# Keys are the identity_yaml ``monthly_expenses_breakdown`` field stems
+# (``_nis`` suffix stripped). Anything unmapped falls into "Other".
+_CATEGORY_MAP: dict[str, str] = {
+    "mortgage": "Housing", "property_tax_arnona": "Housing",
+    "electricity": "Housing", "home_maintenance": "Housing",
+    "internet_phone": "Housing",
+    "hotels": "Travel & vacation", "flights": "Travel & vacation",
+    "vacation_other": "Travel & vacation",
+    "groceries": "Groceries",
+    "restaurants": "Dining out", "takeout": "Dining out",
+    "coffee_bars": "Dining out",
+    "fuel": "Transportation", "car_maintenance": "Transportation",
+    "car_insurance": "Transportation",
+    "after_school": "Childcare & education", "kids_activities": "Childcare & education",
+    "health_insurance": "Healthcare", "medical_other": "Healthcare",
+    "pharmacy": "Healthcare",
+    "insurance_other": "Insurance (life/home)",
+    "shopping_other": "Discretionary", "entertainment": "Discretionary",
+    "clothing": "Discretionary", "furniture": "Discretionary",
+    "pet": "Other", "uncategorized": "Other",
+}
+
+
+def _rollup_to_categories(breakdown: dict) -> list[tuple[str, float]]:
+    """Roll the fine-grained monthly budget lines up into parent categories,
+    annualized (×12) and sorted descending. Readable (~10 rows) rather than
+    the ~28 raw line items."""
+    totals: dict[str, float] = {}
+    for k, v in breakdown.items():
+        amt = _f(v)
+        if amt is None:
+            continue
+        stem = k[:-4] if k.endswith("_nis") else k
+        cat = _CATEGORY_MAP.get(stem, "Other")
+        totals[cat] = totals.get(cat, 0.0) + amt * 12.0
+    return sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
 
 
 def _f(v: object) -> float | None:
@@ -211,9 +255,11 @@ def compute_fi_target(
 
     components: list[FiComponent] = []
 
-    # --- Mortgage: finite, runs off. Subtract from the permanent baseline; -----
-    # park the remaining principal in the reserve.
+    # --- T12 spend rolled up into READABLE parent categories (the audit
+    # trail behind the baseline). The tracked budget has ~28 fine-grained
+    # lines; group them into ~10 parent categories so the plan reads cleanly.
     breakdown = identity.get("monthly_expenses_breakdown") or {}
+    baseline_breakdown = _rollup_to_categories(breakdown) if isinstance(breakdown, dict) else []
     mortgage_monthly = _f(breakdown.get("mortgage_nis")) if isinstance(breakdown, dict) else None
     mortgage_annual = (mortgage_monthly or 0.0) * 12.0
     mort_bal = identity.get("mortgage_balance") or {}
@@ -317,6 +363,8 @@ def compute_fi_target(
         finite_liability_reserve_nis=reserve,
         fi_total_capital_nis=fi_total,
         components=components,
+        baseline_breakdown=baseline_breakdown,
+        baseline_source=baseline_src,
         method=method,
         confidence="MEDIUM",
     )

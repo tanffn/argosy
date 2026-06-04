@@ -996,6 +996,143 @@ def render_trajectory_reconciliation_appendix(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_number_derivations_appendix(
+    *,
+    session: "Session | None" = None,
+    user_id: str = "ariel",
+    decision_run_id: int | None = None,
+    resolved=None,
+) -> str:
+    """Render the "show your work" appendix: every headline number built from
+    its RAW inputs, step by step, each line sourced. No placeholders, no
+    magic numbers — the audit trail behind the prose. Empty when neither the
+    FI methodology nor the resolver manifest can be computed.
+    """
+    if session is None:
+        return ""
+    try:
+        from argosy.services.fi_methodology import compute_fi_target
+    except Exception:  # pragma: no cover
+        return ""
+
+    # Use the resolver's tracked-T12 as the spend basis when available so the
+    # derivation matches the rest of the plan; else fall back to identity.
+    t12 = None
+    if resolved is not None:
+        rv = resolved.get("spend.annual_t12_nis")
+        if rv is not None and rv.status == "resolved" and rv.value:
+            t12 = float(rv.value)
+    try:
+        m = compute_fi_target(session, user_id=user_id, spend_t12_nis=t12)
+    except Exception:  # noqa: BLE001
+        m = None
+    if m is None:
+        return ""
+
+    def _n(x: float) -> str:
+        return f"₪{x:,.0f}"
+
+    lines: list[str] = ["## Appendix — Number Derivations (show your work)", ""]
+    lines.append(
+        "Every headline number is built from raw inputs below — no "
+        "placeholders, no magic numbers. Each step cites its source so it can "
+        "be re-derived and audited."
+    )
+    lines.append("")
+
+    # --- FI spend basis: raw T12 rollup → permanent-equivalent. -------------
+    lines.append(f"### FI spend basis — {_n(m.permanent_annual_spend_nis)}/yr (permanent-equivalent, real)")
+    lines.append("")
+    lines.append(
+        f"**Step 1 — tracked T12 household burn: {_n(m.baseline_annual_nis)}/yr** "
+        f"(source: `{m.baseline_source}`). Raw category rollup:"
+    )
+    lines.append("")
+    if m.baseline_breakdown:
+        lines.append("| Category | ₪/yr | share |")
+        lines.append("|---|---:|---:|")
+        for label, amt in m.baseline_breakdown:
+            share = (amt / m.baseline_annual_nis * 100.0) if m.baseline_annual_nis else 0.0
+            lines.append(f"| {label} | {amt:,.0f} | {share:.1f}% |")
+        lines.append(f"| **Total tracked T12** | **{m.baseline_annual_nis:,.0f}** | 100% |")
+    else:
+        lines.append("| (raw category breakdown not available in identity_yaml) |")
+    lines.append("")
+    lines.append(
+        f"**Step 2 — lift to permanent-equivalent: {_n(m.permanent_annual_spend_nis)}/yr** "
+        "(smooths amortized life-event phases into a perpetual-equivalent spend):"
+    )
+    lines.append("")
+    lines.append("| Component | ₪/yr | source | confidence |")
+    lines.append("|---|---:|---|---|")
+    for c in m.components:
+        if c.kind != "permanent":
+            continue
+        lines.append(f"| {c.label} | {c.annual_nis:+,.0f} | {c.source} | {c.confidence} |")
+    lines.append(f"| **Permanent-equivalent total** | **{m.permanent_annual_spend_nis:,.0f}** | | |")
+    lines.append("")
+
+    # --- FI capital target: perpetuity + reserve. ---------------------------
+    lines.append(f"### FI capital target — {_n(m.fi_perpetuity_nis)} perpetuity base")
+    lines.append("")
+    lines.append(
+        f"- **Perpetuity base** = permanent spend {_n(m.permanent_annual_spend_nis)} ÷ "
+        f"{m.swr_real_pct*100:.1f}% real after-tax perpetual SWR = **{_n(m.fi_perpetuity_nis)}** "
+        f"(SWR band {m.swr_band[0]*100:.1f}–{m.swr_band[1]*100:.1f}%; "
+        f"the {m.return_assumption_real_pct*100:.1f}% expected return is trajectory-only, NOT used to size the target)."
+    )
+    finite = [c for c in m.components if c.kind == "finite"]
+    if finite:
+        lines.append(
+            f"- **Liquidity reserve** = {_n(m.finite_liability_reserve_nis)} of finite "
+            "liabilities, held SEPARATELY (not capitalized into the perpetuity):"
+        )
+        lines.append("")
+        lines.append("| Finite liability | ₪ | source | confidence |")
+        lines.append("|---|---:|---|---|")
+        for c in finite:
+            lines.append(f"| {c.label} | {c.reserve_nis:,.0f} | {c.source} | {c.confidence} |")
+        lines.append(f"| **Reserve total** | **{m.finite_liability_reserve_nis:,.0f}** | | |")
+    lines.append("")
+    lines.append(
+        f"- **FI total capital** = perpetuity {_n(m.fi_perpetuity_nis)} + reserve "
+        f"{_n(m.finite_liability_reserve_nis)} = **{_n(m.fi_total_capital_nis)}**."
+    )
+    lines.append("")
+
+    # --- Other headline numbers from the resolver (formula + source). -------
+    if resolved is not None:
+        rows: list[tuple[str, str]] = []
+        for key, label in (
+            ("portfolio.net_worth_nis", "Net worth"),
+            ("savings.annual_net_nis", "Annual net savings"),
+            ("concentration.nvda_cap_pct", "NVDA concentration cap"),
+            ("concentration.nvda_current_pct", "NVDA current weight"),
+            ("retirement.fi_age", "Earliest feasible FI age"),
+        ):
+            rv = resolved.get(key)
+            if rv is None or rv.status != "resolved" or rv.value is None:
+                continue
+            if rv.unit == "nis":
+                val = _n(float(rv.value))
+            elif rv.unit == "pct":
+                val = f"{float(rv.value)*100:.1f}%"
+            elif rv.unit == "age":
+                val = f"age {float(rv.value):.1f}"
+            else:
+                val = f"{rv.value}"
+            formula = rv.formula or rv.source_locator
+            rows.append((label, f"{val} — {formula} (source: `{rv.source_locator}`; conf {rv.confidence})"))
+        if rows:
+            lines.append("### Other headline numbers")
+            lines.append("")
+            for label, body in rows:
+                lines.append(f"- **{label}**: {body}")
+            lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_plan_appendices(
     output: PlanSynthesisOutput,
     *,
@@ -1046,6 +1183,12 @@ def render_plan_appendices(
     ledger = render_assumption_ledger_appendix(_resolved)
     if ledger:
         parts.append(ledger)
+    derivations = render_number_derivations_appendix(
+        session=session, user_id=user_id, decision_run_id=decision_run_id,
+        resolved=_resolved,
+    )
+    if derivations:
+        parts.append(derivations)
     sections = render_section_evidence_appendix(output)
     if sections:
         parts.append(sections)
