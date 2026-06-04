@@ -28,6 +28,12 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
     agent_role = "plan_synthesizer"
     output_model = PlanSynthesisOutput
     require_citations = True
+    # The synthesizer's PlanSynthesisOutput is large + carries the v3.1
+    # evidence-discipline rules (soft-source citations must bind an
+    # assumption); the model intermittently violates them. Feed the
+    # validation error back and let it self-correct rather than failing the
+    # whole synthesis (BaseAgent.schema_retry_attempts).
+    schema_retry_attempts = 2
     # max_tokens driven by DEFAULT_MAX_TOKENS_BY_ROLE (32000).
     # Opt into schema-constrained JSON output. Codex tandem found
     # synth #58 truncating at the markdown-fence opener with
