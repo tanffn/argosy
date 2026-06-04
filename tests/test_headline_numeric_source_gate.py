@@ -41,6 +41,8 @@ def _resolved(**vals: float) -> ResolvedPlanNumbers:
         "spend.annual_t12_nis": "nis",
         "concentration.nvda_cap_pct": "pct",
         "concentration.nvda_current_pct": "pct",
+        "retirement.liquidity_reserve_nis": "nis",
+        "retirement.fi_total_capital_nis": "nis",
     }
     out: dict[str, ResolvedValue] = {}
     for k, v in vals.items():
@@ -246,3 +248,58 @@ def test_scrub_preserves_trailing_newline():
     md = {"long": "FI target **₪21.00M**.\n"}
     scrubbed, _ = scrub_headline_numeric_source(md, resolved)
     assert scrubbed["long"].endswith("\n")
+
+
+# --------------------------------------------------------------------------
+# (f) SURGICAL scrub — only large NIS amounts in FI-capital context are
+#     mutated; everything else is preserved (a live drun showed a broad
+#     scrub turning ~44 legit detail numbers into [derivation pending]).
+# --------------------------------------------------------------------------
+
+def test_scrub_preserves_small_nis_on_fi_line():
+    # Education ₪500,000 on an FI-context line is below the ₪2M floor → kept.
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": "FI target funding sets aside ₪500,000 per child for education."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    assert scrubbed["long"] == md["long"]
+    assert log == []
+
+
+def test_scrub_preserves_large_nis_on_non_fi_line():
+    # A large NIS amount that is NOT an FI-capital/net-worth claim is left
+    # alone (e.g. an annual income line).
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": "Combined annual household income is ₪2,500,000 before tax."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    assert scrubbed["long"] == md["long"]
+    assert log == []
+
+
+def test_scrub_preserves_pct_and_age_even_on_fi_line():
+    # pct / age are no longer mutated by the surgical scrub.
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": "FI target needs a 21% yield and retiring at age 44."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    assert scrubbed["long"] == md["long"]
+    assert log == []
+
+
+def test_scrub_preserves_total_capital_composite():
+    # The legit total (perpetuity + reserve) must be recognized when present
+    # in the manifest.
+    resolved = _resolved(**{
+        "retirement.fi_target_nis": 10_386_133.0,
+        "retirement.fi_total_capital_nis": 11_836_133.0,
+    })
+    md = {"long": "Net worth covers the FI target; combined stack is ₪11.84M."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    assert "₪11.84M" in scrubbed["long"]
+    assert log == []
+
+
+def test_scrub_still_catches_large_fabricated_fi_target():
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": "FI capital target on the gross base is **₪22.00M**."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    assert PENDING_LABEL in scrubbed["long"]
+    assert len(log) == 1

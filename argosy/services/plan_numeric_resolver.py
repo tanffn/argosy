@@ -129,6 +129,7 @@ _KEY_UNITS: dict[str, str] = {
     "concentration.nvda_cap_pct": "pct",
     "concentration.nvda_current_pct": "pct",
     "retirement.liquidity_reserve_nis": "nis",
+    "retirement.fi_total_capital_nis": "nis",
 }
 
 
@@ -638,6 +639,16 @@ def _apply_fi_methodology(
         confidence=conf,
         formula="expected real return for the trajectory (decoupled from the SWR)",
     )
+    values["retirement.fi_total_capital_nis"] = ResolvedValue(
+        key="retirement.fi_total_capital_nis",
+        value=float(m.fi_total_capital_nis),
+        unit="nis",
+        status="resolved",
+        source_locator="fi_methodology.fi_total_capital_nis (perpetuity + reserve)",
+        agent_report_id=None,
+        confidence=conf,
+        formula="FI perpetuity + finite-liability reserve (the full capital target)",
+    )
     values["retirement.liquidity_reserve_nis"] = ResolvedValue(
         key="retirement.liquidity_reserve_nis",
         value=float(m.finite_liability_reserve_nis),
@@ -661,6 +672,7 @@ def _apply_fi_methodology(
 _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("portfolio.net_worth_nis", "Net worth"),
     ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
+    ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
     ("retirement.liquidity_reserve_nis", "Liquidity reserve (finite liabilities, held separately)"),
     ("spend.fi_basis_nis", "FI spend basis (permanent-equivalent, real)"),
     ("retirement.required_real_yield_pct", "Required real yield (perpetual safe-withdrawal rate)"),

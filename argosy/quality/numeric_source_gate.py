@@ -324,42 +324,64 @@ def _token_ok_nis(num: float, suffix: str | None, resolved: list[tuple[str, floa
     return any(_matches(c, rv, "nis") for c in cands for _, rv in resolved)
 
 
-def _token_ok_pct(num: float, resolved: list[tuple[str, float]]) -> bool:
-    return any(
-        _matches(num, rv * 100.0, "pct") or _matches(num, rv, "pct")
-        for _, rv in resolved
+# The mutating scrub is deliberately SURGICAL — far narrower than the
+# advisory check above. It only rewrites the headline figure the #1 reject was
+# about: a large NIS capital amount presented as the FI / retirement /
+# net-worth target that traces to no resolved value. It does NOT mutate
+# percentages, ages, or small NIS amounts (income, education, monthly burn,
+# RSU tranches, sub-components) — those are legitimate plan detail and a live
+# drun showed a broad scrub turning ~44 of them into [derivation pending],
+# which destroys the plan. Fabricated pct/age values are still surfaced by the
+# advisory check + the codex review; only the load-bearing capital headline is
+# fail-closed at persist.
+
+# A NIS amount is only scrubbed on a line in this tight FI-capital context.
+_FI_CAPITAL_LINE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"\bfi\s+(?:capital\s+)?target\b",
+        r"\bfi\s+base\b",
+        r"\bfi\s+number\b",
+        r"\bfi\s+threshold\b",
+        r"\bfinancial\s+independence\b",
+        r"\bcapital\s+target\b",
+        r"\bnet\s+worth\b",
+        r"\bnest\s+egg\b",
+        r"\bperpetuity\b",
+        r"\bretirement\s+(?:capital|target|corpus|number)\b",
     )
+)
+
+# Only NIS amounts at/above this magnitude are candidates — the FI capital
+# target is ~₪10M; education (₪0.5–1.5M), monthly burn, income, and RSU
+# tranches all sit below it, so the floor cleanly excludes plan detail.
+_SCRUB_NIS_FLOOR = 2_000_000.0
 
 
-def _token_ok_age(num: float, resolved: list[tuple[str, float]]) -> bool:
-    return any(_matches(num, rv, "age") for _, rv in resolved)
+def _is_fi_capital_line(line: str) -> bool:
+    return any(p.search(line) for p in _FI_CAPITAL_LINE_PATTERNS)
 
 
 def _scrub_line(line: str, by_unit: dict[str, list[tuple[str, float]]]) -> tuple[str, list[str]]:
-    """Replace every fabricated headline token in ``line`` with the pending
+    """Replace a fabricated FI-capital headline NIS amount with the pending
     literal. Returns ``(scrubbed_line, [scrubbed_token, ...])``.
 
-    Spans are collected across all three token classes and applied
-    right-to-left so earlier offsets stay valid during replacement.
+    Surgical: only large NIS amounts (>= the floor) on an FI-capital/net-worth
+    line that match no resolved value are scrubbed. Percentages, ages, and
+    small NIS amounts are never mutated here.
     """
+    if not _is_fi_capital_line(line):
+        return line, []
     spans: list[tuple[int, int, str]] = []  # (start, end, original_token)
     for m in _NIS_TOKEN.finditer(line):
         num = _parse_num(m.group("num"))
         if num is None:
             continue
+        cands = _nis_candidates(num, m.group("suffix"))
+        # Candidate magnitude must clear the FI-capital floor to be eligible.
+        if not any(c >= _SCRUB_NIS_FLOOR for c in cands):
+            continue
         if not _token_ok_nis(num, m.group("suffix"), by_unit["nis"]):
-            spans.append((m.start(), m.end(), m.group(0)))
-    for m in _PCT_TOKEN.finditer(line):
-        num = _parse_num(m.group("num"))
-        if num is None:
-            continue
-        if not _token_ok_pct(num, by_unit["pct"]):
-            spans.append((m.start(), m.end(), m.group(0)))
-    for m in _AGE_TOKEN.finditer(line):
-        num = _parse_num(m.group("num"))
-        if num is None:
-            continue
-        if not _token_ok_age(num, by_unit["age"]):
             spans.append((m.start(), m.end(), m.group(0)))
 
     if not spans:
@@ -388,11 +410,13 @@ def scrub_headline_numeric_source(
 ) -> tuple[dict[str, str], list[str]]:
     """Scrub fabricated headline numbers out of the user-facing markdown.
 
-    For every headline-context line, any ₪/percent/age token that traces to
-    no resolved value of its class is replaced with ``[derivation pending]``.
-    Returns ``(scrubbed_horizon_text, scrub_log)`` where ``scrub_log`` is a
-    list of ``"horizon line=N token=`…`"`` strings for audit. Non-headline
-    lines and the pending literal itself are never touched.
+    Surgical: only a large NIS amount (>= ₪2M) on an FI-capital/net-worth
+    line that traces to no resolved value is replaced with
+    ``[derivation pending]``. ``_scrub_line`` self-gates on the tight
+    FI-capital context, so the loop calls it on every line (the broad
+    advisory ``_is_headline_line`` is NOT used here — it both over-matches
+    detail lines and under-matches phrasings like "FI capital target").
+    Returns ``(scrubbed_horizon_text, scrub_log)``.
     """
     by_unit = _resolved_by_unit(resolved)
     scrubbed_text: dict[str, str] = {}
@@ -403,9 +427,6 @@ def scrub_headline_numeric_source(
             continue
         out_lines: list[str] = []
         for line_no, raw_line in enumerate(text.splitlines(), start=1):
-            if not _is_headline_line(raw_line):
-                out_lines.append(raw_line)
-                continue
             new_line, removed = _scrub_line(raw_line, by_unit)
             out_lines.append(new_line)
             for tok in removed:
