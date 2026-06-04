@@ -3224,7 +3224,40 @@ def _run_phase_5_fund_manager(*, session, user_id,
     # non-empty so legacy stubs without the kwarg keep working.
     if prior_resolved_list:
         fm_kwargs["prior_resolved_concerns"] = prior_resolved_list
-    result = fm.run_sync(**fm_kwargs)
+    # Orchestrator-level transient-flake retry for the FM — same envelope
+    # as bear_researcher. The FM is the LAST step of a ~25-min pipeline; a
+    # bare claude.exe exit-1 flake here (observed: drun 78) would otherwise
+    # throw away the entire run. _is_bear_transient_flake only matches the
+    # empty-stderr exit-1 fingerprint, so deterministic FM failures still
+    # surface immediately. (The SDK has its own inner retry; this restarts
+    # the whole call fresh, which recovers flakes the SDK layer doesn't.)
+    result = None
+    for _fm_attempt in range(_BEAR_RESEARCHER_MAX_ATTEMPTS):
+        try:
+            result = fm.run_sync(**fm_kwargs)
+            break
+        except AgentRunError as exc:
+            is_final = _fm_attempt + 1 >= _BEAR_RESEARCHER_MAX_ATTEMPTS
+            if not _is_bear_transient_flake(exc) or is_final:
+                log.error(
+                    "plan_synthesis.fund_manager.retry_exhausted",
+                    decision_run_id=decision_run_id,
+                    attempt=_fm_attempt + 1,
+                    max_attempts=_BEAR_RESEARCHER_MAX_ATTEMPTS,
+                    is_transient_flake=_is_bear_transient_flake(exc),
+                    error=str(exc)[:500],
+                )
+                raise
+            delay = _BEAR_RESEARCHER_RETRY_BACKOFF_SECONDS[_fm_attempt]
+            log.warning(
+                "plan_synthesis.fund_manager.orchestrator_retry",
+                decision_run_id=decision_run_id,
+                attempt=_fm_attempt + 1,
+                max_attempts=_BEAR_RESEARCHER_MAX_ATTEMPTS,
+                delay_seconds=delay,
+                error=str(exc)[:500],
+            )
+            time.sleep(delay)
     # W1.C-v2: uniform bulk-persist pattern. Phase 5 calls exactly one
     # agent; wrap its dataclass in a 1-element list and route through
     # the package namespace. Stub agents return SimpleNamespace; only
