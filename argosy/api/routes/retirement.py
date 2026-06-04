@@ -109,6 +109,20 @@ class SourcesResponse(BaseModel):
     sources: dict[str, SourceDTO]
 
 
+@router.get("/derived-inputs")
+def get_derived_inputs(user_id: str, db: Session = Depends(get_db)) -> dict:
+    """Single source of truth for every /retirement card input.
+
+    /retirement TRACKS PLAN EXECUTION (output-trust doctrine): every figure
+    derives from the current plan's resolver manifest + fi_methodology + the
+    portfolio/identity state. Replaces the hardcoded page props. Each field is
+    ``{value, unit, source, confidence, status}``; ``status="pending"`` (UI:
+    "needs intake") where Argosy genuinely lacks the datum — never a guess.
+    """
+    from argosy.services.retirement.derived_inputs import compute_derived_inputs
+    return compute_derived_inputs(db, user_id=user_id)
+
+
 @router.get("/sources", response_model=SourcesResponse)
 def get_sources() -> SourcesResponse:
     reg = load_sources()
