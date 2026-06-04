@@ -180,17 +180,21 @@ class YearVestRow(BaseModel):
         description="net_nis / gross_nis as a percentage, 0-100.",
     )
     confidence: Literal["HIGH", "MEDIUM", "LOW"] = Field(
+        default="MEDIUM",
         description=(
             "Per-year confidence band. HIGH for years dominated by "
             "contractual vesting; degrades as the row depends more on "
-            "modelled refresh grants."
+            "modelled refresh grants. Defaults to MEDIUM when the model "
+            "omits it (annotation, not money — must not abort synthesis)."
         ),
     )
     source: Literal["contractual", "modeled_refresh"] = Field(
+        default="modeled_refresh",
         description=(
             "'contractual' when this year's vests come exclusively from "
             "grants already on file; 'modeled_refresh' when any portion "
-            "depends on assumed future refresh grants."
+            "depends on assumed future refresh grants. Defaults to the "
+            "conservative 'modeled_refresh' when the model omits it."
         ),
     )
 
@@ -287,10 +291,14 @@ class ScenarioProjection(BaseModel):
         ),
     )
     confidence: Literal["HIGH", "MEDIUM", "LOW"] = Field(
+        default="MEDIUM",
         description=(
             "Overall confidence band for this scenario. HIGH only when "
             "the scenario depends exclusively on contractual grants "
-            "with verified vest dates."
+            "with verified vest dates. Defaults to MEDIUM (conservative) "
+            "when the model omits it — this is a confidence ANNOTATION, "
+            "not a money field, so a missing label must not abort the "
+            "whole synthesis at the run-completeness gate."
         ),
     )
 

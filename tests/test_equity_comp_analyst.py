@@ -701,3 +701,22 @@ def test_safe_run_agent_raises_on_empty_material_inputs(monkeypatch) -> None:
              "decision_id": "plan-synth-99"},
             "plan-synth-99",
         )
+
+
+def test_scenario_missing_confidence_defaults_not_aborts():
+    """drun-75 regression: the model omitted per-scenario + per-year
+    `confidence` (and `source`); these are metadata labels, not money, so
+    they must DEFAULT (MEDIUM / modeled_refresh) rather than fail validation
+    and abort the whole synthesis at the run-completeness gate."""
+    from argosy.agents.equity_comp_analyst_types import ScenarioProjection
+
+    s = ScenarioProjection.model_validate({
+        "name": "known_grants_only",
+        "years": [{"year": 2026, "gross_shares": 100, "gross_usd": 1,
+                   "gross_nis": 1, "net_nis": 1, "net_retention_pct": 50}],
+        "five_year_avg_net_nis": 228001,
+    })
+    assert s.confidence == "MEDIUM"
+    assert s.years[0].confidence == "MEDIUM"
+    assert s.years[0].source == "modeled_refresh"
+    assert s.five_year_avg_net_nis == 228001.0
