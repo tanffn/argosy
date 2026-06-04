@@ -442,3 +442,30 @@ def test_one_bad_role_does_not_poison_others(session):
     resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
     assert resolved.get("retirement.fi_target_nis").status == "pending"
     assert resolved.get("concentration.nvda_cap_pct").status == "resolved"
+
+
+def test_fx_usd_nis_resolves_from_boi_cache(session):
+    """FX must come from the BOI cache (the authoritative feed), NOT a hardcoded
+    3.45. Kills the magic number in the assumption ledger (A5/A6)."""
+    from datetime import date as _date
+    from decimal import Decimal
+    from argosy.state.models import FxRate
+    _seed_all(session)
+    for d, r in [(_date(2026, 6, 1), Decimal("2.813")), (_date(2026, 6, 2), Decimal("2.84"))]:
+        session.add(FxRate(date=d, currency="USD", rate=r, source="boi"))
+    session.flush()
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    fx = res.get("fx.usd_nis")
+    assert fx is not None and fx.status == "resolved", "fx.usd_nis must resolve from BOI"
+    assert 2.5 < float(fx.value) < 3.4, f"BOI-sourced, not 3.45 (got {fx.value})"
+    assert "boi" in fx.source_locator.lower()
+
+
+def test_fx_usd_nis_pending_when_cache_cold(session):
+    """No cached BOI rate (cache-only read, no live network in the resolver) →
+    pending, never the hardcoded 3.45."""
+    _seed_all(session)
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    fx = res.get("fx.usd_nis")
+    assert fx is not None and fx.status == "pending"
+    assert fx.value is None

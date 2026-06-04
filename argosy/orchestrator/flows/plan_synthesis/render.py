@@ -499,6 +499,10 @@ def _ledger_rows_with_manifest(resolved) -> list[dict[str, str]]:
     ret = _rv("retirement.return_assumption_pct")
     cap = _rv("concentration.nvda_cap_pct")
     savings = _rv("savings.annual_net_nis")
+    t12 = _rv("spend.annual_t12_nis")
+    fx_spot = _rv("fx.usd_nis")
+    fx_lo = _rv("fx.usd_nis_band_low")
+    fx_hi = _rv("fx.usd_nis_band_high")
 
     if ret is not None and "A1" in by_id:
         by_id["A1"]["value"] = f"{ret*100:.1f}% real"
@@ -518,6 +522,16 @@ def _ledger_rows_with_manifest(resolved) -> list[dict[str, str]]:
         by_id["A8"]["value"] = f"{_nis(savings)}/yr net"
     if cap is not None and "A10" in by_id:
         by_id["A10"]["value"] = f"{cap*100:.0f}% of portfolio"
+    if t12 is not None and "A12" in by_id:
+        by_id["A12"]["value"] = f"{_nis(t12)}/yr"
+    # FX rows — derive from BOI (kills the hardcoded 3.45 / 3.20-3.80 that
+    # contradicted the rate the agents actually computed at).
+    if fx_spot is not None and "A5" in by_id:
+        by_id["A5"]["value"] = f"{fx_spot:.3f} NIS/USD"
+        by_id["A5"]["source"] = "Bank of Israel daily representative rate"
+    if fx_lo is not None and fx_hi is not None and "A6" in by_id:
+        by_id["A6"]["value"] = f"{fx_lo:.2f} → {fx_hi:.2f}"
+        by_id["A6"]["source"] = "BOI USD/NIS 90-day low → high"
     return rows
 
 

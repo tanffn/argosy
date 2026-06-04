@@ -569,8 +569,54 @@ def resolve_plan_numbers(
     # ------------------------------------------------------------------
     _apply_fi_methodology(session, user_id, values)
     _apply_us_situs_estate(session, user_id, values)
+    _apply_fx_boi(session, values)
 
     return ResolvedPlanNumbers(values=values)
+
+
+def _apply_fx_boi(session: "Session", values: dict[str, ResolvedValue]) -> None:
+    """Resolve USD/NIS from the authoritative Bank-of-Israel feed (the FxRate
+    cache, walking back over weekends/holidays), plus a 90-day band. This is the
+    FX source of truth — the assumption-ledger FX rows (A5/A6) and the synth bind
+    to it instead of a hardcoded 3.45 that contradicted the actual BOI rate the
+    agents computed at (~2.81). Pending (never the magic number) when no rate is
+    cached.
+    """
+    from datetime import date, timedelta
+
+    key = "fx.usd_nis"
+    loc = "boi USD/NIS daily representative rate (FxRate cache, walkback)"
+    try:
+        # Cache-only read (warmed by the FX refresh job) — no live network in
+        # the resolver hot path; pending if the cache is cold.
+        from argosy.services.fx import cache as _fxcache
+        today = date.today()
+        rate = float(_fxcache.find_walkback(session, today, "USD", max_days=10))
+        from argosy.state.models import FxRate
+        since = today - timedelta(days=90)
+        band_rows = session.execute(
+            select(FxRate.rate).where(
+                FxRate.currency == "USD", FxRate.date >= since,
+            )
+        ).scalars().all()
+        band = [float(x) for x in band_rows] if band_rows else [rate]
+        lo, hi = min(band), max(band)
+        values[key] = ResolvedValue(
+            key=key, value=rate, unit="nis_per_usd", status="resolved",
+            source_locator=loc, agent_report_id=None, confidence="HIGH",
+            formula=f"Bank of Israel representative USD/NIS; 90-day band {lo:.3f}–{hi:.3f}",
+        )
+        values["fx.usd_nis_band_low"] = ResolvedValue(
+            key="fx.usd_nis_band_low", value=lo, unit="nis_per_usd", status="resolved",
+            source_locator="boi USD/NIS 90-day low", agent_report_id=None, confidence="HIGH",
+        )
+        values["fx.usd_nis_band_high"] = ResolvedValue(
+            key="fx.usd_nis_band_high", value=hi, unit="nis_per_usd", status="resolved",
+            source_locator="boi USD/NIS 90-day high", agent_report_id=None, confidence="HIGH",
+        )
+    except Exception as exc:  # noqa: BLE001 — no cached rate → pending, never 3.45
+        log.warning("plan_numeric_resolver.fx_boi_unavailable err=%s", exc)
+        values[key] = ResolvedValue.pending(key, "nis_per_usd", loc)
 
 
 def _apply_us_situs_estate(
@@ -768,6 +814,7 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("savings.annual_net_nis", "Annual net savings (RSU, conservative floor)"),
     ("concentration.nvda_cap_pct", "NVDA concentration cap"),
     ("concentration.nvda_current_pct", "NVDA current weight"),
+    ("fx.usd_nis", "USD/NIS (BOI daily representative rate)"),
 )
 
 PENDING_LABEL = "[derivation pending]"
