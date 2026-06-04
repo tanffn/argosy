@@ -675,6 +675,53 @@ def run_synthesis(
     if _appendices:
         _long_horizon_md = _long_horizon_md.rstrip() + "\n\n" + _appendices
 
+    _medium_horizon_md = _pkg._horizon_md_user(output.medium)
+    _short_horizon_md = _pkg._horizon_md_user(output.short)
+
+    # #24 PRIMARY gate (codex-recommended): scrub the user-facing markdown
+    # against the deterministic resolver manifest BEFORE persist. Any headline
+    # ₪/percent/age number that traces to no resolved value is replaced with
+    # `[derivation pending]` — fail-closed, so a synth-fabricated/stale figure
+    # (e.g. a carried-forward ₪21M) never reaches the draft body. The /accept
+    # checker remains the backstop. Best-effort: a resolver failure logs and
+    # leaves the markdown unscrubbed (the /accept gate still guards promotion).
+    _scrub_log: list[str] = []
+    try:
+        from argosy.quality.numeric_source_gate import (
+            scrub_headline_numeric_source,
+        )
+        from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+        _drun_int = _decision_run_int(decision_run_id)
+        if _drun_int is not None:
+            _manifest = resolve_plan_numbers(
+                session, user_id=user_id, decision_run_id=_drun_int
+            )
+            _scrubbed, _scrub_log = scrub_headline_numeric_source(
+                {
+                    "long": _long_horizon_md,
+                    "medium": _medium_horizon_md,
+                    "short": _short_horizon_md,
+                },
+                _manifest,
+            )
+            _long_horizon_md = _scrubbed["long"]
+            _medium_horizon_md = _scrubbed["medium"]
+            _short_horizon_md = _scrubbed["short"]
+            if _scrub_log:
+                log.warning(
+                    "plan_synthesis.headline_numbers_scrubbed",
+                    user_id=user_id,
+                    decision_run_id=decision_run_id,
+                    count=len(_scrub_log),
+                    tokens=_scrub_log[:20],
+                )
+    except Exception as exc:  # noqa: BLE001 — scrub is defense-in-depth
+        log.warning(
+            "plan_synthesis.headline_scrub_failed",
+            user_id=user_id, error=str(exc),
+        )
+
     draft = PlanVersion(
         user_id=user_id,
         role="draft",
@@ -698,8 +745,8 @@ def run_synthesis(
         # (assumption ledger + section-by-section evidence + fleet
         # receipts) assembled just above.
         horizon_long_md=_long_horizon_md,
-        horizon_medium_md=_pkg._horizon_md_user(output.medium),
-        horizon_short_md=_pkg._horizon_md_user(output.short),
+        horizon_medium_md=_medium_horizon_md,
+        horizon_short_md=_short_horizon_md,
         horizon_long_md_audit=_pkg._horizon_md_audit(output.long),
         horizon_medium_md_audit=_pkg._horizon_md_audit(output.medium),
         horizon_short_md_audit=_pkg._horizon_md_audit(output.short),
@@ -2470,6 +2517,25 @@ def _build_source_reliability_preamble(
     return "\n".join(lines) + "\n\n"
 
 
+def _decision_run_int(decision_run_id) -> int | None:
+    """Extract the integer decision_run PK from the orchestrator's token.
+
+    The orchestrator threads ``decision_run_id`` as the string audit token
+    ``"plan-synth-<int>"`` through most helpers, but the resolver keys on the
+    int. Tolerate either form; return None when neither parses (caller
+    degrades gracefully).
+    """
+    if isinstance(decision_run_id, int):
+        return decision_run_id
+    if isinstance(decision_run_id, str):
+        tail = decision_run_id.rsplit("-", 1)[-1]
+        try:
+            return int(tail)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
 def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
                              analyst_reports_text, debate_outcomes_text,
                              portfolio_summary, fills_summary,
@@ -2529,6 +2595,31 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
         reliability_preamble + analyst_reports_text
     )
 
+    # Feed the deterministic headline numbers INTO the synth prompt so it
+    # consumes them rather than authoring its own (the #1 reject). The
+    # phase-1 analyst reports are already persisted under this run's
+    # decision_id by now, so the resolver can derive the manifest. Best-
+    # effort: a resolver failure leaves the block empty and the synth falls
+    # back to its DERIVATION-OWNERSHIP prose rule + the post-synth scrub gate.
+    resolved_numbers_block = ""
+    try:
+        from argosy.services.plan_numeric_resolver import (
+            render_numbers_for_synth,
+            resolve_plan_numbers,
+        )
+
+        _drun_int = _decision_run_int(decision_run_id)
+        if _drun_int is not None:
+            _resolved = resolve_plan_numbers(
+                session, user_id=user_id, decision_run_id=_drun_int
+            )
+            resolved_numbers_block = render_numbers_for_synth(_resolved)
+    except Exception as exc:  # noqa: BLE001 — synth must not break on this
+        log.warning(
+            "plan_synthesis.resolved_numbers_block_failed",
+            user_id=user_id, error=str(exc),
+        )
+
     result = agent.run_sync(
         baseline_distillate_md=baseline_md,
         prior_current_md=prior_md,
@@ -2540,6 +2631,7 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
         speculation_cap_concurrent=speculation_cap_concurrent,
         prior_items_index=prior_items_index,
         user_directive=guidance,
+        resolved_numbers_block=resolved_numbers_block,
         decision_id=decision_run_id,
     )
     # W1.C-v2: single-agent phase still uses the uniform bulk-persist

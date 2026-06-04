@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from argosy.quality import check_headline_numeric_source
 from argosy.quality.gate_types import GateCheck
+from argosy.quality.numeric_source_gate import (
+    PENDING_LABEL,
+    scrub_headline_numeric_source,
+)
 from argosy.services.plan_numeric_resolver import (
     ResolvedPlanNumbers,
     ResolvedValue,
@@ -185,3 +189,60 @@ def test_multiple_horizons_locator_reports_horizon():
     violations = check_headline_numeric_source(md, resolved)
     assert len(violations) == 1
     assert "horizon=short" in (violations[0].locator or "")
+
+
+# --------------------------------------------------------------------------
+# (e) PRIMARY scrub — fabricated headline numbers replaced with the pending
+#     literal BEFORE persist (codex-recommended #24 primary gate).
+# --------------------------------------------------------------------------
+
+def test_scrub_replaces_fabricated_fi_target():
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": "- Derived FI target: **₪21.00M** sustains spend."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    assert PENDING_LABEL in scrubbed["long"]
+    assert "₪21.00M" not in scrubbed["long"]
+    assert len(log) == 1
+    assert "₪21.00M" in log[0]
+
+
+def test_scrub_keeps_matching_number():
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": "- Derived FI target: **₪10.39M** sustains spend."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    assert scrubbed["long"] == md["long"]
+    assert log == []
+
+
+def test_scrub_mixed_line_replaces_only_fabricated():
+    # FI target matches (10.39M); the carried-forward 21M does not.
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": "FI target is **₪10.39M**, up from a prior ₪21.00M."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    assert "₪10.39M" in scrubbed["long"]
+    assert "₪21.00M" not in scrubbed["long"]
+    assert scrubbed["long"].count(PENDING_LABEL) == 1
+
+
+def test_scrub_leaves_non_headline_lines_untouched():
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": "Section 21.5 of the appendix lists ₪999,999 in fees."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    # No headline keyword on the line → not scanned, not scrubbed.
+    assert scrubbed["long"] == md["long"]
+    assert log == []
+
+
+def test_scrub_pending_literal_not_double_scrubbed():
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": f"- Derived FI target: {PENDING_LABEL}."}
+    scrubbed, log = scrub_headline_numeric_source(md, resolved)
+    assert scrubbed["long"] == md["long"]
+    assert log == []
+
+
+def test_scrub_preserves_trailing_newline():
+    resolved = _resolved(**{"retirement.fi_target_nis": 10_390_000.0})
+    md = {"long": "FI target **₪21.00M**.\n"}
+    scrubbed, _ = scrub_headline_numeric_source(md, resolved)
+    assert scrubbed["long"].endswith("\n")

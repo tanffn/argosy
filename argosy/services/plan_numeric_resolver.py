@@ -650,8 +650,81 @@ def _apply_fi_methodology(
     )
 
 
+# ---------------------------------------------------------------------------
+# Synth-prompt rendering — feed the derived headline numbers INTO the
+# synthesizer so it consumes them rather than authoring its own.
+# ---------------------------------------------------------------------------
+
+# Display order + human labels for the headline numbers the synthesizer is
+# allowed to state. Pending keys still render (as [derivation pending]) so the
+# model knows the figure exists but has no approved value.
+_SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
+    ("portfolio.net_worth_nis", "Net worth"),
+    ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
+    ("retirement.liquidity_reserve_nis", "Liquidity reserve (finite liabilities, held separately)"),
+    ("spend.fi_basis_nis", "FI spend basis (permanent-equivalent, real)"),
+    ("retirement.required_real_yield_pct", "Required real yield (perpetual safe-withdrawal rate)"),
+    ("retirement.return_assumption_pct", "Expected real return (trajectory only)"),
+    ("retirement.fi_age", "Earliest feasible FI age"),
+    ("spend.annual_t12_nis", "Current tracked spend (T12)"),
+    ("savings.annual_net_nis", "Annual net savings (RSU, conservative floor)"),
+    ("concentration.nvda_cap_pct", "NVDA concentration cap"),
+    ("concentration.nvda_current_pct", "NVDA current weight"),
+)
+
+PENDING_LABEL = "[derivation pending]"
+
+
+def _display_value(rv: ResolvedValue) -> str:
+    """Render one resolved value for the synth prompt (raw + readable form)."""
+    if rv.status != "resolved" or rv.value is None:
+        return PENDING_LABEL
+    v = float(rv.value)
+    if rv.unit == "nis":
+        if abs(v) >= 1_000_000:
+            return f"₪{v:,.0f} (≈₪{v / 1e6:.2f}M)"
+        return f"₪{v:,.0f}"
+    if rv.unit == "pct":
+        return f"{v * 100:.1f}%"
+    if rv.unit == "age":
+        return f"age {v:.1f}"
+    return f"{v:,.2f}"
+
+
+def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
+    """Render the authoritative derived-numbers block for the synth prompt.
+
+    The synthesizer is FORBIDDEN from inventing headline figures; this block
+    hands it the deterministically-derived values it MUST consume verbatim,
+    and tells it to write ``[derivation pending]`` for any unresolved figure
+    instead of guessing (the exact failure that let a stale ₪21M reach a
+    draft).
+    """
+    lines: list[str] = [
+        "These are the ONLY approved values for the plan's headline figures. "
+        "They are DERIVED deterministically from analyst outputs + a "
+        "reviewed methodology and are the single source of truth. You MUST "
+        "use these EXACT values for any headline claim (net worth, FI target, "
+        "spend, yield, retirement age, savings, NVDA cap/weight). Do NOT round "
+        "to a marketing figure, do NOT invent an alternative, and do NOT carry "
+        "forward any prior/stale figure from an earlier draft or the baseline "
+        "(e.g. a ₪21M FI target). For any line marked "
+        f"`{PENDING_LABEL}`, write that literal string instead of a number.",
+        "",
+    ]
+    for key, label in _SYNTH_DISPLAY:
+        rv = resolved.get(key)
+        disp = _display_value(rv)
+        src = rv.source_locator if rv.status == "resolved" else "no approved source"
+        conf = f"; conf {rv.confidence}" if rv.confidence else ""
+        lines.append(f"  - {label}: {disp}   [{src}{conf}]")
+    return "\n".join(lines)
+
+
 __all__ = [
     "ResolvedValue",
     "ResolvedPlanNumbers",
     "resolve_plan_numbers",
+    "render_numbers_for_synth",
+    "PENDING_LABEL",
 ]

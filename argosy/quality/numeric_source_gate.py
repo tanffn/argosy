@@ -296,4 +296,130 @@ def _scan_age(
     return out
 
 
-__all__ = ["check_headline_numeric_source", "PENDING_LABEL"]
+# ---------------------------------------------------------------------------
+# Primary scrub — codex's recommended #24 PRIMARY gate. The /accept-time
+# checker above only DETECTS; this mutates the user-facing markdown BEFORE
+# persist so a synth-fabricated headline number never reaches the draft body.
+# Any headline token that traces to no resolved value of its class is replaced
+# with the [derivation pending] literal (fail-closed to the sanctioned escape
+# hatch). The deterministic resolver remains the single source of truth.
+# ---------------------------------------------------------------------------
+
+
+def _resolved_by_unit(
+    resolved: "ResolvedPlanNumbers",
+) -> dict[str, list[tuple[str, float]]]:
+    out: dict[str, list[tuple[str, float]]] = {"nis": [], "pct": [], "age": []}
+    for rv in resolved.values.values():
+        if rv.status != "resolved" or rv.value is None:
+            continue
+        bucket = out.get(rv.unit)
+        if bucket is not None:
+            bucket.append((rv.key, float(rv.value)))
+    return out
+
+
+def _token_ok_nis(num: float, suffix: str | None, resolved: list[tuple[str, float]]) -> bool:
+    cands = _nis_candidates(num, suffix)
+    return any(_matches(c, rv, "nis") for c in cands for _, rv in resolved)
+
+
+def _token_ok_pct(num: float, resolved: list[tuple[str, float]]) -> bool:
+    return any(
+        _matches(num, rv * 100.0, "pct") or _matches(num, rv, "pct")
+        for _, rv in resolved
+    )
+
+
+def _token_ok_age(num: float, resolved: list[tuple[str, float]]) -> bool:
+    return any(_matches(num, rv, "age") for _, rv in resolved)
+
+
+def _scrub_line(line: str, by_unit: dict[str, list[tuple[str, float]]]) -> tuple[str, list[str]]:
+    """Replace every fabricated headline token in ``line`` with the pending
+    literal. Returns ``(scrubbed_line, [scrubbed_token, ...])``.
+
+    Spans are collected across all three token classes and applied
+    right-to-left so earlier offsets stay valid during replacement.
+    """
+    spans: list[tuple[int, int, str]] = []  # (start, end, original_token)
+    for m in _NIS_TOKEN.finditer(line):
+        num = _parse_num(m.group("num"))
+        if num is None:
+            continue
+        if not _token_ok_nis(num, m.group("suffix"), by_unit["nis"]):
+            spans.append((m.start(), m.end(), m.group(0)))
+    for m in _PCT_TOKEN.finditer(line):
+        num = _parse_num(m.group("num"))
+        if num is None:
+            continue
+        if not _token_ok_pct(num, by_unit["pct"]):
+            spans.append((m.start(), m.end(), m.group(0)))
+    for m in _AGE_TOKEN.finditer(line):
+        num = _parse_num(m.group("num"))
+        if num is None:
+            continue
+        if not _token_ok_age(num, by_unit["age"]):
+            spans.append((m.start(), m.end(), m.group(0)))
+
+    if not spans:
+        return line, []
+    # Apply right-to-left; drop overlaps (a later class re-matching the same
+    # offset) by keeping the first span at each start.
+    spans.sort(key=lambda s: s[0])
+    deduped: list[tuple[int, int, str]] = []
+    last_end = -1
+    for start, end, tok in spans:
+        if start >= last_end:
+            deduped.append((start, end, tok))
+            last_end = end
+    scrubbed = line
+    removed: list[str] = []
+    for start, end, tok in reversed(deduped):
+        scrubbed = scrubbed[:start] + PENDING_LABEL + scrubbed[end:]
+        removed.append(tok.strip())
+    removed.reverse()
+    return scrubbed, removed
+
+
+def scrub_headline_numeric_source(
+    horizon_text: dict[str, str],
+    resolved: "ResolvedPlanNumbers",
+) -> tuple[dict[str, str], list[str]]:
+    """Scrub fabricated headline numbers out of the user-facing markdown.
+
+    For every headline-context line, any ₪/percent/age token that traces to
+    no resolved value of its class is replaced with ``[derivation pending]``.
+    Returns ``(scrubbed_horizon_text, scrub_log)`` where ``scrub_log`` is a
+    list of ``"horizon line=N token=`…`"`` strings for audit. Non-headline
+    lines and the pending literal itself are never touched.
+    """
+    by_unit = _resolved_by_unit(resolved)
+    scrubbed_text: dict[str, str] = {}
+    scrub_log: list[str] = []
+    for horizon_name, text in horizon_text.items():
+        if not text:
+            scrubbed_text[horizon_name] = text
+            continue
+        out_lines: list[str] = []
+        for line_no, raw_line in enumerate(text.splitlines(), start=1):
+            if not _is_headline_line(raw_line):
+                out_lines.append(raw_line)
+                continue
+            new_line, removed = _scrub_line(raw_line, by_unit)
+            out_lines.append(new_line)
+            for tok in removed:
+                scrub_log.append(f"{horizon_name} line={line_no} token=`{tok}`")
+        # Preserve a trailing newline if the original had one.
+        joined = "\n".join(out_lines)
+        if text.endswith("\n"):
+            joined += "\n"
+        scrubbed_text[horizon_name] = joined
+    return scrubbed_text, scrub_log
+
+
+__all__ = [
+    "check_headline_numeric_source",
+    "scrub_headline_numeric_source",
+    "PENDING_LABEL",
+]

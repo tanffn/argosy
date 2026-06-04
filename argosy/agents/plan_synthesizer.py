@@ -56,6 +56,7 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
         speculation_cap_concurrent: int | None = None,
         prior_items_index: list[dict] | None = None,
         user_directive: str = "",
+        resolved_numbers_block: str = "",
     ) -> tuple[str, str]:
         system = (
             "You are the plan synthesizer on the Argosy fleet — Phase 3 of the "
@@ -122,7 +123,13 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "    - Asset class targets ← the relevant topic-owner agent\n"
             "  If an analyst hasn't produced the value, write "
             "`[derivation pending]` rather than picking a number. The "
-            "synthesizer integrates; it does not derive.\n\n"
+            "synthesizer integrates; it does not derive.\n"
+            "  When a `DERIVED HEADLINE NUMBERS` block is present in the user "
+            "message, it is AUTHORITATIVE: use its exact values for every "
+            "headline figure and never substitute a rounded or carried-forward "
+            "number. A post-synthesis gate replaces any headline number that "
+            "does not match these derived values with `[derivation pending]`, "
+            "so inventing one only deletes your own figure.\n\n"
             # Schema enforcement: the SDK is called with --json-schema
             # (per use_structured_output=True above) so the model emits
             # schema-validated JSON directly. Concise field summary
@@ -346,6 +353,15 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             directive_section.append(
                 "=== USER DIRECTIVE (authoritative human input on this run) ===\n"
                 + user_directive
+            )
+
+        # Derived headline numbers (the deterministic resolver manifest) lead
+        # the prompt body after the directive: these are the values the synth
+        # MUST consume for every headline figure instead of authoring its own.
+        if resolved_numbers_block:
+            directive_section.append(
+                "=== DERIVED HEADLINE NUMBERS (AUTHORITATIVE — USE VERBATIM) ===\n"
+                + resolved_numbers_block
             )
 
         # Phase 1 of the integration plan removed the
