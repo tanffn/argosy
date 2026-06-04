@@ -202,7 +202,13 @@ class ConcentrationAnalystOutput(BaseModel):
     synthesizer must write '[derivation pending]' instead of guessing.
     """
 
-    model_config = ConfigDict(extra="forbid", validate_default=True)
+    # extra="ignore" (was "forbid"): the LLM intermittently emits useful but
+    # unmodeled fields (breaches / deltas_vs_target / nvda_pace / summary).
+    # Forbidding them failed the WHOLE validation — so the agent's own
+    # _parse_output AND the resolver dropped the (present + valid) nvda_cap_pct
+    # to pending. Ignoring extras keeps the modeled fields and self-heals the
+    # variance, matching the equity_comp_analyst hardening.
+    model_config = ConfigDict(extra="ignore", validate_default=True)
 
     current_nvda_pct: float = Field(
         ge=0.0,
