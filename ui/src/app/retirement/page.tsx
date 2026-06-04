@@ -22,6 +22,7 @@ import { RebalancingAlertsCard } from "@/components/retirement/RebalancingAlerts
 import { RuinProbabilityHero } from "@/components/retirement/RuinProbabilityHero";
 import { SafetyGatesPanel } from "@/components/retirement/SafetyGatesPanel";
 import { ScenarioGridCard } from "@/components/retirement/ScenarioGridCard";
+import { DerivedInputsProvenancePanel } from "@/components/retirement/DerivedInputsProvenancePanel";
 import { SigmaCalibrationCard } from "@/components/retirement/SigmaCalibrationCard";
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
 import { StochasticFxCard } from "@/components/retirement/StochasticFxCard";
@@ -400,6 +401,10 @@ export default function RetirementPage() {
           <DrilldownSection title="Sources" badge="all">
             <SourcesPanel filterIds={null} />
           </DrilldownSection>
+
+          <div className="mt-4">
+            <DerivedInputsProvenancePanel data={derived} />
+          </div>
         </section>
       </div>
     </div>
