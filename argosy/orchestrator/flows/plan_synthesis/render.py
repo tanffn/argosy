@@ -399,14 +399,18 @@ _ASSUMPTION_LEDGER_V1: list[dict[str, str]] = [
         "affects": "Nominal-to-real conversion across all horizons",
     },
     {
+        # Value/source are placeholders — overwritten from the BOI-resolved
+        # fx.usd_nis in _ledger_rows_with_manifest. NEVER a hardcoded rate: a
+        # cold cache renders [derivation pending], not a stale 3.45 (codex FX
+        # final review).
         "id": "A5", "name": "FX USD/NIS spot (planning anchor)",
-        "value": "3.45 NIS/USD", "source": "fx_analyst (pinned 2026-06)",
+        "value": "[derivation pending]", "source": "Bank of Israel daily representative rate",
         "year": "2026", "confidence": "MEDIUM",
         "affects": "USD-denominated holdings translation; RSU net",
     },
     {
         "id": "A6", "name": "FX USD/NIS planning band (low → high)",
-        "value": "3.20 → 3.80", "source": "fx_analyst range",
+        "value": "[derivation pending]", "source": "BOI USD/NIS 90-day low → high",
         "year": "2026", "confidence": "MEDIUM",
         "affects": "FX strategy block; RSU stream sensitivity",
     },

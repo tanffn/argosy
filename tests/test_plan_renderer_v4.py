@@ -530,3 +530,13 @@ def test_fmt_target_value_units():
     assert _fmt_target_value(_t(15.0, "pct_of_net_worth")) == "15% of net worth"
     assert _fmt_target_value(_t(350000, "nis")) == "₪350,000"
     assert _fmt_target_value(_t(12, "months")) == "12 months"
+
+
+def test_ledger_fx_never_falls_back_to_hardcoded_345():
+    """Cold cache / no manifest must NOT emit the hardcoded 3.45 / 3.20→3.80 —
+    A5/A6 render pending instead (codex FX final review BLOCKER)."""
+    from argosy.orchestrator.flows.plan_synthesis.render import _ledger_rows_with_manifest
+    rows = _ledger_rows_with_manifest(None)  # no resolver manifest at all
+    by_id = {r["id"]: r for r in rows}
+    assert "3.45" not in by_id["A5"]["value"], f"A5 leaked 3.45: {by_id['A5']['value']}"
+    assert "3.20" not in by_id["A6"]["value"] and "3.80" not in by_id["A6"]["value"]
