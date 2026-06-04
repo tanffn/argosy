@@ -130,6 +130,19 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "number. A post-synthesis gate replaces any headline number that "
             "does not match these derived values with `[derivation pending]`, "
             "so inventing one only deletes your own figure.\n\n"
+            "FI FRAMING DISCIPLINE (gate-checked):\n"
+            "  - NEVER restate a retired/superseded numeric value, even to say "
+            "it is being dropped (no \"down from ₪21M\", \"was ₪22M\", "
+            "\"replaces the ₪11.54M base\"). Reference a dropped item by its "
+            "item_id/label only — the old number must not appear in prose.\n"
+            "  - The FI capital target has TWO levels; keep them distinct and "
+            "never conflate: the PERPETUITY BASE (funds permanent spend at the "
+            "SWR) and the TOTAL CAPITAL TARGET (= perpetuity base + the "
+            "separate finite-liability reserve). Do NOT call the perpetuity "
+            "base 'the FI target crossed'. State honestly which level current "
+            "net worth covers: if net worth exceeds the perpetuity base but is "
+            "below the total target, say 'perpetuity base funded; total capital "
+            "target not yet reached (short by ₪X)', never 'past FI'.\n\n"
             # Schema enforcement: the SDK is called with --json-schema
             # (per use_structured_output=True above) so the model emits
             # schema-validated JSON directly. Concise field summary
