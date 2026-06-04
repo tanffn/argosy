@@ -1169,6 +1169,83 @@ def render_number_derivations_appendix(
         )
         lines.append("")
 
+    # --- Currency-mismatch / FX risk (assets ~USD, spend NIS). --------------
+    # The household holds USD assets but spends in NIS, so a strengthening
+    # shekel erodes NIS purchasing power. Surface the split, sensitivity,
+    # break-even FX, and a scenario band rather than burying FX in one anchor.
+    fx_rv = resolved.get("fx.usd_nis") if resolved is not None else None
+    fx_spot = (
+        float(fx_rv.value)
+        if (fx_rv is not None and fx_rv.status == "resolved" and fx_rv.value is not None)
+        else None
+    )
+    usd_assets_usd = nis_assets_nis = None
+    holdings_as_of = None
+    if session is not None and fx_spot:
+        try:
+            from sqlalchemy import select
+            from argosy.state.models import PortfolioSnapshotRow
+            snap = session.execute(
+                select(PortfolioSnapshotRow)
+                .where(PortfolioSnapshotRow.user_id == user_id)
+                .order_by(PortfolioSnapshotRow.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if snap is not None:
+                holdings_as_of = getattr(snap, "snapshot_date", None)
+                positions = json.loads(snap.positions_json or "[]")
+                snap_fx = float(snap.fx_usd_nis or fx_spot)
+                usd_assets_usd = sum(
+                    float(p.get("usd_value_k") or 0.0) * 1000.0
+                    for p in positions if (p.get("currency") or "").upper() == "USD"
+                )
+                # NIS-origin positions: recover native NIS (don't re-translate
+                # as USD exposure — codex FX review).
+                nis_assets_nis = sum(
+                    float(p.get("usd_value_k") or 0.0) * 1000.0 * snap_fx
+                    for p in positions if (p.get("currency") or "").upper() != "USD"
+                )
+        except Exception:  # noqa: BLE001 — FX-risk block is best-effort
+            usd_assets_usd = None
+
+    if fx_spot and usd_assets_usd:
+        nw_now = usd_assets_usd * fx_spot + (nis_assets_nis or 0.0)
+        total_assets = usd_assets_usd * fx_spot + (nis_assets_nis or 0.0)
+        usd_share = (usd_assets_usd * fx_spot) / total_assets if total_assets else 0.0
+        sens_per_010 = usd_assets_usd * 0.10  # ₪ per 0.10 USD/NIS move
+        fi_total = m.fi_total_capital_nis
+        break_even = (fi_total - (nis_assets_nis or 0.0)) / usd_assets_usd if usd_assets_usd else 0.0
+        lines.append("### Currency-mismatch / FX risk")
+        lines.append("")
+        as_of_txt = holdings_as_of.isoformat() if holdings_as_of else "latest snapshot"
+        lines.append(
+            f"Assets are **{usd_share*100:.0f}% USD / {(1-usd_share)*100:.0f}% NIS** but spend is "
+            f"100% NIS — a strengthening shekel erodes NIS purchasing power. FX = "
+            f"**{fx_spot:.3f}** (BOI); holdings as of **{as_of_txt}** (provisional — refresh "
+            "holdings before a GO/NO-GO)."
+        )
+        lines.append("")
+        lines.append(
+            f"- **Net worth @ current FX** = ${usd_assets_usd/1e6:.2f}M USD × {fx_spot:.3f} "
+            f"+ {_n(nis_assets_nis or 0.0)} NIS = **{_n(nw_now)}** (vs FI total {_n(fi_total)} → "
+            f"gap {_n(nw_now - fi_total)})."
+        )
+        lines.append(
+            f"- **FX sensitivity**: every 0.10 move in USD/NIS = **{_n(sens_per_010)}** of net worth."
+        )
+        lines.append(
+            f"- **Break-even FX** to reach the {_n(fi_total)} total target on current holdings: "
+            f"**{break_even:.3f} USD/NIS**."
+        )
+        lines.append("")
+        lines.append("| FX scenario | USD/NIS | Net worth | FI gap |")
+        lines.append("|---|---:|---:|---:|")
+        for label, mult in (("−10% (shekel strengthens)", 0.90), ("base", 1.0), ("+10% (shekel weakens)", 1.10)):
+            fx_s = fx_spot * mult
+            nw_s = usd_assets_usd * fx_s + (nis_assets_nis or 0.0)
+            lines.append(f"| {label} | {fx_s:.3f} | {_n(nw_s)} | {_n(nw_s - fi_total)} |")
+        lines.append("")
+
     # --- Other headline numbers from the resolver (formula + source). -------
     if resolved is not None:
         rows: list[tuple[str, str]] = []
