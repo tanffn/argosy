@@ -141,6 +141,7 @@ from argosy.orchestrator.flows.plan_synthesis.render import (
     render_fleet_receipts_appendix,
     render_plan_appendices,
     render_section_evidence_appendix,
+    render_trajectory_reconciliation_appendix,
 )
 
 __all__ = [
@@ -188,6 +189,7 @@ __all__ = [
     "render_fleet_receipts_appendix",
     "render_plan_appendices",
     "render_section_evidence_appendix",
+    "render_trajectory_reconciliation_appendix",
     # Agent classes (monkeypatched in phase-1 test)
     "ConcentrationAnalystAgent",
     "FxAnalystAgent",
