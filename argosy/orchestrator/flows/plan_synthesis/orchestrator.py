@@ -232,7 +232,7 @@ def run_synthesis(
     # were already going to charge).
     import os as _os
 
-    cost_cap_usd = float(_os.environ.get("ARGOSY_SYNTHESIS_COST_CAP_USD", "10.0"))
+    cost_cap_usd = float(_os.environ.get("ARGOSY_SYNTHESIS_COST_CAP_USD", "20.0"))
 
     # T2.3 — resume support. When `resume_from_phase` > 1, look up any
     # decision_phases rows already persisted for this decision_run (from
