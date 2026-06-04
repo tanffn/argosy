@@ -137,12 +137,20 @@ def compute_derived_inputs(session, *, user_id: str, today: date | None = None) 
         if age is not None else DerivedField.pending("age", "identity_yaml.user_date_of_birth"))
     put("retirement_age", fld_from_rv("retirement.fi_age", "age"))
 
-    # FX spot — derive from identity_yaml.fx_rate.usd_nis (kills the hardcoded
-    # 3.4 the StochasticFxCard fell back to). Pending, never faked, if absent.
-    fx_rate = idy.get("fx_rate") if isinstance(idy.get("fx_rate"), dict) else {}
-    fx = _f(fx_rate.get("usd_nis"))
-    put("fx_usd_nis", DerivedField(fx, "fx", "identity_yaml.fx_rate.usd_nis", "HIGH")
-        if fx else DerivedField.pending("fx", "identity_yaml.fx_rate.usd_nis"))
+    # FX spot — derive from the same resolver the cashflow engine uses (latest
+    # snapshot's totals_json, falling back to identity_yaml.fx_rate.usd_nis),
+    # killing the hardcoded 3.4 the StochasticFxCard fell back to.
+    fx = None
+    fx_src = "portfolio_snapshot.totals_json.fx_usd_nis / identity_yaml.fx_rate.usd_nis"
+    try:
+        from argosy.services.cashflow_projection import _latest_snapshot, _resolve_fx_usd_nis
+        snap = _latest_snapshot(session, user_id)
+        fx_val, _ = _resolve_fx_usd_nis(snapshot=snap, user_ctx=idy)
+        fx = float(fx_val) if fx_val else None
+    except Exception:  # noqa: BLE001
+        fx = _f((idy.get("fx_rate") or {}).get("usd_nis")) if isinstance(idy.get("fx_rate"), dict) else None
+    put("fx_usd_nis", DerivedField(fx, "fx", fx_src, "HIGH")
+        if fx else DerivedField.pending("fx", fx_src))
 
     # Mekadem (annuity divisor) — the documented planning default until a
     # fund-specific value is provided. An auditable default, not a bare magic
