@@ -47,7 +47,7 @@ FULL, CGT = 10_992_315.0, 855_092.0
 def _plan(**over):
     a = RetirementAssumptions(n_paths=500, max_age=58, seed=42, **over)
     reserve_raw = 1_450_000.0
-    reserve_pv = _reserve_pv(reserve_raw, a.mu_real_typical, a.reserve_avg_liability_years)
+    reserve_pv = _reserve_pv(reserve_raw, a.reserve_discount_real, a.reserve_avg_liability_years)
     deployable = FULL - reserve_pv - CGT
     return compute_retirement_plan(
         household=_household(), pensions=_pensions(), deployable_nis=deployable,
@@ -60,9 +60,9 @@ def _plan(**over):
 
 
 def test_reserve_pv_discounts_below_raw():
-    pv = _reserve_pv(1_450_000.0, 0.05, 5.0)
-    assert pv == pytest.approx(1_450_000.0 / (1.05 ** 5), rel=1e-9)
-    assert 1_050_000.0 < pv < 1_250_000.0  # materially below the raw 1.45M, not zero
+    pv = _reserve_pv(1_450_000.0, 0.02, 5.0)  # safe real rate, not equity return
+    assert pv == pytest.approx(1_450_000.0 / (1.02 ** 5), rel=1e-9)
+    assert 1_250_000.0 < pv < 1_400_000.0  # below raw 1.45M but only modestly (safe discount)
 
 
 def test_deployable_accounting():

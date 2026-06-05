@@ -6,22 +6,24 @@ under two tracks, recomputed live from holdings x BOI FX (no magic numbers):
 
   * **Drawdown-to-95** — earliest age the base Monte Carlo clears ``bar_drawdown``
     (default 90%) solvency to 95. "Retire ASAP; spend principal if needed."
-  * **Capital-preservation** — earliest age that clears ``bar_preservation``
-    (default 99%) AND leaves median *real* terminal wealth >= the real portfolio
-    at retirement. "Live off it forever; leave the principal to the kids."
+  * **Capital-preservation** — earliest age at which the WORST-10% path still
+    leaves real terminal wealth >= today's real deployable principal (a p10
+    bequest floor, not a coin-flip median). "Live off it forever; leave the
+    principal to the kids even in a bad market."
 
 Both run on the SAME deconcentrated, reserve-netted basis so they reconcile, and
 across three market regimes (bull / typical / bear). The result also carries the
 per-age estate frontier (median + worst-10% bequest), the spend level that makes
-retire-now safe, and an FX-stress what-if band (USD assets vs NIS spend).
+retire-now safe, a stress-spend sensitivity, and an FX-stress what-if band.
 
-Assumptions are the post-audit corrected set (codex assumption audit 2026-06-05):
-5.0% real central return (4.5% conservative case), 10% interim withdrawal tax
-(basis-aware drag, not the full 15% lifetime), reserve held at the PV of its
-scheduled liabilities (not amputated upfront), and a permanent-spend basis split
-into a confidence-trimmed CENTRAL (HIGH/MEDIUM components) and a STRESS (all
-components, incl. the LOW-confidence healthcare/home heuristics). Every figure
-carries a source; nothing is fabricated.
+Assumptions are the post-audit corrected set (codex assumption audit + code
+review 2026-06-05): 5.0% real central return (4.5% conservative case), 10%
+interim withdrawal tax (basis-aware drag, not the full 15% lifetime), the
+finite-liability reserve held at the PV of its scheduled liabilities discounted
+at a SAFE real rate (earmarked near-term money isn't invested at equity risk),
+and a permanent-spend basis split into CENTRAL (real needs incl. healthcare) and
+STRESS (adds discretionary home upgrades). Estates are read at age 95 (not the
+end of the >95 horizon). Every figure carries a source; nothing is fabricated.
 
 ``compute_retirement_plan`` is the pure, DB-free core (hand inputs → plan);
 ``build_retirement_plan`` is the DB adapter that resolves the inputs first.
@@ -51,7 +53,7 @@ from argosy.services.retirement.scenario_mc import (
 )
 
 
-# --- Corrected assumption set (auditable; post codex assumption audit). ------
+# --- Corrected assumption set (auditable; post codex audit + code review). ----
 @dataclass(frozen=True)
 class RetirementAssumptions:
     mu_real_typical: float = 0.050      # central; the fi_methodology DOCUMENTED return
@@ -63,15 +65,16 @@ class RetirementAssumptions:
     bear_decade_years: int = 10
     sigma_diversified: float = SIGMA_DIVERSIFIED
     deconcentration_taper_years: int = 3
-    # PV of the finite-liability reserve: discount the raw reserve at the real
-    # return over an average liability horizon (approximate pending mortgage-term
-    # / education-schedule intake — better than amputating the full sum at t=0).
+    # PV of the finite-liability reserve: discount the raw reserve over an
+    # average liability horizon at a SAFE real rate (earmarked near-term money is
+    # held conservatively, NOT at the equity return). ~2% ≈ recent 5y TIPS real.
     reserve_avg_liability_years: float = 5.0
+    reserve_discount_real: float = 0.02
     bar_drawdown: float = 0.90
     bar_preservation: float = 0.99
     fx_stress_pcts: tuple[float, ...] = (0.0, 0.10, 0.20)
     inflation: float = DEFAULT_INFLATION_ANNUAL
-    n_paths: int = 1500
+    n_paths: int = 2000
     seed: int = 42
     max_age: int = 67
 
@@ -81,9 +84,10 @@ class FrontierPoint:
     retire_age: int
     p_solvent_95: float
     median_estate_nis: float
-    median_estate_real_nis: float        # deflated to today's purchasing power
+    median_estate_real_nis: float        # deflated to today's purchasing power, at age 95
     worst10_estate_nis: float
-    principal_preserved: bool            # median real terminal >= real deployable
+    worst10_estate_real_nis: float
+    principal_preserved: bool            # worst-10% real terminal >= real deployable (p10 floor)
 
 
 @dataclass(frozen=True)
@@ -93,7 +97,7 @@ class ScenarioTrack:
     mu_real: float
     drawdown_age: int | None             # earliest clearing bar_drawdown
     drawdown_p: float | None
-    preservation_age: int | None         # earliest clearing bar_preservation + principal intact
+    preservation_age: int | None         # earliest the worst-10% path preserves real principal
     preservation_p: float | None
     frontier: list[FrontierPoint]
 
@@ -110,32 +114,40 @@ class RetirementPlan:
     spend_stress_nis: float
     sigma_current: float
     tracks: list[ScenarioTrack]          # at spend_central
+    stress_drawdown_age: int | None      # typical regime at the STRESS spend (sensitivity)
+    stress_preservation_age: int | None
     spend_to_retire_now_nis: float | None
     fx_stress_band: list[tuple[float, int | None]]  # (fx_adverse_pct, drawdown_age @ typical)
     assumptions: dict
 
 
-def _reserve_pv(reserve_nis: float, mu_real: float, avg_years: float) -> float:
+def _reserve_pv(reserve_nis: float, discount_real: float, avg_years: float) -> float:
     """PV of the finite-liability reserve. The liabilities (education ~10y,
     mortgage runoff, near-term weddings) are paid over time, so the capital that
     must be earmarked TODAY is their PV, not the full nominal sum. Discounted at
-    the real return over an average horizon. Approximate until the actual
-    liability schedule is in intake."""
-    return reserve_nis / ((1.0 + mu_real) ** max(0.0, avg_years))
+    a SAFE real rate (earmarked money is held conservatively, not at equity
+    risk). Approximate until the actual liability schedule is in intake."""
+    return reserve_nis / ((1.0 + discount_real) ** max(0.0, avg_years))
 
 
 def _split_spend(session, user_id: str) -> tuple[float, float]:
-    """CENTRAL = permanent components at HIGH/MEDIUM confidence (tracked living
-    ex-mortgage + car cadence); STRESS = all permanent components (adds the
-    LOW-confidence healthcare ramp + home-upgrade heuristics). Derived from the
-    sourced fi components — never a hardcoded constant."""
+    """CENTRAL = permanent components that are real ongoing needs — HIGH/MEDIUM
+    confidence (tracked living ex-mortgage + car cadence) PLUS the healthcare
+    ramp (a genuine retirement need even if its size is a heuristic). STRESS adds
+    the discretionary home-upgrade cadence. Derived from the sourced fi
+    components — never a hardcoded constant (codex review: healthcare belongs in
+    central; home upgrades are discretionary stress)."""
     from argosy.services.fi_methodology import compute_fi_target
 
     fi = compute_fi_target(session, user_id=user_id)
     if fi is None or not fi.permanent_annual_spend_nis:
         raise ValueError("retirement_plan needs an FI spend basis — refusing to fabricate one.")
     perm = [c for c in fi.components if c.kind == "permanent"]
-    central = sum(c.annual_nis for c in perm if c.confidence in ("HIGH", "MEDIUM"))
+
+    def _is_home_upgrade(c) -> bool:
+        return "HOME_UPGRADE" in (c.source or "").upper()
+
+    central = sum(c.annual_nis for c in perm if not _is_home_upgrade(c))
     stress = sum(c.annual_nis for c in perm)
     if central <= 0:  # defensive — never run on a zero basis
         central = stress
@@ -166,6 +178,12 @@ def _run_mc(*, hh: HouseholdState, pensions: PensionState, retire_age: int, year
         tax_rate=a.withdrawal_tax, apply_age_aware_tax=False,
         bl_annuity_monthly_nis=bl_monthly, annuity_tax_rate=annuity_tax,
     )
+
+
+def _at_age(series, target_age: float):
+    """The series point nearest ``target_age`` — the MC horizon runs PAST 95, so
+    series[-1] (~age 97) overstates the age-95 estate (codex review #1)."""
+    return min(series, key=lambda p: abs(p.age_years - target_age))
 
 
 def compute_retirement_plan(
@@ -213,15 +231,24 @@ def compute_retirement_plan(
                          annuity_tax=annuity_tax_rate, shock=shock, bear=bear,
                          current_age=current_age, today=today)
             p95 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_95))
-            end = mc.series[-1]
-            med, p10 = end.portfolio_value_p50_nis, end.portfolio_value_p10_nis
+            pt95 = _at_age(mc.series, 95.0)
+            med, p10 = pt95.portfolio_value_p50_nis, pt95.portfolio_value_p10_nis
             med_real = real_deflate(med, 95.0)
+            p10_real = real_deflate(p10, 95.0)
             rows.append(FrontierPoint(
                 retire_age=ra, p_solvent_95=p95,
                 median_estate_nis=med, median_estate_real_nis=med_real,
-                worst10_estate_nis=p10, principal_preserved=med_real >= portfolio,
+                worst10_estate_nis=p10, worst10_estate_real_nis=p10_real,
+                # bequest floor: even the worst-10% path leaves >= today's real principal
+                principal_preserved=p10_real >= deployable_nis,
             ))
         return rows
+
+    def ages_from(fr: list[FrontierPoint]) -> tuple[int | None, float | None, int | None, float | None]:
+        draw = next((p for p in fr if p.p_solvent_95 >= a.bar_drawdown), None)
+        pres = next((p for p in fr if p.principal_preserved and p.p_solvent_95 >= a.bar_preservation), None)
+        return (draw.retire_age if draw else None, draw.p_solvent_95 if draw else None,
+                pres.retire_age if pres else None, pres.p_solvent_95 if pres else None)
 
     specs = (
         ("typical", "Typical (5.0% real)", a.mu_real_typical, False, 0.0),
@@ -231,27 +258,29 @@ def compute_retirement_plan(
     tracks: list[ScenarioTrack] = []
     for name, label, mu_real, bear, shock in specs:
         fr = frontier_for(mu_real, bear=bear, shock=shock, spend=spend_central_nis, portfolio=deployable_nis)
-        draw = next((p for p in fr if p.p_solvent_95 >= a.bar_drawdown), None)
-        pres = next((p for p in fr if p.p_solvent_95 >= a.bar_preservation and p.principal_preserved), None)
+        da, dp, pa, pp = ages_from(fr)
         tracks.append(ScenarioTrack(
             name=name, label=label, mu_real=mu_real,
-            drawdown_age=draw.retire_age if draw else None,
-            drawdown_p=draw.p_solvent_95 if draw else None,
-            preservation_age=pres.retire_age if pres else None,
-            preservation_p=pres.p_solvent_95 if pres else None,
-            frontier=fr,
+            drawdown_age=da, drawdown_p=dp, preservation_age=pa, preservation_p=pp, frontier=fr,
         ))
+
+    # Stress-spend sensitivity (typical regime at the higher STRESS spend).
+    stress_fr = frontier_for(a.mu_real_typical, bear=False, shock=0.0,
+                             spend=spend_stress_nis, portfolio=deployable_nis)
+    s_da, _, s_pa, _ = ages_from(stress_fr)
 
     spend_now = _solve_spend_to_retire_now(
         household=household, pensions=pensions, a=a, glide=glide, years=years, months=months,
         start=start, bl_monthly=bl_monthly_nis, annuity_tax=annuity_tax_rate,
         current_age=current_age, portfolio=deployable_nis, today=today)
 
-    # FX what-if: a stronger shekel cuts the NIS value of USD assets.
+    # FX what-if: a stronger shekel cuts the NIS value of the (USD) assets BEFORE
+    # the NIS-denominated reserve + CGT are netted (codex review #5).
     fx_band: list[tuple[float, int | None]] = []
     for hit in a.fx_stress_pcts:
+        stressed_deployable = max(0.0, full_portfolio_nis * (1.0 - hit) - cgt_haircut_nis - reserve_pv_nis)
         fr = frontier_for(a.mu_real_typical, bear=False, shock=0.0,
-                          spend=spend_central_nis, portfolio=deployable_nis * (1.0 - hit))
+                          spend=spend_central_nis, portfolio=stressed_deployable)
         draw = next((p for p in fr if p.p_solvent_95 >= a.bar_drawdown), None)
         fx_band.append((hit, draw.retire_age if draw else None))
 
@@ -266,6 +295,8 @@ def compute_retirement_plan(
         spend_stress_nis=spend_stress_nis,
         sigma_current=sigma_current,
         tracks=tracks,
+        stress_drawdown_age=s_da,
+        stress_preservation_age=s_pa,
         spend_to_retire_now_nis=spend_now,
         fx_stress_band=fx_band,
         assumptions={
@@ -277,16 +308,19 @@ def compute_retirement_plan(
             "sigma_current_calibrated": sigma_current,
             "deconcentration_taper_years": a.deconcentration_taper_years,
             "reserve_avg_liability_years": a.reserve_avg_liability_years,
+            "reserve_discount_real": a.reserve_discount_real,
             "bar_drawdown": a.bar_drawdown,
             "bar_preservation": a.bar_preservation,
+            "preservation_test": "worst-10% real terminal wealth at 95 >= today's real deployable principal",
             "inflation": a.inflation,
             "bl_monthly_nis": bl_monthly_nis,
             "bl_source": bl_source,
             "annuity_tax_rate": annuity_tax_rate,
             "n_paths": a.n_paths,
-            "spend_central_source": "fi_methodology permanent components @ HIGH/MEDIUM confidence",
-            "spend_stress_source": "fi_methodology all permanent components (incl. LOW-confidence)",
-            "reserve_pv_note": "PV of finite-liability reserve at real return over avg horizon; approximate pending liability-schedule intake",
+            "spend_central_source": "fi_methodology permanent components incl. healthcare ramp (ex home-upgrade)",
+            "spend_stress_source": "fi_methodology all permanent components (adds discretionary home upgrades)",
+            "reserve_pv_note": "PV of finite-liability reserve at a safe real rate over avg horizon; approximate pending liability-schedule intake",
+            "estate_read_at_age": 95,
             "source": "retirement_plan.compute_retirement_plan",
         },
     )
@@ -331,7 +365,7 @@ def build_retirement_plan(
     g = _gather_inputs(session, user_id, today)
     sigma_hi = _calibrated_sigma(session, user_id)
     haircut = _nvda_deconcentration_haircut(session, user_id, g.household.portfolio_value_nis)
-    reserve_pv = _reserve_pv(g.reserve_nis, a.mu_real_typical, a.reserve_avg_liability_years)
+    reserve_pv = _reserve_pv(g.reserve_nis, a.reserve_discount_real, a.reserve_avg_liability_years)
     deployable = max(0.0, g.household.portfolio_value_nis - reserve_pv - haircut)
     spend_central, spend_stress = _split_spend(session, user_id)
     return compute_retirement_plan(
