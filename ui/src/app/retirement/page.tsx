@@ -7,6 +7,7 @@ import { api, type DerivedInputsResponse, type WithdrawalPolicy } from "@/lib/ap
 import { BituachLeumiCard } from "@/components/retirement/BituachLeumiCard";
 import { DecumulationOrderCard } from "@/components/retirement/DecumulationOrderCard";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
+import { DualTrackPlanCard } from "@/components/retirement/dual-track-plan-card";
 import { ExpectedRetirementAgeCard } from "@/components/retirement/ExpectedRetirementAgeCard";
 import { GlidePathCard } from "@/components/retirement/GlidePathCard";
 import { HealthcareCurveCard } from "@/components/retirement/HealthcareCurveCard";
@@ -38,6 +39,7 @@ const USER_ID = "ariel";
 // read-only visualization surface.
 const SECTIONS: Array<{ id: string; label: string }> = [
   { id: "when-can-i-retire", label: "When can I retire?" },
+  { id: "dual-track",        label: "Retire now or leave it?" },
   { id: "timeline",          label: "Holistic Timeline" },
   { id: "upcoming-vests",    label: "Upcoming RSU vests" },
   { id: "verdict",           label: "Verdict" },
@@ -162,6 +164,14 @@ export default function RetirementPage() {
             projection on the current plan draft. */}
         <section id="when-can-i-retire" className="scroll-mt-6">
           <ExpectedRetirementAgeCard userId={USER_ID} />
+        </section>
+
+        {/* Dual-track retire-age ↔ estate-left-to-kids tradeoff: the two
+            intents (spend down vs. preserve for the kids) across return
+            regimes, the estate frontier, the spend-to-retire-now lever, and
+            the full assumption bag. Self-fetches its own payload on mount. */}
+        <section id="dual-track" className="scroll-mt-6">
+          <DualTrackPlanCard userId={USER_ID} />
         </section>
 
         <section id="timeline" className="scroll-mt-6">

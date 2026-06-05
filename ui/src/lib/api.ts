@@ -652,6 +652,65 @@ export interface DerivedInputsResponse {
   nvda_current_pct: DerivedInputField;
 }
 
+// ----------------------------------------------------------------------
+// Dual-track retirement plan — GET /api/retirement/projection/dual-track-plan
+//
+// The retire-age ↔ estate-left-to-kids tradeoff. Two "tracks" of intent
+// (spend it down vs. preserve principal for the kids) crossed with three
+// return regimes (typical / bull / bear). Every NIS amount is a raw number;
+// ages can be null when no age in the search horizon clears the relevant
+// bar. ``assumptions`` is an open bag of the inputs that drove the run so
+// the UI can render the full "show me the numbers" panel.
+// ----------------------------------------------------------------------
+
+export interface DualTrackFrontierPoint {
+  retire_age: number;
+  p_solvent_95: number;
+  median_estate_nis: number;
+  median_estate_real_nis: number;
+  worst10_estate_nis: number;
+  worst10_estate_real_nis: number;
+  principal_preserved: boolean;
+}
+
+export interface DualTrackTrack {
+  name: "typical" | "bull" | "bear";
+  label: string;
+  mu_real: number;
+  /** Earliest age the spend-down track clears the solvency bar; null if none. */
+  drawdown_age: number | null;
+  drawdown_p: number | null;
+  /** Earliest age the worst-10% path still preserves principal; null if none. */
+  preservation_age: number | null;
+  preservation_p: number | null;
+  frontier: DualTrackFrontierPoint[];
+}
+
+export interface DualTrackFxStressBand {
+  fx_adverse_pct: number;
+  drawdown_age: number | null;
+}
+
+export interface DualTrackPlanResponse {
+  current_age: number;
+  full_portfolio_nis: number;
+  cgt_haircut_nis: number;
+  reserve_raw_nis: number;
+  reserve_pv_nis: number;
+  deployable_nis: number;
+  spend_central_nis: number;
+  spend_stress_nis: number;
+  sigma_current: number;
+  tracks: DualTrackTrack[];
+  stress_drawdown_age: number | null;
+  stress_preservation_age: number | null;
+  spend_to_retire_now_nis: number | null;
+  fx_stress_band: DualTrackFxStressBand[];
+  // Open bag of named assumptions; the panel reads known keys but tolerates
+  // extras. Values are numbers (rates/counts/amounts) or strings (sources).
+  assumptions: Record<string, number | string>;
+}
+
 export interface DailyBriefDTO {
   id: number;
   user_id: string;
@@ -1444,6 +1503,15 @@ export const api = {
         `/api/retirement/projection/scenarios?${params.toString()}`,
       );
     },
+    // Dual-track retire-age ↔ estate tradeoff. Returns the two intents
+    // (spend-down vs. preserve-for-kids) across typical/bull/bear regimes,
+    // the estate frontier per track, the spend-to-retire-now lever, and the
+    // full assumption bag. Note the path keeps the project's `/api` prefix
+    // convention (the other projection fetchers do the same).
+    dualTrackPlan: (userId: string) =>
+      getJSON<DualTrackPlanResponse>(
+        `/api/retirement/projection/dual-track-plan?user_id=${encodeURIComponent(userId)}`,
+      ),
     bituachLeumi: (
       userId: string,
       currentAge: number,
