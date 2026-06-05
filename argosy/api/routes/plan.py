@@ -1494,6 +1494,53 @@ class MonteCarloProjectionResponse(BaseModel):
     assumptions: dict
 
 
+def _mc_projection_to_response(proj) -> MonteCarloProjectionResponse:
+    """Serialize a ``MonteCarloProjection`` to the wire DTO (USD), deriving fx +
+    age from the projection's household-at-start. Shared by the
+    cashflow-monte-carlo + plan-series endpoints so they stay identical on the
+    wire."""
+    hh = proj.household_state_at_start
+    fx = hh.fx_usd_nis if (hh and hh.fx_usd_nis and hh.fx_usd_nis > 0) else 1.0
+
+    def to_usd(nis: float) -> float:
+        return round(nis / fx, 2)
+
+    series_dto = [
+        MonteCarloPointDTO(
+            months_out=p.months_out,
+            age_years=round(p.age_years, 3),
+            date=p.date_yyyy_mm,
+            portfolio_value_p10_usd=to_usd(p.portfolio_value_p10_nis),
+            portfolio_value_p25_usd=to_usd(p.portfolio_value_p25_nis),
+            portfolio_value_p50_usd=to_usd(p.portfolio_value_p50_nis),
+            portfolio_value_p75_usd=to_usd(p.portfolio_value_p75_nis),
+            portfolio_value_p90_usd=to_usd(p.portfolio_value_p90_nis),
+            fraction_solvent=round(p.fraction_solvent, 4),
+            pension_annuity_monthly_usd=to_usd(p.pension_annuity_monthly_nis),
+            expenses_monthly_usd=to_usd(p.expenses_monthly_nis),
+            bl_monthly_usd=to_usd(p.bl_monthly_nis),
+            lump_amount_usd=to_usd(p.lump_amount_nis),
+            portfolio_net_draw_monthly_usd=to_usd(p.portfolio_net_draw_monthly_nis),
+            portfolio_gross_withdrawal_monthly_usd=to_usd(
+                p.portfolio_gross_withdrawal_monthly_nis
+            ),
+        )
+        for p in proj.series
+    ]
+    return MonteCarloProjectionResponse(
+        today_date=datetime.now(timezone.utc).date().isoformat(),
+        today_age_years=round(hh.current_age_years, 3),
+        fx_usd_nis=fx,
+        retirement_age_assumed=round(proj.retirement_age_assumed, 1),
+        n_paths=proj.n_paths,
+        p_failure_before_age_75=round(proj.p_failure_before_age_75, 4),
+        p_failure_before_age_85=round(proj.p_failure_before_age_85, 4),
+        p_failure_before_age_95=round(proj.p_failure_before_age_95, 4),
+        series=series_dto,
+        assumptions=proj.assumptions,
+    )
+
+
 @router.get(
     "/draft/cashflow-monte-carlo", response_model=MonteCarloProjectionResponse
 )
@@ -1543,46 +1590,7 @@ def get_draft_cashflow_monte_carlo(
         n_paths=n_paths, seed=seed,
     )
 
-    fx = hh.fx_usd_nis if hh.fx_usd_nis > 0 else 1.0
-
-    def to_usd(nis: float) -> float:
-        return round(nis / fx, 2)
-
-    series_dto = [
-        MonteCarloPointDTO(
-            months_out=p.months_out,
-            age_years=round(p.age_years, 3),
-            date=p.date_yyyy_mm,
-            portfolio_value_p10_usd=to_usd(p.portfolio_value_p10_nis),
-            portfolio_value_p25_usd=to_usd(p.portfolio_value_p25_nis),
-            portfolio_value_p50_usd=to_usd(p.portfolio_value_p50_nis),
-            portfolio_value_p75_usd=to_usd(p.portfolio_value_p75_nis),
-            portfolio_value_p90_usd=to_usd(p.portfolio_value_p90_nis),
-            fraction_solvent=round(p.fraction_solvent, 4),
-            pension_annuity_monthly_usd=to_usd(p.pension_annuity_monthly_nis),
-            expenses_monthly_usd=to_usd(p.expenses_monthly_nis),
-            bl_monthly_usd=to_usd(p.bl_monthly_nis),
-            lump_amount_usd=to_usd(p.lump_amount_nis),
-            portfolio_net_draw_monthly_usd=to_usd(p.portfolio_net_draw_monthly_nis),
-            portfolio_gross_withdrawal_monthly_usd=to_usd(
-                p.portfolio_gross_withdrawal_monthly_nis
-            ),
-        )
-        for p in proj.series
-    ]
-
-    return MonteCarloProjectionResponse(
-        today_date=datetime.now(timezone.utc).date().isoformat(),
-        today_age_years=round(hh.current_age_years, 3),
-        fx_usd_nis=fx,
-        retirement_age_assumed=round(proj.retirement_age_assumed, 1),
-        n_paths=proj.n_paths,
-        p_failure_before_age_75=round(proj.p_failure_before_age_75, 4),
-        p_failure_before_age_85=round(proj.p_failure_before_age_85, 4),
-        p_failure_before_age_95=round(proj.p_failure_before_age_95, 4),
-        series=series_dto,
-        assumptions=proj.assumptions,
-    )
+    return _mc_projection_to_response(proj)
 
 
 @router.get(
@@ -1625,6 +1633,40 @@ def get_current_cashflow_monte_carlo(
         seed=seed,
         db=db,
     )
+
+
+@router.get(
+    "/current/plan-series", response_model=MonteCarloProjectionResponse
+)
+def get_current_plan_series(
+    user_id: str = Query("ariel"),
+    retire_age: float = Query(47.0, ge=30.0, le=80.0),
+    regime: str = Query("typical"),
+    n_paths: int = Query(1200, ge=100, le=10_000),
+    db: Session = Depends(get_db),
+) -> MonteCarloProjectionResponse:
+    """Monte Carlo series on the DUAL-TRACK PLAN basis (deconcentrated NVDA,
+    σ-glide 34→18%, reserve-netted at PV, 5% real / 10% interim tax) for a
+    selected ``retire_age`` + market ``regime`` ('typical'|'bull'|'bear').
+
+    This is the feed the /plan portfolio-bands + cashflow-coverage charts SHOULD
+    use so they reconcile with the headline dual-track ages — unlike
+    ``/current/cashflow-monte-carlo``, which runs the stale 'keep-NVDA, do
+    nothing' config (full concentration, σ flat, 25% tax) and therefore reads
+    'stress-test fails'. 404 when the FI spend basis can't be sourced."""
+    from argosy.services.retirement.retirement_plan import (
+        RetirementAssumptions,
+        plan_series,
+    )
+
+    try:
+        proj = plan_series(
+            session=db, user_id=user_id, retire_age=retire_age, regime=regime,
+            assumptions=RetirementAssumptions(n_paths=n_paths),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return _mc_projection_to_response(proj)
 
 
 class NvdaVestEvent(BaseModel):

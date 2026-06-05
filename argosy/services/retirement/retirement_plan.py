@@ -462,6 +462,50 @@ def canonical_feasible_dual_track(
     )
 
 
+def plan_series(
+    *,
+    session,
+    user_id: str,
+    retire_age: float,
+    regime: str = "typical",
+    assumptions: RetirementAssumptions | None = None,
+    today: date | None = None,
+):
+    """Full per-tick Monte Carlo series on the dual-track PLAN basis
+    (deconcentrated NVDA, σ-glide 34→18%, reserve-netted at PV, 5% real / 10%
+    interim tax) for a SELECTED retire age + market regime. Feeds the
+    portfolio-bands + cashflow-coverage charts so they reconcile with the
+    headline ages instead of the stale "do nothing" config. Returns a
+    ``cashflow_projection.MonteCarloProjection``."""
+    a = assumptions or RetirementAssumptions()
+    g = _gather_inputs(session, user_id, today)
+    sigma_hi = _calibrated_sigma(session, user_id)
+    haircut = _nvda_deconcentration_haircut(session, user_id, g.household.portfolio_value_nis)
+    reserve_pv = _reserve_pv(g.reserve_nis, a.reserve_discount_real, a.reserve_avg_liability_years)
+    deployable = max(0.0, g.household.portfolio_value_nis - reserve_pv - haircut)
+    spend_central, _stress = _split_spend(session, user_id)
+    current_age = g.household.current_age_years
+    years = _horizon_years_to_95(current_age)
+    months = max(1, min(years, 60)) * 12
+    start = max(int(math.ceil(current_age)), 1)
+    glide = _sigma_glidepath(
+        months=months, current_age=current_age, retirement_age=float(start),
+        sigma_hi=sigma_hi, sigma_lo=a.sigma_diversified,
+        taper_years=a.deconcentration_taper_years,
+    )
+    bear = regime == "bear"
+    mu_real = a.mu_real_bull if regime == "bull" else a.mu_real_typical
+    shock = a.bear_shock_pct if bear else 0.0
+    ra = max(start, int(round(retire_age)))
+    hh = replace(g.household, monthly_expenses_nis=spend_central / 12.0, portfolio_value_nis=deployable)
+    return _run_mc(
+        hh=hh, pensions=g.pensions, retire_age=ra, years=years, months=months,
+        mu_real=mu_real, sigma_path=glide, a=a, bl_monthly=g.bl_monthly_nis,
+        annuity_tax=g.annuity_tax_rate, shock=shock, bear=bear,
+        current_age=current_age, today=today,
+    )
+
+
 __all__ = [
     "RetirementAssumptions",
     "FrontierPoint",
@@ -470,4 +514,5 @@ __all__ = [
     "compute_retirement_plan",
     "build_retirement_plan",
     "canonical_feasible_dual_track",
+    "plan_series",
 ]
