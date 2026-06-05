@@ -274,3 +274,36 @@ class TestHorizonReachesAge95:
             today=date(2026, 1, 1),
         )
         assert mc.series[-1].age_years >= 95.0
+
+
+class TestSigmaPath:
+    def test_flat_sigma_path_matches_scalar(self):
+        """A constant σ path reproduces the scalar-σ run bit-for-bit."""
+        h = _household(spend=40_000.0)
+        sig = 0.18
+        path = np.full(MONTHS, sig)
+        scalar = project_monte_carlo(household=h, pensions=_pensions(), sigma_annual=sig, **COMMON)
+        pathed = project_monte_carlo(
+            household=h, pensions=_pensions(), sigma_annual=sig,
+            sigma_nominal_path=path, **COMMON,
+        )
+        assert pathed.p_failure_before_age_95 == scalar.p_failure_before_age_95
+
+    def test_higher_sigma_increases_ruin(self):
+        """A declining-σ glidepath (starts high) ruins more than a low flat σ —
+        the concentrated-portfolio risk is real. Uses a non-saturated config
+        (large portfolio, modest draw) so σ actually moves the verdict."""
+        h = _household(spend=28_000.0, portfolio=9_000_000.0)
+        low = project_monte_carlo(
+            household=h, pensions=_pensions(), mu_nominal_annual=0.07,
+            sigma_nominal_path=np.full(MONTHS, 0.18), n_paths=1500,
+            retirement_age=49.0, years=52, seed=42, today=date(2026, 1, 1),
+        )
+        # Glidepath: ~34% for the first 3 retirement years, tapering to 18%.
+        glide = np.concatenate([np.full(48, 0.34), np.linspace(0.34, 0.18, 36), np.full(MONTHS - 84, 0.18)])
+        high = project_monte_carlo(
+            household=h, pensions=_pensions(), mu_nominal_annual=0.07,
+            sigma_nominal_path=glide, n_paths=1500,
+            retirement_age=49.0, years=52, seed=42, today=date(2026, 1, 1),
+        )
+        assert high.p_failure_before_age_95 > low.p_failure_before_age_95

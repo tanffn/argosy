@@ -743,6 +743,7 @@ def project_monte_carlo(
     bl_start_age: float = float(ANNUITY_AGE),
     initial_shock_pct: float = 0.0,
     mu_nominal_path: "object | None" = None,
+    sigma_nominal_path: "object | None" = None,
     annuity_tax_rate: float = 0.0,
 ) -> MonteCarloProjection:
     """Random-walk Monte Carlo of consumption-tracking retirement paths.
@@ -777,19 +778,34 @@ def project_monte_carlo(
     # single scalar drift. The path branch draws zero-mean normals and adds the
     # per-month drift; this is bit-identical to ``normal(loc=drift, ...)`` for a
     # constant path because the underlying standard-normal stream is unchanged.
-    if mu_nominal_path is None:
+    if mu_nominal_path is None and sigma_nominal_path is None:
         log_returns = rng.normal(loc=log_drift, scale=log_std, size=(n_paths, months))
     else:
-        mu_path = np.asarray(mu_nominal_path, dtype=np.float64)
-        if mu_path.shape != (months,):
-            raise ValueError(
-                f"mu_nominal_path must have shape ({months},) to match the "
-                f"horizon; got {mu_path.shape}."
-            )
-        drift_row = mu_path / 12.0 - sigma_annual ** 2 / 24.0  # shape (months,)
-        log_returns = (
-            rng.normal(loc=0.0, scale=log_std, size=(n_paths, months)) + drift_row
-        )
+        # Time-varying drift and/or volatility. ``sigma_nominal_path`` lets σ
+        # DECLINE over the horizon — e.g. as a concentrated NVDA position sells
+        # down to the cap, portfolio volatility falls from the calibrated ~34%
+        # toward the diversified ~18% (the deconcentration glidepath). Both rows
+        # default to the scalar when their path is None, so a mu-only path stays
+        # bit-identical to the prior behavior.
+        if mu_nominal_path is not None:
+            mu_row = np.asarray(mu_nominal_path, dtype=np.float64)
+            if mu_row.shape != (months,):
+                raise ValueError(
+                    f"mu_nominal_path must have shape ({months},); got {mu_row.shape}."
+                )
+        else:
+            mu_row = np.full(months, mu_nominal_annual, dtype=np.float64)
+        if sigma_nominal_path is not None:
+            sig_row = np.asarray(sigma_nominal_path, dtype=np.float64)
+            if sig_row.shape != (months,):
+                raise ValueError(
+                    f"sigma_nominal_path must have shape ({months},); got {sig_row.shape}."
+                )
+        else:
+            sig_row = np.full(months, sigma_annual, dtype=np.float64)
+        drift_row = mu_row / 12.0 - sig_row ** 2 / 24.0   # shape (months,)
+        std_row = sig_row / math.sqrt(12.0)               # shape (months,)
+        log_returns = drift_row + std_row * rng.normal(0.0, 1.0, size=(n_paths, months))
 
     # Per-path state, kept in numpy arrays for vectorization.
     portfolio = np.full(n_paths, household.portfolio_value_nis, dtype=np.float64)

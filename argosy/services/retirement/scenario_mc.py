@@ -484,6 +484,171 @@ def earliest_feasible_retire_age(
     )
 
 
+SIGMA_DIVERSIFIED = 0.18          # post-deconcentration target σ (8-asset-class)
+DECONCENTRATION_TAPER_YEARS = 3   # σ falls hi→lo over the NVDA sell-down period
+DEFAULT_NVDA_CAP_PCT = 0.13       # strategic single-name ceiling (fallback)
+
+
+def _calibrated_sigma(session, user_id: str) -> float:
+    """Current portfolio σ from the calibrator (NVDA-concentrated ≈ 0.34).
+    Falls back to the diversified target if unavailable."""
+    try:
+        from argosy.services.cashflow_assumptions import get_default_assumptions
+        a = get_default_assumptions(session=session, user_id=user_id)
+        v = float(a.sigma_annual.value)
+        return v if v > 0 else SIGMA_DIVERSIFIED
+    except Exception:  # noqa: BLE001
+        return SIGMA_DIVERSIFIED
+
+
+def _nvda_deconcentration_haircut(session, user_id: str, net_worth_nis: float) -> float:
+    """The CGT cost of selling NVDA down to the strategic cap — the one-time
+    capital haircut the 'deconcentrated' scenario pays to de-risk. Gain taxed on
+    the taxable fraction (≈15% effective, matching the withdrawal tax). 0 when
+    NVDA is already at/under the cap or the inputs are unavailable."""
+    try:
+        from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+        from argosy.state.models import PlanVersion
+        from sqlalchemy import select, desc
+        pv = session.execute(
+            select(PlanVersion).where(
+                PlanVersion.user_id == user_id, PlanVersion.role == "current"
+            ).order_by(desc(PlanVersion.id)).limit(1)
+        ).scalar_one_or_none()
+        drun = getattr(pv, "decision_run_id", None) if pv else None
+        nvda_pct = cap_pct = None
+        if drun is not None:
+            r = resolve_plan_numbers(session, user_id=user_id, decision_run_id=int(drun))
+            cur = r.get("concentration.nvda_current_pct")
+            cap = r.get("concentration.nvda_cap_pct")
+            nvda_pct = float(cur.value) if (cur and cur.status == "resolved" and cur.value) else None
+            cap_pct = float(cap.value) if (cap and cap.status == "resolved" and cap.value) else None
+        if nvda_pct is None:
+            return 0.0
+        cap_pct = cap_pct if cap_pct is not None else DEFAULT_NVDA_CAP_PCT
+        sell_fraction = max(0.0, nvda_pct - cap_pct)
+        sell_nis = sell_fraction * net_worth_nis
+        return sell_nis * EFFECTIVE_WITHDRAWAL_TAX  # gain-fraction × CGT
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _sigma_glidepath(
+    *, months: int, current_age: float, retirement_age: float,
+    sigma_hi: float, sigma_lo: float, taper_years: int,
+) -> "object":
+    """Per-month σ declining hi→lo over ``taper_years`` starting NOW (tick 0) —
+    the NVDA sell-down is a present action (~3y to the cap), so volatility falls
+    from the calibrated ~34% toward the diversified ~18% during the working
+    years; by a mid/late-40s retirement σ is already at the floor. ``retirement_age``
+    is unused for the anchor but kept for signature symmetry."""
+    import numpy as np
+    path = np.full(months, sigma_lo, dtype=np.float64)
+    taper = max(1, taper_years * 12)
+    for i in range(months):
+        if i < taper:
+            frac = i / taper
+            path[i] = sigma_hi + (sigma_lo - sigma_hi) * frac
+        else:
+            path[i] = sigma_lo
+    return path
+
+
+def earliest_feasible_scenarios(
+    *,
+    session,
+    user_id: str,
+    target_p_solvent: float = 0.90,
+    mu_real_central: float = 0.045,
+    operational_target_age: float = 49.0,
+    n_paths: int = 1200,
+    seed: int | None = 42,
+    today: date | None = None,
+    max_age: int = 70,
+) -> list[FeasibleAgeResult]:
+    """Earliest-safe age under THREE genuinely-different, labeled scenarios
+    (not the deterministic-bug 'same age'): 'as_is' keeps the NVDA-concentrated
+    portfolio (flat calibrated σ); 'deconcentrated' sells NVDA to the cap (σ
+    glidepath hi→18%, portfolio net of the one-time CGT haircut); 'bear' is the
+    deconcentrated path plus a −25% retirement shock + a low-return first decade.
+    """
+    from argosy.services.cashflow_projection import DEFAULT_SIGMA_ANNUAL  # noqa: F401
+
+    g = _gather_inputs(session, user_id, today)
+    infl = DEFAULT_INFLATION_ANNUAL
+    current_age = g.household.current_age_years
+    years = _horizon_years_to_95(current_age)
+    months = max(1, min(years, 60)) * 12
+    sigma_hi = _calibrated_sigma(session, user_id)
+    haircut = _nvda_deconcentration_haircut(session, user_id, g.household.portfolio_value_nis)
+
+    base_portfolio = max(0.0, g.household.portfolio_value_nis - g.reserve_nis)
+    decon_portfolio = max(0.0, base_portfolio - haircut)
+    glide = _sigma_glidepath(
+        months=months, current_age=current_age, retirement_age=operational_target_age,
+        sigma_hi=sigma_hi, sigma_lo=SIGMA_DIVERSIFIED, taper_years=DECONCENTRATION_TAPER_YEARS,
+    )
+
+    specs = (
+        ("as_is", "As-is (keep NVDA, σ≈{:.0%})".format(sigma_hi), base_portfolio,
+         {"sigma_flat": sigma_hi}),
+        ("deconcentrated", "Deconcentrated (sell NVDA to cap, σ→{:.0%})".format(SIGMA_DIVERSIFIED),
+         decon_portfolio, {"sigma_glidepath": True, "cgt_haircut_nis": haircut}),
+        ("bear", "Bear (deconcentrated + −25% shock + low decade)", decon_portfolio,
+         {"sigma_glidepath": True, "cgt_haircut_nis": haircut, "shock": 0.25}),
+    )
+
+    out: list[FeasibleAgeResult] = []
+    for name, label, portfolio, knobs in specs:
+        hh = replace(
+            g.household,
+            monthly_expenses_nis=g.spend_basis_annual_nis / 12.0,
+            portfolio_value_nis=portfolio,
+        )
+        sigma_flat = knobs.get("sigma_flat")
+        sigma_path = None if sigma_flat is not None else glide
+        shock = knobs.get("shock", 0.0)
+        # Bear: low-return first decade overlaid on the central μ.
+        mu_path = None
+        if name == "bear":
+            import numpy as np
+            mu_path = np.empty(months, dtype=np.float64)
+            for i in range(months):
+                age_at = current_age + (i + 1) / 12.0
+                real = (0.03 if operational_target_age <= age_at < operational_target_age + 10 else mu_real_central)
+                mu_path[i] = real + infl
+
+        earliest = p_at = None
+        for ra in range(max(int(math.ceil(current_age)), 1), max_age + 1):
+            mc = project_monte_carlo(
+                household=replace(hh, monthly_expenses_nis=g.spend_basis_annual_nis / 12.0),
+                pensions=g.pensions, retirement_age=float(ra), years=years,
+                mu_nominal_annual=mu_real_central + infl,
+                sigma_annual=(sigma_flat if sigma_flat is not None else SIGMA_DIVERSIFIED),
+                sigma_nominal_path=sigma_path, mu_nominal_path=mu_path,
+                initial_shock_pct=shock, inflation_annual=infl,
+                n_paths=n_paths, seed=seed, today=today,
+                tax_rate=EFFECTIVE_WITHDRAWAL_TAX, apply_age_aware_tax=False,
+                bl_annuity_monthly_nis=g.bl_monthly_nis, annuity_tax_rate=g.annuity_tax_rate,
+            )
+            p95 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_95))
+            if p95 >= target_p_solvent:
+                earliest, p_at = float(ra), p95
+                break
+
+        from argosy.services.cashflow_projection import ANNUITY_AGE, LUMP_PENSION_AGE
+        out.append(FeasibleAgeResult(
+            earliest_feasible_age=earliest, p_solvent_at_age=p_at,
+            target_p_solvent=target_p_solvent, operational_target_age=operational_target_age,
+            statutory_lump_age=int(LUMP_PENSION_AGE), statutory_annuity_age=int(ANNUITY_AGE),
+            current_age=current_age, reserve_netted_nis=g.reserve_nis,
+            basis={"scenario": name, "label": label, "sigma_hi": sigma_hi,
+                   "sigma_lo": SIGMA_DIVERSIFIED, "portfolio_nis": portfolio,
+                   "cgt_haircut_nis": knobs.get("cgt_haircut_nis", 0.0), **knobs},
+        ))
+    return out
+
+
 __all__ = [
     "ScenarioOutcome",
     "GridPoint",
@@ -492,4 +657,5 @@ __all__ = [
     "simulate_scenarios",
     "run_retirement_scenarios",
     "earliest_feasible_retire_age",
+    "earliest_feasible_scenarios",
 ]
