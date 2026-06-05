@@ -154,6 +154,13 @@ class MonteCarloPoint:
     # Deterministic helpers (same for all paths)
     pension_annuity_monthly_nis: float
     expenses_monthly_nis: float
+    # Deterministic income-composition helpers (identical across all paths) —
+    # drive the inflow/outflow "cashflow coverage" chart so the age-60 lump and
+    # the age-67 pension bridge are visible alongside portfolio value.
+    bl_monthly_nis: float = 0.0
+    lump_amount_nis: float = 0.0
+    portfolio_net_draw_monthly_nis: float = 0.0
+    portfolio_gross_withdrawal_monthly_nis: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -818,6 +825,11 @@ def project_monte_carlo(
     annuity_locked = False
     annuity_real_monthly = 0.0
     annuity_lock_t = 0
+    # Capture the one-time age-60 lump (nominal) and the tick it unlocks at, so
+    # the deterministic output loop can emit it at exactly that single tick for
+    # the cashflow-coverage chart.
+    lump_total_nominal = 0.0
+    lump_unlock_t = -1
 
     # Bituach Leumi old-age stipend: a statutory income stream credited from
     # ``bl_start_age`` (default 67), netted against retirement spend alongside
@@ -927,6 +939,8 @@ def project_monte_carlo(
             hisht_bal[:] = 0.0
             gemel_bal[:] = 0.0
             lump_unlocked = True
+            lump_total_nominal = float(lump_total)
+            lump_unlock_t = t
 
         # Annuity lock (deterministic → same on all paths)
         if age_t >= ANNUITY_AGE and not annuity_locked:
@@ -1079,6 +1093,43 @@ def project_monte_carlo(
         exp_t = household.monthly_expenses_nis * (
             (1.0 + expense_growth) ** (t / 12.0)
         )
+
+        # Deterministic income-composition fields (identical across paths),
+        # re-derived from the state machine exactly like ``ann_t`` above.
+        # Bituach Leumi stipend: CPI-indexed real-2026 figure nominalized from
+        # t=0, credited once age_t crosses bl_start_age (mirrors the main loop).
+        bl_t = 0.0
+        if bl_annuity_monthly_nis > 0.0 and age_t >= bl_start_age:
+            bl_t = bl_annuity_monthly_nis * (
+                (1.0 + inflation_annual) ** (t / 12.0)
+            )
+
+        # One-time age-60 lump: nonzero only at the single tick it unlocked.
+        lump_t = lump_total_nominal if t == lump_unlock_t else 0.0
+
+        # Portfolio draw post-retirement: expenses net of the (taxed) private
+        # annuity and the (tax-exempt) BL stipend — mirrors the main-loop
+        # shortfall. Zero during the accumulation phase.
+        net_draw_t = 0.0
+        gross_withdrawal_t = 0.0
+        if age_t >= retirement_age:
+            annuity_net_t = ann_t * (1.0 - annuity_tax_rate)
+            net_draw_t = max(0.0, exp_t - annuity_net_t - bl_t)
+            # Gross-up by the same effective-tax denominator the withdrawal
+            # engine uses (lines ~1009-1019): age-band rate when age-aware tax
+            # is on, else the flat tax_rate; denom clamped identically.
+            if apply_age_aware_tax:
+                if age_t < LUMP_PENSION_AGE:
+                    effective_tax = 0.25
+                elif age_t < ANNUITY_AGE:
+                    effective_tax = 0.15
+                else:
+                    effective_tax = 0.12
+                denom = max(1.0 - effective_tax, 0.01)
+            else:
+                denom = max(1.0 - tax_rate, 0.01)
+            gross_withdrawal_t = net_draw_t / denom
+
         d = _add_months(today, t)
         out.append(MonteCarloPoint(
             months_out=t,
@@ -1092,6 +1143,10 @@ def project_monte_carlo(
             fraction_solvent=solvent,
             pension_annuity_monthly_nis=ann_t,
             expenses_monthly_nis=exp_t,
+            bl_monthly_nis=bl_t,
+            lump_amount_nis=lump_t,
+            portfolio_net_draw_monthly_nis=net_draw_t,
+            portfolio_gross_withdrawal_monthly_nis=gross_withdrawal_t,
         ))
 
     # Failure-by-age probabilities

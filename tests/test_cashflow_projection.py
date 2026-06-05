@@ -1275,6 +1275,114 @@ class TestPreRetirementSavingsContribution:
             <= retire_49.p_failure_before_age_95
         )
 
+    def test_mc_income_composition_fields(self) -> None:
+        """Deterministic income-composition fields drive the cashflow-coverage
+        chart: BL stipend starts at bl_start_age, the age-60 lump fires at one
+        tick, and the post-67 portfolio draw collapses once the annuity + BL
+        cover most of the spend. Existing fields are untouched."""
+        from argosy.services.cashflow_projection import (
+            HouseholdState,
+            PensionState,
+            project_monte_carlo,
+        )
+
+        current_age = 44.0
+        retirement_age = 60.0
+        bl_start_age = 67.0
+        infl = 0.025
+        annuity_tax_rate = 0.15
+        bl_real_monthly = 5_000.0
+
+        pensions = PensionState(
+            kupat_pensia_balance_nis=1_500_000.0,
+            kupat_pensia_contribution_monthly_nis=3_500.0,
+            executive_insurance_balance_nis=900_000.0,
+            keren_hishtalmut_balance_nis=600_000.0,
+            keren_hishtalmut_contribution_monthly_nis=2_500.0,
+            kupat_gemel_balance_nis=200_000.0,
+        )
+        initial_portfolio = 4_000_000.0
+        mc = project_monte_carlo(
+            household=HouseholdState(
+                monthly_expenses_nis=25_000.0,
+                portfolio_value_nis=initial_portfolio,
+                fx_usd_nis=3.0,
+                current_age_years=current_age,
+                monthly_savings_nis=20_000.0,
+            ),
+            pensions=pensions,
+            retirement_age=retirement_age,
+            years=30,  # reaches age 74 — past BL start at 67
+            mu_nominal_annual=0.08,
+            sigma_annual=0.18,
+            inflation_annual=infl,
+            mekadem=200.0,
+            n_paths=200,
+            seed=42,
+            today=date(2026, 5, 27),
+            bl_annuity_monthly_nis=bl_real_monthly,
+            bl_start_age=bl_start_age,
+            annuity_tax_rate=annuity_tax_rate,
+            apply_age_aware_tax=True,
+        )
+
+        # --- Spot-check an existing field is unchanged: p50 at t=0 == portfolio
+        assert mc.series[0].portfolio_value_p50_nis == pytest.approx(
+            initial_portfolio
+        )
+
+        # --- bl_monthly_nis: 0 before bl_start_age, > 0 after.
+        before_bl = [
+            p for p in mc.series if p.age_years < bl_start_age
+        ]
+        after_bl = [
+            p for p in mc.series if p.age_years >= bl_start_age
+        ]
+        assert all(p.bl_monthly_nis == 0.0 for p in before_bl)
+        assert all(p.bl_monthly_nis > 0.0 for p in after_bl)
+        # And it is the real figure nominalized from t=0 at the first BL tick.
+        first_bl = after_bl[0]
+        t = first_bl.months_out
+        assert first_bl.bl_monthly_nis == pytest.approx(
+            bl_real_monthly * ((1.0 + infl) ** (t / 12.0))
+        )
+
+        # --- lump_amount_nis: nonzero at exactly one tick near age 60, 0 else.
+        lump_ticks = [p for p in mc.series if p.lump_amount_nis > 0.0]
+        assert len(lump_ticks) == 1
+        lump_pt = lump_ticks[0]
+        assert 60.0 <= lump_pt.age_years < 60.1  # fires the first tick past 60
+        assert lump_pt.lump_amount_nis > 0.0
+
+        # --- portfolio_net_draw post-67 << just-before-67 (annuity + BL cover
+        # most spend). Compare the tick just before age 67 to the one just after.
+        just_before_67 = max(
+            (p for p in mc.series if p.age_years < bl_start_age),
+            key=lambda p: p.age_years,
+        )
+        just_after_67 = min(
+            (p for p in mc.series if p.age_years >= bl_start_age),
+            key=lambda p: p.age_years,
+        )
+        assert just_before_67.portfolio_net_draw_monthly_nis > 0.0
+        assert (
+            just_after_67.portfolio_net_draw_monthly_nis
+            < 0.5 * just_before_67.portfolio_net_draw_monthly_nis
+        )
+
+        # --- gross withdrawal grosses up the net draw by (1 - eff_tax); at 67+
+        # the age-band rate is 12%, so gross == net / 0.88.
+        assert just_after_67.portfolio_gross_withdrawal_monthly_nis == pytest.approx(
+            just_after_67.portfolio_net_draw_monthly_nis / (1.0 - 0.12)
+        )
+        # Pre-retirement (accumulation) ticks have zero draw.
+        pre_ret = [p for p in mc.series if p.age_years < retirement_age]
+        assert all(
+            p.portfolio_net_draw_monthly_nis == 0.0
+            and p.portfolio_gross_withdrawal_monthly_nis == 0.0
+            for p in pre_ret
+        )
+
 
 class TestProjectCashflowAnnuityNominalization:
     """Codex review 2026-06-04: the deterministic /plan cashflow engine must

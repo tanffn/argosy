@@ -1474,6 +1474,11 @@ class MonteCarloPointDTO(BaseModel):
     fraction_solvent: float
     pension_annuity_monthly_usd: float
     expenses_monthly_usd: float
+    # Deterministic income-composition fields for the cashflow-coverage chart.
+    bl_monthly_usd: float = 0.0
+    lump_amount_usd: float = 0.0
+    portfolio_net_draw_monthly_usd: float = 0.0
+    portfolio_gross_withdrawal_monthly_usd: float = 0.0
 
 
 class MonteCarloProjectionResponse(BaseModel):
@@ -1556,6 +1561,12 @@ def get_draft_cashflow_monte_carlo(
             fraction_solvent=round(p.fraction_solvent, 4),
             pension_annuity_monthly_usd=to_usd(p.pension_annuity_monthly_nis),
             expenses_monthly_usd=to_usd(p.expenses_monthly_nis),
+            bl_monthly_usd=to_usd(p.bl_monthly_nis),
+            lump_amount_usd=to_usd(p.lump_amount_nis),
+            portfolio_net_draw_monthly_usd=to_usd(p.portfolio_net_draw_monthly_nis),
+            portfolio_gross_withdrawal_monthly_usd=to_usd(
+                p.portfolio_gross_withdrawal_monthly_nis
+            ),
         )
         for p in proj.series
     ]
