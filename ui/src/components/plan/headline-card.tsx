@@ -11,6 +11,7 @@
  */
 
 import Link from "next/link";
+import { useEffect, useState } from "react";
 
 import {
   Card,
@@ -19,11 +20,21 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { HeadlineDerivationDTO, RecapSummaryDTO } from "@/lib/api";
+import {
+  api,
+  type DualTrackPlanResponse,
+  type DualTrackTrack,
+  type HeadlineDerivationDTO,
+  type RecapSummaryDTO,
+} from "@/lib/api";
 import { formatLocalDateTime } from "@/lib/utils";
 
 interface HeadlineCardProps {
   recap: RecapSummaryDTO;
+  // The /plan page's USER_ID, threaded down so the readiness panel can
+  // self-fetch the dual-track plan (the engine that actually produces
+  // the two ages) for the at-95 estate table + assumptions collapsible.
+  userId: string;
 }
 
 function formatUsdK(value: number | null): string {
@@ -39,7 +50,7 @@ function formatUsdK(value: number | null): string {
   return `$${usd.toFixed(0)}`;
 }
 
-export function HeadlineCard({ recap }: HeadlineCardProps) {
+export function HeadlineCard({ recap, userId }: HeadlineCardProps) {
   const { headline, accepted_deltas, portfolio_value, insurance_gaps, audit } =
     recap;
   const approvedLabel = audit.approved_at
@@ -61,15 +72,6 @@ export function HeadlineCard({ recap }: HeadlineCardProps) {
           <p className="text-lg font-semibold leading-tight">
             {headline.retirement_readiness}
           </p>
-          {recap.derivation ? (
-            <p className="text-xs text-muted-foreground">
-              based on μ={(recap.derivation.mu_nominal_annual * 100).toFixed(0)}%,
-              σ={(recap.derivation.sigma_annual * 100).toFixed(1)}%,
-              tax={(recap.derivation.tax_rate * 100).toFixed(0)}%,
-              target age {recap.derivation.retirement_target_age.toFixed(0)}.{" "}
-              {recap.derivation.sourced_from}
-            </p>
-          ) : null}
           {headline.next_big_move ? (
             <p className="text-sm text-muted-foreground">
               {headline.next_big_move}
@@ -86,7 +88,10 @@ export function HeadlineCard({ recap }: HeadlineCardProps) {
 
         {recap.derivation?.readiness_by_policy &&
         recap.derivation.readiness_by_policy.length > 0 ? (
-          <ReadinessByPolicyStrip derivation={recap.derivation} />
+          <ReadinessByPolicyStrip
+            derivation={recap.derivation}
+            userId={userId}
+          />
         ) : null}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -225,15 +230,127 @@ function splitRationale(rationale: string): { why: string; means: string | null 
   };
 }
 
+// Format a NIS amount as ₪X.XM / ₪Xk / ₪X. Mirrors the project's "money in
+// plain English" convention; null/non-finite renders as an em-dash.
+function formatNis(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1_000_000) return `${sign}₪${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}₪${Math.round(abs / 1_000)}k`;
+  return `${sign}₪${Math.round(abs)}`;
+}
+
+// Read a numeric key out of the dual-track ``assumptions`` bag (values are
+// number | string). Returns null when absent or not a finite number so the
+// caller can skip the row instead of rendering NaN.
+function assumpNum(
+  bag: Record<string, number | string>,
+  key: string,
+): number | null {
+  const v = bag[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
+function assumpStr(
+  bag: Record<string, number | string>,
+  key: string,
+): string | null {
+  const v = bag[key];
+  return typeof v === "string" ? v : null;
+}
+
+function pct(value: number | null, digits = 0): string {
+  return value == null ? "—" : `${(value * 100).toFixed(digits)}%`;
+}
+
+// One regime's at-95 estate reading for a single retire-age. ``solvent`` is the
+// p_solvent_95 in [0,1]; ``honest`` flags the BEAR row when its solvency falls
+// below the 85% comfort line, so the table renders it in amber/rose.
+interface EstateRegimeRow {
+  name: DualTrackTrack["name"];
+  label: string;
+  medianRealNis: number;
+  worst10RealNis: number;
+  solvent: number;
+  honest: boolean;
+}
+
+// Pull the at-95 estate readings for one tile age across all three tracks by
+// finding each track's frontier point whose ``retire_age === age``. Returns []
+// when nothing matches (e.g. the age is outside the swept frontier), which the
+// caller treats as "no enrichment for this tile".
+function estateRowsForAge(
+  plan: DualTrackPlanResponse,
+  age: number,
+): EstateRegimeRow[] {
+  const rows: EstateRegimeRow[] = [];
+  for (const track of plan.tracks) {
+    const point = track.frontier.find((p) => p.retire_age === age);
+    if (point == null) continue;
+    rows.push({
+      name: track.name,
+      label: track.label,
+      medianRealNis: point.median_estate_real_nis,
+      worst10RealNis: point.worst10_estate_real_nis,
+      solvent: point.p_solvent_95,
+      honest: track.name === "bear" && point.p_solvent_95 < 0.85,
+    });
+  }
+  return rows;
+}
+
 function ReadinessByPolicyStrip({
   derivation,
+  userId,
 }: {
   derivation: HeadlineDerivationDTO;
+  userId: string;
 }) {
   // Two COMPUTED tracks only (drawdown + capital-preservation). The planned
   // target is an input → shown as a caption, not a co-equal tile.
   const tracks = derivation.readiness_by_policy ?? [];
   const target = derivation.retirement_target_age;
+
+  // Self-fetch the dual-track plan (the engine that actually produces these two
+  // ages). 1000 paths keeps the per-request cost responsive; the enrichment is
+  // strictly additive — the two tiles render immediately from the recap, and a
+  // fetch failure silently hides only the estate table + assumptions block.
+  const [plan, setPlan] = useState<DualTrackPlanResponse | null>(null);
+  const [enrichState, setEnrichState] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- justified: userId-driven fetch; toggling the loading flag inside the effect is the whole point
+    setEnrichState("loading");
+    api.retirement
+      .dualTrackPlan(userId, 1000)
+      .then((r) => {
+        if (cancelled) return;
+        setPlan(r);
+        setEnrichState("ready");
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPlan(null);
+        setEnrichState("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  // The two tile ages, in tile order (drawdown first, capital-preservation
+  // second), with the policy label so the estate sub-table can title itself.
+  const tileAges = tracks
+    .filter((v) => v.retire_ready_age != null)
+    .map((v) => ({
+      label: v.policy,
+      age: Math.round(v.retire_ready_age as number),
+    }));
+
   return (
     <div className="rounded-md border border-info/40 bg-info/5 p-3">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
@@ -285,7 +402,264 @@ function ReadinessByPolicyStrip({
           ? ` Your plan currently targets age ${target.toFixed(0)} — that's an input you chose, not a safe-age result.`
           : ""}
       </p>
+
+      {/* At-95 estate enrichment. Loading shows a "computing…" hint; an error
+          hides the block entirely (the two tiles above stand on their own). */}
+      {enrichState === "loading" ? (
+        <p className="text-[11px] text-muted-foreground mt-3 italic">
+          Computing at-95 estate and assumptions…
+        </p>
+      ) : enrichState === "ready" && plan ? (
+        <>
+          <EstateExplorer plan={plan} tileAges={tileAges} />
+          <AssumptionsDisclosure plan={plan} />
+        </>
+      ) : null}
     </div>
+  );
+}
+
+const REGIME_LABEL: Record<DualTrackTrack["name"], string> = {
+  bull: "Bull",
+  typical: "Typical",
+  bear: "Bear",
+};
+const REGIME_ORDER: Array<DualTrackTrack["name"]> = ["bull", "typical", "bear"];
+
+// Plain-English description of each market regime — answers "what does the MC
+// actually assume, and is 'bear' a 30-year slump?" right in the UI.
+function regimeBlurb(name: DualTrackTrack["name"]): string {
+  switch (name) {
+    case "bull":
+      return "a sustained good market (~6% real return per year).";
+    case "bear":
+      return "a −25% crash right as you retire plus a weak first decade — the sequence-of-returns risk that actually sinks retirements — then a normal market. It is NOT 30 years of falling prices; and every simulated path still has its own full year-to-year ups and downs around that lower start.";
+    default:
+      return "the central case (~5% real return per year).";
+  }
+}
+
+// Solvency → text colour: green ≥90%, amber 70–90%, rose <70%.
+function solvencyTone(s: number): string {
+  if (s >= 0.9) return "text-emerald-600 dark:text-emerald-400";
+  if (s >= 0.7) return "text-amber-600 dark:text-amber-400";
+  return "text-rose-600 dark:text-rose-400";
+}
+
+// Interactive at-95 explorer: pick a retire age (the two computed anchors) and a
+// market regime, and the solvency + estate readout updates live. Replaces the
+// static per-age tables so the data is clear and self-driven.
+function EstateExplorer({
+  plan,
+  tileAges,
+}: {
+  plan: DualTrackPlanResponse;
+  tileAges: Array<{ label: string; age: number }>;
+}) {
+  // Distinct anchor ages that actually have frontier data, in tile order.
+  const ages = tileAges.filter(
+    (t, i, arr) =>
+      arr.findIndex((x) => x.age === t.age) === i &&
+      estateRowsForAge(plan, t.age).length > 0,
+  );
+  const [age, setAge] = useState<number | null>(null);
+  const [regime, setRegime] = useState<DualTrackTrack["name"]>("typical");
+  if (ages.length === 0) return null;
+  const activeAge = age ?? ages[0].age;
+  const row =
+    estateRowsForAge(plan, activeAge).find((r) => r.name === regime) ?? null;
+  const nPaths = assumpNum(plan.assumptions ?? {}, "n_paths");
+
+  const segBtn = (active: boolean) =>
+    `px-3 py-1 text-xs font-medium font-mono transition-colors ${
+      active
+        ? "bg-primary text-primary-foreground"
+        : "bg-transparent text-muted-foreground hover:bg-muted/50"
+    }`;
+
+  return (
+    <div className="mt-3 rounded border border-border/50 bg-background/40 p-3">
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+        Explore — retire at … in a … market
+      </p>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2 mb-3">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-muted-foreground">Retire age</span>
+          <div className="inline-flex overflow-hidden rounded-md border border-border/60">
+            {ages.map((a) => (
+              <button
+                key={a.age}
+                type="button"
+                onClick={() => setAge(a.age)}
+                className={segBtn(activeAge === a.age)}
+              >
+                {a.age}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-muted-foreground">Market</span>
+          <div className="inline-flex overflow-hidden rounded-md border border-border/60">
+            {REGIME_ORDER.map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => setRegime(name)}
+                className={segBtn(regime === name)}
+              >
+                {REGIME_LABEL[name]}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {row ? (
+        <div className="rounded-md border border-border/60 bg-muted/10 p-3">
+          <p className="text-sm">
+            Retire at{" "}
+            <span className="font-semibold font-mono">{activeAge}</span>, in a{" "}
+            <span className="font-semibold">{REGIME_LABEL[regime]}</span> market:
+          </p>
+          <p
+            className={`mt-1 text-2xl font-semibold ${solvencyTone(row.solvent)}`}
+          >
+            {pct(row.solvent)} chance your money lasts to age 95
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            At 95 you&apos;d have{" "}
+            <span className="font-mono text-foreground">
+              {formatNis(row.medianRealNis)}
+            </span>{" "}
+            on a median path ·{" "}
+            <span className="font-mono text-foreground">
+              {formatNis(row.worst10RealNis)}
+            </span>{" "}
+            in the worst 10% — in today&apos;s money.
+          </p>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            <strong className="text-foreground">{REGIME_LABEL[regime]}</strong> ={" "}
+            {regimeBlurb(regime)}
+          </p>
+        </div>
+      ) : (
+        <p className="text-[11px] text-muted-foreground">
+          No simulation data for this combination.
+        </p>
+      )}
+
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        <strong className="text-foreground">&ldquo;Solvent&rdquo;</strong> = your
+        portfolio never runs out before age 95.{" "}
+        {nPaths != null ? `Of ~${nPaths.toLocaleString()} ` : "Of the "}simulated
+        market paths — each with its own random year-to-year ups and downs, not a
+        straight line — this is the share in which the money lasts.{" "}
+        <strong className="text-foreground">&ldquo;Estate&rdquo;</strong> is the
+        real (inflation-adjusted) wealth still left at 95.
+      </p>
+    </div>
+  );
+}
+
+function AssumptionsDisclosure({ plan }: { plan: DualTrackPlanResponse }) {
+  const [open, setOpen] = useState(false);
+  const a = plan.assumptions ?? {};
+
+  const muTypical = assumpNum(a, "mu_real_typical");
+  const muBull = assumpNum(a, "mu_real_bull");
+  const muCons = assumpNum(a, "mu_real_conservative");
+  const withdrawalTax = assumpNum(a, "withdrawal_tax");
+  const inflation = assumpNum(a, "inflation");
+  const sigmaCurrent = assumpNum(a, "sigma_current_calibrated");
+  const sigmaDiversified = assumpNum(a, "sigma_diversified");
+  const reserveDiscount = assumpNum(a, "reserve_discount_real");
+  const barDrawdown = assumpNum(a, "bar_drawdown");
+  const preservationTest = assumpStr(a, "preservation_test");
+
+  // Nominal ≈ real + inflation, used to spell out "real = after inflation".
+  const muNominalApprox =
+    muTypical != null && inflation != null ? muTypical + inflation : null;
+
+  return (
+    <section className="mt-3 rounded border border-border/40 bg-background/40 p-2.5 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full text-left flex items-center gap-2"
+      >
+        <span className="font-mono text-muted-foreground">
+          {open ? "▼" : "▸"}
+        </span>
+        <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          Assumptions &amp; how this age is computed
+        </span>
+      </button>
+      {open ? (
+        <ul className="mt-2 flex flex-col gap-2 text-muted-foreground">
+          <li>
+            <strong className="text-foreground">
+              There is no single &ldquo;target portfolio.&rdquo;
+            </strong>{" "}
+            This age is the earliest at which 90% of simulated market paths keep
+            you solvent to 95 — solvency-based, not target-based.
+          </li>
+          <li>
+            <strong className="text-foreground">Deployable capital</strong> —{" "}
+            {formatNis(plan.deployable_nis)} = {formatNis(plan.full_portfolio_nis)}{" "}
+            portfolio − {formatNis(plan.cgt_haircut_nis)} NVDA-sale CGT −{" "}
+            {formatNis(plan.reserve_pv_nis)} reserve (PV). This is the money the
+            simulation actually invests.
+          </li>
+          <li>
+            <strong className="text-foreground">Expected return</strong> —{" "}
+            {pct(muTypical, 1)} REAL (real = after inflation
+            {muNominalApprox != null
+              ? `, ≈${(muNominalApprox * 100).toFixed(1)}% nominal at ${pct(
+                  inflation,
+                  1,
+                )} inflation`
+              : ""}
+            ). Bull case {pct(muBull, 1)}, conservative {pct(muCons, 1)} — the
+            three regimes you see in the table.
+          </li>
+          <li>
+            <strong className="text-foreground">Volatility</strong> — glides{" "}
+            {pct(sigmaCurrent, 0)}→{pct(sigmaDiversified, 0)} as NVDA is sold down
+            to its strategic cap, so concentration risk fades as you diversify.
+          </li>
+          <li>
+            <strong className="text-foreground">Withdrawal tax</strong> —{" "}
+            {pct(withdrawalTax, 0)} (interim, basis-aware) applied to what you
+            draw, not the whole balance.
+          </li>
+          <li>
+            <strong className="text-foreground">Inflation</strong> —{" "}
+            {pct(inflation, 1)}; every figure above is in today&apos;s real
+            shekels.
+          </li>
+          <li>
+            <strong className="text-foreground">Spend</strong> — central{" "}
+            {formatNis(plan.spend_central_nis)} (incl. healthcare) vs stress{" "}
+            {formatNis(plan.spend_stress_nis)} (adds home upgrades); the age uses
+            the central spend, the stress line is the sensitivity.
+          </li>
+          <li>
+            <strong className="text-foreground">Reserve</strong> — held at PV{" "}
+            {formatNis(plan.reserve_pv_nis)} (safe-rate discounted,{" "}
+            {pct(reserveDiscount, 1)} real), not the full{" "}
+            {formatNis(plan.reserve_raw_nis)} removed upfront — so a finite
+            liability doesn&apos;t over-penalize the deployable base.
+          </li>
+          <li>
+            <strong className="text-foreground">Bars</strong> — drawdown ={" "}
+            {pct(barDrawdown, 0)} solvent to 95; capital-preservation ={" "}
+            {preservationTest ?? "worst-10% real terminal ≥ today's real principal"}
+            .
+          </li>
+        </ul>
+      ) : null}
+    </section>
   );
 }
 

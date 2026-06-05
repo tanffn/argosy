@@ -12,7 +12,6 @@ import { DeltaCard } from "@/components/plan/delta-card";
 import { DeltaMap } from "@/components/plan/delta-map";
 import { ActionsTimeline } from "@/components/plan/actions-timeline";
 import { AllocationGlidepathChart } from "@/components/plan/allocation-glidepath-chart";
-import { AssumptionsCard } from "@/components/plan/assumptions-card";
 import { ExecutiveSummaryCard } from "@/components/plan/executive-summary-card";
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { FullPlanNarrative } from "@/components/plan/full-plan-narrative";
@@ -126,7 +125,10 @@ export default function PlanPage() {
   const [glidepath, setGlidepath] =
     useState<AllocationGlidepathResponse | null>(null);
   // Wave 8 Piece C — pre-populated cashflow assumption defaults
-  // with per-field rationale tooltips. Drives AssumptionsCard.
+  // (calibrated sigma + goals_yaml inputs). Now consumed only as the
+  // seed for the recap Monte Carlo fetch below; the standalone
+  // AssumptionsCard was retired (the dual-track assumptions live inside
+  // the HeadlineCard "When can you retire?" collapsible instead).
   const [assumptions, setAssumptions] =
     useState<DefaultAssumptionsResponseDTO | null>(null);
   // Wave 8 Piece D — Monte Carlo projection for the recap surface.
@@ -1005,13 +1007,17 @@ export default function PlanPage() {
           can read instead of falling through to a stale-draft view. */}
       {viewState === "recap_current" && plan && (
         <>
-          {recapSummary ? <HeadlineCard recap={recapSummary} /> : null}
+          {recapSummary ? (
+            <HeadlineCard recap={recapSummary} userId={USER_ID} />
+          ) : null}
           {/* Wave 8 v2 polish: codex-recommended order is
-              Headline → Assumptions → Monthly Cashflow → Current
-              Allocation → NVDA → MC → Glidepath → Full Plan →
-              Actions/Triggers (last). Two-column charts where they
-              fit cleanly side-by-side. */}
-          <AssumptionsCard defaults={assumptions} />
+              Headline → Monthly Cashflow → Current Allocation → NVDA →
+              MC → Glidepath → Full Plan → Actions/Triggers (last).
+              Two-column charts where they fit cleanly side-by-side.
+              The cashflow assumptions now live inside the HeadlineCard's
+              "When can you retire?" panel as a collapsible (sourced from
+              the dual-track engine that actually produces the ages), so
+              the standalone AssumptionsCard is gone. */}
           <CashflowProjectionChart userId={USER_ID} />
           <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {planStructured ? (

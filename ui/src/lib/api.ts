@@ -1508,9 +1508,11 @@ export const api = {
     // the estate frontier per track, the spend-to-retire-now lever, and the
     // full assumption bag. Note the path keeps the project's `/api` prefix
     // convention (the other projection fetchers do the same).
-    dualTrackPlan: (userId: string) =>
+    dualTrackPlan: (userId: string, nPaths?: number) =>
       getJSON<DualTrackPlanResponse>(
-        `/api/retirement/projection/dual-track-plan?user_id=${encodeURIComponent(userId)}`,
+        `/api/retirement/projection/dual-track-plan?user_id=${encodeURIComponent(userId)}${
+          nPaths !== undefined ? `&n_paths=${nPaths}` : ""
+        }`,
       ),
     bituachLeumi: (
       userId: string,
