@@ -701,12 +701,15 @@ def _retirement(
         y2t: float | None = None
         target_age: int | None = None
         try:
-            from argosy.services.retirement.scenario_mc import (
-                earliest_feasible_retire_age,
+            from argosy.services.retirement.retirement_plan import (
+                RetirementAssumptions,
+                canonical_feasible_dual_track,
             )
-            canon = earliest_feasible_retire_age(
+            # Honest dual-track basis (sigma-glide + NVDA CGT + PV reserve + 10%
+            # interim tax + healthcare-in-central-spend), this scenario's real μ.
+            canon = canonical_feasible_dual_track(
                 session=session, user_id=user_id, target_p_solvent=0.90,
-                mu_real_central=r, n_paths=800, seed=42,
+                assumptions=RetirementAssumptions(mu_real_typical=r, n_paths=800),
             )
             if canon.earliest_feasible_age is not None:
                 target_age = int(round(canon.earliest_feasible_age))

@@ -489,19 +489,20 @@ def _compute_retire_ready_ages(
 
 
 def _canonical_feasible(db: Session, user_id: str, *, assumptions):
-    """The ONE canonical retirement-age result: the earliest age the base-case
-    MC clears 90% solvency with the finite-liability reserve earmarked
-    (sequence-of-returns aware). Supersedes the deterministic income-crossing
-    test that reported the current age. None on failure.
+    """The ONE canonical retirement-age result: the earliest age the TYPICAL
+    regime clears 90% solvency to 95 under the honest dual-track assumptions
+    (sigma-glide + NVDA-sale CGT + PV-discounted reserve + 5% real + 10% interim
+    tax + healthcare-in-central-spend), with the capital-preservation age carried
+    in ``basis``. Supersedes the optimistic sigma-flat / no-CGT canonical that
+    reported 49. None on failure.
     """
     try:
-        from argosy.services.retirement.scenario_mc import (
-            earliest_feasible_retire_age,
+        from argosy.services.retirement.retirement_plan import (
+            canonical_feasible_dual_track,
         )
-        return earliest_feasible_retire_age(
+        return canonical_feasible_dual_track(
             session=db, user_id=user_id, target_p_solvent=0.90,
             operational_target_age=assumptions.retirement_age.value,
-            n_paths=1500, seed=42,
         )
     except Exception:  # pragma: no cover - defensive
         return None
@@ -518,17 +519,34 @@ def _readiness_anchors(canon) -> list[ReadinessVerdictSummary]:
     ef_str = f"{ef:.0f}" if ef is not None else "not within horizon"
     p = canon.p_solvent_at_age
     p_str = f" ({p*100:.0f}% MC solvency@95)" if p is not None else ""
-    return [
+    basis = canon.basis or {}
+    pres = basis.get("preservation_age")
+    pres_p = basis.get("preservation_p")
+    pres_p_str = f" ({pres_p*100:.0f}% MC solvency@95)" if pres_p is not None else ""
+    anchors = [
         ReadinessVerdictSummary(
-            policy="Earliest safe (MC 90%, reserve-netted)",
+            policy="Retire ASAP — drawdown (MC 90%)",
             retire_ready_age=ef,
             rationale=(
-                f"Earliest age the base-case Monte Carlo clears 90% solvency to "
-                f"age 95 with the ₪{canon.reserve_netted_nis:,.0f} finite-"
-                f"liability reserve earmarked{p_str}. Sequence-of-returns aware "
-                "— supersedes the deterministic income-crossing test."
+                f"Earliest age the typical-market Monte Carlo clears 90% solvency "
+                f"to age 95 spending principal down, on the deconcentrated "
+                f"(sigma-glide + NVDA-sale CGT), reserve-netted basis{p_str}. "
+                "Sequence-of-returns aware; the honest number (not the optimistic "
+                "sigma-flat / no-CGT prior)."
             ),
         ),
+    ]
+    if pres is not None:
+        anchors.append(ReadinessVerdictSummary(
+            policy="Leave it to the kids — capital-preservation",
+            retire_ready_age=pres,
+            rationale=(
+                f"Earliest age the WORST-10% market path still leaves your real "
+                f"principal intact to your heirs{pres_p_str} — live off it forever "
+                "rather than spend it down. A what-if, not a constraint."
+            ),
+        ))
+    anchors += [
         ReadinessVerdictSummary(
             policy="Operational target",
             retire_ready_age=canon.operational_target_age,
@@ -544,6 +562,7 @@ def _readiness_anchors(canon) -> list[ReadinessVerdictSummary]:
             ),
         ),
     ]
+    return anchors
 
 
 def _compute_mu_sensitivity(

@@ -379,6 +379,89 @@ def build_retirement_plan(
     )
 
 
+def canonical_feasible_dual_track(
+    *,
+    session,
+    user_id: str,
+    target_p_solvent: float = 0.90,
+    operational_target_age: float | None = None,
+    assumptions: RetirementAssumptions | None = None,
+    today: date | None = None,
+):
+    """Lightweight canonical age for the /plan headline: the TYPICAL-regime
+    DRAWDOWN age (earliest clearing ``target_p_solvent`` to 95) under the
+    corrected dual-track assumptions, with the capital-preservation age carried
+    in ``basis``. ONE frontier sweep (fast — comparable to the old single-age
+    canonical), not the full dual-track build. Returns a
+    ``scenario_mc.FeasibleAgeResult`` so the existing headline/anchor code
+    consumes it unchanged but now off the HONEST numbers (not the optimistic
+    sigma-flat / no-CGT 49)."""
+    from argosy.services.cashflow_projection import ANNUITY_AGE, LUMP_PENSION_AGE
+    from argosy.services.retirement.scenario_mc import FeasibleAgeResult
+
+    a = assumptions or RetirementAssumptions()
+    if target_p_solvent and target_p_solvent != a.bar_drawdown:
+        a = replace(a, bar_drawdown=target_p_solvent)
+
+    g = _gather_inputs(session, user_id, today)
+    sigma_hi = _calibrated_sigma(session, user_id)
+    haircut = _nvda_deconcentration_haircut(session, user_id, g.household.portfolio_value_nis)
+    reserve_pv = _reserve_pv(g.reserve_nis, a.reserve_discount_real, a.reserve_avg_liability_years)
+    deployable = max(0.0, g.household.portfolio_value_nis - reserve_pv - haircut)
+    spend_central, _spend_stress = _split_spend(session, user_id)
+
+    current_age = g.household.current_age_years
+    years = _horizon_years_to_95(current_age)
+    months = max(1, min(years, 60)) * 12
+    start = max(int(math.ceil(current_age)), 1)
+    glide = _sigma_glidepath(
+        months=months, current_age=current_age, retirement_age=float(start),
+        sigma_hi=sigma_hi, sigma_lo=a.sigma_diversified,
+        taper_years=a.deconcentration_taper_years,
+    )
+    hh = replace(g.household, monthly_expenses_nis=spend_central / 12.0, portfolio_value_nis=deployable)
+
+    drawdown_age = pres_age = None
+    drawdown_p = pres_p = None
+    for ra in range(start, a.max_age + 1):
+        mc = _run_mc(hh=hh, pensions=g.pensions, retire_age=ra, years=years, months=months,
+                     mu_real=a.mu_real_typical, sigma_path=glide, a=a, bl_monthly=g.bl_monthly_nis,
+                     annuity_tax=g.annuity_tax_rate, current_age=current_age, today=today)
+        p95 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_95))
+        pt95 = _at_age(mc.series, 95.0)
+        p10_real = pt95.portfolio_value_p10_nis / ((1.0 + a.inflation) ** (95.0 - current_age))
+        if drawdown_age is None and p95 >= a.bar_drawdown:
+            drawdown_age, drawdown_p = float(ra), p95
+        if pres_age is None and p10_real >= deployable and p95 >= a.bar_preservation:
+            pres_age, pres_p = float(ra), p95
+        if drawdown_age is not None and pres_age is not None:
+            break
+
+    op_target = operational_target_age if operational_target_age is not None else 49.0
+    return FeasibleAgeResult(
+        earliest_feasible_age=drawdown_age,
+        p_solvent_at_age=drawdown_p,
+        target_p_solvent=a.bar_drawdown,
+        operational_target_age=float(op_target),
+        statutory_lump_age=int(LUMP_PENSION_AGE),
+        statutory_annuity_age=int(ANNUITY_AGE),
+        current_age=current_age,
+        reserve_netted_nis=reserve_pv,
+        basis={
+            "method": "dual-track typical drawdown (corrected assumptions; sigma-glide + CGT + PV reserve)",
+            "preservation_age": pres_age,
+            "preservation_p": pres_p,
+            "preservation_test": "worst-10% real terminal at 95 >= today's real deployable principal",
+            "spend_central_nis": spend_central,
+            "deployable_nis": deployable,
+            "mu_real": a.mu_real_typical,
+            "withdrawal_tax": a.withdrawal_tax,
+            "reserve_pv_nis": reserve_pv,
+            "source": "retirement_plan.canonical_feasible_dual_track",
+        },
+    )
+
+
 __all__ = [
     "RetirementAssumptions",
     "FrontierPoint",
@@ -386,4 +469,5 @@ __all__ = [
     "RetirementPlan",
     "compute_retirement_plan",
     "build_retirement_plan",
+    "canonical_feasible_dual_track",
 ]
