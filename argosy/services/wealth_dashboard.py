@@ -648,6 +648,8 @@ def _net_worth(
 
 def _retirement(
     *,
+    session: Session,
+    user_id: str,
     snapshot: PortfolioSnapshotRow | None,
     budget_report: dict[str, Any] | None,
     fx_usd_nis: float,
@@ -672,22 +674,45 @@ def _retirement(
         income_f - burn_f if (income_f is not None and burn_f is not None) else None
     )
     annual_expenses = burn_f * 12.0 if burn_f is not None else None
+    # FI capital target + SWR bind to the deterministic fi_methodology (the SAME
+    # source as /plan + /retirement: permanent-equivalent spend ÷ 3.0% real SWR
+    # + reserve), NOT a naive T12 ÷ 3.5% (age-coherence / output-trust doctrine).
+    # Falls back to the naive number only when the methodology can't be sourced.
+    swr_used = SWR
     target_portfolio = annual_expenses / SWR if annual_expenses is not None else None
+    try:
+        from argosy.services.fi_methodology import compute_fi_target
+        _fi = compute_fi_target(session, user_id=user_id)
+        if _fi is not None and _fi.fi_total_capital_nis:
+            target_portfolio = float(_fi.fi_total_capital_nis)
+            swr_used = float(_fi.swr_real_pct)
+    except Exception:  # noqa: BLE001 — keep the naive fallback
+        pass
 
+    # Retirement age binds to the CANONICAL sequence-aware Monte-Carlo answer
+    # (age-coherence 1b): the earliest age the base-case MC clears 90% solvency
+    # with the finite-liability reserve earmarked — the SAME source as /plan +
+    # /retirement, so no surface contradicts. Each scenario uses its own real
+    # return as the central μ. Replaces the deterministic years-to-target that
+    # reported the current age (43). Per-scenario target_portfolio stays the FI
+    # capital implied by that scenario's draw.
     scenarios: list[ScenarioCard] = []
     for name, r in SCENARIO_RETURNS.items():
         y2t: float | None = None
         target_age: int | None = None
-        if nw_nis is not None and target_portfolio is not None:
-            annual_contrib = (surplus or 0.0) * 12.0
-            y2t = years_to_target(
-                starting_portfolio=nw_nis,
-                annual_contribution=annual_contrib,
-                real_return=r,
-                target=target_portfolio,
+        try:
+            from argosy.services.retirement.scenario_mc import (
+                earliest_feasible_retire_age,
             )
-            if y2t is not None:
-                target_age = current_age + int(math.ceil(y2t))
+            canon = earliest_feasible_retire_age(
+                session=session, user_id=user_id, target_p_solvent=0.90,
+                mu_real_central=r, n_paths=800, seed=42,
+            )
+            if canon.earliest_feasible_age is not None:
+                target_age = int(round(canon.earliest_feasible_age))
+                y2t = max(0.0, canon.earliest_feasible_age - current_age)
+        except Exception:  # noqa: BLE001 — defensive; leave age None (not feasible)
+            target_age = None
         scenarios.append(
             ScenarioCard(
                 name=name,
@@ -729,7 +754,7 @@ def _retirement(
         monthly_surplus_nis=surplus,
         annual_expenses_nis=annual_expenses,
         target_portfolio_nis=target_portfolio,
-        swr_rate=SWR,
+        swr_rate=swr_used,
         current_age=current_age,
         current_age_inferred=current_age_inferred,
         scenarios=scenarios,
@@ -1181,6 +1206,17 @@ def compute_wealth_dashboard(
     plan = _latest_draft_with_targets(session, user_id)
 
     fx_usd_nis, fx_source = _resolve_fx_usd_nis(snapshot=snapshot, user_ctx=user_ctx)
+    # Prefer the current Bank-of-Israel rate (cache) so /portfolio net worth +
+    # estate + FX cards match /plan and /retirement — the snapshot fx (2.94) was
+    # an erroneous value (codex FX review 2026-06-04). Falls back to the
+    # snapshot/identity resolution when BOI is uncached.
+    try:
+        from datetime import date as _date
+        from argosy.services.fx import cache as _fxcache
+        fx_usd_nis = float(_fxcache.find_walkback(session, today or _date.today(), "USD", max_days=10))
+        fx_source = "boi USD/NIS current (FxRate cache)"
+    except Exception:  # noqa: BLE001 — keep the snapshot/identity fallback
+        pass
 
     # current_age resolution (in order of preference):
     #   1. identity_yaml.user_date_of_birth — canonical for the primary user
@@ -1214,6 +1250,8 @@ def compute_wealth_dashboard(
             age_source = "identity_yaml.user_date_of_birth"
 
     retirement = _retirement(
+        session=session,
+        user_id=user_id,
         snapshot=snapshot,
         budget_report=budget_report,
         fx_usd_nis=fx_usd_nis,

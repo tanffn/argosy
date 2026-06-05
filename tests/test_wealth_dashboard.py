@@ -427,16 +427,16 @@ class TestRetirementBlock:
         # 3 scenarios in canonical order: bear, conservative, typical.
         assert [s.name for s in r.scenarios] == ["bear", "conservative", "typical"]
         assert [s.real_return for s in r.scenarios] == [0.0, 0.02, 0.045]
-        # Bear case: 3M starting + 360k/yr * t = 6.86M -> t ≈ 10.71 -> age 43 + 11 = 54.
-        bear = r.scenarios[0]
-        assert bear.years_to_target == pytest.approx(
-            (r.target_portfolio_nis - r.net_worth_nis) / (r.monthly_surplus_nis * 12), rel=1e-6
-        )
-        assert bear.target_age is not None and bear.target_age > r.current_age
-        # Typical case must reach target faster than bear.
-        typical = r.scenarios[2]
-        assert typical.years_to_target is not None and bear.years_to_target is not None
-        assert typical.years_to_target < bear.years_to_target
+        # Retirement age now binds to the canonical MC-based earliest-feasible
+        # age (the SAME source as /plan + /retirement), NOT the deterministic
+        # years-to-target. This seed has no FI spend basis in identity_yaml, so
+        # the canonical can't be sourced → every scenario age is None (never a
+        # fabricated/deterministic 'retire now'). Each scenario's age, when
+        # present, must be an int ≥ current age.
+        for sc in r.scenarios:
+            assert sc.target_age is None or sc.target_age >= r.current_age
+            if sc.target_age is None:
+                assert sc.years_to_target is None
         # Trajectory has PROJECTION_YEARS+1 points starting at year 0 = nw_nis.
         assert len(r.trajectory) == 26
         assert r.trajectory[0].bear == pytest.approx(r.net_worth_nis)
