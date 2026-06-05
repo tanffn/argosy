@@ -30,6 +30,10 @@ from argosy.services.retirement.scenario_mc import (
     earliest_feasible_retire_age,
     run_retirement_scenarios,
 )
+from argosy.services.retirement.retirement_plan import (
+    RetirementAssumptions,
+    build_retirement_plan,
+)
 from argosy.services.retirement.safety_gates import compute_safety_gates
 from argosy.services.retirement.glide_path import compute_glide_path
 from argosy.services.retirement.healthcare import (
@@ -372,6 +376,78 @@ def get_feasible_age(
         "current_age": r.current_age,
         "reserve_netted_nis": r.reserve_netted_nis,
         "basis": r.basis,
+    }
+
+
+@router.get("/projection/dual-track-plan")
+def get_dual_track_plan(
+    user_id: str,
+    n_paths: int = 1500,
+    seed: int = 42,
+    db: Session = Depends(get_db),
+) -> dict:
+    """The dual-track retirement plan: the retire-age <-> estate tradeoff under
+    bull/typical/bear, with a DRAWDOWN-to-95 track (retire ASAP, spend principal)
+    and a CAPITAL-PRESERVATION track (worst-10% path still leaves today's real
+    principal — "leave it to the kids"). Also the per-age estate frontier, the
+    spend that makes retire-now safe, a stress-spend sensitivity, and an FX
+    what-if band. Everything live-derived from holdings x BOI FX; every
+    assumption echoed. 404 when the FI spend basis can't be sourced.
+
+    NOTE: heavier than the single-age endpoints (it sweeps ages across several
+    regimes). ``n_paths`` is tunable for responsiveness; the decision-grade
+    headline should be (re)computed at higher paths / multiple seeds, ideally as
+    a cached scheduler job rather than per-request."""
+    try:
+        plan = build_retirement_plan(
+            session=db, user_id=user_id,
+            assumptions=RetirementAssumptions(n_paths=n_paths, seed=seed),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    def _track(t) -> dict:
+        return {
+            "name": t.name,
+            "label": t.label,
+            "mu_real": t.mu_real,
+            "drawdown_age": t.drawdown_age,
+            "drawdown_p": t.drawdown_p,
+            "preservation_age": t.preservation_age,
+            "preservation_p": t.preservation_p,
+            "frontier": [
+                {
+                    "retire_age": p.retire_age,
+                    "p_solvent_95": p.p_solvent_95,
+                    "median_estate_nis": p.median_estate_nis,
+                    "median_estate_real_nis": p.median_estate_real_nis,
+                    "worst10_estate_nis": p.worst10_estate_nis,
+                    "worst10_estate_real_nis": p.worst10_estate_real_nis,
+                    "principal_preserved": p.principal_preserved,
+                }
+                for p in t.frontier
+            ],
+        }
+
+    return {
+        "current_age": plan.current_age,
+        "full_portfolio_nis": plan.full_portfolio_nis,
+        "cgt_haircut_nis": plan.cgt_haircut_nis,
+        "reserve_raw_nis": plan.reserve_raw_nis,
+        "reserve_pv_nis": plan.reserve_pv_nis,
+        "deployable_nis": plan.deployable_nis,
+        "spend_central_nis": plan.spend_central_nis,
+        "spend_stress_nis": plan.spend_stress_nis,
+        "sigma_current": plan.sigma_current,
+        "tracks": [_track(t) for t in plan.tracks],
+        "stress_drawdown_age": plan.stress_drawdown_age,
+        "stress_preservation_age": plan.stress_preservation_age,
+        "spend_to_retire_now_nis": plan.spend_to_retire_now_nis,
+        "fx_stress_band": [
+            {"fx_adverse_pct": hit, "drawdown_age": age}
+            for hit, age in plan.fx_stress_band
+        ],
+        "assumptions": plan.assumptions,
     }
 
 
