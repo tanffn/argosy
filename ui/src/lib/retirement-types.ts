@@ -60,6 +60,18 @@ export interface RuinProbabilityResponse {
   suggested_action: ValueWithRationale;
 }
 
+export interface FeasibleAgeResponse {
+  earliest_feasible_age: number | null;
+  p_solvent_at_age: number | null;
+  target_p_solvent: number;
+  operational_target_age: number;
+  statutory_lump_age: number;
+  statutory_annuity_age: number;
+  current_age: number;
+  reserve_netted_nis: number;
+  basis: Record<string, unknown>;
+}
+
 export interface ScenarioOutcome {
   name: "bear" | "base" | "bull";
   label: string;

@@ -488,57 +488,62 @@ def _compute_retire_ready_ages(
         return None, None
 
 
-def _compute_readiness_by_policy(
-    db: Session, user_id: str, *, assumptions
-) -> list[ReadinessVerdictSummary]:
-    """Run the deterministic projection once at the user's calibrated
-    assumptions, then evaluate all three readiness policies
-    (returns_only, swr_3_5, swr_4_0) against the same series.
-
-    Pure-function policy module is in
-    argosy.services.retirement.readiness_policy.
-
-    Returns [] on any failure (no plan, calibrator down, etc.) so the
-    headline degrades gracefully.
+def _canonical_feasible(db: Session, user_id: str, *, assumptions):
+    """The ONE canonical retirement-age result: the earliest age the base-case
+    MC clears 90% solvency with the finite-liability reserve earmarked
+    (sequence-of-returns aware). Supersedes the deterministic income-crossing
+    test that reported the current age. None on failure.
     """
     try:
-        from argosy.services.cashflow_projection import (
-            extract_household_state,
-            extract_pension_state,
-            project_cashflow,
+        from argosy.services.retirement.scenario_mc import (
+            earliest_feasible_retire_age,
         )
-        from argosy.services.retirement.readiness_policy import (
-            detect_retire_ready_all_policies,
+        return earliest_feasible_retire_age(
+            session=db, user_id=user_id, target_p_solvent=0.90,
+            operational_target_age=assumptions.retirement_age.value,
+            n_paths=1500, seed=42,
         )
-
-        hh = extract_household_state(db, user_id)
-        pen = extract_pension_state(db, user_id)
-        proj = project_cashflow(
-            household=hh,
-            pensions=pen,
-            retirement_age=assumptions.retirement_age.value,
-            years=50,
-            mu_nominal_annual=assumptions.mu_nominal_annual.value,
-            sigma_annual=assumptions.sigma_annual.value,
-            lifestyle_drift_annual=assumptions.lifestyle_drift_annual.value,
-            tax_rate=assumptions.tax_rate.value,
-            life_events=[],
-        )
-        verdicts = detect_retire_ready_all_policies(
-            proj.series,
-            current_portfolio_value_nis=hh.portfolio_value_nis,
-            target_annual_spend_nis=hh.monthly_expenses_nis * 12.0,
-        )
-        return [
-            ReadinessVerdictSummary(
-                policy=v.policy,
-                retire_ready_age=v.retire_ready_age,
-                rationale=v.rationale,
-            )
-            for v in verdicts
-        ]
     except Exception:  # pragma: no cover - defensive
+        return None
+
+
+def _readiness_anchors(canon) -> list[ReadinessVerdictSummary]:
+    """The three LABELED retirement-age anchors that all surfaces agree on —
+    replacing the deterministic 'by readiness policy' tiles that wrongly read
+    the current age. earliest-feasible (MC 90%, reserve-netted) /
+    operational-target / statutory (age-coherence 1b)."""
+    if canon is None:
         return []
+    ef = canon.earliest_feasible_age
+    ef_str = f"{ef:.0f}" if ef is not None else "not within horizon"
+    p = canon.p_solvent_at_age
+    p_str = f" ({p*100:.0f}% MC solvency@95)" if p is not None else ""
+    return [
+        ReadinessVerdictSummary(
+            policy="Earliest safe (MC 90%, reserve-netted)",
+            retire_ready_age=ef,
+            rationale=(
+                f"Earliest age the base-case Monte Carlo clears 90% solvency to "
+                f"age 95 with the ₪{canon.reserve_netted_nis:,.0f} finite-"
+                f"liability reserve earmarked{p_str}. Sequence-of-returns aware "
+                "— supersedes the deterministic income-crossing test."
+            ),
+        ),
+        ReadinessVerdictSummary(
+            policy="Operational target",
+            retire_ready_age=canon.operational_target_age,
+            rationale="The retirement age the plan operates around.",
+        ),
+        ReadinessVerdictSummary(
+            policy="Statutory (pension annuity + BL)",
+            retire_ready_age=float(canon.statutory_annuity_age),
+            rationale=(
+                f"Bituach Leumi + private-pension annuity age "
+                f"{canon.statutory_annuity_age}; tax-advantaged lump from "
+                f"{canon.statutory_lump_age}."
+            ),
+        ),
+    ]
 
 
 def _compute_mu_sensitivity(
@@ -657,15 +662,19 @@ def compute_recap_summary(
         assumptions = None
 
     if assumptions is not None:
-        base_age, bear_age = _compute_retire_ready_ages(
-            db, user_id, assumptions=assumptions
-        )
-        sensitivity = _compute_mu_sensitivity(
-            db, user_id, assumptions=assumptions
-        )
-        readiness_by_policy = _compute_readiness_by_policy(
-            db, user_id, assumptions=assumptions
-        )
+        # Age-coherence (1b): ALL surfaces bind to the canonical MC-based
+        # earliest-feasible age (reserve-netted, sequence-aware), NOT the
+        # deterministic income-crossing that reported the current age (44).
+        canon = _canonical_feasible(db, user_id, assumptions=assumptions)
+        base_age = canon.earliest_feasible_age if canon is not None else None
+        # The bear earliest-feasible is shown on the /retirement MC scenario
+        # card (base/bull/bear); the headline quotes the single canonical age.
+        bear_age = None
+        # The μ→age sensitivity is dropped here: it was the deterministic
+        # 67→44 cliff, and the coherent return-sensitivity now lives on
+        # /retirement (the μ-grid of P-solvent). Empty → UI hides the strip.
+        sensitivity = []
+        readiness_by_policy = _readiness_anchors(canon)
         # Read current age once for the "FI already on paper" framing
         # so the headline doesn't read "retire at 44" when the user
         # is already 44.

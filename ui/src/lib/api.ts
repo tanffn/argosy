@@ -28,6 +28,7 @@ export type {
   GateStatus,
   GateVerdict,
   HishtalmutWithdrawalTaxResponse,
+  FeasibleAgeResponse,
   MekademBandResponse,
   RuinProbabilityResponse,
   SafetyGatesResponse,
@@ -42,6 +43,7 @@ export type {
 } from "@/lib/retirement-types";
 import type {
   BLStipendResponse,
+  FeasibleAgeResponse,
   FxBandResponse,
   HishtalmutWithdrawalTaxResponse,
   MekademBandResponse,
@@ -1419,6 +1421,15 @@ export const api = {
       if (opts?.sigmaAnnual !== undefined) params.set("sigma_annual", String(opts.sigmaAnnual));
       return getJSON<RuinProbabilityResponse>(
         `/api/retirement/projection/ruin-probability?${params.toString()}`,
+      );
+    },
+    feasibleAge: (userId: string, opts?: { targetPSolvent?: number; nPaths?: number; seed?: number }) => {
+      const params = new URLSearchParams({ user_id: userId });
+      if (opts?.targetPSolvent !== undefined) params.set("target_p_solvent", String(opts.targetPSolvent));
+      if (opts?.nPaths !== undefined) params.set("n_paths", String(opts.nPaths));
+      if (opts?.seed !== undefined) params.set("seed", String(opts.seed));
+      return getJSON<FeasibleAgeResponse>(
+        `/api/retirement/projection/feasible-age?${params.toString()}`,
       );
     },
     projectionScenarios: (

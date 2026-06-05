@@ -218,15 +218,13 @@ function ReadinessByPolicyStrip({
 }: {
   derivation: HeadlineDerivationDTO;
 }) {
-  const labels: Record<string, string> = {
-    returns_only: "Returns-only",
-    swr_3_5: "SWR 3.5% (plan)",
-    swr_4_0: "SWR 4.0%",
-  };
+  // The backend now emits the three reconciled age ANCHORS (earliest-safe /
+  // operational-target / statutory) as the policy label; render it directly.
+  const labels: Record<string, string> = {};
   return (
     <div className="rounded-md border border-info/40 bg-info/5 p-3">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
-        Earliest retirement age by readiness policy
+        Retirement age — earliest-safe · target · statutory
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
         {(derivation.readiness_by_policy ?? []).map((v) => (
@@ -247,10 +245,11 @@ function ReadinessByPolicyStrip({
         ))}
       </div>
       <p className="text-[11px] text-muted-foreground mt-2">
-        Returns-only never touches principal. SWR 3.5% is the Bengen-
-        style reading your plan uses. SWR 4.0% is more aggressive.
-        These ages differ because they answer different questions —
-        hover any tile for the underlying math.
+        Earliest-safe is the earliest age the Monte Carlo clears 90% solvency
+        with the finite-liability reserve earmarked (sequence-of-returns aware).
+        Target is the plan&apos;s operating age; statutory is the pension/BL age.
+        Hover any tile for the backing numbers. Return-sensitivity lives on
+        the /retirement μ-grid.
       </p>
     </div>
   );

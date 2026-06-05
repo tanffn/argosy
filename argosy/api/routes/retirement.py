@@ -26,7 +26,10 @@ from argosy.services.retirement.mekadem import (
 )
 from argosy.services.retirement.reference import ResolveError, resolve
 from argosy.services.retirement.ruin_probability import compute_ruin_probability
-from argosy.services.retirement.scenario_mc import run_retirement_scenarios
+from argosy.services.retirement.scenario_mc import (
+    earliest_feasible_retire_age,
+    run_retirement_scenarios,
+)
 from argosy.services.retirement.safety_gates import compute_safety_gates
 from argosy.services.retirement.glide_path import compute_glide_path
 from argosy.services.retirement.healthcare import (
@@ -336,6 +339,39 @@ def get_projection_scenarios(
         "fat_tail_p_solvent_95": g.fat_tail_p_solvent_95,
         "t12_sensitivity_p_solvent_95": g.t12_sensitivity_p_solvent_95,
         "assumptions": g.assumptions,
+    }
+
+
+@router.get("/projection/feasible-age")
+def get_feasible_age(
+    user_id: str,
+    target_p_solvent: float = 0.90,
+    n_paths: int = 1500,
+    seed: int | None = 42,
+    db: Session = Depends(get_db),
+) -> dict:
+    """The ONE canonical retirement-age answer (age-coherence 1b): the earliest
+    age the base-case MC clears the solvency bar with the finite-liability
+    reserve earmarked, plus the labeled anchors (earliest-feasible /
+    operational-target / statutory) so no surface contradicts another. 404 when
+    the FI basis can't be sourced."""
+    try:
+        r = earliest_feasible_retire_age(
+            session=db, user_id=user_id, target_p_solvent=target_p_solvent,
+            n_paths=n_paths, seed=seed,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {
+        "earliest_feasible_age": r.earliest_feasible_age,
+        "p_solvent_at_age": r.p_solvent_at_age,
+        "target_p_solvent": r.target_p_solvent,
+        "operational_target_age": r.operational_target_age,
+        "statutory_lump_age": r.statutory_lump_age,
+        "statutory_annuity_age": r.statutory_annuity_age,
+        "current_age": r.current_age,
+        "reserve_netted_nis": r.reserve_netted_nis,
+        "basis": r.basis,
     }
 
 
