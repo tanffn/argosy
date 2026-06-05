@@ -91,7 +91,7 @@ function tierHeadline(tier: "green" | "amber" | "red"): string {
     case "amber":
       return "Material variability";
     case "red":
-      return "Stress-test fails";
+      return "Tail risk to stress-test";
   }
 }
 
@@ -128,8 +128,23 @@ function ModelAssumptionsFooter({
   const a = (response.assumptions ?? {}) as Record<string, unknown>;
   const lumpAge = readNumberKey(a, "lump_pension_age", 60);
   const annuityAge = readNumberKey(a, "annuity_age", 67);
-  const mu = readNumberKey(a, "mu_nominal_annual", 0.07);
+  // Nominal μ comes off the response (5% real + inflation ≈ 7.5% nominal
+  // on the plan-series feed) — never a hardcoded 7%. Fall back to the
+  // response's real_return + inflation if the nominal key is absent.
+  const realReturn = readNumberKey(
+    a,
+    "real_return_annual",
+    readNumberKey(a, "mu_real_typical", Number.NaN),
+  );
   const inflation = readNumberKey(a, "inflation_annual", 0.025);
+  const mu = readNumberKey(
+    a,
+    "mu_nominal_annual",
+    Number.isFinite(realReturn) ? realReturn + inflation : Number.NaN,
+  );
+  // The plan-series feed applies a flat interim withdrawal tax (10% by
+  // default) on what you draw, not the legacy age-banded schedule.
+  const withdrawalTax = readNumberKey(a, "tax_rate", Number.NaN);
   const mekadem = readNumberKey(a, "mekadem", 200);
   const fx = response.fx_usd_nis;
   return (
@@ -168,23 +183,52 @@ function ModelAssumptionsFooter({
             NIS/USD). All internal math runs in NIS; USD figures in
             this chart are converted at this single rate (i.e. FX is
             held constant across the horizon — material FX moves are
-            NOT modelled in this projection). The plan was authored
-            at <span className="font-mono">3.50</span> NIS/USD;
-            shekel appreciation since then has already moved your
-            USD-denominated targets.
+            NOT modelled in this projection).
           </p>
           <p>
             <strong className="text-foreground">Other knobs.</strong> μ
-            (expected return) = <span className="font-mono">{(mu * 100).toFixed(1)}%</span>{" "}
-            nominal; inflation = <span className="font-mono">{(inflation * 100).toFixed(1)}%</span>;{" "}
-            tax engine is age-banded (25% pre-60 → 15% during 60-67
-            lump window → 12% from 67 onward).
+            (expected return) ={" "}
+            {Number.isFinite(realReturn) ? (
+              <>
+                <span className="font-mono">
+                  {(realReturn * 100).toFixed(1)}%
+                </span>{" "}
+                real
+                {Number.isFinite(mu) ? (
+                  <>
+                    {" "}
+                    (≈
+                    <span className="font-mono">{(mu * 100).toFixed(1)}%</span>{" "}
+                    nominal)
+                  </>
+                ) : null}
+              </>
+            ) : Number.isFinite(mu) ? (
+              <>
+                <span className="font-mono">{(mu * 100).toFixed(1)}%</span>{" "}
+                nominal
+              </>
+            ) : (
+              "—"
+            )}
+            ; inflation ={" "}
+            <span className="font-mono">{(inflation * 100).toFixed(1)}%</span>;{" "}
+            withdrawal tax ={" "}
+            {Number.isFinite(withdrawalTax) ? (
+              <span className="font-mono">
+                {(withdrawalTax * 100).toFixed(0)}%
+              </span>
+            ) : (
+              "—"
+            )}{" "}
+            interim (a flat, basis-aware rate applied to what you draw,
+            not the whole balance).
           </p>
           <p>
             <strong className="text-foreground">Verdict thresholds.</strong>{" "}
-            P(broke before 95) &lt; 0.5% → Likely solvent. 0.5-5% →
-            Material variability. 5-20% → Material variability with
-            tail risk worth stress-testing. ≥ 20% → Stress-test fails.
+            P(broke before 95) &lt; 5% → Likely solvent. 5-20% →
+            Material variability worth stress-testing the tail against.
+            ≥ 20% → the stress test starts to fail.
           </p>
         </div>
       ) : null}

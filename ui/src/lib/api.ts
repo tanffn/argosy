@@ -2581,6 +2581,29 @@ export const api = {
       `/api/plan/current/cashflow-monte-carlo?${qs.toString()}`,
     );
   },
+  // Monte Carlo series on the DUAL-TRACK PLAN basis (deconcentrated
+  // NVDA, σ-glide 34→18%, reserve-netted at PV, 5% real / 10% interim
+  // tax) for a selected retire age + market regime. Returns the same
+  // ``MonteCarloProjectionResponse`` shape as
+  // ``planCurrentCashflowMonteCarlo`` but reconciles with the headline
+  // dual-track ages instead of the stale "keep-NVDA, do nothing" config.
+  // ``regime`` is one of "typical" | "bull" | "bear".
+  planSeries: (
+    userId: string,
+    opts?: {
+      retire_age?: number;
+      regime?: "typical" | "bull" | "bear";
+      n_paths?: number;
+    },
+  ) => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (opts?.retire_age != null) qs.set("retire_age", String(opts.retire_age));
+    if (opts?.regime != null) qs.set("regime", opts.regime);
+    if (opts?.n_paths != null) qs.set("n_paths", String(opts.n_paths));
+    return getJSON<MonteCarloProjectionResponse>(
+      `/api/plan/current/plan-series?${qs.toString()}`,
+    );
+  },
   planSpeculativeTake: (
     userId: string,
     ticker: string,
@@ -3862,6 +3885,13 @@ export interface MonteCarloProjectionResponse {
     annuity_age: number;
     n_paths: number;
     model_notes: string;
+    // The dual-track ``/current/plan-series`` feed populates the same
+    // ``project_monte_carlo`` assumptions bag (so the keys above all
+    // apply), but may additionally carry the canonical real-return key
+    // when sourced from the retirement engine. Index signature so the
+    // chart can read any optional plan-basis key without a cast.
+    mu_real_typical?: number;
+    [key: string]: number | string | undefined;
   };
 }
 

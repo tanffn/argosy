@@ -90,10 +90,14 @@ function fmtSignedUsd(n: number): string {
 
 export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps) {
   const [data, setData] = useState<CashflowProjectionResponse | null>(null);
-  const [retirementAge, setRetirementAge] = useState<number>(49);
+  // Seeds toward the honest dual-track baseline: retire ~47, 10% interim
+  // withdrawal tax, ≈7.5% nominal (5% real + 2.5% inflation). σ stays at the
+  // calibrated diversified-equity default. These are still what-if sliders —
+  // the headline ages come from the dedicated plan-series engine.
+  const [retirementAge, setRetirementAge] = useState<number>(47);
   const [scenario, setScenario] = useState<Scenario>("typical");
-  const [taxRate, setTaxRate] = useState<number>(0.25);
-  const [muNominal, setMuNominal] = useState<number>(0.08);
+  const [taxRate, setTaxRate] = useState<number>(0.1);
+  const [muNominal, setMuNominal] = useState<number>(0.075);
   const [portfolioOverrideUsd, setPortfolioOverrideUsd] = useState<number | null>(null);
   const [sigmaAnnual, setSigmaAnnual] = useState<number>(0.18);
   const [lifestyleDriftAnnual, setLifestyleDriftAnnual] = useState<number>(0.0);
@@ -556,7 +560,7 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
           <label className="flex items-center gap-2">
             <span className="text-muted-foreground">
               tax (cap gains)
-              <InfoIcon title="Israeli capital gains rate applied to portfolio income (the returns you withdraw). Default 25%. Pension annuity is NOT tax-adjusted in this model." />
+              <InfoIcon title="Interim withdrawal tax applied to portfolio income (the returns you withdraw). Default 10% — the basis-aware interim rate the plan uses, not the headline 25% cap-gains rate. Pension annuity is NOT tax-adjusted in this model." />
             </span>
             <input
               type="range"
@@ -570,11 +574,19 @@ export function CashflowProjectionChart({ userId }: CashflowProjectionChartProps
             />
             <span className="font-mono w-8 text-right">{(taxRate * 100).toFixed(0)}%</span>
           </label>
+          {/* Advanced what-if knobs — collapsed by default to cut the
+              control-bar density. The headline ages come from the
+              dedicated plan-series engine; these are stress-test sliders. */}
+          <details className="w-full">
+            <summary className="cursor-pointer text-muted-foreground select-none">
+              Stress-test knobs (advanced)
+            </summary>
+            <div className="mt-2 flex flex-wrap items-center gap-4">
           <label className="flex items-center gap-2">
             <span className="text-muted-foreground">
               μ nominal
               <InfoIcon
-                title={`Expected portfolio return per year (nominal, before subtracting inflation). Default 0.08 = S&P 500 long-term historical. Drop to 0.04-0.05 for a stress-test of a flat/sideways decade. Real return (what you actually earn after inflation) = μ - 0.025.`}
+                title={`Expected portfolio return per year (nominal, before subtracting inflation). Default 0.075 ≈ the plan's 5% real + 2.5% inflation. Bump toward 0.08-0.10 for an optimistic equity run, or drop to 0.04-0.05 to stress-test a flat/sideways decade. Real return (what you actually earn after inflation) = μ - 0.025.`}
               />
             </span>
             <input
@@ -691,6 +703,8 @@ Effective expense growth = inflation_annual + lifestyle_drift.`} />
               </button>
             )}
           </label>
+            </div>
+          </details>
           {view === "deterministic" && <fieldset className="flex items-center gap-2 border-0 p-0 m-0">
             <legend className="text-muted-foreground sr-only">Scenario</legend>
             <span className="text-muted-foreground">

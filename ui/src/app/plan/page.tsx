@@ -17,8 +17,7 @@ import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { FullPlanNarrative } from "@/components/plan/full-plan-narrative";
 import { PlanFullDetailCard } from "@/components/plan/plan-full-detail";
 import { HeadlineCard } from "@/components/plan/headline-card";
-import { MonteCarloBandsChart } from "@/components/plan/monte-carlo-bands-chart";
-import { CashflowInflowOutflowChart } from "@/components/plan/cashflow-inflow-outflow-chart";
+import { PlanVisualization } from "@/components/plan/plan-visualization";
 import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
 import { CashflowProjectionChart } from "@/components/plan/cashflow-projection-chart";
 import { SourcesHeatmap } from "@/components/plan/sources-heatmap";
@@ -42,8 +41,6 @@ import {
   type HorizonView,
   type InFlightSynthesisDTO,
   type AllocationGlidepathResponse,
-  type DefaultAssumptionsResponseDTO,
-  type MonteCarloProjectionResponse,
   type NvdaTrajectoryResponse,
   type PlanCurrentDTO,
   type PortfolioSnapshotDTO,
@@ -124,18 +121,12 @@ export default function PlanPage() {
   // ActionsTimeline (excluded non-pct targets) + the Piece B2 chart.
   const [glidepath, setGlidepath] =
     useState<AllocationGlidepathResponse | null>(null);
-  // Wave 8 Piece C — pre-populated cashflow assumption defaults
-  // (calibrated sigma + goals_yaml inputs). Now consumed only as the
-  // seed for the recap Monte Carlo fetch below; the standalone
-  // AssumptionsCard was retired (the dual-track assumptions live inside
-  // the HeadlineCard "When can you retire?" collapsible instead).
-  const [assumptions, setAssumptions] =
-    useState<DefaultAssumptionsResponseDTO | null>(null);
-  // Wave 8 Piece D — Monte Carlo projection for the recap surface.
-  // Fetched lazily after the assumptions arrive so the projection
-  // uses the calibrated sigma + goals_yaml-sourced inputs.
-  const [monteCarlo, setMonteCarlo] =
-    useState<MonteCarloProjectionResponse | null>(null);
+  // The /plan portfolio-bands + cashflow-coverage charts now self-fetch
+  // the dual-track Monte Carlo series (see PlanVisualization), so the
+  // recap no longer pre-fetches a stale-basis projection here. The
+  // standalone AssumptionsCard was retired too — the dual-track
+  // assumptions live inside the HeadlineCard "When can you retire?"
+  // collapsible.
   const [draft, setDraft] = useState<DraftResponse | null>(null);
   const [objections, setObjections] = useState<FMObjectionsResponse | null>(null);
   // Live target-progress map keyed by item_id — fetched in parallel with
@@ -184,9 +175,6 @@ export default function PlanPage() {
     const glidepathP = api
       .planCurrentAllocationGlidepath(USER_ID)
       .catch(() => null);
-    const assumptionsP = api
-      .planCurrentCashflowDefaultAssumptions(USER_ID)
-      .catch(() => null);
     const draftP = api.planDraft(USER_ID).catch(() => null);
     const objP = api.planDraftObjections(USER_ID).catch(() => null);
     const snapP = api.portfolioSnapshot(USER_ID).catch(() => null);
@@ -205,7 +193,6 @@ export default function PlanPage() {
         planStructuredV,
         recapV,
         glidepathV,
-        assumptionsV,
         draftV,
         objV,
         snapV,
@@ -217,7 +204,6 @@ export default function PlanPage() {
         planStructuredP,
         recapP,
         glidepathP,
-        assumptionsP,
         draftP,
         objP,
         snapP,
@@ -229,7 +215,6 @@ export default function PlanPage() {
       setPlanStructured(planStructuredV);
       setRecapSummary(recapV);
       setGlidepath(glidepathV);
-      setAssumptions(assumptionsV);
       setDraft(draftV);
       setObjections(objV);
       setSnapshot(snapV);
@@ -242,35 +227,6 @@ export default function PlanPage() {
       setLoading(false);
     }
   }, []);
-
-  // Wave 8 Piece D — fetch the recap's Monte Carlo projection once
-  // the calibrated assumptions arrive. Re-fetch only when the
-  // calibrated sigma / retirement_age / etc. shift; the chart caches
-  // by reference equality otherwise. Defensive: any failure resolves
-  // to null and the chart renders its "unavailable" empty state.
-  useEffect(() => {
-    if (assumptions == null) return;
-    let cancelled = false;
-    api
-      .planCurrentCashflowMonteCarlo(USER_ID, {
-        years: 50,
-        retirement_age: assumptions.retirement_age.value,
-        tax_rate: assumptions.tax_rate.value,
-        mu_nominal_annual: assumptions.mu_nominal_annual.value,
-        sigma_annual: assumptions.sigma_annual.value,
-        lifestyle_drift_annual: assumptions.lifestyle_drift_annual.value,
-        n_paths: 1000,
-      })
-      .then((r) => {
-        if (!cancelled) setMonteCarlo(r);
-      })
-      .catch(() => {
-        if (!cancelled) setMonteCarlo(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [assumptions]);
 
   // Poll the in-flight synthesis endpoint while one is running so the
   // phase counter on the "Synthesis in flight" card ticks up live. The
@@ -1025,8 +981,7 @@ export default function PlanPage() {
             ) : null}
             <NvdaTrajectoryChart data={nvda} />
           </section>
-          <MonteCarloBandsChart response={monteCarlo} />
-          <CashflowInflowOutflowChart response={monteCarlo} />
+          <PlanVisualization userId={USER_ID} />
           <AllocationGlidepathChart response={glidepath} />
           <FullPlanNarrative
             userId={USER_ID}
