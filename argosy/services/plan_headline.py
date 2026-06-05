@@ -523,16 +523,23 @@ def _readiness_anchors(canon) -> list[ReadinessVerdictSummary]:
     pres = basis.get("preservation_age")
     pres_p = basis.get("preservation_p")
     pres_p_str = f" ({pres_p*100:.0f}% MC solvency@95)" if pres_p is not None else ""
+    gap = int(pres - ef) if (pres is not None and ef is not None) else None
+    gap_str = f" — about {gap} more working years than retiring ASAP" if gap else ""
+    # Only the two COMPUTED tracks are shown as tiles. The statutory age (67) is
+    # kept in the calc (annuity + BL credited from 67) but no longer a tile; the
+    # operational/planned target is an INPUT, demoted to a caption in the UI.
     anchors = [
         ReadinessVerdictSummary(
             policy="Retire ASAP — drawdown (MC 90%)",
             retire_ready_age=ef,
             rationale=(
-                f"Earliest age the typical-market Monte Carlo clears 90% solvency "
-                f"to age 95 spending principal down, on the deconcentrated "
-                f"(sigma-glide + NVDA-sale CGT), reserve-netted basis{p_str}. "
-                "Sequence-of-returns aware; the honest number (not the optimistic "
-                "sigma-flat / no-CGT prior)."
+                f"WHY: the earliest age the typical-market Monte Carlo (5% real) "
+                f"clears 90% solvency to age 95 while DRAWING THE PORTFOLIO DOWN — "
+                f"on the deconcentrated (NVDA sold to its cap, volatility glided "
+                f"34%→18%) and reserve-netted basis{p_str}. "
+                "WHAT IT MEANS: you could stop working at this age and the money "
+                "lasts to 95 in ~9 of 10 market paths; the worst 10% is sequence-"
+                "of-returns risk, cushioned by your pension + Bituach Leumi from 67."
             ),
         ),
     ]
@@ -541,27 +548,14 @@ def _readiness_anchors(canon) -> list[ReadinessVerdictSummary]:
             policy="Leave it to the kids — capital-preservation",
             retire_ready_age=pres,
             rationale=(
-                f"Earliest age the WORST-10% market path still leaves your real "
-                f"principal intact to your heirs{pres_p_str} — live off it forever "
-                "rather than spend it down. A what-if, not a constraint."
+                f"WHY: the earliest age at which even the WORST-10% market path "
+                f"still leaves your principal intact in real (inflation-adjusted) "
+                f"terms by age 95{pres_p_str}. "
+                "WHAT IT MEANS: you live off returns instead of spending the nest "
+                "egg down, so you hand roughly today's real wealth (or more) to the "
+                f"kids{gap_str}. A what-if to see the tradeoff, not a constraint."
             ),
         ))
-    anchors += [
-        ReadinessVerdictSummary(
-            policy="Operational target",
-            retire_ready_age=canon.operational_target_age,
-            rationale="The retirement age the plan operates around.",
-        ),
-        ReadinessVerdictSummary(
-            policy="Statutory (pension annuity + BL)",
-            retire_ready_age=float(canon.statutory_annuity_age),
-            rationale=(
-                f"Bituach Leumi + private-pension annuity age "
-                f"{canon.statutory_annuity_age}; tax-advantaged lump from "
-                f"{canon.statutory_lump_age}."
-            ),
-        ),
-    ]
     return anchors
 
 

@@ -213,43 +213,77 @@ export function HeadlineCard({ recap }: HeadlineCardProps) {
  *     (matches the user's plan-stated framework)
  *   - swr_4_0: more aggressive 4% SWR
  */
+// Split a "WHY: … WHAT IT MEANS: …" rationale into its two labeled parts so the
+// hover panel can render them as a clean why / implication pair.
+function splitRationale(rationale: string): { why: string; means: string | null } {
+  const marker = "WHAT IT MEANS:";
+  const i = rationale.indexOf(marker);
+  if (i === -1) return { why: rationale.replace(/^WHY:\s*/i, "").trim(), means: null };
+  return {
+    why: rationale.slice(0, i).replace(/^WHY:\s*/i, "").trim(),
+    means: rationale.slice(i + marker.length).trim(),
+  };
+}
+
 function ReadinessByPolicyStrip({
   derivation,
 }: {
   derivation: HeadlineDerivationDTO;
 }) {
-  // The backend now emits the three reconciled age ANCHORS (earliest-safe /
-  // operational-target / statutory) as the policy label; render it directly.
-  const labels: Record<string, string> = {};
+  // Two COMPUTED tracks only (drawdown + capital-preservation). The planned
+  // target is an input → shown as a caption, not a co-equal tile.
+  const tracks = derivation.readiness_by_policy ?? [];
+  const target = derivation.retirement_target_age;
   return (
     <div className="rounded-md border border-info/40 bg-info/5 p-3">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
-        Retirement age — earliest-safe · target · statutory
+        When can you retire? — spend it down vs. leave it to the kids
       </p>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-        {(derivation.readiness_by_policy ?? []).map((v) => (
-          <div
-            key={v.policy}
-            className="rounded border border-border/60 p-2"
-            title={v.rationale}
-          >
-            <p className="text-[10px] text-muted-foreground">
-              {labels[v.policy] ?? v.policy}
-            </p>
-            <p className="text-lg font-semibold font-mono">
-              {v.retire_ready_age == null
-                ? "—"
-                : `age ${v.retire_ready_age.toFixed(0)}`}
-            </p>
-          </div>
-        ))}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {tracks.map((v) => {
+          const { why, means } = splitRationale(v.rationale ?? "");
+          return (
+            <div
+              key={v.policy}
+              tabIndex={0}
+              className="group relative rounded border border-border/60 p-2.5 cursor-help outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+            >
+              <p className="text-[11px] font-medium text-muted-foreground">
+                {v.policy}
+              </p>
+              <p className="text-2xl font-semibold font-mono tabular-nums">
+                {v.retire_ready_age == null
+                  ? "—"
+                  : `age ${v.retire_ready_age.toFixed(0)}`}
+              </p>
+              {/* Styled hover/focus panel — replaces the native title tooltip. */}
+              <div
+                role="tooltip"
+                className="pointer-events-none absolute left-0 top-full z-30 mt-2 hidden w-[22rem] max-w-[90vw] rounded-lg border border-border/70 bg-popover p-3 text-left text-xs leading-relaxed text-popover-foreground shadow-xl group-hover:block group-focus-visible:block"
+              >
+                <p className="mb-1 font-semibold text-foreground">{v.policy}</p>
+                <p className="mb-2">
+                  <span className="font-semibold text-muted-foreground">Why this age: </span>
+                  {why}
+                </p>
+                {means ? (
+                  <p>
+                    <span className="font-semibold text-muted-foreground">What it means: </span>
+                    {means}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
       </div>
       <p className="text-[11px] text-muted-foreground mt-2">
-        Earliest-safe is the earliest age the Monte Carlo clears 90% solvency
-        with the finite-liability reserve earmarked (sequence-of-returns aware).
-        Target is the plan&apos;s operating age; statutory is the pension/BL age.
-        Hover any tile for the backing numbers. Return-sensitivity lives on
-        the /retirement μ-grid.
+        Both ages are computed live (typical 5%-real market, deconcentrated +
+        reserve-netted, pension + Bituach Leumi credited from 67). Hover or focus
+        a tile for the why and the implications.
+        {target != null
+          ? ` Your plan currently targets age ${target.toFixed(0)} — that's an input you chose, not a safe-age result.`
+          : ""}
       </p>
     </div>
   );
