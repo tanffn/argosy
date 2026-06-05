@@ -7,21 +7,24 @@ user **where/how to invest** to get there — not merely report one age. Every n
 live-derived from current holdings × current BOI FX, every assumption shown, no magic
 numbers. (feedback_argosy_prime_directive, feedback_output_trust_doctrine.)
 
-## Definition of "safe" (the one parameter that sets the ages)
+## Definition of "safe" — DUAL TRACK (show both; what-if, not a commitment)
 
-**Safe = P(portfolio never hits zero before age 95) ≥ BAR**, reserve-netted
-(₪1.45M finite-liability reserve earmarked out), permanent-equivalent spend basis
-(₪311,584/yr), private pension annuity + Bituach Leumi credited from 67, lump from 60.
-**Default BAR = 0.90.** Bar is a surfaced, user-tunable assumption.
+Two cases surfaced side by side so the owner sees the **retire-age ↔ estate-left-to-kids** tradeoff:
+- **Drawdown-to-95**: P(portfolio never hits zero before 95) ≥ BAR (default 0.90). "Retire ASAP, spend principal if needed."
+- **Capital-preservation**: P@95 ≥ 0.99 AND median real terminal wealth ≥ real wealth at retirement. "Live off it forever, leave the principal to the kids."
 
-## Live acceptance anchors (computed 2026-06-05; the build must reproduce these)
+Both reserve-netted at the **PV of scheduled liabilities** (not the full ₪1.45M upfront), pension+BL credited from 67, lump from 60. BAR is user-tunable; an **FX-stress band** is shown as a what-if (not a forced hedge). The plan shows the whole retire-age curve with per-age median + worst-10% bequest, not a single number.
 
-Deployable (deconcentrated, reserve-netted) portfolio = **₪8,687,223**. σ-glide 34.4→18% / 3y.
+## Live acceptance anchors (post-audit corrected set, 2026-06-05; build must reproduce)
 
-- Earliest safe age @90%: **bull (5.5% real) = 47 · typical (4.5%) = 51 · bear (4.5%+−25%+low decade) = 59**
-- Bar sensitivity (typical): 85%→50 · 90%→51 · 95%→53 · 99%→58
-- **Spend-X to retire today (44) @90% typical = ₪227,440/yr (₪18,953/mo)** vs current ₪311,584/yr (≈27% cut)
-- Methodology already codex-verified: 51 is the honest central age (band 50–52); double-count vs understated-NVDA-tax offset. See `tmp_review/codex_sigma_cgt_verdict.md`.
+Corrected defaults: **5.0% real central** return (4.5% as a labeled conservative case), **10% interim withdrawal tax** (basis-aware schedule later), **PV/scheduled reserve** (~₪1.15M, not ₪1.45M upfront), spend **₪281.6k central / ₪311.6k stress**. Deployable ≈ ₪8.99M. My sweep + codex's independent audit converge:
+
+- **Drawdown-safe (90% to 95, typical 5% real, central spend): age 46** (stress spend → 48).
+- **Capital-preservation (P@95 ≥ 99% + real principal intact): age 52.**
+- **Codex single-most-defensible central: age 49** (band 48–50). 51 = too conservative; "now" = not decision-grade.
+- Retire-age ↔ estate (typical): even the earliest drawdown case leaves a large median legacy (retire 46 → median ₪108M / ₪30.7M real; worst-10% ₪2.5M). Waiting buys **downside-bequest** protection, not median legacy.
+- FX what-if (stronger shekel cuts USD-asset NIS value): 0%→46 · 10%→47 · 20%→48.
+- Audits: `tmp_review/codex_sigma_cgt_verdict.md` (σ/CGT), `tmp_review/codex_assumption_audit_verdict.md` (assumption stack).
 
 ## Components (with file ownership + interface contracts — agents stay in their lane)
 
