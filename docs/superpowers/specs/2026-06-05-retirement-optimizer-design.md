@@ -17,13 +17,13 @@ Both reserve-netted at the **PV of scheduled liabilities** (not the full ₪1.45
 
 ## Live acceptance anchors (post-audit corrected set, 2026-06-05; build must reproduce)
 
-Corrected defaults: **5.0% real central** return (4.5% as a labeled conservative case), **10% interim withdrawal tax** (basis-aware schedule later), **PV/scheduled reserve** (~₪1.15M, not ₪1.45M upfront), spend **₪281.6k central / ₪311.6k stress**. Deployable ≈ ₪8.99M. My sweep + codex's independent audit converge:
+Corrected defaults (post codex code-review): **5.0% real central** (4.5% conservative case), **10% interim withdrawal tax**, finite-liability reserve at the **PV discounted at a safe ~2% real rate** (₪1.31M, not ₪1.45M upfront), spend **₪296.6k central** (incl. healthcare ramp) / **₪311.6k stress** (+ home upgrades). Deployable ≈ ₪8.82M. Estates read at age 95; capital-preservation = worst-10% path still preserves real principal. My sweep + codex review converge:
 
-- **Drawdown-safe (90% to 95, typical 5% real, central spend): age 46** (stress spend → 48).
-- **Capital-preservation (P@95 ≥ 99% + real principal intact): age 52.**
-- **Codex single-most-defensible central: age 49** (band 48–50). 51 = too conservative; "now" = not decision-grade.
-- Retire-age ↔ estate (typical): even the earliest drawdown case leaves a large median legacy (retire 46 → median ₪108M / ₪30.7M real; worst-10% ₪2.5M). Waiting buys **downside-bequest** protection, not median legacy.
-- FX what-if (stronger shekel cuts USD-asset NIS value): 0%→46 · 10%→47 · 20%→48.
+- **Drawdown-safe (90% to 95, central spend): bull 45 · typical 47 · bear 56.**
+- **Capital-preservation (worst-10% leaves today's real principal): bull 50 · typical 55 · bear 66.**
+- **Honest central ≈ 49** (drawdown 47 ↔ preservation 55). 51 = too conservative; 46/"now" = too optimistic.
+- Spend-to-retire-now ≈ ₪260.6k (vs ₪296.6k central).
+- FX what-if (stronger shekel, hit on gross USD assets first): 0%→47, +0–1 yr at 10–20%.
 - Audits: `tmp_review/codex_sigma_cgt_verdict.md` (σ/CGT), `tmp_review/codex_assumption_audit_verdict.md` (assumption stack).
 
 ## Components (with file ownership + interface contracts — agents stay in their lane)
