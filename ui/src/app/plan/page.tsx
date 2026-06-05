@@ -19,6 +19,7 @@ import { FullPlanNarrative } from "@/components/plan/full-plan-narrative";
 import { PlanFullDetailCard } from "@/components/plan/plan-full-detail";
 import { HeadlineCard } from "@/components/plan/headline-card";
 import { MonteCarloBandsChart } from "@/components/plan/monte-carlo-bands-chart";
+import { CashflowInflowOutflowChart } from "@/components/plan/cashflow-inflow-outflow-chart";
 import { NvdaTrajectoryChart } from "@/components/plan/nvda-trajectory-chart";
 import { CashflowProjectionChart } from "@/components/plan/cashflow-projection-chart";
 import { SourcesHeatmap } from "@/components/plan/sources-heatmap";
@@ -1019,6 +1020,7 @@ export default function PlanPage() {
             <NvdaTrajectoryChart data={nvda} />
           </section>
           <MonteCarloBandsChart response={monteCarlo} />
+          <CashflowInflowOutflowChart response={monteCarlo} />
           <AllocationGlidepathChart response={glidepath} />
           <FullPlanNarrative
             userId={USER_ID}

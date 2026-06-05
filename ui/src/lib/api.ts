@@ -3763,6 +3763,10 @@ export interface MonteCarloPoint {
   fraction_solvent: number;
   pension_annuity_monthly_usd: number;
   expenses_monthly_usd: number;
+  bl_monthly_usd: number;
+  lump_amount_usd: number;
+  portfolio_net_draw_monthly_usd: number;
+  portfolio_gross_withdrawal_monthly_usd: number;
 }
 
 export interface MonteCarloProjectionResponse {
