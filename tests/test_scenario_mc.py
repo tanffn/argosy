@@ -255,3 +255,54 @@ class TestDbAdapter:
                     user_id="ariel", session=s, n_paths=50, seed=1,
                     today=date(2026, 1, 1),
                 )
+
+
+class TestEarliestFeasibleAge:
+    """The ONE canonical retirement age every surface binds to: the earliest
+    age the MC base case clears the solvency bar with the finite-liability
+    reserve earmarked (codex/age-coherence 1b). Kills the deterministic 44."""
+
+    def test_contract_reserve_netted_and_labeled(self, client_with_db):
+        from argosy.services.retirement.scenario_mc import earliest_feasible_retire_age
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full(s)
+            r = earliest_feasible_retire_age(
+                session=s, user_id="ariel", target_p_solvent=0.90,
+                operational_target_age=49.0, n_paths=400, seed=42, today=date(2026, 1, 1),
+            )
+        # Labeled anchors + the reserve genuinely earmarked out of the portfolio.
+        assert r.target_p_solvent == 0.90
+        assert r.statutory_lump_age == 60 and r.statutory_annuity_age == 67
+        assert r.operational_target_age == 49.0
+        assert r.reserve_netted_nis > 0
+        # Portfolio used for the sweep is net of the earmarked reserve.
+        assert r.basis["portfolio_after_reserve_nis"] >= 0
+        assert r.basis["reserve_netted_nis"] == r.reserve_netted_nis
+        # When an age IS found it must actually clear the bar and be ≥ current age
+        # (NEVER the deterministic current-age 'retire now' artifact unless it
+        # genuinely clears the sequence-aware MC bar).
+        if r.earliest_feasible_age is not None:
+            assert r.earliest_feasible_age >= r.current_age
+            assert r.p_solvent_at_age >= 0.90
+
+    def test_clears_with_a_large_portfolio(self, client_with_db):
+        """A genuinely over-funded portfolio DOES clear the MC bar — proving the
+        'found' path (not just always-None)."""
+        from argosy.services.retirement.scenario_mc import earliest_feasible_retire_age
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_full(s)
+            # Bump the snapshot to a clearly-over-funded portfolio.
+            from argosy.state.models import PortfolioSnapshotRow
+            from sqlalchemy import select, desc
+            snap = s.execute(select(PortfolioSnapshotRow).where(
+                PortfolioSnapshotRow.user_id == "ariel").order_by(desc(PortfolioSnapshotRow.id)).limit(1)).scalar_one()
+            snap.totals_json = json.dumps({"fx_usd_nis": 3.7, "total_usd_value_k": 9000.0})  # ~₪33M
+            s.commit()
+            r = earliest_feasible_retire_age(
+                session=s, user_id="ariel", target_p_solvent=0.90,
+                n_paths=400, seed=42, today=date(2026, 1, 1),
+            )
+        assert r.earliest_feasible_age is not None
+        assert r.p_solvent_at_age >= 0.90

@@ -297,22 +297,24 @@ def simulate_scenarios(
     )
 
 
-def run_retirement_scenarios(
-    *,
-    user_id: str,
-    session,
-    retirement_age: float = 49.0,
-    n_paths: int = 2000,
-    seed: int | None = None,
-    today: date | None = None,
-) -> ScenarioGrid:
-    """DB adapter: resolve the spend basis + BL stipend, then run the core.
+@dataclass(frozen=True)
+class _GatheredInputs:
+    household: HouseholdState
+    pensions: PensionState
+    spend_basis_annual_nis: float
+    spend_t12_annual_nis: float
+    reserve_nis: float
+    bl_monthly_nis: float
+    bl_source: str
+    annuity_tax_rate: float
+    annuity_tax_source: str
 
-    Spend basis = ``fi_methodology.permanent_annual_spend_nis`` (the number the
-    FI target was sized on). BL = the central old-age stipend estimate for the
-    user (Ariel only; spouse stipend is a documented pending uplift — crediting
-    one stipend is the conservative choice). Raises ``ValueError`` when the FI
-    basis cannot be sourced — never substitutes a fabricated constant.
+
+def _gather_inputs(session, user_id: str, today: date | None) -> _GatheredInputs:
+    """Resolve the shared scenario inputs once (spend basis, finite-liability
+    reserve, BL stipend, effective annuity tax). Single source so the scenario
+    grid AND the earliest-feasible-age sweep bind to identical assumptions.
+    Raises ValueError when the FI spend basis can't be sourced (never fabricated).
     """
     from argosy.services.fi_methodology import compute_fi_target
     from argosy.services.retirement.bituach_leumi import estimate_bl_stipend
@@ -328,6 +330,7 @@ def run_retirement_scenarios(
             "(fi_methodology returned no baseline) — refusing to fabricate one."
         )
     spend_basis_annual = float(fi.permanent_annual_spend_nis)
+    reserve_nis = float(fi.finite_liability_reserve_nis or 0.0)
 
     spend_t12_annual = household.monthly_expenses_nis * 12.0
     if spend_t12_annual <= 0:
@@ -335,51 +338,149 @@ def run_retirement_scenarios(
 
     age = household.current_age_years
     age_int = max(0, int(round(age)))
-    # BL insured-year convention matches the BL card: full-time work from ~22.
     history_years = max(0, age_int - 22)
     bl_monthly = 0.0
     bl_src = "bituach_leumi.estimate_bl_stipend.monthly_nis (Ariel; no spouse uplift)"
     try:
         est = estimate_bl_stipend(
-            current_age=age_int,
-            contribution_history_years=history_years,
-            spouse_eligible=False,
-            user_id=user_id,
-            session=session,
+            current_age=age_int, contribution_history_years=history_years,
+            spouse_eligible=False, user_id=user_id, session=session,
         )
         bl_monthly = float(est.monthly_nis.value or 0.0)
-    except Exception:  # noqa: BLE001 — BL is an income credit; absence is conservative
+    except Exception:  # noqa: BLE001
         bl_monthly = 0.0
         bl_src = "bituach_leumi unavailable — BL income not credited (conservative)"
 
-    # Effective income tax on the post-67 private pension annuity, sourced from
-    # the ITA exemption phasing + household marginal rate (codex review
-    # 2026-06-04). Use the claim-year (age 67) so the exemption schedule is
-    # applied at the right point.
     base_year = (today or date.today()).year
     claim_year = base_year + max(0, int(round(67.0 - age)))
     annuity_tax = effective_pension_annuity_tax(
         user_id=user_id, session=session, year=claim_year,
     )
 
-    return simulate_scenarios(
-        household=household,
-        pensions=pensions,
-        retirement_age=retirement_age,
-        spend_basis_annual_nis=spend_basis_annual,
-        spend_t12_annual_nis=spend_t12_annual,
-        bl_monthly_nis=bl_monthly,
+    return _GatheredInputs(
+        household=household, pensions=pensions,
+        spend_basis_annual_nis=spend_basis_annual, spend_t12_annual_nis=spend_t12_annual,
+        reserve_nis=reserve_nis, bl_monthly_nis=bl_monthly, bl_source=bl_src,
         annuity_tax_rate=annuity_tax,
-        n_paths=n_paths,
-        seed=seed,
-        today=today,
-        spend_basis_source=(
-            "fi_methodology.permanent_annual_spend_nis"
-        ),
-        bl_source=bl_src,
-        annuity_tax_source=(
-            f"tax_engine.effective_pension_annuity_tax (claim year {claim_year})"
-        ),
+        annuity_tax_source=f"tax_engine.effective_pension_annuity_tax (claim year {claim_year})",
+    )
+
+
+def run_retirement_scenarios(
+    *,
+    user_id: str,
+    session,
+    retirement_age: float = 49.0,
+    n_paths: int = 2000,
+    seed: int | None = None,
+    today: date | None = None,
+) -> ScenarioGrid:
+    """DB adapter: resolve the spend basis + BL stipend, then run the core."""
+    g = _gather_inputs(session, user_id, today)
+    return simulate_scenarios(
+        household=g.household, pensions=g.pensions, retirement_age=retirement_age,
+        spend_basis_annual_nis=g.spend_basis_annual_nis,
+        spend_t12_annual_nis=g.spend_t12_annual_nis,
+        bl_monthly_nis=g.bl_monthly_nis, annuity_tax_rate=g.annuity_tax_rate,
+        n_paths=n_paths, seed=seed, today=today,
+        spend_basis_source="fi_methodology.permanent_annual_spend_nis",
+        bl_source=g.bl_source, annuity_tax_source=g.annuity_tax_source,
+    )
+
+
+@dataclass(frozen=True)
+class FeasibleAgeResult:
+    """The ONE canonical retirement-age answer every surface binds to.
+
+    ``earliest_feasible_age`` is the earliest age the base-case Monte Carlo
+    clears ``target_p_solvent`` at 95 with the finite-liability reserve
+    earmarked (sequence-of-returns aware). This is the honest "earliest you can
+    safely retire" — it supersedes the deterministic income-crossing test that
+    reported the current age. The other ages are the labeled anchors so no
+    surface contradicts another (age-coherence 1b).
+    """
+    earliest_feasible_age: float | None
+    p_solvent_at_age: float | None
+    target_p_solvent: float
+    operational_target_age: float
+    statutory_lump_age: int
+    statutory_annuity_age: int
+    current_age: float
+    reserve_netted_nis: float
+    basis: dict
+
+
+def earliest_feasible_retire_age(
+    *,
+    session,
+    user_id: str,
+    target_p_solvent: float = 0.90,
+    mu_real_central: float = 0.045,
+    operational_target_age: float = 49.0,
+    n_paths: int = 2000,
+    seed: int | None = 42,
+    today: date | None = None,
+    max_age: int = 70,
+) -> FeasibleAgeResult:
+    """Sweep retirement age and return the earliest the base-case MC clears the
+    solvency bar — reserve-netted, permanent-equivalent spend, BL credited,
+    annuity taxed. The reserve (education/mortgage/weddings) is earmarked out of
+    the portfolio because it WILL be spent, so it can't also fund the perpetuity.
+    """
+    from argosy.services.cashflow_projection import (
+        ANNUITY_AGE,
+        DEFAULT_SIGMA_ANNUAL,
+        LUMP_PENSION_AGE,
+    )
+
+    g = _gather_inputs(session, user_id, today)
+    infl = DEFAULT_INFLATION_ANNUAL
+    current_age = g.household.current_age_years
+    years = _horizon_years_to_95(current_age)
+    netted_portfolio = max(0.0, g.household.portfolio_value_nis - g.reserve_nis)
+    hh = replace(
+        g.household,
+        monthly_expenses_nis=g.spend_basis_annual_nis / 12.0,
+        portfolio_value_nis=netted_portfolio,
+    )
+
+    earliest: float | None = None
+    p_at: float | None = None
+    start = max(int(math.ceil(current_age)), 1)
+    for ra in range(start, max_age + 1):
+        mc = project_monte_carlo(
+            household=hh, pensions=g.pensions, retirement_age=float(ra), years=years,
+            mu_nominal_annual=mu_real_central + infl, sigma_annual=DEFAULT_SIGMA_ANNUAL,
+            inflation_annual=infl, n_paths=n_paths, seed=seed, today=today,
+            tax_rate=EFFECTIVE_WITHDRAWAL_TAX, apply_age_aware_tax=False,
+            bl_annuity_monthly_nis=g.bl_monthly_nis, annuity_tax_rate=g.annuity_tax_rate,
+        )
+        p95 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_95))
+        if p95 >= target_p_solvent:
+            earliest, p_at = float(ra), p95
+            break
+
+    return FeasibleAgeResult(
+        earliest_feasible_age=earliest,
+        p_solvent_at_age=p_at,
+        target_p_solvent=target_p_solvent,
+        operational_target_age=operational_target_age,
+        statutory_lump_age=int(LUMP_PENSION_AGE),
+        statutory_annuity_age=int(ANNUITY_AGE),
+        current_age=current_age,
+        reserve_netted_nis=g.reserve_nis,
+        basis={
+            "method": "earliest age base-case MC clears the solvency bar, reserve-netted",
+            "target_p_solvent": target_p_solvent,
+            "mu_real_central": mu_real_central,
+            "spend_basis_annual_nis": g.spend_basis_annual_nis,
+            "reserve_netted_nis": g.reserve_nis,
+            "portfolio_after_reserve_nis": netted_portfolio,
+            "bl_monthly_nis": g.bl_monthly_nis,
+            "annuity_tax_rate": g.annuity_tax_rate,
+            "n_paths": n_paths,
+            "source": "scenario_mc.earliest_feasible_retire_age",
+        },
     )
 
 
@@ -387,6 +488,8 @@ __all__ = [
     "ScenarioOutcome",
     "GridPoint",
     "ScenarioGrid",
+    "FeasibleAgeResult",
     "simulate_scenarios",
     "run_retirement_scenarios",
+    "earliest_feasible_retire_age",
 ]
