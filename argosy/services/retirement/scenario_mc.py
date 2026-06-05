@@ -58,11 +58,14 @@ from argosy.services.retirement.regime_switch_mc import simulate_regime_switch
 
 
 # --- Documented scenario parameters (auditable, not LLM guesses). -----------
-SCENARIO_MU_REAL: dict[str, float] = {"base": 0.045, "bull": 0.055}
+# Aligned to the canonical dual-track set (retirement_plan.RetirementAssumptions):
+# typical 5.0% real / bull 6.0% so the /retirement scenario grid agrees with the
+# dual-track card on the same page (was 4.5/5.5).
+SCENARIO_MU_REAL: dict[str, float] = {"base": 0.050, "bull": 0.060}
 BEAR_SHOCK_PCT = 0.25
-BEAR_ACCUM_REAL = 0.045      # accumulation: no reason to assume bad luck PRE-retirement
+BEAR_ACCUM_REAL = 0.050      # accumulation: no reason to assume bad luck PRE-retirement
 BEAR_DECADE_REAL = 0.03      # retirement years 1-10 sequence-risk decade
-BEAR_RECOVERY_REAL = 0.045   # codex range 4.0-4.5; use the top (anti-over-conservatism)
+BEAR_RECOVERY_REAL = 0.050   # post-decade recovery; matches the typical central
 BEAR_DECADE_YEARS = 10
 MU_GRID_REAL: list[float] = [0.040, 0.045, 0.050, 0.055]
 

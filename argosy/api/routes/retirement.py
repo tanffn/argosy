@@ -33,6 +33,7 @@ from argosy.services.retirement.scenario_mc import (
 from argosy.services.retirement.retirement_plan import (
     RetirementAssumptions,
     build_retirement_plan,
+    canonical_feasible_dual_track,
 )
 from argosy.services.retirement.safety_gates import compute_safety_gates
 from argosy.services.retirement.glide_path import compute_glide_path
@@ -360,9 +361,12 @@ def get_feasible_age(
     operational-target / statutory) so no surface contradicts another. 404 when
     the FI basis can't be sourced."""
     try:
-        r = earliest_feasible_retire_age(
+        # Canonical dual-track engine (deconcentrated, σ-glide 34→18%, 5% real,
+        # 10% interim tax) so this card matches the dual-track card on the same
+        # page — not the legacy flat-σ / 4.5% engine that read a different age.
+        r = canonical_feasible_dual_track(
             session=db, user_id=user_id, target_p_solvent=target_p_solvent,
-            n_paths=n_paths, seed=seed,
+            assumptions=RetirementAssumptions(n_paths=n_paths, seed=seed),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

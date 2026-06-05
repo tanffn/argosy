@@ -617,6 +617,24 @@ def _truncate_key_finding(response_text: str, max_chars: int = 200) -> str:
             if isinstance(val, str) and val.strip():
                 text = val.strip()
                 break
+        else:
+            # Structured output with no summary-style key (e.g. withdrawal_sequencer,
+            # whose fields are fi_bridge / withdrawal_schedule / fi_base / …). Do NOT
+            # fall through to line-1 of the raw JSON — that yields a bare "{". Build a
+            # compact finding from the object's scalar fields, else its field names.
+            # Generic, so it fixes EVERY structured-output agent at once (no per-symptom).
+            scalars = [
+                f"{k}: {v}"
+                for k, v in parsed.items()
+                if isinstance(v, (str, int, float, bool)) and str(v).strip()
+            ]
+            text = (
+                "; ".join(scalars[:3])
+                if scalars
+                else f"(structured output: {', '.join(list(parsed)[:6])})"
+            )
+    elif isinstance(parsed, list) and parsed:
+        text = f"(structured output — {len(parsed)} items)"
     # Take first non-empty line.
     for raw_line in text.splitlines():
         line = raw_line.strip().lstrip("#-*> ").strip()
