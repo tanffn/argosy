@@ -30,7 +30,6 @@ from dataclasses import dataclass, replace
 from datetime import date
 
 from argosy.services.cashflow_projection import (
-    DEFAULT_TAXABLE_GAIN_FRACTION,
     HouseholdState,
     PensionState,
 )
@@ -54,7 +53,7 @@ from argosy.services.retirement.scenario_mc import (
 #
 # Base statutory CGT on the real gain for individual residents (post-2003
 # acquisitions). The taxable-gain fraction itself (how much of a SALE is gain)
-# is handled separately via DEFAULT_TAXABLE_GAIN_FRACTION; this rate applies to
+# is handled separately via NVDA_TAXABLE_GAIN_FRACTION; this rate applies to
 # the gain.
 CGT_BASE_RATE = 0.25
 # `mas yesef` high-income general surtax: +3% on the portion of the year's income
@@ -71,6 +70,14 @@ SURTAX_THRESHOLD_NIS = 721_560.0
 CGT_MARGINAL_ABOVE_THRESHOLD = (
     CGT_BASE_RATE + SURTAX_GENERAL_RATE + SURTAX_CAPITAL_SOURCE_RATE
 )
+# Safe real rate for discounting the multi-year tax stream to present value —
+# future-year CGT is a deferred liability, so charging it all at t=0 over-
+# penalizes slower horizons (codex money-math review 2026-06-07).
+TAX_DISCOUNT_REAL = 0.02
+# Fraction of the NVDA SALE that is taxable gain. NVDA is RSU-sourced (basis =
+# vest-date FMV) and has run up hard, so most of the sale is embedded gain —
+# 0.8 (codex review: 0.6 is a portfolio-wide blend, too low for this lot).
+NVDA_TAXABLE_GAIN_FRACTION = 0.8
 
 DEFAULT_HORIZONS: tuple[int, ...] = (1, 2, 3, 4, 5)
 
@@ -80,13 +87,14 @@ def effective_cgt_rate(annual_taxable_gain_nis: float) -> float:
     taxable capital gain (in NIS, real terms — the statutory base is the real
     gain; cost basis is CPI-indexed, see capital_gains.md).
 
-    The gain is taxed at 25% up to the high-income threshold and ~30% above it
-    (25% base + 3% `mas yesef` + 2% capital-source levy). Spreading a fixed total
-    gain across MORE years keeps more of each year below the threshold → a lower
-    blended rate; bunching it into ONE year pushes more above → a higher blended
-    rate. This is the lever the horizon optimizer trades against the σ-glide.
+    For a high earner already past the threshold on labour income, the 3% `mas
+    yesef` general surtax applies to the WHOLE capital gain (25% + 3% = 28%); only
+    the 2% capital-source levy (2025+) is gated to the slice ABOVE the threshold,
+    taking the rate to 30% there. So spreading a fixed total gain across MORE
+    years only shrinks the 2% layer (the 3% is unavoidable) → a smaller bunching
+    penalty than a naive threshold-gated model suggests (codex review 2026-06-07).
 
-    Returns a rate in [0.25, 0.30]. A non-positive gain returns the base rate
+    Returns a rate in [0.28, 0.30]. A non-positive gain returns the base rate
     (no tax is actually due, but the *rate* is the base — the caller multiplies
     by the gain).
     """
@@ -96,8 +104,8 @@ def effective_cgt_rate(annual_taxable_gain_nis: float) -> float:
     above = max(0.0, gain - SURTAX_THRESHOLD_NIS)
     tax = (
         CGT_BASE_RATE * gain
-        + SURTAX_GENERAL_RATE * above
-        + SURTAX_CAPITAL_SOURCE_RATE * above
+        + SURTAX_GENERAL_RATE * gain          # 3% mas-yesef on the WHOLE gain
+        + SURTAX_CAPITAL_SOURCE_RATE * above  # 2% only above the threshold
     )
     return tax / gain
 
@@ -114,7 +122,11 @@ def total_cgt_for_horizon(total_taxable_gain_nis: float, horizon_years: int) -> 
     gain = max(0.0, float(total_taxable_gain_nis))
     per_year = gain / h
     rate = effective_cgt_rate(per_year)
-    total = rate * gain  # = H × (rate × per_year), the Σ over H equal tranches
+    annual_tax = rate * per_year
+    # PV of the tax stream paid across years 0..H-1 at a safe real discount rate.
+    # Future-year tax is a deferred liability; charging it all at t=0 would over-
+    # penalize slower horizons (codex review). H=1 → no discount (paid now).
+    total = sum(annual_tax / ((1.0 + TAX_DISCOUNT_REAL) ** i) for i in range(h))
     return total, rate
 
 
@@ -250,7 +262,7 @@ def optimize_deconcentration_core(
             "surtax_capital_source_rate": SURTAX_CAPITAL_SOURCE_RATE,
             "surtax_threshold_nis": SURTAX_THRESHOLD_NIS,
             "cgt_marginal_above_threshold": CGT_MARGINAL_ABOVE_THRESHOLD,
-            "taxable_gain_fraction": DEFAULT_TAXABLE_GAIN_FRACTION,
+            "taxable_gain_fraction": NVDA_TAXABLE_GAIN_FRACTION,
             "gain_terms": "real NIS gain (statutory base is the CPI-indexed real gain)",
             "cgt_model": (
                 "per calendar year: 25% on the gain + 3% mas yesef + 2% capital-"
@@ -335,7 +347,7 @@ def optimize_deconcentration(
     full_portfolio = g.household.portfolio_value_nis
     reserve_pv = _reserve_pv(g.reserve_nis, a.reserve_discount_real, a.reserve_avg_liability_years)
     sell_nis, nvda_pct, cap_pct = _resolve_nvda_sell(session, user_id, full_portfolio)
-    total_taxable_gain = sell_nis * DEFAULT_TAXABLE_GAIN_FRACTION
+    total_taxable_gain = sell_nis * NVDA_TAXABLE_GAIN_FRACTION
     spend_central, _spend_stress = _split_spend(session, user_id)
 
     return optimize_deconcentration_core(

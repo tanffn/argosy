@@ -22,6 +22,8 @@ from argosy.services.cashflow_projection import (
 from argosy.services.retirement.deconcentration_optimizer import (
     CGT_BASE_RATE,
     CGT_MARGINAL_ABOVE_THRESHOLD,
+    NVDA_TAXABLE_GAIN_FRACTION,
+    SURTAX_GENERAL_RATE,
     SURTAX_THRESHOLD_NIS,
     DeconcentrationPlan,
     effective_cgt_rate,
@@ -75,13 +77,15 @@ def _plan(**over) -> DeconcentrationPlan:
 # --- effective_cgt_rate: pure tax math (exact, deterministic) ----------------
 
 def test_effective_cgt_rate_bounds():
-    # Below threshold -> exactly the base rate; above -> never beyond the marginal.
-    assert effective_cgt_rate(0.0) == CGT_BASE_RATE
-    assert effective_cgt_rate(100_000.0) == pytest.approx(CGT_BASE_RATE)
-    assert effective_cgt_rate(SURTAX_THRESHOLD_NIS) == pytest.approx(CGT_BASE_RATE)
+    # High earner: 3% mas-yesef applies to the whole gain -> 28% below the
+    # threshold (the floor); +2% capital levy above -> up to the 30% marginal.
+    below = CGT_BASE_RATE + SURTAX_GENERAL_RATE
+    assert effective_cgt_rate(0.0) == CGT_BASE_RATE  # gain<=0: no tax due
+    assert effective_cgt_rate(100_000.0) == pytest.approx(below)
+    assert effective_cgt_rate(SURTAX_THRESHOLD_NIS) == pytest.approx(below)
     for g in (1.0, 500_000.0, SURTAX_THRESHOLD_NIS, 1_000_000.0, 5_000_000.0, 50_000_000.0):
         r = effective_cgt_rate(g)
-        assert CGT_BASE_RATE <= r <= CGT_MARGINAL_ABOVE_THRESHOLD
+        assert below - 1e-9 <= r <= CGT_MARGINAL_ABOVE_THRESHOLD + 1e-9
     # A very large single-year gain blends toward (but never reaches) the marginal.
     assert effective_cgt_rate(1e12) == pytest.approx(CGT_MARGINAL_ABOVE_THRESHOLD, abs=1e-3)
 
@@ -96,10 +100,12 @@ def test_effective_cgt_rate_monotonic_nondecreasing():
 
 
 def test_surtax_only_bites_above_threshold():
-    # Gain split so each year is under the threshold -> pure 25%, no surtax.
-    assert effective_cgt_rate(SURTAX_THRESHOLD_NIS - 1.0) == pytest.approx(CGT_BASE_RATE)
-    # Just above -> strictly more than base.
-    assert effective_cgt_rate(SURTAX_THRESHOLD_NIS + 100_000.0) > CGT_BASE_RATE
+    # The 2% capital-source levy is the only threshold-gated layer (the 3%
+    # mas-yesef applies to the whole gain for a high earner).
+    below = CGT_BASE_RATE + SURTAX_GENERAL_RATE
+    assert effective_cgt_rate(SURTAX_THRESHOLD_NIS - 1.0) == pytest.approx(below)
+    # Just above -> strictly more (the 2% layer starts).
+    assert effective_cgt_rate(SURTAX_THRESHOLD_NIS + 100_000.0) > below
 
 
 # --- tax-bunching: faster sell-down pays more total CGT ----------------------
@@ -120,12 +126,15 @@ def test_total_cgt_monotonic_in_horizon():
         assert slower <= faster + 1e-6
 
 
-def test_total_cgt_floor_is_base_rate():
-    # Spreading thin enough that each year is under the threshold -> 25% floor.
+def test_total_cgt_floor_is_28pct_below_threshold():
+    # Spread thin enough that each year is under the threshold -> 28% rate
+    # (25% base + 3% mas-yesef; the 2% capital levy doesn't bite).
+    below = CGT_BASE_RATE + SURTAX_GENERAL_RATE
     cgt, rate = total_cgt_for_horizon(GAIN, 5)
-    # 3.42M / 5 = 684k < 721,560 threshold -> exactly the base rate.
-    assert rate == pytest.approx(CGT_BASE_RATE)
-    assert cgt == pytest.approx(CGT_BASE_RATE * GAIN)
+    assert rate == pytest.approx(below)
+    # Total is the PV of the 5 annual tranches (discounted) -> below the
+    # undiscounted 28% x GAIN, but positive.
+    assert 0.0 < cgt < below * GAIN
 
 
 # --- optimizer core: structural (seed-noise robust) -------------------------
@@ -180,5 +189,5 @@ def test_assumptions_block_sourced():
     assert a["surtax_threshold_nis"] == SURTAX_THRESHOLD_NIS
     assert a["cgt_marginal_above_threshold"] == CGT_MARGINAL_ABOVE_THRESHOLD
     assert "surtax.md" in a["cgt_model"]
-    assert a["taxable_gain_fraction"] == DEFAULT_TAXABLE_GAIN_FRACTION
+    assert a["taxable_gain_fraction"] == NVDA_TAXABLE_GAIN_FRACTION
     assert "real NIS" in a["gain_terms"]
