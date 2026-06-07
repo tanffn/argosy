@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 # real-estate assets which aren't part of the "portfolio mix".
 _PCT_UNITS = frozenset({"pct_of_portfolio", "pct_of_liquid"})
 
+# A single asset-class band above this many % of the portfolio is implausible
+# without leverage — a target tagged pct_of_* but carrying that value is almost
+# certainly an ABSOLUTE amount mislabeled (e.g. a raw NIS figure), which would
+# blow up the stacked axis (the "4,535,884%" bug). Such bands are routed to the
+# actions timeline instead of the chart.
+_PCT_PLAUSIBILITY_CEILING = 150.0
+
 
 # Wave 8 v2 polish — bridge alias map for synthesizer label → snapshot
 # category matching. The synthesizer emits descriptive prose labels
@@ -503,6 +510,50 @@ def build_glidepath(
         raw_today_value, matched, alias_source = _resolve_today_value(
             label_lower, portfolio_categories
         )
+        raw_waypoints: list[tuple[date, float, str]] = []
+        for t in group:
+            horizon = _horizon_from_target(t)
+            raw_waypoints.append(
+                (t.revisit_after, float(t.value), horizon)
+            )
+        # Per-class scale normalisation. Today's value comes from the
+        # snapshot (already 0-100) but the synthesizer's targets may be
+        # fraction-of-1; if every target waypoint is ≤ 1, scale them up.
+        target_values = [v for _, v, _ in raw_waypoints]
+        scaled_target_values = [
+            _normalize_pct_value(v, target_values) for v in target_values
+        ]
+        # Guard: a pct-tagged target whose value is implausible as a percentage
+        # (>150%) is almost certainly an ABSOLUTE amount mislabeled — it would
+        # blow up the stacked axis (the 4,535,884% bug). Route it to the actions
+        # timeline (like the non-pct targets) instead of plotting it.
+        worst = max(
+            [abs(raw_today_value)] + [abs(v) for v in scaled_target_values],
+            default=0.0,
+        )
+        if worst > _PCT_PLAUSIBILITY_CEILING:
+            for t in group:
+                excluded.append(
+                    ExcludedTarget(
+                        target_label=t.label,
+                        target_unit=t.unit,
+                        target_value=t.value,
+                        target_date=t.revisit_after,
+                        reason=(
+                            f"value {t.value:,.0f} implausible as a percentage "
+                            "(>150% of portfolio) — looks like an absolute "
+                            "amount; surfaced in the actions timeline instead "
+                            "of the glidepath"
+                        ),
+                    )
+                )
+            logger.warning(
+                "allocation_glidepath.implausible_pct asset_class=%s worst=%.1f "
+                "(routed to excluded; likely an absolute value mislabeled as pct)",
+                label_lower,
+                worst,
+            )
+            continue
         # Codex B1 finding #3 — surface the no-match case so the UI
         # can render a "starts from 0" caveat instead of silently
         # showing a misleading rising-from-zero curve.
@@ -521,19 +572,6 @@ def build_glidepath(
                 alias_source=alias_source,
             )
         )
-        raw_waypoints: list[tuple[date, float, str]] = []
-        for t in group:
-            horizon = _horizon_from_target(t)
-            raw_waypoints.append(
-                (t.revisit_after, float(t.value), horizon)
-            )
-        # Per-class scale normalisation. Today's value comes from the
-        # snapshot (already 0-100) but the synthesizer's targets may be
-        # fraction-of-1; if every target waypoint is ≤ 1, scale them up.
-        target_values = [v for _, v, _ in raw_waypoints]
-        scaled_target_values = [
-            _normalize_pct_value(v, target_values) for v in target_values
-        ]
         raw_waypoints = [
             (raw_waypoints[i][0], scaled_target_values[i], raw_waypoints[i][2])
             for i in range(len(raw_waypoints))
