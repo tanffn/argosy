@@ -228,6 +228,32 @@ async def get_plan_narrative(
     identity = _load_identity_excerpt(session, user_id)
     baseline = _load_baseline_voice(session, user_id)
 
+    # H10: bind the narrative to the SAME numeric resolver the synthesizer uses,
+    # so every headline figure (net worth, return, SWR, retirement age, FI target,
+    # spend) is derived live from holdings + the plan's agents — never hardcoded
+    # in the prompt. Best-effort: on any failure (or a plan with no decision run)
+    # the block stays empty and the system prompt's "[derivation pending]" rule
+    # applies, so the narrative still never fabricates a number.
+    resolved_numbers_block = ""
+    if pv.decision_run_id is not None:
+        try:
+            from argosy.services.plan_numeric_resolver import (
+                render_numbers_for_synth,
+                resolve_plan_numbers,
+            )
+
+            resolved = resolve_plan_numbers(
+                session, user_id=user_id, decision_run_id=pv.decision_run_id
+            )
+            resolved_numbers_block = render_numbers_for_synth(resolved)
+        except Exception as exc:  # noqa: BLE001 — narrative must not break on this
+            logger.warning(
+                "plan_narrative.resolved_numbers_failed user_id=%s plan_version_id=%s err=%s",
+                user_id,
+                pv.id,
+                exc,
+            )
+
     # Import the agent lazily so the route module doesn't pull in
     # the agent SDK at import time (keeps test collection fast).
     from argosy.agents.plan_narrative import PlanNarrativeAgent
@@ -238,6 +264,7 @@ async def get_plan_narrative(
             plan_input=plan_input,
             identity_excerpt=identity,
             baseline_voice=baseline,
+            resolved_numbers_block=resolved_numbers_block,
         )
     except Exception as exc:  # noqa: BLE001
         logger.error(
