@@ -36,6 +36,10 @@ from argosy.services.wealth_dashboard import _latest_snapshot
 _SIGMA_BY_CLASS: dict[str, float] = {
     "concentrated_equity": 0.45,  # single-stock heavy (NVDA, TSLA, etc.)
     "us_equity": 0.18,             # diversified US (S&P 500)
+    "low_vol_equity": 0.13,        # min-vol / quality-defensive equity (USMV-like):
+                                   # ~0.11-0.13 realized vs ~0.15-0.18 for the cap-
+                                   # weighted market — a real equity sleeve, NOT the
+                                   # 0.06 IG-bond floor it was being mis-mapped to.
     "intl_equity": 0.20,           # developed international (VEA, etc.)
     "emerging_equity": 0.25,       # emerging markets
     "bonds": 0.06,                 # investment-grade bonds (SGOV, BND)

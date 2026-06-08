@@ -37,6 +37,42 @@ class TestMapGlidepathClassToSigmaClass:
         assert map_glidepath_class_to_sigma_class(label) == expected
 
 
+class TestMapGlidepathClassExclusionAndLowVol:
+    """Allocation-panel caveats 1 + 2: the matcher must not mis-map an
+    EXCLUSION of a concentrated ticker (``ex-NVDA``) as concentrated, and
+    a min-vol EQUITY sleeve must model at its true ~0.13 risk, not the
+    0.06 IG-bond floor (the phantom-bond bug)."""
+
+    @pytest.mark.parametrize(
+        "label,expected",
+        [
+            # Caveat 1 — the ex-/non-NVDA trap. An EXCLUSION of the ticker
+            # must NOT classify the sleeve as concentrated single-stock.
+            ("Growth-ex-NVDA", "us_equity"),
+            ("US growth tilt (ex-NVDA)", "us_equity"),
+            ("US-growth (non-NVDA)", "us_equity"),
+            ("Diversified equity excluding NVDA", "us_equity"),
+            # The genuine single-stock class STILL maps to concentrated.
+            ("Strategic single-stock (NVDA)", "concentrated_equity"),
+            ("NVDA strategic hold", "concentrated_equity"),
+            ("nvidia rsu band", "concentrated_equity"),
+            # Caveat 2 — a min-vol / low-vol EQUITY sleeve is its own class,
+            # NOT bonds (0.06) and NOT plain diversified equity (0.18).
+            ("US low-volatility equity", "low_vol_equity"),
+            ("Min-vol equity sleeve", "low_vol_equity"),
+        ],
+    )
+    def test_exclusion_and_low_vol_routing(self, label: str, expected: str) -> None:
+        assert map_glidepath_class_to_sigma_class(label) == expected
+
+    def test_low_vol_equity_sigma_between_bonds_and_us_equity(self) -> None:
+        # The phantom-bond bug modeled a low-vol equity sleeve at 0.06 —
+        # less than half its true ~0.13 risk. It must sit BELOW diversified
+        # equity (0.18) but well ABOVE IG bonds (0.06).
+        s = sigma_from_composition({"US low-volatility equity": 100.0})
+        assert 0.10 < s < 0.16
+
+
 class TestSigmaFromComposition:
     def test_today_nvda_heavy_higher_than_planned(self) -> None:
         # NVDA 65% + Growth 20% + Cash 15% → 0.3315

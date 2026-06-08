@@ -26,6 +26,7 @@ no portfolio rows yet.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -52,6 +53,17 @@ _LABEL_TO_SIGMA_CLASS: tuple[tuple[str, str], ...] = (
     ("tsla", "concentrated_equity"),
     ("individual stock", "concentrated_equity"),
     ("concentrated", "concentrated_equity"),
+    # Min-vol / quality-defensive EQUITY — its own ~0.13 class. MUST precede
+    # the generic "equity"/"defensive" needles so a min-vol equity sleeve is
+    # not collapsed to plain diversified equity (0.18) or, worse, IG bonds
+    # (0.06). Allocation-panel caveat 2.
+    ("low-vol", "low_vol_equity"),
+    ("low vol", "low_vol_equity"),
+    ("low-volatility", "low_vol_equity"),
+    ("low volatility", "low_vol_equity"),
+    ("min-vol", "low_vol_equity"),
+    ("min vol", "low_vol_equity"),
+    ("minimum volatility", "low_vol_equity"),
     ("cash", "cash"),
     ("hysa", "cash"),
     ("money market", "cash"),
@@ -97,11 +109,22 @@ class SigmaCurve:
         return self.series[month]
 
 
+# Caveat 1 — a sleeve that merely NAMES the concentrated ticker it EXCLUDES
+# ("Growth-ex-NVDA", "US growth (non-NVDA)", "diversified equity excluding
+# NVDA") must not match the ``("nvda", "concentrated_equity")`` rule on the
+# substring alone. We strip the exclusion phrase before the needle scan so the
+# ticker only survives when it is genuinely the held position.
+_TICKER_EXCLUSION_RE = re.compile(
+    r"\b(?:ex|non|excl|excluding|without|minus|sans)[-\s]*(?:nvda|nvidia|tsla)\b"
+)
+
+
 def map_glidepath_class_to_sigma_class(class_name: str) -> str:
     """Translate a glidepath asset-class key into a ``_SIGMA_BY_CLASS`` key."""
     key = class_name.strip().lower()
     if not key:
         return "us_equity"
+    key = _TICKER_EXCLUSION_RE.sub(" ", key)
     for needle, sigma_class in _LABEL_TO_SIGMA_CLASS:
         if needle in key:
             return sigma_class
