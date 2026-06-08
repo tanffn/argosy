@@ -381,6 +381,7 @@ class RedistributionWaypoint:
     quarter: int            # 1..N
     target_date: date       # first-of-quarter date
     pct: float              # composition % at this quarter
+    snapshot_category: str | None = None  # B1/H5: explicit glidepath anchor
 
 
 @dataclass(frozen=True)
@@ -418,6 +419,7 @@ def build_redistribution_schedule(
     the sense of the 2-year-vs-5-year horizon choice the optimizer already made).
     """
     end_target = {c.label: c.target_pct for c in target.classes}
+    label_to_cat = {c.label: c.snapshot_category for c in target.classes}
     labels = list(dict.fromkeys(list(today_composition) + list(end_target)))
     waypoints: list[RedistributionWaypoint] = []
     n = max(1, quarters)
@@ -433,6 +435,7 @@ def build_redistribution_schedule(
                     quarter=q,
                     target_date=qdate,
                     pct=round(t0 + (t1 - t0) * frac, 4),
+                    snapshot_category=label_to_cat.get(label),
                 )
             )
     return RedistributionSchedule(
@@ -469,6 +472,7 @@ def to_waypoint_targets(
                 revisit_after=w.target_date,
                 rationale=rationale,
                 source_section="allocation_redistribution",
+                snapshot_category=w.snapshot_category,  # B1/H5: explicit anchor
             )
         )
     return out
@@ -491,6 +495,7 @@ def to_synth_targets(
             revisit_after=revisit_after,
             rationale=c.rationale,
             source_section="allocation_target",
+            snapshot_category=c.snapshot_category,  # B1/H5: explicit anchor
         )
         for c in alloc.classes
     ]

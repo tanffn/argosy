@@ -30,6 +30,7 @@ def _t(
     unit: str = "pct_of_portfolio",
     revisit_after: date = date(2027, 1, 1),
     stated_at: date = date(2026, 6, 1),
+    snapshot_category: str | None = None,
 ) -> SynthTarget:
     return SynthTarget(
         label=label,
@@ -37,7 +38,70 @@ def _t(
         unit=unit,
         stated_at=stated_at,
         revisit_after=revisit_after,
+        snapshot_category=snapshot_category,
     )
+
+
+# Canonical allocation structure (label, target%, snapshot_category) — exercises
+# the three 229% bugs: the sub-1% real-assets sleeve (×100 scale bug), the
+# "ex-NVDA" growth label (substring mis-route), and two sleeves sharing the
+# "Defensive" snapshot category (shared-anchor double-count). Sums to 100.
+_CANON = [
+    ("US broad-market core", 28.0, "Core Equity"),
+    ("Dividend-quality income", 19.0, "Dividend"),
+    ("International developed (ex-US)", 12.0, "International"),
+    ("US growth tilt (ex-NVDA)", 6.0, "Growth"),
+    ("US low-volatility equity", 6.0, "Defensive"),
+    ("Real assets (REIT/TIPS)", 0.93, "Alternative"),
+    ("Strategic single-stock (NVDA)", 12.0, "Individual Stocks"),
+    ("Cash & T-bills", 11.47, "Cash"),
+    ("Short-duration IG bonds", 4.6, "Defensive"),
+]
+_CANON_SNAPSHOT = {
+    "core equity": 28.0, "dividend": 19.0, "international": 12.0, "growth": 6.0,
+    "defensive": 10.6, "alternative": 0.93, "individual stocks": 12.0, "cash": 11.47,
+}
+
+
+class TestGlidepathSumsTo100:
+    """B1/H5: the canonical target + a matching snapshot must compose to ~100% at
+    EVERY tick (it summed to 229% via the ×100 sub-band, the nvda-substring
+    mis-route, and untargeted double-count)."""
+
+    def test_every_tick_sums_to_100(self) -> None:
+        targets = [
+            _t(label, value=pct, snapshot_category=cat) for (label, pct, cat) in _CANON
+        ]
+        gp = build_glidepath(
+            portfolio_categories=dict(_CANON_SNAPSHOT),
+            targets=targets,
+            today=date(2026, 6, 1),
+        )
+        assert gp.points, "glidepath produced no points"
+        for p in gp.points:
+            total = sum(p.composition_pct_by_class.values())
+            assert abs(total - 100.0) < 0.5, (
+                f"tick {p.month_index if hasattr(p, 'month_index') else '?'} "
+                f"sums to {total:.1f}%, not 100%"
+            )
+
+    def test_fraction_scale_targets_also_sum_to_100(self) -> None:
+        # Same plan but the synthesizer emitted fraction-of-1 (÷100). The WHOLE-
+        # plan scale gate must ×100 the whole plan (it sums to ~1.0), and STILL
+        # never ×100 a lone sub-band in a percentage plan (the other test). The
+        # 0.93% sleeve here is 0.0093 -> 0.93, not 0.0093 left tiny nor 93.
+        targets = [
+            _t(label, value=pct / 100.0, snapshot_category=cat)
+            for (label, pct, cat) in _CANON
+        ]
+        gp = build_glidepath(
+            portfolio_categories=dict(_CANON_SNAPSHOT),
+            targets=targets,
+            today=date(2026, 6, 1),
+        )
+        assert gp.points
+        for p in gp.points:
+            assert abs(sum(p.composition_pct_by_class.values()) - 100.0) < 0.5
 
 
 # Unit filtering ---------------------------------------------------------

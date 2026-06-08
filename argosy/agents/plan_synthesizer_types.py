@@ -58,6 +58,12 @@ class SynthTarget(BaseModel):
     revisit_after: date
     rationale: str = ""
     source_section: str | None = None
+    # Explicit portfolio-snapshot category this target anchors to (B1/H5). When
+    # present the allocation glidepath uses it for an EXACT today-value match
+    # instead of fragile label-substring alias routing (which mis-routed e.g.
+    # "US growth tilt (ex-NVDA)" onto the "nvda" keyword). Sourced from
+    # AllocationClass.snapshot_category via allocation_plan.to_synth_targets.
+    snapshot_category: str | None = None
 
 
 class Theme(BaseModel):

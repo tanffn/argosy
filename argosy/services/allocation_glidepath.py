@@ -501,28 +501,76 @@ def build_glidepath(
         )
     groups = group_targets_by_label(eligible)
 
+    # B1/H5: decide the pct SCALE for the WHOLE plan at once — if the sum of all
+    # target values is ≈1.0 the synthesizer emitted fraction-of-1 (×100); if ≈100
+    # they are already whole-percentages. Deciding globally (not per class) stops
+    # a single legitimately-sub-1% sleeve (e.g. a 0.93% real-assets band) from
+    # being wrongly ×100'd to 93% — the root of the 229% chart.
+    all_target_vals = [float(t.value) for g in groups.values() for t in g]
+    plan_scale = (
+        100.0 if all_target_vals and sum(abs(v) for v in all_target_vals) <= 1.5 else 1.0
+    )
+
+    # B1/H5: explicit-category routing + shared-anchor split. Map each EXPLICIT
+    # snapshot_category to the labels that anchor on it, and each label's scaled
+    # end-state target. When N labels share one snapshot category (e.g. low-vol +
+    # IG bonds both on "Defensive"), today's single snapshot value is split among
+    # them proportional to their end targets, so t=0 doesn't double-count it.
+    explicit_categories: set[str] = set()
+    cat_to_labels: dict[str, list[str]] = {}
+    end_target_by_label: dict[str, float] = {}
+    for label_lower, g in groups.items():
+        end_target_by_label[label_lower] = (
+            float(sorted(g, key=lambda t: t.revisit_after)[-1].value) * plan_scale
+        )
+        sc = next((t.snapshot_category for t in g if t.snapshot_category), None)
+        if sc:
+            sc_lower = _normalize_label(sc)
+            explicit_categories.add(sc_lower)
+            cat_to_labels.setdefault(sc_lower, []).append(label_lower)
+
     per_class_waypoints: dict[str, list[tuple[date, float]]] = {}
     collapsed_total: list[CollapsedWaypoint] = []
     max_revisit: date | None = None
 
     anchor_status_list: list[AssetClassAnchorStatus] = []
     for label_lower, group in groups.items():
-        raw_today_value, matched, alias_source = _resolve_today_value(
-            label_lower, portfolio_categories
+        # B1/H5: anchor today's value via the EXPLICIT snapshot_category when the
+        # target carries one (exact match, no fragile substring alias); split a
+        # shared category proportional to end targets. Fall back to the legacy
+        # alias matcher only for targets with no explicit category.
+        explicit_sc = next(
+            (t.snapshot_category for t in group if t.snapshot_category), None
         )
+        if explicit_sc is not None:
+            sc_lower = _normalize_label(explicit_sc)
+            snap_val = portfolio_categories.get(sc_lower)
+            if snap_val is not None:
+                sharing = cat_to_labels.get(sc_lower, [label_lower])
+                if len(sharing) > 1:
+                    denom = sum(end_target_by_label[l] for l in sharing) or 1.0
+                    raw_today_value = snap_val * (
+                        end_target_by_label[label_lower] / denom
+                    )
+                else:
+                    raw_today_value = snap_val
+                matched, alias_source = True, explicit_sc
+            else:
+                raw_today_value, matched, alias_source = 0.0, False, None
+        else:
+            raw_today_value, matched, alias_source = _resolve_today_value(
+                label_lower, portfolio_categories
+            )
         raw_waypoints: list[tuple[date, float, str]] = []
         for t in group:
             horizon = _horizon_from_target(t)
             raw_waypoints.append(
                 (t.revisit_after, float(t.value), horizon)
             )
-        # Per-class scale normalisation. Today's value comes from the
-        # snapshot (already 0-100) but the synthesizer's targets may be
-        # fraction-of-1; if every target waypoint is ≤ 1, scale them up.
+        # Scale normalisation uses the WHOLE-PLAN decision (B1/H5) so a single
+        # sub-1% sleeve is never wrongly ×100'd. Today's value is already 0-100.
         target_values = [v for _, v, _ in raw_waypoints]
-        scaled_target_values = [
-            _normalize_pct_value(v, target_values) for v in target_values
-        ]
+        scaled_target_values = [v * plan_scale for v in target_values]
         # Guard: a pct-tagged target whose value is implausible as a percentage
         # (>150%) is almost certainly an ABSOLUTE amount mislabeled — it would
         # blow up the stacked axis (the 4,535,884% bug). Route it to the actions
@@ -616,6 +664,7 @@ def build_glidepath(
             portfolio_categories=portfolio_categories,
             today_first=today_first,
             horizon_end=today_first,
+            explicit_categories=explicit_categories,
         )
         return AllocationGlidepath(
             points=[],
@@ -639,6 +688,7 @@ def build_glidepath(
         portfolio_categories=portfolio_categories,
         today_first=today_first,
         horizon_end=max_revisit,
+        explicit_categories=explicit_categories,
     )
 
     points = interpolate_glidepath(
@@ -664,17 +714,28 @@ def _add_untargeted_snapshot_bands(
     portfolio_categories: dict[str, float],
     today_first: date,
     horizon_end: date,
+    explicit_categories: "set[str] | None" = None,
 ) -> dict[str, list[tuple[date, float]]]:
     """Mutate-and-return: extend ``per_class_waypoints`` with one
     flat-line band per untargeted snapshot category. Also append an
     AssetClassAnchorStatus row for each so the UI can label these as
     "unconstrained — held flat at today's value".
+
+    ``explicit_categories`` (B1/H5): snapshot categories already CLAIMED by a
+    target via its explicit ``snapshot_category`` — skip them so a category
+    bound by a target isn't ALSO added as an untargeted band (the double-count
+    that helped sum the chart to 229%).
     """
+    explicit_categories = explicit_categories or set()
     matched_cats = _matched_categories(
         list(per_class_waypoints.keys()), portfolio_categories
     )
     for cat_lower, pct in portfolio_categories.items():
-        if cat_lower in matched_cats or cat_lower in per_class_waypoints:
+        if (
+            cat_lower in matched_cats
+            or cat_lower in per_class_waypoints
+            or cat_lower in explicit_categories
+        ):
             continue
         # Two waypoints: today and the horizon end, both at the
         # current snapshot value. Interpolation between them is the
