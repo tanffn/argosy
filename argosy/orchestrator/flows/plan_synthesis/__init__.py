@@ -126,6 +126,7 @@ from argosy.orchestrator.flows.plan_synthesis.inputs import (
     _assemble_portfolio_summary,
     _assemble_fills_summary,
     _load_user_context_yaml,
+    resolve_risk_inputs,
 )
 
 # Rendering helpers (Phase 1: user vs audit split; back-compat alias
@@ -181,6 +182,7 @@ __all__ = [
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",
     "_load_user_context_yaml",
+    "resolve_risk_inputs",
     # Rendering helpers (Phase 1 split + v4 block B1 appendices)
     "_horizon_md",
     "_horizon_md_audit",

@@ -101,14 +101,22 @@ def decide(
             ).scalars().all()
         analyst_reports = [_row_to_report(r) for r in rows]
 
+        # H7: feed the risk team REAL user constraints + configured risk
+        # caps instead of empties. ``resolve_risk_inputs`` is best-effort
+        # (returns ("", {}) on any failure) and opens its own short-lived
+        # sync session. Lazy import to avoid a module-load circular import.
+        from argosy.orchestrator.flows.plan_synthesis import resolve_risk_inputs
+
+        user_constraints, risk_caps = resolve_risk_inputs(user_id)
+
         flow = DecisionFlow(user_id=user_id, settings=settings)
         outcome = await flow.run(
             ticker=ticker,
             tier=chosen,
             analyst_reports=analyst_reports,
             positions_summary="",
-            user_constraints="",
-            risk_caps={},
+            user_constraints=user_constraints,
+            risk_caps=risk_caps,
             account_class=account_class,  # type: ignore[arg-type]
         )
 

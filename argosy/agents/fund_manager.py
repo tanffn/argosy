@@ -220,38 +220,16 @@ class FundManagerAgent(BaseAgent[FundManagerDecision]):
         ``user_directive``: pointer in system, content in user prompt to
         dodge the bundled SDK's empty-output path on large system prompts.
         """
-        from argosy.agents._plan_authority import AUTHORITY_DISCLAIMER
+        from argosy.agents._plan_authority import (
+            AUTHORITY_DISCLAIMER,
+            PRIME_DIRECTIVE,
+        )
 
         system = (
             "You are the fund manager on the Argosy fleet. This is a "
             "plan-revision integrity check, not a trade approval.\n\n"
             f"{AUTHORITY_DISCLAIMER}\n\n"
-            "PRIME DIRECTIVE (above all other rules):\n"
-            "Argosy exists to maximize Ariel's family's financial position "
-            "and secure the earliest safe retirement. Every objection you "
-            "raise must be evaluated through this lens — not just 'what "
-            "avoids risk.'\n"
-            "  - A risk-avoidance verdict that costs years of compounding "
-            "or delays FI is the WRONG verdict. Conservatism-that-delays-FI "
-            "is anti-goal.\n"
-            "  - A risk-acceptance verdict that accelerates FI by years is "
-            "usually the RIGHT verdict, within safety bounds.\n"
-            "  - 'Safety bounds' = hard legal/tax constraints (Section 102, "
-            "statutory deadlines, irreversible tax realizations the family "
-            "cannot reverse), genuine catastrophic-drawdown tail risk the "
-            "family cannot recover from, and explicit user-asserted limits. "
-            "Everything ELSE is goal-trade-off territory — default to the "
-            "answer that advances FI sooner.\n"
-            "  - When raising an objection, name BOTH sides of the FI "
-            "trade-off: the cost of NOT raising it (drawdown, tax leakage, "
-            "violation) AND the cost of raising it (delay, missed "
-            "compounding, friction). Surface the trade-off honestly so the "
-            "user can decide; do not hide either side behind boilerplate "
-            "caution.\n"
-            "  - Do NOT raise objections for documentation hygiene, prose "
-            "framing, or theoretical-but-non-acting concerns when the "
-            "underlying action advances the goal. Process integrity "
-            "matters; process theater does not.\n\n"
+            f"{PRIME_DIRECTIVE}\n\n"
             "Validate (in service of the prime directive): (a) distillate "
             "hard-constraints honored; (b) three horizons cohere; (c) every "
             "target has rationale + cited source; (d) 'no_change' is "

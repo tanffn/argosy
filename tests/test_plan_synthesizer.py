@@ -170,6 +170,34 @@ def test_plan_synthesizer_prompt_includes_authority_disclaimer_and_inputs():
     assert "DO NOT emit audit tokens" in sys
 
 
+def test_synthesizer_prompt_carries_argosy_prime_directive():
+    """H11: Argosy's prime directive — maximize the family's financial
+    position + secure the earliest safe retirement — must be in the plan
+    synthesizer's system prompt, pulled from the single canonical source
+    (argosy.agents._plan_authority.PRIME_DIRECTIVE). Without it the
+    synthesizer can drift toward conservatism-that-delays-FI framing.
+    """
+    from argosy.agents._plan_authority import PRIME_DIRECTIVE
+    from argosy.agents.plan_synthesizer import PlanSynthesizerAgent
+
+    agent = PlanSynthesizerAgent(user_id="test")
+    sys, _ = agent.build_prompt(
+        baseline_distillate_md="x",
+        prior_current_md="x",
+        analyst_reports_text="x",
+        debate_outcomes_text="x",
+        portfolio_snapshot_summary="x",
+        recent_fills_summary="x",
+    )
+    # Single-source: the whole canonical block is present verbatim.
+    assert PRIME_DIRECTIVE in sys
+    # Pin the load-bearing phrases so a future refactor can't silently
+    # regress the directive into goal-free language.
+    assert "PRIME DIRECTIVE" in sys
+    assert "earliest safe retirement" in sys.lower()
+    assert "anti-goal" in sys.lower()
+
+
 def test_synthesizer_prompt_includes_speculation_cap():
     """The synthesizer's user prompt must surface the cap so it cannot
     emit candidates that would breach it.

@@ -311,6 +311,92 @@ def _load_user_context_yaml(*, session, user_id) -> str:
     return "\n".join(parts)
 
 
+def resolve_risk_inputs(user_id: str) -> tuple[str, dict]:
+    """Resolve the real ``(user_constraints, risk_caps)`` for the risk team.
+
+    Two call sites (plan-synthesis Phase 4 risk officers + the ``argosy
+    decide`` CLI) previously passed empty values into
+    ``RiskOfficerAgent.build_prompt``, blinding the risk gate to the
+    user's stated constraints and the configured size/concentration
+    caps. This helper feeds them REAL values:
+
+    * ``user_constraints`` — the user's ``UserContext.constraints_yaml``
+      (the constraints the conservative officer is meant to reject
+      against). Opens its own *sync* session against the configured DB
+      so it is safe to call from the synthesis ThreadPoolExecutor
+      worker threads (a session is not shared across threads).
+    * ``risk_caps`` — derived from ``agent_settings`` (no magic numbers):
+      the per-tier portfolio-percentage caps + the account-scoped
+      escalation threshold from ``settings.tiers``, plus the limited
+      account per-decision / daily-loss caps from
+      ``settings.limited_account``. The risk officer prompt renders the
+      dict verbatim, so the keys are descriptive cap labels.
+
+    Best-effort: any failure (no DB, no context row, settings load
+    error) returns ``("", {})`` so the flow degrades to the prior
+    behaviour rather than breaking.
+    """
+    user_constraints = ""
+    risk_caps: dict = {}
+
+    # --- user_constraints: read UserContext.constraints_yaml ---
+    try:
+        from sqlalchemy import create_engine, event
+        from sqlalchemy.orm import sessionmaker
+
+        from argosy.config import get_settings
+        from argosy.state.models import UserContext
+
+        sync_url = get_settings().database_url.replace("+aiosqlite", "")
+        engine = create_engine(sync_url, connect_args={"check_same_thread": False})
+        if sync_url.startswith("sqlite") and ":memory:" not in sync_url:
+            @event.listens_for(engine, "connect")
+            def _pragmas(dbapi_connection, _record):  # pragma: no cover - trivial
+                cur = dbapi_connection.cursor()
+                cur.execute("PRAGMA journal_mode=WAL")
+                cur.execute("PRAGMA busy_timeout=60000")
+                cur.close()
+
+        SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+        try:
+            with SessionLocal() as session:
+                ctx = session.get(UserContext, user_id)
+                if ctx is not None and ctx.constraints_yaml:
+                    user_constraints = ctx.constraints_yaml
+        finally:
+            engine.dispose()
+    except Exception as exc:  # noqa: BLE001 — best-effort, never break the flow
+        log.warning(
+            "plan_synthesis.inputs.user_constraints_failed",
+            user_id=user_id,
+            error=str(exc)[:200],
+        )
+
+    # --- risk_caps: marshal agent_settings into a labelled dict ---
+    try:
+        from argosy.agent_settings import load_agent_settings
+
+        settings = load_agent_settings(user_id)
+        tiers = settings.tiers
+        limited = settings.limited_account
+        risk_caps = {
+            "t0_max_portfolio_pct": tiers.t0_max_portfolio_pct,
+            "t1_max_portfolio_pct": tiers.t1_max_portfolio_pct,
+            "t2_max_portfolio_pct": tiers.t2_max_portfolio_pct,
+            "account_scoped_escalation_pct": tiers.account_scoped_escalation_pct,
+            "limited_account_per_decision_max_pct": limited.per_decision_max_pct,
+            "limited_account_daily_loss_limit_pct": limited.daily_loss_limit_pct,
+        }
+    except Exception as exc:  # noqa: BLE001 — best-effort, never break the flow
+        log.warning(
+            "plan_synthesis.inputs.risk_caps_failed",
+            user_id=user_id,
+            error=str(exc)[:200],
+        )
+
+    return user_constraints, risk_caps
+
+
 # ----------------------------------------------------------------------
 # Wave W1.A — typed Phase1Inputs + best-effort assembler
 # ----------------------------------------------------------------------
@@ -1772,4 +1858,5 @@ __all__ = [
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",
     "_load_user_context_yaml",
+    "resolve_risk_inputs",
 ]

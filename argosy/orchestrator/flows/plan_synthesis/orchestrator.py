@@ -3361,11 +3361,19 @@ def _run_one_risk_perspective(*, stance: str, user_id: str,
         "report_text": analyst_reports_text,
     }]
 
+    # H7: feed the risk officer REAL user constraints + configured risk
+    # caps instead of empty values. Lazy import via the package namespace
+    # so a test monkeypatching ``flow.resolve_risk_inputs`` is honoured
+    # and to avoid any module-load-time circular import. Best-effort: the
+    # helper returns ("", {}) on any failure so the run never breaks.
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
+    user_constraints, risk_caps = _pkg.resolve_risk_inputs(user_id)
+
     result = officer.run_sync(
         proposal=proposal,
         analyst_reports=analyst_reports_payload,
-        user_constraints="",
-        risk_caps={},
+        user_constraints=user_constraints,
+        risk_caps=risk_caps,
         prior_rounds=[],
         round_index=1,
         n_max=1,

@@ -14,6 +14,10 @@ from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
+from argosy.agents._plan_authority import (
+    CONSERVATIVE_FI_COUNTERWEIGHT,
+    PRIME_DIRECTIVE,
+)
 from argosy.agents.base import BaseAgent, ConfidenceBand
 
 
@@ -118,10 +122,19 @@ class RiskOfficerAgent(BaseAgent[RiskVerdict]):
     ) -> tuple[str, str]:
         prior_rounds = prior_rounds or []
         instructions = _PERSPECTIVE_INSTRUCTIONS[self.perspective]
+        # Prime directive lands in every risk officer's system prompt so
+        # the risk gate weighs concerns against the goal (earliest safe
+        # retirement), not risk-avoidance alone. The conservative officer
+        # — whose default failure mode is over-caution that quietly delays
+        # FI — additionally gets the cost-in-years counterweight.
+        directive_block = PRIME_DIRECTIVE
+        if self.perspective == "conservative":
+            directive_block = f"{PRIME_DIRECTIVE}\n{CONSERVATIVE_FI_COUNTERWEIGHT}"
         system = (
             f"You are the {self.perspective} risk officer on the Argosy fleet. "
             f"Round {round_index} of {n_max}. Other risk officers may have "
             "argued differently in this and prior rounds.\n\n"
+            f"{directive_block}\n\n"
             f"{instructions}\n\n"
             "Rules:\n"
             "  - Verdict is one of APPROVE / APPROVE_WITH_CONDITIONS / REJECT.\n"

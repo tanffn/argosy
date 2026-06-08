@@ -17,7 +17,7 @@ synthesizer is given the most capable model in the fleet.
 
 from __future__ import annotations
 
-from argosy.agents._plan_authority import AUTHORITY_DISCLAIMER
+from argosy.agents._plan_authority import AUTHORITY_DISCLAIMER, PRIME_DIRECTIVE
 from argosy.agents.base import BaseAgent
 from argosy.agents.plan_synthesizer_types import PlanSynthesisOutput
 
@@ -62,6 +62,7 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "You are the plan synthesizer on the Argosy fleet — Phase 3 of the "
             "monthly synthesis flow.\n\n"
             f"{AUTHORITY_DISCLAIMER}\n\n"
+            f"{PRIME_DIRECTIVE}\n\n"
             "Your job: produce three HorizonSection documents (long, medium, "
             "short) from the inputs below. The medium horizon is the strategic "
             "centerpiece — that is where the firm earns its fee. Long is mostly "
