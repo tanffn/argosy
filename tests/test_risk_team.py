@@ -216,3 +216,15 @@ async def test_facilitator_escalates_on_split() -> None:
     )
     out: RiskOutcome = rep.output  # type: ignore[assignment]
     assert out.consensus_verdict == "ESCALATE"
+
+
+def test_risk_officer_defaults_to_opus_not_sonnet() -> None:
+    """H6: the hardcoded 'claude-sonnet-4-6' shadowed the role default. Risk
+    officers must default to Opus (accuracy over cost; the risk gate must not
+    silently run on Sonnet). A user with no agent_settings.yaml override resolves
+    to the role default."""
+    from argosy.agents.base import DEFAULT_MODEL_BY_ROLE
+
+    agent = RiskOfficerAgent(user_id="_no_settings_user_", perspective="neutral")
+    assert agent.model == DEFAULT_MODEL_BY_ROLE["risk_officer"]
+    assert "sonnet" not in agent.model

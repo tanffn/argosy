@@ -95,7 +95,11 @@ class RiskOfficerAgent(BaseAgent[RiskVerdict]):
         perspective: Perspective,
         model: str | None = None,
     ) -> None:
-        super().__init__(user_id=user_id, model=model or "claude-sonnet-4-6")
+        # H6: pass model through (None → the role default in
+        # DEFAULT_MODEL_BY_ROLE, i.e. Opus). The prior ``or "claude-sonnet-4-6"``
+        # silently shadowed that default, running the RISK GATE on Sonnet against
+        # the accuracy-over-cost binding preference.
+        super().__init__(user_id=user_id, model=model)
         if perspective not in ("aggressive", "neutral", "conservative"):
             raise ValueError(f"unknown risk perspective: {perspective!r}")
         self.perspective: Perspective = perspective
