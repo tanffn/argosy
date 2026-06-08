@@ -63,6 +63,16 @@ DEFAULT_TRANSITION_MATRIX = np.array([
 ])
 
 
+def _stationary_distribution(transition_matrix: np.ndarray) -> np.ndarray:
+    """Stationary distribution π (π = πP) of the regime Markov chain — the left
+    eigenvector of P for eigenvalue 1, normalized to sum to 1."""
+    P = np.asarray(transition_matrix, dtype=np.float64)
+    evals, evecs = np.linalg.eig(P.T)
+    idx = int(np.argmin(np.abs(evals - 1.0)))
+    pi = np.real(evecs[:, idx])
+    return pi / pi.sum()
+
+
 def stationary_real_return(
     regime_params: dict[RegimeId, tuple[float, float]],
     transition_matrix: np.ndarray,
@@ -77,13 +87,25 @@ def stationary_real_return(
     pension buckets at a defensible expected rate.
     """
     order: list[RegimeId] = ["calm", "turbulent", "crisis"]
-    P = np.asarray(transition_matrix, dtype=np.float64)
-    evals, evecs = np.linalg.eig(P.T)
-    idx = int(np.argmin(np.abs(evals - 1.0)))
-    pi = np.real(evecs[:, idx])
-    pi = pi / pi.sum()
+    pi = _stationary_distribution(transition_matrix)
     long_run_mu = float(sum(pi[j] * regime_params[order[j]][0] for j in range(len(order))))
     return long_run_mu - inflation_annual
+
+
+def stationary_sigma(
+    regime_params: dict[RegimeId, tuple[float, float]],
+    transition_matrix: np.ndarray,
+) -> float:
+    """The regime chain's own unconditional annual VOLATILITY: the stationary-
+    weighted RMS of the per-regime vols, ``sqrt(Σ π_r · σ_r²)`` (≈0.187, a
+    diversified-equity level). It is the baseline the single-name concentration
+    premium is measured ABOVE: callers pass ``idio_var_path = max(0, σ_glide² −
+    stationary_sigma²)`` so the calm/turbulent regimes absorb the idiosyncratic
+    vol while the crisis stays systematic. (codex H8/H9 HERO-FIX.)"""
+    order: list[RegimeId] = ["calm", "turbulent", "crisis"]
+    pi = _stationary_distribution(transition_matrix)
+    var = float(sum(pi[j] * regime_params[order[j]][1] ** 2 for j in range(len(order))))
+    return math.sqrt(var)
 
 
 @dataclass(frozen=True)
@@ -152,6 +174,7 @@ def simulate_regime_switch(
     annuity_tax_rate: float = 0.0,
     apply_expense_phases: bool = False,
     household_has_kids: bool = True,
+    idio_var_path: "object | None" = None,
 ) -> RegimeSwitchResult:
     """Run a regime-switching MC and return the result.
 
@@ -199,7 +222,34 @@ def simulate_regime_switch(
     )
     # log_returns[i, t] = drifts[regime] + std[regime] * standard_normal
     z = rng.normal(size=(n_paths, months))
-    log_returns = drifts[regimes] + stds[regimes] * z
+    if idio_var_path is None:
+        log_returns = drifts[regimes] + stds[regimes] * z
+    else:
+        # H8 (codex HERO-FIX): a VARIANCE-ADDITIVE idiosyncratic overlay. Single-
+        # name concentration vol (σ_book² − stationary_σ²) is firm-specific risk
+        # that shows up in NORMAL markets, so it ADDS to the calm/turbulent regime
+        # variances; the CRISIS regime is a SYSTEMATIC crash state and keeps its
+        # historical vol UNSCALED (concentrated and diversified books crater
+        # together — multiplying the crash vol by the single-name ratio would
+        # double-count tail risk). idio_var_path is per-month so the overlay
+        # decays as the book deconcentrates. None reproduces the default exactly.
+        idio = np.asarray(idio_var_path, dtype=np.float64)
+        if idio.shape != (months,):
+            raise ValueError(
+                f"idio_var_path must have shape ({months},); got {idio.shape}."
+            )
+        mus = np.array([regime_params[r][0] for r in regimes_order])
+        base_var = np.array([regime_params[r][1] ** 2 for r in regimes_order])
+        crisis_idx = regimes_order.index("crisis")
+        var_by_regime = np.tile(base_var[:, None], (1, months))   # (3, months)
+        for j in range(len(regimes_order)):
+            if j != crisis_idx:
+                var_by_regime[j, :] = base_var[j] + np.maximum(0.0, idio)
+        cols = np.arange(months)
+        sig_eff = np.sqrt(var_by_regime[regimes, cols[None, :]])  # (n_paths, months)
+        drift_eff = mus[regimes] / 12.0 - sig_eff ** 2 / 24.0
+        std_eff = sig_eff / math.sqrt(12.0)
+        log_returns = drift_eff + std_eff * z
 
     portfolio = np.full(n_paths, household.portfolio_value_nis, dtype=np.float64)
     pensia_bal = np.full(n_paths, pensions.kupat_pensia_balance_nis, dtype=np.float64)

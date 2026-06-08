@@ -220,18 +220,26 @@ def _seed_full(session) -> None:
 class TestDbAdapter:
     def test_resolves_permanent_spend_basis_and_bl(self, client_with_db):
         SF = client_with_db.app.state.session_factory
+        from argosy.services.retirement.retirement_plan import resolve_canonical_basis
+
         with SF() as s:
             _seed_full(s)
             g = run_retirement_scenarios(
                 user_id="ariel", session=s, retirement_age=49.0,
                 n_paths=200, seed=42, today=date(2026, 1, 1),
             )
-        # Spend basis is the permanent-equivalent number, not the T12 burn.
-        assert round(g.spend_basis_annual_nis) == 311_584
+            # H9: the grid now binds to the canonical MC basis — the reserve+CGT
+            # netted deployable and the MC CENTRAL spend (flat healthcare ramp +
+            # discretionary home-upgrade excluded; the phase curve carries late-
+            # life healthcare). Assert ENGINE-SOURCED, not a magic number.
+            cb = resolve_canonical_basis(s, "ariel", today=date(2026, 1, 1))
+        assert round(g.spend_basis_annual_nis) == round(cb.spend_central_nis)
+        # Strictly below the old full FI-permanent basis (₪311,584) — the strip.
+        assert g.spend_basis_annual_nis < 311_584
         assert round(g.spend_t12_annual_nis) == 277_008
         # BL income is credited (Ariel has a long insured history).
         assert g.bl_monthly_nis > 0.0
-        assert "fi_methodology" in g.spend_basis_source
+        assert "resolve_canonical_basis" in g.spend_basis_source
         # Pension annuity is netted of a sourced, non-zero income tax — NOT
         # credited gross (codex review 2026-06-04).
         assert 0.0 < g.annuity_tax_rate < 0.5
@@ -241,6 +249,8 @@ class TestDbAdapter:
         assert len(g.mu_grid) == 4
 
     def test_route_returns_scenario_table(self, client_with_db):
+        from argosy.services.retirement.retirement_plan import resolve_canonical_basis
+
         SF = client_with_db.app.state.session_factory
         with SF() as s:
             _seed_full(s)
@@ -249,7 +259,12 @@ class TestDbAdapter:
         )
         assert r.status_code == 200
         body = r.json()
-        assert round(body["spend_basis_annual_nis"]) == 311_584
+        # H9: canonical MC-central spend (reserve+CGT netted, healthcare-flat
+        # stripped) — engine-sourced, below the old full FI-permanent ₪311,584.
+        with SF() as s2:
+            cb = resolve_canonical_basis(s2, "ariel")  # today=None → date.today(), as the route uses
+        assert round(body["spend_basis_annual_nis"]) == round(cb.spend_central_nis)
+        assert body["spend_basis_annual_nis"] < 311_584
         assert body["bl_monthly_nis"] > 0.0
         assert {x["name"] for x in body["scenarios"]} == {"bear", "base", "bull"}
         assert len(body["mu_grid"]) == 4
@@ -339,3 +354,25 @@ class TestEarliestFeasibleAge:
             )
         assert r.earliest_feasible_age is not None
         assert r.p_solvent_at_age >= 0.90
+
+
+class TestCanonicalBasisGrid:
+    """H9: passing the calibrated sigma_hi switches the grid onto the dual-track
+    basis (σ-glide + geometric + expense phases), so the scenario solvency
+    reconciles with the headline instead of an optimistic flat/arithmetic basis."""
+
+    def test_sigma_hi_switches_the_grid_basis(self):
+        legacy = _run()                # flat 0.18, arithmetic, no phases
+        canon = _run(sigma_hi=0.34)    # glide 0.34->0.18, geometric, phases
+        assert (
+            _by_name(legacy, "base").p_solvent_95
+            != _by_name(canon, "base").p_solvent_95
+        )
+
+    def test_higher_calibrated_sigma_is_no_more_solvent(self):
+        lo = _run(sigma_hi=0.18)       # diversified glide
+        hi = _run(sigma_hi=0.45)       # very concentrated glide (wider early vol)
+        assert (
+            _by_name(hi, "base").p_solvent_95
+            <= _by_name(lo, "base").p_solvent_95
+        )

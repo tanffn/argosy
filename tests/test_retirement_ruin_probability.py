@@ -174,3 +174,51 @@ class TestComputeRuinProbability:
             )
         # The 85% target should appear in the suggested-action text
         assert "85" in str(v.suggested_action.value)
+
+
+def _fake_canonical_basis(sigma_hi: float):
+    """A controlled CanonicalBasis so we can vary ONLY the calibrated sigma and
+    confirm it threads through to the hero verdict (H8)."""
+    from argosy.services.cashflow_projection import HouseholdState, PensionState
+    from argosy.services.retirement.retirement_plan import CanonicalBasis
+
+    hh = HouseholdState(
+        monthly_expenses_nis=0.0, portfolio_value_nis=0.0, fx_usd_nis=3.0,
+        current_age_years=44.0, monthly_savings_nis=0.0,
+    )
+    pens = PensionState(
+        kupat_pensia_balance_nis=800_000.0, kupat_pensia_contribution_monthly_nis=0.0,
+        executive_insurance_balance_nis=755_000.0, keren_hishtalmut_balance_nis=380_000.0,
+        keren_hishtalmut_contribution_monthly_nis=0.0, kupat_gemel_balance_nis=75_000.0,
+    )
+    return CanonicalBasis(
+        household=hh, pensions=pens, deployable_nis=8_000_000.0,
+        full_portfolio_nis=10_000_000.0, cgt_haircut_nis=0.0, reserve_raw_nis=0.0,
+        reserve_pv_nis=0.0, sigma_hi=sigma_hi, spend_central_nis=320_000.0,
+        spend_stress_nis=350_000.0, bl_monthly_nis=0.0, bl_source="test",
+        annuity_tax_rate=0.15,
+    )
+
+
+class TestHeroSigmaReconciliation:
+    """H8: the regime ruin hero must follow the calibrated sigma (via the canonical
+    basis), so a concentrated book (high sigma) yields a LOWER P(solvent) than a
+    diversified one — recalibrating sigma MUST move the hero."""
+
+    def test_p_solvent_drops_with_higher_calibrated_sigma(self, client_with_db, monkeypatch):
+        from argosy.services.retirement import retirement_plan as rp
+
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_minimum(s)
+            monkeypatch.setattr(rp, "resolve_canonical_basis",
+                                lambda *a, **k: _fake_canonical_basis(0.34))
+            v_hi = compute_ruin_probability(
+                user_id="ariel", session=s, retirement_age=49.0, n_paths=800, seed=3,
+            )
+            monkeypatch.setattr(rp, "resolve_canonical_basis",
+                                lambda *a, **k: _fake_canonical_basis(0.18))
+            v_lo = compute_ruin_probability(
+                user_id="ariel", session=s, retirement_age=49.0, n_paths=800, seed=3,
+            )
+        assert v_hi.p_solvent_at_95.value < v_lo.p_solvent_at_95.value

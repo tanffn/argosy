@@ -193,6 +193,57 @@ def _bear_mu_path(months: int, current_age: float, retire_age: int,
     return path
 
 
+@dataclass(frozen=True)
+class CanonicalBasis:
+    """The ONE reserve-netted + CGT-haircut deployable capital, calibrated σ, and
+    central/stress spend that the dual-track plan, the /retirement ruin hero, and
+    the scenario grid all bind to — so the three surfaces reconcile on identical
+    capital / risk / spend (H8/H9). Pure resolution; no Monte Carlo."""
+    household: HouseholdState
+    pensions: PensionState
+    deployable_nis: float          # full_portfolio − reserve_pv − cgt_haircut
+    full_portfolio_nis: float
+    cgt_haircut_nis: float
+    reserve_raw_nis: float
+    reserve_pv_nis: float
+    sigma_hi: float                # calibrated current σ (NVDA-concentrated today)
+    spend_central_nis: float
+    spend_stress_nis: float
+    bl_monthly_nis: float
+    bl_source: str
+    annuity_tax_rate: float
+
+
+def resolve_canonical_basis(
+    session, user_id: str, *,
+    assumptions: RetirementAssumptions | None = None,
+    today: date | None = None,
+) -> CanonicalBasis:
+    """Resolve the single deconcentrated, reserve-netted, CGT-haircut basis used
+    across every retirement surface. Centralizing this (vs re-deriving it per
+    surface) is what guarantees the dual-track headline, the ruin hero, and the
+    scenario grid reconcile (codex H8/H9)."""
+    a = assumptions or RetirementAssumptions()
+    g = _gather_inputs(session, user_id, today)
+    sigma_hi = _calibrated_sigma(session, user_id)
+    haircut = _nvda_deconcentration_haircut(
+        session, user_id, g.household.portfolio_value_nis
+    )
+    reserve_pv = _reserve_pv(
+        g.reserve_nis, a.reserve_discount_real, a.reserve_avg_liability_years
+    )
+    deployable = max(0.0, g.household.portfolio_value_nis - reserve_pv - haircut)
+    spend_central, spend_stress = _split_spend(session, user_id)
+    return CanonicalBasis(
+        household=g.household, pensions=g.pensions, deployable_nis=deployable,
+        full_portfolio_nis=g.household.portfolio_value_nis, cgt_haircut_nis=haircut,
+        reserve_raw_nis=g.reserve_nis, reserve_pv_nis=reserve_pv, sigma_hi=sigma_hi,
+        spend_central_nis=spend_central, spend_stress_nis=spend_stress,
+        bl_monthly_nis=g.bl_monthly_nis, bl_source=g.bl_source,
+        annuity_tax_rate=g.annuity_tax_rate,
+    )
+
+
 def _run_mc(*, hh: HouseholdState, pensions: PensionState, retire_age: int, years: int,
             months: int, mu_real: float, sigma_path, a: RetirementAssumptions,
             bl_monthly: float, annuity_tax: float, current_age: float,
@@ -403,19 +454,14 @@ def build_retirement_plan(
     """DB adapter: resolve the deconcentrated reserve-netted deployable capital,
     the central/stress spend split, the calibrated sigma, then run the pure core."""
     a = assumptions or RetirementAssumptions()
-    g = _gather_inputs(session, user_id, today)
-    sigma_hi = _calibrated_sigma(session, user_id)
-    haircut = _nvda_deconcentration_haircut(session, user_id, g.household.portfolio_value_nis)
-    reserve_pv = _reserve_pv(g.reserve_nis, a.reserve_discount_real, a.reserve_avg_liability_years)
-    deployable = max(0.0, g.household.portfolio_value_nis - reserve_pv - haircut)
-    spend_central, spend_stress = _split_spend(session, user_id)
+    cb = resolve_canonical_basis(session, user_id, assumptions=a, today=today)
     return compute_retirement_plan(
-        household=g.household, pensions=g.pensions, deployable_nis=deployable,
-        spend_central_nis=spend_central, spend_stress_nis=spend_stress,
-        bl_monthly_nis=g.bl_monthly_nis, bl_source=g.bl_source,
-        annuity_tax_rate=g.annuity_tax_rate, sigma_current=sigma_hi,
-        full_portfolio_nis=g.household.portfolio_value_nis, cgt_haircut_nis=haircut,
-        reserve_raw_nis=g.reserve_nis, reserve_pv_nis=reserve_pv,
+        household=cb.household, pensions=cb.pensions, deployable_nis=cb.deployable_nis,
+        spend_central_nis=cb.spend_central_nis, spend_stress_nis=cb.spend_stress_nis,
+        bl_monthly_nis=cb.bl_monthly_nis, bl_source=cb.bl_source,
+        annuity_tax_rate=cb.annuity_tax_rate, sigma_current=cb.sigma_hi,
+        full_portfolio_nis=cb.full_portfolio_nis, cgt_haircut_nis=cb.cgt_haircut_nis,
+        reserve_raw_nis=cb.reserve_raw_nis, reserve_pv_nis=cb.reserve_pv_nis,
         assumptions=a, today=today,
     )
 
@@ -444,12 +490,13 @@ def canonical_feasible_dual_track(
     if target_p_solvent and target_p_solvent != a.bar_drawdown:
         a = replace(a, bar_drawdown=target_p_solvent)
 
-    g = _gather_inputs(session, user_id, today)
-    sigma_hi = _calibrated_sigma(session, user_id)
-    haircut = _nvda_deconcentration_haircut(session, user_id, g.household.portfolio_value_nis)
-    reserve_pv = _reserve_pv(g.reserve_nis, a.reserve_discount_real, a.reserve_avg_liability_years)
-    deployable = max(0.0, g.household.portfolio_value_nis - reserve_pv - haircut)
-    spend_central, _spend_stress = _split_spend(session, user_id)
+    # Single canonical basis (reserve-netted + CGT-haircut deployable, calibrated
+    # σ, central spend) — the SAME one the ruin hero + scenario grid bind to.
+    g = resolve_canonical_basis(session, user_id, assumptions=a, today=today)
+    sigma_hi = g.sigma_hi
+    reserve_pv = g.reserve_pv_nis
+    deployable = g.deployable_nis
+    spend_central = g.spend_central_nis
 
     current_age = g.household.current_age_years
     years = _horizon_years_to_95(current_age)

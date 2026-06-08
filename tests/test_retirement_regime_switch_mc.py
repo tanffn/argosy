@@ -230,6 +230,45 @@ class TestRegimeBituachLeumi:
         assert explicit_zero.p_failure_before_age[95] == base.p_failure_before_age[95]
 
 
+class TestRegimeSigmaScale:
+    """H8: the regime fat-tail engine must follow a per-month sigma-SCALE path
+    (the dual-track glide expressed against the engine's own stationary vol), so
+    the hero P(solvent) reflects the user's NVDA concentration declining over the
+    sell-down — not a fixed diversified vol that ignores it."""
+
+    def test_stationary_sigma_is_diversified_like(self):
+        from argosy.services.retirement.regime_switch_mc import (
+            DEFAULT_REGIME_PARAMS,
+            DEFAULT_TRANSITION_MATRIX,
+            stationary_sigma,
+        )
+
+        s = stationary_sigma(DEFAULT_REGIME_PARAMS, DEFAULT_TRANSITION_MATRIX)
+        # calm-dominated chain -> blended vol ~0.15-0.19 (diversified-equity-like)
+        assert 0.14 < s < 0.20
+
+    def test_idio_overlay_raises_failure_via_normal_regimes(self):
+        # The variance-additive idiosyncratic overlay lifts the calm/turbulent
+        # vols (concentration risk in normal markets) -> more ruin by 95. The
+        # crisis regime is left unscaled (systematic), so this is NOT the
+        # over-punishing uniform multiply. None == default (back-compat).
+        import numpy as np
+
+        h = _direct_household(spend=30_000.0)
+        common = dict(retirement_age=49.0, years=52, n_paths=600, seed=11)
+        months = max(1, min(52, 60)) * 12
+        base = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(), **common,
+        )
+        # idio variance ~ (0.30^2 - 0.18^2): a concentrated book above diversified.
+        idio = np.full(months, 0.30 ** 2 - 0.18 ** 2)
+        overlaid = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(),
+            idio_var_path=idio, **common,
+        )
+        assert overlaid.p_failure_before_age[95] > base.p_failure_before_age[95]
+
+
 class TestRegimePhaseExpenses:
     """H3: the documented life-stage phases (empty-nest dip + heavy late-life LTC
     tail) must shape the regime ruin math too — not only project_monte_carlo —

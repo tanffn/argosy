@@ -19,14 +19,17 @@ This is the right semantics for "if you exhaust liquid assets you're done."
 
 Plan: `docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md` § Wave 3.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Literal
 
 import numpy as np
 from sqlalchemy.orm import Session
 
+import logging
 import math
+
+logger = logging.getLogger(__name__)
 
 from argosy.services.cashflow_projection import (
     DEFAULT_INFLATION_ANNUAL,
@@ -142,27 +145,76 @@ def compute_ruin_probability(
     Returns the P(solvent at 75/85/95) point estimates + bootstrap 95% CI on
     P(solvent at 95) + the categorical verdict + concrete next-action text.
     """
-    household = extract_household_state(session, user_id=user_id, today=today)
-    pensions = extract_pension_state(session, user_id=user_id)
+    # Resolve the SINGLE canonical basis (reserve-netted + CGT-haircut deployable,
+    # FI central spend, calibrated σ-glide) that the dual-track + scenario grid
+    # use, so the hero READINESS verdict reconciles with them instead of an
+    # optimistic full-book / raw-burn basis (H8/H9). codex HERO-FIX: the verdict
+    # is the TYPICAL lognormal-on-canonical-glide P(solvent) — it lines up with the
+    # dual-track typical age (~90% at the canonical drawdown age). The regime fat-
+    # tail is a SEPARATE, labeled downside stress (the scenario grid's
+    # fat_tail_95), NOT the readiness driver — uniformly scaling its crisis vol by
+    # the single-name concentration ratio would double-count systematic crash risk.
+    # Lazy imports avoid the retirement-engine circular-import trap. Falls back to
+    # the raw extracted state when the FI basis can't be sourced (thin data / new
+    # user), preserving the legacy behavior so the hero always renders.
+    bl_monthly_hero = 0.0
+    annuity_tax_hero = 0.0
+    canonical_glide = None
+    canonical_ok = False
+    effective_sigma = sigma_annual
+    sigma_label = f"σ={sigma_annual:.2f}"
+    try:
+        from argosy.services.retirement.retirement_plan import (
+            RetirementAssumptions,
+            resolve_canonical_basis,
+        )
+        from argosy.services.retirement.scenario_mc import _sigma_glidepath
 
-    # Horizon must actually REACH age 95, regardless of the route's `years`
-    # default. Otherwise p_solvent_at_95 silently clamps to the last simulated
-    # age (codex MC review 2026-06-04: years=40 from age ~44 ended ~84, and
-    # both the 85- and 95-year ticks reported that age-84 figure).
-    years = max(years, math.ceil(95.0 - household.current_age_years) + 1)
+        _a = RetirementAssumptions()
+        cb = resolve_canonical_basis(session, user_id=user_id, today=today)
+        household = replace(
+            cb.household,
+            monthly_expenses_nis=cb.spend_central_nis / 12.0,
+            portfolio_value_nis=cb.deployable_nis,
+        )
+        pensions = cb.pensions
+        bl_monthly_hero = cb.bl_monthly_nis
+        annuity_tax_hero = cb.annuity_tax_rate
+        years = max(years, math.ceil(95.0 - household.current_age_years) + 1)
+        months = max(1, min(years, 60)) * 12
+        canonical_glide = _sigma_glidepath(
+            months=months, current_age=household.current_age_years,
+            retirement_age=retirement_age, sigma_hi=cb.sigma_hi,
+            sigma_lo=_a.sigma_diversified, taper_years=_a.deconcentration_taper_years,
+        )
+        # The lognormal verdict uses the glide directly (FX is dropped here — it is
+        # a separate stress band, not folded into the readiness number).
+        effective_sigma = float(canonical_glide[0])
+        sigma_label = (
+            f"σ-glide {canonical_glide[0]:.2f}->{_a.sigma_diversified:.2f} "
+            "(geometric, reserve+CGT netted)"
+        )
+        canonical_ok = True
+    except Exception as exc:  # noqa: BLE001 — hero must still render on thin data
+        logger.warning(
+            "ruin_probability.canonical_basis_unavailable user_id=%s err=%s — "
+            "falling back to full-book / raw-burn basis",
+            user_id, exc,
+        )
+        household = extract_household_state(session, user_id=user_id, today=today)
+        pensions = extract_pension_state(session, user_id=user_id)
+        years = max(years, math.ceil(95.0 - household.current_age_years) + 1)
+        # Legacy FX uplift: combine portfolio σ with σ_fx on the USD portion in
+        # quadrature (only on the fallback path; the canonical path uses the glide).
+        fx_contribution = usd_fraction * DEFAULT_FX_SIGMA
+        effective_sigma = math.sqrt(sigma_annual ** 2 + fx_contribution ** 2)
+        sigma_label = f"σ={effective_sigma:.2f} (flat, FX-uplifted full-book fallback)"
 
-    # Stochastic FX uplift: combine portfolio σ with σ_fx on the USD portion
-    # in quadrature. For Ariel's 65% USD with σ_fx=0.08:
-    #   effective σ = sqrt(σ² + (usd_fraction × σ_fx)²) ≈ sqrt(0.18² + 0.052²) ≈ 0.187
-    # The uplift widens the spread of the MC and surfaces FX risk in the verdict.
-    fx_contribution = usd_fraction * DEFAULT_FX_SIGMA
-    effective_sigma = math.sqrt(sigma_annual ** 2 + fx_contribution ** 2)
-
-    if engine == "regime_switch":
-        # Use the 3-state Markov regime-switch engine (calm / turbulent / crisis).
-        # Fat tails appear in P(ruin) — under stress this gives 5-10pp lower
-        # P(solvent) than the lognormal engine, surfacing the safety margin
-        # honestly per the "better safe than sorry" preference.
+    if engine == "regime_switch" and not canonical_ok:
+        # FALLBACK ONLY (thin data): the 3-state Markov regime engine on the raw
+        # extracted basis. On the canonical path the readiness verdict uses the
+        # lognormal-on-glide below instead (codex HERO-FIX A) so it reconciles
+        # with the dual-track; the regime fat-tail lives in the scenario grid.
         rs = simulate_regime_switch(
             household=household,
             pensions=pensions,
@@ -175,9 +227,7 @@ def compute_ruin_probability(
             n_paths=n_paths,
             seed=seed,
             today=today,
-            # H3: late-life healthcare/LTC phases shape the fat-tail ruin too, so
-            # the hero P(solvent) shares the dual-track's expense basis.
-            apply_expense_phases=True,
+            apply_expense_phases=True,  # H3
         )
         p_solvent_75 = max(0.0, min(1.0, 1.0 - rs.p_failure_before_age.get(75, 0.0)))
         p_solvent_85 = max(0.0, min(1.0, 1.0 - rs.p_failure_before_age.get(85, 0.0)))
@@ -188,7 +238,9 @@ def compute_ruin_probability(
         n_paths_actual = rs.n_paths
         mc = None  # signal "regime engine was used"
     else:
-        # Legacy lognormal Gaussian engine; FX uplift baked into σ.
+        # Lognormal Gaussian engine. On the canonical path it runs the calibrated
+        # σ-glide + geometric basis (reconciled with the dual-track); on the
+        # fallback path it keeps the legacy flat FX-uplifted σ.
         mc = project_monte_carlo(
             household=household,
             pensions=pensions,
@@ -196,6 +248,8 @@ def compute_ruin_probability(
             years=years,
             mu_nominal_annual=mu_nominal_annual,
             sigma_annual=effective_sigma,
+            sigma_nominal_path=canonical_glide,
+            mu_nominal_basis="geometric" if canonical_glide is not None else "arithmetic",
             inflation_annual=inflation_annual,
             mekadem=mekadem,
             tax_rate=tax_rate,
@@ -204,6 +258,8 @@ def compute_ruin_probability(
             seed=seed,
             today=today,
             withdrawal_policy_id=withdrawal_policy_id,
+            bl_annuity_monthly_nis=bl_monthly_hero,
+            annuity_tax_rate=annuity_tax_hero,
             apply_expense_phases=True,  # H3: same life-stage spend basis
         )
         p_solvent_75 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_75))
@@ -255,8 +311,7 @@ def compute_ruin_probability(
             else label + ". "
         )
         rationale += (
-            f"σ={sigma_annual:.2f}, μ={mu_nominal_annual:.2f}, "
-            f"tax={tax_rate:.0%}, retire@{retirement_age:.0f}."
+            f"{sigma_label}, tax={tax_rate:.0%}, retire@{retirement_age:.0f}."
         )
         return ValueWithRationale(
             value=round(v, 4),

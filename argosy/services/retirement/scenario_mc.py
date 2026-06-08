@@ -160,6 +160,7 @@ def simulate_scenarios(
     bl_monthly_nis: float,
     inflation_annual: float = DEFAULT_INFLATION_ANNUAL,
     sigma_annual: float = DEFAULT_SIGMA_ANNUAL,
+    sigma_hi: float | None = None,
     n_paths: int = 2000,
     seed: int | None = None,
     today: date | None = None,
@@ -181,6 +182,23 @@ def simulate_scenarios(
     hh_basis = replace(household, monthly_expenses_nis=spend_basis_annual_nis / 12.0)
     hh_t12 = replace(household, monthly_expenses_nis=spend_t12_annual_nis / 12.0)
 
+    # H8/H9: when a calibrated σ is supplied the grid runs on the SAME canonical
+    # basis as the dual-track headline — the σ-glide (34→18), the geometric return
+    # basis, and the life-stage expense phases — so the scenario ages reconcile
+    # with the dual-track instead of an optimistic flat-σ / arithmetic / no-phase
+    # basis. Legacy callers (sigma_hi=None) keep the prior flat behavior.
+    canonical = sigma_hi is not None
+    sigma_glide = None
+    if canonical:
+        from argosy.services.retirement.retirement_plan import RetirementAssumptions
+
+        _a = RetirementAssumptions()
+        sigma_glide = _sigma_glidepath(
+            months=months, current_age=current_age, retirement_age=retirement_age,
+            sigma_hi=sigma_hi, sigma_lo=_a.sigma_diversified,
+            taper_years=_a.deconcentration_taper_years,
+        )
+
     common = dict(
         retirement_age=retirement_age,
         years=years,
@@ -193,6 +211,8 @@ def simulate_scenarios(
         apply_age_aware_tax=False,
         bl_annuity_monthly_nis=bl_monthly_nis,
         annuity_tax_rate=annuity_tax_rate,
+        mu_nominal_basis="geometric" if canonical else "arithmetic",
+        apply_expense_phases=canonical,
     )
 
     def _run(hh, mu_nominal, *, shock=0.0, mu_path=None):
@@ -202,6 +222,7 @@ def simulate_scenarios(
             mu_nominal_annual=mu_nominal,
             initial_shock_pct=shock,
             mu_nominal_path=mu_path,
+            sigma_nominal_path=sigma_glide,
             **common,
         )
 
@@ -245,6 +266,21 @@ def simulate_scenarios(
     _, _, t12_95 = _p_solvent(_run(hh_t12, SCENARIO_MU_REAL["base"] + inflation_annual))
 
     # Fat-tail stress — regime-switch engine, same basis + BL.
+    rs_idio_var = None
+    if canonical:
+        from argosy.services.retirement.regime_switch_mc import (
+            DEFAULT_REGIME_PARAMS,
+            DEFAULT_TRANSITION_MATRIX,
+            stationary_sigma,
+        )
+
+        base_sigma = stationary_sigma(DEFAULT_REGIME_PARAMS, DEFAULT_TRANSITION_MATRIX)
+        glide_arr = np.asarray(sigma_glide, dtype=float)
+        # codex HERO-FIX: variance-additive idiosyncratic overlay — the calm /
+        # turbulent regimes absorb the single-name concentration vol; the crisis
+        # regime stays systematic (unscaled). NOT a uniform multiply (which would
+        # double-count the crash tail).
+        rs_idio_var = np.maximum(0.0, glide_arr ** 2 - base_sigma ** 2)
     rs = simulate_regime_switch(
         household=hh_basis,
         pensions=pensions,
@@ -256,6 +292,8 @@ def simulate_scenarios(
         today=today,
         bl_annuity_monthly_nis=bl_monthly_nis,
         annuity_tax_rate=annuity_tax_rate,
+        apply_expense_phases=canonical,
+        idio_var_path=rs_idio_var,
     )
     fat_tail_95 = max(0.0, min(1.0, 1.0 - rs.p_failure_before_age.get(95, 0.0)))
 
@@ -380,13 +418,36 @@ def run_retirement_scenarios(
 ) -> ScenarioGrid:
     """DB adapter: resolve the spend basis + BL stipend, then run the core."""
     g = _gather_inputs(session, user_id, today)
+    # H9: bind the grid to the SAME canonical basis as the dual-track headline —
+    # the reserve-netted + CGT-haircut deployable, the MC central spend (the flat
+    # healthcare ramp excluded since the phases model it), and the calibrated σ
+    # (which turns on the σ-glide + geometric + phases inside the core). Fall back
+    # to the full-book / FI-permanent flat basis if the resolver is unavailable.
+    household = g.household
+    spend_basis = g.spend_basis_annual_nis
+    spend_basis_source = "fi_methodology.permanent_annual_spend_nis"
+    sigma_hi = None
+    try:
+        from argosy.services.retirement.retirement_plan import resolve_canonical_basis
+
+        cb = resolve_canonical_basis(session, user_id, today=today)
+        household = replace(g.household, portfolio_value_nis=cb.deployable_nis)
+        spend_basis = cb.spend_central_nis
+        spend_basis_source = (
+            "retirement_plan.resolve_canonical_basis (MC central spend; "
+            "reserve-PV + CGT netted deployable; calibrated σ-glide)"
+        )
+        sigma_hi = cb.sigma_hi
+    except Exception:  # noqa: BLE001 — grid still renders on the flat basis
+        pass
     return simulate_scenarios(
-        household=g.household, pensions=g.pensions, retirement_age=retirement_age,
-        spend_basis_annual_nis=g.spend_basis_annual_nis,
+        household=household, pensions=g.pensions, retirement_age=retirement_age,
+        spend_basis_annual_nis=spend_basis,
         spend_t12_annual_nis=g.spend_t12_annual_nis,
         bl_monthly_nis=g.bl_monthly_nis, annuity_tax_rate=g.annuity_tax_rate,
+        sigma_hi=sigma_hi,
         n_paths=n_paths, seed=seed, today=today,
-        spend_basis_source="fi_methodology.permanent_annual_spend_nis",
+        spend_basis_source=spend_basis_source,
         bl_source=g.bl_source, annuity_tax_source=g.annuity_tax_source,
     )
 
