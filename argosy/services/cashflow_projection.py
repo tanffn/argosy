@@ -752,6 +752,8 @@ def project_monte_carlo(
     mu_nominal_path: "object | None" = None,
     sigma_nominal_path: "object | None" = None,
     mu_nominal_basis: Literal["arithmetic", "geometric"] = "arithmetic",
+    apply_expense_phases: bool = False,
+    household_has_kids: bool = True,
     annuity_tax_rate: float = 0.0,
 ) -> MonteCarloProjection:
     """Random-walk Monte Carlo of consumption-tracking retirement paths.
@@ -793,6 +795,23 @@ def project_monte_carlo(
     log_std = sigma_annual / math.sqrt(12)
     real_return = mu_nominal_annual - inflation_annual
     expense_growth = inflation_annual + lifestyle_drift_annual
+
+    # H3: optional life-stage expense phases (empty-nest dip + post-65 healthcare
+    # ramp / late-life LTC tail) scale the per-tick expense RELATIVE to today's
+    # burn, so the documented curve shapes the path-dependent ruin math — not just
+    # a display card. ``phase_factors[t-1]`` applies at loop tick t (t=1..months).
+    # Lazy import keeps this module free of a load-time dependency on the
+    # retirement package (circular-import safety per project conventions).
+    phase_factors: "Sequence[float] | None" = None
+    if apply_expense_phases:
+        from argosy.services.retirement.phase_expenses import (
+            phase_expense_factor_series,
+        )
+        phase_factors = phase_expense_factor_series(
+            current_age=household.current_age_years,
+            months=months,
+            has_kids=household_has_kids,
+        )
 
     rng = np.random.default_rng(seed)
     # Pre-generate all random returns: shape (n_paths, months).
@@ -1002,6 +1021,8 @@ def project_monte_carlo(
         expenses_t = household.monthly_expenses_nis * (
             (1.0 + expense_growth) ** (t / 12.0)
         )
+        if phase_factors is not None:
+            expenses_t *= phase_factors[t - 1]  # life-stage shape (H3)
 
         # Consumption: withdraw based on the selected policy.
         # Default 'bengen_4pct': fixed-real spending — shortfall = (expenses -
@@ -1115,6 +1136,8 @@ def project_monte_carlo(
         exp_t = household.monthly_expenses_nis * (
             (1.0 + expense_growth) ** (t / 12.0)
         )
+        if phase_factors is not None and t >= 1:
+            exp_t *= phase_factors[t - 1]  # life-stage shape (H3); t=0 -> 1.0
 
         # Deterministic income-composition fields (identical across paths),
         # re-derived from the state machine exactly like ``ann_t`` above.
@@ -1198,6 +1221,7 @@ def project_monte_carlo(
             "annuity_age": ANNUITY_AGE,
             "n_paths": n_paths,
             "mu_nominal_basis": mu_nominal_basis,
+            "apply_expense_phases": apply_expense_phases,
             "model_notes": (
                 "Monte Carlo: each path simulates monthly log-returns. With "
                 "mu_nominal_basis='arithmetic' (default) the per-month drift is "

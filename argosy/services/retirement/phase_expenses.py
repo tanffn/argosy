@@ -112,6 +112,75 @@ def build_phase_expense_curve(
     return phases
 
 
+def _phase_at(curve: list[ExpensePhase], age: float) -> ExpensePhase | None:
+    """The phase covering ``age``. Carries the latest-passed phase forward for
+    ages beyond the curve (e.g. past 95 stays in late_life_ltc, not a silent
+    drop back to baseline). Returns None only for ages BEFORE the first phase."""
+    match: ExpensePhase | None = None
+    for p in curve:
+        if p.start_age <= age <= p.end_age:
+            return p
+        if age > p.end_age:
+            match = p  # carry-forward the latest phase already passed
+    return match
+
+
+def phase_expense_factor_series(
+    *,
+    current_age: float,
+    months: int,
+    has_kids: bool = True,
+    healthcare_ramp_age: int = 65,
+) -> list[float]:
+    """Per-tick multiplicative factor applied to the inflated baseline expense in
+    the solvency MC, so the documented life-stage phases (empty-nest dip, post-65
+    healthcare ramp, late-life LTC tail) shape the path-dependent ruin math — not
+    just a display card. ``factor[t-1]`` applies at MC loop tick ``t``
+    (age = ``current_age`` + t/12):
+
+        factor = rel_mult(age) * prem_factor(age)
+
+      rel_mult(age)    = phase_mult(age) / phase_mult(current_age)
+                         — NORMALIZED to today, so the per-tick expense at t=0 is
+                         the actual current burn (no double-count of the phase the
+                         household is already in; e.g. a 44-yo already inside
+                         kids_peak). Empty-nest dips below 1.0; late_life rises.
+      prem_factor(age) = compounding product of (1 + premium(age_k))^(1/12) over
+                         the elapsed months from ``current_age`` — the EXTRA
+                         inflation above CPI accrued passing through each phase.
+                         NOT normalized (today anchors the LEVEL; premiums model
+                         future above-CPI cost growth). This is the dominant
+                         late-life driver (~1.5%/yr 65-80, ~3%/yr 81-95).
+
+    Composes on top of the engine's existing (1+inflation+lifestyle_drift)^(t/12)
+    growth — it does NOT replace it. (codex H3 verdict 2026-06-08.)"""
+    curve = build_phase_expense_curve(
+        has_kids=has_kids, healthcare_ramp_age=healthcare_ramp_age
+    )
+
+    def _mult_at(age: float) -> float:
+        p = _phase_at(curve, age)
+        return float(p.monthly_multiplier.value) if p else 1.0
+
+    def _premium_at(age: float) -> float:
+        p = _phase_at(curve, age)
+        return float(p.inflation_premium.value) if p else 0.0
+
+    base_mult = _mult_at(current_age)  # the phase the household is in TODAY
+    if base_mult <= 0.0:
+        base_mult = 1.0
+
+    dt = 1.0 / 12.0
+    factors: list[float] = []
+    prem_factor = 1.0
+    for t in range(1, months + 1):
+        age_t = current_age + t * dt
+        prem_factor *= (1.0 + _premium_at(age_t)) ** dt
+        rel_mult = _mult_at(age_t) / base_mult
+        factors.append(rel_mult * prem_factor)
+    return factors
+
+
 def idf_service_phases(
     *,
     kids_birth_years: list[int] | None = None,

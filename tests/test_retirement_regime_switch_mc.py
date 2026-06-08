@@ -228,3 +228,35 @@ class TestRegimeBituachLeumi:
             bl_annuity_monthly_nis=0.0, **self.COMMON,
         )
         assert explicit_zero.p_failure_before_age[95] == base.p_failure_before_age[95]
+
+
+class TestRegimePhaseExpenses:
+    """H3: the documented life-stage phases (empty-nest dip + heavy late-life LTC
+    tail) must shape the regime ruin math too — not only project_monte_carlo —
+    so the fat-tail readout and the dual-track headline share one expense basis."""
+
+    COMMON = dict(retirement_age=49.0, years=52, n_paths=600, seed=11)
+
+    def test_phases_worsen_late_life_failure(self):
+        # The premium-driven late-life ramp (up to ~2x current real burn by the
+        # 90s) outweighs the earlier empty-nest dip, so ruin-by-95 rises.
+        h = _direct_household(spend=30_000.0)
+        flat = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(), **self.COMMON,
+        )
+        phased = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(),
+            apply_expense_phases=True, **self.COMMON,
+        )
+        assert phased.p_failure_before_age[95] > flat.p_failure_before_age[95]
+
+    def test_default_off_is_unchanged(self):
+        h = _direct_household(spend=30_000.0)
+        base = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(), **self.COMMON,
+        )
+        explicit_false = simulate_regime_switch(
+            household=h, pensions=_direct_pensions(),
+            apply_expense_phases=False, **self.COMMON,
+        )
+        assert base.p_failure_before_age[95] == explicit_false.p_failure_before_age[95]

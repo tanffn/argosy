@@ -760,6 +760,68 @@ class TestMonteCarloSimulator:
             > arith.series[-1].portfolio_value_p50_nis * 1.10
         )
 
+    def test_expense_phases_shape_late_life_and_ruin(self) -> None:
+        """H3: with apply_expense_phases=True the per-tick expense follows the
+        documented life-stage curve RELATIVE to today's burn — an empty-nest dip
+        (~age 60) then a heavy premium-driven late-life ramp (~age 90 well above
+        flat-inflation). The heavier tail must not LOWER ruin. Default (False)
+        leaves the flat-inflation behavior unchanged."""
+        from argosy.services.cashflow_projection import (
+            HouseholdState,
+            PensionState,
+            project_monte_carlo,
+        )
+
+        hh = HouseholdState(
+            monthly_expenses_nis=25_000.0,
+            portfolio_value_nis=4_000_000.0,
+            fx_usd_nis=3.7,
+            current_age_years=44.0,
+            monthly_savings_nis=0.0,
+        )
+        pens = PensionState(
+            kupat_pensia_balance_nis=0.0,
+            kupat_pensia_contribution_monthly_nis=0.0,
+            executive_insurance_balance_nis=0.0,
+            keren_hishtalmut_balance_nis=0.0,
+            keren_hishtalmut_contribution_monthly_nis=0.0,
+            kupat_gemel_balance_nis=0.0,
+        )
+        common = dict(
+            household=hh,
+            pensions=pens,
+            retirement_age=49.0,
+            years=52,  # reaches ~age 96 — spans healthcare_ramp + late_life_ltc
+            mu_nominal_annual=0.05,
+            sigma_annual=0.18,
+            inflation_annual=0.025,
+            n_paths=400,
+            seed=42,
+        )
+        flat = project_monte_carlo(**common)
+        phased = project_monte_carlo(**common, apply_expense_phases=True)
+
+        def _near(series, age):
+            return min(series, key=lambda p: abs(p.age_years - age))
+
+        # Empty-nest dip (~age 60): phased expense below the flat baseline.
+        assert (
+            _near(phased.series, 60.0).expenses_monthly_nis
+            < _near(flat.series, 60.0).expenses_monthly_nis
+        )
+        # Late-life LTC tail (~age 90): premium-driven, materially above flat.
+        assert (
+            _near(phased.series, 90.0).expenses_monthly_nis
+            > _near(flat.series, 90.0).expenses_monthly_nis * 1.5
+        )
+        # Heavier tail -> ruin no lower than the flat baseline.
+        assert phased.p_failure_before_age_95 >= flat.p_failure_before_age_95
+        # Default path unchanged.
+        assert (
+            _near(flat.series, 90.0).expenses_monthly_nis
+            == pytest.approx(25_000.0 * (1.025 ** (90.0 - 44.0)))
+        )
+
 
 class TestLifestyleDrift:
     def test_drift_increases_expense_growth(self, client_with_db):

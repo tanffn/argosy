@@ -21,9 +21,12 @@ review 2026-06-05): 5.0% real central return (4.5% conservative case), 10%
 interim withdrawal tax (basis-aware drag, not the full 15% lifetime), the
 finite-liability reserve held at the PV of its scheduled liabilities discounted
 at a SAFE real rate (earmarked near-term money isn't invested at equity risk),
-and a permanent-spend basis split into CENTRAL (real needs incl. healthcare) and
-STRESS (adds discretionary home upgrades). Estates are read at age 95 (not the
-end of the >95 horizon). Every figure carries a source; nothing is fabricated.
+and a permanent-spend basis split into CENTRAL (real ongoing needs) and STRESS
+(adds discretionary home upgrades). Late-life healthcare/LTC is modeled inside
+the MC as a time-varying expense phase (see ``_mc_spend_split`` /
+``apply_expense_phases``), not as a flat allowance in this basis. Estates are read
+at age 95 (not the end of the >95 horizon). Every figure carries a source; nothing
+is fabricated.
 
 ``compute_retirement_plan`` is the pure, DB-free core (hand inputs → plan);
 ``build_retirement_plan`` is the DB adapter that resolves the inputs first.
@@ -130,25 +133,51 @@ def _reserve_pv(reserve_nis: float, discount_real: float, avg_years: float) -> f
     return reserve_nis / ((1.0 + discount_real) ** max(0.0, avg_years))
 
 
+def _is_home_upgrade(c) -> bool:
+    return "HOME_UPGRADE" in (c.source or "").upper()
+
+
+def _is_flat_healthcare_ramp(c) -> bool:
+    """The flat permanent healthcare allowance (planning_parameter:HEALTHCARE_RAMP)
+    is SUPERSEDED in the solvency MC by the time-varying phase curve
+    (phase_expenses.phase_expense_factor_series, applied via apply_expense_phases):
+    keeping both would double-count late-life healthcare in every ruin path. The
+    FI perpetuity (fi_methodology) KEEPS the allowance until M1 reconciles the two
+    derivations. (codex H3 verdict 2026-06-08: decision A.)"""
+    return "HEALTHCARE_RAMP" in (c.source or "").upper()
+
+
+def _mc_spend_split(perm_components: list) -> tuple[float, float]:
+    """The MC spend basis from the permanent FI components.
+
+    CENTRAL = real ongoing needs (tracked living ex-mortgage + car cadence),
+    EXCLUDING both the discretionary home-upgrade cadence and the flat
+    healthcare-ramp allowance. STRESS adds back the home-upgrade cadence but
+    still excludes the flat healthcare ramp (the phase curve carries late-life
+    healthcare in BOTH the central and stress MC paths). Pure + DB-free for
+    unit testing."""
+    central = sum(
+        c.annual_nis for c in perm_components
+        if not _is_home_upgrade(c) and not _is_flat_healthcare_ramp(c)
+    )
+    stress = sum(
+        c.annual_nis for c in perm_components if not _is_flat_healthcare_ramp(c)
+    )
+    return float(central), float(stress)
+
+
 def _split_spend(session, user_id: str) -> tuple[float, float]:
-    """CENTRAL = permanent components that are real ongoing needs — HIGH/MEDIUM
-    confidence (tracked living ex-mortgage + car cadence) PLUS the healthcare
-    ramp (a genuine retirement need even if its size is a heuristic). STRESS adds
-    the discretionary home-upgrade cadence. Derived from the sourced fi
-    components — never a hardcoded constant (codex review: healthcare belongs in
-    central; home upgrades are discretionary stress)."""
+    """The MC's central/stress spend basis, derived from the sourced FI
+    components — never a hardcoded constant. See ``_mc_spend_split`` for the
+    component selection (the flat healthcare ramp is excluded here because the
+    solvency MC models late-life healthcare via the time-varying phase curve)."""
     from argosy.services.fi_methodology import compute_fi_target
 
     fi = compute_fi_target(session, user_id=user_id)
     if fi is None or not fi.permanent_annual_spend_nis:
         raise ValueError("retirement_plan needs an FI spend basis — refusing to fabricate one.")
     perm = [c for c in fi.components if c.kind == "permanent"]
-
-    def _is_home_upgrade(c) -> bool:
-        return "HOME_UPGRADE" in (c.source or "").upper()
-
-    central = sum(c.annual_nis for c in perm if not _is_home_upgrade(c))
-    stress = sum(c.annual_nis for c in perm)
+    central, stress = _mc_spend_split(perm)
     if central <= 0:  # defensive — never run on a zero basis
         central = stress
     return float(central), float(stress)
@@ -181,6 +210,11 @@ def _run_mc(*, hh: HouseholdState, pensions: PensionState, retire_age: int, year
         # age too late. regime_switch_mc stays arithmetic (its regime means are
         # arithmetic).
         mu_nominal_basis="geometric",
+        # H3: shape the per-tick spend by the documented life-stage phases
+        # (empty-nest dip, post-65 healthcare ramp, late-life LTC tail). The flat
+        # healthcare allowance is already excluded from the spend basis upstream
+        # (_mc_spend_split) so this does not double-count.
+        apply_expense_phases=True,
         inflation_annual=a.inflation, n_paths=a.n_paths, seed=a.seed, today=today,
         tax_rate=a.withdrawal_tax, apply_age_aware_tax=False,
         bl_annuity_monthly_nis=bl_monthly, annuity_tax_rate=annuity_tax,

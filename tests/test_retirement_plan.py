@@ -126,3 +126,37 @@ def test_estate_preserved_at_old_retirement():
     p = _plan()
     typ = next(t for t in p.tracks if t.name == "typical")
     assert typ.frontier[-1].principal_preserved is True
+
+
+class TestMcSpendSplit:
+    """H3: the MC spend basis excludes the flat HEALTHCARE_RAMP allowance — the
+    phase curve (phase_expense_factor_series) models late-life healthcare
+    time-resolved, so keeping the flat allowance too would double-count it in
+    every ruin path. HOME_UPGRADE stays excluded from central (discretionary).
+    The FI perpetuity keeps the allowance (M1, deferred). codex H3: decision A."""
+
+    @staticmethod
+    def _comps():
+        from argosy.services.fi_methodology import FiComponent
+        return [
+            FiComponent(label="Tracked baseline living (ex-mortgage)",
+                        kind="permanent", annual_nis=280_000.0, reserve_nis=0.0,
+                        source="identity_yaml...", confidence="HIGH"),
+            FiComponent(label="Car replacement (amortized)",
+                        kind="permanent", annual_nis=20_000.0, reserve_nis=0.0,
+                        source="planning_parameter:CAR_REPLACEMENT", confidence="MEDIUM"),
+            FiComponent(label="Late-life healthcare ramp",
+                        kind="permanent", annual_nis=15_000.0, reserve_nis=0.0,
+                        source="planning_parameter:HEALTHCARE_RAMP", confidence="LOW"),
+            FiComponent(label="Home upgrades (amortized)",
+                        kind="permanent", annual_nis=30_000.0, reserve_nis=0.0,
+                        source="planning_parameter:HOME_UPGRADE", confidence="LOW"),
+        ]
+
+    def test_central_and_stress_exclude_flat_healthcare(self):
+        from argosy.services.retirement.retirement_plan import _mc_spend_split
+        central, stress = _mc_spend_split(self._comps())
+        # central = baseline + car (no healthcare, no home-upgrade)
+        assert central == pytest.approx(300_000.0)
+        # stress = baseline + car + home-upgrade (still no flat healthcare)
+        assert stress == pytest.approx(330_000.0)

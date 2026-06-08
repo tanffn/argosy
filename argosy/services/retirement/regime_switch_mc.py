@@ -150,6 +150,8 @@ def simulate_regime_switch(
     bl_annuity_monthly_nis: float = 0.0,
     bl_start_age: float = float(ANNUITY_AGE),
     annuity_tax_rate: float = 0.0,
+    apply_expense_phases: bool = False,
+    household_has_kids: bool = True,
 ) -> RegimeSwitchResult:
     """Run a regime-switching MC and return the result.
 
@@ -160,6 +162,19 @@ def simulate_regime_switch(
     # Cap raised 50→60 so a horizon that reaches age 95 from the mid-40s
     # (~51 years) isn't truncated (codex MC review 2026-06-04).
     months = max(1, min(years, 60)) * 12
+    # H3: optional life-stage expense phases — same shared helper + indexing as
+    # project_monte_carlo, so both ruin engines apply ONE expense basis.
+    # ``phase_factors[t-1]`` applies at loop tick t (t=1..months).
+    phase_factors = None
+    if apply_expense_phases:
+        from argosy.services.retirement.phase_expenses import (
+            phase_expense_factor_series,
+        )
+        phase_factors = phase_expense_factor_series(
+            current_age=household.current_age_years,
+            months=months,
+            has_kids=household_has_kids,
+        )
     if regime_params is None:
         regime_params = DEFAULT_REGIME_PARAMS
     if transition_matrix is None:
@@ -283,6 +298,8 @@ def simulate_regime_switch(
             expenses_t = household.monthly_expenses_nis * (
                 (1.0 + expense_growth) ** (t / 12.0)
             )
+            if phase_factors is not None:
+                expenses_t *= phase_factors[t - 1]  # life-stage shape (H3)
             # Private pension annuity credited NET of its effective tax; BL is
             # income-tax-exempt → gross (codex review 2026-06-04).
             annuity_net_t = annuity_nominal_t * (1.0 - annuity_tax_rate)

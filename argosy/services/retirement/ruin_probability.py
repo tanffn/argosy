@@ -175,6 +175,9 @@ def compute_ruin_probability(
             n_paths=n_paths,
             seed=seed,
             today=today,
+            # H3: late-life healthcare/LTC phases shape the fat-tail ruin too, so
+            # the hero P(solvent) shares the dual-track's expense basis.
+            apply_expense_phases=True,
         )
         p_solvent_75 = max(0.0, min(1.0, 1.0 - rs.p_failure_before_age.get(75, 0.0)))
         p_solvent_85 = max(0.0, min(1.0, 1.0 - rs.p_failure_before_age.get(85, 0.0)))
@@ -201,6 +204,7 @@ def compute_ruin_probability(
             seed=seed,
             today=today,
             withdrawal_policy_id=withdrawal_policy_id,
+            apply_expense_phases=True,  # H3: same life-stage spend basis
         )
         p_solvent_75 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_75))
         p_solvent_85 = max(0.0, min(1.0, 1.0 - mc.p_failure_before_age_85))
