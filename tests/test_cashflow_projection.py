@@ -708,6 +708,58 @@ class TestMonteCarloSimulator:
         for i in range(1, len(proj.series)):
             assert proj.series[i].fraction_solvent <= proj.series[i-1].fraction_solvent + 1e-9
 
+    def test_geometric_basis_skips_variance_drag(self) -> None:
+        """A 'geometric'/compound return basis must NOT subtract the
+        sigma^2/2 variance drag, so for the same mu,sigma its median
+        terminal exceeds the 'arithmetic' basis. Isolated in a pure-
+        accumulation scenario (no spend, retirement far past the horizon).
+
+        Plan H1: '5% real' is a compound figure by convention (Vanguard
+        VCMM / BNY CMA); the prior code treated it as arithmetic and always
+        subtracted sigma^2/2, so the diversified book earned only
+        0.05 - 0.18^2/2 = 3.38% compound -> the earliest-safe age was biased
+        too late (over-conservative)."""
+        from argosy.services.cashflow_projection import (
+            HouseholdState,
+            PensionState,
+            project_monte_carlo,
+        )
+
+        hh = HouseholdState(
+            monthly_expenses_nis=0.0,
+            portfolio_value_nis=1_000_000.0,
+            fx_usd_nis=3.7,
+            current_age_years=44.0,
+            monthly_savings_nis=0.0,
+        )
+        pens = PensionState(
+            kupat_pensia_balance_nis=0.0,
+            kupat_pensia_contribution_monthly_nis=0.0,
+            executive_insurance_balance_nis=0.0,
+            keren_hishtalmut_balance_nis=0.0,
+            keren_hishtalmut_contribution_monthly_nis=0.0,
+            kupat_gemel_balance_nis=0.0,
+        )
+        common = dict(
+            household=hh,
+            pensions=pens,
+            retirement_age=90.0,  # far past the 20y horizon: pure accumulation
+            years=20,
+            mu_nominal_annual=0.05 + 0.025,  # 5% real + 2.5% inflation
+            sigma_annual=0.18,
+            inflation_annual=0.025,
+            n_paths=2000,
+            seed=42,
+        )
+        arith = project_monte_carlo(**common, mu_nominal_basis="arithmetic")
+        geom = project_monte_carlo(**common, mu_nominal_basis="geometric")
+        # geometric basis skips the drag ~= +sigma^2/2 ~= +1.6%/yr compound
+        # -> ~1.38x higher median terminal over 20y; assert a safe 1.10x floor.
+        assert (
+            geom.series[-1].portfolio_value_p50_nis
+            > arith.series[-1].portfolio_value_p50_nis * 1.10
+        )
+
 
 class TestLifestyleDrift:
     def test_drift_increases_expense_growth(self, client_with_db):

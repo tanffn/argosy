@@ -174,6 +174,13 @@ def _run_mc(*, hh: HouseholdState, pensions: PensionState, retire_age: int, year
         household=hh, pensions=pensions, retirement_age=float(retire_age), years=years,
         mu_nominal_annual=mu_real + a.inflation, sigma_annual=a.sigma_diversified,
         sigma_nominal_path=sigma_path, mu_nominal_path=mu_path, initial_shock_pct=shock,
+        # mu_real (and the bear-decade real in mu_path) are COMPOUND/geometric
+        # real-return assumptions (5% real per Vanguard/BNY convention), so the
+        # MC must not re-apply the -sigma^2/2 variance drag (H1). Treating them
+        # as arithmetic understated the median path and biased the earliest-safe
+        # age too late. regime_switch_mc stays arithmetic (its regime means are
+        # arithmetic).
+        mu_nominal_basis="geometric",
         inflation_annual=a.inflation, n_paths=a.n_paths, seed=a.seed, today=today,
         tax_rate=a.withdrawal_tax, apply_age_aware_tax=False,
         bl_annuity_monthly_nis=bl_monthly, annuity_tax_rate=annuity_tax,

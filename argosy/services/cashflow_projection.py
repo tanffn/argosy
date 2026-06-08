@@ -19,7 +19,7 @@ import json
 import math
 from dataclasses import dataclass
 from datetime import date
-from typing import Sequence
+from typing import Literal, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -751,6 +751,7 @@ def project_monte_carlo(
     initial_shock_pct: float = 0.0,
     mu_nominal_path: "object | None" = None,
     sigma_nominal_path: "object | None" = None,
+    mu_nominal_basis: Literal["arithmetic", "geometric"] = "arithmetic",
     annuity_tax_rate: float = 0.0,
 ) -> MonteCarloProjection:
     """Random-walk Monte Carlo of consumption-tracking retirement paths.
@@ -763,7 +764,13 @@ def project_monte_carlo(
     Returns per-tick percentile bands + path-failure aggregate stats.
 
     ``seed``: pin the RNG for reproducible tests. ``None`` = nondeterministic
-    (production usage)."""
+    (production usage).
+
+    ``mu_nominal_basis``: "arithmetic" (default) treats ``mu_nominal_annual``
+    as the GBM drift input and subtracts the variance drag (median path =
+    mu - sigma^2/2); "geometric" treats it as the realized compound CAGR and
+    skips the drag. Pass "geometric" when feeding a conventional "X% real"
+    assumption (Vanguard/BNY quote those as compound)."""
     import numpy as np
 
     today = today or date.today()
@@ -772,7 +779,17 @@ def project_monte_carlo(
     # clamping to ~age-94 (codex MC review 2026-06-04, mirrors the same fix
     # in regime_switch_mc.py).
     months = max(1, min(years, 60)) * 12
-    log_drift = mu_nominal_annual / 12.0 - sigma_annual ** 2 / 24.0
+    # ``mu_nominal_basis`` declares whether ``mu_nominal_annual`` (and any
+    # ``mu_nominal_path``) is an ARITHMETIC mean (default — the GBM drift
+    # input, so the median path is mu - sigma^2/2) or a GEOMETRIC/compound
+    # figure (already the realized CAGR, so do NOT re-apply the variance
+    # drag). "5% real" is conventionally geometric (Vanguard VCMM, BNY CMA);
+    # passing it as arithmetic understates the median and biases the safe age
+    # too late. Default "arithmetic" preserves all pre-existing callers.
+    if mu_nominal_basis == "geometric":
+        log_drift = mu_nominal_annual / 12.0
+    else:
+        log_drift = mu_nominal_annual / 12.0 - sigma_annual ** 2 / 24.0
     log_std = sigma_annual / math.sqrt(12)
     real_return = mu_nominal_annual - inflation_annual
     expense_growth = inflation_annual + lifestyle_drift_annual
@@ -810,7 +827,12 @@ def project_monte_carlo(
                 )
         else:
             sig_row = np.full(months, sigma_annual, dtype=np.float64)
-        drift_row = mu_row / 12.0 - sig_row ** 2 / 24.0   # shape (months,)
+        # Same basis branch as the scalar path: a geometric/compound mu is
+        # already the realized CAGR, so skip the -sigma^2/2 variance drag.
+        if mu_nominal_basis == "geometric":
+            drift_row = mu_row / 12.0                      # shape (months,)
+        else:
+            drift_row = mu_row / 12.0 - sig_row ** 2 / 24.0   # shape (months,)
         std_row = sig_row / math.sqrt(12.0)               # shape (months,)
         log_returns = drift_row + std_row * rng.normal(0.0, 1.0, size=(n_paths, months))
 
@@ -1175,9 +1197,16 @@ def project_monte_carlo(
             "lump_pension_age": LUMP_PENSION_AGE,
             "annuity_age": ANNUITY_AGE,
             "n_paths": n_paths,
+            "mu_nominal_basis": mu_nominal_basis,
             "model_notes": (
-                "Monte Carlo: each path simulates monthly log-returns ~ "
-                "N(mu/12 - sigma^2/24, sigma/sqrt(12)). User withdraws "
+                "Monte Carlo: each path simulates monthly log-returns. With "
+                "mu_nominal_basis='arithmetic' (default) the per-month drift is "
+                "N(mu/12 - sigma^2/24, sigma/sqrt(12)) — mu is the arithmetic "
+                "mean and the median path carries the -sigma^2/2 variance drag. "
+                "With mu_nominal_basis='geometric' the drift is N(mu/12, "
+                "sigma/sqrt(12)) — mu is already the compound/CAGR return so no "
+                "drag is re-applied (used by the canonical dual-track, where "
+                "'5% real' is a compound assumption). User withdraws "
                 "(inflated_expenses - nominal_pension_annuity) / (1-tax) from "
                 "portfolio each month. Path fails when portfolio hits zero. "
                 "Captures sequence-of-returns risk that the deterministic "
