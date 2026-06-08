@@ -55,13 +55,29 @@ from argosy.state.models import (
 
 SWR = 0.035  # 3.5% real, per the plan's QUICK REFERENCE.
 
-#: real-return scenarios used for the 25-year wealth-trajectory chart and
-#: the target-retirement-age solve. Keep ``typical`` at 4.5% (plan-aligned).
-SCENARIO_RETURNS: dict[str, float] = {
+#: Non-central real-return bands for the 25-year wealth-trajectory chart and
+#: the target-retirement-age solve. ``typical`` is NOT a literal here — it is
+#: single-sourced from the canonical ``RetirementAssumptions.mu_real_typical``
+#: via ``get_scenario_returns()`` so /portfolio cannot diverge from /plan +
+#: /retirement (it was a stale 0.045 — which is actually the dual-track
+#: CONSERVATIVE case, not the 5.0% central).
+_SCENARIO_RETURN_BANDS: dict[str, float] = {
     "bear": 0.00,
     "conservative": 0.02,
-    "typical": 0.045,
 }
+
+
+def get_scenario_returns() -> dict[str, float]:
+    """Real-return scenarios for the wealth chart + target-age solve.
+
+    ``typical`` is sourced from the canonical ``RetirementAssumptions`` so the
+    central return is single-source across surfaces. The import is lazy because
+    ``cashflow_projection`` imports *this* module — a module-level import of the
+    retirement engine would cycle.
+    """
+    from argosy.services.retirement.retirement_plan import RetirementAssumptions
+
+    return {**_SCENARIO_RETURN_BANDS, "typical": RetirementAssumptions().mu_real_typical}
 
 DEFAULT_CURRENT_AGE = 45  # fallback when no date_of_birth in identity_yaml.
 DEFAULT_FX_USD_NIS = 3.10  # last-ditch fallback when DB has none.
@@ -697,7 +713,7 @@ def _retirement(
     # reported the current age (43). Per-scenario target_portfolio stays the FI
     # capital implied by that scenario's draw.
     scenarios: list[ScenarioCard] = []
-    for name, r in SCENARIO_RETURNS.items():
+    for name, r in get_scenario_returns().items():
         y2t: float | None = None
         target_age: int | None = None
         try:
@@ -730,7 +746,7 @@ def _retirement(
     if nw_nis is not None:
         annual_contrib = (surplus or 0.0) * 12.0
         curves: dict[str, list[float]] = {}
-        for name, r in SCENARIO_RETURNS.items():
+        for name, r in get_scenario_returns().items():
             curves[name] = project_wealth_curve(
                 starting_portfolio=nw_nis,
                 annual_contribution=annual_contrib,
@@ -1281,7 +1297,7 @@ def compute_wealth_dashboard(
 
     assumptions = Assumptions(
         swr_rate=SWR,
-        scenario_returns=dict(SCENARIO_RETURNS),
+        scenario_returns=get_scenario_returns(),
         fx_usd_nis=fx_usd_nis,
         fx_source=fx_source,
         current_age=current_age,
@@ -1340,7 +1356,7 @@ __all__ = [
     "project_wealth_curve",
     "compute_current_age",
     "SWR",
-    "SCENARIO_RETURNS",
+    "get_scenario_returns",
     "DEFAULT_CURRENT_AGE",
     "DEFAULT_FX_USD_NIS",
     "PROJECTION_YEARS",

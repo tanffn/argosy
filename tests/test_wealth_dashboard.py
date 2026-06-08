@@ -29,15 +29,28 @@ import pytest
 from argosy.services.wealth_dashboard import (
     DEFAULT_CURRENT_AGE,
     DEFAULT_FX_USD_NIS,
-    SCENARIO_RETURNS,
     SWR,
     US_NRA_ESTATE_EXEMPTION_USD,
     US_NRA_ESTATE_RATE,
     compute_current_age,
     compute_wealth_dashboard,
+    get_scenario_returns,
     project_wealth_curve,
     years_to_target,
 )
+
+
+def test_typical_scenario_return_is_canonical_central() -> None:
+    """H4: /portfolio's 'typical' real return must equal the canonical
+    RetirementAssumptions.mu_real_typical that /plan + /retirement use — it was
+    a stale 0.045 (which is actually the dual-track CONSERVATIVE case), so the
+    three surfaces disagreed on the single most important number."""
+    from argosy.services.retirement.retirement_plan import RetirementAssumptions
+    from argosy.services.wealth_dashboard import get_scenario_returns
+
+    assert get_scenario_returns()["typical"] == pytest.approx(
+        RetirementAssumptions().mu_real_typical
+    )
 from argosy.state.models import (
     AgentReport,
     PlanVersion,
@@ -426,7 +439,14 @@ class TestRetirementBlock:
         assert r.swr_rate == SWR
         # 3 scenarios in canonical order: bear, conservative, typical.
         assert [s.name for s in r.scenarios] == ["bear", "conservative", "typical"]
-        assert [s.real_return for s in r.scenarios] == [0.0, 0.02, 0.045]
+        # 'typical' is single-sourced from the canonical central return (5.0%),
+        # not the stale 0.045 (= the dual-track CONSERVATIVE case) that used to
+        # make /portfolio disagree with /plan + /retirement (H4).
+        assert [s.real_return for s in r.scenarios] == [
+            0.0,
+            0.02,
+            get_scenario_returns()["typical"],
+        ]
         # Retirement age now binds to the canonical MC-based earliest-feasible
         # age (the SAME source as /plan + /retirement), NOT the deterministic
         # years-to-target. This seed has no FI spend basis in identity_yaml, so
@@ -737,7 +757,7 @@ class TestAssumptionsAndDefaults:
             _seed_snapshot(s)
             _seed_household_budget_report(s)
             dash = compute_wealth_dashboard(s, user_id="ariel")
-        assert dash.assumptions.scenario_returns == SCENARIO_RETURNS
+        assert dash.assumptions.scenario_returns == get_scenario_returns()
         assert dash.assumptions.swr_rate == SWR
 
 

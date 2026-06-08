@@ -504,11 +504,35 @@ def _calibrated_sigma(session, user_id: str) -> float:
         return SIGMA_DIVERSIFIED
 
 
+def nvda_deconcentration_cgt(sell_nis: float, *, taper_years: int) -> float:
+    """One-time CGT on selling ``sell_nis`` of NVDA down to the strategic cap.
+
+    SINGLE canonical model, shared with ``deconcentration_optimizer``: the 0.8
+    RSU taxable-gain fraction × the surtax-inclusive effective rate
+    (``effective_cgt_rate``), PV-discounted over ``taper_years``
+    (``total_cgt_for_horizon``). This is the deconcentration SALE tax — a
+    distinct, higher cost than the 0.15 ongoing-withdrawal tax
+    (``EFFECTIVE_WITHDRAWAL_TAX``) it was previously conflated with (which
+    understated the haircut by ~NIS 0.4M and fed the headline age a cheaper-
+    than-real deployable book). Lazy import avoids the
+    ``deconcentration_optimizer`` → ``scenario_mc`` cycle."""
+    from argosy.services.retirement.deconcentration_optimizer import (
+        NVDA_TAXABLE_GAIN_FRACTION,
+        total_cgt_for_horizon,
+    )
+
+    gain = max(0.0, float(sell_nis)) * NVDA_TAXABLE_GAIN_FRACTION
+    cgt, _rate = total_cgt_for_horizon(gain, taper_years)
+    return cgt
+
+
 def _nvda_deconcentration_haircut(session, user_id: str, net_worth_nis: float) -> float:
     """The CGT cost of selling NVDA down to the strategic cap — the one-time
-    capital haircut the 'deconcentrated' scenario pays to de-risk. Gain taxed on
-    the taxable fraction (≈15% effective, matching the withdrawal tax). 0 when
-    NVDA is already at/under the cap or the inputs are unavailable."""
+    capital haircut the 'deconcentrated' scenario pays to de-risk. Uses the
+    single canonical deconcentration CGT model (``nvda_deconcentration_cgt``:
+    0.8 gain fraction + surtax-inclusive rate, PV-discounted over the taper),
+    NOT the 0.15 ongoing-withdrawal rate. 0 when NVDA is already at/under the
+    cap or the inputs are unavailable."""
     try:
         from argosy.services.plan_numeric_resolver import resolve_plan_numbers
         from argosy.state.models import PlanVersion
@@ -531,7 +555,7 @@ def _nvda_deconcentration_haircut(session, user_id: str, net_worth_nis: float) -
         cap_pct = cap_pct if cap_pct is not None else DEFAULT_NVDA_CAP_PCT
         sell_fraction = max(0.0, nvda_pct - cap_pct)
         sell_nis = sell_fraction * net_worth_nis
-        return sell_nis * EFFECTIVE_WITHDRAWAL_TAX  # gain-fraction × CGT
+        return nvda_deconcentration_cgt(sell_nis, taper_years=DECONCENTRATION_TAPER_YEARS)
     except Exception:  # noqa: BLE001
         return 0.0
 

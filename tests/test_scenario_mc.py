@@ -12,6 +12,7 @@ from datetime import date, datetime, timezone
 
 from argosy.services.cashflow_projection import HouseholdState, PensionState
 from argosy.services.retirement.scenario_mc import (
+    SCENARIO_MU_REAL,
     run_retirement_scenarios,
     simulate_scenarios,
 )
@@ -21,6 +22,35 @@ from argosy.state.models import (
     User,
     UserContext,
 )
+
+import pytest
+
+
+def test_nvda_deconcentration_cgt_uses_single_optimizer_model() -> None:
+    """H2: the one-time NVDA-sale CGT haircut must use the SAME model as the
+    deconcentration optimizer (0.8 taxable-gain fraction + the surtax-inclusive
+    effective rate, PV-discounted over the taper) — NOT the 0.15 ongoing-
+    withdrawal-tax rate it was conflated with (a ~NIS 0.4M understatement that
+    fed the headline age a cheaper-than-real haircut)."""
+    from argosy.services.retirement.deconcentration_optimizer import (
+        NVDA_TAXABLE_GAIN_FRACTION,
+        total_cgt_for_horizon,
+    )
+    from argosy.services.retirement.scenario_mc import (
+        DECONCENTRATION_TAPER_YEARS,
+        nvda_deconcentration_cgt,
+    )
+
+    sell = 5_700_000.0
+    got = nvda_deconcentration_cgt(sell, taper_years=DECONCENTRATION_TAPER_YEARS)
+    expected, _rate = total_cgt_for_horizon(
+        sell * NVDA_TAXABLE_GAIN_FRACTION, DECONCENTRATION_TAPER_YEARS
+    )
+    assert got == pytest.approx(expected)
+    # materially above the old 0.15-of-sale withdrawal-tax-rate haircut
+    assert got > sell * 0.18
+    # non-positive sale realizes no CGT
+    assert nvda_deconcentration_cgt(0.0, taper_years=2) == 0.0
 
 
 def _household() -> HouseholdState:
@@ -106,9 +136,12 @@ class TestScenarioSemantics:
         assert _by_name(g, "bull").initial_shock_pct == 0.0
 
     def test_central_real_returns_are_codex_values(self):
+        # Single-sourced from SCENARIO_MU_REAL (base 5.0% / bull 6.0% per the
+        # dual-track) so the test can't drift from the code again (was a stale
+        # 0.045/0.055 — the pre-dual-track values).
         g = _run()
-        assert round(_by_name(g, "base").mu_real_pct, 3) == 0.045
-        assert round(_by_name(g, "bull").mu_real_pct, 3) == 0.055
+        assert round(_by_name(g, "base").mu_real_pct, 3) == round(SCENARIO_MU_REAL["base"], 3)
+        assert round(_by_name(g, "bull").mu_real_pct, 3) == round(SCENARIO_MU_REAL["bull"], 3)
 
     def test_nominal_is_real_plus_inflation(self):
         g = _run()
