@@ -179,6 +179,9 @@ If you find a binding policy not listed above that you've inferred from the code
 15. [Risks & Open Questions](#15-risks--open-questions)
 16. [References & Glossary](#16-references--glossary)
 17. [Provenance & accountability](#17-provenance--accountability)
+18. [Household Budget & Cash-Flow Analysis](#18-household-budget--cash-flow-analysis)
+19. [Retirement Readiness — the dual-track engine](#19-retirement-readiness--the-dual-track-engine)
+20. [Allocation Model — the canonical target mix](#20-allocation-model--the-canonical-target-mix)
 
 **Appendices**
 
@@ -224,7 +227,7 @@ Argosy is two things glued together: an always-on background process and a dashb
 
 **Execution & approval** ([10-execution-routing.png](diagrams/10-execution-routing.png)) is a routing matrix indexed by tier × account × mode. Most cells route to the human queue; a few (small trades inside the limited account, on live mode) auto-execute. `queue_only` mode disables every auto cell as a single-flag pause.
 
-**The dashboard** is a Next.js app at `localhost:1337` with 13 primary nav screens (Home, **Advisor**, Portfolio, **Expenses**, Plan, Proposals queue, Argonaut, Agent Activity, **Files**, Audit Log, Domain KB, Settings — Decision replay at `/decisions/[id]` is reached via deep-link, not nav). The Advisor sits in nav slot 2 (right after Home) and exposes a persistent gap tracker + free-form chat surface; the home page also carries an `<AdvisorBriefCard>` glance widget composed from the most recent gap, daily-brief output, and investor-event signal. Expenses (slot 4) is the household-budget surface (§18.3–§18.6) with sub-tabs for Monthly / Transactions / Sources / Merchants / Trips / RSU / Income; Files (slot 9) is the provenance catalog browser (§17.3). The UI reads state and offers approval actions; it never runs the engine. WebSocket events keep it live without page reloads.
+**The dashboard** is a Next.js app at `localhost:1337` split into a PRIMARY nav row (Home, **Advisor**, Portfolio, **Expenses**, Plan, **Retirement**, **Consult**, Proposals) and an inspection set behind a "More" dropdown (Argonaut, Agents, Decisions, **Files**, Audit, Domain KB, Settings, Notifications); a per-run replay at `/decisions/[id]` is reached via deep-link, not nav. The Advisor sits in nav slot 2 (right after Home) and exposes a persistent gap tracker + free-form chat surface; the home page also carries an `<AdvisorBriefCard>` glance widget composed from the most recent gap, daily-brief output, and investor-event signal. Expenses is the household-budget surface (§18.3–§18.6) with sub-tabs for Monthly / Transactions / Sources / Merchants / Trips / RSU / Income; Retirement is the dual-track readiness verdict (§19); Files is the provenance catalog browser (§17.3). The UI reads state and offers approval actions; it never runs the engine. WebSocket events keep it live without page reloads.
 
 ### 0.5 A worked example
 
@@ -248,7 +251,7 @@ The whole thing cost roughly $3 in Claude tokens, lives in `audit_log` forever, 
 
 - **Not a high-frequency trader.** It thinks in cadences of minutes, hours, days, months — not microseconds. It is not chasing tick-level alpha.
 - **Not a regulated financial advisor.** In single-user mode it is personal-use software for the project's author. Productized later (Phase 6+) it is sold as *infrastructure*, not advice.
-- **Not optimized to beat the market.** A buy-and-hold global index will probably beat a multi-agent system on raw return over decades, and Argosy doesn't pretend otherwise. The optimization target is *plan adherence + concentration reduction + tax efficiency + audit trail*. Alpha, if any, is incidental.
+- **Not optimized to beat the market on raw return.** A buy-and-hold global index will probably beat a multi-agent system on raw return over decades, and Argosy doesn't pretend otherwise. The optimization target is the family's **earliest safe retirement** (§1.0); plan adherence, concentration reduction, tax efficiency, and the audit trail are the disciplines that serve it. Alpha, if any, is incidental.
 
 ### 0.7 Where to go next
 
@@ -263,6 +266,20 @@ The whole thing cost roughly $3 in Claude tokens, lives in `audit_log` forever, 
 
 ## 1. Overview & Goals
 
+### 1.0 North Star (the prime directive)
+
+Everything below — every feature, every agent objection, every default — is subordinate to one goal. The user uses Argosy to **maximize the family's financial position and reach the earliest *safe* retirement**; conservatism that costs retirement-years is the anti-goal, not a virtue. This is encoded once, verbatim, as the `PRIME_DIRECTIVE` constant in `argosy/agents/_plan_authority.py` and injected into every plan-authority agent (fund manager, plan synthesizer, both risk gates) so the goal-framing cannot silently drift toward risk-only language:
+
+> PRIME DIRECTIVE (above all other rules):
+> Argosy exists to maximize Ariel's family's financial position and secure the earliest safe retirement. Every objection you raise must be evaluated through this lens — not just 'what avoids risk.'
+>   - A risk-avoidance verdict that costs years of compounding or delays FI is the WRONG verdict. Conservatism-that-delays-FI is anti-goal.
+>   - A risk-acceptance verdict that accelerates FI by years is usually the RIGHT verdict, within safety bounds.
+>   - 'Safety bounds' = hard legal/tax constraints (Section 102, statutory deadlines, irreversible tax realizations the family cannot reverse), genuine catastrophic-drawdown tail risk the family cannot recover from, and explicit user-asserted limits. Everything ELSE is goal-trade-off territory — default to the answer that advances FI sooner.
+>   - When raising an objection, name BOTH sides of the FI trade-off: the cost of NOT raising it (drawdown, tax leakage, violation) AND the cost of raising it (delay, missed compounding, friction). Surface the trade-off honestly so the user can decide; do not hide either side behind boilerplate caution.
+>   - Do NOT raise objections for documentation hygiene, prose framing, or theoretical-but-non-acting concerns when the underlying action advances the goal. Process integrity matters; process theater does not.
+
+The conservative risk officer also carries the `CONSERVATIVE_FI_COUNTERWEIGHT` one-liner — a reminder that needless caution itself carries a cost-in-years and is a risk to weigh, not a free default. The discipline goals named in §1.2 / §1.4 (plan adherence, concentration reduction, tax efficiency, audit trail) are the *means* by which the family reaches the earliest safe retirement, not ends that outrank it.
+
 ### 1.1 What Argosy is
 
 Argosy is a multi-agent financial advisor system. A fleet of specialized AI agents (analysts, researchers, traders, risk officers, fund manager) is coordinated by a Python orchestrator that monitors data continuously, but invokes the LLM agents only at decision points. The system serves a single user today (the project's author) and is architected from day one to scale to multiple tenants when productization becomes the goal.
@@ -272,7 +289,7 @@ The name *Argosy* refers to a fleet of merchant ships sailing together on a long
 ### 1.2 What Argosy is **not**
 
 - **Not** a high-frequency trading system. It does not chase tick-level alpha.
-- **Not** an alpha-generating engine intended to beat a passively-held global index over decades. Disciplined plan execution, concentration reduction, tax efficiency, and an audit trail are the goals; alpha is incidental.
+- **Not** an alpha-generating engine intended to beat a passively-held global index over decades. The instruments it optimizes — disciplined plan execution, concentration reduction, tax efficiency, an audit trail — serve the §1.0 north star (earliest safe retirement); raw index-beating alpha is incidental and is not the objective the engine maximizes.
 - **Not** a regulated financial advisor. In single-user mode it is personal-use software. In productized form (Phase 6+) it is sold as **infrastructure**, not advice.
 
 ### 1.3 Mission
@@ -287,8 +304,11 @@ Replace the manual monthly portfolio-review cycle with a continuously-running mu
 
 ### 1.4 Success criteria
 
+The overriding criterion is the §1.0 north star: the family's earliest *safe* retirement age — the engine's live drawdown-track output (§19) — holds or improves while staying inside the hard safety bounds. The rows below are the operational disciplines that serve it; none outranks it.
+
 | Criterion | How measured |
 |---|---|
+| **Earliest safe retirement holds or improves** | The dual-track engine's typical-regime drawdown age (§19) is derived live and not regressed by needless conservatism; the capital-preservation track is shown as a what-if, not enforced as the verdict |
 | **Decisions are explainable** | Every decision has a complete reasoning trail (analyst reports + debate summary + risk verdict + fund-manager note); no black-box decisions |
 | **Plan adherence improves** | NVDA pace meets schedule; concentration caps held; gap-weighted buys execute monthly without skips |
 | **Operational discipline maintained** | Monthly TSV reconciliation automatic; tax-loss harvesting opportunities surfaced before year-end; W-8BEN refresh prompted |
@@ -1887,23 +1907,26 @@ Stack: FastAPI on `localhost:8000` + Next.js + TypeScript + Tailwind + shadcn/ui
 
 ### 11.1 Screen inventory
 
-Nav order (per `ui/src/components/nav.tsx`): Home → Advisor → Portfolio → Expenses → Plan → Proposals → Argonaut → Agents → Files → Audit → Domain KB → Settings. The **Advisor** tab was promoted from a buried last-tab to **slot 2** (right after Home) so the gap-tracker / Q&A panel is one click from any page. The legacy `/intake` page redirects to `/advisor`; legacy `/api/intake/*` routes still work unchanged. The **Expenses** + **Files** tabs land mid-nav: Expenses (slot 4) for the household-budget surface (§18.3–§18.6); Files (slot 9) for the catalog browser (§17.3).
+Nav splits into a **PRIMARY** row (always visible — daily-to-monthly use) and an **INSPECTION** set behind a **"More"** dropdown (occasional / debugging / reference / setup), per `ui/src/components/nav.tsx`. PRIMARY follows the typical session flow: **Home** (glance) → **Advisor** (data entry) → **Portfolio** / **Expenses** (read state) → **Plan** (the draft) → **Retirement** (the readiness verdict) → **Consult** (a ticker) → **Proposals** (approve). The **Advisor** tab sits at **slot 2** so the gap-tracker / Q&A panel is one click from any page; the legacy `/intake` page redirects to `/advisor` and legacy `/api/intake/*` routes still work unchanged. The "More" dropdown carries **Argonaut, Agents, Decisions, Files, Audit, Domain KB, Settings**, and **Notifications** (the push-subscription + channel × severity × kind preference matrix, sibling of Settings); it pulses "active" when one of its routes is open.
 
-| # | Screen | What it shows | Interactions |
+| Group | Screen | What it shows | Interactions |
 |---|---|---|---|
-| 1 | **Home** (`/`) | `<AdvisorBriefCard>` (above OVERVIEW); net worth + Δ (week/month/year); concentration scorecard; pending proposals count; plan RED/YELLOW/GREEN; recent agent activity (last 10) | Glance only; click-throughs to detail screens; "Talk to advisor" CTA on the brief card → `/advisor` |
-| 2 | **Advisor** (`/advisor`, was Intake) | Two-column persistent panel: chat history + free-form input on the left; color-coded gap tracker (green/amber/red) on the right. Same UI handles first-run intake AND every later check-in | Type a question (user_driven mode) or click a sidebar gap row (gap_driven, focused on `target_field`); stale fields show a "stale: …" marker |
-| 3 | **Portfolio** (`/portfolio`) | Positions per account; per-acct P&L (unrealized + realized YTD); allocation pie vs target pie; drift indicator per category | Click ticker → lots/holding-period detail |
-| 4 | **Expenses** (`/expenses`) — see §18.3 | Yearly-focus dashboard: savings-rate trend, top movers YTD-vs-prior, currency mix, yearly summary, dividends/taxes, sources health. Sub-tabs: `/monthly`, `/transactions`, `/sources`, `/merchants`, `/trips`, `/rsu`, `/income` | Month picker (Monthly tab) re-scopes the page; per-row category PATCH; bulk-label / bulk-categorize; tag/untag; FX-mode toggle (per-currency ↔ NIS-converted) |
-| 5 | **Plan** (`/plan`) | Rendered plan + critique-agent output (findings with evidence); plan version history; diff view between versions | "Re-critique now"; export current plan as md |
-| 6 | **Proposals queue** (`/proposals`) | Cards per pending proposal: tier badge, account, ticker, action, size, expected impact; full reasoning trail on expand | Approve / Reject / Escalate-tier / Defer; bulk-approve grouped |
-| 7 | **Argonaut** (`/argonaut`, limited acct) | P&L curve since inception; open positions; recent trades incl. paper fills; per-strategy stats (win rate, avg hold period); mode toggle | Toggle paper/live/queue_only with confirmation modal; deposit/withdraw config |
-| 8 | **Agent activity** (`/agents`) | Live timeline of agent invocations; per-agent monthly Claude cost; drill-down into any run (prompt, response, tools) | Click run → full transcript; export run JSON |
-| 9 | **Files** (`/files`) — see §17.3 | Table of every cataloged user_file: kind icon, size, source, ISO timestamp, decision-run / plan-version backlinks, soft-delete state | Click row → stream the bytes (`/api/files/{id}/content`); deep-link to `/decisions/{id}` for files associated with a run |
-| 10 | **Audit log** (`/audit`) | Every decision, override, fill — searchable | Filter by date / ticker / agent / tier / outcome; export CSV |
-| 11 | **Decision replay** (`/decisions/[id]`) — see §17.3 | Per-decision-run replay surface: metadata, inputs (`user_files` for this run), full-run Mermaid sequence diagram, per-phase collapsible cards (verdict, TLDR, participants, transcript) | Expand/collapse phase cards; "view full replay →" deep-link from Proposals detail |
-| 12 | **Domain KB** (`/domain-kb`) | Tree of `domain_knowledge/`; per-file content, last_verified, next_refresh_due, sources; refresh-agent's review queue | "Trigger refresh"; approve/reject proposed updates from refresh agent |
-| 13 | **Settings** (`/settings`) | Cadence scheduling; tier thresholds; execution mode per account; model overrides per agent role; alert channels; install path / backup config | Edit + save; some changes require restart, surfaced clearly |
+| PRIMARY | **Home** (`/`) | `<AdvisorBriefCard>` (above OVERVIEW); net worth + Δ (week/month/year); concentration scorecard; pending proposals count; plan RED/YELLOW/GREEN; recent agent activity (last 10) | Glance only; click-throughs to detail screens; "Talk to advisor" CTA on the brief card → `/advisor` |
+| PRIMARY | **Advisor** (`/advisor`, was Intake) | Two-column persistent panel: chat history + free-form input on the left; color-coded gap tracker (green/amber/red) on the right. Same UI handles first-run intake AND every later check-in | Type a question (user_driven mode) or click a sidebar gap row (gap_driven, focused on `target_field`); stale fields show a "stale: …" marker |
+| PRIMARY | **Portfolio** (`/portfolio`) | Positions per account; per-acct P&L (unrealized + realized YTD); allocation pie vs target pie (the §20 canonical target); drift indicator per category. The central return used for the wealth bands is single-sourced from the retirement engine's `mu_real_typical` (§19), not a stand-alone constant | Click ticker → lots/holding-period detail |
+| PRIMARY | **Expenses** (`/expenses`) — see §18.3 | Yearly-focus dashboard: savings-rate trend, top movers YTD-vs-prior, currency mix, yearly summary, dividends/taxes, sources health. Sub-tabs: `/monthly`, `/transactions`, `/sources`, `/merchants`, `/trips`, `/rsu`, `/income` | Month picker (Monthly tab) re-scopes the page; per-row category PATCH; bulk-label / bulk-categorize; tag/untag; FX-mode toggle (per-currency ↔ NIS-converted) |
+| PRIMARY | **Plan** (`/plan`) | Rendered plan + critique-agent output (findings with evidence); plan version history; diff view between versions; the allocation glidepath chart (§20) | "Re-critique now"; export current plan as md |
+| PRIMARY | **Retirement** (`/retirement`) — see §19 | The dual-track readiness verdict: the ruin hero (P(solvent) at 75/85/95), the scenario grid (base/bull/bear + μ-grid + T12 + fat-tail stress), the per-age estate frontier, the FX-stress band, and the displayed earliest-safe age — all reconciled to the one canonical basis | Pick a retire age + market regime to re-run the per-tick bands |
+| PRIMARY | **Consult** (`/consult`) | Ad-hoc per-ticker second opinion: submit tickers with a conviction (buy/sell/hold/lean) + rationale; the agent fleet runs a per-ticker decision flow and returns a recommendation with a full reasoning trail. Modes: **Long hold** (no FX/technical analysts, long-horizon thesis-fit trader prompt) vs **Tactical trade** (entry-timing). Tiers T1/T2/T3 | Add/remove ticker rows; choose mode + tier; accept/execute happens on `/proposals` |
+| PRIMARY | **Proposals queue** (`/proposals`) | Cards per pending proposal: tier badge, account, ticker, action, size, expected impact; full reasoning trail on expand | Approve / Reject / Escalate-tier / Defer; bulk-approve grouped |
+| More | **Argonaut** (`/argonaut`, limited acct) | P&L curve since inception; open positions; recent trades incl. paper fills; per-strategy stats (win rate, avg hold period); mode toggle | Toggle paper/live/queue_only with confirmation modal; deposit/withdraw config |
+| More | **Agent activity** (`/agents`) | Live timeline of agent invocations; per-agent monthly Claude cost; drill-down into any run (prompt, response, tools) | Click run → full transcript; export run JSON |
+| More | **Decision replay** (`/decisions/[id]`) — see §17.3 | Per-decision-run replay surface: metadata, inputs (`user_files` for this run), full-run Mermaid sequence diagram, per-phase collapsible cards (verdict, TLDR, participants, transcript) | Expand/collapse phase cards; "view full replay →" deep-link from Proposals detail |
+| More | **Files** (`/files`) — see §17.3 | Table of every cataloged user_file: kind icon, size, source, ISO timestamp, decision-run / plan-version backlinks, soft-delete state | Click row → stream the bytes (`/api/files/{id}/content`); deep-link to `/decisions/{id}` for files associated with a run |
+| More | **Audit log** (`/audit`) | Every decision, override, fill — searchable | Filter by date / ticker / agent / tier / outcome; export CSV |
+| More | **Domain KB** (`/domain-kb`) | Tree of `domain_knowledge/`; per-file content, last_verified, next_refresh_due, sources; refresh-agent's review queue | "Trigger refresh"; approve/reject proposed updates from refresh agent |
+| More | **Settings** (`/settings`) | Cadence scheduling; tier thresholds; execution mode per account; model overrides per agent role; alert channels; install path / backup config | Edit + save; some changes require restart, surfaced clearly |
+| More | **Notifications** (`/settings/notifications`) | Push-subscription card + channel × severity × kind preference matrix | Subscribe/unsubscribe; toggle per-channel routing |
 
 **Off-nav pages** (exist in `ui/src/app/` but not in the primary
 nav-bar):
@@ -1915,9 +1938,10 @@ nav-bar):
  once onboarding completes.
 - `/intake` — legacy redirect to `/advisor` (kept for back-compat
  with old bookmarks).
-- `/decisions/[id]` — surfaced as row 11 above; navigated to via
- "view full replay →" from Proposals detail or `/files`, not from
- the nav-bar.
+- `/decisions/[id]` — the per-run replay surface (the "Decision
+ replay" row above is the `/decisions` list, reached from the "More"
+ dropdown); an individual run is navigated to via "view full replay →"
+ from Proposals detail or `/files`, not from the nav-bar.
 
 #### `<AdvisorBriefCard>` (Home page)
 
@@ -2434,7 +2458,7 @@ These are deferred from the design phase. Each carries a status, an owner phase 
 ### 15.3 Accepted risks (not mitigated)
 
 - **Paper mode != live**: paper fills can pass when real fills wouldn't (price moved, liquidity gone). Acknowledged; this is why we soak.
-- **The agent fleet won't beat a buy-and-hold of an index over the long run.** That's not the goal. Goal: disciplined plan execution + concentration reduction + tax efficiency + audit trail. Alpha is a bonus.
+- **The agent fleet won't beat a buy-and-hold of an index on raw return over the long run.** Index-beating alpha is not the objective. The objective is the §1.0 north star — the family's earliest *safe* retirement — pursued through disciplined plan execution, concentration reduction, tax efficiency, and an audit trail. Those disciplines (and the deconcentration/allocation engine in §19–§20) compound into the retirement-readiness verdict; alpha, if any, is incidental.
 - **Single point of failure (the user's machine)** until productization. The user is the SRE; backup discipline is the protection.
 
 ### 15.4 Out of scope / known limitations
@@ -3277,6 +3301,79 @@ data-quality flags); EX2 graduates these into a dedicated agent with
 persistent records + the recurring-missed detector that monitors the
 Card 2923 fee-waiver promo. EX2 spec memo at
 `memory/project_card_2923_fee_waiver.md`.
+
+---
+
+## 19. Retirement Readiness — the dual-track engine
+
+The retirement-readiness verdict is the operational expression of the §1.0 north star: *when can the family safely retire?* It is computed live from holdings × BOI FX and the sourced FI spend basis — no headline age is a stored constant. The engine lives in `argosy/services/retirement/`; `retirement_plan.py` is the optimizer-facing core.
+
+### 19.1 Two tracks, three regimes
+
+`compute_retirement_plan` (DB adapter `build_retirement_plan`) produces an honest **dual track** rather than a single optimistic age, because "earliest" and "safest" are different questions:
+
+- **Drawdown-to-95** — the earliest retire age whose base Monte Carlo clears the `bar_drawdown` solvency bar (default 90%) through age 95. *Retire ASAP; spend principal if needed.* This is the headline readiness age.
+- **Capital-preservation** — the earliest age at which even the **worst-10%** path still leaves real terminal wealth ≥ today's real deployable principal (a p10 bequest floor, not a coin-flip median). *Live off it forever; leave the principal to the kids even in a bad market.* This is shown as a **what-if**, never enforced as the verdict — enforcing it would be exactly the conservatism-that-delays-FI the prime directive names as anti-goal.
+
+Both tracks run on the **same** deconcentrated, reserve-netted basis (so they reconcile) and across three market regimes — **bull** (`mu_real_bull` 6.0%), **typical** (`mu_real_typical` 5.0%), and **bear** (−25% shock at retirement + a low-return first decade). The drawdown age is therefore a **spectrum** spanning bull→typical→bear, not a single number; the typical-regime drawdown age is the headline. Each track also carries the per-age estate frontier (median + worst-10% bequest, deflated to today's purchasing power at age 95), the spend level that makes retire-now safe, a stress-spend sensitivity, and an FX-stress what-if band.
+
+### 19.2 The corrected assumption set (`RetirementAssumptions`)
+
+Every number is auditable; nothing is a magic constant.
+
+- **5.0% real central return, treated as GEOMETRIC/compound.** `_run_mc` passes `mu_nominal_basis="geometric"` to `project_monte_carlo`, so the engine does **not** re-apply the `−σ²/2` variance drag to a number that is already a compound-return convention (Vanguard VCMM / BNY CMA). Treating it as an arithmetic mean understated the median path and biased the earliest-safe age too late — the anti-goal. (The `regime_switch_mc` fat-tail readout stays on the arithmetic basis, because its calm/turbulent/crisis μ are arithmetic regime means.) Bull 6.0% and the conservative 4.5% labeled case use the same convention.
+- **σ-glide from the calibrated concentrated σ down to the diversified anchor.** `_calibrated_sigma` reads today's NVDA-concentrated portfolio volatility (≈0.34) from the calibrator; `_sigma_glidepath` glides it to the post-deconcentration `SIGMA_DIVERSIFIED` (0.18) over the deconcentration taper. The MC consumes the per-tick σ path, so sequence risk falls as the concentration is sold down — not a single flat σ.
+- **Reserve-PV + CGT-haircut deployable.** Deployable capital = full portfolio − reserve PV − NVDA-deconcentration CGT haircut. The finite-liability reserve (education, mortgage runoff, near-term weddings) is netted at the **PV** of its scheduled liabilities discounted at a safe real rate (`_reserve_pv`; earmarked near-term money is held conservatively, not at equity risk), not at its full nominal sum. The CGT haircut is the single deconcentration CGT model (§19.4).
+- **Late-life healthcare/LTC inside the solvency MC.** `_run_mc` passes `apply_expense_phases=True`, so the per-tick spend is shaped by the documented life-stage phases (empty-nest dip, post-65 healthcare ramp, late-life LTC tail) via `phase_expenses.phase_expense_factor_series` — applied **inside** every ruin path, not just on a display card. To avoid double-counting, the flat healthcare-ramp allowance is excluded from the MC spend basis upstream (`_mc_spend_split`); the FI perpetuity keeps the allowance until the two derivations are reconciled.
+- **FX as a stress band, not folded into σ.** A stronger shekel is surfaced as a labeled `fx_stress_band` what-if (it cuts the NIS value of the USD assets before the NIS reserve + CGT net), not blended into the volatility number — so the readiness σ stays interpretable.
+- **Spend basis split CENTRAL vs STRESS.** Central = real ongoing needs (ex home-upgrade, ex flat healthcare ramp); stress adds the discretionary home-upgrade cadence. Both are derived from the sourced FI components (`fi_methodology`), never a hardcoded number; the plan refuses to run on a fabricated basis.
+
+### 19.3 One canonical basis; one headline age
+
+`resolve_canonical_basis` resolves the single reserve-netted + CGT-haircut deployable capital, calibrated σ, and central/stress spend **once**, and the three retirement surfaces all bind to it so they reconcile on identical capital / risk / spend:
+
+- **`canonical_feasible_dual_track`** is the SINGLE headline-age source — one fast typical-regime frontier sweep on the canonical basis, returning the drawdown age (with the capital-preservation age carried alongside). The displayed `retirement_age` in `derived_inputs.py` is sourced from this canonical age (`retirement_plan.canonical_feasible_dual_track.earliest_feasible_age`), falling back to the resolved `retirement.fi_age` only on thin data — never the optimistic flat-σ / no-CGT figure.
+- The **`/retirement` ruin hero** (`ruin_probability`) runs the lognormal engine on that same canonical σ-glide + geometric basis + reserve+CGT-netted deployable, so its P(solvent) lines up with the dual-track typical age.
+- The **scenario grid** (`scenario_mc.simulate_scenarios`) runs base/bull/bear + a μ-grid + a T12-burn sensitivity on the same σ-glide, geometric basis, and life-stage phases.
+
+The 3-regime Markov **fat-tail** stress (`regime_switch_mc`) is fed the same basis but is a **labeled secondary downside** — it surfaces clustered-crash risk the lognormal engine cannot, but it is **not** the readiness verdict (scaling its crisis vol by the concentration ratio would double-count systematic crash risk).
+
+### 19.4 The NVDA deconcentration sell-rate optimizer
+
+NVDA is the dominant single-name concentration; the plan sells it down to the strategic cap. `deconcentration_optimizer.py` resolves the central trade-off in *how fast* to do that: a faster sell-down glides σ (34%→18%) sooner — helping the earliest-safe age — but bunches the realized gain into fewer tax years, pushing more of it through Israel's high-income surtax zone (25% base + 3% `mas yesef` on the whole gain + 2% capital-source levy above the wage-indexed threshold; sourced from `domain_knowledge/tax/israel/`). It sweeps the sell-down horizon H ∈ {1..5} years and, for each H, runs the **same** canonical dual-track machinery on the H-specific deployable capital (full − reserve PV − CGT(H)) and H-specific σ-glide, then picks the H that **minimizes** the typical-regime drawdown age (tie-break: lower total CGT, PV-discounted over the taper — keep more capital for the same age). This is the single deconcentration CGT model (`nvda_deconcentration_cgt`) the rest of `/plan` and the canonical haircut bind to; no separate sale-haircut figure exists.
+
+> **Forward pointer.** A dynamic-allocation owner (allocation-aware arithmetic-μ paths + a market-state cushion) is specified but not yet built; it resumes on this corrected engine. See `docs/superpowers/specs/2026-06-08-dynamic-allocation-owner-and-long-hold-fleet-design.md`.
+
+---
+
+## 20. Allocation Model — the canonical target mix
+
+`argosy/services/allocation_plan.py` is the **single source** of the target asset-class weights the plan deconcentrates toward — the one allocation every downstream surface reads, not a side file. Provenance: a multi-agent investment panel (long-hold dividend, total-market Boglehead, risk-&-FX, capital-preservation lenses) proposed, adversarially critiqued, and a synthesizer reconciled one mix with per-class agreement levels + recorded dissent.
+
+### 20.1 The weights: two handled specially, the rest renormalized
+
+Each class is an `AllocationClass` carrying its `target_pct`, its `sigma_class`, an explicit **`snapshot_category`** (the portfolio-snapshot category that anchors today's value for the glidepath), and the panel's agreement/rationale/dissent.
+
+- **Strategic single-stock (NVDA)** is held at `NVDA_TARGET_PCT` = 12% — the user's explicit sign-off **within** the optimizer's band, just under the hard cap `DEFAULT_NVDA_CAP_PCT` (13%, the MIN-of-four-constraints ceiling: sequence / tail-loss / risk-contribution / tax-liquidity), with ~1pp headroom so normal drift doesn't immediately breach the do-not-re-concentrate rule.
+- **Fixed-income / cash is DERIVED, not asserted.** `derive_fi_weight` finds the *minimum* FI weight at which the allocation's engine-blended σ sits on the `SIGMA_DIVERSIFIED` (0.18) steady-state anchor — the σ the deconcentration optimizer used to certify the earliest-safe age. FI is sized to that anchor (not the panel's contested 16% estimate, which blends above 0.18 and would push the headline age later), restoring self-consistency between the allocation and the readiness age. It is derived on the **corrected** engine (§19), not a chosen constant. Model caveats are carried in the rationale, not swallowed: the engine blends class σ linearly (no correlation credit → conservative-leaning) and holds `mu_real` constant regardless of FI weight (sees FI's volatility benefit, not its return drag).
+- The remaining equity/alts sleeves (US broad-market core, dividend-quality, international developed, US growth ex-NVDA, US low-vol, real-assets toehold) are held at their agreed **relative** ratios and renormalized into the space left after NVDA + FI. The FI sleeve is split cash / short-IG by `CASH_FRAC_OF_FI` (0.70, cash-heavy because the ILS-hedge + bridge-liquidity job dominates).
+
+### 20.2 The σ-glidepath redistribution schedule
+
+`build_redistribution_schedule` linearly transforms today's full-book composition into the target over N quarters (default 8). Each intermediate quarter is a convex blend of two mixes that each sum to 100, so the chart's stacked bands stay coherent by construction. The schedule is emitted into the plan as `SynthTarget`s:
+
+- **`to_synth_targets`** — one end-state `pct_of_portfolio` target per class.
+- **`to_waypoint_targets`** — one target per (class, quarter), so the plan literally carries the Q1..Q8 staged transformation; the rationale is stamped on each class's final-quarter waypoint.
+
+Every emitted target carries the explicit **`snapshot_category`** from its `AllocationClass`, which is what lets `allocation_glidepath.build_glidepath` compose a per-tick allocation that sums to 100%:
+
+- **Whole-plan scale.** The pct scale (fraction-of-1 vs whole-percent) is decided once for the whole plan from the sum of all target values, so a single legitimately sub-1% sleeve is never wrongly ×100'd (the root of the prior 229% chart).
+- **Explicit-category anchoring.** Today's value is anchored via the exact `snapshot_category` match (no fragile substring alias), with the legacy alias matcher kept only as a fallback for targets that carry no explicit category.
+- **Shared-category split.** When several labels share one snapshot category (e.g. low-vol + IG bonds both on "Defensive"), today's single snapshot value is split among them proportional to their end targets, so t=0 doesn't double-count it. Untargeted snapshot bands flat-line at today's value and are labeled "unconstrained" rather than dropped.
+
+### 20.3 How targets reach the surfaces
+
+The canonical targets persist into the current plan version as the `SynthTarget`s above. `/portfolio` reads them as the **target pie** against the live allocation; `/plan` renders the **glidepath chart** of the staged transformation; and the same target/σ-anchor basis feeds `/retirement` (§19), so the allocation, the deconcentration optimizer, and the readiness age all reconcile on one set of weights and one steady-state σ.
 
 ---
 
