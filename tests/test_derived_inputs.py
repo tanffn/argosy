@@ -88,3 +88,56 @@ def test_every_field_carries_source(session):
             continue
         assert v["source"], f"{k} has no source locator"
         assert v["status"] in ("resolved", "pending")
+
+
+def test_retirement_age_prefers_canonical_dual_track(session, monkeypatch):
+    """The user-facing retirement_age must be the CANONICAL dual-track
+    earliest-safe age (retirement_plan.canonical_feasible_dual_track), NOT the
+    stale withdrawal_sequencer fi_age. Monkeypatch the (heavy MC) canonical fn
+    to a known age and assert it flows through value + source."""
+    import argosy.services.retirement.retirement_plan as rp
+    from argosy.services.retirement.scenario_mc import FeasibleAgeResult
+
+    canonical_age = 46.0
+
+    def _fake_canon(*, session, user_id, **kwargs):  # noqa: ARG001 — signature parity
+        return FeasibleAgeResult(
+            earliest_feasible_age=canonical_age,
+            p_solvent_at_age=0.91,
+            target_p_solvent=0.90,
+            operational_target_age=49.0,
+            statutory_lump_age=60,
+            statutory_annuity_age=67,
+            current_age=43.96,
+            reserve_netted_nis=0.0,
+            basis={"preservation_age": 53.0, "source": "retirement_plan.canonical_feasible_dual_track"},
+        )
+
+    monkeypatch.setattr(rp, "canonical_feasible_dual_track", _fake_canon)
+
+    d = compute_derived_inputs(session, user_id="ariel", today=date(2026, 6, 4))
+    fld = d["retirement_age"]
+    assert fld["value"] == canonical_age
+    assert fld["status"] == "resolved"
+    assert "canonical_feasible_dual_track" in fld["source"]
+    # And NOT the stale withdrawal_sequencer fi_age locator.
+    assert "withdrawal_sequencer" not in fld["source"]
+
+
+def test_retirement_age_falls_back_when_canonical_fails(session, monkeypatch):
+    """Best-effort: if the canonical dual-track raises (thin data / no FI
+    basis), retirement_age falls back to the resolved retirement.fi_age value
+    (here pending, since there is no plan run) — never crashes, never the
+    canonical source string."""
+    import argosy.services.retirement.retirement_plan as rp
+
+    def _boom(*, session, user_id, **kwargs):  # noqa: ARG001
+        raise RuntimeError("no FI basis")
+
+    monkeypatch.setattr(rp, "canonical_feasible_dual_track", _boom)
+
+    d = compute_derived_inputs(session, user_id="ariel", today=date(2026, 6, 4))
+    fld = d["retirement_age"]
+    # No plan run in this fixture → fi_age is pending; the fallback path is taken.
+    assert fld["status"] == "pending"
+    assert "canonical_feasible_dual_track" not in fld["source"]

@@ -135,7 +135,30 @@ def compute_derived_inputs(session, *, user_id: str, today: date | None = None) 
     age = _age_from_dob(idy.get("user_date_of_birth"), today)
     put("current_age", DerivedField(age, "age", "identity_yaml.user_date_of_birth", "HIGH")
         if age is not None else DerivedField.pending("age", "identity_yaml.user_date_of_birth"))
-    put("retirement_age", fld_from_rv("retirement.fi_age", "age"))
+    # Retirement age — the CANONICAL dual-track earliest-safe age (the
+    # corrected drawdown age from the sigma-glide + NVDA-CGT + PV-reserve Monte
+    # Carlo), NOT the stale withdrawal_sequencer fi_age. Lazy import (the
+    # retirement engine ↔ wealth_dashboard circular-import trap) + best-effort:
+    # any failure (thin data, no FI basis) falls back to the resolved
+    # retirement.fi_age so nothing breaks. Never fabricated.
+    fi_age_fld = fld_from_rv("retirement.fi_age", "age")
+    canon_fld: DerivedField | None = None
+    try:
+        from argosy.services.retirement.retirement_plan import (
+            canonical_feasible_dual_track,
+        )
+        canon = canonical_feasible_dual_track(session=session, user_id=user_id)
+        canon_age = getattr(canon, "earliest_feasible_age", None)
+        if canon_age is not None:
+            conf = "HIGH" if canon.p_solvent_at_age is not None else "MEDIUM"
+            canon_fld = DerivedField(
+                float(canon_age), "age",
+                "retirement_plan.canonical_feasible_dual_track.earliest_feasible_age",
+                conf,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort; fall back to fi_age
+        log.warning("derived_inputs.canonical_age_failed", error=str(exc))
+    put("retirement_age", canon_fld if canon_fld is not None else fi_age_fld)
 
     # FX spot — the current Bank-of-Israel rate (cache), the FX source of truth
     # (codex FX review). Falls back to the snapshot/identity fx only if BOI is
