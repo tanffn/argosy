@@ -18,10 +18,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from argosy.api.events import publish_event
 from argosy.billing.entitlements import Entitlements, feature_required_tier
@@ -35,6 +36,8 @@ from argosy.state.models import (
     Fill as FillRow,
     Lot as LotRow,
 )
+from argosy.api.routes.plan import get_db
+from argosy.services.plan_proposal_diff import load_plan_targets
 
 
 _log = get_logger("argosy.api.execution")
@@ -128,6 +131,7 @@ class AuditResponse(BaseModel):
 async def execute_proposal(
     proposal_id: int,
     body: ExecuteRequest,
+    db: Session = Depends(get_db),
 ) -> ExecuteResponse:
     # Live execution requires the live_execution entitlement.
     # Paper-mode is always allowed (the router resolves mode internally
@@ -161,7 +165,10 @@ async def execute_proposal(
             proposal_id,
             cash_available_usd=body.cash_available_usd,
             max_position_usd=body.max_position_usd,
-            plan_targets=body.plan_targets or {},
+            # G21 (T4.3): the concentration cap-check uses the canonical plan's
+            # targets server-side; caller-supplied targets are an explicit
+            # override only. Omitted → server-derived (was silently {} = no cap).
+            plan_targets=body.plan_targets or load_plan_targets(db, body.user_id),
             snapshot_pct=body.snapshot_pct or {},
             day_pnl_usd=body.day_pnl_usd,
             daily_loss_limit_usd=body.daily_loss_limit_usd,

@@ -18,7 +18,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from argosy.services.target_allocation_doc import TargetAllocationDoc
+from argosy.services.target_allocation_doc import (
+    TargetAllocationDoc,
+    load_plan_target_allocation,
+)
 
 
 @dataclass(frozen=True)
@@ -100,3 +103,37 @@ def diff_plan_vs_holdings(
             rationale=rationale,
         ))
     return deltas
+
+
+def plan_targets_by_symbol(doc: TargetAllocationDoc) -> dict[str, float]:
+    """``{SYMBOL: target_pct_of_book}`` for the concentration cap-check.
+
+    Same per-symbol percentage the diff uses, keyed UPPER because the execution
+    preflight uppercases the proposal ticker (``risk_preflight.check_concentration_cap``).
+    """
+    out: dict[str, float] = {}
+    for c in doc.classes:
+        for instr in c.instruments:
+            pct = c.target_pct * instr.weight_within_class_pct / 100.0
+            key = instr.symbol.upper()
+            out[key] = out.get(key, 0.0) + pct
+    return out
+
+
+def load_plan_targets(session, user_id: str) -> dict[str, float]:
+    """Server-side ``{SYMBOL: target_pct}`` from the user's current canonical
+    plan, or ``{}`` when no plan/doc is persisted.
+
+    Makes the execution concentration cap-check AUTHORITATIVE (G21): the targets
+    come from the canonical ``TargetAllocationDoc`` rather than being trusted
+    from the request body. Never raises — a missing plan degrades to ``{}`` (the
+    cap-check no-ops on an empty map) rather than breaking execution.
+    """
+    from argosy.state.queries import get_current_plan
+
+    try:
+        pv = get_current_plan(session, user_id)
+    except Exception:  # noqa: BLE001 — defensive; absence degrades to {}
+        return {}
+    doc = load_plan_target_allocation(pv) if pv is not None else None
+    return plan_targets_by_symbol(doc) if doc is not None else {}

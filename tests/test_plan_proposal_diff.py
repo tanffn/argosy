@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from argosy.services.plan_proposal_diff import ProposalDelta, diff_plan_vs_holdings
+from argosy.services.plan_proposal_diff import (
+    ProposalDelta,
+    diff_plan_vs_holdings,
+    load_plan_targets,
+    plan_targets_by_symbol,
+)
 from argosy.services.target_allocation_doc import (
     AllocationClassDoc,
     AllocationInstrument,
@@ -85,3 +90,27 @@ def test_deltas_are_self_consistent_and_typed():
 
 def test_empty_book_returns_empty():
     assert diff_plan_vs_holdings(DOC, {}) == []
+
+
+# ─── T4.3: server-side plan_targets for the execution cap-check ────────────
+
+
+def test_plan_targets_by_symbol_keys_upper_and_pct_of_book():
+    assert plan_targets_by_symbol(DOC) == {
+        "NVDA": pytest.approx(12.0),
+        "VOO": pytest.approx(88.0),
+    }
+
+
+def test_load_plan_targets_from_canonical_plan(monkeypatch):
+    from argosy.services import plan_proposal_diff as ppd
+    monkeypatch.setattr("argosy.state.queries.get_current_plan", lambda s, u: object())
+    monkeypatch.setattr(ppd, "load_plan_target_allocation", lambda pv: DOC)
+    targets = ppd.load_plan_targets(session=None, user_id="ariel")
+    assert targets == {"NVDA": pytest.approx(12.0), "VOO": pytest.approx(88.0)}
+
+
+def test_load_plan_targets_no_plan_is_empty(monkeypatch):
+    from argosy.services import plan_proposal_diff as ppd
+    monkeypatch.setattr("argosy.state.queries.get_current_plan", lambda s, u: None)
+    assert ppd.load_plan_targets(session=None, user_id="ariel") == {}
