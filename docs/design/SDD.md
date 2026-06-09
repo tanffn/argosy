@@ -10,6 +10,26 @@ This document describes Argosy as it stands today. History (per-wave changes, pr
 
 ---
 
+## Why Argosy exists — and why you'd use it
+
+**The problem.** A family with a real portfolio — a concentrated equity position, RSUs vesting on a schedule, pensions and real estate, Israeli tax and currency exposure, and a retirement to fund — needs a top-tier advisor *and* an analyst team *and* a tax/FX specialist, watching continuously and reasoning over the whole picture at once. Hiring that is expensive, periodic, and opaque. Doing it yourself means becoming the expert.
+
+**What Argosy is.** Argosy *is* that team, in software: a fleet of specialist agents (analysts, researchers, risk officers, a fund manager, concentration/tax/FX specialists) that holds the entire financial picture and produces **one living plan**, maintained continuously as markets, data, and life change. **The user should never have to be the investing expert — Argosy is, out loud.**
+
+**What "the plan" is** — the single deliverable everything else serves:
+- an **investment policy** (the strategic frame and the guardrails an advisor enforces);
+- a **target portfolio at the instrument level** — actual tickers, not just asset classes;
+- a **transition** from today's real holdings to that target (keep / trim / add, tax- and FX-aware), with the NVDA deconcentration as today's centerpiece;
+- a **time-phased glide** through the life phases, to and through retirement;
+- a **thesis per holding** and continuous **monitoring** that flags drift, cap breaches, and broken theses — *to the user*, in plain English;
+- every number **Argosy-derived from real data, explained, and auditable**.
+
+**The trust contract.** The UI is a *pure projection of the current plan* — `/plan`, `/portfolio`, and `/retirement` all render the same canonical plan, consistently; **when the plan changes, every surface changes with it.** No hardcoded numbers, no per-chart divergent sources. If a surface cannot be reconciled to the plan and the raw data behind it, that is a defect, not a display choice.
+
+**The single goal** (elaborated in §1.0): maximize the family's financial position and secure the earliest *safe* retirement — "retire from work, not from life." Conservatism that quietly costs retirement-years is the anti-goal.
+
+---
+
 ## Quickstart for new agents — where to find things
 
 **Read this first.** This SDD is long; you do not need to read the codebase to make a non-trivial change. Use this section as a router from "I need to do X" → "look at file Y."
