@@ -263,6 +263,24 @@ def build_plan_target_allocation_doc(
     return build_target_allocation_doc(today=today, today_composition=comp)
 
 
+def doc_equity_bond_cash(doc: TargetAllocationDoc) -> tuple[float, float, float]:
+    """Aggregate the doc's class targets into (equity, bond, cash) percentages
+    by sigma_class. The retirement /glide-path projects THIS — the plan's actual
+    target allocation (equity-heavy by design; the deconcentration transition is
+    the /plan glidepath, and σ-de-risking for solvency is the MC's job) — rather
+    than a textbook age-decline curve. Everything that isn't bonds/cash is a risk
+    asset → equity."""
+    equity = bond = cash = 0.0
+    for c in doc.classes:
+        if c.sigma_class == "bonds":
+            bond += c.target_pct
+        elif c.sigma_class == "cash":
+            cash += c.target_pct
+        else:
+            equity += c.target_pct
+    return equity, bond, cash
+
+
 def load_plan_target_allocation(pv: object) -> TargetAllocationDoc | None:
     """Read the canonical doc off a plan version, or ``None`` — never raises.
 

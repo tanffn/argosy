@@ -19,6 +19,7 @@ from argosy.services.target_allocation_doc import (
     TargetAllocationDoc,
     build_target_allocation_doc,
     derive_full_book_today_composition,
+    doc_equity_bond_cash,
     load_plan_target_allocation,
 )
 
@@ -132,6 +133,21 @@ class _PV:
 
     def __init__(self, target_allocation_json: str | None) -> None:
         self.target_allocation_json = target_allocation_json
+
+
+def test_doc_equity_bond_cash_aggregates_by_sigma_class() -> None:
+    """T2.3 — the retirement /glide-path projects the doc's equity/bond/cash
+    (the plan's actual, equity-heavy target), summing to ~100."""
+    doc = build_target_allocation_doc(
+        today=date(2026, 6, 9), today_composition=_TODAY_FULL_BOOK
+    )
+    eq, bd, cs = doc_equity_bond_cash(doc)
+    assert eq + bd + cs == pytest.approx(100.0, abs=0.1)
+    # equity dominates (NVDA + the equity sleeves); bonds + cash are the FI split
+    assert eq > bd and eq > cs
+    assert bd > 0 and cs > 0
+    # NVDA (concentrated_equity, 12%) folds into equity, not its own bucket
+    assert eq >= 12.0
 
 
 def test_load_plan_target_allocation_parses_when_set() -> None:

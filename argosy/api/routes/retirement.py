@@ -463,8 +463,59 @@ def get_glide_path(
     policy: str = "vanguard_target_date",
     start_age: int = 30,
     end_age: int = 95,
+    user_id: str = "ariel",
+    db: Session = Depends(get_db),
 ) -> dict:
-    """Per-age target equity/bond/cash allocation table."""
+    """Per-age target equity/bond/cash allocation table.
+
+    T2.3 — when the current plan carries the canonical TargetAllocationDoc, this
+    projects the PLAN's actual equity/bond/cash target (held across ages; the
+    deconcentration transition is the /plan glidepath and σ-de-risking for
+    solvency is the MC's job), not a textbook age-decline curve. Falls back to
+    the policy curve when no doc is persisted."""
+    from argosy.services.retirement.citations import ValueWithRationale
+    from argosy.services.target_allocation_doc import (
+        doc_equity_bond_cash,
+        load_plan_target_allocation,
+    )
+    from argosy.state.queries import get_current_plan
+
+    doc = None
+    try:
+        pv = get_current_plan(db, user_id)
+        doc = load_plan_target_allocation(pv) if pv is not None else None
+    except Exception:  # noqa: BLE001 — additive; fall back to the policy curve
+        doc = None
+
+    if doc is not None:
+        eq, bd, cs = (v / 100.0 for v in doc_equity_bond_cash(doc))
+        rat = (
+            "Canonical plan target allocation (held; the deconcentration "
+            "transition is the /plan glidepath)."
+        )
+
+        def _vwr(v: float) -> ValueWithRationale:
+            return ValueWithRationale(
+                value=round(v, 4),
+                unit="fraction",
+                source_id="canonical_target_allocation_doc",
+                rationale=rat,
+                confidence="high",
+            )
+
+        return {
+            "policy": "canonical_plan",
+            "points": [
+                {
+                    "age": age,
+                    "target_equity_pct": as_dict(_vwr(eq)),
+                    "target_bond_pct": as_dict(_vwr(bd)),
+                    "target_cash_pct": as_dict(_vwr(cs)),
+                }
+                for age in range(start_age, end_age + 1)
+            ],
+        }
+
     path = compute_glide_path(
         start_age=start_age, end_age=end_age, policy=policy,  # type: ignore[arg-type]
     )

@@ -137,3 +137,20 @@ def test_portfolio_pie_reconciles_to_the_canonical_doc() -> None:
     for a in allocs:
         assert a.pct == pytest.approx(round(q0.get(a.category, 0.0), 2), abs=0.01)
         assert a.target_pct == pytest.approx(round(qN.get(a.category, 0.0), 2), abs=0.01)
+
+
+def test_retirement_glide_reconciles_to_the_canonical_doc() -> None:
+    """T2.3/T2.5 — the /retirement equity/bond/cash glide projects the doc's
+    target allocation (the plan's equity-heavy mix), not a textbook age curve:
+    bonds/cash are the doc's FI split, equity is everything else, sum == 100."""
+    from argosy.services.target_allocation_doc import doc_equity_bond_cash
+
+    doc = _canonical_doc()
+    eq, bd, cs = doc_equity_bond_cash(doc)
+    exp_bonds = sum(c.target_pct for c in doc.classes if c.sigma_class == "bonds")
+    exp_cash = sum(c.target_pct for c in doc.classes if c.sigma_class == "cash")
+    assert eq + bd + cs == pytest.approx(100.0, abs=0.1)
+    assert bd == pytest.approx(exp_bonds, abs=0.01)
+    assert cs == pytest.approx(exp_cash, abs=0.01)
+    assert eq == pytest.approx(100.0 - exp_bonds - exp_cash, abs=0.1)
+    assert eq > bd and eq > cs  # the plan is equity-heavy by design
