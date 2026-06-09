@@ -61,6 +61,38 @@ def tick(session: Session) -> None:
     async work completes.
     """
     _trigger_plan_synthesis_for_all(session)
+    _route_breach_tranches_for_all(session)
+
+
+def _route_breach_tranches_for_all(session: Session) -> None:
+    """T4.5: for each user with an active baseline, auto-route an NVDA
+    concentration-breach SELL tranche to approval (best-effort, idempotent).
+
+    NEVER executes — the proposal lands in ``awaiting_human``, routed into the
+    §10 approval pipeline. One user's failure must not stop the others."""
+    from argosy.services.breach_router import route_breach_tranche
+
+    rows = (
+        session.query(PlanVersion.user_id)
+        .filter(PlanVersion.role == "baseline")
+        .distinct()
+        .all()
+    )
+    for (user_id,) in rows:
+        try:
+            pid = route_breach_tranche(session, user_id)
+            if pid is not None:
+                session.commit()
+                _log.info(
+                    "monthly_cycle.breach_tranche_routed",
+                    user_id=user_id,
+                    proposal_id=pid,
+                )
+        except Exception as exc:  # noqa: BLE001 — isolate per-user failures
+            session.rollback()
+            _log.error(
+                "monthly_cycle.breach_route_failed", user_id=user_id, error=str(exc)
+            )
 
 
 def _trigger_plan_synthesis_for_all(session: Session) -> None:
