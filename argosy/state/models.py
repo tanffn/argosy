@@ -172,6 +172,13 @@ class PlanVersion(Base):
     # NULL until the narrative is first generated for this plan version.
     narrative_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Canonical instrument-level target allocation (roadmap T1.x) — the
+    # TargetAllocationDoc the deterministic allocation_plan engine authors and
+    # every surface (/plan glidepath, /portfolio target, /retirement glide)
+    # projects. NULL on plan versions written before the doc existed; populated
+    # forward on synthesis and backfilled for the current plan.
+    target_allocation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Provenance Wave A (migration 0019) — points back at the catalog row
     # for the bytes this plan was imported from. Optional because synthesized
     # drafts and superseded historical rows have no source file.
