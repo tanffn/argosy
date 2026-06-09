@@ -63,12 +63,12 @@ P5 (magic-number purges): mostly independent small lanes, can start anytime EXCE
 | T1.4 | Migration `0063` + `PlanVersion.target_allocation_json` column | P1 | SPINE | — | | ☑ | s14 7371557 |
 | T1.5 | Write the doc during synthesis (orchestrator + amendment) | P1 | SPINE | T1.3,T1.4 | | ☑ | s14 13e825f |
 | T1.6 | `load_plan_target_allocation(pv)` reader + backfill current plan | P1 | SPINE | T1.5 | | ☑ | s14 4b94762/13e825f |
-| T2.1 | Rebind `/plan` glidepath → the doc's glide (full-book, incl NVDA) | P2 | SPINE | T1.6 | ✓ | ☐ | |
-| T2.2 | Rebind `/portfolio` target → the doc | P2 | SPINE | T1.6 | | ☐ | |
-| T2.3 | Rebind `/retirement` glide + cashflow-chart knobs → canonical | P2 | SPINE | T1.6 | ✓ | ☐ | |
-| T2.4 | Rebind NVDA trajectory → `nvda_projection` (wire the orphan, G13) | P2 | SPINE | T1.6 | ✓ | ☐ | |
-| T2.5 | **Cross-surface reconciliation guardrail test** (the 12-session ask) | P2 | SPINE | T2.1–T2.4 | | ☐ | |
-| T2.6 | Enable `plan_gate_enforce` default + extend gate to charts/portfolio | P2 | SPINE | T2.5 | | ☐ | |
+| T2.1 | Rebind `/plan` glidepath → the doc's glide (full-book, incl NVDA) | P2 | SPINE | T1.6 | ✓ | ☑ | s14 50fb04d |
+| T2.2 | Rebind `/portfolio` target → the doc | P2 | SPINE | T1.6 | | ☑ | s14 7ba3602 |
+| T2.3 | Rebind `/retirement` glide + cashflow-chart knobs → canonical | P2 | SPINE | T1.6 | ✓ | ◐ | s14 0f54a22 — age done (cashflow→canonical 46); glide-derivation (doc→equity/bond/cash age curve) pending, intertwined w/ T5.4 |
+| T2.4 | Rebind NVDA trajectory → `nvda_projection` (wire the orphan, G13) | P2 | SPINE | T1.6 | ✓ | ☑ | s14 7a2bd5f — wired + killed the 18.21 full-book bug |
+| T2.5 | **Cross-surface reconciliation guardrail test** (the 12-session ask) | P2 | SPINE | T2.1–T2.4 | | ◐ | s14 50fb04d/7ba3602 — glidepath+portfolio reconcile to doc GREEN; retirement/age assertions pending |
+| T2.6 | Enable `plan_gate_enforce` default + extend gate to charts/portfolio | P2 | SPINE | T2.5 | | ☐ | gated on full-suite baseline (running) + T2.3-glide |
 | T3.1 | Flip `phase5_agents` default on (gate off) | P3 | A0 | — | | ☐ | |
 | T3.2 | Wire EquityComp (RSU net savings + FV trajectory) resolver path | P3 | A1 | T1.6,T3.1 | ✓ | ☐ | |
 | T3.3 | Wire Withdrawal Sequencer (FI-bridge waterfall) resolver path | P3 | A2 | T1.6,T3.1 | ✓ | ☐ | |
