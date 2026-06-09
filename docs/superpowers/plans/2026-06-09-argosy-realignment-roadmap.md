@@ -81,12 +81,12 @@ P5 (magic-number purges): mostly independent small lanes, can start anytime EXCE
 | T4.5 | Auto-route concentration-breach tranche to approval/broker | P4 | B | T4.1,T4.3 | ✓ | ☐ | |
 | T5.1 | Derive/intake hishtalmut first-deposit date (drop 2018-01-01) | P5 | C1 | — | | ☐ | |
 | T5.2 | Derive/intake mortgage rate/term (drop 4.5%/20yr) | P5 | C2 | — | | ☐ | |
-| T5.3 | Derive FX σ/μ (drop frozen 0.08/0) | P5 | C3 | — | ✓ | ☐ | |
+| T5.3 | Derive FX σ/μ (drop frozen 0.08/0) | P5 | C3 | — | ✓ | ☑ | s15 96da397/ec24551 — **Option A**: derive σ from history, hold μ=0 (driftless). Codex+SE rationale: a ~10y sample can't estimate a 30y drift (SE≈σ/√T≈2.5%/yr; Meese-Rogoff), and a derived log-μ also mishandled the Itô σ²/2 term. Realized drift logged for audit, not extrapolated. Dormant on dev DB (<24mo → fallback). 18 green |
 | T5.4 | Delete Vanguard glide-curve fallback (use canonical glide) | P5 | C4 | T2.3 | | ☐ | |
-| T5.5 | Remove `fx.threshold_breach` + manual `check_*` per-symptom detectors | P5 | C5 | — | | ☐ | |
-| T5.6 | Fix dev `argosy run` scheduler (boot observer + predictions-evaluator) | P5 | C6 | — | | ☐ | |
+| T5.5 | Remove `fx.threshold_breach` + manual `check_*` per-symptom detectors | P5 | C5 | — | | ☑ | s15 9522bc6 — emergent observer only; `check_mc_regression` retained (observer reads no MC P(solvent)); tests rewritten to assert removal + match `state_diff` comparator map. hour_loop/monitor_drift/monitor_macro_shift green |
+| T5.6 | Fix dev `argosy run` scheduler (boot observer + predictions-evaluator) | P5 | C6 | — | | ☑ | s15 e7a76e3 — registers `state_observer_daily` + `predictions_evaluator` in `register_default_loops` (so `argosy run` boots them, not just FastAPI startup); double-register harmless (dict-by-name overwrite). scheduler/lifecycle/jobs_registry 52 green |
 | T5.7 | Single tax-band source (drop triplicated 0.25/0.15/0.12, add surtax) | P5 | C7 | T3.4 | ✓ | ☐ | |
-| T6.1 | Default decision fleet to long-hold; disable minute/hour cadences | P6 | D0 | — | | ☐ | |
+| T6.1 | Default decision fleet to long-hold; disable minute/hour cadences | P6 | D0 | — | | ☑ | s15 a90c0d5 + bc5b25f — default mode `long_hold`; minute/hour cadences default off. Pinned `mode="tactical_trade"` on 6 per-ticker tests; made `test_phase7_loops_registered_by_default` hermetic (was green only via a stale on-disk yaml — latent CI failure). 43 green |
 | T6.2 | Source-reliability/predictions-ledger API + UI | P6 | D1 | — | | ☐ | |
 | T6.3 | Proactive web-push wired to real events (not just test) | P6 | D2 | — | | ☐ | |
 | T6.4 | Bidirectional Discord (inbound→system→outbound reply) | P6 | D3 | spine | | ☐ | |
