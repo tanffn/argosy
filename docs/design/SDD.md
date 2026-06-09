@@ -3368,7 +3368,7 @@ NVDA is the dominant single-name concentration; the plan sells it down to the st
 
 ## 20. Allocation Model — the canonical target mix
 
-`argosy/services/allocation_plan.py` is the **single source** of the target asset-class weights the plan deconcentrates toward — the one allocation every downstream surface reads, not a side file. Provenance: a multi-agent investment panel (long-hold dividend, total-market Boglehead, risk-&-FX, capital-preservation lenses) proposed, adversarially critiqued, and a synthesizer reconciled one mix with per-class agreement levels + recorded dissent.
+`argosy/services/allocation_plan.py` defines the canonical target asset-class weights the plan deconcentrates toward — the mix the surfaces are being wired to read (see §20.3). Provenance: a multi-agent investment panel (long-hold dividend, total-market Boglehead, risk-&-FX, capital-preservation lenses) proposed, adversarially critiqued, and a synthesizer reconciled one mix with per-class agreement levels + recorded dissent.
 
 ### 20.1 The weights: two handled specially, the rest renormalized
 
@@ -3393,7 +3393,7 @@ Every emitted target carries the explicit **`snapshot_category`** from its `Allo
 
 ### 20.3 How targets reach the surfaces
 
-The canonical targets persist into the current plan version as the `SynthTarget`s above. `/portfolio` reads them as the **target pie** against the live allocation; `/plan` renders the **glidepath chart** of the staged transformation; and the same target/σ-anchor basis feeds `/retirement` (§19), so the allocation, the deconcentration optimizer, and the readiness age all reconcile on one set of weights and one steady-state σ.
+The engine emits the canonical targets as the `SynthTarget`s above. Binding the surfaces to this canonical output is in progress: today `/plan`'s glidepath chart and `/retirement`'s glide render the LLM-authored horizon targets, and `/portfolio`'s target pie reads the imported TSV column — not this engine's output. The realignment work persists a structured, instrument-level target document on the plan version and rebinds `/plan`, `/portfolio`, and `/retirement` to it, so the allocation, the deconcentration optimizer, and the readiness age reconcile on one set of weights and one steady-state σ.
 
 ---
 
