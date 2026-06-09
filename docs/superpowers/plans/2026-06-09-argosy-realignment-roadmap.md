@@ -74,7 +74,7 @@ P5 (magic-number purges): mostly independent small lanes, can start anytime EXCE
 | T3.3 | Wire Withdrawal Sequencer (FI-bridge waterfall) resolver path | P3 | A2 | T1.6,T3.1 | ✓ | ☐ | |
 | T3.4 | Wire real tax engine into MC; retire flat-10%/surtax-off shortcut | P3 | A3 | T1.6,T3.1 | ✓ | ☐ | |
 | T3.5 | Wire PlanCoverageAnalyst output to a surface | P3 | A4 | T3.1 | | ☐ | |
-| T4.1 | Plan→proposal generator: diff target vs holdings → keep/trim/add | P4 | B | T1.6 | ✓ | ☐ | |
+| T4.1 | Plan→proposal generator: diff target vs holdings → keep/trim/add | P4 | B | T1.6 | ✓ | ◐ | s15 92d02f7 — `plan_proposal_diff.diff_plan_vs_holdings`: doc instrument targets vs holdings → per-ticker keep/trim/add (value-based, closed-book Σdelta=0). **Codex-verified** money-math. 5 green. CORE diff done; persistence to `action_proposals` (write surface) + live cap-check are T4.3/T4.4 |
 | T4.2 | Wire `optimize_deconcentration` to choose the NVDA taper | P4 | B | T1.6 | ✓ | ☐ | |
 | T4.3 | Load `plan_targets` server-side; make exec cap-check live | P4 | B | T4.1 | | ☐ | |
 | T4.4 | Add `plan_version_id` to `Proposal` (audit lineage) | P4 | B | T4.1 | | ☐ | |
