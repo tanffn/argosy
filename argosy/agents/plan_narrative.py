@@ -140,6 +140,19 @@ HARD constraints:
     assumptions get listed — state them as load-bearing facts drawn
     from <resolved_numbers>, not as updates from prior numbers.
 
+  - **RETIREMENT AGE — lead with the earliest-SAFE age.**
+    <resolved_numbers> may carry up to three retirement ages. The
+    "Earliest safe retirement age" (typical drawdown, 90% solvency) is
+    THE headline retirement age — the honest "earliest you could stop
+    working and have the money last" — lead with it in "How it ends".
+    Present the "Capital-preservation retirement age" as a what-if
+    (the leave-more-to-the-kids trade-off), NOT as the plan's target or
+    a hard constraint. The "Full-FI / perpetuity target age" is a
+    trajectory / bridge-sizing number — NEVER call it "the earliest you
+    can retire". If the plan names a chosen target retirement age, you
+    may state it as the user's target, distinct from the earliest-safe
+    age. Do not collapse these into one number.
+
   - NO USD references in user-facing text. Do not write "$", "USD",
     "dollar", or "dollars". Use percentages, share counts, NIS, or
     "the portfolio total" / "your annual spending" descriptors.

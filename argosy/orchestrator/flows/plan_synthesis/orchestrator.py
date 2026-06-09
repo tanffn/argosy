@@ -563,7 +563,10 @@ def run_synthesis(
             if _drun is None:
                 return ""
             return render_numbers_for_synth(
-                resolve_plan_numbers(session, user_id=user_id, decision_run_id=_drun)
+                resolve_plan_numbers(
+                    session, user_id=user_id, decision_run_id=_drun,
+                    include_canonical_ages=True,
+                )
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("plan_synthesis.codex_numbers_block_failed", error=str(exc))
@@ -796,6 +799,9 @@ def run_synthesis(
 
         _drun_int = _decision_run_int(decision_run_id)
         if _drun_int is not None:
+            # The scrub is surgical to large NIS FI-capital amounts and never
+            # mutates ages, so it does NOT need the canonical ages (keeps it off
+            # the heavy MC path).
             _manifest = resolve_plan_numbers(
                 session, user_id=user_id, decision_run_id=_drun_int
             )
@@ -2772,7 +2778,8 @@ def _run_phase_3_synthesizer(*, session, user_id, baseline, prior_current,
         _drun_int = _decision_run_int(decision_run_id)
         if _drun_int is not None:
             _resolved = resolve_plan_numbers(
-                session, user_id=user_id, decision_run_id=_drun_int
+                session, user_id=user_id, decision_run_id=_drun_int,
+                include_canonical_ages=True,
             )
             resolved_numbers_block = render_numbers_for_synth(_resolved)
     except Exception as exc:  # noqa: BLE001 — synth must not break on this

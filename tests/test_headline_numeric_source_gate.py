@@ -34,6 +34,8 @@ def _resolved(**vals: float) -> ResolvedPlanNumbers:
         "portfolio.net_worth_nis": "nis",
         "retirement.fi_target_nis": "nis",
         "retirement.fi_age": "age",
+        "retirement.earliest_safe_age": "age",
+        "retirement.preservation_age": "age",
         "retirement.required_real_yield_pct": "pct",
         "retirement.return_assumption_pct": "pct",
         "spend.fi_basis_nis": "nis",
@@ -78,6 +80,31 @@ def test_matching_age_headline_passes():
     resolved = _resolved(**{"retirement.fi_age": 49.0})
     md = {"long": "You could retire at age 49 on the derived path."}
     assert check_headline_numeric_source(md, resolved) == []
+
+
+def test_canonical_earliest_safe_age_sanctioned_by_checker():
+    """Dual-track threading regression: when the manifest carries the canonical
+    earliest-safe age (46), a synth body stating BOTH 'age 46' (earliest-safe)
+    and 'age 49' (the FI/target age) passes the headline-numeric check — neither
+    is flagged. This is what the /accept gate-manifest opt-in
+    (include_canonical_ages=True) buys."""
+    resolved = _resolved(
+        **{"retirement.earliest_safe_age": 46.0, "retirement.fi_age": 49.0}
+    )
+    md = {"long": "The earliest you can safely retire is age 46; the plan targets age 49."}
+    assert check_headline_numeric_source(md, resolved) == []
+
+
+def test_canonical_age_flagged_when_manifest_lacks_it():
+    """Inverse: with ONLY fi_age (49) in the manifest, 'age 46' is flagged as an
+    unsourced headline age — the exact false-positive the /accept gate-manifest
+    opt-in prevents once the synth states the canonical earliest-safe age."""
+    resolved = _resolved(**{"retirement.fi_age": 49.0})
+    md = {"long": "The earliest you can safely retire is age 46."}
+    violations = check_headline_numeric_source(md, resolved)
+    assert len(violations) == 1
+    assert violations[0].check is GateCheck.HEADLINE_NUMERIC_SOURCE
+    assert "46" in violations[0].detail
 
 
 def test_matching_pct_headline_passes_fraction_to_points():

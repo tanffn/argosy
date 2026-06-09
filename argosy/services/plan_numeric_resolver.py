@@ -121,6 +121,8 @@ _KEY_UNITS: dict[str, str] = {
     "portfolio.net_worth_nis": "nis",
     "retirement.fi_target_nis": "nis",
     "retirement.fi_age": "age",
+    "retirement.earliest_safe_age": "age",
+    "retirement.preservation_age": "age",
     "retirement.required_real_yield_pct": "pct",
     "retirement.return_assumption_pct": "pct",
     "spend.fi_basis_nis": "nis",
@@ -505,7 +507,8 @@ def _resolve_net_worth(
 
 
 def resolve_plan_numbers(
-    session: "Session", *, user_id: str, decision_run_id: int
+    session: "Session", *, user_id: str, decision_run_id: int,
+    include_canonical_ages: bool = False,
 ) -> ResolvedPlanNumbers:
     """Resolve all plan headline numbers for one synthesis run.
 
@@ -517,6 +520,18 @@ def resolve_plan_numbers(
 
     A parse failure for one role degrades only that role's keys; the
     resolver never raises.
+
+    ``include_canonical_ages`` (default ``False``) adds the canonical
+    dual-track retirement ages (``retirement.earliest_safe_age`` +
+    ``retirement.preservation_age``) from
+    ``retirement_plan.canonical_feasible_dual_track`` — the SAME basis the
+    /retirement headline + ruin hero bind to. It is OFF by default for two
+    reasons: (1) that engine runs a heavy MC; (2) it is mutually re-entrant
+    with this resolver (``canonical_feasible_dual_track`` →
+    ``resolve_canonical_basis`` → ``_nvda_deconcentration_haircut`` →
+    ``resolve_plan_numbers``), so it must only ever be requested by a
+    TOP-LEVEL display surface (the /plan narrative + the synth numbers block),
+    never from the re-entrant hop. The keys stay pending on any failure.
     """
     values: dict[str, ResolvedValue] = {}
 
@@ -612,7 +627,77 @@ def resolve_plan_numbers(
     _apply_us_situs_estate(session, user_id, values)
     _apply_fx_boi(session, values)
 
+    # Canonical dual-track retirement ages — DISPLAY surfaces only (see the
+    # docstring re: re-entrancy + MC cost). Gated so the re-entrant NVDA-haircut
+    # hop and the non-display callers never trigger the heavy canonical MC.
+    if include_canonical_ages:
+        _apply_canonical_dual_track_age(session, user_id, values)
+
     return ResolvedPlanNumbers(values=values)
+
+
+def _apply_canonical_dual_track_age(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Resolve the CANONICAL dual-track retirement ages — the ONE honest
+    earliest-safe (typical-drawdown) age + the capital-preservation what-if —
+    from ``retirement_plan.canonical_feasible_dual_track`` (the same basis the
+    /retirement headline, ruin hero, and scenario grid bind to). This is what
+    makes the /plan narrative + synthesizer state the SAME age as /retirement
+    instead of the stale ``retirement.fi_age`` (the trajectory-feasibility
+    number, kept intact for its legitimate FIRE-bridge-sizing consumers).
+
+    Lazy import: the retirement engine and this resolver are mutually
+    re-entrant, so the call is only reached from a top-level display surface
+    (the caller gates it behind ``include_canonical_ages``). Best-effort — any
+    failure (thin data, MC error, or no age clearing the bar) leaves the keys
+    absent → pending sentinel. NEVER a fabricated or stale fallback value.
+    """
+    early_key = "retirement.earliest_safe_age"
+    pres_key = "retirement.preservation_age"
+    try:
+        from argosy.services.retirement.retirement_plan import (
+            canonical_feasible_dual_track,
+        )
+
+        canon = canonical_feasible_dual_track(session=session, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001 — resolver must not break on this
+        log.warning(
+            "plan_numeric_resolver.canonical_age_failed user_id=%s err=%s",
+            user_id, exc,
+        )
+        return
+
+    early_age = _to_float(getattr(canon, "earliest_feasible_age", None))
+    p_solvent = getattr(canon, "p_solvent_at_age", None)
+    if early_age is not None:
+        target_p = getattr(canon, "target_p_solvent", 0.90) or 0.90
+        values[early_key] = ResolvedValue(
+            key=early_key,
+            value=early_age,
+            unit="age",
+            status="resolved",
+            source_locator="retirement_plan.canonical_feasible_dual_track.earliest_feasible_age",
+            confidence="HIGH" if p_solvent is not None else "MEDIUM",
+            formula=(
+                "earliest age the typical-regime drawdown Monte Carlo clears "
+                f"{target_p:.0%} solvency to 95 on the deconcentrated, "
+                "reserve-netted, CGT-haircut basis"
+            ),
+        )
+
+    basis = getattr(canon, "basis", None)
+    pres_age = _to_float(basis.get("preservation_age")) if isinstance(basis, dict) else None
+    if pres_age is not None:
+        values[pres_key] = ResolvedValue(
+            key=pres_key,
+            value=pres_age,
+            unit="age",
+            status="resolved",
+            source_locator="retirement_plan.canonical_feasible_dual_track.basis.preservation_age",
+            confidence="MEDIUM",
+            formula="earliest age the worst-10% real path preserves today's real principal to 95",
+        )
 
 
 def _apply_fx_boi(session: "Session", values: dict[str, ResolvedValue]) -> None:
@@ -850,7 +935,9 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("spend.fi_basis_nis", "FI spend basis (permanent-equivalent, real)"),
     ("retirement.required_real_yield_pct", "Required real yield (perpetual safe-withdrawal rate)"),
     ("retirement.return_assumption_pct", "Expected real return (trajectory only)"),
-    ("retirement.fi_age", "Earliest feasible FI age"),
+    ("retirement.earliest_safe_age", "Earliest safe retirement age — typical drawdown, 90% MC solvency to 95 (THE headline retirement age)"),
+    ("retirement.preservation_age", "Capital-preservation retirement age — worst-10% real principal preserved (a what-if, not a constraint)"),
+    ("retirement.fi_age", "Full-FI / perpetuity target age — trajectory feasibility, for FIRE-bridge sizing (NOT the earliest-safe age)"),
     ("spend.annual_t12_nis", "Current tracked spend (T12)"),
     ("savings.annual_net_nis", "Annual net savings (RSU, conservative floor)"),
     ("concentration.nvda_cap_pct", "NVDA concentration cap"),

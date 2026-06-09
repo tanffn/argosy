@@ -24,6 +24,7 @@ from sqlalchemy.orm import sessionmaker
 from argosy.services.plan_numeric_resolver import (
     ResolvedPlanNumbers,
     ResolvedValue,
+    render_numbers_for_synth,
     resolve_plan_numbers,
 )
 from argosy.state.models import (
@@ -469,6 +470,149 @@ def test_fx_usd_nis_pending_when_cache_cold(session):
     fx = res.get("fx.usd_nis")
     assert fx is not None and fx.status == "pending"
     assert fx.value is None
+
+
+# ---------------------------------------------------------------------------
+# Tests — canonical dual-track retirement ages (opt-in; recursion-safe)
+#
+# The /retirement headline, the ruin hero, and (after this) the /plan narrative
+# + synthesizer all bind to the ONE canonical dual-track age from
+# retirement_plan.canonical_feasible_dual_track. The resolver exposes it only
+# when a DISPLAY surface opts in (include_canonical_ages=True). The default is
+# False so the ~8 non-display callers stay cheap AND the re-entrant
+# _nvda_deconcentration_haircut -> resolve_plan_numbers hop (reached from
+# canonical_feasible_dual_track itself) cannot infinite-recurse.
+# ---------------------------------------------------------------------------
+
+
+def _fake_feasible(*, earliest=46.0, p=0.91, pres=53.0):
+    from argosy.services.retirement.scenario_mc import FeasibleAgeResult
+
+    return FeasibleAgeResult(
+        earliest_feasible_age=earliest,
+        p_solvent_at_age=p,
+        target_p_solvent=0.90,
+        operational_target_age=49.0,
+        statutory_lump_age=60,
+        statutory_annuity_age=67,
+        current_age=43.96,
+        reserve_netted_nis=0.0,
+        basis={
+            "preservation_age": pres,
+            "source": "retirement_plan.canonical_feasible_dual_track",
+        },
+    )
+
+
+def test_canonical_ages_resolve_when_opted_in(session, monkeypatch):
+    """include_canonical_ages=True exposes the canonical dual-track earliest-safe
+    (typical drawdown) age + the capital-preservation age, sourced from
+    retirement_plan.canonical_feasible_dual_track — NOT the stale fi_age."""
+    import argosy.services.retirement.retirement_plan as rp
+
+    monkeypatch.setattr(rp, "canonical_feasible_dual_track", lambda **kw: _fake_feasible())
+    _seed_all(session)
+    resolved = resolve_plan_numbers(
+        session, user_id="ariel", decision_run_id=DRUN, include_canonical_ages=True
+    )
+
+    early = resolved.get("retirement.earliest_safe_age")
+    assert early.status == "resolved"
+    assert early.value == pytest.approx(46.0)
+    assert early.unit == "age"
+    assert (
+        early.source_locator
+        == "retirement_plan.canonical_feasible_dual_track.earliest_feasible_age"
+    )
+
+    pres = resolved.get("retirement.preservation_age")
+    assert pres.status == "resolved"
+    assert pres.value == pytest.approx(53.0)
+    assert pres.unit == "age"
+    assert "preservation_age" in pres.source_locator
+
+    # fi_age (the trajectory-feasibility number) is untouched — still its own
+    # value, kept for FIRE-bridge sizing.
+    fi_age = resolved.get("retirement.fi_age")
+    assert fi_age.value == pytest.approx(51.7)
+
+
+def test_canonical_ages_not_computed_by_default(session, monkeypatch):
+    """Default (no opt-in) must NOT invoke the heavy canonical MC. This is what
+    keeps the re-entrant _nvda_deconcentration_haircut -> resolve_plan_numbers
+    path from infinite-recursing, and keeps the non-display callers cheap. The
+    age keys stay pending (never fabricated)."""
+    import argosy.services.retirement.retirement_plan as rp
+
+    calls = {"n": 0}
+
+    def _spy(**kw):
+        calls["n"] += 1
+        return _fake_feasible()
+
+    monkeypatch.setattr(rp, "canonical_feasible_dual_track", _spy)
+    _seed_all(session)
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+
+    assert calls["n"] == 0, "canonical_feasible_dual_track must not run by default"
+    assert resolved.get("retirement.earliest_safe_age").status == "pending"
+    assert resolved.get("retirement.earliest_safe_age").value is None
+    assert resolved.get("retirement.preservation_age").status == "pending"
+
+
+def test_canonical_age_failure_is_pending_no_fabrication(session, monkeypatch):
+    """If the canonical engine raises (thin data, MC error), the earliest-safe
+    age degrades to pending — NEVER a fabricated or stale fallback number
+    (output-trust doctrine: every number Argosy-derived or absent)."""
+    import argosy.services.retirement.retirement_plan as rp
+
+    def _boom(**kw):
+        raise RuntimeError("MC blew up")
+
+    monkeypatch.setattr(rp, "canonical_feasible_dual_track", _boom)
+    _seed_all(session)
+    resolved = resolve_plan_numbers(
+        session, user_id="ariel", decision_run_id=DRUN, include_canonical_ages=True
+    )
+    early = resolved.get("retirement.earliest_safe_age")
+    assert early.status == "pending"
+    assert early.value is None
+
+
+def test_canonical_age_none_when_no_safe_age(session, monkeypatch):
+    """A portfolio that never clears the solvency bar (earliest_feasible_age is
+    None) resolves the earliest-safe age to pending, not 0 or a guess."""
+    import argosy.services.retirement.retirement_plan as rp
+
+    monkeypatch.setattr(
+        rp, "canonical_feasible_dual_track", lambda **kw: _fake_feasible(earliest=None)
+    )
+    _seed_all(session)
+    resolved = resolve_plan_numbers(
+        session, user_id="ariel", decision_run_id=DRUN, include_canonical_ages=True
+    )
+    assert resolved.get("retirement.earliest_safe_age").status == "pending"
+
+
+def test_render_synth_leads_with_earliest_safe_age(session, monkeypatch):
+    """The synth/narrative numbers block surfaces the canonical earliest-safe age
+    BEFORE the fi_age line, and relabels fi_age as the full-FI/perpetuity target
+    (so the narrative can no longer call 49 'the earliest you can retire')."""
+    import argosy.services.retirement.retirement_plan as rp
+
+    monkeypatch.setattr(rp, "canonical_feasible_dual_track", lambda **kw: _fake_feasible())
+    _seed_all(session)
+    resolved = resolve_plan_numbers(
+        session, user_id="ariel", decision_run_id=DRUN, include_canonical_ages=True
+    )
+    block = render_numbers_for_synth(resolved)
+
+    assert "age 46.0" in block  # the honest earliest-safe age is stated
+    assert "age 53.0" in block  # the preservation what-if
+    # fi_age must no longer be labeled as the "earliest" age.
+    assert "Earliest feasible FI age" not in block
+    # earliest-safe age leads the fi_age (49/51.7) line.
+    assert block.index("age 46.0") < block.index("age 51.7")
 
 
 def test_net_worth_marks_to_boi_current_fx(session):

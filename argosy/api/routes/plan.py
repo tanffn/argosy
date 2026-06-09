@@ -3127,10 +3127,15 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
                     from argosy.services.plan_numeric_resolver import (
                         resolve_plan_numbers,
                     )
+                    # include_canonical_ages so the gate sanctions the canonical
+                    # earliest-safe age (46) the synth body now states — otherwise
+                    # the headline age check flags it as unsourced (the manifest
+                    # would carry only fi_age ~49).
                     resolved = resolve_plan_numbers(
                         db,
                         user_id=pv.user_id,
                         decision_run_id=pv.decision_run_id,
+                        include_canonical_ages=True,
                     )
                 except Exception as exc:  # noqa: BLE001
                     resolver_error = f"resolver raised: {exc}"

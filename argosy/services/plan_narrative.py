@@ -243,7 +243,8 @@ async def get_plan_narrative(
             )
 
             resolved = resolve_plan_numbers(
-                session, user_id=user_id, decision_run_id=pv.decision_run_id
+                session, user_id=user_id, decision_run_id=pv.decision_run_id,
+                include_canonical_ages=True,
             )
             resolved_numbers_block = render_numbers_for_synth(resolved)
         except Exception as exc:  # noqa: BLE001 — narrative must not break on this

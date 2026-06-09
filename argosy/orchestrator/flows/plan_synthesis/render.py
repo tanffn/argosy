@@ -1276,7 +1276,7 @@ def render_number_derivations_appendix(
             ("savings.annual_net_nis", "Annual net savings"),
             ("concentration.nvda_cap_pct", "NVDA concentration cap"),
             ("concentration.nvda_current_pct", "NVDA current weight"),
-            ("retirement.fi_age", "Earliest feasible FI age"),
+            ("retirement.fi_age", "Full-FI / perpetuity target age"),
         ):
             rv = resolved.get(key)
             if rv is None or rv.status != "resolved" or rv.value is None:
