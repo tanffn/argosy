@@ -96,6 +96,8 @@ P5 (magic-number purges): mostly independent small lanes, can start anytime EXCE
 
 Full backend suite after the spine: **3692 passed / 9 failed / 16 skipped (44 min)**. All 9 are **pre-existing, non-product, isolation/network flakiness** — **zero touch the spine code** (every spine surface test + the cross-surface guardrail are green; the gate flip didn't break promotion mechanics):
 
+> **s16 re-confirmation (2026-06-09, post P3 + T5.7):** `pytest -m "not llm_eval" --ignore=tests/test_monthly_cycle_loop.py` (ARGOSY_PHASE5_AGENTS=false) → **3733 passed / 9 failed / 16 skipped / 11 deselected (43:10)**. The 9 failures are the SAME pre-existing set below (4 caplog + 5 discord); the 4 caplog tests were re-run in isolation → **4 passed** (contaminators, not regressions). **Zero new failures from P3/T5.7.** `test_monthly_cycle_loop` deselected (real-LLM hang).
+
 - **4 caplog/structlog full-suite isolation** — `test_allocation_glidepath` ×2, `test_lifecycle`, `test_plan_language_rewriter`. Pass in isolation; fail only in the full suite (a structlog/caplog global-state contaminator). s14's flaky-fix (`d5faca1`) fixed `test_cadence_loop_tick_widening` + addressed the named root causes (structlog `cache_logger_on_first_use=False`, conftest `logging.disable` reset + `clear_contextvars`), but a **further full-suite contaminator remains** → needs a contaminator bisect. **DEFERRED** (test-infra, not product). **Record correction:** `d5faca1`'s message over-states "repair 5 failures" — the true outcome is **1 fixed + 4 root-caused-but-still-failing** in the full suite (I committed on repro-evidence before the full-suite confirmation).
 - **5 discord network/mock** — `test_discord_attachment_fetch` ×5. Environment-dependent; the failing count varies run-to-run.
 
