@@ -134,3 +134,19 @@ def build_target_allocation_doc(
         classes=classes,
         glide=glide,
     )
+
+
+def load_plan_target_allocation(pv: object) -> TargetAllocationDoc | None:
+    """Read the canonical doc off a plan version, or ``None`` — never raises.
+
+    Surfaces call this to project the plan; a missing/empty/corrupt column must
+    degrade to "no canonical doc" (fall back to the legacy path) rather than
+    break the surface. ``pv`` is any object with a ``target_allocation_json``
+    attribute (the ``PlanVersion`` row)."""
+    raw = getattr(pv, "target_allocation_json", None)
+    if not raw:
+        return None
+    try:
+        return TargetAllocationDoc.model_validate_json(raw)
+    except (ValueError, TypeError):
+        return None

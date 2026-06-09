@@ -17,6 +17,7 @@ from argosy.services.target_allocation_doc import (
     GlideWaypoint,
     TargetAllocationDoc,
     build_target_allocation_doc,
+    load_plan_target_allocation,
 )
 
 # A full liquid book incl. NVDA (sums to ~100) — the settled basis is the FULL
@@ -116,3 +117,29 @@ def test_builds_instrument_level_doc_with_quarterly_glide() -> None:
         doc.glide[0].composition_pct_by_class[nvda_label]
         > doc.glide[-1].composition_pct_by_class[nvda_label]
     )
+
+
+class _PV:
+    """Minimal PlanVersion stand-in carrying just the column the reader reads."""
+
+    def __init__(self, target_allocation_json: str | None) -> None:
+        self.target_allocation_json = target_allocation_json
+
+
+def test_load_plan_target_allocation_parses_when_set() -> None:
+    doc = build_target_allocation_doc(
+        today=date(2026, 6, 9), today_composition=_TODAY_FULL_BOOK
+    )
+    loaded = load_plan_target_allocation(_PV(doc.model_dump_json()))
+    assert loaded is not None
+    assert loaded.classes[0].instruments  # instrument-level survives the round-trip
+
+
+def test_load_plan_target_allocation_returns_none_and_never_raises() -> None:
+    # empty / missing column -> None
+    assert load_plan_target_allocation(_PV(None)) is None
+    assert load_plan_target_allocation(_PV("")) is None
+    # malformed JSON -> None (never raises)
+    assert load_plan_target_allocation(_PV("{not valid json")) is None
+    # object with no such attribute at all -> None
+    assert load_plan_target_allocation(object()) is None
