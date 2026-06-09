@@ -128,6 +128,75 @@ def test_estate_preserved_at_old_retirement():
     assert typ.frontier[-1].principal_preserved is True
 
 
+class TestMcAgeAwareTax:
+    """T3.4 — the MC grosses up the net draw with the single-source age-aware
+    EFFECTIVE withdrawal curve (tax_curve.effective_withdrawal_tax_at_age),
+    NOT the retired flat-10% withdrawal_tax shortcut. Pre-67 the gross-up
+    reflects 15% (CGT 0.25 × gain-fraction 0.6); post-67 reflects 12%."""
+
+    @staticmethod
+    def _retired_household():
+        from argosy.services.cashflow_projection import HouseholdState
+        # Already retired at 55, spending well above any annuity so the
+        # portfolio draw is strictly positive across the horizon.
+        return HouseholdState(
+            monthly_expenses_nis=40_000.0,
+            portfolio_value_nis=20_000_000.0,
+            fx_usd_nis=2.9,
+            current_age_years=55.0,
+            monthly_savings_nis=0.0,
+        )
+
+    @staticmethod
+    def _pensions_zero():
+        return PensionState(
+            kupat_pensia_balance_nis=0.0,
+            kupat_pensia_contribution_monthly_nis=0.0,
+            executive_insurance_balance_nis=0.0,
+            keren_hishtalmut_balance_nis=0.0,
+            keren_hishtalmut_contribution_monthly_nis=0.0,
+            kupat_gemel_balance_nis=0.0,
+        )
+
+    def _run(self, *, apply_age_aware_tax, tax_rate=0.10):
+        from argosy.services.cashflow_projection import project_monte_carlo
+        return project_monte_carlo(
+            household=self._retired_household(), pensions=self._pensions_zero(),
+            retirement_age=55.0, years=20, mu_nominal_annual=0.075,
+            sigma_annual=0.18, inflation_annual=0.025, n_paths=50, seed=7,
+            today=date(2026, 6, 5), tax_rate=tax_rate,
+            apply_age_aware_tax=apply_age_aware_tax,
+        )
+
+    @staticmethod
+    def _pre67_point(proj):
+        # First post-retirement point comfortably below the pension age.
+        return next(
+            p for p in proj.series
+            if 58.0 <= p.age_years <= 60.0
+            and p.portfolio_net_draw_monthly_nis > 0.0
+        )
+
+    def test_pre67_gross_up_uses_15pct_not_flat_10(self):
+        from argosy.services.tax_curve import effective_withdrawal_tax_at_age
+        proj = self._run(apply_age_aware_tax=True)
+        pt = self._pre67_point(proj)
+        rate = effective_withdrawal_tax_at_age(pt.age_years)
+        assert rate == pytest.approx(0.15)
+        ratio = pt.portfolio_gross_withdrawal_monthly_nis / pt.portfolio_net_draw_monthly_nis
+        assert ratio == pytest.approx(1.0 / (1.0 - 0.15), rel=1e-6)
+        # And it is materially higher than the retired flat-10% gross-up.
+        assert ratio > 1.0 / (1.0 - 0.10)
+
+    def test_age_aware_draw_exceeds_flat_10pct_shortcut(self):
+        flat = self._run(apply_age_aware_tax=False, tax_rate=0.10)
+        aware = self._run(apply_age_aware_tax=True)
+        fp = self._pre67_point(flat)
+        ap = self._pre67_point(aware)
+        # Same net spend, higher tax -> higher gross withdrawal under age-aware.
+        assert ap.portfolio_gross_withdrawal_monthly_nis > fp.portfolio_gross_withdrawal_monthly_nis
+
+
 class TestMcSpendSplit:
     """H3: the MC spend basis excludes the flat HEALTHCARE_RAMP allowance — the
     phase curve (phase_expense_factor_series) models late-life healthcare

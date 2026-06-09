@@ -113,3 +113,51 @@ class TestBuildTaxCurve:
     def test_returned_points_are_dataclass_instances(self):
         curve = build_tax_curve(current_age=45, horizon_months=1)
         assert isinstance(curve[0], TaxCurvePoint)
+
+
+class TestEffectiveWithdrawalTaxAtAge:
+    """T3.4 — the single-source EFFECTIVE withdrawal-tax curve the MC uses
+    instead of the retired flat-10% shortcut. Pre-pension draws are taxable-
+    brokerage CGT on the realized-gain fraction (statutory CGT ×
+    taxable_gain_fraction); post-67 is the pension rights-fixation effective
+    rate. Both rates are DERIVED from constants, never magic numbers."""
+
+    def test_pre_67_is_cgt_times_gain_fraction(self):
+        from argosy.services.tax_curve import (
+            ISRAELI_CGT_RATE,
+            TAXABLE_GAIN_FRACTION,
+            effective_withdrawal_tax_at_age,
+        )
+        expected = ISRAELI_CGT_RATE * TAXABLE_GAIN_FRACTION  # 0.25 * 0.6 = 0.15
+        assert effective_withdrawal_tax_at_age(46) == pytest.approx(expected)
+        assert effective_withdrawal_tax_at_age(62) == pytest.approx(expected)
+        assert expected == pytest.approx(0.15)
+
+    def test_post_67_is_pension_effective_rate(self):
+        from argosy.services.tax_curve import (
+            POST_67_RATE,
+            effective_withdrawal_tax_at_age,
+        )
+        assert effective_withdrawal_tax_at_age(70) == pytest.approx(POST_67_RATE)
+        assert effective_withdrawal_tax_at_age(70) == pytest.approx(0.12)
+
+    def test_boundary_at_67_switches_to_pension(self):
+        from argosy.services.tax_curve import effective_withdrawal_tax_at_age
+        assert effective_withdrawal_tax_at_age(ANNUITY_AGE - 1e-6) == pytest.approx(0.15)
+        assert effective_withdrawal_tax_at_age(ANNUITY_AGE) == pytest.approx(0.12)
+
+    def test_not_the_retired_flat_10pct_shortcut(self):
+        """The whole point of T3.4: the MC tax is no longer a flat 10%."""
+        from argosy.services.tax_curve import effective_withdrawal_tax_at_age
+        assert effective_withdrawal_tax_at_age(46) != pytest.approx(0.10)
+        assert effective_withdrawal_tax_at_age(70) != pytest.approx(0.10)
+
+    def test_override_flat_honored(self):
+        from argosy.services.tax_curve import effective_withdrawal_tax_at_age
+        assert effective_withdrawal_tax_at_age(46, override_flat=0.0) == pytest.approx(0.0)
+        assert effective_withdrawal_tax_at_age(46, override_flat=0.30) == pytest.approx(0.30)
+
+    def test_defensive_clamps(self):
+        from argosy.services.tax_curve import effective_withdrawal_tax_at_age
+        assert effective_withdrawal_tax_at_age(-5) == pytest.approx(0.15)
+        assert effective_withdrawal_tax_at_age(150) == pytest.approx(0.12)

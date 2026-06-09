@@ -23,7 +23,10 @@ from typing import Literal, Sequence
 
 from sqlalchemy.orm import Session
 
-from argosy.services.tax_curve import effective_tax_rate_at_age
+from argosy.services.tax_curve import (
+    effective_tax_rate_at_age,
+    effective_withdrawal_tax_at_age,
+)
 from argosy.services.wealth_dashboard import (
     _latest_household_budget_report,
     _latest_snapshot,
@@ -1053,24 +1056,16 @@ def project_monte_carlo(
             annuity_net_t = annuity_nominal_t * (1.0 - annuity_tax_rate)
             shortfall = max(0.0, expenses_t - annuity_net_t - bl_nominal_t)
 
-        # Tax engine integration: age-aware effective rate captures the
-        # life-stage mix of taxable / hishtalmut / annuity sources without
-        # requiring a multi-account portfolio refactor. Calibrated to
-        # Israeli rules per `argosy/services/retirement/tax_engine.py`.
-        #   Pre-60:  25% (all from taxable equity; Israeli CGT)
-        #   60-67:   15% (taxable + hishtalmut 6yr tax-free lump available)
-        #   67+:     12% (pension annuity ~20% effective on post-67 rights-
-        #                 fixation + hishtalmut tax-free)
-        # Setting `apply_age_aware_tax=False` falls back to the legacy flat
-        # `tax_rate` slider for back-compat.
+        # Age-aware EFFECTIVE withdrawal tax — the single source is
+        # ``tax_curve.effective_withdrawal_tax_at_age`` (T3.4): pre-67 the draw
+        # is taxable-brokerage CGT on the realized-gain fraction
+        # (0.25 × 0.6 = 0.15), 67+ is the pension rights-fixation effective
+        # rate (0.12). This replaces the retired flat-10% ``withdrawal_tax``
+        # shortcut. ``apply_age_aware_tax=False`` falls back to the legacy
+        # flat ``tax_rate`` slider for back-compat / explicit overrides.
         if apply_age_aware_tax:
             age_now = household.current_age_years + t / 12.0
-            if age_now < LUMP_PENSION_AGE:
-                effective_tax = 0.25
-            elif age_now < ANNUITY_AGE:
-                effective_tax = 0.15
-            else:
-                effective_tax = 0.12
+            effective_tax = effective_withdrawal_tax_at_age(age_now)
             denom = max(1.0 - effective_tax, 0.01)
         else:
             denom = max(1.0 - tax_rate, 0.01)
@@ -1161,15 +1156,11 @@ def project_monte_carlo(
             annuity_net_t = ann_t * (1.0 - annuity_tax_rate)
             net_draw_t = max(0.0, exp_t - annuity_net_t - bl_t)
             # Gross-up by the same effective-tax denominator the withdrawal
-            # engine uses (lines ~1009-1019): age-band rate when age-aware tax
-            # is on, else the flat tax_rate; denom clamped identically.
+            # engine uses above: the single-source age-aware withdrawal rate
+            # (tax_curve.effective_withdrawal_tax_at_age) when age-aware tax is
+            # on, else the flat tax_rate; denom clamped identically.
             if apply_age_aware_tax:
-                if age_t < LUMP_PENSION_AGE:
-                    effective_tax = 0.25
-                elif age_t < ANNUITY_AGE:
-                    effective_tax = 0.15
-                else:
-                    effective_tax = 0.12
+                effective_tax = effective_withdrawal_tax_at_age(age_t)
                 denom = max(1.0 - effective_tax, 0.01)
             else:
                 denom = max(1.0 - tax_rate, 0.01)

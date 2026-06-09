@@ -32,6 +32,27 @@ PRE_60_RATE: float = 0.25
 LUMP_WINDOW_RATE: float = 0.15
 POST_67_RATE: float = 0.12
 
+# --- Effective WITHDRAWAL-tax curve (T3.4) ---------------------------------
+# The age-banded rates above are the STATUTORY effective rates per source
+# (pre-60 = 25% equity CGT). The Monte-Carlo retirement engine, however,
+# grosses up the FULL net spend it must draw — i.e. it taxes the whole
+# withdrawal, not just the realized gain. Applying the 25% statutory CGT to
+# the entire draw over-taxes a long-held, partly-deconcentrated, dividend-
+# yielding book (codex MC review 2026-06-04: it inflated the effective draw
+# ~33%). Only the realized-GAIN fraction of each sale is taxable; basis,
+# accrued cash and return-of-capital are not. ``TAXABLE_GAIN_FRACTION`` is the
+# canonical single source for that blend (mirrors what scenario_mc + the
+# deterministic cashflow path already assumed); 0.6 is a deliberately
+# conservative (errs-toward-more-tax) figure, documented + tunable.
+ISRAELI_CGT_RATE: float = 0.25
+TAXABLE_GAIN_FRACTION: float = 0.6
+# Pre-pension drawdown is taxable-brokerage CGT on the gain fraction.
+PRE_67_EFFECTIVE_WITHDRAWAL_RATE: float = ISRAELI_CGT_RATE * TAXABLE_GAIN_FRACTION  # 0.15
+# Post-67 the draw is dominated by the pension annuity under rights-fixation;
+# the 12% effective band already blends that (it is NOT a CGT-on-gain rate, so
+# the gain fraction does not apply).
+POST_67_EFFECTIVE_WITHDRAWAL_RATE: float = POST_67_RATE  # 0.12
+
 _MIN_RATE: float = 0.0
 _MAX_RATE: float = 1.0
 _MIN_AGE: float = 0.0
@@ -69,6 +90,34 @@ def effective_tax_rate_at_age(
         return max(_MIN_RATE, min(_MAX_RATE, float(override_flat)))
     rate, _ = _band_for_age(age)
     return rate
+
+
+def effective_withdrawal_tax_at_age(
+    age: float,
+    *,
+    override_flat: float | None = None,
+) -> float:
+    """Effective tax on a PORTFOLIO WITHDRAWAL at ``age`` years (T3.4).
+
+    This is the single source the Monte-Carlo retirement engine consults to
+    gross up the net spend it must draw, replacing the retired flat-10%
+    ``withdrawal_tax`` shortcut. Unlike ``effective_tax_rate_at_age`` (which
+    returns the per-source statutory band), this returns the rate applied to
+    the WHOLE withdrawal:
+
+        age <  67   -> ISRAELI_CGT_RATE × TAXABLE_GAIN_FRACTION   (= 0.15)
+        age >= 67   -> POST_67_RATE                               (= 0.12)
+
+    Pre-67 the draw is taxable-brokerage CGT on the realized-gain fraction;
+    post-67 it is the pension rights-fixation effective rate. ``override_flat``
+    short-circuits the curve (legacy ``apply_age_aware_tax=False`` behavior).
+    """
+    if override_flat is not None:
+        return max(_MIN_RATE, min(_MAX_RATE, float(override_flat)))
+    a = max(_MIN_AGE, min(_MAX_AGE, float(age)))
+    if a < ANNUITY_AGE:
+        return PRE_67_EFFECTIVE_WITHDRAWAL_RATE
+    return POST_67_EFFECTIVE_WITHDRAWAL_RATE
 
 
 def build_tax_curve(

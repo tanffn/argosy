@@ -62,7 +62,11 @@ class RetirementAssumptions:
     mu_real_typical: float = 0.050      # central; the fi_methodology DOCUMENTED return
     mu_real_bull: float = 0.060
     mu_real_conservative: float = 0.045  # labeled conservative case (not the default)
-    withdrawal_tax: float = 0.10        # interim shortcut; basis-aware schedule later
+    withdrawal_tax: float = 0.10        # legacy flat-override fallback only — the
+    #                                     MC now uses the age-aware effective curve
+    #                                     (tax_curve.effective_withdrawal_tax_at_age,
+    #                                     T3.4); this applies only if a caller forces
+    #                                     apply_age_aware_tax=False.
     bear_shock_pct: float = 0.25
     bear_decade_real: float = 0.030
     bear_decade_years: int = 10
@@ -267,7 +271,11 @@ def _run_mc(*, hh: HouseholdState, pensions: PensionState, retire_age: int, year
         # (_mc_spend_split) so this does not double-count.
         apply_expense_phases=True,
         inflation_annual=a.inflation, n_paths=a.n_paths, seed=a.seed, today=today,
-        tax_rate=a.withdrawal_tax, apply_age_aware_tax=False,
+        # T3.4: retire the flat-10% withdrawal_tax shortcut — the MC now grosses
+        # up the net draw with the age-aware EFFECTIVE curve (15% pre-67 CGT on
+        # the gain fraction / 12% post-67 pension). withdrawal_tax stays only as
+        # the override-flat fallback below.
+        tax_rate=a.withdrawal_tax, apply_age_aware_tax=True,
         bl_annuity_monthly_nis=bl_monthly, annuity_tax_rate=annuity_tax,
     )
 
