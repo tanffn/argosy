@@ -68,7 +68,7 @@ P5 (magic-number purges): mostly independent small lanes, can start anytime EXCE
 | T2.3 | Rebind `/retirement` glide + cashflow-chart knobs → canonical | P2 | SPINE | T1.6 | ✓ | ◐ | s14 0f54a22 — age done (cashflow→canonical 46); glide-derivation (doc→equity/bond/cash age curve) pending, intertwined w/ T5.4 |
 | T2.4 | Rebind NVDA trajectory → `nvda_projection` (wire the orphan, G13) | P2 | SPINE | T1.6 | ✓ | ☑ | s14 7a2bd5f — wired + killed the 18.21 full-book bug |
 | T2.5 | **Cross-surface reconciliation guardrail test** (the 12-session ask) | P2 | SPINE | T2.1–T2.4 | | ◐ | s14 50fb04d/7ba3602 — glidepath+portfolio reconcile to doc GREEN; retirement/age assertions pending |
-| T2.6 | Enable `plan_gate_enforce` default + extend gate to charts/portfolio | P2 | SPINE | T2.5 | | ☐ | gated on full-suite baseline (running) + T2.3-glide |
+| T2.6 | Enable `plan_gate_enforce` default + extend gate to charts/portfolio | P2 | SPINE | T2.5 | | ☑ | s14 52a541e — default flipped fail-closed; mechanics tests pinned warn-only. Runtime gate-extension-to-charts deferred (charts already reconcile to the doc via T2.1/T2.2 + the guardrail enforces it in tests) |
 | T3.1 | Flip `phase5_agents` default on (gate off) | P3 | A0 | — | | ☐ | |
 | T3.2 | Wire EquityComp (RSU net savings + FV trajectory) resolver path | P3 | A1 | T1.6,T3.1 | ✓ | ☐ | |
 | T3.3 | Wire Withdrawal Sequencer (FI-bridge waterfall) resolver path | P3 | A2 | T1.6,T3.1 | ✓ | ☐ | |
