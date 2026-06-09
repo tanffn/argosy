@@ -116,3 +116,24 @@ def test_plan_glidepath_reconciles_to_the_canonical_doc(tmp_path) -> None:
     assert nvda_end == pytest.approx(12.0, abs=1.5), (
         f"glidepath must deconcentrate NVDA to the 12 target (got {nvda_end})"
     )
+
+
+def test_portfolio_pie_reconciles_to_the_canonical_doc() -> None:
+    """T2.2 target: /portfolio's pie IS the plan — current % from the glide's
+    today anchor, target % from its endpoint — so it agrees with the /plan
+    glidepath label-for-label (one object, two surfaces)."""
+    from argosy.api.routes.portfolio import _allocations_from_doc
+
+    doc = _canonical_doc()
+    allocs = _allocations_from_doc(doc)
+    by_cat = {a.category: a for a in allocs}
+
+    nvda = by_cat[NVDA_LABEL]
+    assert nvda.pct == pytest.approx(64.86, abs=0.01)        # current == glide q0
+    assert nvda.target_pct == pytest.approx(12.0, abs=0.01)  # target == glide q8
+
+    q0 = doc.glide[0].composition_pct_by_class
+    qN = doc.glide[-1].composition_pct_by_class
+    for a in allocs:
+        assert a.pct == pytest.approx(round(q0.get(a.category, 0.0), 2), abs=0.01)
+        assert a.target_pct == pytest.approx(round(qN.get(a.category, 0.0), 2), abs=0.01)

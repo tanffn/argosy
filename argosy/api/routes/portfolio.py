@@ -139,6 +139,47 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
     )
 
 
+def _allocations_from_doc(doc) -> list[AllocationDTO]:
+    """T2.2 — the /portfolio pie AS the plan: current % from the glide's today
+    anchor (q0), target % from its endpoint, one row per glide label. Same
+    labels + values the /plan glidepath renders, so the two reconcile by
+    construction (the cross-surface guardrail)."""
+    q0 = doc.glide[0].composition_pct_by_class
+    qN = doc.glide[-1].composition_pct_by_class
+    labels = list(dict.fromkeys(list(qN) + list(q0)))
+    return [
+        AllocationDTO(
+            category=lbl,
+            pct=round(q0.get(lbl, 0.0), 2),
+            target_pct=round(qN.get(lbl, 0.0), 2),
+            delta_k=None,
+        )
+        for lbl in labels
+    ]
+
+
+def _project_canonical_allocations(
+    dto: PortfolioSnapshotDTO, db: Session, user_id: str
+) -> PortfolioSnapshotDTO:
+    """Override the snapshot's TSV allocation pie with the canonical doc's
+    full-book composition when the plan carries one; else leave the TSV pie.
+
+    Best-effort: the projection is additive, so any failure reading the plan
+    (e.g. an unmigrated DB without plan_versions) falls back to the snapshot
+    pie rather than breaking /portfolio."""
+    try:
+        from argosy.services.target_allocation_doc import load_plan_target_allocation
+        from argosy.state.queries import get_current_plan
+
+        pv = get_current_plan(db, user_id)
+        doc = load_plan_target_allocation(pv) if pv is not None else None
+        if doc is None or not doc.glide:
+            return dto
+        return dto.model_copy(update={"allocations": _allocations_from_doc(doc)})
+    except Exception:  # noqa: BLE001 — additive projection, never break /portfolio
+        return dto
+
+
 @router.get("/snapshot", response_model=PortfolioSnapshotDTO)
 def get_portfolio_snapshot(
     user_id: str = Query("ariel"),
@@ -166,7 +207,7 @@ def get_portfolio_snapshot(
     if row is not None:
         try:
             snap = row_to_snapshot(row)
-            return _snapshot_to_dto(snap)
+            return _project_canonical_allocations(_snapshot_to_dto(snap), db, user_id)
         except Exception as exc:  # noqa: BLE001 - defensive
             _log.warning(
                 "portfolio_snapshot.db_hydrate_failed",
@@ -177,15 +218,19 @@ def get_portfolio_snapshot(
     # 2. Filesystem fallback + write-through.
     tsv = _find_latest_tsv()
     if tsv is None:
-        return PortfolioSnapshotDTO(
-            snapshot_date=None,
-            fx_usd_nis=None,
-            fx_usd_eur=None,
-            total_usd_value_k=0.0,
-            positions=[],
-            allocations=[],
-            source_path=None,
-            parse_warnings=["No TSV found under ARGOSY_HOME."],
+        return _project_canonical_allocations(
+            PortfolioSnapshotDTO(
+                snapshot_date=None,
+                fx_usd_nis=None,
+                fx_usd_eur=None,
+                total_usd_value_k=0.0,
+                positions=[],
+                allocations=[],
+                source_path=None,
+                parse_warnings=["No TSV found under ARGOSY_HOME."],
+            ),
+            db,
+            user_id,
         )
 
     snap = parse_portfolio_tsv(tsv)
@@ -196,7 +241,7 @@ def get_portfolio_snapshot(
             "portfolio_snapshot.write_through_failed",
             user_id=user_id, error=str(exc),
         )
-    return _snapshot_to_dto(snap)
+    return _project_canonical_allocations(_snapshot_to_dto(snap), db, user_id)
 
 
 # ---------------------------------------------------------------------------
