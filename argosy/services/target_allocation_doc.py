@@ -65,6 +65,69 @@ class TargetAllocationDoc(BaseModel):
     glide: list[GlideWaypoint]  # today -> target over N quarters
 
 
+# --- Deriving TODAY's full-tradeable-book composition (the glide's t0) --------
+# Snapshot category (normalized/lowercased, as _categories_from_snapshot emits)
+# -> engine class label. 'defensive' and 'individual stocks' are special-cased
+# in derive_full_book_today_composition (split / redeploy band).
+_SNAPSHOT_CAT_TO_LABEL: dict[str, str] = {
+    "core equity": "US broad-market core",
+    "dividend": "Dividend-quality income",
+    "international": "International developed (ex-US)",
+    "growth": "US growth tilt (ex-NVDA)",
+    "cash": "Cash & T-bills (incl. ILS tranche)",
+    "alternative": "Real assets (REIT/TIPS)",
+}
+
+# Today's non-NVDA single stocks have no target sleeve (the engine holds only
+# NVDA as a single name). They are an honest, distinct band that the glide
+# redeploys to 0 — NOT mislabeled into the growth sleeve. The per-ticker
+# keep/trim decision (e.g. keep GOOG) is an instrument-level transition concern.
+OTHER_SINGLES_LABEL = "Individual Stocks (non-NVDA, to redeploy)"
+
+_NVDA_LABEL = "Strategic single-stock (NVDA)"
+
+
+def derive_full_book_today_composition(
+    *,
+    nvda_tradeable_pct: float,
+    ex_nvda_categories: dict[str, float],
+    low_vol_target: float,
+    bonds_target: float,
+) -> dict[str, float]:
+    """Today's composition on the FULL tradeable book basis, keyed by engine label.
+
+    The settled basis (codex danger-full-access verified against the live DB):
+    NVDA's weight is ``nvda_tradeable_pct`` (from the concentration report, NOT the
+    snapshot's 'Individual Stocks' row, which is the OTHER singles). The ex-NVDA
+    snapshot categories (each a % of the ex-NVDA book, summing to ~100) are scaled
+    by ``(100 - nvda_tradeable_pct)/100`` so the whole book sums to ~100.
+
+    Special cases:
+      * ``defensive`` splits between US low-vol + short IG bonds proportional to
+        their engine target weights (the glidepath's shared-category rule);
+      * ``individual stocks`` (the non-NVDA singles) becomes the redeploy band
+        ``OTHER_SINGLES_LABEL`` (glides to 0 — no target sleeve);
+      * unknown categories are kept under their raw key so the sum is preserved.
+    """
+    mult = (100.0 - nvda_tradeable_pct) / 100.0
+    comp: dict[str, float] = {_NVDA_LABEL: nvda_tradeable_pct}
+    for cat, pct in ex_nvda_categories.items():
+        scaled = pct * mult
+        if cat == "defensive":
+            denom = low_vol_target + bonds_target
+            if denom <= 0:
+                comp["US low-volatility equity"] = scaled
+                continue
+            comp["US low-volatility equity"] = scaled * low_vol_target / denom
+            comp["Short-duration IG bonds"] = scaled * bonds_target / denom
+        elif cat == "individual stocks":
+            comp[OTHER_SINGLES_LABEL] = comp.get(OTHER_SINGLES_LABEL, 0.0) + scaled
+        else:
+            label = _SNAPSHOT_CAT_TO_LABEL.get(cat, cat)
+            comp[label] = comp.get(label, 0.0) + scaled
+    return comp
+
+
 def build_target_allocation_doc(
     *,
     today: date,

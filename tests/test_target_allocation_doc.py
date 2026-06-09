@@ -12,11 +12,13 @@ from datetime import date
 import pytest
 
 from argosy.services.target_allocation_doc import (
+    OTHER_SINGLES_LABEL,
     AllocationClassDoc,
     AllocationInstrument,
     GlideWaypoint,
     TargetAllocationDoc,
     build_target_allocation_doc,
+    derive_full_book_today_composition,
     load_plan_target_allocation,
 )
 
@@ -143,3 +145,65 @@ def test_load_plan_target_allocation_returns_none_and_never_raises() -> None:
     assert load_plan_target_allocation(_PV("{not valid json")) is None
     # object with no such attribute at all -> None
     assert load_plan_target_allocation(object()) is None
+
+
+# The live snapshot (portfolio_snapshots.id=1) ex-NVDA categories, normalized
+# keys as _categories_from_snapshot returns them. NVDA is NOT here — it is a
+# separate positions row; its weight comes from the concentration report.
+_SNAPSHOT_EX_NVDA = {
+    "alternative": 0.0,
+    "cash": 12.94,
+    "core equity": 26.25,
+    "defensive": 11.06,
+    "dividend": 18.28,
+    "growth": 10.9,
+    "individual stocks": 18.21,
+    "international": 2.36,
+}
+
+
+def test_derive_full_book_composition_matches_codex_verified() -> None:
+    """Reconciles to the codex danger-full-access verdict against the live DB:
+    NVDA 64.86% (concentration report, NOT the snapshot 'Individual Stocks'),
+    ex-NVDA categories scaled by (100-64.86)/100, Defensive split low-vol/bonds
+    by target ratio, other-singles modeled as a distinct redeploy band."""
+    comp = derive_full_book_today_composition(
+        nvda_tradeable_pct=64.86,
+        ex_nvda_categories=_SNAPSHOT_EX_NVDA,
+        low_vol_target=5.56,
+        bonds_target=6.39,
+    )
+    assert sum(comp.values()) == pytest.approx(100.0, abs=0.01)
+    assert comp["Strategic single-stock (NVDA)"] == pytest.approx(64.86)
+    assert comp["US broad-market core"] == pytest.approx(9.2242, abs=0.001)
+    assert comp["Dividend-quality income"] == pytest.approx(6.4236, abs=0.001)
+    assert comp["International developed (ex-US)"] == pytest.approx(0.8293, abs=0.001)
+    # growth ALONE (10.9 x 0.3514), NOT folded with the other singles
+    assert comp["US growth tilt (ex-NVDA)"] == pytest.approx(3.8303, abs=0.001)
+    assert comp["US low-volatility equity"] == pytest.approx(1.8083, abs=0.001)
+    assert comp["Short-duration IG bonds"] == pytest.approx(2.0782, abs=0.001)
+    assert comp["Cash & T-bills (incl. ILS tranche)"] == pytest.approx(4.5471, abs=0.001)
+    assert comp["Real assets (REIT/TIPS)"] == pytest.approx(0.0, abs=0.001)
+    # the non-NVDA singles are an honest, distinct redeploy band (-> glides to 0)
+    assert comp[OTHER_SINGLES_LABEL] == pytest.approx(6.399, abs=0.001)
+
+
+def test_derived_composition_drives_a_two_sided_glide() -> None:
+    """The derived composition + the engine target produce a glide where BOTH
+    NVDA and the legacy singles deconcentrate toward the target (redeploy)."""
+    comp = derive_full_book_today_composition(
+        nvda_tradeable_pct=64.86,
+        ex_nvda_categories=_SNAPSHOT_EX_NVDA,
+        low_vol_target=5.56,
+        bonds_target=6.39,
+    )
+    doc = build_target_allocation_doc(
+        today=date(2026, 6, 9), today_composition=comp, quarters=8
+    )
+    nvda = "Strategic single-stock (NVDA)"
+    # NVDA glides down from ~64.86 toward the 12 target; the legacy singles
+    # band glides to ~0 (no target sleeve); every quarter still sums to 100.
+    assert doc.glide[0].composition_pct_by_class[nvda] > doc.glide[-1].composition_pct_by_class[nvda]
+    assert doc.glide[-1].composition_pct_by_class.get(OTHER_SINGLES_LABEL, 0.0) == pytest.approx(0.0, abs=0.01)
+    for wp in doc.glide:
+        assert sum(wp.composition_pct_by_class.values()) == pytest.approx(100.0, abs=0.1)
