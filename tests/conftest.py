@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 
 import pytest
@@ -10,6 +11,64 @@ from httpx import ASGITransport, AsyncClient
 
 from argosy.state import db as db_module
 from argosy.state.models import Base
+
+# ---------------------------------------------------------------------------
+# Logging / structlog isolation
+#
+# argosy.logging.configure_logging() wires structlog to the stdlib logging
+# machinery and sets root.handlers = [file_handler, stderr_handler].  It is
+# guarded by _CONFIGURED so it only runs once per process.
+#
+# Problem: when configure_logging() is first called at *collection time*
+# (triggered by module-level `log = get_logger(...)` calls in imported
+# modules), root.handlers is replaced BEFORE pytest's per-test caplog
+# fixture can add its LogCaptureHandler.  Then, inside a test, pytest adds
+# its handler on top of the existing list — that works correctly for stdlib
+# loggers.
+#
+# However, with structlog's `cache_logger_on_first_use=True` (now disabled
+# in argosy/logging.py), BoundLoggerLazyProxy objects cache their processor
+# chain + underlying stdlib logger on first use.  If first use happens in a
+# test WITHOUT a caplog context, the caplog handler is NOT in the handler
+# chain for subsequent tests.
+#
+# The belt-and-suspenders fix here:
+#   1. Call configure_logging() at module-import time so it runs before any
+#      test's caplog fixture tries to set up.  This ensures root.handlers is
+#      always [file_handler, stderr_handler] before caplog adds its own handler.
+#   2. Add a per-test autouse fixture that resets global logging state that
+#      pytest's caplog may leave dirty after exceptions in prior tests
+#      (specifically, manager.disable can be left non-zero, causing warning
+#      records to be silently discarded).
+# ---------------------------------------------------------------------------
+from argosy.logging import configure_logging as _argosy_configure_logging
+_argosy_configure_logging()
+
+
+@pytest.fixture(autouse=True)
+def _structlog_isolation():
+    """Ensure clean structlog / stdlib-logging state for every test.
+
+    With ``cache_logger_on_first_use=True`` (disabled in argosy/logging.py,
+    but kept here as belt-and-suspenders), a structlog BoundLoggerLazyProxy
+    that was first-used in a test WITHOUT a caplog handler active will cache
+    a processor chain that skips caplog for all subsequent tests.
+
+    This fixture clears structlog's contextvars (which are test-scoped
+    thread-locals and should not bleed across tests) and also resets the
+    manager-level ``logging.disable()`` threshold that pytest's caplog may
+    leave non-zero after an unexpected exception in a prior test's
+    ``at_level`` context.
+    """
+    import structlog
+    structlog.contextvars.clear_contextvars()
+    # Reset any stale manager-level disable level so WARNING records are
+    # never silently dropped by a prior test's uncleaned caplog state.
+    original_disable = logging.root.manager.disable
+    logging.disable(logging.NOTSET)
+    yield
+    # Restore the disable level (in case a test intentionally set it).
+    logging.disable(original_disable)
 
 
 @pytest.fixture

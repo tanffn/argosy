@@ -69,7 +69,18 @@ def _all_cadence_loop_subclasses() -> list[type[CadenceLoop]]:
     # Drop abstract subclasses (the base alias itself is filtered by
     # __subclasses__ but defensive subclasses that override `tick` as
     # abstract again would be excluded by inspect.isabstract).
-    return [c for c in seen if not inspect.isabstract(c)]
+    #
+    # Also drop subclasses defined in test modules (module name starts
+    # with "test_" or contains ".test_").  Those stubs are created and
+    # left in the __subclasses__ registry when test files are imported
+    # during collection, and they are NOT part of the production widening
+    # contract being verified here.
+    def _is_test_stub(cls: type) -> bool:
+        mod = cls.__module__ or ""
+        parts = mod.split(".")
+        return any(p.startswith("test_") or p == "tests" for p in parts)
+
+    return [c for c in seen if not inspect.isabstract(c) and not _is_test_stub(c)]
 
 
 def test_base_class_tick_signature_widened() -> None:
@@ -126,15 +137,28 @@ def test_all_concrete_subclasses_have_tick_returning_dict_or_none() -> None:
             continue
         ret = hints.get("return", None)
         # Acceptable: no annotation, None, dict, dict | None,
-        # Optional[dict], or any wider Union containing dict + None.
+        # Optional[dict], dict[K, V] | None, or any wider Union
+        # containing dict (or a generic dict alias) + None.
         if ret is None or ret is type(None) or ret is dict:
             continue
+        # Handle bare generic dict alias: dict[str, Any] etc.
+        if typing.get_origin(ret) is dict:
+            continue
         args = set(typing.get_args(ret))
-        if args and (dict in args or any(
-            isinstance(a, type) and issubclass(dict, a) for a in args
-        )):
+        if args and (
+            dict in args
+            or typing.get_origin(ret) is dict
+            or any(
+                # bare dict or a generic alias whose origin is dict
+                a is dict
+                or typing.get_origin(a) is dict
+                or (isinstance(a, type) and issubclass(dict, a))
+                for a in args
+            )
+        ):
             # If the subclass return is a Union including dict (or a
-            # supertype of dict), the widening is satisfied.
+            # supertype / generic alias of dict), the widening is
+            # satisfied.
             continue
         incompatible.append((f"{cls.__module__}.{cls.__name__}", ret))
 

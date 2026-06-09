@@ -20,7 +20,17 @@ _CONFIGURED = False
 
 
 def configure_logging(level: int | str = logging.INFO) -> None:
-    """Idempotent. Wires stdlib `logging` to structlog with JSON renderer."""
+    """Idempotent. Wires stdlib `logging` to structlog with JSON renderer.
+
+    ``cache_logger_on_first_use=False`` is intentional: caching structlog
+    BoundLoggerLazyProxy instances across tests causes caplog to see empty
+    records — the cached proxy binds to the processor chain and stdlib logger
+    at first-call time, but pytest's LogCaptureHandler is added to the root
+    logger AFTER collection-time imports. Disabling the cache means every
+    log call rebuilds the chain fresh, so caplog can always intercept records
+    regardless of test ordering. The performance cost is negligible (processor
+    chain evaluation is I/O-bound in practice).
+    """
     global _CONFIGURED
     if _CONFIGURED:
         return
@@ -45,7 +55,11 @@ def configure_logging(level: int | str = logging.INFO) -> None:
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
+        # Disabled: caching here causes pytest caplog isolation failures.
+        # When a BoundLoggerLazyProxy is first-used in a test that runs
+        # without a caplog handler active, the cached chain bypasses
+        # caplog's handler for all later tests in the same session.
+        cache_logger_on_first_use=False,
     )
 
     formatter = structlog.stdlib.ProcessorFormatter(
