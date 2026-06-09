@@ -27,7 +27,6 @@ from argosy.services.retirement.mekadem import (
 from argosy.services.retirement.reference import ResolveError, resolve
 from argosy.services.retirement.ruin_probability import compute_ruin_probability
 from argosy.services.retirement.scenario_mc import (
-    earliest_feasible_retire_age,
     run_retirement_scenarios,
 )
 from argosy.services.retirement.retirement_plan import (
