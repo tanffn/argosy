@@ -252,15 +252,45 @@ def load_full_book_today_composition(
     )
 
 
+def _deconcentration_quarters(
+    db: "Session", user_id: str, today: date, *, default_quarters: int = 8
+) -> int:
+    """The doc's deconcentration glide tapers over the OPTIMIZER-chosen horizon
+    (T4.2): ``optimize_deconcentration`` sweeps H∈{1..5}y and picks the H that
+    minimizes the typical-regime drawdown age (tie-break: lower total CGT) — the
+    SAME horizon its σ-glide uses for the MC. The displayed transition then spans
+    that horizon: ``quarters = H × 4``. Best-effort: the optimizer is a heavy MC
+    sweep, so any failure / no-feasible-horizon falls back to ``default_quarters``
+    (never blocks the doc build, never fabricates a horizon)."""
+    try:
+        from argosy.services.retirement.deconcentration_optimizer import (
+            optimize_deconcentration,
+        )
+
+        plan = optimize_deconcentration(session=db, user_id=user_id, today=today)
+        h = plan.chosen_horizon_years
+        if h and int(h) > 0:
+            return int(h) * 4
+    except Exception:  # noqa: BLE001 — never block the doc build on the optimizer
+        pass
+    return default_quarters
+
+
 def build_plan_target_allocation_doc(
     db: "Session", user_id: str, decision_run_id: int, today: date
 ) -> TargetAllocationDoc | None:
     """The DB-aware entry T1.5/backfill call: derive today's composition then
-    build the canonical doc, or ``None`` when the composition can't be derived."""
+    build the canonical doc, or ``None`` when the composition can't be derived.
+
+    The deconcentration glide spans the optimizer-chosen sell-down horizon
+    (T4.2, :func:`_deconcentration_quarters`) instead of a fixed 2-year taper."""
     comp = load_full_book_today_composition(db, user_id, decision_run_id)
     if comp is None:
         return None
-    return build_target_allocation_doc(today=today, today_composition=comp)
+    quarters = _deconcentration_quarters(db, user_id, today)
+    return build_target_allocation_doc(
+        today=today, today_composition=comp, quarters=quarters
+    )
 
 
 def doc_equity_bond_cash(doc: TargetAllocationDoc) -> tuple[float, float, float]:

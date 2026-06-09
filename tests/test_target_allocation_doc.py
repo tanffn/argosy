@@ -17,6 +17,7 @@ from argosy.services.target_allocation_doc import (
     AllocationInstrument,
     GlideWaypoint,
     TargetAllocationDoc,
+    _deconcentration_quarters,
     build_target_allocation_doc,
     derive_full_book_today_composition,
     doc_equity_bond_cash,
@@ -208,6 +209,40 @@ def test_derive_full_book_composition_matches_codex_verified() -> None:
     assert comp["Real assets (REIT/TIPS)"] == pytest.approx(0.0, abs=0.001)
     # the non-NVDA singles are an honest, distinct redeploy band (-> glides to 0)
     assert comp[OTHER_SINGLES_LABEL] == pytest.approx(6.399, abs=0.001)
+
+
+# ─── T4.2: deconcentration glide horizon follows the optimizer ─────────────
+
+
+def test_deconcentration_quarters_follows_optimizer_chosen_horizon(monkeypatch) -> None:
+    from argosy.services.retirement import deconcentration_optimizer as deco
+
+    class _Plan:
+        chosen_horizon_years = 3
+
+    monkeypatch.setattr(deco, "optimize_deconcentration", lambda **_k: _Plan())
+    # H=3y → 12 quarters (distinct from the fixed-2yr default of 8).
+    assert _deconcentration_quarters(db=None, user_id="ariel", today=date(2026, 6, 9)) == 12
+
+
+def test_deconcentration_quarters_falls_back_when_no_feasible_horizon(monkeypatch) -> None:
+    from argosy.services.retirement import deconcentration_optimizer as deco
+
+    class _Plan:
+        chosen_horizon_years = None
+
+    monkeypatch.setattr(deco, "optimize_deconcentration", lambda **_k: _Plan())
+    assert _deconcentration_quarters(db=None, user_id="ariel", today=date(2026, 6, 9)) == 8
+
+
+def test_deconcentration_quarters_falls_back_on_optimizer_error(monkeypatch) -> None:
+    from argosy.services.retirement import deconcentration_optimizer as deco
+
+    def _boom(**_k):
+        raise RuntimeError("heavy MC failed")
+
+    monkeypatch.setattr(deco, "optimize_deconcentration", _boom)
+    assert _deconcentration_quarters(db=None, user_id="ariel", today=date(2026, 6, 9)) == 8
 
 
 def test_derived_composition_drives_a_two_sided_glide() -> None:
