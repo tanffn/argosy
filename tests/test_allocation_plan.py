@@ -158,6 +158,38 @@ class TestRedistributionSchedule:
         assert dts == sorted(dts) and len(set(dts)) == 8
 
 
+class TestInstruments:
+    """T1.2 — each class is instrument-level (named tickers), so the canonical
+    doc can say WHAT to buy, not just an abstract asset-class weight. Tickers are
+    the panel's agreed names (sourced from each sleeve's rationale), never magic."""
+
+    def test_every_class_carries_instruments_summing_to_100(self) -> None:
+        alloc = build_target_allocation()
+        for c in alloc.classes:
+            assert c.instruments, f"{c.label} has no instruments"
+            total = sum(i.weight_within_class_pct for i in c.instruments)
+            assert total == pytest.approx(100.0, abs=0.01), c.label
+
+    def test_nvda_class_is_just_nvda(self) -> None:
+        alloc = build_target_allocation()
+        nvda = next(c for c in alloc.classes if c.sigma_class == "concentrated_equity")
+        assert [i.symbol for i in nvda.instruments] == ["NVDA"]
+        assert nvda.instruments[0].weight_within_class_pct == pytest.approx(100.0)
+
+    def test_named_sleeves_carry_their_panel_tickers(self) -> None:
+        alloc = build_target_allocation()
+        core = next(c for c in alloc.classes if c.label == "US broad-market core")
+        div = next(c for c in alloc.classes if c.label == "Dividend-quality income")
+        assert "VOO" in {i.symbol for i in core.instruments}
+        assert "SCHD" in {i.symbol for i in div.instruments}
+
+    def test_every_instrument_is_sourced_with_a_rationale(self) -> None:
+        alloc = build_target_allocation()
+        for c in alloc.classes:
+            for i in c.instruments:
+                assert i.rationale, f"{c.label}/{i.symbol} instrument lacks a sourced rationale"
+
+
 class TestToSynthTargets:
     def test_targets_are_pct_of_portfolio_with_rationale(self) -> None:
         alloc = build_target_allocation()

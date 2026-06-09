@@ -49,6 +49,7 @@ from argosy.services.retirement.scenario_mc import (
     SIGMA_DIVERSIFIED,
 )
 from argosy.services.sigma_glidepath import sigma_from_composition
+from argosy.services.target_allocation_doc import AllocationInstrument
 
 # --- The two specially-handled weights (auditable, not magic). ---------------
 # Ariel's sign-off, inside the optimizer's 10-13% band; cap is the canonical
@@ -76,12 +77,19 @@ class _PanelSleeve:
     agreement: str
     rationale: str
     dissent: str = ""
+    instruments: tuple[AllocationInstrument, ...] = ()
 
 
 _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     _PanelSleeve(
         label="US broad-market core",
         ratio=28.0,
+        instruments=(
+            AllocationInstrument(
+                symbol="VOO", role="primary", weight_within_class_pct=100.0,
+                rationale="Total US-market core (VOO); VTI an equivalent low-cost substitute.",
+            ),
+        ),
         sigma_class="us_equity",
         snapshot_category="Core Equity",
         agreement="moderate",
@@ -97,6 +105,12 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     _PanelSleeve(
         label="Dividend-quality income",
         ratio=19.0,
+        instruments=(
+            AllocationInstrument(
+                symbol="SCHD", role="primary", weight_within_class_pct=100.0,
+                rationale="Dividend-quality payers (SCHD); VIG a comparable substitute.",
+            ),
+        ),
         sigma_class="us_equity",
         snapshot_category="Dividend",
         agreement="moderate",
@@ -116,6 +130,12 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     _PanelSleeve(
         label="International developed (ex-US)",
         ratio=12.0,
+        instruments=(
+            AllocationInstrument(
+                symbol="VEA", role="primary", weight_within_class_pct=100.0,
+                rationale="Developed ex-US equity (VEA); VXUS a broader substitute that also adds EM.",
+            ),
+        ),
         sigma_class="intl_equity",
         snapshot_category="International",
         agreement="moderate",
@@ -134,6 +154,12 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     _PanelSleeve(
         label="US growth tilt (ex-NVDA)",
         ratio=6.0,
+        instruments=(
+            AllocationInstrument(
+                symbol="SCHG", role="primary", weight_within_class_pct=100.0,
+                rationale="US large-cap growth ex-single-name (SCHG); deliberately excludes NVDA.",
+            ),
+        ),
         sigma_class="us_equity",
         snapshot_category="Growth",
         agreement="moderate",
@@ -149,6 +175,12 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     _PanelSleeve(
         label="US low-volatility equity",
         ratio=6.0,
+        instruments=(
+            AllocationInstrument(
+                symbol="USMV", role="primary", weight_within_class_pct=100.0,
+                rationale="Min-volatility / quality-defensive US equity (USMV).",
+            ),
+        ),
         sigma_class="low_vol_equity",
         snapshot_category="Defensive",
         agreement="moderate",
@@ -164,6 +196,12 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     _PanelSleeve(
         label="Real assets (REIT/TIPS)",
         ratio=1.0,
+        instruments=(
+            AllocationInstrument(
+                symbol="VNQ", role="primary", weight_within_class_pct=100.0,
+                rationale="US REIT proxy (VNQ) for the token real-assets sleeve; a TIPS fund (SCHP) is the inflation-hedge alternative.",
+            ),
+        ),
         sigma_class="real_estate",
         snapshot_category="Alternative",
         agreement="contested",
@@ -179,6 +217,12 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
 _NVDA_SLEEVE = _PanelSleeve(
     label="Strategic single-stock (NVDA)",
     ratio=0.0,  # fixed weight, not part of the renormalised ratios
+    instruments=(
+        AllocationInstrument(
+            symbol="NVDA", role="primary", weight_within_class_pct=100.0,
+            rationale="The strategic single-stock position itself.",
+        ),
+    ),
     sigma_class="concentrated_equity",
     snapshot_category="Individual Stocks",
     agreement="contested",
@@ -209,6 +253,7 @@ class AllocationClass:
     agreement: str
     rationale: str
     dissent: str = ""
+    instruments: tuple[AllocationInstrument, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -282,6 +327,12 @@ _FI_CASH = AllocationClass(
         "blends ABOVE the 0.18 anchor (P@95 at age 47 ~= 89.5% → age slips to 48); "
         "the weight is DERIVED up to the anchor instead so age 47 stays consistent."
     ),
+    instruments=(
+        AllocationInstrument(
+            symbol="SGOV", role="primary", weight_within_class_pct=100.0,
+            rationale="0-3mo US T-bills (SGOV); the earmarked ILS short-makam hedge tranche is held within this sleeve.",
+        ),
+    ),
 )
 _FI_BONDS = AllocationClass(
     label="Short-duration IG bonds",
@@ -295,6 +346,12 @@ _FI_BONDS = AllocationClass(
         "real-rate/re-investment risk on the bridge ladder."
     ),
     dissent="Part of the contested FI sleeve; weight follows the derived FI total.",
+    instruments=(
+        AllocationInstrument(
+            symbol="VGSH", role="primary", weight_within_class_pct=100.0,
+            rationale="Short-duration US Treasuries / IG (VGSH); SGOV an alternative.",
+        ),
+    ),
 )
 
 
@@ -321,6 +378,7 @@ def build_target_allocation(
                 agreement=s.agreement,
                 rationale=s.rationale,
                 dissent=s.dissent,
+                instruments=s.instruments,
             )
         )
     classes.append(
@@ -332,6 +390,7 @@ def build_target_allocation(
             agreement=_NVDA_SLEEVE.agreement,
             rationale=_NVDA_SLEEVE.rationale,
             dissent=_NVDA_SLEEVE.dissent,
+            instruments=_NVDA_SLEEVE.instruments,
         )
     )
     cash_pct = round(weights["Cash & T-bills (incl. ILS tranche)"], 2)
