@@ -1301,6 +1301,75 @@ def render_number_derivations_appendix(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_plan_coverage_appendix(
+    session: Session, *, decision_run_id: int
+) -> str:
+    """Render the ``Appendix — Coverage self-assessment`` block (T3.5).
+
+    The PlanCoverageAnalyst persists a ``plan_coverage`` agent report saying
+    which canonical sections it could NOT baseline (``unfilled_section_ids``)
+    and what data is still missing inside the sections it did baseline
+    (per-section ``missing_data``). That output was previously persisted but
+    never surfaced — this renders it so the user sees where the plan is thin
+    (the gap self-assessment), in line with the trust contract.
+
+    Returns the empty string when no coverage report exists for the run or it
+    has nothing to flag, so callers can append unconditionally.
+    """
+    from sqlalchemy import select
+
+    from argosy.agents.plan_coverage_analyst import PlanCoverageOutput
+    from argosy.state.models import AgentReport
+
+    decision_id = f"plan-synth-{decision_run_id}"
+    row = session.execute(
+        select(AgentReport)
+        .where(AgentReport.decision_id == decision_id)
+        .where(AgentReport.agent_role == "plan_coverage")
+        .order_by(AgentReport.id.desc())
+        .limit(1)
+    ).scalars().first()
+    if row is None:
+        return ""
+    try:
+        out = PlanCoverageOutput.model_validate_json(row.response_text or "{}")
+    except Exception:  # noqa: BLE001 — never break the plan render on a bad blob
+        return ""
+
+    unfilled = list(out.unfilled_section_ids or [])
+    missing_by_section: list[tuple[str, str, list[str]]] = []
+    for s in out.baseline_sections or []:
+        md = list(getattr(getattr(s, "evidence", None), "missing_data", None) or [])
+        if md:
+            missing_by_section.append((s.section_id, s.title, md))
+    if not unfilled and not missing_by_section:
+        return ""
+
+    conf = getattr(out.confidence, "value", out.confidence)
+    lines = ["## Appendix — Coverage self-assessment", ""]
+    lines.append(
+        "Where the plan is thin, per Argosy's own coverage analyst "
+        f"(confidence: {conf}). These are open items, not asserted facts."
+    )
+    lines.append("")
+    if unfilled:
+        lines.append(
+            "**Sections not yet baselined** (need your input or a defensible "
+            "default before they carry weight):"
+        )
+        lines.append("")
+        for sid in unfilled:
+            lines.append(f"- `{sid}`")
+        lines.append("")
+    if missing_by_section:
+        lines.append("**Known data gaps inside covered sections:**")
+        lines.append("")
+        for sid, title, md in missing_by_section:
+            lines.append(f"- **{title}** (`{sid}`): {'; '.join(md)}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_plan_appendices(
     output: PlanSynthesisOutput,
     *,
@@ -1360,7 +1429,14 @@ def render_plan_appendices(
     sections = render_section_evidence_appendix(output)
     if sections:
         parts.append(sections)
+    # Coverage self-assessment (T3.5) — surface where the plan is thin before
+    # the forensic receipts. User-relevant, so it precedes the receipts block.
     if session is not None and decision_run_id is not None:
+        coverage = render_plan_coverage_appendix(
+            session, decision_run_id=decision_run_id,
+        )
+        if coverage:
+            parts.append(coverage)
         receipts = render_fleet_receipts_appendix(
             session, decision_run_id=decision_run_id,
         )

@@ -229,3 +229,96 @@ def test_run_sync_can_be_stubbed_for_orchestrator_wiring(monkeypatch):
     assert captured == {"plan_markdown": "x", "snapshot_summary": "y"}
     assert len(result.output.baseline_sections) == 1
     assert result.output.unfilled_section_ids == ["ips"]
+
+
+# ---------------------------------------------------------------------------
+# T3.5 — surface the coverage self-assessment (was dropped on the floor)
+# ---------------------------------------------------------------------------
+
+
+def _coverage_session():
+    """In-memory session with a User, mirroring the propagation tests."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from argosy.state.models import Base, User
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    session.add(User(id="ariel", plan="free"))
+    session.commit()
+    return session
+
+
+def _persist_coverage(session, decision_run_id: int, output: PlanCoverageOutput):
+    from argosy.state.models import AgentReport
+
+    session.add(AgentReport(
+        user_id="ariel",
+        agent_role="plan_coverage",
+        decision_id=f"plan-synth-{decision_run_id}",
+        model="stub-model",
+        response_text=output.model_dump_json(),
+        tokens_in=1, tokens_out=1, cost_usd=0.0,
+    ))
+    session.commit()
+
+
+def test_coverage_appendix_lists_unfilled_and_missing_data():
+    """The PlanCoverageAnalyst output is persisted; T3.5 surfaces it as a
+    coverage/self-assessed-gaps appendix instead of dropping it."""
+    from argosy.orchestrator.flows.plan_synthesis.render import (
+        render_plan_coverage_appendix,
+    )
+
+    session = _coverage_session()
+    out = PlanCoverageOutput(
+        baseline_sections=[_build_baseline_section()],
+        unfilled_section_ids=["ips", "client_goals"],
+        confidence=ConfidenceBand.MEDIUM,
+    )
+    _persist_coverage(session, 4242, out)
+
+    md = render_plan_coverage_appendix(session, decision_run_id=4242)
+    assert md  # non-empty
+    assert "Coverage" in md
+    # Sections the agent could not baseline are surfaced as gaps.
+    assert "ips" in md
+    assert "client_goals" in md
+    # Per-section missing-data is surfaced too.
+    assert "user-specific Maccabi premium tier" in md
+
+
+def test_coverage_appendix_empty_without_report():
+    """No coverage report on the run -> empty string (caller appends
+    unconditionally)."""
+    from argosy.orchestrator.flows.plan_synthesis.render import (
+        render_plan_coverage_appendix,
+    )
+
+    session = _coverage_session()
+    assert render_plan_coverage_appendix(session, decision_run_id=999) == ""
+
+
+def test_coverage_appendix_wired_into_plan_appendices():
+    """The coverage block is assembled into the integrated appendix bundle."""
+    from argosy.orchestrator.flows.plan_synthesis.render import (
+        render_plan_appendices,
+    )
+    from argosy.agents.plan_synthesizer_types import PlanSynthesisOutput
+
+    session = _coverage_session()
+    out = PlanCoverageOutput(
+        baseline_sections=[],
+        unfilled_section_ids=["estate_plan"],
+        confidence=ConfidenceBand.LOW,
+    )
+    _persist_coverage(session, 7, out)
+
+    # An empty synthesis output is fine — we only assert the coverage block
+    # is included when a coverage report exists for the run.
+    empty = PlanSynthesisOutput.model_construct(sections=[])
+    bundle = render_plan_appendices(
+        empty, session=session, decision_run_id=7, user_id="ariel",
+    )
+    assert "estate_plan" in bundle
