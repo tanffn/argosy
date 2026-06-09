@@ -3,7 +3,7 @@
 Covers ``ARGOSY_PLAN_GATE_ENFORCE`` env var + the gate-check wired
 into ``POST /api/plan/draft/{draft_id}/accept``:
 
-- flag default is False (warning mode)
+- flag default is True (enforce mode; T2.6)
 - warning mode: gate failures land in ``gate_warning`` on
   ``AcceptResponse``, accept proceeds.
 - enforce mode: gate failures raise 422 before the role flip.
@@ -45,12 +45,13 @@ def _restore_gate_settings():
 # Settings — env var default + override
 # ---------------------------------------------------------------------------
 
-def test_settings_plan_gate_enforce_default_false(monkeypatch):
-    """Default is False — gate runs as a warning at launch."""
+def test_settings_plan_gate_enforce_default_true(monkeypatch):
+    """Default is True (T2.6) — the trust contract is enforced at /accept: a
+    draft whose numbers don't trace to the plan is BLOCKED, not just warned."""
     monkeypatch.delenv("ARGOSY_PLAN_GATE_ENFORCE", raising=False)
     from argosy.config import reload_settings
     settings = reload_settings()
-    assert settings.plan_gate_enforce is False
+    assert settings.plan_gate_enforce is True
 
 
 def test_settings_plan_gate_enforce_env_var_true(monkeypatch):

@@ -10,6 +10,22 @@ from sqlalchemy.orm import sessionmaker
 from argosy.state.models import PlanVersion, User
 
 
+@pytest.fixture(autouse=True)
+def _warn_only_gate(monkeypatch):
+    """These tests exercise accept MECHANICS (promote / supersede / events /
+    cache invalidation), not the plan_output_gate. T2.6 flipped
+    ``plan_gate_enforce`` to True by default; pin warn-only here so the minimal
+    fixture drafts (no ``decision_run_id`` -> the numeric gate fail-closes)
+    still promote. Gate ENFORCEMENT itself is covered by
+    tests/test_plan_gate_feature_flag.py."""
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "false")
+    from argosy.config import reload_settings
+
+    reload_settings()
+    yield
+    reload_settings()
+
+
 @pytest.fixture
 def app_with_draft(client_with_db):
     """Insert a baseline + a draft for user ariel."""

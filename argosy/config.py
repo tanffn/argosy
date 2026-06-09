@@ -106,14 +106,13 @@ class Settings(BaseSettings):
     # monitoring. See `argosy/api/auth.py::require_admin_token`.
     admin_token: str | None = Field(default=None)
 
-    # Phase 6 of docs/plans/argosy-comprehensive-plan-integration.md
-    # — when True, a failing plan_output_gate blocks /accept; when
-    # False (default), the gate runs as a warning surfaced in the
-    # response body but the accept proceeds. Loaded from
-    # ``ARGOSY_PLAN_GATE_ENFORCE`` env var. Recommended rollout:
-    # ship False, observe gate failures in production for one cycle,
-    # then promote to True.
-    plan_gate_enforce: bool = Field(default=False)
+    # Phase 6 / T2.6 — when True (the default), a failing plan_output_gate
+    # blocks /accept with a 422: the trust contract is ENFORCED, so a promoted
+    # plan's user-facing numbers must trace to the resolver/canonical plan
+    # (no fabricated headlines). Set ``ARGOSY_PLAN_GATE_ENFORCE=false`` to fall
+    # back to warn-only (the violation summary surfaces on the response but the
+    # accept proceeds). ``?override_gate=true`` bypasses a single accept (audited).
+    plan_gate_enforce: bool = Field(default=True)
 
     # Phase 5 of docs/plans/argosy-comprehensive-plan-integration.md
     # — when True, PlanCoverageAnalyst and WithdrawalSequencerAgent
