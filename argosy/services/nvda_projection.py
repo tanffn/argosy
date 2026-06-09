@@ -13,7 +13,7 @@ Every surface is then just ``base * norm(t)`` in its own denominator:
 
     * share count        = today_shares      * norm(t)   (trajectory chart)
     * tradeable weight   = current_tradeable * norm(t)   (concentration view, 64.86% -> 13%)
-    * full-book weight   = fullbook_current  * norm(t)   (glidepath band, 18.21% -> 3.65%)
+    * full-book weight   = fullbook_current  * norm(t)   (canonical NVDA band; mirrors the tradeable weight)
 
 Because the three are the same path in three denominators, the cross-surface
 consistency guardrail is mechanically true: their normalised paths are
@@ -215,14 +215,13 @@ def compute_nvda_projection(
         ``resolve_plan_numbers`` (default ``include_canonical_ages=False`` — the
         concentration keys never enter the dual-track re-entrant hop).
       * ``today_shares`` ← latest snapshot ``positions_json`` NVDA row.
-      * ``fullbook_current_pct`` ← the SAME snapshot category the glidepath
-        anchors NVDA at (``"nvda"`` → "Individual Stocks").
+      * ``fullbook_current_pct`` ← the canonical NVDA weight (= the concentration
+        report's ``current_tradeable_pct``); NOT the snapshot "Individual Stocks"
+        row, which is the OTHER singles, not NVDA (codex-confirmed).
       * ``annual_reduction`` ← the plan's NVDA sale cadence.
     """
     from argosy.services.allocation_glidepath import (
-        _categories_from_snapshot,
         _latest_portfolio_snapshot,
-        _resolve_today_value,
     )
     from argosy.services.nvda_sales_history import _annual_nvda_target_from_plan
     from argosy.services.plan_numeric_resolver import resolve_plan_numbers
@@ -247,11 +246,14 @@ def compute_nvda_projection(
     if today_shares is None or today_shares <= 0:
         return None
 
-    fullbook_current_pct, matched, _alias = _resolve_today_value(
-        "nvda", _categories_from_snapshot(snap)
-    )
-    if not matched:
-        return None
+    # The full-book band uses the SAME canonical NVDA weight as the tradeable
+    # band: ``current_tradeable_pct`` (the concentration report's NVDA share =
+    # the doc's NVDA today weight). The prior code sourced this from the snapshot
+    # "Individual Stocks" category, which is the OTHER singles (GOOG/AMZN/.../RKT),
+    # NOT NVDA — a codex-confirmed root-confusion bug (it read 18.21% instead of
+    # ~64.86%). There is ONE canonical NVDA weight; the glidepath/portfolio bands
+    # read it from the TargetAllocationDoc, and this projection mirrors it.
+    fullbook_current_pct = current_tradeable_pct
 
     annual = _annual_nvda_target_from_plan(pv)
     if annual <= 0:

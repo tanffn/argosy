@@ -1833,29 +1833,48 @@ def get_draft_nvda_trajectory(
     except Exception:  # noqa: BLE001 — best-effort
         today_shares = None
 
-    # Find the long-horizon ceiling target.
+    # T2.4 — the canonical NVDA target comes from the single projection
+    # (codex-verified share math: 11,471 -> floor(cap/current x shares) = 2,299
+    # at the 13% cap), wiring the previously-orphaned compute_nvda_projection so
+    # the trajectory reconciles to the plan instead of an identity_yaml ceiling.
     ceiling_value: float | None = None
     ceiling_label: str | None = None
-    from argosy.state.queries import get_pending_draft
+    try:
+        from argosy.services.nvda_projection import compute_nvda_projection
 
-    pv = get_pending_draft(db, user_id)
-    if pv is not None and pv.horizon_long_json:
-        try:
-            payload = json.loads(pv.horizon_long_json)
-            for t in payload.get("targets") or []:
-                if not isinstance(t, dict):
-                    continue
-                label = (t.get("label") or "").lower()
-                if "share count" in label or "share ceiling" in label or (
-                    "ceiling" in label and "share" in label
-                ):
-                    val = t.get("value")
-                    if isinstance(val, (int, float)):
-                        ceiling_value = float(val)
-                        ceiling_label = t.get("label") or None
-                        break
-        except json.JSONDecodeError:
-            pass
+        _proj = compute_nvda_projection(
+            db, user_id, datetime.now(timezone.utc).date()
+        )
+        if _proj is not None:
+            ceiling_value = float(_proj.target_shares)
+            ceiling_label = f"Canonical NVDA target ({_proj.cap_pct:.0f}% cap)"
+            if today_shares is None:
+                today_shares = _proj.today_shares
+    except Exception:  # noqa: BLE001 — best-effort; fall back to the draft ceiling
+        pass
+
+    # Fallback: the draft's long-horizon share-ceiling target.
+    if ceiling_value is None:
+        from argosy.state.queries import get_pending_draft
+
+        pv = get_pending_draft(db, user_id)
+        if pv is not None and pv.horizon_long_json:
+            try:
+                payload = json.loads(pv.horizon_long_json)
+                for t in payload.get("targets") or []:
+                    if not isinstance(t, dict):
+                        continue
+                    label = (t.get("label") or "").lower()
+                    if "share count" in label or "share ceiling" in label or (
+                        "ceiling" in label and "share" in label
+                    ):
+                        val = t.get("value")
+                        if isinstance(val, (int, float)):
+                            ceiling_value = float(val)
+                            ceiling_label = t.get("label") or None
+                            break
+            except json.JSONDecodeError:
+                pass
 
     return NvdaTrajectoryResponse(
         today_date=today,
