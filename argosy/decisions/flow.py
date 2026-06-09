@@ -763,6 +763,22 @@ class DecisionFlow:
         if self.config.skip_persistence:
             return 0
         async with db_mod.get_session() as session:
+            # T4.4: best-effort plan lineage (audit) — the canonical plan
+            # version this proposal traces to. Never blocks a proposal.
+            plan_version_id = None
+            try:
+                from sqlalchemy import desc as _desc, select as _select
+
+                from argosy.state.models import PlanVersion as _PV
+
+                plan_version_id = (await session.execute(
+                    _select(_PV.id)
+                    .where(_PV.user_id == proposal.user_id, _PV.role == "current")
+                    .order_by(_desc(_PV.id))
+                    .limit(1)
+                )).scalar_one_or_none()
+            except Exception:  # noqa: BLE001 — lineage is best-effort
+                plan_version_id = None
             row = ProposalRow(
                 user_id=proposal.user_id,
                 ticker=proposal.ticker,
@@ -782,6 +798,7 @@ class DecisionFlow:
                 confidence=proposal.confidence,
                 cooling_off_until=proposal.cooling_off_until,
                 decision_run_id=proposal.decision_run_id,
+                plan_version_id=plan_version_id,
             )
             session.add(row)
             await session.flush()

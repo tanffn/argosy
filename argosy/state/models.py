@@ -682,6 +682,11 @@ class Proposal(Base):
     decision_run_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("decision_runs.id", ondelete="SET NULL"), nullable=True
     )
+    # T4.4: audit lineage — the canonical plan version this proposal traces to.
+    # A plain nullable reference to plan_versions.id (not a DB-enforced FK, to
+    # keep the SQLite ADD COLUMN migration simple); stamped best-effort at
+    # persist time, NULL when no current plan exists.
+    plan_version_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
