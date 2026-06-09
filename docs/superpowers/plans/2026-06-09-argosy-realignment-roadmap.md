@@ -79,8 +79,8 @@ P5 (magic-number purges): mostly independent small lanes, can start anytime EXCE
 | T4.3 | Load `plan_targets` server-side; make exec cap-check live | P4 | B | T4.1 | | ☐ | |
 | T4.4 | Add `plan_version_id` to `Proposal` (audit lineage) | P4 | B | T4.1 | | ☐ | |
 | T4.5 | Auto-route concentration-breach tranche to approval/broker | P4 | B | T4.1,T4.3 | ✓ | ☐ | |
-| T5.1 | Derive/intake hishtalmut first-deposit date (drop 2018-01-01) | P5 | C1 | — | | ☐ | |
-| T5.2 | Derive/intake mortgage rate/term (drop 4.5%/20yr) | P5 | C2 | — | | ☐ | |
+| T5.1 | Derive/intake hishtalmut first-deposit date (drop 2018-01-01) | P5 | C1 | — | | ☑ | s15 d7771c8 — `derived_inputs` emits `hishtalmut_first_deposit_date` (intake; pending→needs-intake note, never a fabricated 2018-01-01). New page `strOf` accessor. test_derived_inputs 8 green; ui tsc/lint/vitest clean |
+| T5.2 | Derive/intake mortgage rate/term (drop 4.5%/20yr) | P5 | C2 | — | | ☑ | s15 d7771c8 — `mortgage_annual_rate` + `mortgage_term_months` from identity_yaml (pending→needs-intake); `RealEstateMortgageCard` dropped its internal `?? 0.045`, draws amortization only with a real rate+term |
 | T5.3 | Derive FX σ/μ (drop frozen 0.08/0) | P5 | C3 | — | ✓ | ☑ | s15 96da397/ec24551 — **Option A**: derive σ from history, hold μ=0 (driftless). Codex+SE rationale: a ~10y sample can't estimate a 30y drift (SE≈σ/√T≈2.5%/yr; Meese-Rogoff), and a derived log-μ also mishandled the Itô σ²/2 term. Realized drift logged for audit, not extrapolated. Dormant on dev DB (<24mo → fallback). 18 green |
 | T5.4 | Delete Vanguard glide-curve fallback (use canonical glide) | P5 | C4 | T2.3 | | ☐ | |
 | T5.5 | Remove `fx.threshold_breach` + manual `check_*` per-symptom detectors | P5 | C5 | — | | ☑ | s15 9522bc6 — emergent observer only; `check_mc_regression` retained (observer reads no MC P(solvent)); tests rewritten to assert removal + match `state_diff` comparator map. hour_loop/monitor_drift/monitor_macro_shift green |
