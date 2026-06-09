@@ -192,3 +192,51 @@ def test_phase7_loops_disabled_individually(engine: None) -> None:
     assert "backup" not in scheduler._loops  # type: ignore[attr-defined]
     # other Phase 7 loops still present (defaults are enabled)
     assert "hour" in scheduler._loops  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# T5.6 — dev run boots observer + predictions-evaluator (issue: these were
+# only registered in the FastAPI startup handler, not in register_default_loops,
+# so `argosy run` never booted them).
+# ---------------------------------------------------------------------------
+
+def test_state_observer_registered_by_default(engine: None) -> None:
+    """register_default_loops() includes state_observer_daily when enabled."""
+    scheduler = Scheduler(user_id="ariel")
+    scheduler.register_default_loops()
+    assert "state_observer_daily" in scheduler._loops  # type: ignore[attr-defined]
+
+
+def test_predictions_evaluator_registered_by_default(engine: None) -> None:
+    """register_default_loops() includes predictions_evaluator when enabled."""
+    scheduler = Scheduler(user_id="ariel")
+    scheduler.register_default_loops()
+    assert "predictions_evaluator" in scheduler._loops  # type: ignore[attr-defined]
+
+
+def test_state_observer_disabled_by_config(engine: None) -> None:
+    """state_observer_daily is absent when cadences.state_observer.enabled=False."""
+    from argosy.agent_settings import AgentSettings, CadencesBlock
+
+    settings = AgentSettings(
+        cadences=CadencesBlock(
+            state_observer=CadenceConfig(enabled=False, cron="0 17 * * *"),
+        )
+    )
+    scheduler = Scheduler(user_id="ariel", settings=settings)
+    scheduler.register_default_loops()
+    assert "state_observer_daily" not in scheduler._loops  # type: ignore[attr-defined]
+
+
+def test_predictions_evaluator_disabled_by_config(engine: None) -> None:
+    """predictions_evaluator is absent when cadences.predictions_evaluator.enabled=False."""
+    from argosy.agent_settings import AgentSettings, CadencesBlock
+
+    settings = AgentSettings(
+        cadences=CadencesBlock(
+            predictions_evaluator=CadenceConfig(enabled=False, cron="30 3 * * *"),
+        )
+    )
+    scheduler = Scheduler(user_id="ariel", settings=settings)
+    scheduler.register_default_loops()
+    assert "predictions_evaluator" not in scheduler._loops  # type: ignore[attr-defined]

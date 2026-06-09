@@ -213,6 +213,53 @@ class Scheduler:
                 )
             )
 
+        # T5.6 — StateObserverLoop. Gated on
+        # ``cadences.state_observer.enabled`` (default True). Mirrors
+        # the identical block in argosy/api/main.py so that `argosy run`
+        # boots the same job set as the FastAPI server.
+        try:
+            from argosy.orchestrator.loops.state_observer import (  # noqa: PLC0415
+                StateObserverLoop,
+            )
+
+            obs_cfg = cadences.state_observer
+            if obs_cfg.enabled:
+                self.register_loop(
+                    StateObserverLoop(
+                        schedule=LoopSchedule.from_config(obs_cfg),
+                        enabled=True,
+                        user_id=self.user_id,
+                    )
+                )
+        except (ImportError, ValueError) as exc:
+            _log.exception(
+                "scheduler.state_observer_register_failed",
+                error_type=type(exc).__name__,
+            )
+
+        # T5.6 — PredictionsEvaluatorLoop. Gated on
+        # ``cadences.predictions_evaluator.enabled`` (default True).
+        # Mirrors the identical block in argosy/api/main.py so that
+        # `argosy run` boots the same job set as the FastAPI server.
+        try:
+            from argosy.orchestrator.loops.predictions_evaluator import (  # noqa: PLC0415
+                PredictionsEvaluatorLoop,
+            )
+
+            pe_cfg = cadences.predictions_evaluator
+            if pe_cfg.enabled:
+                self.register_loop(
+                    PredictionsEvaluatorLoop(
+                        schedule=LoopSchedule.from_config(pe_cfg),
+                        enabled=True,
+                    )
+                )
+        except (ImportError, ValueError) as exc:
+            _log.exception(
+                "scheduler.predictions_evaluator_register_failed",
+                error_type=type(exc).__name__,
+            )
+
     # ------------------------------------------------------------------
     # Run
     # ------------------------------------------------------------------
