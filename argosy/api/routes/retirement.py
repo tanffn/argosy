@@ -95,9 +95,7 @@ from argosy.services.retirement.withdrawal_policy import list_policies
 from argosy.services.retirement_timeline import build_holistic_timeline
 from argosy.services.rsu_prevest_planner import compute_upcoming_vest_outlook
 from argosy.services.plan_monitor import (
-    check_allocation_drift,
     check_mc_regression,
-    get_active_drift_flags,
     get_active_mc_regression_flags,
 )
 
@@ -1533,21 +1531,13 @@ def get_upcoming_vests(
 
 
 # ---------------------------------------------------------------------------
-# Monitor agent endpoints (sprint commit #11) -- allocation-drift trigger.
+# Monitor agent endpoints
 # ---------------------------------------------------------------------------
-
-
-@router.post("/monitor/run")
-def post_run_drift_check(user_id: str, db: Session = Depends(get_db)) -> dict:
-    """Manually trigger an allocation-drift check (spec §5.1.1).
-
-    In production this runs nightly via cron; the route lets the UI
-    surface a "check now" button and lets tests drive the detector
-    deterministically. Returns the ``DriftCheckResult`` payload (flags
-    fired this run + the snapshot that was scored).
-    """
-    result = check_allocation_drift(db, user_id)
-    return result.to_dict()
+# NOTE (T5.5): POST /monitor/run (allocation-drift check) has been removed.
+# Allocation drift detection now flows exclusively through the emergent
+# StateObserverAgent (daily 17:00 IDT). The observer reads
+# portfolio.allocations[].current_pct vs target_pct from the state diff
+# and surfaces deviations as state_observer_* flags on the Red-Flag Strip.
 
 
 @router.get("/monitor/flags")

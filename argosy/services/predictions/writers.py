@@ -802,9 +802,9 @@ def write_monitor_flag_prediction(
     consumer (commit #6) interpret direction from the underlying
     flag's payload.
 
-    Gating contract: the caller (``check_allocation_drift`` /
-    ``check_mc_regression``) has ALREADY decided the flag should fire
-    before reaching this writer. No additional gate here.
+    Gating contract: the caller (``check_mc_regression``) has ALREADY
+    decided the flag should fire before reaching this writer. No additional
+    gate here.
 
     Idempotency: ``v1|predictions|mf|<monitor_flag_id>``.
 

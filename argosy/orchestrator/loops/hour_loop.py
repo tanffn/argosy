@@ -4,12 +4,13 @@
   - News-feed delta (FinnhubAdapter)
   - Macro release calendar (FRED)
   - Corp-actions feed
-  - FX move > threshold (BoI / FRED)
+  - FX rates (BoI / FRED) — ingested into the state snapshot for emergent
+    anomaly detection by StateObserverAgent; no hardcoded per-symptom threshold
+    here (design principle: emergent observer only, no check_<symptom> detectors)
 
 Records material events; emits WebSocket events:
   - `news.material`         — when news materiality > threshold
   - `macro.surprise`        — when a macro print exceeds the configured surprise threshold
-  - `fx.threshold_breach`   — when an FX pair's intraday move > threshold
 
 Honors the cost-guard pause and kill switch.
 """
@@ -56,7 +57,6 @@ class HourLoop(CadenceLoop):
         fx_provider: FXProvider | None = None,
         corp_actions_provider: CorpActionsProvider | None = None,
         news_materiality_threshold: float = 0.6,
-        fx_threshold_pct: float = 1.0,
     ) -> None:
         super().__init__(schedule=schedule, enabled=enabled)
         self.user_id = user_id
@@ -65,7 +65,6 @@ class HourLoop(CadenceLoop):
         self._fx = fx_provider or _empty_provider
         self._corp = corp_actions_provider or _empty_provider
         self._news_threshold = news_materiality_threshold
-        self._fx_threshold = fx_threshold_pct
 
     async def tick(self, *, now: Callable[[], datetime] | None = None) -> None:
         if os.environ.get("ARGOSY_KILL") == "1":
@@ -93,18 +92,14 @@ class HourLoop(CadenceLoop):
         for item in surprises:
             await _publish("macro.surprise", {"user_id": self.user_id, **item})
 
-        # 3. FX moves
+        # 3. FX rates — ingested for snapshot freshness; anomaly detection is
+        # emergent via StateObserverAgent, not a hardcoded threshold here.
         fx_items = await self._fx()
-        fx_breaches = [
-            x for x in fx_items if abs(float(x.get("pct_change", 0))) >= self._fx_threshold
-        ]
-        for item in fx_breaches:
-            await _publish("fx.threshold_breach", {"user_id": self.user_id, **item})
 
         # 4. Corp actions (recorded but no event for Phase 7).
         corp_items = await self._corp()
 
-        if material_news or surprises or fx_breaches or corp_items:
+        if material_news or surprises or fx_items or corp_items:
             await record_audit_event(
                 user_id=self.user_id,
                 event_type="hour_loop.events_recorded",
@@ -114,7 +109,7 @@ class HourLoop(CadenceLoop):
                     "now": moment.isoformat(),
                     "news_material_count": len(material_news),
                     "macro_surprise_count": len(surprises),
-                    "fx_breach_count": len(fx_breaches),
+                    "fx_items_count": len(fx_items),
                     "corp_actions_count": len(corp_items),
                 },
             )
@@ -122,7 +117,7 @@ class HourLoop(CadenceLoop):
                 "hour_loop.events_recorded",
                 news=len(material_news),
                 macro=len(surprises),
-                fx=len(fx_breaches),
+                fx=len(fx_items),
                 corp=len(corp_items),
             )
 

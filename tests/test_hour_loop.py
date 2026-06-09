@@ -1,4 +1,10 @@
-"""HourLoop tests — mocks news/macro/fx providers, asserts events."""
+"""HourLoop tests — mocks news/macro/fx providers, asserts events.
+
+T5.5 design contract: HourLoop must NOT emit ``fx.threshold_breach``.
+FX anomaly detection flows through the emergent StateObserverAgent only.
+The FX provider is still polled (data ingested into state snapshot), but
+no threshold-based WS event is fired from the loop.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +21,9 @@ from argosy.state.models import User
 
 
 @pytest.mark.asyncio
-async def test_hour_loop_emits_news_macro_fx_events(engine: None) -> None:
+async def test_hour_loop_emits_news_and_macro_not_fx_threshold(engine: None) -> None:
+    """news.material and macro.surprise are still emitted; fx.threshold_breach
+    is gone (T5.5 — emergent observer only)."""
     events._reset_for_tests()
     reset_cost_guard()
 
@@ -35,7 +43,10 @@ async def test_hour_loop_emits_news_macro_fx_events(engine: None) -> None:
             {"label": "ISM", "surprise": False, "delta_bps": 5},
         ]
 
+    fx_polled: list[bool] = []
+
     async def fx_provider() -> list[dict[str, Any]]:
+        fx_polled.append(True)
         return [
             {"pair": "USD/NIS", "pct_change": 1.5},
             {"pair": "USD/EUR", "pct_change": 0.2},
@@ -52,7 +63,6 @@ async def test_hour_loop_emits_news_macro_fx_events(engine: None) -> None:
         macro_provider=macro_provider,
         fx_provider=fx_provider,
         news_materiality_threshold=0.6,
-        fx_threshold_pct=1.0,
     )
     await loop.tick()
 
@@ -61,12 +71,15 @@ async def test_hour_loop_emits_news_macro_fx_events(engine: None) -> None:
     await sub_ctx.__aexit__(None, None, None)
 
     joined = "\n".join(received)
+    # Expected WS events still fire.
     assert "news.material" in joined
     assert "macro.surprise" in joined
-    assert "fx.threshold_breach" in joined
+    # FX threshold-breach event MUST NOT be emitted (T5.5).
+    assert "fx.threshold_breach" not in joined
+    # FX provider WAS called — data is still ingested for state snapshot.
+    assert fx_polled, "fx_provider must be called even though no WS event is emitted"
     # Only NVDA news was material; TSLA was below threshold.
     assert "NVDA" in joined
-    assert "USD/NIS" in joined
 
 
 @pytest.mark.asyncio
