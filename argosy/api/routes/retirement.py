@@ -665,6 +665,7 @@ def post_tax_compute(
         "israeli_tax": as_dict(tb.israeli_tax),
         "us_treaty_credit": as_dict(tb.us_treaty_credit),
         "bituach_leumi_tax": as_dict(tb.bituach_leumi_tax),
+        "surtax": as_dict(tb.surtax),
         "effective_rate": as_dict(tb.effective_rate),
     }
 

@@ -113,6 +113,65 @@ class TestTaxEngine:
         # 7% × min(100K, 50K ceiling) = 3500
         assert tb.bituach_leumi_tax.value == pytest.approx(50_000 * 0.07)
 
+    def test_small_capital_gain_has_no_surtax(self, client_with_db):
+        """T5.7 — below the ₪721,560 surtax threshold → surtax 0 (the existing
+        25%/net assertions are unchanged)."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed(s)
+            tb = compute_tax(
+                TaxableCashflow(source="capital_gain", gross_amount_nis=100_000),
+                user_id="ariel", session=s,
+            )
+        assert tb.surtax.value == pytest.approx(0.0)
+        assert tb.net.value == pytest.approx(75_000.0)
+
+    def test_large_capital_gain_carries_5pct_surtax(self, client_with_db):
+        """A big NVDA-deconcentration-sized capital gain crosses the threshold;
+        capital income carries the 5% surtax above it."""
+        from argosy.services.tax_curve import SURTAX_THRESHOLD_ANNUAL_NIS
+        SF = client_with_db.app.state.session_factory
+        gross = 2_000_000.0
+        with SF() as s:
+            _seed(s)
+            tb = compute_tax(
+                TaxableCashflow(source="capital_gain", gross_amount_nis=gross),
+                user_id="ariel", session=s,
+            )
+        expected_surtax = (gross - SURTAX_THRESHOLD_ANNUAL_NIS) * 0.05
+        assert tb.surtax.value == pytest.approx(expected_surtax)
+        # Total tax now includes CGT + surtax; net reflects both.
+        assert tb.net.value == pytest.approx(gross - gross * 0.25 - expected_surtax)
+
+    def test_large_salary_carries_3pct_ordinary_surtax(self, client_with_db):
+        from argosy.services.tax_curve import SURTAX_THRESHOLD_ANNUAL_NIS
+        SF = client_with_db.app.state.session_factory
+        gross = 1_500_000.0
+        with SF() as s:
+            _seed(s)
+            tb = compute_tax(
+                TaxableCashflow(source="salary", gross_amount_nis=gross),
+                user_id="ariel", session=s,
+            )
+        expected_surtax = (gross - SURTAX_THRESHOLD_ANNUAL_NIS) * 0.03
+        assert tb.surtax.value == pytest.approx(expected_surtax)
+
+    def test_large_rental_carries_5pct_capital_surtax(self, client_with_db):
+        """§121ב applies notwithstanding the §122 final-tax track; ITA 05/2025
+        treats non-business rent as capital-source income → 5% surtax above the
+        threshold (codex tax review)."""
+        from argosy.services.tax_curve import SURTAX_THRESHOLD_ANNUAL_NIS
+        SF = client_with_db.app.state.session_factory
+        gross = 1_200_000.0
+        with SF() as s:
+            _seed(s)
+            tb = compute_tax(
+                TaxableCashflow(source="rental", gross_amount_nis=gross),
+                user_id="ariel", session=s,
+            )
+        expected_surtax = (gross - SURTAX_THRESHOLD_ANNUAL_NIS) * 0.05
+        assert tb.surtax.value == pytest.approx(expected_surtax)
+
 
 # ─── Hishtalmut ──────────────────────────────────────────────────────────
 

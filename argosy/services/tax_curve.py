@@ -58,6 +58,21 @@ _MAX_RATE: float = 1.0
 _MIN_AGE: float = 0.0
 _MAX_AGE: float = 120.0
 
+# --- Surtax (mas yesef / "additional tax") (T5.7) --------------------------
+# Israel levies an annual surtax on the portion of taxable income above a high
+# threshold. Per ITA: a 3% base surtax on income above the threshold, and from
+# 2025 an additional 2% on CAPITAL/passive income (capital gains, dividends,
+# interest, rent) above the same threshold — so capital income carries 5% above
+# the threshold while ordinary income carries 3%. The threshold is nominally
+# ~₪721,560/yr (2024/2025; frozen, not indexed up in the 2025 budget). These
+# are documented, sourced, intake-overridable constants — NOT hidden magic.
+# For a retirement DRAWDOWN (~₪280k/yr central spend) the surtax is zero (well
+# below the threshold); it bites on large one-off events — RSU vests, a big NVDA
+# deconcentration sale — which is exactly where it must be captured.
+SURTAX_THRESHOLD_ANNUAL_NIS: float = 721_560.0
+SURTAX_RATE_ORDINARY: float = 0.03
+SURTAX_RATE_CAPITAL: float = 0.05  # 3% base + 2% capital surcharge (2025+)
+
 
 @dataclass(frozen=True)
 class TaxCurvePoint:
@@ -118,6 +133,27 @@ def effective_withdrawal_tax_at_age(
     if a < ANNUITY_AGE:
         return PRE_67_EFFECTIVE_WITHDRAWAL_RATE
     return POST_67_EFFECTIVE_WITHDRAWAL_RATE
+
+
+def annual_surtax(
+    annual_income_nis: float,
+    *,
+    is_capital: bool = False,
+    threshold_nis: float | None = None,
+) -> float:
+    """Israeli surtax (mas yesef) on the portion of ANNUAL income above the
+    threshold (T5.7).
+
+    Capital/passive income (capital gains, dividends, interest, rent) carries
+    the higher 5% rate (3% base + 2% capital surcharge, 2025+); ordinary income
+    (salary, RSU vest, pension) carries 3%. ``threshold_nis`` overrides the
+    default (intake). Income at/below the threshold returns 0; this is the
+    SINGLE source of the surtax math for the calculator + any large-event tax.
+    """
+    thr = SURTAX_THRESHOLD_ANNUAL_NIS if threshold_nis is None else float(threshold_nis)
+    excess = max(0.0, float(annual_income_nis) - thr)
+    rate = SURTAX_RATE_CAPITAL if is_capital else SURTAX_RATE_ORDINARY
+    return excess * rate
 
 
 def build_tax_curve(

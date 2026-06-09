@@ -24,6 +24,8 @@ from typing import Literal, Sequence
 from sqlalchemy.orm import Session
 
 from argosy.services.tax_curve import (
+    ISRAELI_CGT_RATE as _ISRAELI_CGT_RATE,
+    TAXABLE_GAIN_FRACTION as _TAXABLE_GAIN_FRACTION,
     effective_tax_rate_at_age,
     effective_withdrawal_tax_at_age,
 )
@@ -39,16 +41,16 @@ DEFAULT_MU_NOMINAL_ANNUAL = 0.08
 DEFAULT_SIGMA_ANNUAL = 0.18
 DEFAULT_INFLATION_ANNUAL = 0.025
 DEFAULT_MEKADEM = 200.0
-DEFAULT_TAX_RATE = 0.25
-# Fraction of a funding withdrawal that is actually a TAXABLE real gain.
-# Grossing up the full net spend by 1/(1-0.25) assumes every shekel sold is
-# taxable gain with zero cost basis / cash / return-of-capital — codex MC
-# review (2026-06-04) flagged this as too harsh (it inflated the effective
-# draw ~33%). A long-held, partly-deconcentrated, dividend-yielding portfolio
-# realizes gain on only a portion of each sale. 0.6 is a deliberately
-# CONSERVATIVE blend (errs toward more tax); effective withdrawal tax ≈
-# tax_rate × 0.6 = 15%. Documented + tunable, never a hidden constant.
-DEFAULT_TAXABLE_GAIN_FRACTION = 0.6
+# Single tax-band source = ``tax_curve`` (T5.7). The statutory equity CGT rate
+# and the taxable-gain fraction live there so they can't drift across the
+# deterministic path, the MC and scenario_mc. Re-exported under the legacy
+# names this module + scenario_mc already use.
+#   gain fraction: only the realized-gain part of a sale is taxable (basis,
+#   cash, return-of-capital are not), so the effective withdrawal tax ≈
+#   CGT × gain_fraction = 0.25 × 0.6 = 15% (codex MC review 2026-06-04 flagged
+#   grossing up the FULL draw at 25% as ~33% too harsh).
+DEFAULT_TAX_RATE = _ISRAELI_CGT_RATE
+DEFAULT_TAXABLE_GAIN_FRACTION = _TAXABLE_GAIN_FRACTION
 DEFAULT_LIFESTYLE_DRIFT_ANNUAL = 0.0
 LUMP_PENSION_AGE = 60
 ANNUITY_AGE = 67

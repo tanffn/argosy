@@ -161,3 +161,37 @@ class TestEffectiveWithdrawalTaxAtAge:
         from argosy.services.tax_curve import effective_withdrawal_tax_at_age
         assert effective_withdrawal_tax_at_age(-5) == pytest.approx(0.15)
         assert effective_withdrawal_tax_at_age(150) == pytest.approx(0.12)
+
+
+class TestAnnualSurtax:
+    """T5.7 — Israeli surtax (mas yesef) on annual income above the threshold:
+    3% ordinary, 5% capital (3% base + 2% capital surcharge, 2025+)."""
+
+    def test_below_threshold_is_zero(self):
+        from argosy.services.tax_curve import annual_surtax, SURTAX_THRESHOLD_ANNUAL_NIS
+        assert annual_surtax(SURTAX_THRESHOLD_ANNUAL_NIS - 1, is_capital=True) == 0.0
+        assert annual_surtax(280_000, is_capital=True) == 0.0  # a retirement draw
+        assert annual_surtax(280_000, is_capital=False) == 0.0
+
+    def test_at_threshold_is_zero(self):
+        from argosy.services.tax_curve import annual_surtax, SURTAX_THRESHOLD_ANNUAL_NIS
+        assert annual_surtax(SURTAX_THRESHOLD_ANNUAL_NIS) == pytest.approx(0.0)
+
+    def test_ordinary_above_threshold_is_3pct_of_excess(self):
+        from argosy.services.tax_curve import annual_surtax, SURTAX_THRESHOLD_ANNUAL_NIS
+        income = SURTAX_THRESHOLD_ANNUAL_NIS + 1_000_000
+        assert annual_surtax(income, is_capital=False) == pytest.approx(1_000_000 * 0.03)
+
+    def test_capital_above_threshold_is_5pct_of_excess(self):
+        from argosy.services.tax_curve import annual_surtax, SURTAX_THRESHOLD_ANNUAL_NIS
+        income = SURTAX_THRESHOLD_ANNUAL_NIS + 1_000_000
+        assert annual_surtax(income, is_capital=True) == pytest.approx(1_000_000 * 0.05)
+
+    def test_threshold_override(self):
+        from argosy.services.tax_curve import annual_surtax
+        # Only the excess above the supplied threshold is taxed.
+        assert annual_surtax(600_000, is_capital=True, threshold_nis=500_000) == pytest.approx(100_000 * 0.05)
+
+    def test_negative_income_is_zero(self):
+        from argosy.services.tax_curve import annual_surtax
+        assert annual_surtax(-50_000, is_capital=True) == 0.0

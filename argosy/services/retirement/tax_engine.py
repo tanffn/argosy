@@ -45,6 +45,11 @@ from sqlalchemy.orm import Session
 
 from argosy.services.retirement.citations import ValueWithRationale
 from argosy.services.retirement.reference import resolve
+from argosy.services.tax_curve import (
+    ISRAELI_CGT_RATE,
+    SURTAX_THRESHOLD_ANNUAL_NIS,
+    annual_surtax,
+)
 
 
 Source = Literal[
@@ -96,7 +101,9 @@ def _pension_exemption_rate(year: int) -> float:
 
 # Default top marginal Israeli income tax bracket for high earners.
 DEFAULT_MARGINAL_TOP_RATE = 0.47
-ISRAELI_CGT_RATE = 0.25
+# ISRAELI_CGT_RATE + the surtax constants are sourced from ``tax_curve`` — the
+# single tax-band source (T5.7) — and imported above, so the 25% CGT can't
+# drift between the calculator, the deterministic path and the MC.
 US_DIVIDEND_TREATY_RATE = 0.15
 # Bituach leumi insurable ceiling — applies to salary + RSU; surplus uninsured.
 DEFAULT_BL_CEILING_NIS_MONTHLY = 50_000.0
@@ -110,7 +117,25 @@ class TaxBreakdown:
     israeli_tax: ValueWithRationale
     us_treaty_credit: ValueWithRationale  # 0 unless US-source dividends
     bituach_leumi_tax: ValueWithRationale
+    surtax: ValueWithRationale  # mas yesef on income above the annual threshold
     effective_rate: ValueWithRationale
+
+
+# Surtax (mas yesef) source classification: capital/passive income carries the
+# higher 5% rate above the threshold; salary/RSU/pension carry the ordinary 3%.
+# §122 rental IS in the surtax base at the capital rate: §121ב applies
+# notwithstanding the §122 final-tax track, and ITA instruction 05/2025 treats
+# non-business rent as capital-source income subject to the 2% capital surcharge
+# (codex tax review, ITA 05/2025). NOTE: for ``capital_gain`` the cashflow's
+# gross_amount_nis is the realized TAXABLE GAIN (the engine taxes the whole of
+# it at 25%), so the surtax is correctly levied on the gain — not on sale
+# proceeds and not on a pre-gain-fraction figure (the 0.6 gain fraction lives
+# only in the MC's withdrawal gross-up, a different code path).
+_SURTAX_CAPITAL_SOURCES = frozenset({
+    "capital_gain", "dividend_us_source", "dividend_israeli_source", "interest",
+    "rental",
+})
+_SURTAX_ORDINARY_SOURCES = frozenset({"salary", "rsu_vest", "pension_annuity"})
 
 
 def compute_tax(
@@ -119,9 +144,17 @@ def compute_tax(
     user_id: str,
     session: Session,
     year: int = 2026,
+    apply_surtax: bool = True,
 ) -> TaxBreakdown:
-    """Returns full tax breakdown — gross, net, per-component taxes,
-    effective_rate — for a single Israeli-resident cashflow."""
+    """Returns full tax breakdown — gross, net, per-component taxes (incl.
+    surtax), effective_rate — for a single Israeli-resident cashflow.
+
+    Surtax note (T5.7): mas yesef is an ANNUAL tax on income above ~₪721,560.
+    The calculator is single-cashflow, so it applies the surtax to THIS
+    cashflow treated as the marginal income above the threshold — exact for a
+    dominant one-off event (a large RSU vest or NVDA deconcentration sale),
+    a lower bound when other income already fills the threshold. Set
+    ``apply_surtax=False`` to suppress."""
     src = cashflow.source
     gross = max(0.0, cashflow.gross_amount_nis)
 
@@ -203,7 +236,24 @@ def compute_tax(
         rationale = f"Unknown source '{src}'; defaulted to marginal {marginal*100:.0f}%."
         source_id = "argosy_derived"
 
-    total_tax = israeli_tax + bl_tax
+    # Surtax (mas yesef) on income above the annual threshold — capital/passive
+    # at 5%, ordinary at 3%, others (e.g. §122 rental) outside the base.
+    surtax = 0.0
+    surtax_rationale = "No surtax: below the annual threshold or out of base."
+    if apply_surtax and src in _SURTAX_CAPITAL_SOURCES:
+        surtax = annual_surtax(gross, is_capital=True)
+    elif apply_surtax and src in _SURTAX_ORDINARY_SOURCES:
+        surtax = annual_surtax(gross, is_capital=False)
+    if surtax > 0:
+        cap = src in _SURTAX_CAPITAL_SOURCES
+        surtax_rationale = (
+            f"Surtax (mas yesef) {'5%' if cap else '3%'} on the "
+            f"₪{max(0.0, gross - SURTAX_THRESHOLD_ANNUAL_NIS):,.0f} above the "
+            f"₪{SURTAX_THRESHOLD_ANNUAL_NIS:,.0f} annual threshold "
+            f"({'capital/passive' if cap else 'ordinary'} income)."
+        )
+
+    total_tax = israeli_tax + bl_tax + surtax
     net = max(0.0, gross - total_tax)
     effective_rate = total_tax / gross if gross > 0 else 0.0
 
@@ -237,11 +287,17 @@ def compute_tax(
                 if bl_tax > 0 else "No BL applies to this source."
             ),
         ),
+        surtax=ValueWithRationale(
+            value=round(surtax, 2), unit="NIS",
+            source_id="israeli_tax_authority_surtax_2025" if surtax > 0 else None,
+            rationale=surtax_rationale,
+        ),
         effective_rate=ValueWithRationale(
             value=round(effective_rate, 4), unit="fraction", source_id=None,
             rationale=(
                 f"Total tax ₪{total_tax:,.0f} / gross ₪{gross:,.0f}. "
-                "Includes Israeli income/CGT + bituach leumi - US treaty credit."
+                "Includes Israeli income/CGT + bituach leumi + surtax "
+                "- US treaty credit."
             ),
         ),
     )
