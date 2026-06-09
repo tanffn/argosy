@@ -162,18 +162,23 @@ def test_disabled_loop_not_run(engine: None) -> None:
 
 
 def test_phase7_loops_registered_by_default(engine: None) -> None:
-    """All Phase 7 cadence loops register when their cadences.<name>.enabled=True."""
-    scheduler = Scheduler(user_id="ariel")
+    """Enabled-by-default Phase 7 cadences register; minute/hour (disabled by
+    default post-T6.1) do not.
+
+    Pinned to an explicit default ``AgentSettings()`` rather than the no-arg
+    ``Scheduler`` path: the latter calls ``load_agent_settings`` which reads/
+    writes a per-user ``agent_settings.yaml`` on disk, so the assertion would
+    otherwise reflect whatever file is present rather than the code defaults.
+    """
+    from argosy.agent_settings import AgentSettings
+
+    scheduler = Scheduler(user_id="ariel", settings=AgentSettings())
     scheduler.register_default_loops()
-    for name in (
-        "minute",
-        "hour",
-        "monthly_cycle",
-        "quarterly",
-        "annual",
-        "backup",
-    ):
+    for name in ("monthly_cycle", "quarterly", "annual", "backup"):
         assert name in scheduler._loops  # type: ignore[attr-defined]
+    # minute + hour default to enabled=False (T6.1) — not registered.
+    assert "minute" not in scheduler._loops  # type: ignore[attr-defined]
+    assert "hour" not in scheduler._loops  # type: ignore[attr-defined]
 
 
 def test_phase7_loops_disabled_individually(engine: None) -> None:
@@ -190,8 +195,10 @@ def test_phase7_loops_disabled_individually(engine: None) -> None:
     scheduler.register_default_loops()
     assert "minute" not in scheduler._loops  # type: ignore[attr-defined]
     assert "backup" not in scheduler._loops  # type: ignore[attr-defined]
-    # other Phase 7 loops still present (defaults are enabled)
-    assert "hour" in scheduler._loops  # type: ignore[attr-defined]
+    # hour is also disabled by default post-T6.1; an enabled-by-default loop
+    # still registers.
+    assert "hour" not in scheduler._loops  # type: ignore[attr-defined]
+    assert "monthly_cycle" in scheduler._loops  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------

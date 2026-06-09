@@ -169,6 +169,7 @@ async def test_all_six_succeed_persists_and_returns(
     )
     result = await run_per_ticker_analysts(
         user_id="ariel", ticker="XYL", decision_run_id=run_id,
+        mode="tactical_trade",  # full 6-analyst fleet; default is now long_hold (T6.1)
     )
 
     assert len(result.reports) == 6
@@ -216,6 +217,7 @@ async def test_quorum_fails_when_only_one_succeeds(
     with pytest.raises(InsufficientAnalystQuorum) as exc_info:
         await run_per_ticker_analysts(
             user_id="ariel", ticker="XYL", decision_run_id=run_id,
+            mode="tactical_trade",  # full 6-analyst fleet; default is now long_hold (T6.1)
         )
     assert "fundamentals" in exc_info.value.succeeded
     assert len(exc_info.value.succeeded) == 1
@@ -282,6 +284,7 @@ async def test_two_succeed_one_ticker_specific_meets_quorum(
     )
     result = await run_per_ticker_analysts(
         user_id="ariel", ticker="XYL", decision_run_id=run_id,
+        mode="tactical_trade",  # full 6-analyst fleet; default is now long_hold (T6.1)
     )
     assert set(result.succeeded_roles) == {"technical", "fx"}
     assert {r for r, _ in result.skipped_roles} == {
@@ -333,6 +336,7 @@ async def test_empty_payload_pre_skips_without_llm_call(
     )
     result = await run_per_ticker_analysts(
         user_id="ariel", ticker="XYL", decision_run_id=run_id,
+        mode="tactical_trade",  # full 6-analyst fleet; default is now long_hold (T6.1)
     )
     # Only technical + fx were invoked (had non-empty payloads).
     assert invoked["technical"] == 1
@@ -372,6 +376,7 @@ async def test_empty_citation_reports_are_dropped(
     )
     result = await run_per_ticker_analysts(
         user_id="ariel", ticker="XYL", decision_run_id=run_id,
+        mode="tactical_trade",  # full 6-analyst fleet; default is now long_hold (T6.1)
     )
     assert "technical" not in result.succeeded_roles
     assert ("technical", "empty_citations") in result.skipped_roles
@@ -407,6 +412,7 @@ async def test_single_analyst_exception_does_not_abort_others(
     )
     result = await run_per_ticker_analysts(
         user_id="ariel", ticker="XYL", decision_run_id=run_id,
+        mode="tactical_trade",  # full 6-analyst fleet; default is now long_hold (T6.1)
     )
     assert "news" not in result.succeeded_roles
     assert len(result.reports) == 5
