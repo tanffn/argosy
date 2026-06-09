@@ -333,6 +333,16 @@ def _phase_1_stub_agents(monkeypatch, flow):
             )
         return _stub
 
+    # Pin the active fleet to the 10 core analysts this helper stubs. The
+    # phase5_agents default is now True (T3.1) → the live fleet is 13, but
+    # these tests assert the core trail mechanism and only stub the core 10.
+    # Pinning keeps them hermetic + flag-independent (mirrors the T6.1 fix).
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as _orch
+    monkeypatch.setattr(
+        _orch, "_PHASE_1_AGENT_NAMES",
+        _orch._PHASE_1_AGENT_NAMES_CORE, raising=True,
+    )
+
     for name in (
         "ConcentrationAnalystAgent",
         "FxAnalystAgent",

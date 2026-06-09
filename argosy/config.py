@@ -114,15 +114,16 @@ class Settings(BaseSettings):
     # accept proceeds). ``?override_gate=true`` bypasses a single accept (audited).
     plan_gate_enforce: bool = Field(default=True)
 
-    # Phase 5 of docs/plans/argosy-comprehensive-plan-integration.md
-    # — when True, PlanCoverageAnalyst and WithdrawalSequencerAgent
-    # run alongside the existing Phase 1 analyst fleet. Default False
-    # because both agents are deferred from MVP — live-LLM iteration
-    # against real distillate output is needed to validate quality.
-    # Loaded from ``ARGOSY_PHASE5_AGENTS`` env var. Recommended:
-    # leave False until at least one supervised real-data run has
-    # been observed and the outputs hand-checked.
-    phase5_agents: bool = Field(default=False)
+    # Phase 5 prime-directive experts — when True (the default), the
+    # PlanCoverageAnalyst, WithdrawalSequencerAgent and EquityCompAnalystAgent
+    # run alongside the core Phase 1 analyst fleet (10 → 13). Their numeric
+    # resolvers (savings.annual_net_nis, retirement.fi_*) and section bindings
+    # (fi_bridge / withdrawal_schedule) are wired, so the headline savings,
+    # FV trajectory and FI-bridge waterfall derive from real agent output
+    # instead of rendering "[derivation pending]". Default flipped to True
+    # after a supervised live-LLM run validated the outputs (T3.1). Set
+    # ``ARGOSY_PHASE5_AGENTS=false`` to fall back to the 10-member core fleet.
+    phase5_agents: bool = Field(default=True)
 
     @property
     def app_log_file(self) -> Path:

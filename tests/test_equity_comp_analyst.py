@@ -571,6 +571,16 @@ def test_phase5_flag_on_includes_equity_comp_in_fleet(monkeypatch) -> None:
     assert "WithdrawalSequencerAgent" in names
 
 
+def test_phase5_agents_default_on(monkeypatch) -> None:
+    """T3.1 — phase5_agents defaults True (gate lifted after the supervised
+    live-LLM run). A fresh Settings() with no env override resolves True."""
+    import argosy.config as cfg
+
+    monkeypatch.delenv("ARGOSY_PHASE5_AGENTS", raising=False)
+    fresh = cfg.Settings()
+    assert fresh.phase5_agents is True
+
+
 def test_phase5_agent_class_importable_from_package() -> None:
     """The class must be exported by argosy.orchestrator.flows.plan_synthesis
     so the orchestrator's getattr-by-name resolver finds it."""

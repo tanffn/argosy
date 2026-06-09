@@ -437,6 +437,14 @@ def test_guidance_threads_to_phase_1_2_4(session, monkeypatch):
     from argosy.orchestrator.flows import plan_synthesis as flow
     from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch_mod
 
+    # Pin the active fleet to core so the (now default-on) phase-5 experts
+    # don't run unstubbed against live LLM. This test asserts core-fleet
+    # guidance threading only.
+    monkeypatch.setattr(
+        orch_mod, "_PHASE_1_AGENT_NAMES",
+        orch_mod._PHASE_1_AGENT_NAMES_CORE, raising=True,
+    )
+
     GUIDANCE = (
         "AGREED: NVDA concentration capped at 12%.\n"
         "DISAGREED: tax-loss harvest is not urgent — defer to Q4 2026.\n"
@@ -813,12 +821,23 @@ def test_synthesis_flow_fails_loudly_when_no_baseline(alembic_engine_at_head, mo
     sess.close()
 
 
-def test_phase_1_runs_all_nine_analysts(session, monkeypatch):
-    """Phase 1 should invoke each of the 9 analyst agents once.
+def test_phase_1_runs_all_core_analysts(session, monkeypatch):
+    """Phase 1 should invoke each core analyst agent once.
 
     We track invocations via a side-effect list. Real calls are stubbed.
+    The active fleet is pinned to the core list (``_PHASE_1_AGENT_NAMES_CORE``)
+    so the test stays hermetic regardless of the phase5_agents default (now
+    True → the live fleet adds 3 phase-5 experts that would otherwise hit
+    live LLM here).
     """
     from argosy.orchestrator.flows import plan_synthesis as flow
+    from argosy.orchestrator.flows.plan_synthesis import orchestrator as orch
+
+    # Pin the active fleet to core so phase-5 experts don't run unstubbed.
+    monkeypatch.setattr(
+        orch, "_PHASE_1_AGENT_NAMES",
+        orch._PHASE_1_AGENT_NAMES_CORE, raising=True,
+    )
 
     invoked = []
 
@@ -828,13 +847,8 @@ def test_phase_1_runs_all_nine_analysts(session, monkeypatch):
             invoked.append(self.__class__.__name__)
             return type("R", (), {"output": type("O", (), {"model_dump_json": lambda self: "{}"})(), "model": "fake"})()
 
-    # Build stubs for all 9 analyst classes; monkeypatch the import points.
-    for name in (
-        "FundamentalsAnalystAgent", "TechnicalAnalystAgent",
-        "NewsAnalystAgent", "SentimentAnalystAgent",
-        "MacroAnalystAgent", "PlanCritiqueAgent",
-        "ConcentrationAnalystAgent", "TaxAnalystAgent", "FxAnalystAgent",
-    ):
+    # Build stubs for every core analyst class; monkeypatch the import points.
+    for name in orch._PHASE_1_AGENT_NAMES_CORE:
         cls = type(name, (_Stub,), {})
         monkeypatch.setattr(f"argosy.orchestrator.flows.plan_synthesis.{name}", cls, raising=False)
 
@@ -851,8 +865,9 @@ def test_phase_1_runs_all_nine_analysts(session, monkeypatch):
     assert isinstance(result, tuple) and len(result) == 3
     out, collected, failed_roles = result
     assert isinstance(failed_roles, list)
-    # All 9 must have been invoked exactly once.
-    assert len(invoked) == 9, f"expected 9 analyst calls, got {len(invoked)}: {invoked}"
+    # Every core analyst must have been invoked exactly once.
+    expected = len(orch._PHASE_1_AGENT_NAMES_CORE)
+    assert len(invoked) == expected, f"expected {expected} analyst calls, got {len(invoked)}: {invoked}"
     assert isinstance(out, str)
     assert len(out) > 0
     assert isinstance(collected, list)
