@@ -92,6 +92,13 @@ P5 (magic-number purges): mostly independent small lanes, can start anytime EXCE
 | T6.4 | Bidirectional Discord (inbound→system→outbound reply) | P6 | D3 | spine | | ☐ | |
 | T6.5 | WhatsApp/Telegram channel | P6 | D4 | T6.4 | | ☐ | |
 
+## Known test-infra debt (deferred — s14, record correction)
+
+Full backend suite after the spine: **3692 passed / 9 failed / 16 skipped (44 min)**. All 9 are **pre-existing, non-product, isolation/network flakiness** — **zero touch the spine code** (every spine surface test + the cross-surface guardrail are green; the gate flip didn't break promotion mechanics):
+
+- **4 caplog/structlog full-suite isolation** — `test_allocation_glidepath` ×2, `test_lifecycle`, `test_plan_language_rewriter`. Pass in isolation; fail only in the full suite (a structlog/caplog global-state contaminator). s14's flaky-fix (`d5faca1`) fixed `test_cadence_loop_tick_widening` + addressed the named root causes (structlog `cache_logger_on_first_use=False`, conftest `logging.disable` reset + `clear_contextvars`), but a **further full-suite contaminator remains** → needs a contaminator bisect. **DEFERRED** (test-infra, not product). **Record correction:** `d5faca1`'s message over-states "repair 5 failures" — the true outcome is **1 fixed + 4 root-caused-but-still-failing** in the full suite (I committed on repro-evidence before the full-suite confirmation).
+- **5 discord network/mock** — `test_discord_attachment_fetch` ×5. Environment-dependent; the failing count varies run-to-run.
+
 > Each phase's tasks are detailed below. **P0–P2 are fully specified (executable now).** P3–P6 are specified at work-package granularity with files + acceptance + dependencies; **author a detailed per-task plan at phase entry** (`docs/superpowers/plans/2026-06-09-pN-<name>.md`) before executing — this is deliberate decomposition (each phase is its own testable subsystem), not a placeholder.
 
 ---
