@@ -221,6 +221,26 @@ def _medium_worker(*, session: Session, user_id: str,
         if _appendices:
             _long_md = _long_md.rstrip() + "\n\n" + _appendices
 
+        # T1.5 — persist the canonical TargetAllocationDoc (additive, best-effort;
+        # NULL on failure -> surfaces fall back, never fail the amendment).
+        try:
+            from argosy.services.target_allocation_doc import (
+                build_plan_target_allocation_doc,
+            )
+
+            _ta_doc = build_plan_target_allocation_doc(
+                session, user_id, decision_run.id, datetime.now(timezone.utc).date()
+            )
+            _target_allocation_json = (
+                _ta_doc.model_dump_json() if _ta_doc is not None else None
+            )
+        except Exception as _exc:  # noqa: BLE001 — additive, never fatal
+            log.warning(
+                "plan_amendment.target_allocation_doc_failed",
+                user_id=user_id, error=str(_exc),
+            )
+            _target_allocation_json = None
+
         draft = PlanVersion(
             user_id=user_id, role="draft",
             version_label=f"amend-{datetime.now(timezone.utc).strftime('%Y-%m-%d-%H%M')}",
@@ -239,6 +259,7 @@ def _medium_worker(*, session: Session, user_id: str,
             horizon_medium_md_audit=_horizon_md_audit(output.medium),
             horizon_short_md_audit=_horizon_md_audit(output.short),
             synthesis_inputs_json=inputs.model_dump_json(),
+            target_allocation_json=_target_allocation_json,
         )
         session.add(draft)
         decision_run.finished_at = datetime.now(timezone.utc)

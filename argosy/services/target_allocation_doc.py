@@ -16,9 +16,12 @@ roadmap. T1.1 defines the schema; ``build_target_allocation_doc`` (T1.3) fills i
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:  # pragma: no cover
+    from sqlalchemy.orm import Session
 
 
 class AllocationInstrument(BaseModel):
@@ -177,7 +180,16 @@ def build_target_allocation_doc(
         start=today,
         quarters=quarters,
     )
-    glide: list[GlideWaypoint] = []
+    # q0 = TODAY's actual composition (the chart's left anchor) so the glidepath
+    # opens on the same reality /portfolio's current pie shows, then q1..qN are
+    # the staged transformation. Without q0 the chart would start already-moved.
+    glide: list[GlideWaypoint] = [
+        GlideWaypoint(
+            quarter=0,
+            date=today,
+            composition_pct_by_class=dict(today_composition),
+        )
+    ]
     for q in range(1, schedule.quarters + 1):
         wps = [w for w in schedule.waypoints if w.quarter == q]
         glide.append(
@@ -197,6 +209,58 @@ def build_target_allocation_doc(
         classes=classes,
         glide=glide,
     )
+
+
+def load_full_book_today_composition(
+    db: "Session", user_id: str, decision_run_id: int
+) -> dict[str, float] | None:
+    """Resolve TODAY's full-tradeable-book composition from the DB, or ``None``.
+
+    NVDA's weight comes from the plan's concentration report
+    (``concentration.nvda_current_pct`` — the SAME canonical source the NVDA
+    projection uses, NOT the snapshot's other-singles row), and the ex-NVDA
+    categories from the latest portfolio snapshot. ``None`` when either is
+    missing (the doc is additive — the caller skips writing it rather than
+    persisting a guess). ``include_canonical_ages`` is left at its default
+    False (the concentration keys must not enter the dual-track re-entrant hop).
+    """
+    from argosy.services.allocation_glidepath import (
+        _categories_from_snapshot,
+        _latest_portfolio_snapshot,
+    )
+    from argosy.services.allocation_plan import build_target_allocation
+    from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+    nums = resolve_plan_numbers(db, user_id=user_id, decision_run_id=decision_run_id)
+    cur_rv = nums.get("concentration.nvda_current_pct")
+    if cur_rv is None or getattr(cur_rv, "status", None) != "resolved":
+        return None
+    if cur_rv.value is None or float(cur_rv.value) <= 0:
+        return None
+    nvda_pct = float(cur_rv.value) * 100.0
+
+    ex_nvda = _categories_from_snapshot(_latest_portfolio_snapshot(db, user_id))
+    if not ex_nvda:
+        return None
+
+    by_label = {c.label: c.target_pct for c in build_target_allocation().classes}
+    return derive_full_book_today_composition(
+        nvda_tradeable_pct=nvda_pct,
+        ex_nvda_categories=ex_nvda,
+        low_vol_target=by_label.get("US low-volatility equity", 0.0),
+        bonds_target=by_label.get("Short-duration IG bonds", 0.0),
+    )
+
+
+def build_plan_target_allocation_doc(
+    db: "Session", user_id: str, decision_run_id: int, today: date
+) -> TargetAllocationDoc | None:
+    """The DB-aware entry T1.5/backfill call: derive today's composition then
+    build the canonical doc, or ``None`` when the composition can't be derived."""
+    comp = load_full_book_today_composition(db, user_id, decision_run_id)
+    if comp is None:
+        return None
+    return build_target_allocation_doc(today=today, today_composition=comp)
 
 
 def load_plan_target_allocation(pv: object) -> TargetAllocationDoc | None:

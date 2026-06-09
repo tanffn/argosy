@@ -103,18 +103,24 @@ def test_builds_instrument_level_doc_with_quarterly_glide() -> None:
     # the 13% hard cap is carried, not re-derived
     assert doc.nvda_cap_pct == pytest.approx(13.0)
 
-    # the glide is 8 quarterly waypoints, each a coherent 100%-composition
-    assert len(doc.glide) == 8
+    # the glide is q0 (today anchor) + 8 quarterly waypoints, each a coherent 100%
+    assert len(doc.glide) == 9
+    assert doc.glide[0].quarter == 0
     for wp in doc.glide:
         assert sum(wp.composition_pct_by_class.values()) == pytest.approx(100.0, abs=0.1)
+
+    nvda_label = "Strategic single-stock (NVDA)"
+    # q0 reflects TODAY exactly (the chart's left anchor == /portfolio's reality)
+    assert doc.glide[0].composition_pct_by_class[nvda_label] == pytest.approx(
+        _TODAY_FULL_BOOK[nvda_label], abs=0.01
+    )
 
     # the final waypoint lands exactly on the end-state class targets
     final = doc.glide[-1].composition_pct_by_class
     for c in doc.classes:
         assert final[c.label] == pytest.approx(c.target_pct, abs=0.1)
 
-    # NVDA deconcentrates: it is a bigger slice at q1 than at the target
-    nvda_label = "Strategic single-stock (NVDA)"
+    # NVDA deconcentrates: bigger today than at the target
     assert (
         doc.glide[0].composition_pct_by_class[nvda_label]
         > doc.glide[-1].composition_pct_by_class[nvda_label]
@@ -201,8 +207,9 @@ def test_derived_composition_drives_a_two_sided_glide() -> None:
         today=date(2026, 6, 9), today_composition=comp, quarters=8
     )
     nvda = "Strategic single-stock (NVDA)"
-    # NVDA glides down from ~64.86 toward the 12 target; the legacy singles
-    # band glides to ~0 (no target sleeve); every quarter still sums to 100.
+    # q0 anchors on today's real NVDA weight (64.86%); it then glides toward the
+    # 12 target; the legacy singles band glides to ~0; every quarter sums to 100.
+    assert doc.glide[0].composition_pct_by_class[nvda] == pytest.approx(64.86, abs=0.01)
     assert doc.glide[0].composition_pct_by_class[nvda] > doc.glide[-1].composition_pct_by_class[nvda]
     assert doc.glide[-1].composition_pct_by_class.get(OTHER_SINGLES_LABEL, 0.0) == pytest.approx(0.0, abs=0.01)
     for wp in doc.glide:
