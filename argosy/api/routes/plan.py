@@ -1305,7 +1305,16 @@ class CashflowProjectionResponse(BaseModel):
 def get_draft_cashflow_projection(
     user_id: str = Query("ariel"),
     years: int = Query(30, ge=1, le=50),
-    retirement_age: float = Query(49.0, ge=30.0, le=80.0),
+    retirement_age: float | None = Query(
+        None,
+        ge=30.0,
+        le=80.0,
+        description=(
+            "Retirement age for the projection. Defaults to the canonical "
+            "dual-track headline age (resolved server-side) so the chart agrees "
+            "with /retirement; pass a value only for what-if overrides."
+        ),
+    ),
     tax_rate: float = Query(0.25, ge=0.0, le=0.5),
     portfolio_value_usd_override: float | None = Query(
         None,
@@ -1375,6 +1384,25 @@ def get_draft_cashflow_projection(
 
     hh = extract_household_state(db, user_id)
     pen = extract_pension_state(db, user_id)
+
+    # T2.3 — the cashflow chart's retirement age defaults to the ONE canonical
+    # headline age (the dual-track typical drawdown age), not a magic 49. This
+    # keeps /plan's chart age == /retirement's headline == the dual-track age
+    # (the cross-surface guardrail). The UI may still override for what-ifs.
+    if retirement_age is None:
+        try:
+            from argosy.services.retirement.retirement_plan import (
+                canonical_feasible_dual_track,
+            )
+
+            _canon = canonical_feasible_dual_track(session=db, user_id=user_id)
+            retirement_age = (
+                float(_canon.earliest_feasible_age)
+                if _canon.earliest_feasible_age is not None
+                else 49.0
+            )
+        except Exception:  # noqa: BLE001 — fall back to the prior default
+            retirement_age = 49.0
 
     # Apply the override (if any) BEFORE the projection. We swap the
     # ``portfolio_value_nis`` field on the immutable dataclass via
