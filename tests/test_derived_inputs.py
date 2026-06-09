@@ -69,6 +69,45 @@ def test_missing_datum_is_pending_not_guessed(session):
     assert d["residence_value_nis"]["value"] is None
 
 
+def test_mortgage_rate_term_and_hishtalmut_date_pending_when_absent(session):
+    # The base IDENTITY has no mortgage rate/term and no hishtalmut first-deposit
+    # date → all three are pending (NEVER the old hardcoded 4.5% / 240 / 2018-01-01).
+    d = compute_derived_inputs(session, user_id="ariel", today=date(2026, 6, 4))
+    for k in ("mortgage_annual_rate", "mortgage_term_months", "hishtalmut_first_deposit_date"):
+        assert d[k]["status"] == "pending", k
+        assert d[k]["value"] is None, k
+
+
+def test_mortgage_rate_term_and_hishtalmut_date_resolve_from_identity(tmp_path):
+    identity = textwrap.dedent("""
+        user_date_of_birth: '1982-06-17'
+        mortgage_balance:
+          keret_1_nis: 350000
+          annual_rate: 0.039
+          term_months: 300
+        pensions:
+          keren_hishtalmut:
+            balance_nis: 384000
+            first_deposit_date: '2017-03-01'
+    """)
+    eng = sa.create_engine(f"sqlite:///{tmp_path/'d2.db'}")
+    Base.metadata.create_all(eng)
+    s = sessionmaker(bind=eng, expire_on_commit=False)()
+    s.add(User(id="ariel", plan="free"))
+    s.add(UserContext(user_id="ariel", identity_yaml=identity, goals_yaml=""))
+    s.commit()
+    try:
+        d = compute_derived_inputs(s, user_id="ariel", today=date(2026, 6, 4))
+        assert d["mortgage_annual_rate"]["status"] == "resolved"
+        assert d["mortgage_annual_rate"]["value"] == pytest.approx(0.039)
+        assert d["mortgage_term_months"]["value"] == 300
+        assert d["hishtalmut_first_deposit_date"]["status"] == "resolved"
+        assert d["hishtalmut_first_deposit_date"]["value"] == "2017-03-01"
+    finally:
+        s.close()
+        eng.dispose()
+
+
 def test_fire_bridge_is_present_and_uses_permanent_spend_basis(session):
     """The FIRE-bridge requirement must be DERIVED (codex residual: it was
     sized at the T12 burn, not the ₪311.6k permanent-equivalent). With no plan

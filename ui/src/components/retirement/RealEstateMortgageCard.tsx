@@ -39,10 +39,10 @@ export function RealEstateMortgageCard(props: Props) {
         mortgageBalanceNis: props.mortgageBalanceNis,
         monthlyPropertyTaxNis: props.monthlyPropertyTaxNis,
       }) as Promise<RealEstateResponse>,
-      props.mortgageBalanceNis > 0 && props.termMonths
+      props.mortgageBalanceNis > 0 && props.termMonths && props.annualRate != null
         ? api.retirement.mortgageSchedule({
             initialBalanceNis: props.mortgageBalanceNis,
-            annualRate: props.annualRate ?? 0.045,
+            annualRate: props.annualRate,
             termMonths: props.termMonths,
           }) as Promise<MortgageScheduleResponse>
         : Promise.resolve(null),
@@ -78,6 +78,13 @@ export function RealEstateMortgageCard(props: Props) {
             <div className="mt-1 text-lg font-mono font-semibold text-emerald-400"><ValueWithTooltip data={re.equity_nis} /></div>
           </div>
         </div>
+
+        {(!schedule || schedule.rows.length === 0) && props.mortgageBalanceNis > 0 && (
+          <div className="text-xs text-muted-foreground mb-4">
+            Amortization schedule needs the mortgage rate + term — add them on the
+            intake page (no rate is assumed).
+          </div>
+        )}
 
         {schedule && schedule.rows.length > 0 && (
           <div>

@@ -640,6 +640,9 @@ export interface DerivedInputsResponse {
   net_worth_nis: DerivedInputField;
   mortgage_balance_nis: DerivedInputField;
   residence_value_nis: DerivedInputField;
+  mortgage_annual_rate: DerivedInputField;
+  mortgage_term_months: DerivedInputField;
+  hishtalmut_first_deposit_date: DerivedInputField<string>;
   dependents_count: DerivedInputField;
   has_kids_under_18: DerivedInputField<boolean>;
   fi_target_nis: DerivedInputField;

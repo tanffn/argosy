@@ -126,6 +126,13 @@ export default function RetirementPage() {
     const v = field.value;
     return typeof v === "boolean" ? v : undefined;
   };
+  const strOf = (key: keyof DerivedInputsResponse): string | undefined => {
+    if (!derived) return undefined;
+    const field = derived[key];
+    if (typeof field !== "object" || field === null) return undefined;
+    const v = field.value;
+    return typeof v === "string" && v.length > 0 ? v : undefined;
+  };
 
   // A tiny placeholder for sections that depend on derived inputs while the
   // fetch is in flight. Matches the cards' own "Loading…" affordance.
@@ -251,16 +258,31 @@ export default function RetirementPage() {
 
         <section id="tax" className="scroll-mt-6 space-y-4">
           <TaxBreakdownCard userId={USER_ID} />
-          {numOf("current_age") === undefined ? (
-            loadingCard("Hishtalmut eligibility timer")
-          ) : (
-            // TODO: derive firstDepositDate — not yet in derived-inputs
-            <HishtalmutTimerCard
-              userId={USER_ID}
-              firstDepositDate="2018-01-01"
-              currentAge={Math.round(numOf("current_age")!)}
-            />
-          )}
+          {(() => {
+            const age = numOf("current_age");
+            const firstDeposit = strOf("hishtalmut_first_deposit_date");
+            if (age === undefined) return loadingCard("Hishtalmut eligibility timer");
+            // first-deposit date is intake; pending → needs-intake note, never a
+            // fabricated 2018-01-01 (the §3(e) 6yr timer must trace to a real date).
+            if (firstDeposit === undefined) {
+              return (
+                <div className="rounded-lg border border-border bg-card p-4">
+                  <div className="text-base font-semibold">Hishtalmut eligibility</div>
+                  <div className="text-sm text-muted-foreground mt-1">
+                    First-deposit date needs intake — add it on the intake page to
+                    compute the §3(e) 6-year tax-free timer.
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <HishtalmutTimerCard
+                userId={USER_ID}
+                firstDepositDate={firstDeposit}
+                currentAge={Math.round(age)}
+              />
+            );
+          })()}
         </section>
 
         <section id="decumulation" className="scroll-mt-6 space-y-4">
@@ -331,10 +353,8 @@ export default function RetirementPage() {
               <RealEstateMortgageCard
                 primaryResidenceValueNis={residence}
                 mortgageBalanceNis={mortgage}
-                /* TODO: derive annualRate — not yet in derived-inputs */
-                annualRate={0.045}
-                /* TODO: derive termMonths — not yet in derived-inputs */
-                termMonths={240}
+                annualRate={numOf("mortgage_annual_rate")}
+                termMonths={numOf("mortgage_term_months")}
               />
             );
           })()}

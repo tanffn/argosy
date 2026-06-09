@@ -25,8 +25,8 @@ log = get_logger(__name__)
 
 @dataclass(frozen=True)
 class DerivedField:
-    value: float | int | bool | None
-    unit: str           # nis | pct | age | count | bool | fx
+    value: float | int | bool | str | None
+    unit: str           # nis | pct | age | count | bool | fx | date
     source: str         # locator the value traces to
     confidence: str     # HIGH | MEDIUM | LOW
     status: str = "resolved"  # resolved | pending
@@ -233,6 +233,31 @@ def compute_derived_inputs(session, *, user_id: str, today: date | None = None) 
     rv_res = _f(idy.get("primary_residence_value_nis"))
     put("residence_value_nis", DerivedField(rv_res, "nis", "identity_yaml.primary_residence_value_nis", "MEDIUM")
         if rv_res else DerivedField.pending("nis", "identity_yaml.primary_residence_value_nis (needs intake)"))
+
+    # Mortgage rate + term (drive the amortization schedule on the real-estate
+    # card). Intake values (contract facts); pending → the card shows "needs
+    # intake" rather than a fabricated 4.5% / 20yr. annual_rate is a FRACTION.
+    m_rate = _f(mort.get("annual_rate"))
+    put("mortgage_annual_rate", DerivedField(m_rate, "pct", "identity_yaml.mortgage_balance.annual_rate", "HIGH")
+        if m_rate is not None else DerivedField.pending("pct", "identity_yaml.mortgage_balance.annual_rate (needs intake)"))
+    m_term_raw = mort.get("term_months")
+    m_term = int(m_term_raw) if isinstance(m_term_raw, (int, float)) and not isinstance(m_term_raw, bool) and m_term_raw else None
+    put("mortgage_term_months", DerivedField(m_term, "count", "identity_yaml.mortgage_balance.term_months", "HIGH")
+        if m_term else DerivedField.pending("count", "identity_yaml.mortgage_balance.term_months (needs intake)"))
+
+    # Hishtalmut first-deposit date — drives the §3(e) 6-year tax-free timer.
+    # Intake (ISO date); pending → the card shows "needs intake" rather than a
+    # fabricated 2018-01-01. YAML may parse a bare date into a date object.
+    hd_raw = (pens.get("keren_hishtalmut") or {}).get("first_deposit_date") or idy.get("hishtalmut_first_deposit_date")
+    if isinstance(hd_raw, (date, datetime)):
+        hd_str: str | None = hd_raw.isoformat()[:10]
+    elif isinstance(hd_raw, str) and hd_raw.strip():
+        hd_str = hd_raw.strip()[:10]
+    else:
+        hd_str = None
+    put("hishtalmut_first_deposit_date",
+        DerivedField(hd_str, "date", "identity_yaml.pensions.keren_hishtalmut.first_deposit_date", "HIGH")
+        if hd_str else DerivedField.pending("date", "identity_yaml.pensions.keren_hishtalmut.first_deposit_date (needs intake)"))
 
     # Family.
     dep = idy.get("dependents_count")
