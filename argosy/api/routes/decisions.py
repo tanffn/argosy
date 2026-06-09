@@ -78,7 +78,7 @@ class RunRequest(BaseModel):
     # [[user_long_hold_investor]] — 4 analysts (no FX, no technical),
     # trader weighs thesis fit + fundamentals + dividends, ignores
     # MACD/RSI chart timing and per-ticker FX hedging.
-    consult_mode: Literal["tactical_trade", "long_hold"] = "tactical_trade"
+    consult_mode: Literal["tactical_trade", "long_hold"] = "long_hold"
 
 
 class RunResponse(BaseModel):

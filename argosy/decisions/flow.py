@@ -208,7 +208,7 @@ class DecisionFlow:
         now: Callable[[], datetime] | None = None,
         decision_run_id: int | None = None,
         persist_input_analysts: bool = True,
-        consult_mode: Literal["tactical_trade", "long_hold"] = "tactical_trade",
+        consult_mode: Literal["tactical_trade", "long_hold"] = "long_hold",
     ) -> ApprovedProposal | BlockedProposal:
         """Run the full pipeline for the given tier.
 

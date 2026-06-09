@@ -47,11 +47,11 @@ class CadenceConfig(BaseModel):
 class CadencesBlock(BaseModel):
     minute: CadenceConfig = Field(
         default_factory=lambda: CadenceConfig(
-            enabled=True, market_hours_only=True, interval_seconds=60
+            enabled=False, market_hours_only=True, interval_seconds=60
         )
     )
     hour: CadenceConfig = Field(
-        default_factory=lambda: CadenceConfig(enabled=True, interval_minutes=60)
+        default_factory=lambda: CadenceConfig(enabled=False, interval_minutes=60)
     )
     daily_brief: CadenceConfig = Field(
         default_factory=lambda: CadenceConfig(
@@ -325,8 +325,8 @@ execution:
   default_mode: paper
 
 cadences:
-  minute:              { enabled: true, market_hours_only: true, interval_seconds: 60 }
-  hour:                { enabled: true, interval_minutes: 60 }
+  minute:              { enabled: false, market_hours_only: true, interval_seconds: 60 }
+  hour:                { enabled: false, interval_minutes: 60 }
   daily_brief:         { enabled: true, cron: "0 9 * * *", timezone: "Asia/Jerusalem" }
   weekly_review:       { enabled: true, cron: "0 18 * * SUN" }
   monthly_cycle:       { enabled: true, cron: "0 8 1 * *" }

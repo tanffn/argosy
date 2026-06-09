@@ -214,18 +214,18 @@ async def run_per_ticker_analysts(
     user_id: str,
     ticker: str,
     decision_run_id: int,
-    mode: ConsultMode = "tactical_trade",
+    mode: ConsultMode = "long_hold",
 ) -> PerTickerAnalystsResult:
     """Run the per-ticker analyst fleet on ``ticker`` in parallel.
 
     Args:
-      mode: ``"tactical_trade"`` (default) runs the SDD 6-analyst fleet
+      mode: ``"long_hold"`` (default) runs the 4-analyst long-hold fleet
+        (fundamentals, news, sentiment, macro) — skips technical (chart
+        timing irrelevant for multi-year horizons) and fx (USD-into-USD-
+        stock decisions don't depend on FX) per [[user_long_hold_investor]].
+        ``"tactical_trade"`` runs the full SDD 6-analyst fleet
         (fundamentals, technical, news, sentiment, macro, fx) — short-
-        horizon trade decision shape. ``"long_hold"`` runs the 4-analyst
-        long-hold fleet (fundamentals, news, sentiment, macro) — skips
-        technical (chart timing irrelevant for multi-year horizons) and
-        fx (USD-into-USD-stock decisions don't depend on FX) per
-        [[user_long_hold_investor]].
+        horizon trade decision shape; opt in explicitly.
 
     Returns the surviving citation-bearing reports. Raises
     ``InsufficientAnalystQuorum`` if fewer than ``MIN_QUORUM_TOTAL``

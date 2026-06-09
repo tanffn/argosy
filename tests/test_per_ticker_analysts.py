@@ -512,7 +512,7 @@ async def test_long_hold_mode_skips_technical_and_fx(
 async def test_tactical_trade_mode_default_keeps_all_six(
     engine: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """mode='tactical_trade' (default) runs the full SDD 6-analyst fleet."""
+    """mode='tactical_trade' (opt-in) runs the full SDD 6-analyst fleet."""
     invoked: dict[str, int] = {r: 0 for r in (
         "fundamentals", "technical", "news", "sentiment", "macro", "fx",
     )}
@@ -537,7 +537,7 @@ async def test_tactical_trade_mode_default_keeps_all_six(
     )
     result = await run_per_ticker_analysts(
         user_id="ariel", ticker="XYL", decision_run_id=run_id,
-        # tactical_trade is the default; omit to verify default
+        mode="tactical_trade",  # opt-in explicitly; default is now long_hold (T6.1)
     )
     assert len(result.reports) == 6
     assert all(invoked[r] == 1 for r in invoked)
