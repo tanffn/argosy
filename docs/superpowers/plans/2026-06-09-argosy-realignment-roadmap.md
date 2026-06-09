@@ -55,14 +55,14 @@ P5 (magic-number purges): mostly independent small lanes, can start anytime EXCE
 
 | ID | Task | Phase | Lane | Depends-on | Money-math | Status | Owner |
 |----|------|-------|------|------------|:---:|:---:|---|
-| T0.1 | Correct SDD §20 to current state (allocation LLM-authored, engine unwired) | P0 | SPINE | — | | ☐ | |
-| T0.2 | Delete dead `earliest_feasible_retire_age` import | P0 | SPINE | — | | ☐ | |
-| T1.1 | `TargetAllocationDoc` pydantic schema (instrument-level + glide) | P1 | SPINE | — | | ☐ | |
-| T1.2 | Add `instruments` (tickers) to the canonical allocation panel | P1 | SPINE | T1.1 | ✓ | ☐ | |
-| T1.3 | `build_target_allocation_doc()` — engine → doc (incl. glide) | P1 | SPINE | T1.1,T1.2 | ✓ | ☐ | |
-| T1.4 | Migration `0063` + `PlanVersion.target_allocation_json` column | P1 | SPINE | — | | ☐ | |
-| T1.5 | Write the doc during synthesis (orchestrator + amendment) | P1 | SPINE | T1.3,T1.4 | | ☐ | |
-| T1.6 | `load_plan_target_allocation(pv)` reader + backfill current plan | P1 | SPINE | T1.5 | | ☐ | |
+| T0.1 | Correct SDD §20 to current state (allocation LLM-authored, engine unwired) | P0 | SPINE | — | | ☑ | s14 8727451 |
+| T0.2 | Delete dead `earliest_feasible_retire_age` import | P0 | SPINE | — | | ☑ | s14 a1d044e |
+| T1.1 | `TargetAllocationDoc` pydantic schema (instrument-level + glide) | P1 | SPINE | — | | ☑ | s14 28b1ff9 |
+| T1.2 | Add `instruments` (tickers) to the canonical allocation panel | P1 | SPINE | T1.1 | ✓ | ☑ | s14 67a1af0 |
+| T1.3 | `build_target_allocation_doc()` — engine → doc (incl. glide) | P1 | SPINE | T1.1,T1.2 | ✓ | ☑ | s14 6f5b28f |
+| T1.4 | Migration `0063` + `PlanVersion.target_allocation_json` column | P1 | SPINE | — | | ☑ | s14 7371557 |
+| T1.5 | Write the doc during synthesis (orchestrator + amendment) | P1 | SPINE | T1.3,T1.4 | | ☑ | s14 13e825f |
+| T1.6 | `load_plan_target_allocation(pv)` reader + backfill current plan | P1 | SPINE | T1.5 | | ☑ | s14 4b94762/13e825f |
 | T2.1 | Rebind `/plan` glidepath → the doc's glide (full-book, incl NVDA) | P2 | SPINE | T1.6 | ✓ | ☐ | |
 | T2.2 | Rebind `/portfolio` target → the doc | P2 | SPINE | T1.6 | | ☐ | |
 | T2.3 | Rebind `/retirement` glide + cashflow-chart knobs → canonical | P2 | SPINE | T1.6 | ✓ | ☐ | |
@@ -273,6 +273,8 @@ def test_doc_is_instrument_level_and_roundtrips():
 ### Task T2.4 `[money-math]`: rebind NVDA trajectory to `nvda_projection` (wire the orphan)
 
 **Files:** Modify `argosy/api/routes/plan.py:1753` (`get_draft_nvda_trajectory`) + `ui/src/components/plan/nvda-trajectory-chart.tsx`; reuse `argosy/services/nvda_projection.py` (built this session) + `compute_nvda_projection`.
+
+> **CODEX-CONFIRMED BUG to fix here (s14, `tmp_review/codex_fullbook_verdict.txt`):** `compute_nvda_projection` sources `fullbook_current_pct` via `_resolve_today_value("nvda", …)` → snapshot category `"Individual Stocks"` = **18.21%**, which is the OTHER singles (TSLA/AMD/GOOG/AMZN/META/SOFI/RKT, ~$261k), **not** NVDA. NVDA is a separate `positions_json` row (11,471 sh / $2,296k); its canonical weight is **64.86%** (`concentration.nvda_current_pct`, the resolver value — already verified consistent). The *share* + *tradeable* math (64.86→13, 11,471→~2,300) is correct; only the **full-book band is wrong**. Fix: drop the `"Individual Stocks"` full-book source; the canonical glide band now comes from the `TargetAllocationDoc` (NVDA 64.86→12, q0-anchored). Reconcile the trajectory chart's implied weight to the doc, not to `identity_yaml` or the other-singles row.
 
 - [ ] **Step 1 — failing test:** the endpoint's today/target shares + the implied weight come from `compute_nvda_projection` (11,471 → ~2,300; tradeable 64.86% → 13%), with a target line; vest/sell dates shown; NOT from `identity_yaml`.
 - [ ] **Step 2–4:** fail → wire to `compute_nvda_projection`; flow from `nvda_sales_history._annual_nvda_target_from_plan` → PASS. **codex-verify** (already verified the share math: `tmp_review/codex_nvda_verdict.txt`).
