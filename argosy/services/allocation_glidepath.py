@@ -864,6 +864,30 @@ def _latest_portfolio_snapshot(
     ).scalar_one_or_none()
 
 
+def _glidepath_from_doc(doc, today: date) -> AllocationGlidepath:
+    """Project the canonical TargetAllocationDoc's quarterly glide into the
+    chart's point series (quarter q -> months_out = q*3). Each waypoint already
+    sums to 100 by construction, so the stacked bands stay coherent."""
+    points = [
+        GlidepathPoint(
+            months_out=wp.quarter * 3,
+            point_date=wp.date,
+            composition_pct_by_class=dict(wp.composition_pct_by_class),
+        )
+        for wp in doc.glide
+    ]
+    classes = sorted({k for p in points for k in p.composition_pct_by_class})
+    return AllocationGlidepath(
+        points=points,
+        collapsed_waypoints=[],
+        excluded_targets=[],
+        asset_classes=classes,
+        anchor_status=[],
+        today=today,
+        end_date=points[-1].point_date if points else None,
+    )
+
+
 def compute_allocation_glidepath(
     db: Session,
     user_id: str,
@@ -874,6 +898,17 @@ def compute_allocation_glidepath(
     pv = get_current_plan(db, user_id)
     if pv is None:
         return None
+
+    # T2.1 — when the plan carries the canonical TargetAllocationDoc, the
+    # glidepath PROJECTS its glide (full tradeable book, NVDA -> 12) instead of
+    # re-deriving from LLM SynthTargets + the ex-NVDA snapshot. The legacy path
+    # below is the fallback only until a doc is persisted.
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+
+    _doc = load_plan_target_allocation(pv)
+    if _doc is not None and _doc.glide:
+        return _glidepath_from_doc(_doc, today)
+
     snap = _latest_portfolio_snapshot(db, user_id)
     portfolio_categories = _categories_from_snapshot(snap)
     targets = _targets_from_plan(pv)
