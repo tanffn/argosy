@@ -9,18 +9,25 @@ at 49" into "retire-ready at 56".
 Model: lognormal random walk on USD/NIS spot
   log(fx_t+1 / fx_t) ~ N(mu_fx/12 - sigma_fx^2/24, sigma_fx/sqrt(12))
 
-σ_fx and μ_fx are DERIVED from Argosy's own ingested USD/NIS history (the
-``fx_rates`` table, fed daily from Bank of Israel + Frankfurter via
-``argosy.services.fx``), NOT frozen magic numbers:
+σ_fx is DERIVED from Argosy's own ingested USD/NIS history (the ``fx_rates``
+table, fed daily from Bank of Israel + Frankfurter via ``argosy.services.fx``),
+NOT a frozen magic number. μ_fx is deliberately HELD AT 0 (driftless USD/NIS):
 
   - σ_fx = annualized stdev of MONTHLY log-returns over a trailing window
     (``FX_VOL_WINDOW_YEARS``): take the last observed daily rate in each
     calendar month, form ``r_m = ln(fx_m / fx_{m-1})``, then
     ``σ_fx = stdev(r_m, sample) × sqrt(12)``.
-  - μ_fx = annualized mean monthly log-return = ``mean(r_m) × 12``.
+  - μ_fx = 0. A trailing ~10y sample cannot estimate a 30y drift:
+    ``SE(μ̂) ≈ σ/sqrt(T) ≈ 0.08/sqrt(10) ≈ 2.5%/yr`` swamps any plausible
+    signal (Meese-Rogoff random-walk benchmark), and a spurious FX drift
+    biases retirement adequacy asymmetrically. The realized historical
+    log-drift is logged for audit but NOT extrapolated over the horizon.
+    (The model's μ_fx is the ARITHMETIC drift; feeding a realized log-return
+    mean here would also mishandle the Itô σ²/2 term.)
 
-The lognormal MODEL above is unchanged; only the SOURCE of σ/μ changed
-from frozen constants to Argosy-derived values. When the trailing window
+The lognormal MODEL above is unchanged; only σ's SOURCE changed from a frozen
+constant to an Argosy-derived value (μ stays 0 — now a documented modeling
+choice, not a frozen literal). When the trailing window
 holds too few monthly observations to estimate vol (fewer than
 ``FX_VOL_MIN_MONTHS`` returns), the derivation falls back to the explicit
 named constants below — and LOGS that it did so (never a silent guess).
@@ -81,8 +88,8 @@ DEFAULT_FX_MU = FALLBACK_FX_MU
 @dataclass(frozen=True)
 class FxVolEstimate:
     """Derived (or fallback) σ/μ for the USD/NIS lognormal model."""
-    sigma_fx: float          # annualized stdev of monthly log-returns
-    mu_fx: float             # annualized mean monthly log-return
+    sigma_fx: float          # annualized stdev of monthly log-returns (derived)
+    mu_fx: float             # annualized ARITHMETIC drift — held at 0 by design
     n_monthly_returns: int   # how many monthly log-returns backed the estimate
     window_years: int        # trailing window the estimate was drawn from
     derived: bool            # True = from fx_rates history; False = fallback
@@ -213,11 +220,16 @@ def derive_fx_sigma_mu(
             ),
         )
 
-    sigma_fx, mu_fx = annualize_sigma_mu(returns)
+    sigma_fx, realized_log_drift = annualize_sigma_mu(returns)
+    # σ is derived from history; μ is deliberately HELD AT 0 (driftless USD/NIS
+    # — see module docstring). A ~10y sample cannot estimate a 30y drift, and a
+    # spurious drift biases retirement adequacy asymmetrically. We LOG the
+    # realized log-drift for audit but never extrapolate it over the horizon.
+    mu_fx = FALLBACK_FX_MU
     _log.info(
         "stochastic_fx.derived currency=%s months=%d window_years=%d "
-        "sigma_fx=%.4f mu_fx=%.4f",
-        currency, n, window_years, sigma_fx, mu_fx,
+        "sigma_fx=%.4f mu_fx=%.4f realized_log_drift=%.4f (mu held at 0)",
+        currency, n, window_years, sigma_fx, mu_fx, realized_log_drift,
     )
     return FxVolEstimate(
         sigma_fx=sigma_fx,
@@ -226,8 +238,9 @@ def derive_fx_sigma_mu(
         window_years=window_years,
         derived=True,
         source=(
-            f"fx_rates {currency}/NIS: {n} monthly log-returns over "
-            f"{window_years}y trailing window (annualized)"
+            f"fx_rates {currency}/NIS: σ from {n} monthly log-returns over "
+            f"{window_years}y trailing window; μ held at 0 (driftless; "
+            f"realized 10y log-drift {realized_log_drift:+.4f}/yr not extrapolated)"
         ),
     )
 

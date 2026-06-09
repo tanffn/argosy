@@ -1,8 +1,9 @@
 """Tests for stochastic FX modeling (Wave 3 · HIGH #12).
 
-T5.3: σ_fx / μ_fx are DERIVED from Argosy's ingested USD/NIS history
-(the ``fx_rates`` table), not the frozen 0.08 / 0 literals. The derivation
-math is hand-verified below.
+T5.3: σ_fx is DERIVED from Argosy's ingested USD/NIS history (the
+``fx_rates`` table), not the frozen 0.08 literal. μ_fx is deliberately held
+at 0 (driftless USD/NIS) — a ~10y sample can't estimate a 30y drift. The
+derivation math is hand-verified below.
 """
 import math
 from datetime import date
@@ -120,11 +121,14 @@ class TestDeriveFxSigmaMu:
         assert isinstance(est, FxVolEstimate)
         assert est.derived is True
         assert est.n_monthly_returns == len(_MONTHLY_LOG_RETURNS)
-        assert est.sigma_fx == pytest.approx(_EXPECTED_SIGMA, abs=1e-9)
-        assert est.mu_fx == pytest.approx(_EXPECTED_MU, abs=1e-9)
+        # σ is derived (DB column is Numeric(12,6) → ~6e-7 quantization, so
+        # abs=1e-5 not 1e-9). μ is held at 0 by design (not the realized drift).
+        assert est.sigma_fx == pytest.approx(_EXPECTED_SIGMA, abs=1e-5)
+        assert est.mu_fx == pytest.approx(FALLBACK_FX_MU)
         # sigma is NOT the frozen 0.08; the whole point of T5.3.
         assert est.sigma_fx != pytest.approx(0.08)
         assert "fx_rates" in est.source
+        assert "driftless" in est.source  # μ=0 is a documented, audited choice
 
     def test_falls_back_explicitly_when_history_too_thin(
         self, alembic_engine_at_head
@@ -172,10 +176,10 @@ class TestDeriveFxSigmaMu:
                 window_years=FX_VOL_WINDOW_YEARS,
                 min_months=len(_MONTHLY_LOG_RETURNS),
             )
-        # Still exactly our 4 in-window returns → sigma/mu unchanged.
+        # Still exactly our 4 in-window returns → derived σ unchanged; μ=0.
         assert est.n_monthly_returns == len(_MONTHLY_LOG_RETURNS)
-        assert est.sigma_fx == pytest.approx(_EXPECTED_SIGMA, abs=1e-9)
-        assert est.mu_fx == pytest.approx(_EXPECTED_MU, abs=1e-9)
+        assert est.sigma_fx == pytest.approx(_EXPECTED_SIGMA, abs=1e-5)
+        assert est.mu_fx == pytest.approx(FALLBACK_FX_MU)
 
 
 # ----------------------------------------------------------------------
@@ -200,8 +204,8 @@ class TestNoFrozenDefaults:
                 sigma_fx=est.sigma_fx,
                 seed=42,
             )
-        assert sim.sigma_fx == pytest.approx(_EXPECTED_SIGMA, abs=1e-9)
-        assert sim.mu_fx == pytest.approx(_EXPECTED_MU, abs=1e-9)
+        assert sim.sigma_fx == pytest.approx(_EXPECTED_SIGMA, abs=1e-5)
+        assert sim.mu_fx == pytest.approx(FALLBACK_FX_MU)  # μ held at 0 by design
         # The carried sigma is the derived value, not the frozen 0.08.
         assert sim.sigma_fx != pytest.approx(0.08)
 
