@@ -19,9 +19,13 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from argosy.services.retirement.citations import ValueWithRationale
-from argosy.services.retirement.glide_path import target_at_age
 from argosy.services.retirement.sigma_calibration import _classify_position
+from argosy.services.target_allocation_doc import (
+    doc_equity_bond_cash,
+    load_plan_target_allocation,
+)
 from argosy.services.wealth_dashboard import _latest_snapshot
+from argosy.state.queries import get_current_plan
 
 
 @dataclass(frozen=True)
@@ -83,12 +87,19 @@ def detect_rebalancing_alerts(
     if total <= 0:
         return []
 
-    # Targets from the glide path
-    gp = target_at_age(current_age)
+    # Targets from the CANONICAL plan (TargetAllocationDoc), NOT a textbook
+    # age-decline curve. No canonical plan persisted → no rebalancing target
+    # (never rebalance toward a fabricated curve). The doc's flat equity/bond/
+    # cash target is exactly what /glide-path projects, so the two reconcile.
+    pv = get_current_plan(session, user_id)
+    doc = load_plan_target_allocation(pv) if pv is not None else None
+    if doc is None:
+        return []
+    eq_pct, bd_pct, cs_pct = doc_equity_bond_cash(doc)  # percentages of the book
     target_map = {
-        "equity": float(gp.target_equity_pct.value or 0.0),
-        "bonds": float(gp.target_bond_pct.value or 0.0),
-        "cash": float(gp.target_cash_pct.value or 0.0),
+        "equity": eq_pct / 100.0,
+        "bonds": bd_pct / 100.0,
+        "cash": cs_pct / 100.0,
     }
 
     alerts: list[RebalancingAlert] = []
@@ -130,8 +141,8 @@ def detect_rebalancing_alerts(
             target_pct=ValueWithRationale(
                 value=round(target_pct, 4),
                 unit="fraction",
-                source_id="vanguard_target_date_glide",
-                rationale=f"Glide-path target {cls} share at age {current_age}.",
+                source_id="canonical_target_allocation_doc",
+                rationale=f"Canonical plan target {cls} share (TargetAllocationDoc).",
                 confidence="high",
             ),
             drift_pp=ValueWithRationale(

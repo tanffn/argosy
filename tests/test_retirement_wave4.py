@@ -7,11 +7,6 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from argosy.services.retirement.glide_path import (
-    GlidePathPoint,
-    compute_glide_path,
-    target_at_age,
-)
 from argosy.services.retirement.healthcare import (
     build_healthcare_curve,
     healthcare_share_of_burn,
@@ -29,47 +24,10 @@ from argosy.services.retirement.rebalancing import (
 from argosy.state.models import PortfolioSnapshotRow, User
 
 
-# ─── Glide Path ──────────────────────────────────────────────────────────
-
-
-class TestGlidePath:
-    def test_returns_per_year_table(self):
-        path = compute_glide_path(start_age=40, end_age=60)
-        assert len(path) == 21
-        assert all(isinstance(p, GlidePathPoint) for p in path)
-
-    def test_equity_monotone_non_increasing(self):
-        path = compute_glide_path(start_age=30, end_age=85)
-        equities = [float(p.target_equity_pct.value or 0) for p in path]
-        for a, b in zip(equities, equities[1:]):
-            assert b <= a + 1e-9
-
-    def test_age_30_equity_high(self):
-        gp = target_at_age(30)
-        assert gp.target_equity_pct.value == pytest.approx(0.90)
-
-    def test_age_65_equity_50_pct(self):
-        gp = target_at_age(65)
-        assert gp.target_equity_pct.value == pytest.approx(0.50)
-
-    def test_allocations_sum_to_one(self):
-        path = compute_glide_path(start_age=30, end_age=85)
-        for p in path:
-            total = (
-                float(p.target_equity_pct.value or 0)
-                + float(p.target_bond_pct.value or 0)
-                + float(p.target_cash_pct.value or 0)
-            )
-            assert total == pytest.approx(1.0, abs=0.01)
-
-    def test_age_minus_30_policy_more_aggressive_early(self):
-        a_vanguard = target_at_age(35, policy="vanguard_target_date")
-        a_minus30 = target_at_age(35, policy="age_minus_30_bonds")
-        # age-minus-30 has only 5% bonds at 35, vs Vanguard ~17%
-        assert (a_minus30.target_bond_pct.value or 0) < (a_vanguard.target_bond_pct.value or 0)
-
-
 # ─── Rebalancing ─────────────────────────────────────────────────────────
+#
+# T5.4: rebalancing targets the CANONICAL plan (TargetAllocationDoc), not the
+# textbook Vanguard age-decline curve. No plan → no target → no alerts.
 
 
 def _seed_user(s, user_id: str = "ariel") -> None:
@@ -91,8 +49,40 @@ def _seed_snap(s, positions: list[dict]) -> None:
     s.commit()
 
 
+def _seed_doc_targets(monkeypatch, *, equity=80.0, bonds=15.0, cash=5.0) -> None:
+    """Point rebalancing at a canonical doc with the given equity/bond/cash %."""
+    from argosy.services.retirement import rebalancing as rb
+    from argosy.services.target_allocation_doc import (
+        AllocationClassDoc,
+        AllocationInstrument,
+        TargetAllocationDoc,
+    )
+
+    def _cls(label, sigma_class, pct, sym):
+        return AllocationClassDoc(
+            label=label, snapshot_category=label, sigma_class=sigma_class,
+            target_pct=pct,
+            instruments=[AllocationInstrument(
+                symbol=sym, role="primary", weight_within_class_pct=100.0)],
+        )
+
+    doc = TargetAllocationDoc(
+        anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0, fi_pct=21.3,
+        provenance="test",
+        classes=[
+            _cls("Equity", "us_equity", equity, "VOO"),
+            _cls("Bonds", "bonds", bonds, "BND"),
+            _cls("Cash", "cash", cash, "-"),
+        ],
+        glide=[],
+    )
+    monkeypatch.setattr(rb, "get_current_plan", lambda session, user_id: object())
+    monkeypatch.setattr(rb, "load_plan_target_allocation", lambda pv: doc)
+
+
 class TestRebalancing:
-    def test_nvda_heavy_triggers_overweight_equity_alert(self, client_with_db):
+    def test_overweight_equity_vs_plan_triggers_alert(self, client_with_db, monkeypatch):
+        _seed_doc_targets(monkeypatch)  # plan target 80/15/5
         SF = client_with_db.app.state.session_factory
         with SF() as s:
             _seed_user(s)
@@ -103,22 +93,41 @@ class TestRebalancing:
             alerts = detect_rebalancing_alerts(
                 user_id="ariel", current_age=43, session=s,
             )
-        # At 43 with Vanguard glide, equity target is ~83%; actual ~96% → trigger
+        # ~96% equity vs the plan's 80% target → equity overweight alert,
+        # reconciled to the canonical doc (NOT a Vanguard age curve).
         classes = [a.asset_class for a in alerts]
         assert "equity" in classes
+        eq_alert = next(a for a in alerts if a.asset_class == "equity")
+        assert eq_alert.target_pct.value == pytest.approx(0.80)
+        assert eq_alert.target_pct.source_id == "canonical_target_allocation_doc"
 
-    def test_no_alerts_when_aligned(self, client_with_db):
+    def test_no_alerts_when_aligned_with_plan(self, client_with_db, monkeypatch):
+        _seed_doc_targets(monkeypatch)  # plan target 80/15/5
         SF = client_with_db.app.state.session_factory
         with SF() as s:
             _seed_user(s)
-            # Roughly aligned with age-50 Vanguard: 70% equity, 28% bonds, 2% cash
+            # Exactly the plan's 80/15/5 → no drift, no alerts.
             _seed_snap(s, [
-                {"symbol": "VOO", "asset_type": "etf", "usd_value_k": 700.0},
-                {"symbol": "BND", "asset_type": "etf", "details": "Bond index", "usd_value_k": 280.0},
-                {"symbol": "-", "asset_type": "Cash", "usd_value_k": 20.0},
+                {"symbol": "VOO", "asset_type": "etf", "usd_value_k": 800.0},
+                {"symbol": "BND", "asset_type": "etf", "details": "Bond index", "usd_value_k": 150.0},
+                {"symbol": "-", "asset_type": "Cash", "usd_value_k": 50.0},
             ])
             alerts = detect_rebalancing_alerts(
                 user_id="ariel", current_age=50, session=s,
+            )
+        assert alerts == []
+
+    def test_no_doc_returns_empty(self, client_with_db):
+        # Snapshot present but NO canonical plan → no target → no alerts
+        # (never rebalance toward a fabricated textbook curve).
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_snap(s, [
+                {"symbol": "NVDA", "asset_type": "NVIDIA", "usd_value_k": 2400.0},
+            ])
+            alerts = detect_rebalancing_alerts(
+                user_id="ariel", current_age=43, session=s,
             )
         assert alerts == []
 

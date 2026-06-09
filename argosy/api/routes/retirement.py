@@ -35,7 +35,6 @@ from argosy.services.retirement.retirement_plan import (
     canonical_feasible_dual_track,
 )
 from argosy.services.retirement.safety_gates import compute_safety_gates
-from argosy.services.retirement.glide_path import compute_glide_path
 from argosy.services.retirement.healthcare import (
     build_healthcare_curve,
     healthcare_share_of_burn,
@@ -514,20 +513,15 @@ def get_glide_path(
             ],
         }
 
-    path = compute_glide_path(
-        start_age=start_age, end_age=end_age, policy=policy,  # type: ignore[arg-type]
-    )
+    # No canonical plan persisted → no glide to project. Per the trust doctrine
+    # we surface "no plan" rather than a fabricated textbook age-decline curve.
     return {
-        "policy": policy,
-        "points": [
-            {
-                "age": p.age,
-                "target_equity_pct": as_dict(p.target_equity_pct),
-                "target_bond_pct": as_dict(p.target_bond_pct),
-                "target_cash_pct": as_dict(p.target_cash_pct),
-            }
-            for p in path
-        ],
+        "policy": "none",
+        "points": [],
+        "note": (
+            "No canonical plan target allocation is persisted yet; the glide "
+            "projects the plan, so there is nothing to show until a plan exists."
+        ),
     }
 
 
