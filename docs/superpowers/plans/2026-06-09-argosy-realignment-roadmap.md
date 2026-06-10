@@ -127,7 +127,17 @@ Full backend suite after the spine: **3692 passed / 9 failed / 16 skipped (44 mi
 > core gate (history/jargon/numeric/section-coverage all 0; evidence=4 WARN). v34 promoted
 > with NO override; v30→superseded. Headline: retire age 47, NW ₪10.997M, FI target
 > ₪10.39M, NVDA 64.86→12%/13% cap (11,471→2,299 sh). Full e2e: every surface reconciles.
-> Full suite (wrap gate): see `tmp_review/full_suite_s17_final.txt`.
+> Full suite (wrap gate): **3745 passed / 15 failed / 16 skipped / 11 deselected (43:36)**.
+> 15 = the known-9 pre-existing (4 caplog + 5 discord) + **6 DATE-ROLLOVER flakes** that
+> started failing when the clock crossed 2026-06-10→06-11 mid-session: 4×
+> `test_plan_action_items` (due/overdue/today classification), `test_sec_form4_adapter`
+> (filing recency), `test_plan_synthesis_inputs::test_nvda_target_shares_ytd` (the latter is
+> a provable day-161 off-by-one: code counts days_elapsed=161 → 635, test expects days+1=162
+> → 639, ±2 tol too tight). NONE touch this session's changed files (gate/resolver/render/
+> nvda_projection); the YTD pace lives in nvda_sales_history/inputs.py, a different path from
+> compute_nvda_projection. **Zero new failures attributable to s17 code.** Test-infra debt:
+> these date-relative tests should inject a frozen `today`, not use `date.today()` with tight
+> tolerances. Log: `tmp_review/full_suite_s17_final.txt`.
 
 - **4 caplog/structlog full-suite isolation** — `test_allocation_glidepath` ×2, `test_lifecycle`, `test_plan_language_rewriter`. Pass in isolation; fail only in the full suite (a structlog/caplog global-state contaminator). s14's flaky-fix (`d5faca1`) fixed `test_cadence_loop_tick_widening` + addressed the named root causes (structlog `cache_logger_on_first_use=False`, conftest `logging.disable` reset + `clear_contextvars`), but a **further full-suite contaminator remains** → needs a contaminator bisect. **DEFERRED** (test-infra, not product). **Record correction:** `d5faca1`'s message over-states "repair 5 failures" — the true outcome is **1 fixed + 4 root-caused-but-still-failing** in the full suite (I committed on repro-evidence before the full-suite confirmation).
 - **5 discord network/mock** — `test_discord_attachment_fetch` ×5. Environment-dependent; the failing count varies run-to-run.
