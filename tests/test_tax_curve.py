@@ -195,3 +195,37 @@ class TestAnnualSurtax:
     def test_negative_income_is_zero(self):
         from argosy.services.tax_curve import annual_surtax
         assert annual_surtax(-50_000, is_capital=True) == 0.0
+
+
+class TestSurtaxConfigSourced:
+    """#4b — the surtax threshold is config-sourced (env/intake overridable),
+    not a frozen magic literal. The math reads Settings; the module literal is
+    only the fallback default."""
+
+    def test_default_threshold_matches_settings_default(self):
+        from argosy.services.tax_curve import _surtax_params
+
+        thr, r_ord, r_cap = _surtax_params()
+        assert thr == 721_560.0
+        assert (r_ord, r_cap) == (0.03, 0.05)
+
+    def test_env_override_changes_surtax(self, monkeypatch):
+        from argosy.config import reload_settings
+        from argosy.services.tax_curve import annual_surtax
+
+        monkeypatch.setenv("ARGOSY_SURTAX_THRESHOLD_NIS", "500000")
+        reload_settings()
+        try:
+            # excess above 500k = 500k; capital rate 5% -> 25,000
+            assert annual_surtax(1_000_000, is_capital=True) == 25_000.0
+        finally:
+            monkeypatch.delenv("ARGOSY_SURTAX_THRESHOLD_NIS", raising=False)
+            reload_settings()
+
+    def test_explicit_threshold_arg_still_wins(self):
+        from argosy.services.tax_curve import annual_surtax
+
+        # An explicit threshold_nis arg overrides the config default.
+        assert annual_surtax(1_000_000, is_capital=False, threshold_nis=900_000) == (
+            (1_000_000 - 900_000) * 0.03
+        )

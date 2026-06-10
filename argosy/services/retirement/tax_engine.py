@@ -246,10 +246,14 @@ def compute_tax(
         surtax = annual_surtax(gross, is_capital=False)
     if surtax > 0:
         cap = src in _SURTAX_CAPITAL_SOURCES
+        from argosy.services.tax_curve import _surtax_params
+
+        _thr, _r_ord, _r_cap = _surtax_params()
+        _rate_pct = (_r_cap if cap else _r_ord) * 100.0
         surtax_rationale = (
-            f"Surtax (mas yesef) {'5%' if cap else '3%'} on the "
-            f"₪{max(0.0, gross - SURTAX_THRESHOLD_ANNUAL_NIS):,.0f} above the "
-            f"₪{SURTAX_THRESHOLD_ANNUAL_NIS:,.0f} annual threshold "
+            f"Surtax (mas yesef) {_rate_pct:g}% on the "
+            f"₪{max(0.0, gross - _thr):,.0f} above the "
+            f"₪{_thr:,.0f} annual threshold "
             f"({'capital/passive' if cap else 'ordinary'} income)."
         )
 

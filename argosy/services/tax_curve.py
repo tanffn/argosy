@@ -65,13 +65,40 @@ _MAX_AGE: float = 120.0
 # interest, rent) above the same threshold — so capital income carries 5% above
 # the threshold while ordinary income carries 3%. The threshold is nominally
 # ~₪721,560/yr (2024/2025; frozen, not indexed up in the 2025 budget). These
-# are documented, sourced, intake-overridable constants — NOT hidden magic.
-# For a retirement DRAWDOWN (~₪280k/yr central spend) the surtax is zero (well
-# below the threshold); it bites on large one-off events — RSU vests, a big NVDA
-# deconcentration sale — which is exactly where it must be captured.
+# are documented, sourced, config-overridable values — NOT hidden magic. The
+# threshold is re-set annually, so it is sourced from Settings (env/intake
+# overridable) with these literals as the fallback default; see
+# ``_surtax_params``. For a retirement DRAWDOWN (~₪280k/yr central spend) the
+# surtax is zero (well below the threshold); it bites on large one-off events —
+# RSU vests, a big NVDA deconcentration sale — which is exactly where it must be
+# captured.
+#
+# Fallback defaults (nominal 2024/2025) — the live values come from Settings.
 SURTAX_THRESHOLD_ANNUAL_NIS: float = 721_560.0
 SURTAX_RATE_ORDINARY: float = 0.03
 SURTAX_RATE_CAPITAL: float = 0.05  # 3% base + 2% capital surcharge (2025+)
+
+
+def _surtax_params() -> tuple[float, float, float]:
+    """(threshold, rate_ordinary, rate_capital) from Settings, falling back to
+    the module literals if settings can't be read (keeps tax_curve importable
+    with no app context). Config-sourced so the annually re-set threshold is
+    not a frozen magic number (#4b)."""
+    try:
+        from argosy.config import get_settings
+
+        s = get_settings()
+        return (
+            float(s.surtax_threshold_nis),
+            float(s.surtax_rate_ordinary),
+            float(s.surtax_rate_capital),
+        )
+    except Exception:  # noqa: BLE001 — pure-module fallback
+        return (
+            SURTAX_THRESHOLD_ANNUAL_NIS,
+            SURTAX_RATE_ORDINARY,
+            SURTAX_RATE_CAPITAL,
+        )
 
 
 @dataclass(frozen=True)
@@ -150,9 +177,10 @@ def annual_surtax(
     default (intake). Income at/below the threshold returns 0; this is the
     SINGLE source of the surtax math for the calculator + any large-event tax.
     """
-    thr = SURTAX_THRESHOLD_ANNUAL_NIS if threshold_nis is None else float(threshold_nis)
+    thr_default, rate_ord, rate_cap = _surtax_params()
+    thr = thr_default if threshold_nis is None else float(threshold_nis)
     excess = max(0.0, float(annual_income_nis) - thr)
-    rate = SURTAX_RATE_CAPITAL if is_capital else SURTAX_RATE_ORDINARY
+    rate = rate_cap if is_capital else rate_ord
     return excess * rate
 
 

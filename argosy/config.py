@@ -125,6 +125,15 @@ class Settings(BaseSettings):
     # ``ARGOSY_PHASE5_AGENTS=false`` to fall back to the 10-member core fleet.
     phase5_agents: bool = Field(default=True)
 
+    # Israeli surtax (mas yesef) parameters — config-sourced so the annually
+    # re-set threshold is NOT a frozen magic literal. Defaults are the nominal
+    # 2024/2025 values; override per tax year via ARGOSY_SURTAX_THRESHOLD_NIS /
+    # ARGOSY_SURTAX_RATE_ORDINARY / ARGOSY_SURTAX_RATE_CAPITAL (or intake).
+    # tax_curve.annual_surtax reads these when no explicit threshold is passed.
+    surtax_threshold_nis: float = Field(default=721_560.0)
+    surtax_rate_ordinary: float = Field(default=0.03)
+    surtax_rate_capital: float = Field(default=0.05)  # 3% base + 2% capital (2025+)
+
     @property
     def app_log_file(self) -> Path:
         return self.logs_dir / "app" / "application.log"

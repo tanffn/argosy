@@ -64,8 +64,23 @@ SURTAX_GENERAL_RATE = 0.03
 # Additional capital-source surtax (effective tax year 2025+): +2% on the portion
 # of capital-source income above the same threshold.
 SURTAX_CAPITAL_SOURCE_RATE = 0.02
-# 2026 threshold, NIS/year (₪60,130/month). Wage-indexed; re-verify each January.
+# Fallback default threshold, NIS/year (₪60,130/month). Wage-indexed and re-set
+# annually, so the LIVE value is config-sourced (#4b) via ``_surtax_threshold``;
+# this literal is only the fallback when no app settings are available.
 SURTAX_THRESHOLD_NIS = 721_560.0
+
+
+def _surtax_threshold() -> float:
+    """Live surtax threshold from Settings (env/intake overridable), falling
+    back to the module literal. Config-sourced so the annually re-set threshold
+    is not a frozen magic number (#4b). Single statutory source shared with
+    ``tax_curve``; this optimizer keeps its own (codex-reviewed) rate model."""
+    try:
+        from argosy.config import get_settings
+
+        return float(get_settings().surtax_threshold_nis)
+    except Exception:  # noqa: BLE001 — pure-module fallback
+        return SURTAX_THRESHOLD_NIS
 # Combined marginal CGT above the threshold = 25% + 3% + 2% = 30%.
 CGT_MARGINAL_ABOVE_THRESHOLD = (
     CGT_BASE_RATE + SURTAX_GENERAL_RATE + SURTAX_CAPITAL_SOURCE_RATE
@@ -101,7 +116,7 @@ def effective_cgt_rate(annual_taxable_gain_nis: float) -> float:
     gain = float(annual_taxable_gain_nis)
     if gain <= 0.0:
         return CGT_BASE_RATE
-    above = max(0.0, gain - SURTAX_THRESHOLD_NIS)
+    above = max(0.0, gain - _surtax_threshold())
     tax = (
         CGT_BASE_RATE * gain
         + SURTAX_GENERAL_RATE * gain          # 3% mas-yesef on the WHOLE gain
@@ -260,7 +275,7 @@ def optimize_deconcentration_core(
             "cgt_base_rate": CGT_BASE_RATE,
             "surtax_general_rate": SURTAX_GENERAL_RATE,
             "surtax_capital_source_rate": SURTAX_CAPITAL_SOURCE_RATE,
-            "surtax_threshold_nis": SURTAX_THRESHOLD_NIS,
+            "surtax_threshold_nis": _surtax_threshold(),
             "cgt_marginal_above_threshold": CGT_MARGINAL_ABOVE_THRESHOLD,
             "taxable_gain_fraction": NVDA_TAXABLE_GAIN_FRACTION,
             "gain_terms": "real NIS gain (statutory base is the CPI-indexed real gain)",
