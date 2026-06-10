@@ -118,7 +118,10 @@ Full backend suite after the spine: **3692 passed / 9 failed / 16 skipped (44 mi
 > numbers (value-only on subject lines) → **subject-binding (option B)** is the tracked fix
 > (codex ranked #1 but "not unattended"). Until B lands, a fresh plan can't pass without
 > force-override, so **v30 stays current** (surfaces verified to reconcile, live e2e).
-> Full suite (wrap gate): see `tmp_review/full_suite_s17.txt` (result in SESSION17 handover).
+> Full suite (wrap gate): **3741 passed / 10 failed / 16 skipped / 11 deselected (43:38)**.
+> 10 = the known-9 pre-existing (4 caplog + 5 discord) + 1 new B1-reversal test
+> (`test_v4_phase5_pipeline_runs_end_to_end`, fixed in b6c2ed9 — not a code regression).
+> Zero new product failures.
 
 - **4 caplog/structlog full-suite isolation** — `test_allocation_glidepath` ×2, `test_lifecycle`, `test_plan_language_rewriter`. Pass in isolation; fail only in the full suite (a structlog/caplog global-state contaminator). s14's flaky-fix (`d5faca1`) fixed `test_cadence_loop_tick_widening` + addressed the named root causes (structlog `cache_logger_on_first_use=False`, conftest `logging.disable` reset + `clear_contextvars`), but a **further full-suite contaminator remains** → needs a contaminator bisect. **DEFERRED** (test-infra, not product). **Record correction:** `d5faca1`'s message over-states "repair 5 failures" — the true outcome is **1 fixed + 4 root-caused-but-still-failing** in the full suite (I committed on repro-evidence before the full-suite confirmation).
 - **5 discord network/mock** — `test_discord_attachment_fetch` ×5. Environment-dependent; the failing count varies run-to-run.
