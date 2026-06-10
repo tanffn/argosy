@@ -830,6 +830,20 @@ def run_synthesis(
             user_id=user_id, error=str(exc),
         )
 
+    # De-jargon the user-facing body (the assumption-ledger / section-evidence /
+    # receipts appendix occasionally names internal agent classes + "fleet" /
+    # "synthesizer", which the jargon_leak gate forbids in the user surface).
+    # The audit variants are rendered separately and keep the raw names.
+    _long_horizon_md = _pkg._strip_jargon(_long_horizon_md)
+    _medium_horizon_md = _pkg._strip_jargon(_medium_horizon_md)
+    _short_horizon_md = _pkg._strip_jargon(_short_horizon_md)
+    # History-leak strip over the FULL assembled body (incl. the appendix, which
+    # is appended after _horizon_md_user already ran its own strip) — catches a
+    # revision verb like "supersedes" that leaks via the assumption ledger.
+    _long_horizon_md = _pkg._strip_history_leak(_long_horizon_md)
+    _medium_horizon_md = _pkg._strip_history_leak(_medium_horizon_md)
+    _short_horizon_md = _pkg._strip_history_leak(_short_horizon_md)
+
     # T1.5 — persist the canonical instrument-level TargetAllocationDoc so every
     # surface projects ONE plan. Additive + best-effort: a missing composition
     # (no concentration report / snapshot) leaves the column NULL and surfaces

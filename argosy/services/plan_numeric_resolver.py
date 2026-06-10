@@ -632,10 +632,46 @@ def resolve_plan_numbers(
     # hop and the non-display callers never trigger the heavy canonical MC.
     if include_canonical_ages:
         _apply_canonical_dual_track_age(session, user_id, values)
+        _apply_canonical_mc_spend(session, user_id, values)
         if decision_run_id is not None:
             _apply_canonical_allocation(session, decision_run_id, values)
 
     return ResolvedPlanNumbers(values=values)
+
+
+def _apply_canonical_mc_spend(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Register the Monte-Carlo central + stress spend as RESOLVED values from
+    ``resolve_canonical_basis`` — the SAME basis the ruin hero / scenario grid /
+    dual-track age bind to. Without this the synth has no manifest source for the
+    MC central spend and cites it to a project-memory note, which the fund
+    manager (correctly) rejects as unsupported. The MC central spend is a
+    DISTINCT concept from the T12 trailing-actual spend and the FI
+    permanent-equivalent spend — all three are legitimately different; this
+    makes the MC one Argosy-derived + auditable so the prose can cite it.
+    """
+    try:
+        from argosy.services.retirement.retirement_plan import (
+            resolve_canonical_basis,
+        )
+
+        basis = resolve_canonical_basis(session=session, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001 — best-effort, never break the resolver
+        log.warning("plan_numeric_resolver.mc_spend_failed err=%s", exc)
+        return
+    for attr, key, label in (
+        ("spend_central_nis", "spend.mc_central_nis", "MC central spend"),
+        ("spend_stress_nis", "spend.mc_stress_nis", "MC stress spend"),
+    ):
+        val = _to_float(getattr(basis, attr, None))
+        if val is not None:
+            values[key] = ResolvedValue(
+                key=key, value=val, unit="nis", status="resolved",
+                source_locator=f"retirement_plan.resolve_canonical_basis.{attr}",
+                confidence="HIGH",
+                formula=f"{label} (canonical MC basis — ruin hero / scenario grid)",
+            )
 
 
 def _apply_canonical_dual_track_age(
