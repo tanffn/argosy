@@ -797,17 +797,41 @@ def _apply_canonical_allocation(
             formula="canonical TargetAllocationDoc strategic class weight",
         )
 
-    # NVDA concentration cap (doc carries percent-points).
+    # NVDA concentration cap (doc carries percent-points). The canonical doc's
+    # cap is the USER-SETTLED BINDING cap (13%) and OVERRIDES the concentration
+    # analyst's tail-loss-derived value (~7%): the analyst's number is a
+    # subordinate, more-conservative input, but the binding cap the plan states
+    # is the settled 13%. Without the override the manifest reports 7% and the
+    # gate false-flags the plan's correct "13% cap" as a fabrication.
     cap = doc.get("nvda_cap_pct")
-    if cap is not None and "concentration.nvda_cap_pct" not in values:
+    if cap is not None:
+        # Preserve the concentration analyst's derived cap (the prior value,
+        # ~7% MIN-over-constraints) under a distinct key so the plan can cite
+        # BOTH the binding cap (13%) and the analyst's more-conservative floor
+        # (~7%) and both trace — they are two legitimate Argosy-derived numbers.
+        prior = values.get("concentration.nvda_cap_pct")
+        if (
+            prior is not None
+            and prior.status == "resolved"
+            and prior.value is not None
+        ):
+            values["concentration.nvda_analyst_floor_pct"] = ResolvedValue(
+                key="concentration.nvda_analyst_floor_pct",
+                value=float(prior.value),
+                unit="pct",
+                status="resolved",
+                source_locator=prior.source_locator,
+                confidence=prior.confidence,
+                formula="concentration analyst MIN-over-constraints cap (subordinate floor to the binding cap)",
+            )
         values["concentration.nvda_cap_pct"] = ResolvedValue(
             key="concentration.nvda_cap_pct",
             value=float(cap) / 100.0,
             unit="pct",
             status="resolved",
-            source_locator="target_allocation_doc.nvda_cap_pct",
+            source_locator="target_allocation_doc.nvda_cap_pct (canonical binding cap)",
             confidence="HIGH",
-            formula="canonical concentration cap",
+            formula="canonical user-settled concentration cap (overrides analyst tail-loss)",
         )
 
     # Structural ages the prose legitimately cites — statutory + MC horizon
