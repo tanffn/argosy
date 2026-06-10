@@ -803,21 +803,13 @@ def test_v4_phase5_pipeline_runs_end_to_end(v4_db, monkeypatch):
         ("short", pv.horizon_short_md),
     ):
         assert md_text, f"horizon_{label}_md should not be empty"
-        # The H1 (e.g. "# Long horizon") is line 1; the deltas block
-        # should be the first ## heading. We check that "## Deltas vs.
-        # prior current" appears BEFORE any other ## heading.
-        lines = md_text.splitlines()
-        h2_positions = [
-            i for i, ln in enumerate(lines) if ln.startswith("## ")
-        ]
-        assert h2_positions, (
-            f"horizon_{label}_md has no H2 sections; expected at least the "
-            f"Deltas block"
-        )
-        first_h2 = lines[h2_positions[0]]
-        assert first_h2.startswith("## Deltas vs. prior current"), (
-            f"horizon_{label}_md must put the Deltas block at the TOP "
-            f"(first H2); first H2 was {first_h2!r}"
+        # The "## Deltas vs. prior current" block is NOT in the user-facing
+        # body (it trips the history_leak trust gate — the plan body is
+        # current-state only). The full delta list lives in the audit variant.
+        # (Reverses the B1 2026-06-02 user-facing placement to satisfy the gate.)
+        assert "## Deltas vs. prior current" not in md_text, (
+            f"horizon_{label}_md must NOT carry the Deltas block "
+            f"(history_leak gate; deltas are audit-only)"
         )
 
     # --- (6) Phase 5 agents actually fired. ``PlanCoverageAnalyst``,
