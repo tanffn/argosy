@@ -114,14 +114,20 @@ Full backend suite after the spine: **3692 passed / 9 failed / 16 skipped (44 mi
 > - **011e73d** `[money-math, codex APPROVE]` T4b — surtax threshold config-sourced
 >   (Settings/env), defaults = prior literals; optimizer duplicate consolidated.
 > - **ec36043** UI lint 23 errors → 0 (+ tsc clean).
-> REMAINING gate blocker: headline-numeric-source still flags ~42 legitimate narrative
-> numbers (value-only on subject lines) → **subject-binding (option B)** is the tracked fix
-> (codex ranked #1 but "not unattended"). Until B lands, a fresh plan can't pass without
-> force-override, so **v30 stays current** (surfaces verified to reconcile, live e2e).
-> Full suite (wrap gate): **3741 passed / 10 failed / 16 skipped / 11 deselected (43:38)**.
-> 10 = the known-9 pre-existing (4 caplog + 5 discord) + 1 new B1-reversal test
-> (`test_v4_phase5_pipeline_runs_end_to_end`, fixed in b6c2ed9 — not a code regression).
-> Zero new product failures.
+> **OUTCOME — a fresh plan is PROMOTED (v34, run 94) with all surfaces reconciling.**
+> Additional s17 commits after the gate-plumbing: subject-binding option B (`18452b0`,
+> headline-numeric false positives 74→0, 2× codex rounds — paired with the persist-scrub
+> as the FI-capital fail-close; structured-claims is the strategic fix); jargon scrub +
+> evidence-WARN-during-transition (`8782683`); MC central/stress spend in the manifest +
+> full-body history strip (`b02ff42`); canonical 13% binding cap overrides the analyst 7%
+> in the manifest, analyst floor preserved (`d6e06c6`); NVDA trajectory binds to the
+> canonical doc cap not the analyst 7% (`ea98239`). Took 3 live re-syntheses — the FM
+> correctly rejected the first two for REAL self-consistency bugs (NVDA action→7%; MC spend
+> cited to memory), each root-caused + fixed (not overridden); the third passed FM + the
+> core gate (history/jargon/numeric/section-coverage all 0; evidence=4 WARN). v34 promoted
+> with NO override; v30→superseded. Headline: retire age 47, NW ₪10.997M, FI target
+> ₪10.39M, NVDA 64.86→12%/13% cap (11,471→2,299 sh). Full e2e: every surface reconciles.
+> Full suite (wrap gate): see `tmp_review/full_suite_s17_final.txt`.
 
 - **4 caplog/structlog full-suite isolation** — `test_allocation_glidepath` ×2, `test_lifecycle`, `test_plan_language_rewriter`. Pass in isolation; fail only in the full suite (a structlog/caplog global-state contaminator). s14's flaky-fix (`d5faca1`) fixed `test_cadence_loop_tick_widening` + addressed the named root causes (structlog `cache_logger_on_first_use=False`, conftest `logging.disable` reset + `clear_contextvars`), but a **further full-suite contaminator remains** → needs a contaminator bisect. **DEFERRED** (test-infra, not product). **Record correction:** `d5faca1`'s message over-states "repair 5 failures" — the true outcome is **1 fixed + 4 root-caused-but-still-failing** in the full suite (I committed on repro-evidence before the full-suite confirmation).
 - **5 discord network/mock** — `test_discord_attachment_fetch` ×5. Environment-dependent; the failing count varies run-to-run.
