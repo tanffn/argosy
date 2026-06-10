@@ -46,42 +46,46 @@ PENDING_LABEL = "[derivation pending]"
 
 
 # ---------------------------------------------------------------------------
-# Headline-context detection
+# Subject binding (option B, codex 2026-06-10)
 # ---------------------------------------------------------------------------
 #
-# A line is scanned for headline numbers only when it mentions one of these
-# concepts. This is the codex "headline set": the numbers that change a
-# user-facing financial conclusion, target, or action. Matching is on
-# whole-ish words, case-insensitive. Deliberately conservative — a number on
-# a line with no headline keyword is left alone (avoids false positives on
-# dates, table indices, section numbers, footnotes).
-
-# Narrowed (codex 2026-06-10, option A) to the SUBJECTS whose numbers truly
-# change a headline financial conclusion / target / action. The broad triggers
-# {portfolio, retire, fi-ready, savings, spend, burn, weight} were dropped:
-# they matched ordinary narrative lines (FX scenarios, probabilities, CGT
-# rates, detail sub-amounts), flagging legitimate context numbers as
-# fabrications and making the gate unsatisfiable for any number-rich plan. The
-# ₪-FI-capital fabrication the gate exists to catch still lands on a FI
-# target / financial independence / net worth line (and the persist-time scrub
-# is a second backstop). Subject-binding (match the number to its subject, not
-# any number on the line) is the tracked hardening follow-up (option B).
-_HEADLINE_LINE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(p, re.IGNORECASE)
-    for p in (
-        r"\bfi\s+target\b",
-        r"\bfinancial\s+independence\b",
-        r"\bnet\s+worth\b",
-        r"\bretirement\s+age\b",
-        r"\bfi\s+age\b",
-        r"\bnvda\b",
-        r"\bconcentration\s+cap\b",
-    )
+# Instead of "scan every number on a line that mentions a headline keyword"
+# (value-only — which flagged legitimate narrative numbers like an FX "30%
+# strengthening" or "90% solvency" sitting on a line that happens to say NVDA
+# or retirement), we bind a number to its SUBJECT: only the value that is the
+# stated value OF a headline subject must trace. A number not bound to a
+# subject is narrative and is left alone. This both kills the false positives
+# AND closes the value-only wrong-context hole (a "current NVDA 12%" can no
+# longer satisfy the *target* — the subject decides which resolved class the
+# token is checked against is not needed; we still check value within unit, but
+# only the subject's own value is checked at all).
+#
+# Each binding: (subject regex, unit, window_chars). After a subject match we
+# look only in the next ``window_chars`` of the SAME line for the first value
+# token of the expected unit; that token must trace (or be the pending
+# literal). Subjects are deliberately specific (e.g. "NVDA target", not bare
+# "NVDA") so narrative phrasings ("NVDA fell 30%") never bind.
+_SUBJECT_BINDINGS: tuple[tuple[re.Pattern[str], str, int], ...] = (
+    # FI / net-worth capital headline — the ₪21M-fabrication reject lives here.
+    (re.compile(r"\bfi\s+(?:capital\s+)?target\b", re.IGNORECASE), "nis", 60),
+    (re.compile(r"\bfinancial\s+independence\s+(?:capital\s+)?(?:target|number)\b", re.IGNORECASE), "nis", 60),
+    (re.compile(r"\b(?:fi|retirement)\s+capital\s+target\b", re.IGNORECASE), "nis", 60),
+    (re.compile(r"\bnest\s+egg\b", re.IGNORECASE), "nis", 60),
+    (re.compile(r"\bnet\s+worth\b", re.IGNORECASE), "nis", 60),
+    # Retirement / FI age.
+    (re.compile(r"\b(?:retirement|fi)\s+age\b", re.IGNORECASE), "age", 40),
+    (re.compile(r"\bearliest[\s-]*(?:safe)?[\s-]*(?:retirement\s+)?age\b", re.IGNORECASE), "age", 40),
+    # NVDA target weight + concentration cap (NOT bare "NVDA").
+    (re.compile(r"\bnvda\s+(?:strategic\s+)?(?:target|weight)\b", re.IGNORECASE), "pct", 50),
+    (re.compile(r"\bnvda\s+(?:concentration\s+)?cap\b", re.IGNORECASE), "pct", 50),
+    (re.compile(r"\bconcentration\s+cap\b", re.IGNORECASE), "pct", 50),
+    (re.compile(r"\btarget\s+nvda\s+weight\b", re.IGNORECASE), "pct", 50),
 )
 
-
-def _is_headline_line(line: str) -> bool:
-    return any(p.search(line) for p in _HEADLINE_LINE_PATTERNS)
+# First value token of each unit in a post-subject window. The subject already
+# says "age", so the value is a bare 2-digit — but NOT one followed by "%" (a
+# percent in a parenthetical like "worst-10%" / "90% solvency" is not the age).
+_AGE_VALUE = re.compile(r"\b(\d{2})\b(?!\s*%)")
 
 
 # ---------------------------------------------------------------------------
@@ -195,25 +199,29 @@ def check_headline_numeric_source(
     for horizon_name, text in horizon_text.items():
         if not text:
             continue
-        for line_no, raw_line in enumerate(text.splitlines(), start=1):
-            if not _is_headline_line(raw_line):
-                continue
-            # The number was replaced by the pending literal → nothing to
-            # trace on this line for that slot. We still scan other tokens
-            # on the line (a line can mix a pending figure and a real one),
-            # but the literal itself carries no digits, so it never trips
-            # the token regexes.
-            line = raw_line
-
-            violations.extend(
-                _scan_nis(line, horizon_name, line_no, resolved_by_unit["nis"])
-            )
-            violations.extend(
-                _scan_pct(line, horizon_name, line_no, resolved_by_unit["pct"])
-            )
-            violations.extend(
-                _scan_age(line, horizon_name, line_no, resolved_by_unit["age"])
-            )
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            # Subject-bound: for each headline subject on the line, check ONLY
+            # the value stated as that subject's value (the first matching-unit
+            # token in the window after the subject). Numbers not bound to a
+            # subject are narrative and left alone. Dedup by (line, token) so
+            # two overlapping subject patterns (e.g. "retirement age" +
+            # "earliest-safe ... age") don't double-count the same value.
+            seen: set[tuple[int, str]] = set()
+            for pat, unit, window in _SUBJECT_BINDINGS:
+                for m in pat.finditer(line):
+                    bad = _bind_value(
+                        line, m.start(), m.end(), unit, window,
+                        resolved_by_unit[unit],
+                    )
+                    if bad is None:
+                        continue
+                    kind, token, why = bad
+                    if (line_no, token) in seen:
+                        continue
+                    seen.add((line_no, token))
+                    violations.append(
+                        _violation(horizon_name, line_no, kind, token, why)
+                    )
 
     return violations
 
@@ -231,72 +239,113 @@ def _violation(
     )
 
 
-def _scan_nis(
-    line: str, horizon: str, line_no: int, resolved: list[tuple[str, float]]
-) -> list[GateViolation]:
-    out: list[GateViolation] = []
-    for m in _NIS_TOKEN.finditer(line):
+# Value-BEFORE-subject forms ("₪21M FI target", "99% NVDA cap", "age 47 ... age")
+# — the value must be IMMEDIATELY adjacent (only whitespace / markdown / a
+# connector between it and the subject), so a narrative number further left
+# ("fell 30%, raising the cap") never binds. Anchored at the end of the left
+# window.
+_NIS_END = re.compile(r"(₪\s*\d[\d,]*(?:\.\d+)?\s*[MmKk]?)[\s*:=~—-]*$")
+_PCT_END = re.compile(r"(\d+(?:\.\d+)?\s*%)[\s*:=~—-]*$")
+_AGE_END = re.compile(r"\b(\d{2})[\s*:=~,—-]*$")
+
+_CLAUSE_BOUNDARY = re.compile(r"(?<!\d)[.;](?!\d)|\n")
+_KINDS = {"nis": "₪ amount", "pct": "percent", "age": "age"}
+
+
+def _clause(text: str) -> str:
+    """Drop parenthetical asides, then cut at the first sentence boundary
+    (decimal-safe). Parens are stripped BEFORE measuring so a number in a
+    derivation note (e.g. "(90% MC solvency to 95)") can't be the bound value
+    and the stated value following the aside is reached within the window."""
+    text = re.sub(r"\([^)]*\)", " ", text)
+    return _CLAUSE_BOUNDARY.split(text, maxsplit=1)[0]
+
+
+def _token_in(
+    text: str, unit: str, *, last: bool = False
+) -> tuple[str, list[float]] | None:
+    """First (or last) value token of ``unit`` in ``text`` → (display, candidates)."""
+    if unit == "nis":
+        ms = list(_NIS_TOKEN.finditer(text))
+    elif unit == "pct":
+        ms = list(_PCT_TOKEN.finditer(text))
+    else:
+        ms = list(_AGE_VALUE.finditer(text))
+    if not ms:
+        return None
+    m = ms[-1] if last else ms[0]
+    if unit == "nis":
         num = _parse_num(m.group("num"))
-        if num is None:
-            continue
-        cands = _nis_candidates(num, m.group("suffix"))
-        ok = any(
-            _matches(c, rv, "nis") for c in cands for _, rv in resolved
-        )
-        if not ok:
-            why = (
-                "no resolved NIS value within tolerance"
-                if resolved
-                else "no NIS value resolved at all (resolver pending)"
-            )
-            out.append(_violation(horizon, line_no, "₪ amount", m.group(0).strip(), why))
-    return out
-
-
-def _scan_pct(
-    line: str, horizon: str, line_no: int, resolved: list[tuple[str, float]]
-) -> list[GateViolation]:
-    # Resolver pct values are FRACTIONS (0.0–1.0; e.g. a 4.5% real yield is
-    # stored as 0.045, an NVDA cap of 35% as 0.35) while the markdown shows
-    # percent-points ("4.5%", "35%"). The renderer prints `value * 100`, so
-    # we compare the token against BOTH the fraction-scaled-to-points form
-    # and the raw resolved value (defensive in case a future key is already
-    # stored in points).
-    out: list[GateViolation] = []
-    for m in _PCT_TOKEN.finditer(line):
+        return (m.group(0).strip(), _nis_candidates(num, m.group("suffix"))) if num is not None else None
+    if unit == "pct":
         num = _parse_num(m.group("num"))
-        if num is None:
-            continue
-        ok = any(
-            _matches(num, rv * 100.0, "pct") or _matches(num, rv, "pct")
-            for _, rv in resolved
-        )
-        if not ok:
-            why = (
-                "no resolved percent within tolerance"
-                if resolved
-                else "no percent value resolved at all (resolver pending)"
-            )
-            out.append(_violation(horizon, line_no, "percent", m.group(0).strip(), why))
-    return out
+        return (m.group(0).strip(), [num]) if num is not None else None
+    num = _parse_num(m.group(1))
+    return (f"age {m.group(1)}", [num]) if num is not None else None
 
 
-def _scan_age(
-    line: str, horizon: str, line_no: int, resolved: list[tuple[str, float]]
-) -> list[GateViolation]:
-    out: list[GateViolation] = []
-    for m in _AGE_TOKEN.finditer(line):
-        num = _parse_num(m.group("num"))
-        if num is None:
-            continue
-        if not any(_matches(num, rv, "age") for _, rv in resolved):
-            why = (
-                "no resolved age within tolerance"
-                if resolved
-                else "no age value resolved at all (resolver pending)"
-            )
-            out.append(_violation(horizon, line_no, "age", m.group(0).strip(), why))
-    return out
+def _traces(unit: str, candidates: list[float], resolved: list[tuple[str, float]]) -> bool:
+    # Resolver pct values are FRACTIONS (0.13) while the markdown shows points
+    # (13%); compare a pct token against both rv*100 and rv.
+    for c in candidates:
+        for _, rv in resolved:
+            if unit == "pct":
+                if _matches(c, rv * 100.0, "pct") or _matches(c, rv, "pct"):
+                    return True
+            elif _matches(c, rv, unit):
+                return True
+    return False
+
+
+def _bind_value(
+    line: str, s: int, e: int, unit: str, window: int,
+    resolved: list[tuple[str, float]],
+) -> tuple[str, str, str] | None:
+    """Bind the value stated AS the subject's value and check it traces.
+
+    Searches in priority order: (1) the clause AFTER the subject (parens
+    stripped, boundary-cut) — first token; (2) a short window immediately
+    BEFORE the subject — adjacent token, for value-before-subject forms like
+    "₪21M FI target" / "99% NVDA cap"; (3) a parenthesized value right after
+    the subject — "FI target (₪21M)". Returns ``(kind, token, why)`` on a
+    non-tracing value, else ``None`` (no inline value / pending escape / traces).
+    """
+    right_raw = line[e: e + window]
+    right = _clause(right_raw)
+
+    # Pending escape preceding any digit in the after-clause → nothing to trace.
+    pend = right.find(PENDING_LABEL)
+    fd = re.search(r"\d", right)
+    if pend != -1 and (fd is None or pend < fd.start()):
+        return None
+
+    found = _token_in(right, unit)
+
+    # (2) value-before-subject — must be IMMEDIATELY adjacent (end-anchored).
+    if found is None:
+        left = _clause(line[max(0, s - 20): s])
+        end_pat = {"nis": _NIS_END, "pct": _PCT_END, "age": _AGE_END}[unit]
+        em = end_pat.search(left)
+        if em is not None:
+            found = _token_in(em.group(1), unit, last=True)
+
+    # (3) parenthesized value immediately after the subject — "FI target (₪21M)".
+    if found is None:
+        pm = re.match(r"\s*\(([^)]*)\)", right_raw)
+        if pm is not None:
+            found = _token_in(pm.group(1), unit)
+
+    if found is None:
+        return None
+    token, cands = found
+    if _traces(unit, cands, resolved):
+        return None
+    why = (
+        f"no resolved {unit} within tolerance"
+        if resolved
+        else f"no {unit} value resolved at all (resolver pending)"
+    )
+    return (_KINDS[unit], token, why)
 
 
 # ---------------------------------------------------------------------------

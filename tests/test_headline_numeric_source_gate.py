@@ -333,3 +333,67 @@ def test_scrub_still_catches_large_fabricated_fi_target():
     scrubbed, log = scrub_headline_numeric_source(md, resolved)
     assert PENDING_LABEL in scrubbed["long"]
     assert len(log) == 1
+
+
+class TestSubjectBinding:
+    """Option B (codex 2026-06-10) — only the value stated AS a headline
+    subject's value must trace; narrative numbers on the same line are ignored."""
+
+    def test_narrative_number_on_subject_line_not_flagged(self):
+        # "30%" is narrative; only the NVDA TARGET value (12%) is bound.
+        resolved = _resolved(**{"concentration.nvda_cap_pct": 0.12})
+        md = {"long": "NVDA fell 30% in 2022, but the NVDA target is 12%."}
+        assert check_headline_numeric_source(md, resolved) == []
+
+    def test_fabricated_subject_value_flagged(self):
+        resolved = _resolved(**{"concentration.nvda_cap_pct": 0.12})
+        md = {"long": "The NVDA target is 99%."}
+        v = check_headline_numeric_source(md, resolved)
+        assert len(v) == 1 and "99%" in v[0].detail
+
+    def test_age_skips_parenthetical_percent(self):
+        # The "90%" and "95" live in a parenthetical; the bound age is 47.
+        resolved = _resolved(**{"retirement.earliest_safe_age": 47.0})
+        md = {"long": "Earliest safe retirement age (90% MC solvency to 95) is 47.0."}
+        assert check_headline_numeric_source(md, resolved) == []
+
+    def test_unbound_narrative_age_not_flagged(self):
+        # A 2-digit number with no headline subject is left alone.
+        resolved = _resolved(**{"retirement.fi_target_nis": 17_300_000.0})
+        md = {"long": "The 2008 crash cut equities 50% over 18 months."}
+        assert check_headline_numeric_source(md, resolved) == []
+
+
+class TestSubjectBindingBeforeAndParens:
+    """Codex 2026-06-10 BLOCK fix — value-BEFORE-subject and parenthesized-value
+    headline forms must still be caught (the original ₪21M reject was '₪21M FI
+    target'); a narrative number not adjacent to the subject must not bind."""
+
+    def test_value_before_subject_fabrication_flagged(self):
+        resolved = _resolved(**{"retirement.fi_target_nis": 17_300_000.0})
+        md = {"long": "The **₪21.00M** FI target is the milestone."}
+        v = check_headline_numeric_source(md, resolved)
+        assert len(v) == 1 and "21.00M" in v[0].detail
+
+    def test_pct_before_subject_fabrication_flagged(self):
+        resolved = _resolved(**{"concentration.nvda_cap_pct": 0.13})
+        md = {"long": "A 99% NVDA cap would be reckless."}
+        v = check_headline_numeric_source(md, resolved)
+        assert len(v) == 1 and "99%" in v[0].detail
+
+    def test_parenthesized_value_fabrication_flagged(self):
+        resolved = _resolved(**{"retirement.fi_target_nis": 17_300_000.0})
+        md = {"long": "FI target (₪21.00M) drives the glide."}
+        v = check_headline_numeric_source(md, resolved)
+        assert len(v) == 1 and "21.00M" in v[0].detail
+
+    def test_value_before_subject_correct_passes(self):
+        resolved = _resolved(**{"retirement.fi_target_nis": 17_300_000.0})
+        md = {"long": "The **₪17.30M** FI target sustains spend."}
+        assert check_headline_numeric_source(md, resolved) == []
+
+    def test_nonadjacent_narrative_before_subject_not_flagged(self):
+        # "30%" is not adjacent to "concentration cap" (words between) → no bind.
+        resolved = _resolved(**{"concentration.nvda_cap_pct": 0.13})
+        md = {"long": "NVDA fell 30%, raising concentration cap worries."}
+        assert check_headline_numeric_source(md, resolved) == []
