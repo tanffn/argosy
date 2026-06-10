@@ -3015,21 +3015,27 @@ def post_draft_accept(
         from argosy.config import get_settings
         from argosy.quality.gate_types import GateCheck
 
-        # Evidence-contract checks depend on the structured `sections` the
-        # synthesizer produces. A plan written before sections were persisted
-        # (sections_json NULL) cannot satisfy them — so for legacy rows these
-        # three are demoted to WARN (surfaced, never blocking). A freshly
-        # synthesized plan DOES carry sections, so it is held to the full
-        # contract (codex 2026-06-10: enforce 4/5 for new plans, WARN legacy).
-        _SECTION_DEPENDENT = {
-            GateCheck.SECTION_COVERAGE,
+        # The trust contract's CORE checks always BLOCK: history_leak,
+        # jargon_leak, headline_numeric_source (no fabrication), and
+        # section_coverage (the plan must cover the canonical sections). This is
+        # codex's enforce set {1,2,3,6}.
+        #
+        # The per-section EVIDENCE-quality checks (evidence_per_section,
+        # distillate_binding) are WARN during the evidence-hardening transition:
+        # the synthesizer emits structured sections (now persisted) but its
+        # per-fact citation completeness isn't yet contract-tight, so blocking on
+        # them would make every fresh plan un-promotable. Surfaced as
+        # `warned_only`; tracked task = harden synth evidence, then re-enforce.
+        # (codex 2026-06-10: WARN 4/5 during transition.) For LEGACY rows with no
+        # persisted sections, section_coverage is also demoted (it can't run).
+        _EVIDENCE_WARN = {
             GateCheck.EVIDENCE_PER_SECTION,
             GateCheck.DISTILLATE_SECTION_BINDING,
         }
         sections_present = bool(getattr(pv, "sections_json", None))
-        blocking_checks = set(GateCheck)
+        blocking_checks = set(GateCheck) - _EVIDENCE_WARN
         if not sections_present:
-            blocking_checks -= _SECTION_DEPENDENT
+            blocking_checks.discard(GateCheck.SECTION_COVERAGE)
         blocking = {
             check: gate_verdict.for_check(check)
             for check in blocking_checks

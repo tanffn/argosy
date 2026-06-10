@@ -170,6 +170,13 @@ _JARGON_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bfleet\b"), "analysis team"),
     (re.compile(r"\borchestrator\b", re.IGNORECASE), "workflow"),
     (re.compile(r"\bsynthesizer\b", re.IGNORECASE), "planner"),
+    # Internal pipeline nouns the gate also forbids in the user surface.
+    (re.compile(r"\bDistillate\b"), "Baseline plan"),
+    (re.compile(r"\bdistillate\b"), "baseline plan"),
+    (re.compile(r"\bpublication\s+gate\b", re.IGNORECASE), "review step"),
+    (re.compile(r"\bgate\s+check\b", re.IGNORECASE), "review step"),
+    (re.compile(r"\btopic\s+owner\b", re.IGNORECASE), "lead analyst"),
+    (re.compile(r"\bsubstrate\b", re.IGNORECASE), "data layer"),
 ]
 
 
