@@ -98,6 +98,28 @@ Full backend suite after the spine: **3692 passed / 9 failed / 16 skipped (44 mi
 
 > **s16 re-confirmation (2026-06-09, post P3 + T5.7):** `pytest -m "not llm_eval" --ignore=tests/test_monthly_cycle_loop.py` (ARGOSY_PHASE5_AGENTS=false) → **3733 passed / 9 failed / 16 skipped / 11 deselected (43:10)**. The 9 failures are the SAME pre-existing set below (4 caplog + 5 discord); the 4 caplog tests were re-run in isolation → **4 passed** (contaminators, not regressions). **Zero new failures from P3/T5.7.** `test_monthly_cycle_loop` deselected (real-LLM hang).
 
+> **s17 (2026-06-10) — plan-output-gate remediation + T4b surtax (decisions #3→A, #4→b).**
+> ROOT CAUSE found: `plan_gate_enforce=True` (T2.6/G27) was enforcing checks the producer
+> side could never satisfy, so the gate blocked EVERY plan (incl. current v30). Fixed
+> (codex-validated, 6 commits `76687ef..HEAD`):
+> - **0e396e8** persist+reconstruct `sections` (migration 0065) — section_coverage/evidence
+>   were failing because the synthesizer's sections were never persisted. Evidence checks
+>   now BLOCK for new plans (sections present), WARN for legacy (codex Q3).
+> - **c69f8be** `[money-math]` register canonical allocation weights + structural ages in the
+>   resolver manifest (NVDA 12% target / class %s / 13% cap / ages 60-67-95 now trace).
+> - **48270c8** `[methodology, codex APPROVE A]` history_leak: Deltas block → audit-only
+>   (⚠️ reverses B1, flagged); jargon scrub → plain English; numeric headline-line detection
+>   narrowed to true subjects (dropped portfolio/retire/spend/savings/burn/weight). numeric
+>   STAYS BLOCKING (demoting it broke the anti-fabrication guarantee — codex Q4).
+> - **011e73d** `[money-math, codex APPROVE]` T4b — surtax threshold config-sourced
+>   (Settings/env), defaults = prior literals; optimizer duplicate consolidated.
+> - **ec36043** UI lint 23 errors → 0 (+ tsc clean).
+> REMAINING gate blocker: headline-numeric-source still flags ~42 legitimate narrative
+> numbers (value-only on subject lines) → **subject-binding (option B)** is the tracked fix
+> (codex ranked #1 but "not unattended"). Until B lands, a fresh plan can't pass without
+> force-override, so **v30 stays current** (surfaces verified to reconcile, live e2e).
+> Full suite (wrap gate): see `tmp_review/full_suite_s17.txt` (result in SESSION17 handover).
+
 - **4 caplog/structlog full-suite isolation** — `test_allocation_glidepath` ×2, `test_lifecycle`, `test_plan_language_rewriter`. Pass in isolation; fail only in the full suite (a structlog/caplog global-state contaminator). s14's flaky-fix (`d5faca1`) fixed `test_cadence_loop_tick_widening` + addressed the named root causes (structlog `cache_logger_on_first_use=False`, conftest `logging.disable` reset + `clear_contextvars`), but a **further full-suite contaminator remains** → needs a contaminator bisect. **DEFERRED** (test-infra, not product). **Record correction:** `d5faca1`'s message over-states "repair 5 failures" — the true outcome is **1 fixed + 4 root-caused-but-still-failing** in the full suite (I committed on repro-evidence before the full-suite confirmation).
 - **5 discord network/mock** — `test_discord_attachment_fetch` ×5. Environment-dependent; the failing count varies run-to-run.
 
