@@ -241,6 +241,22 @@ def compute_nvda_projection(
     cap_pct = float(cap_rv.value) * 100.0
     current_tradeable_pct = float(cur_rv.value) * 100.0
 
+    # Bind the cap to the canonical TargetAllocationDoc — the SAME single source
+    # the glidepath + portfolio surfaces use — so the trajectory reconciles with
+    # them by construction. Without this the projection reads the concentration
+    # analyst's tail-loss cap (~7%) via the resolver (called here with
+    # include_canonical_ages=False, so the canonical override doesn't apply),
+    # while the other surfaces show the user-settled 13% — a surface split.
+    try:
+        import json as _json
+
+        if getattr(pv, "target_allocation_json", None):
+            _doc_cap = _json.loads(pv.target_allocation_json).get("nvda_cap_pct")
+            if _doc_cap is not None:
+                cap_pct = float(_doc_cap)  # doc carries percent-points
+    except Exception:  # noqa: BLE001 — fall back to the resolver cap
+        pass
+
     snap = _latest_portfolio_snapshot(db, user_id)
     today_shares = _nvda_shares_from_snapshot(snap)
     if today_shares is None or today_shares <= 0:
