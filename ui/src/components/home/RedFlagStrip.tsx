@@ -120,7 +120,6 @@ interface RedFlagRowProps {
 
 function RedFlagRow({ flag, busy, onAcknowledge }: RedFlagRowProps) {
   const dotClass = severityDotClass(flag.severity);
-  const Icon = severityIcon(flag.severity);
   const summary = buildSummary(flag);
   const href = linkForKind(flag.kind);
   const canAcknowledge = flag.id >= 0;
@@ -136,10 +135,10 @@ function RedFlagRow({ flag, busy, onAcknowledge }: RedFlagRowProps) {
       />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-center gap-2 flex-wrap">
-          <Icon
-            className={`h-3.5 w-3.5 shrink-0 ${severityTextClass(flag.severity)}`}
-            aria-hidden
-          />
+          {severityIcon(
+            flag.severity,
+            `h-3.5 w-3.5 shrink-0 ${severityTextClass(flag.severity)}`,
+          )}
           <Badge variant={severityBadgeVariant(flag.severity)} className="font-mono">
             {kindLabel(flag.kind)}
           </Badge>
@@ -263,16 +262,20 @@ function severityTextClass(severity: MonitorFlagSeverity): string {
   }
 }
 
+// Returns the icon as a rendered element (not a component type) so callers
+// don't bind a capitalized local and render <Icon/> — that trips the React
+// compiler's "cannot create components during render" rule.
 function severityIcon(
   severity: MonitorFlagSeverity,
-): React.ComponentType<{ className?: string }> {
+  className?: string,
+): React.ReactElement {
   switch (severity) {
     case "critical":
-      return AlertTriangle;
+      return <AlertTriangle className={className} aria-hidden />;
     case "warning":
-      return AlertCircle;
+      return <AlertCircle className={className} aria-hidden />;
     case "info":
-      return Info;
+      return <Info className={className} aria-hidden />;
   }
 }
 

@@ -90,7 +90,7 @@ export function SafetyGatesPanel({ userId }: Props) {
           </span>
         </CardTitle>
         <CardDescription>
-          Hard-blocks for plan approval. If any gate FAILs, the plan can't
+          Hard-blocks for plan approval. If any gate FAILs, the plan can&apos;t
           be approved until the underlying issue is addressed.
         </CardDescription>
       </CardHeader>

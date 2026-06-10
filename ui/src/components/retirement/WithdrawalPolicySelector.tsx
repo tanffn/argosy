@@ -120,7 +120,7 @@ export function WithdrawalPolicySelector({
                 VPW eliminates literal zero-balance ruin by construction
                 (you always have something left to spend), but the hero
                 verdict can still show OFF_TRACK because P(solvent) here
-                means &quot;P(covering essential expenses at age 95)&quot; — VPW's
+                means &quot;P(covering essential expenses at age 95)&quot; — VPW&apos;s
                 age-banded draws may fall well below your expense need
                 during stressed periods.
               </>
@@ -164,7 +164,7 @@ export function WithdrawalPolicySelector({
             <p>
               Currently selected: <b>{selectedPolicy?.label}</b>. In a
               follow-up commit this selection drives the Monte Carlo
-              path's per-month withdrawal.
+              path&apos;s per-month withdrawal.
             </p>
           </MethodologyPanel>
         </DrilldownSection>

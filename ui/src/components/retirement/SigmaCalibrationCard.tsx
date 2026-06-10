@@ -142,8 +142,8 @@ export function SigmaCalibrationCard({ userId }: Props) {
             <p>
               Weighted average is a conservative approximation; it slightly
               overstates σ vs. the true variance-covariance computation
-              (which credits diversification benefit). The "better safe
-              than sorry" bias is intentional.
+              (which credits diversification benefit). The &quot;better safe
+              than sorry&quot; bias is intentional.
             </p>
           </MethodologyPanel>
         </DrilldownSection>

@@ -164,7 +164,6 @@ interface SelectItemProps {
 
 // Pure marker — Select's root walks children synchronously to extract
 // SelectItems from <SelectContent>. SelectContent itself renders nothing.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function SelectContent(_props: { children: React.ReactNode }) {
   return null;
 }
@@ -173,7 +172,6 @@ function SelectContent(_props: { children: React.ReactNode }) {
 // SelectItem — data-only; rendered as <option> by SelectTrigger via context
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function SelectItem(_props: SelectItemProps) {
   return null;
 }

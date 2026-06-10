@@ -142,7 +142,7 @@ export function MekademBand({ userId, fundId, balanceNis }: Props) {
                 Lower mekadem (favorable band) → higher monthly annuity.
               </li>
               <li>
-                If you've supplied a pension balance, the corresponding
+                If you&apos;ve supplied a pension balance, the corresponding
                 annuity band is shown under each mekadem value.
               </li>
               <li>

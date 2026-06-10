@@ -54,6 +54,7 @@ export function RuinProbabilityHero({
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset-on-deps-change: show the spinner + clear the stale error before each refetch.
     setLoading(true);
     setErr(null);
     api.retirement
@@ -188,9 +189,9 @@ export function RuinProbabilityHero({
             <p>
               The verdict comes from a 2000-path Monte Carlo simulation of
               monthly portfolio returns under sequence-of-returns risk.
-              Paths that hit zero stay at zero — once you've exhausted
+              Paths that hit zero stay at zero — once you&apos;ve exhausted
               liquid assets, the pension lump unlock at 60 does NOT rescue
-              you (correct model semantics for "running out of money").
+              you (correct model semantics for &quot;running out of money&quot;).
             </p>
             <p>
               Verdict logic uses a bootstrap 95% CI rather than the point
@@ -210,10 +211,10 @@ export function RuinProbabilityHero({
               </li>
             </ul>
             <p>
-              Replaces the prior "retire-ready age" calculation that
+              Replaces the prior &quot;retire-ready age&quot; calculation that
               ignored sequence-of-returns risk by checking only a single-
               month income ≥ expenses crossing under deterministic
-              assumptions — a user could "retire" right before a 2008-
+              assumptions — a user could &quot;retire&quot; right before a 2008-
               style sequence and find themselves OFF_TRACK within 2 years.
             </p>
           </MethodologyPanel>

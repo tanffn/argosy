@@ -71,7 +71,7 @@ export function StochasticFxCard({
           USD/NIS forecast — {yearsOut}y horizon
         </CardTitle>
         <CardDescription>
-          Lognormal random walk from today's ₪{initialFx.toFixed(2)}/$ with
+          Lognormal random walk from today&apos;s ₪{initialFx.toFixed(2)}/$ with
           σ_fx=0.08. NIS-denominated liabilities + USD-denominated assets
           mean FX drift materially affects retire-ready age.
         </CardDescription>
@@ -109,8 +109,8 @@ export function StochasticFxCard({
               <li>n_paths = 1000</li>
             </ul>
             <p>
-              A 30% NIS strengthening (toward P10) turns "retire-ready at
-              49" into "retire-ready at 56" for a USD-asset / NIS-liability
+              A 30% NIS strengthening (toward P10) turns &quot;retire-ready at
+              49&quot; into &quot;retire-ready at 56&quot; for a USD-asset / NIS-liability
               household — this is the #1 silent risk in the prior projection
               that used a fixed snapshot FX.
             </p>

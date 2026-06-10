@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
 import { MethodologyPanel } from "@/components/retirement/MethodologyPanel";
-import { ValueWithTooltip } from "@/components/retirement/ValueWithTooltip";
 import { api } from "@/lib/api";
 import type { LumpVsAnnuityResponse } from "@/lib/retirement-types";
 

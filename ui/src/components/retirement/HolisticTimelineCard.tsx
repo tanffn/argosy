@@ -65,6 +65,7 @@ export function HolisticTimelineCard({ userId }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset-on-deps-change: show the spinner + clear the stale error before each refetch.
     setLoading(true);
     setError(null);
     api.retirement

@@ -609,6 +609,10 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
     [userId],
   );
 
+  // Hook must precede the early return below (rules-of-hooks): the
+  // resolved-rows footer toggle is component state, not derived data.
+  const [showResolved, setShowResolved] = useState(false);
+
   if (objections.length === 0) return null;
 
   const lazyTranslate = async (idx: number, o: FMObjection) => {
@@ -655,7 +659,6 @@ export function FMObjectionsCard(props: FMObjectionsCardProps) {
   );
   const resolvedByFleet = sorted.filter((o) => o.action_kind == null);
   const visibleObjections = actionable.length > 0 ? actionable : sorted;
-  const [showResolved, setShowResolved] = useState(false);
 
   const persistStance = async (
     idx: number,

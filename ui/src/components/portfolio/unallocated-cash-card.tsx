@@ -68,6 +68,7 @@ export function UnallocatedCashCard({ userId, overageRatio = 1.5 }: Props) {
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional reset-on-deps-change: show the spinner before each refetch.
     setLoading(true);
     api
       .portfolioUnallocatedCashProposal(userId, overageRatio)

@@ -68,7 +68,6 @@ export function AdvisorWelcomeCard({ userId, gaps }: AdvisorWelcomeCardProps) {
 
   useEffect(() => {
     let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount fan-out, see Markdown / Plan pages for the canonical pattern.
     void (async () => {
       const [synth, draft, vestsOutlook, actions, anoms] = await Promise.all([
         api
