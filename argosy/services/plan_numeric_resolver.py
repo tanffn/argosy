@@ -632,6 +632,8 @@ def resolve_plan_numbers(
     # hop and the non-display callers never trigger the heavy canonical MC.
     if include_canonical_ages:
         _apply_canonical_dual_track_age(session, user_id, values)
+        if decision_run_id is not None:
+            _apply_canonical_allocation(session, decision_run_id, values)
 
     return ResolvedPlanNumbers(values=values)
 
@@ -698,6 +700,94 @@ def _apply_canonical_dual_track_age(
             confidence="MEDIUM",
             formula="earliest age the worst-10% real path preserves today's real principal to 95",
         )
+
+
+def _slug(label: str) -> str:
+    """Compact ascii slug for a canonical allocation-class label."""
+    import re as _re
+
+    return _re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:48]
+
+
+def _apply_canonical_allocation(
+    session: "Session", decision_run_id: int, values: dict[str, ResolvedValue]
+) -> None:
+    """Register the canonical TargetAllocationDoc weights + structural ages as
+    RESOLVED values, so the headline-numeric-source gate can trace every
+    Argosy-derived allocation number the plan prose cites (the NVDA target,
+    each asset-class target %, the concentration cap) instead of flagging them
+    as fabrications.
+
+    Source: the persisted ``target_allocation_json`` on the plan version that
+    THIS decision run produced — i.e. the exact doc the prose was rendered
+    from. Best-effort; any failure leaves the keys absent (the gate then flags
+    the numbers, which is the safe direction). Percent values are stored as
+    FRACTIONS to match the resolver's pct convention (the gate scales ×100).
+    """
+    from argosy.state.models import PlanVersion
+
+    try:
+        pv = session.execute(
+            select(PlanVersion)
+            .where(PlanVersion.decision_run_id == decision_run_id)
+            .order_by(PlanVersion.id.desc())
+        ).scalars().first()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.alloc_lookup_failed err=%s", exc)
+        return
+    if pv is None or not pv.target_allocation_json:
+        return
+    try:
+        import json as _json
+
+        doc = _json.loads(pv.target_allocation_json)
+    except Exception:  # noqa: BLE001
+        return
+
+    # Per-class target weights (percent-points in the doc → fraction here).
+    for cls in doc.get("classes", []) or []:
+        label = cls.get("label") or cls.get("class_label") or cls.get("name")
+        tgt = cls.get("target_pct")
+        if label is None or tgt is None:
+            continue
+        key = f"allocation.{_slug(label)}_target_pct"
+        values[key] = ResolvedValue(
+            key=key,
+            value=float(tgt) / 100.0,
+            unit="pct",
+            status="resolved",
+            source_locator=f"target_allocation_doc.classes[{label!r}].target_pct",
+            confidence="HIGH",
+            formula="canonical TargetAllocationDoc strategic class weight",
+        )
+
+    # NVDA concentration cap (doc carries percent-points).
+    cap = doc.get("nvda_cap_pct")
+    if cap is not None and "concentration.nvda_cap_pct" not in values:
+        values["concentration.nvda_cap_pct"] = ResolvedValue(
+            key="concentration.nvda_cap_pct",
+            value=float(cap) / 100.0,
+            unit="pct",
+            status="resolved",
+            source_locator="target_allocation_doc.nvda_cap_pct",
+            confidence="HIGH",
+            formula="canonical concentration cap",
+        )
+
+    # Structural ages the prose legitimately cites — statutory + MC horizon
+    # constants, not fabrications: 60 (keren/kupot partial unlock), 67
+    # (statutory pension age), 95 (Monte-Carlo solvency horizon).
+    for age, key, why in (
+        (60.0, "statutory.pension_unlock_age", "age-60 keren/kupot partial unlock"),
+        (67.0, "statutory.retirement_age", "statutory pension age 67"),
+        (95.0, "mc.solvency_horizon_age", "Monte-Carlo solvency horizon"),
+    ):
+        if key not in values:
+            values[key] = ResolvedValue(
+                key=key, value=age, unit="age", status="resolved",
+                source_locator=f"statutory_constant ({why})",
+                confidence="HIGH", formula=why,
+            )
 
 
 def _apply_fx_boi(session: "Session", values: dict[str, ResolvedValue]) -> None:
