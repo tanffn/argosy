@@ -3027,11 +3027,9 @@ def post_draft_accept(
             GateCheck.DISTILLATE_SECTION_BINDING,
         }
         sections_present = bool(getattr(pv, "sections_json", None))
-        blocking_checks = (
-            set(GateCheck)
-            if sections_present
-            else set(GateCheck) - _SECTION_DEPENDENT
-        )
+        blocking_checks = set(GateCheck)
+        if not sections_present:
+            blocking_checks -= _SECTION_DEPENDENT
         blocking = {
             check: gate_verdict.for_check(check)
             for check in blocking_checks

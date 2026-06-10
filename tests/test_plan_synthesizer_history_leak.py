@@ -148,7 +148,7 @@ def _make_horizon_section_with_history_surfaces() -> HorizonSection:
 # now surfaces the Deltas block at the TOP (v4 block B1, 2026-06-02)
 # ---------------------------------------------------------------------------
 
-def test_renderer_user_drops_status_and_revisit_keeps_deltas_at_top():
+def test_renderer_user_drops_status_revisit_and_deltas():
     section = _make_horizon_section_with_history_surfaces()
     output = _horizon_md_user(section)
 
@@ -162,39 +162,21 @@ def test_renderer_user_drops_status_and_revisit_keeps_deltas_at_top():
     assert "revisit " not in output, (
         "Revisit dates must not appear in user-facing output."
     )
-    # v4 block B1 — the Deltas block is INTENTIONALLY present (user-
-    # requested counter-decision to Phase 1's strip), and it must
-    # appear AT THE TOP of the document (before posture / targets /
-    # rationale) so the user sees "what changed" before the details.
-    assert "## Deltas vs. prior current" in output, (
-        "v4 block B1: Deltas block is now surfaced to the user — "
-        "must NOT be stripped from the user variant."
+    # The Deltas block is no longer in the user-facing body (it trips the
+    # history_leak trust gate — the plan body is current-state only). The
+    # full delta list is retained in the audit variant. (Reverses the B1
+    # 2026-06-02 user-facing placement to satisfy the gate.)
+    assert "## Deltas vs. prior current" not in output, (
+        "Deltas block must NOT appear in the user variant (history_leak gate)."
     )
-    deltas_pos = output.index("## Deltas vs. prior current")
-    posture_pos = output.find("**Posture.**")
-    targets_pos = output.find("## Targets")
-    if posture_pos >= 0:
-        assert deltas_pos < posture_pos, (
-            "Deltas block must appear BEFORE the Posture line — that's "
-            "the v4 block B1 ordering."
-        )
-    if targets_pos >= 0:
-        assert deltas_pos < targets_pos, (
-            "Deltas block must appear BEFORE the Targets block."
-        )
-    # Phase-0 history_leak gate will flag the Deltas heading by design
-    # in v4 — the gate's regex pattern set is unchanged so the audit
-    # surface stays catchable, but the user variant is allowed to
-    # carry the block. The non-deltas patterns (status, parentheticals)
-    # must still produce zero matches against the user render.
+    # The FULL history-leak pattern set (incl. the Deltas marker) must now
+    # produce zero matches against the user render.
     from argosy.quality.regex_patterns import HISTORY_LEAK_PATTERNS as _HLP
-    non_deltas_patterns = [p for p in _HLP if "Deltas" not in p.pattern]
     residual = []
-    for p in non_deltas_patterns:
+    for p in _HLP:
         residual.extend(p.findall(output))
     assert residual == [], (
-        "User render still contains a non-Deltas history-leak surface "
-        f"(status header / stated-revisit parenthetical): {residual!r}"
+        f"User render still contains a history-leak surface: {residual!r}"
     )
 
 

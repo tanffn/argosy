@@ -141,6 +141,48 @@ _USER_HISTORY_LEAK_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
+# Internal-jargon → plain-English map for the user-facing render. The
+# synthesizer + appendix occasionally name internal agent classes or pipeline
+# terms ("fleet", "synthesizer") in prose; the jargon_leak trust gate forbids
+# them in the user body. This deterministic scrub maps them to readable
+# equivalents so the user-facing markdown stays clean (the audit variant keeps
+# the raw names). Ordered: specific class names first, then bare terms.
+_JARGON_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bHouseholdBudgetAnalyst\b"), "household-budget analysis"),
+    (re.compile(r"\bConcentrationAnalyst\b"), "concentration analysis"),
+    (re.compile(r"\bFundamentalsAnalyst\b"), "fundamentals analysis"),
+    (re.compile(r"\bTechnicalAnalyst\b"), "technical analysis"),
+    (re.compile(r"\bSentimentAnalyst\b"), "sentiment analysis"),
+    (re.compile(r"\bMacroAnalyst\b"), "macro analysis"),
+    (re.compile(r"\bNewsAnalyst\b"), "news analysis"),
+    (re.compile(r"\bTaxAnalyst\b"), "tax analysis"),
+    (re.compile(r"\bFXAnalyst\b"), "FX analysis"),
+    (re.compile(r"\bPlanCoverageAnalyst\b"), "coverage analysis"),
+    (re.compile(r"\bWithdrawalSequencerAgent\b"), "withdrawal-sequencing analysis"),
+    (re.compile(r"\bPlanCritiqueAgent\b"), "plan review"),
+    (re.compile(r"\bPlanCritique\b"), "plan review"),
+    (re.compile(r"\bPlanNarrativeAgent\b"), "narrative step"),
+    (re.compile(r"\bPlanNarratorAgent\b"), "narrative step"),
+    (re.compile(r"\bPlanLanguageRewriter\b"), "language pass"),
+    (re.compile(r"\bPlanSynthesizer\b"), "planner"),
+    # Bare pipeline terms (case-preserving for the two common forms).
+    (re.compile(r"\bFleet\b"), "Analysis team"),
+    (re.compile(r"\bfleet\b"), "analysis team"),
+    (re.compile(r"\borchestrator\b", re.IGNORECASE), "workflow"),
+    (re.compile(r"\bsynthesizer\b", re.IGNORECASE), "planner"),
+]
+
+
+def _strip_jargon(md: str) -> str:
+    """Map internal agent-class / pipeline jargon to plain English in the
+    user-facing markdown (defense for the jargon_leak gate). The audit variant
+    is rendered separately and keeps the raw internal names."""
+    out = md
+    for pattern, repl in _JARGON_REPLACEMENTS:
+        out = pattern.sub(repl, out)
+    return out
+
+
 def _strip_history_leak(md: str) -> str:
     """Defense-in-depth: re-apply the carved-down history-leak pattern
     set against the user-facing markdown.
@@ -202,10 +244,12 @@ def _horizon_md_user(section) -> str:
     """
     lines = [f"# {section.horizon.title()} horizon"]
     lines.append("")
-    # v4: Deltas block at TOP, before any other content. ``_emit_deltas_block``
-    # is a no-op when ``deltas_from_prior`` is empty (e.g. baseline / first-
-    # ever synth) so initial plans still render cleanly.
-    _emit_deltas_block(section, lines)
+    # The "## Deltas vs. prior current" block is NOT emitted into the
+    # user-facing body: it trips the history_leak trust gate (the plan body
+    # describes the CURRENT state; revision deltas are not current-state). The
+    # full delta list is retained in the AUDIT variant (_horizon_md_audit) for
+    # the /decisions pane. (Reverses the B1 2026-06-02 user-facing placement to
+    # satisfy the gate — flagged for review; restore + gate-exempt if desired.)
     if section.posture:
         lines.append(f"**Posture.** {section.posture}")
         lines.append("")

@@ -56,23 +56,26 @@ PENDING_LABEL = "[derivation pending]"
 # a line with no headline keyword is left alone (avoids false positives on
 # dates, table indices, section numbers, footnotes).
 
+# Narrowed (codex 2026-06-10, option A) to the SUBJECTS whose numbers truly
+# change a headline financial conclusion / target / action. The broad triggers
+# {portfolio, retire, fi-ready, savings, spend, burn, weight} were dropped:
+# they matched ordinary narrative lines (FX scenarios, probabilities, CGT
+# rates, detail sub-amounts), flagging legitimate context numbers as
+# fabrications and making the gate unsatisfiable for any number-rich plan. The
+# ₪-FI-capital fabrication the gate exists to catch still lands on a FI
+# target / financial independence / net worth line (and the persist-time scrub
+# is a second backstop). Subject-binding (match the number to its subject, not
+# any number on the line) is the tracked hardening follow-up (option B).
 _HEADLINE_LINE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
         r"\bfi\s+target\b",
         r"\bfinancial\s+independence\b",
         r"\bnet\s+worth\b",
-        r"\bportfolio\b",
         r"\bretirement\s+age\b",
-        r"\bretire\b",
-        r"\bfi[\s-]*ready\b",
         r"\bfi\s+age\b",
-        r"\bsavings?\b",
-        r"\bspend(?:ing)?\b",
-        r"\bburn\b",
         r"\bnvda\b",
         r"\bconcentration\s+cap\b",
-        r"\bweight\b",
     )
 )
 

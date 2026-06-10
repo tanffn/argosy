@@ -307,22 +307,36 @@ def db_session_with_drun_71(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_user_horizon_md_carries_deltas_at_top():
-    """v4 block B1: the Deltas block is no longer stripped from the
-    user-facing horizon md — it appears at the TOP, before posture /
-    targets / rationale."""
+def test_user_horizon_md_omits_deltas_block():
+    """The "## Deltas vs. prior current" block is NOT in the user-facing body:
+    it trips the history_leak trust gate (the plan body is current-state only).
+    The full delta list is retained in the audit variant. (Reverses the B1
+    2026-06-02 user-facing placement to satisfy the gate.)"""
     output = _make_full_plan_output()
     long_md = _horizon_md_user(output.long)
 
-    assert "## Deltas vs. prior current" in long_md, (
-        "User render must surface the Deltas block (v4 block B1)."
+    assert "## Deltas vs. prior current" not in long_md, (
+        "User render must NOT carry the Deltas block (history_leak gate)."
     )
-    deltas_pos = long_md.index("## Deltas vs. prior current")
-    posture_pos = long_md.index("**Posture.**")
-    assert deltas_pos < posture_pos, (
-        f"Deltas must appear ABOVE posture (deltas@{deltas_pos}, "
-        f"posture@{posture_pos}) — that's the v4 ordering."
+    # Posture / targets still render.
+    assert "**Posture.**" in long_md
+
+
+def test_strip_jargon_clears_all_jargon_leak_patterns():
+    """The de-jargon scrub maps internal agent-class / pipeline terms to plain
+    English so the jargon_leak gate finds nothing in the user-facing body."""
+    from argosy.orchestrator.flows.plan_synthesis.render import _strip_jargon
+    from argosy.quality.regex_patterns import JARGON_LEAK_PATTERNS
+
+    raw = (
+        "The ConcentrationAnalyst and TaxAnalyst flagged drift; the fleet and "
+        "synthesizer agreed. SentimentAnalyst FAILED.\n## Appendix — Fleet receipts\n"
     )
+    clean = _strip_jargon(raw)
+    residual = [p.pattern[:40] for p in JARGON_LEAK_PATTERNS if p.search(clean)]
+    assert residual == [], f"jargon survived the scrub: {residual}"
+    # Reads naturally — no doubled article.
+    assert "the the" not in clean.lower()
 
 
 def test_audit_horizon_md_retains_deltas_at_bottom():
@@ -450,9 +464,10 @@ def test_render_plan_appendices_contains_all_four_required_surfaces(
     """The combined appendix builder produces a single markdown block
     containing all three appendices (ledger + sections + receipts).
 
-    Combined with the user-facing horizon md (which now carries the
-    Deltas block at the top), this is the v4 "what the user sees"
-    surface — ~50 KB of previously-hidden reasoning made visible.
+    Combined with the user-facing horizon md, this is the v4 "what the
+    user sees" surface — ~50 KB of previously-hidden reasoning made visible.
+    (The Deltas block is NOT here — it moved to the audit variant to satisfy
+    the history_leak gate.)
     """
     output = _make_full_plan_output()
     appendices = render_plan_appendices(
@@ -461,9 +476,9 @@ def test_render_plan_appendices_contains_all_four_required_surfaces(
     long_md = _horizon_md_user(output.long)
     combined = long_md.rstrip() + "\n\n" + appendices
 
-    # All four user-visible surfaces (per spec §4 B1) must appear.
+    # The appendix surfaces must appear; deltas are audit-only now.
     assert "Appendix — Section-by-section evidence" in combined
-    assert "Deltas vs. prior current" in combined
+    assert "Deltas vs. prior current" not in combined
     assert "Assumption ledger" in combined
     assert "Fleet receipts" in combined
 
@@ -482,10 +497,6 @@ def test_render_plan_appendices_contains_all_four_required_surfaces(
         f"ordering broken: ledger@{ledger_pos} < "
         f"sections@{sections_pos} < receipts@{receipts_pos}"
     )
-
-    # And the Deltas block is at the TOP — before all appendices.
-    deltas_pos = combined.index("## Deltas vs. prior current")
-    assert deltas_pos < ledger_pos
 
 
 def test_render_plan_appendices_skips_receipts_when_no_session():

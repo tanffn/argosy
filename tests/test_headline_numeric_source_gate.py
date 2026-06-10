@@ -100,7 +100,8 @@ def test_canonical_age_flagged_when_manifest_lacks_it():
     unsourced headline age — the exact false-positive the /accept gate-manifest
     opt-in prevents once the synth states the canonical earliest-safe age."""
     resolved = _resolved(**{"retirement.fi_age": 49.0})
-    md = {"long": "The earliest you can safely retire is age 46."}
+    # "retirement age" is a kept headline subject (narrowed set, codex A).
+    md = {"long": "The earliest-safe retirement age is age 46."}
     violations = check_headline_numeric_source(md, resolved)
     assert len(violations) == 1
     assert violations[0].check is GateCheck.HEADLINE_NUMERIC_SOURCE
@@ -152,7 +153,9 @@ def test_fabricated_fi_target_flagged_when_resolver_pending():
 
 def test_fabricated_age_flagged():
     resolved = _resolved(**{"retirement.fi_age": 49.0})
-    md = {"long": "You could retire at age 44 comfortably."}
+    # Uses the kept "retirement age" subject (the narrowed headline set drops
+    # the bare "retire" trigger — codex 2026-06-10 option A).
+    md = {"long": "Your projected retirement age is age 44."}
     violations = check_headline_numeric_source(md, resolved)
     assert len(violations) == 1
     assert "44" in violations[0].detail
