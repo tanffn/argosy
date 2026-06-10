@@ -260,6 +260,9 @@ def _medium_worker(*, session: Session, user_id: str,
             horizon_short_md_audit=_horizon_md_audit(output.short),
             synthesis_inputs_json=inputs.model_dump_json(),
             target_allocation_json=_target_allocation_json,
+            sections_json=json.dumps(
+                [s.model_dump(mode="json") for s in output.sections]
+            ),
         )
         session.add(draft)
         decision_run.finished_at = datetime.now(timezone.utc)

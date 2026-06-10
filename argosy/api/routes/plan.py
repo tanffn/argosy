@@ -3013,6 +3013,36 @@ def post_draft_accept(
     gate_warning: dict | None = None
     if gate_verdict is not None and not gate_verdict.passes:
         from argosy.config import get_settings
+        from argosy.quality.gate_types import GateCheck
+
+        # Evidence-contract checks depend on the structured `sections` the
+        # synthesizer produces. A plan written before sections were persisted
+        # (sections_json NULL) cannot satisfy them — so for legacy rows these
+        # three are demoted to WARN (surfaced, never blocking). A freshly
+        # synthesized plan DOES carry sections, so it is held to the full
+        # contract (codex 2026-06-10: enforce 4/5 for new plans, WARN legacy).
+        _SECTION_DEPENDENT = {
+            GateCheck.SECTION_COVERAGE,
+            GateCheck.EVIDENCE_PER_SECTION,
+            GateCheck.DISTILLATE_SECTION_BINDING,
+        }
+        sections_present = bool(getattr(pv, "sections_json", None))
+        blocking_checks = (
+            set(GateCheck)
+            if sections_present
+            else set(GateCheck) - _SECTION_DEPENDENT
+        )
+        blocking = {
+            check: gate_verdict.for_check(check)
+            for check in blocking_checks
+            if gate_verdict.violations[check]
+        }
+        warned = {
+            check: gate_verdict.for_check(check)
+            for check in gate_verdict.violations
+            if gate_verdict.violations[check] and check not in blocking
+        }
+
         if override_gate:
             _publish(
                 "plan.draft.accepted.override",
@@ -3022,7 +3052,7 @@ def post_draft_accept(
                     "gate_summary": gate_verdict.summary(),
                 },
             )
-        elif get_settings().plan_gate_enforce:
+        elif blocking and get_settings().plan_gate_enforce:
             raise HTTPException(
                 status_code=422,
                 detail={
@@ -3031,10 +3061,12 @@ def post_draft_accept(
                     "violations_by_check": {
                         check.value: [
                             {"detail": v.detail, "locator": v.locator}
-                            for v in gate_verdict.for_check(check)
+                            for v in viols
                         ]
-                        for check in gate_verdict.violations
-                        if gate_verdict.violations[check]
+                        for check, viols in blocking.items()
+                    },
+                    "warned_only": {
+                        check.value: len(viols) for check, viols in warned.items()
                     },
                     "hint": (
                         "Re-run synthesis after addressing the violations, "
@@ -3044,9 +3076,9 @@ def post_draft_accept(
                 },
             )
         else:
-            # Warning mode (default at launch): proceed with accept
-            # but include the violation summary on the response so the
-            # UI can surface a banner.
+            # Warning mode (or only warn-demoted checks tripped): proceed
+            # with accept but include the violation summary on the response
+            # so the UI can surface a banner.
             gate_warning = {
                 "summary": gate_verdict.summary(),
                 "total_violations": gate_verdict.total_violations,
@@ -3135,10 +3167,22 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
             from argosy.agents.plan_synthesizer_types import (
                 HorizonSection,
                 PlanSynthesisOutput,
+                Section,
                 SynthesisInputs,
             )
             import json as _json
             if pv.horizon_long_json and pv.horizon_medium_json and pv.horizon_short_json:
+                # Reconstruct the structured sections the synthesizer produced
+                # (persisted in sections_json from migration 0065). Without this
+                # the rebuilt object has zero sections and section_coverage /
+                # evidence_per_section fail for EVERY plan. NULL on legacy rows
+                # → empty list → the evidence checks WARN, never block.
+                _sections: list[Section] = []
+                if pv.sections_json:
+                    _sections = [
+                        Section.model_validate(d)
+                        for d in _json.loads(pv.sections_json)
+                    ]
                 synth = PlanSynthesisOutput(
                     long=HorizonSection.model_validate_json(pv.horizon_long_json),
                     medium=HorizonSection.model_validate_json(pv.horizon_medium_json),
@@ -3150,6 +3194,7 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
                            '"agent_report_ids":[],"debate_outcome_ids":[],'
                            '"decision_run_id":null}'
                     ),
+                    sections=_sections,
                 )
         except Exception:
             synth = None

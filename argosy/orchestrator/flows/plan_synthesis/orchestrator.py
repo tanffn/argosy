@@ -883,6 +883,12 @@ def run_synthesis(
         horizon_short_md_audit=_pkg._horizon_md_audit(output.short),
         synthesis_inputs_json=inputs.model_dump_json(),
         target_allocation_json=_target_allocation_json,
+        # Persist the structured sections so the plan-output gate can
+        # evaluate section_coverage + evidence_per_section against the REAL
+        # sections at promote-time (they were previously dropped on the floor).
+        sections_json=json.dumps(
+            [s.model_dump(mode="json") for s in output.sections]
+        ),
     )
     session.add(draft)
     session.commit()

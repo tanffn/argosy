@@ -179,6 +179,15 @@ class PlanVersion(Base):
     # forward on synthesis and backfilled for the current plan.
     target_allocation_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Structured synthesis sections (the flat ``PlanSynthesisOutput.sections``
+    # list — each Section carries its own ``horizon`` + evidence contract).
+    # The synthesizer already produces these at runtime; persisting them lets
+    # the plan-output gate evaluate section_coverage + evidence_per_section
+    # against the REAL sections at promote-time instead of reconstructing a
+    # sectionless object from the per-horizon JSON. NULL on plan versions
+    # written before this column existed (legacy → gate WARNs, never blocks).
+    sections_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Provenance Wave A (migration 0019) — points back at the catalog row
     # for the bytes this plan was imported from. Optional because synthesized
     # drafts and superseded historical rows have no source file.
