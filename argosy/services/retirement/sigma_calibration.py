@@ -71,7 +71,10 @@ def _classify_position(p: dict) -> str:
         return "cash"
     if "real estate" in asset_type or "real estate" in details:
         return "real_estate"
-    if "treasury" in details or symbol in ("SGOV", "BND", "AGG", "TLT", "SHY"):
+    if "treasury" in details or symbol in (
+        "SGOV", "BND", "AGG", "TLT", "SHY",
+        "IB01", "IBTA", "CBU3", "ERNS",  # UCITS $-Treasury twins (domicile-aware plan)
+    ):
         return "bonds"
     if symbol in _CONCENTRATED_TICKERS:
         return "concentrated_equity"

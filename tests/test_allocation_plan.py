@@ -180,8 +180,29 @@ class TestInstruments:
         alloc = build_target_allocation()
         core = next(c for c in alloc.classes if c.label == "US broad-market core")
         div = next(c for c in alloc.classes if c.label == "Dividend-quality income")
-        assert "VOO" in {i.symbol for i in core.instruments}
-        assert "SCHD" in {i.symbol for i in div.instruments}
+        # UCITS-preferred (domicile-aware): Irish-domiciled twins, NOT US-domiciled
+        # VOO/SCHD, so the canonical plan does not add US-situs estate exposure for a
+        # non-US-person (cite estate_tax_nonresidents.md / feedback_canonical_allocation_ucits_preferred).
+        assert "CSPX" in {i.symbol for i in core.instruments}
+        assert "FUSA" in {i.symbol for i in div.instruments}
+
+    def test_no_canonical_class_uses_a_us_domiciled_primary(self) -> None:
+        """Guardrail: the canonical instrument layer must stay UCITS-preferred.
+
+        US-domiciled ETF shares are US-situs for a non-US-person and re-introducing
+        them would silently rebuild the ~$1M estate-tax tail the plan exists to shrink.
+        NVDA is the one sanctioned US-situs holding (managed down by the trim glide).
+        """
+        us_domiciled = {"VOO", "SCHD", "VEA", "SCHG", "USMV", "VNQ", "SGOV", "VGSH",
+                        "VTI", "VXUS", "VIG", "SCHP", "QQQM", "IBIT"}
+        alloc = build_target_allocation()
+        for c in alloc.classes:
+            for i in c.instruments:
+                if i.symbol == "NVDA":
+                    continue
+                assert i.symbol not in us_domiciled, (
+                    f"{c.label}/{i.symbol} is a US-domiciled primary — use the UCITS twin"
+                )
 
     def test_every_instrument_is_sourced_with_a_rationale(self) -> None:
         alloc = build_target_allocation()

@@ -86,8 +86,15 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=28.0,
         instruments=(
             AllocationInstrument(
-                symbol="VOO", role="primary", weight_within_class_pct=100.0,
-                rationale="Total US-market core (VOO); VTI an equivalent low-cost substitute.",
+                symbol="CSPX", role="primary", weight_within_class_pct=100.0,
+                rationale=(
+                    "S&P 500 core via the Irish-domiciled UCITS CSPX (Acc, ~0.07% TER), "
+                    "NOT US-domiciled VOO. For a non-US-person, UCITS shares are NOT "
+                    "US-situs, so this preserves the economic exposure without adding to "
+                    "the ~$1M US estate-tax tail (no US-Israel estate treaty; $60K NRA "
+                    "exemption, up to 40%). Cite domain_knowledge/tax/us/estate_tax_nonresidents.md. "
+                    "The household already holds CSPX."
+                ),
             ),
         ),
         sigma_class="us_equity",
@@ -107,8 +114,17 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=19.0,
         instruments=(
             AllocationInstrument(
-                symbol="SCHD", role="primary", weight_within_class_pct=100.0,
-                rationale="Dividend-quality payers (SCHD); VIG a comparable substitute.",
+                symbol="FUSA", role="primary", weight_within_class_pct=100.0,
+                rationale=(
+                    "US quality-income via the Irish UCITS FUSA (Fidelity US Quality "
+                    "Income, Acc, ~0.25% TER), NOT US-domiciled SCHD. There is no exact "
+                    "SCHD twin in UCITS form — FUSA is the closest US-quality-dividend "
+                    "wrapper and tilts slightly more mega-cap/quality-growth (an accepted "
+                    "drift). Chosen because UCITS shares avoid US-situs estate exposure "
+                    "for a non-US-person; cite estate_tax_nonresidents.md. SCHD itself is "
+                    "fundamentally sound — the swap is for DOMICILE, not for any momentum/"
+                    "fundamental weakness."
+                ),
             ),
         ),
         sigma_class="us_equity",
@@ -132,8 +148,14 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=12.0,
         instruments=(
             AllocationInstrument(
-                symbol="VEA", role="primary", weight_within_class_pct=100.0,
-                rationale="Developed ex-US equity (VEA); VXUS a broader substitute that also adds EM.",
+                symbol="EXUS", role="primary", weight_within_class_pct=100.0,
+                rationale=(
+                    "Developed-world ex-US equity via the Irish UCITS EXUS (Xtrackers "
+                    "MSCI World ex-USA, Acc, ~0.15% TER), NOT US-domiciled VEA. Closest "
+                    "ex-US developed twin; lacks small-caps and carries minor MSCI/FTSE "
+                    "country drift (accepted). UCITS domicile keeps it off the US-situs "
+                    "estate base; cite estate_tax_nonresidents.md."
+                ),
             ),
         ),
         sigma_class="intl_equity",
@@ -156,8 +178,14 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=6.0,
         instruments=(
             AllocationInstrument(
-                symbol="SCHG", role="primary", weight_within_class_pct=100.0,
-                rationale="US large-cap growth ex-single-name (SCHG); deliberately excludes NVDA.",
+                symbol="R1GR", role="primary", weight_within_class_pct=100.0,
+                rationale=(
+                    "US large-cap growth via the Irish UCITS R1GR (iShares Russell 1000 "
+                    "Growth, Acc, ~0.18% TER), NOT US-domiciled SCHG. Closest UCITS growth "
+                    "twin; note it is NOT ex-NVDA (the index still holds NVDA), a small "
+                    "overlap accepted given the sleeve's 6% size. UCITS domicile avoids "
+                    "US-situs estate exposure; cite estate_tax_nonresidents.md."
+                ),
             ),
         ),
         sigma_class="us_equity",
@@ -177,8 +205,13 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=6.0,
         instruments=(
             AllocationInstrument(
-                symbol="USMV", role="primary", weight_within_class_pct=100.0,
-                rationale="Min-volatility / quality-defensive US equity (USMV).",
+                symbol="SPMV", role="primary", weight_within_class_pct=100.0,
+                rationale=(
+                    "US min-volatility via the Irish UCITS SPMV (iShares S&P 500 Min "
+                    "Volatility, Acc, ~0.20% TER), NOT US-domiciled USMV. Kept US-only "
+                    "(the WORLD min-vol UCITS MVOL would break the plan's US/ex-US split). "
+                    "UCITS domicile avoids US-situs estate exposure; cite estate_tax_nonresidents.md."
+                ),
             ),
         ),
         sigma_class="low_vol_equity",
@@ -198,8 +231,14 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=1.0,
         instruments=(
             AllocationInstrument(
-                symbol="VNQ", role="primary", weight_within_class_pct=100.0,
-                rationale="US REIT proxy (VNQ) for the token real-assets sleeve; a TIPS fund (SCHP) is the inflation-hedge alternative.",
+                symbol="DPYA", role="primary", weight_within_class_pct=100.0,
+                rationale=(
+                    "Real-assets sliver via the Irish UCITS DPYA (iShares Developed "
+                    "Markets Property Yield, Acc, ~0.59% TER), NOT US-domiciled VNQ. This "
+                    "is developed-WORLD property (not US-only REIT), an accepted broadening "
+                    "for a 1% token sleeve. UCITS domicile avoids US-situs estate exposure; "
+                    "cite estate_tax_nonresidents.md."
+                ),
             ),
         ),
         sigma_class="real_estate",
@@ -329,8 +368,16 @@ _FI_CASH = AllocationClass(
     ),
     instruments=(
         AllocationInstrument(
-            symbol="SGOV", role="primary", weight_within_class_pct=100.0,
-            rationale="0-3mo US T-bills (SGOV); the earmarked ILS short-makam hedge tranche is held within this sleeve.",
+            symbol="IB01", role="primary", weight_within_class_pct=100.0,
+            rationale=(
+                "0-1yr US Treasuries via the Irish UCITS IB01 (iShares $ Treasury Bond "
+                "0-1yr, Acc, ~0.07% TER), NOT US-domiciled SGOV. Cleanest of all for a "
+                "non-US-person is holding T-bills / USD deposits DIRECTLY (estate-exempt "
+                "under IRC §2105(b)(1)/§871(h)); IB01 is the ETF fallback for trading "
+                "convenience and is non-US-situs as a UCITS wrapper. The earmarked ILS "
+                "short-makam hedge tranche is held within this sleeve. Cite "
+                "estate_tax_nonresidents.md."
+            ),
         ),
     ),
 )
@@ -348,8 +395,13 @@ _FI_BONDS = AllocationClass(
     dissent="Part of the contested FI sleeve; weight follows the derived FI total.",
     instruments=(
         AllocationInstrument(
-            symbol="VGSH", role="primary", weight_within_class_pct=100.0,
-            rationale="Short-duration US Treasuries / IG (VGSH); SGOV an alternative.",
+            symbol="IBTA", role="primary", weight_within_class_pct=100.0,
+            rationale=(
+                "1-3yr US Treasuries via the Irish UCITS IBTA (iShares $ Treasury Bond "
+                "1-3yr, Acc, ~0.07% TER), NOT US-domiciled VGSH. As with the cash sleeve, "
+                "a direct 1-3y Treasury ladder is cleanest for a non-US-person; IBTA is "
+                "the non-US-situs ETF fallback. Cite estate_tax_nonresidents.md."
+            ),
         ),
     ),
 )

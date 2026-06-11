@@ -277,10 +277,18 @@ _TICKER_TO_SECTOR: dict[str, str] = {
     "ACWD": "ETF/Index",
     "CNDX": "ETF/Index",
     "XZEW": "ETF/Index",
+    # UCITS twins the domicile-aware canonical plan buys (non-US-situs).
+    "FUSA": "ETF/Index",
+    "EXUS": "ETF/Index",
+    "R1GR": "ETF/Index",
+    "SPMV": "ETF/Index",
+    "DPYA": "ETF/Index",
     # Value ETF (kept separate per spec).
     "VTV": "Value ETF",
     # Cash equivalents / T-bills.
     "SGOV": "Cash/T-Bill",
+    "IB01": "Cash/T-Bill",
+    "IBTA": "Cash/T-Bill",
     # Healthcare / REIT (lumped into Other per spec).
     "BMY": "Other",
     "O": "Other",
@@ -312,11 +320,19 @@ _TICKER_TO_ASSET_CLASS_FALLBACK: dict[str, str] = {
     "ACWD": "Equity",
     "CNDX": "Equity",
     "XZEW": "Equity",
+    # UCITS twins the domicile-aware canonical plan buys (non-US-situs).
+    "FUSA": "Equity",
+    "EXUS": "Equity",
+    "R1GR": "Equity",
+    "SPMV": "Equity",
+    "DPYA": "Equity",
     "VTV": "Equity",
     "BMY": "Equity",
     "O": "Equity",
     "BRK.B": "Equity",
     "SGOV": "Cash",
+    "IB01": "Cash",
+    "IBTA": "Cash",
     "IBIT": "Alternatives",
 }
 
