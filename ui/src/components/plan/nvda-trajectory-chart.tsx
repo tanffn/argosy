@@ -108,14 +108,29 @@ function buildSeries(data: NvdaTrajectoryResponse): SeriesPoint[] {
     date_iso: data.today_date,
     shares: data.today_shares,
   });
-  running = data.today_shares;
-  for (const e of futureEvents) {
-    running += e.delta;
-    points.push({
-      t_ms: e.t_ms,
-      date_iso: new Date(e.t_ms).toISOString().slice(0, 10),
-      shares: running,
-    });
+
+  // ----- FUTURE half -----
+  // Prefer the canonical forward sell glide (today_shares → target_shares at
+  // the 13% cap) from the projection — the real planned reduction path. Only
+  // when it is absent do we fall back to distributing the small 2026 reduction
+  // program over a few quarters (which never reaches the canonical target).
+  const path = data.projected_path ?? [];
+  if (path.length > 1) {
+    for (const p of path) {
+      const ms = Date.parse(p.date + "T00:00:00Z");
+      if (Number.isNaN(ms) || ms <= todayMs) continue;
+      points.push({ t_ms: ms, date_iso: p.date, shares: p.shares });
+    }
+  } else {
+    running = data.today_shares;
+    for (const e of futureEvents) {
+      running += e.delta;
+      points.push({
+        t_ms: e.t_ms,
+        date_iso: new Date(e.t_ms).toISOString().slice(0, 10),
+        shares: running,
+      });
+    }
   }
   return points;
 }

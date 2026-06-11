@@ -3800,6 +3800,13 @@ export interface NvdaTrajectoryResponse {
   };
   ceiling_target_shares: number | null;
   ceiling_target_label: string | null;
+  projected_path?: NvdaProjectionPathPoint[];
+}
+
+export interface NvdaProjectionPathPoint {
+  date: string;
+  shares: number;
+  tradeable_weight_pct: number;
 }
 
 export interface CashflowPoint {

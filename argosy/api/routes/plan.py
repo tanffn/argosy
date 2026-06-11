@@ -1709,6 +1709,12 @@ class NvdaSaleEvent(BaseModel):
     price_usd: float | None = None
 
 
+class NvdaProjectionPathPoint(BaseModel):
+    date: str  # YYYY-MM-DD
+    shares: int
+    tradeable_weight_pct: float
+
+
 class NvdaTrajectoryResponse(BaseModel):
     today_date: str  # YYYY-MM-DD
     today_shares: int | None
@@ -1717,6 +1723,10 @@ class NvdaTrajectoryResponse(BaseModel):
     reduction_program: dict
     ceiling_target_shares: float | None
     ceiling_target_label: str | None
+    # The canonical forward sell glide (today_shares → target_shares at the
+    # 13% cap) from compute_nvda_projection — the planned reduction path the
+    # chart draws as the "sell points". Empty when the projection is unavailable.
+    projected_path: list[NvdaProjectionPathPoint] = []
 
 
 def _deep_find(node, key: str):
@@ -1867,6 +1877,7 @@ def get_draft_nvda_trajectory(
     # the trajectory reconciles to the plan instead of an identity_yaml ceiling.
     ceiling_value: float | None = None
     ceiling_label: str | None = None
+    projected_path: list[NvdaProjectionPathPoint] = []
     try:
         from argosy.services.nvda_projection import compute_nvda_projection
 
@@ -1878,6 +1889,14 @@ def get_draft_nvda_trajectory(
             ceiling_label = f"Canonical NVDA target ({_proj.cap_pct:.0f}% cap)"
             if today_shares is None:
                 today_shares = _proj.today_shares
+            projected_path = [
+                NvdaProjectionPathPoint(
+                    date=p.point_date.isoformat(),
+                    shares=int(p.shares),
+                    tradeable_weight_pct=round(float(p.tradeable_weight_pct), 2),
+                )
+                for p in _proj.points
+            ]
     except Exception:  # noqa: BLE001 — best-effort; fall back to the draft ceiling
         pass
 
@@ -1922,6 +1941,7 @@ def get_draft_nvda_trajectory(
         },
         ceiling_target_shares=ceiling_value,
         ceiling_target_label=ceiling_label,
+        projected_path=projected_path,
     )
 
 
