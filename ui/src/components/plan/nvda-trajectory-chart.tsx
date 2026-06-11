@@ -185,6 +185,35 @@ export function NvdaTrajectoryChart(props: NvdaTrajectoryChartProps) {
     [data],
   );
 
+  // "Imaginary" future sell points — the PLANNED sells along the canonical
+  // forward glide, sampled ~quarterly. Drawn as hollow red dots to distinguish
+  // them from the solid red dots of sales the user has actually transacted.
+  const plannedSellDots = useMemo(() => {
+    const path = data?.projected_path ?? [];
+    if (todayMs == null || data?.today_shares == null || path.length < 2) {
+      return [] as Array<{ t_ms: number; shares: number; note: string }>;
+    }
+    const dots: Array<{ t_ms: number; shares: number; note: string }> = [];
+    const QUARTER_MS = 85 * 86400_000;
+    let lastMs = todayMs;
+    let lastShares = data.today_shares;
+    for (const p of path) {
+      const ms = Date.parse(p.date + "T00:00:00Z");
+      if (Number.isNaN(ms) || ms <= todayMs) continue;
+      if (ms - lastMs >= QUARTER_MS) {
+        const sold = Math.max(0, lastShares - p.shares);
+        dots.push({
+          t_ms: ms,
+          shares: p.shares,
+          note: `Planned sell ~${sold.toLocaleString()} → ${p.shares.toLocaleString()} sh`,
+        });
+        lastMs = ms;
+        lastShares = p.shares;
+      }
+    }
+    return dots;
+  }, [data, todayMs]);
+
   return (
     <Card>
       <CardHeader>
@@ -199,6 +228,7 @@ export function NvdaTrajectoryChart(props: NvdaTrajectoryChartProps) {
           {data?.reduction_program.remaining
             ? ` · ${data.reduction_program.remaining.toLocaleString()} shares left in reduction program (${data.reduction_program.progress_pct}% done)`
             : ""}
+          {plannedSellDots.length > 0 ? " · ○ = planned sells" : ""}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -290,6 +320,17 @@ export function NvdaTrajectoryChart(props: NvdaTrajectoryChartProps) {
                   r={5}
                   fill="#f43f5e"
                   stroke="#9f1239"
+                />
+              ))}
+              {plannedSellDots.map((s, i) => (
+                <ReferenceDot
+                  key={`planned-sell-${i}`}
+                  x={s.t_ms}
+                  y={s.shares}
+                  r={4}
+                  fill="transparent"
+                  stroke="#f43f5e"
+                  strokeWidth={2}
                 />
               ))}
             </LineChart>
