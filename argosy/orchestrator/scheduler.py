@@ -32,6 +32,7 @@ from argosy.orchestrator.loops.monthly_cycle import MonthlyCycleLoop
 from argosy.orchestrator.loops.process_cooling import ProcessCoolingLoop
 from argosy.orchestrator.loops.quarterly import QuarterlyLoop
 from argosy.orchestrator.loops.plan_watcher import PlanWatcherLoop
+from argosy.orchestrator.loops.speculative_monitor_loop import SpeculativeMonitorLoop
 from argosy.orchestrator.loops.watchlist import WatchlistLoop
 from argosy.orchestrator.loops.weekly_review import WeeklyReviewLoop
 from argosy.orchestrator.triggers import is_market_open
@@ -113,6 +114,18 @@ class Scheduler:
                 enabled=True,
                 user_id=self.user_id,
                 settings=self.settings,
+            )
+        )
+
+        # S18: daily stop-loss / sell-signal sweep over the high-risk
+        # speculative single names (the user's "live daily monitor" ask).
+        # Always-on like process_cooling — no cadence settings field; cheap
+        # (a handful of yfinance reads in a worker thread).
+        self.register_loop(
+            SpeculativeMonitorLoop(
+                schedule=LoopSchedule(interval_seconds=86_400),
+                enabled=True,
+                user_id=self.user_id,
             )
         )
 
