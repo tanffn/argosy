@@ -160,6 +160,25 @@ Full backend suite after the spine: **3692 passed / 9 failed / 16 skipped (44 mi
 > the core "$250k → buy this" UI list still uses the legacy hardcoded windfall map
 > (rebind to `diff_plan_vs_holdings` next); snapshot is 79d stale. Full report:
 > `tmp_review/SESSION18_HANDOVER.md`.
+>
+> **s18 root-cause (codex-confirmed) + systemic fix.** WHY the US-domiciled ship
+> happened: the canonical instrument layer (`allocation_plan.py`) is a FROZEN
+> deterministic constant OUTSIDE both agent authority and the trust gate. The
+> agents reasoned about UCITS (it's in v34 prose) and `plan_critique` ran + fed the
+> synthesizer, but `target_allocation_json` is built deterministically downstream
+> and NO gate validated its instruments — and critique reviews PROSE, not the
+> structured doc. Same root as the "orphaned allocation" problem. Fix: **`2e33927`**
+> `AllocationInstrument.domicile`/`is_us_situs` + `validate_instrument_domicile`;
+> **`16a9b3c`** wired into `_run_plan_output_gate` as `GateCheck.INSTRUMENT_DOMICILE`
+> (RED non-sanctioned US-situs primary AUTO-BLOCKS promotion) + fixed two same-class
+> bugs codex caught (windfall hardcoded US tickers→UCITS; FUSA Acc-vs-"cash-flow"
+> contradiction). NVDA = the one sanctioned US-situs sleeve. Wrap: smoke 128 + 45
+> alloc/windfall/domicile green. **STILL OPEN:** (a) live re-synthesis — BLOCKED on
+> the user's ANTHROPIC_API_KEY (absent from agent env); ready script
+> `tmp_review/rerun_synthesis_s18.py`; the gate guarantees the re-run is UCITS-clean
+> or hard-fails. (b) ≥5% canonical satellite CLASS (σ/age money-math, codex-verify,
+> no silent FI compensation). (c) codex Q4 `InstrumentConstraintGate` + instrument
+> registry covering proposal/windfall paths.
 
 - **4 caplog/structlog full-suite isolation** — `test_allocation_glidepath` ×2, `test_lifecycle`, `test_plan_language_rewriter`. Pass in isolation; fail only in the full suite (a structlog/caplog global-state contaminator). s14's flaky-fix (`d5faca1`) fixed `test_cadence_loop_tick_widening` + addressed the named root causes (structlog `cache_logger_on_first_use=False`, conftest `logging.disable` reset + `clear_contextvars`), but a **further full-suite contaminator remains** → needs a contaminator bisect. **DEFERRED** (test-infra, not product). **Record correction:** `d5faca1`'s message over-states "repair 5 failures" — the true outcome is **1 fixed + 4 root-caused-but-still-failing** in the full suite (I committed on repro-evidence before the full-suite confirmation).
 - **5 discord network/mock** — `test_discord_attachment_fetch` ×5. Environment-dependent; the failing count varies run-to-run.
