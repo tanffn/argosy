@@ -335,6 +335,52 @@ export interface HighPotentialSleeveDTO {
   note: string;
 }
 
+// Trend radar (S18) — live high-potential SOURCING across no-API-key signal
+// families (momentum / attention / growth), pump-guarded + liquidity-filtered.
+export interface TrendCandidateDTO {
+  ticker: string;
+  name: string;
+  score: number;
+  families: string[];
+  reasons: string[];
+  price: number | null;
+  market_cap: number | null;
+  dollar_volume: number | null;
+  pct_change: number | null;
+}
+
+export interface TrendRadarDTO {
+  shortlist: TrendCandidateDTO[];
+  quarantine_count: number;
+  source_counts: Record<string, unknown>;
+  note: string;
+}
+
+// Speculative-position monitor (S18) — stop-loss / sell signals for the
+// high-risk single names (hard + trailing stop + 50d-MA momentum break).
+export interface MonitorSignalDTO {
+  ticker: string;
+  name: string;
+  action: "SELL" | "TRIM" | "WATCH" | "HOLD";
+  reason: string;
+  current_price: number;
+  entry_price: number;
+  peak_price: number;
+  hard_stop_level: number;
+  trailing_stop_level: number;
+  binding_stop_level: number;
+  pct_from_entry: number;
+  pct_from_peak: number;
+  distance_to_stop_pct: number;
+}
+
+export interface SpeculativeMonitorDTO {
+  signals: MonitorSignalDTO[];
+  hard_stop_pct: number;
+  trailing_stop_pct: number;
+  note: string;
+}
+
 // Unallocated-cash overage proposal (2026-05-29). Self-tuning trigger
 // based on the plan's cash target -- not a hard-coded dollar threshold.
 // Null response = no overage detected (current cash within tolerance).
@@ -1704,9 +1750,23 @@ export const api = {
   portfolioHighPotentialSleeve: (
     cashUsd: number = 250_000,
     sleevePct: number = 5.0,
+    liveRadar: boolean = false,
   ): Promise<HighPotentialSleeveDTO> =>
     getJSON<HighPotentialSleeveDTO>(
-      `/api/portfolio/high-potential-sleeve?cash_usd=${cashUsd}&sleeve_pct=${sleevePct}`,
+      `/api/portfolio/high-potential-sleeve?cash_usd=${cashUsd}&sleeve_pct=${sleevePct}` +
+        (liveRadar ? "&live_radar=true" : ""),
+    ),
+  portfolioTrendRadar: (limit: number = 15): Promise<TrendRadarDTO> =>
+    getJSON<TrendRadarDTO>(`/api/portfolio/trend-radar?limit=${limit}`),
+  portfolioSpeculativeMonitor: (
+    tickers: string = "",
+    hardStopPct: number = 20.0,
+    trailingStopPct: number = 25.0,
+  ): Promise<SpeculativeMonitorDTO> =>
+    getJSON<SpeculativeMonitorDTO>(
+      `/api/portfolio/speculative-monitor?hard_stop_pct=${hardStopPct}` +
+        `&trailing_stop_pct=${trailingStopPct}` +
+        (tickers ? `&tickers=${encodeURIComponent(tickers)}` : ""),
     ),
   // Monthly portfolio snapshot upload (2026-05-29). User drops the
   // Family Finances Status TSV; the route persists under the

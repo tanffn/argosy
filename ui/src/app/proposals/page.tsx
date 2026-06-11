@@ -35,6 +35,8 @@ import { DeferModal } from "@/components/proposals/DeferModal";
 import { RejectModal } from "@/components/proposals/RejectModal";
 import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { HighPotentialSleeveCard } from "@/components/portfolio/high-potential-sleeve-card";
+import { TrendRadarCard } from "@/components/portfolio/trend-radar-card";
+import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monitor-card";
 import { useWSEvents } from "@/lib/ws";
 
 const USER_ID = "ariel";
@@ -632,8 +634,12 @@ export default function ProposalsPage() {
       {/* High-potential satellite sleeve — the med-high-risk slice (≥5% of a
           cash deployment), conviction-weighted, blend vehicle (UCITS thematic
           core + single-name carve-out). */}
-      <section id="high-potential" className="scroll-mt-6">
+      <section id="high-potential" className="scroll-mt-6 space-y-4">
         <HighPotentialSleeveCard />
+        {/* Live SOURCING for the single-name carve-out + the exit-discipline
+            monitor (stop-loss / sell signals) for the high-risk names. */}
+        <TrendRadarCard />
+        <SpeculativeMonitorCard />
       </section>
 
       {error && <p className="text-sm text-error font-mono">{error}</p>}
