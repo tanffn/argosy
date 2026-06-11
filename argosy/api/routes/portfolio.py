@@ -823,6 +823,94 @@ def get_unallocated_cash_proposal(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/portfolio/high-potential-sleeve — the med-high-risk satellite slice
+# the user asked to carve out of a cash deployment (≥5% of redeployed cash).
+# Conviction-weighted, blend vehicle (UCITS thematic core + single-name
+# carve-out). See argosy/services/high_potential_sleeve.py.
+# ---------------------------------------------------------------------------
+
+
+class SleeveCandidateDTO(BaseModel):
+    ticker: str
+    name: str
+    vehicle: str  # ucits_thematic | single_name
+    conviction: str  # HIGH | MEDIUM | LOW
+    thesis: str
+    us_situs: bool  # single US name/ETF → adds estate-tax exposure
+    held_today: bool
+    source: str  # advisor_seed | fleet_validated
+    amount_usd: float
+    pct_of_sleeve: float
+
+
+class HighPotentialSleeveDTO(BaseModel):
+    """GET /api/portfolio/high-potential-sleeve response."""
+
+    cash_basis_usd: float
+    sleeve_pct_of_cash: float
+    sleeve_budget_usd: float
+    vehicle_split: dict[str, float]
+    candidates: list[SleeveCandidateDTO]
+    note: str
+
+
+@router.get(
+    "/high-potential-sleeve",
+    response_model=HighPotentialSleeveDTO,
+)
+def get_high_potential_sleeve(
+    cash_usd: float = Query(
+        250_000.0, ge=0.0, le=100_000_000.0,
+        description="Cash being redeployed; the sleeve is sleeve_pct of this.",
+    ),
+    sleeve_pct: float = Query(
+        5.0, ge=0.0, le=25.0,
+        description="High-potential share of the redeployed cash (default 5%).",
+    ),
+) -> HighPotentialSleeveDTO:
+    """Conviction-weighted high-potential sleeve for a cash deployment.
+
+    Blend vehicle: a UCITS thematic core (non-US-situs) + a single-name
+    carve-out (US-situs — estate-tax accepted on that slice). Seed candidates
+    are the advisor's first pass (``source='advisor_seed'``); the agent fleet
+    validates/augments + final-sizes on the next live synth.
+    """
+    from argosy.services.high_potential_sleeve import (
+        build_high_potential_sleeve,
+        sleeve_vehicle_split,
+    )
+
+    budget = cash_usd * sleeve_pct / 100.0
+    allocs = build_high_potential_sleeve(budget)
+    return HighPotentialSleeveDTO(
+        cash_basis_usd=round(cash_usd, 2),
+        sleeve_pct_of_cash=sleeve_pct,
+        sleeve_budget_usd=round(budget, 2),
+        vehicle_split=sleeve_vehicle_split(allocs),
+        candidates=[
+            SleeveCandidateDTO(
+                ticker=a.candidate.ticker,
+                name=a.candidate.name,
+                vehicle=a.candidate.vehicle,
+                conviction=a.candidate.conviction,
+                thesis=a.candidate.thesis,
+                us_situs=a.candidate.us_situs,
+                held_today=a.candidate.held_today,
+                source=a.candidate.source,
+                amount_usd=a.amount_usd,
+                pct_of_sleeve=a.pct_of_sleeve,
+            )
+            for a in allocs
+        ],
+        note=(
+            "Advisor first-pass seeds, conviction-weighted; the agent fleet "
+            "validates + final-sizes on the next synthesis. UCITS thematic core "
+            "is non-US-situs; single-name carve-out adds estate-tax exposure."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
 # POST /api/portfolio/refresh-rsu-vests — explicit RSU vest ingest trigger
 #
 # The monthly cycle (``argosy/orchestrator/loops/monthly_cycle.py``)

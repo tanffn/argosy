@@ -310,6 +310,31 @@ export interface GenerateTsvResponse {
   detail: string | null;
 }
 
+// High-potential ("satellite") sleeve (S18). The med-high-risk slice carved
+// out of a cash deployment (default 5% of redeployed cash). Blend vehicle:
+// UCITS thematic core (non-US-situs) + single-name carve-out (US-situs).
+export interface SleeveCandidateDTO {
+  ticker: string;
+  name: string;
+  vehicle: "ucits_thematic" | "single_name";
+  conviction: "HIGH" | "MEDIUM" | "LOW";
+  thesis: string;
+  us_situs: boolean;
+  held_today: boolean;
+  source: string;
+  amount_usd: number;
+  pct_of_sleeve: number;
+}
+
+export interface HighPotentialSleeveDTO {
+  cash_basis_usd: number;
+  sleeve_pct_of_cash: number;
+  sleeve_budget_usd: number;
+  vehicle_split: Record<string, number>;
+  candidates: SleeveCandidateDTO[];
+  note: string;
+}
+
 // Unallocated-cash overage proposal (2026-05-29). Self-tuning trigger
 // based on the plan's cash target -- not a hard-coded dollar threshold.
 // Null response = no overage detected (current cash within tolerance).
@@ -1675,6 +1700,13 @@ export const api = {
       `/api/portfolio/unallocated-cash-proposal?user_id=${encodeURIComponent(
         userId,
       )}&overage_ratio=${overageRatio}`,
+    ),
+  portfolioHighPotentialSleeve: (
+    cashUsd: number = 250_000,
+    sleevePct: number = 5.0,
+  ): Promise<HighPotentialSleeveDTO> =>
+    getJSON<HighPotentialSleeveDTO>(
+      `/api/portfolio/high-potential-sleeve?cash_usd=${cashUsd}&sleeve_pct=${sleevePct}`,
     ),
   // Monthly portfolio snapshot upload (2026-05-29). User drops the
   // Family Finances Status TSV; the route persists under the
