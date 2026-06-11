@@ -1871,6 +1871,28 @@ def get_draft_nvda_trajectory(
     except Exception:  # noqa: BLE001 — best-effort
         today_shares = None
 
+    # Prefer the authoritative Schwab sale records (nvda_sale_progress.sales_2026,
+    # ingested from the Equity Awards Transactions CSV) over the TSV's sale block,
+    # which is generated from internal state and can lag the brokerage. Each entry:
+    # {date: YYYY-MM-DD, shares, avg_price_usd}.
+    _sales_2026 = reduction.get("sales_2026") if isinstance(reduction, dict) else None
+    if isinstance(_sales_2026, list) and _sales_2026:
+        _authoritative: list[NvdaSaleEvent] = []
+        for s in _sales_2026:
+            if not isinstance(s, dict):
+                continue
+            d = s.get("date")
+            sh = s.get("shares")
+            if isinstance(d, str) and isinstance(sh, (int, float)):
+                _authoritative.append(NvdaSaleEvent(
+                    date=d,
+                    shares=int(sh),
+                    price_usd=s.get("avg_price_usd"),
+                ))
+        if _authoritative:
+            _authoritative.sort(key=lambda x: x.date)
+            past_sales_raw = _authoritative
+
     # T2.4 — the canonical NVDA target comes from the single projection
     # (codex-verified share math: 11,471 -> floor(cap/current x shares) = 2,299
     # at the 13% cap), wiring the previously-orphaned compute_nvda_projection so
