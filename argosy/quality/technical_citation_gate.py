@@ -47,12 +47,17 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
 # ---------------------------------------------------------------------------
 #
 # The value pattern matches "RSI 73.4", "RSI: 73.4", "RSI of 73.4",
-# "RSI is 73.4", "RSI=73.4", "14-day RSI 73.4" — but NOT "RSI > 70" /
-# "RSI above 70" (a threshold, not a reading): the value must follow the
-# keyword + an optional copula/colon, with no comparison operator between.
-
+# "RSI is 73.4", "RSI=73.4", "RSI-14 73.4", "RSI(14) 73.4", "14-day RSI 73.4",
+# "RSI 14-day reading is 56.0" — but NOT "RSI > 70" / "RSI above 70" (those
+# never reach a captured value). An optional PERIOD qualifier ("(14)", "-14",
+# "14-day") is consumed separately so it is never mistaken for the reading.
 _RSI_VALUE = re.compile(
-    r"\bRSI\b\s*(?:of|is|at|reading|=|:)?\s*(\d{1,3}(?:\.\d+)?)\b",
+    r"\bRSI\b"
+    r"(?:\s*\(\s*\d{1,2}\s*\))?"          # RSI(14)
+    r"(?:\s*-\s*\d{1,2}(?!\s*\.))?"        # RSI-14  (not RSI-14.x)
+    r"(?:\s*\d{1,2}\s*-?\s*day)?"          # RSI 14-day / 14 day
+    r"\s*(?:of|is|at|reading|=|:|,|\s)*?"  # copula words (NOT comparison ops)
+    r"(\d{1,3}(?:\.\d+)?)",
     re.IGNORECASE,
 )
 
@@ -60,6 +65,21 @@ _RSI_VALUE = re.compile(
 _INDICATORS: dict[str, tuple[re.Pattern[str], float, str]] = {
     "rsi_14": (_RSI_VALUE, 1.5, "RSI"),
 }
+
+# A reading is a THRESHOLD/rule, not a stated current value, when these cues
+# sit just before the keyword or just after the captured value. We skip those
+# (e.g. "trim only if RSI 70 or higher", "add when RSI above 30").
+_THRESHOLD_BEFORE = re.compile(
+    r"\b(if|when|whenever|once|until|unless|above|below|over|under|"
+    r"exceeds?|reach(?:es|ed)?|past|beyond|cross(?:es|ed)?|stays?|holds?)\b"
+    r"|[<>]=?\s*$",
+    re.IGNORECASE,
+)
+_THRESHOLD_AFTER = re.compile(
+    r"^\s*(?:or\s+(?:higher|lower|above|below|more|less)|\+|or\s+richer|"
+    r"threshold|\bor\s+above\b)",
+    re.IGNORECASE,
+)
 
 
 def parse_indicators_from_report_json(
@@ -167,41 +187,51 @@ def check_technical_citation_integrity(
         if not text:
             continue
         for line_no, line in enumerate(text.splitlines(), start=1):
-            on_line = [
-                s for s in symbols
-                if re.search(rf"\b{re.escape(s)}\b", line)
-            ]
-            if not on_line:
+            # All symbol occurrences on the line, as (symbol, start) pairs.
+            occ: list[tuple[str, int]] = []
+            for s in symbols:
+                for sm in re.finditer(rf"\b{re.escape(s)}\b", line):
+                    occ.append((s, sm.start()))
+            if not occ:
                 continue
             for payload_key, (pattern, tol, label) in _INDICATORS.items():
-                live = [
-                    indicators[s][payload_key]
-                    for s in on_line
-                    if payload_key in indicators[s]
-                ]
-                if not live:
-                    continue  # no symbol on this line carries this indicator
                 for m in pattern.finditer(line):
+                    # Skip THRESHOLD/rule contexts ("if RSI 70 or higher").
+                    before = line[max(0, m.start() - 24): m.start()]
+                    after = line[m.end(): m.end() + 16]
+                    if _THRESHOLD_BEFORE.search(before) or _THRESHOLD_AFTER.search(after):
+                        continue
                     stated_str = m.group(1)
                     try:
                         stated = float(stated_str)
                     except (TypeError, ValueError):
                         continue
-                    if any(abs(stated - c) <= tol for c in live):
+                    # Bind to the NEAREST symbol that carries this indicator
+                    # (a value is attributed to the symbol it sits closest to,
+                    # not to "any on-line symbol" — which would false-negative
+                    # "SCHD RSI 36 vs SCHG" against SCHG's 36).
+                    anchor = m.start()
+                    nearest: str | None = None
+                    best = 1 << 30
+                    for s, pos in occ:
+                        if payload_key not in indicators[s]:
+                            continue
+                        d = abs(pos - anchor)
+                        if d < best:
+                            best, nearest = d, s
+                    if nearest is None:
+                        continue  # no on-line symbol carries this indicator
+                    live = indicators[nearest][payload_key]
+                    if abs(stated - live) <= tol:
                         continue
-                    live_str = ", ".join(
-                        f"{s}={indicators[s][payload_key]:g}"
-                        for s in on_line
-                        if payload_key in indicators[s]
-                    )
                     violations.append(
                         GateViolation(
                             check=GateCheck.TECHNICAL_CITATION,
                             detail=(
-                                f"prose {label} {stated_str} for "
-                                f"{'/'.join(on_line)} contradicts the current "
-                                f"technical payload ({live_str}) — re-ground "
-                                f"from the live indicator or drop the claim"
+                                f"prose {label} {stated_str} for {nearest} "
+                                f"contradicts the current technical payload "
+                                f"({nearest}={live:g}) — re-ground from the live "
+                                f"indicator or drop the claim"
                             ),
                             locator=f"horizon={horizon_name} line={line_no}",
                         )

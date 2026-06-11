@@ -122,3 +122,45 @@ def test_no_payload_for_symbol_skips():
 def test_empty_inputs_safe():
     assert check_technical_citation_integrity({}, _indicators()) == []
     assert check_technical_citation_integrity({"short": "SCHD RSI 73.4"}, {}) == []
+
+
+# --- codex-review hardening (s18) -----------------------------------------
+
+
+def test_codex4_multi_symbol_binds_to_nearest_not_any():
+    # "SCHD RSI 36.0 vs SCHG": 36.0 sits next to SCHD, so it must be checked
+    # against SCHD (56.05) and FLAGGED — not silently passed because it happens
+    # to match the farther SCHG's 36.04.
+    text = {"short": "SCHD RSI 36.0 vs SCHG looks divergent."}
+    viols = check_technical_citation_integrity(text, _indicators())
+    assert len(viols) == 1
+    assert "SCHD" in viols[0].detail and "36.0" in viols[0].detail
+
+
+def test_codex5_threshold_rule_not_flagged():
+    # "if RSI 70 or higher" is a rule threshold, not a stated reading.
+    text = {
+        "short": "SCHD: trim only if RSI 70 or higher.",
+        "medium": "AMD: add when RSI 30 or lower.",
+        "long": "SCHD stays a hold until RSI 75.",
+    }
+    assert check_technical_citation_integrity(text, _indicators()) == []
+
+
+def test_codex6_period_notation_forms():
+    # period qualifier must not be captured as the value; all of these are the
+    # stale 73.4 reading for SCHD and must flag (SCHD live = 56.05).
+    for line in (
+        "SCHD RSI-14 73.4 is overbought.",
+        "SCHD RSI(14) 73.4 today.",
+        "SCHD 14-day RSI 73.4 now.",
+    ):
+        viols = check_technical_citation_integrity({"short": line}, _indicators())
+        assert len(viols) == 1, line
+        assert "73.4" in viols[0].detail, line
+
+
+def test_codex6_period_notation_does_not_misread_period_as_value():
+    # "RSI 14-day reading is 56.0" -> the value is 56.0 (matches live), NOT 14.
+    text = {"short": "SCHD RSI 14-day reading is 56.0, neutral."}
+    assert check_technical_citation_integrity(text, _indicators()) == []

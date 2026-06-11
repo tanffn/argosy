@@ -9,10 +9,11 @@ pre-committed exit, not a discretionary "should I sell?" each day.
 Three exit triggers, evaluated per position (see :func:`evaluate`):
 
   * HARD STOP — current price <= entry x (1 - hard_stop_pct). Caps the loss
-    from the entry. Default 25%.
+    from the entry. Default 20% (the tighter floor that binds a fresh name).
   * TRAILING STOP — current price <= peak-since-entry x (1 - trailing_pct).
     Locks in gains once a name has run, and exits a name that round-trips.
-    Default 20%. The binding stop is the HIGHER of the two levels.
+    Default 25% (looser; binds once peak > entry x 1.067). The binding stop is
+    the HIGHER of the two levels (the first to trigger).
   * MOMENTUM BREAK — price below its 50-day moving average. A softer,
     thesis-watch signal (the trend that sourced the name has broken), surfaced
     as TRIM/WATCH rather than a hard SELL.
@@ -149,9 +150,17 @@ def _fetch_history_stats(ticker: str, since: date) -> dict[str, float] | None:
     """Best-effort yfinance fetch: current close, peak close since ``since``,
     and the 50-day moving average. Returns None on any failure."""
     try:
+        from datetime import timedelta
+
         import yfinance as yf
 
-        hist = yf.Ticker(ticker).history(period="1y", auto_adjust=True)
+        # Start early enough to cover BOTH the peak-since-entry window and the
+        # 50-day MA: min(entry date, today-100d) minus a buffer. period="1y"
+        # would cap the peak for a position entered more than a year ago and
+        # could miss the true since-entry high (codex review).
+        today = date.today()
+        start = min(since, today - timedelta(days=100)) - timedelta(days=10)
+        hist = yf.Ticker(ticker).history(start=str(start), auto_adjust=True)
         if hist is None or hist.empty:
             return None
         closes = hist["Close"].dropna()
@@ -192,7 +201,10 @@ def run_monitor(
     fabricated. Returns signals sorted with the most actionable first
     (SELL > TRIM > WATCH > HOLD).
     """
-    order = {"SELL": 0, "TRIM": 1, "WATCH": 2, "HOLD": 3}
+    # WATCH (a stop is imminent) ranks above TRIM (a softer momentum break) to
+    # match evaluate()'s precedence, which checks the watch band before the
+    # MA break (codex review — keep ordering and evaluate() consistent).
+    order = {"SELL": 0, "WATCH": 1, "TRIM": 2, "HOLD": 3}
     signals: list[MonitorSignal] = []
     for w in watch:
         stats = _fetch_history_stats(w.ticker, w.entry_date)
