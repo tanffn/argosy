@@ -158,12 +158,13 @@ def _fetch_history_stats(ticker: str, since: date) -> dict[str, float] | None:
         if closes.empty:
             return None
         current = float(closes.iloc[-1])
-        # peak since the entry date (tz-naive compare on the date index)
+        # peak + entry-reference since the entry date (tz-naive date compare)
         since_ts = str(since)
         recent = closes[closes.index >= since_ts]
         peak = float(recent.max()) if not recent.empty else current
+        entry_close = float(recent.iloc[0]) if not recent.empty else current
         ma_50 = float(closes.tail(50).mean()) if len(closes) >= 50 else None
-        out = {"current": current, "peak": peak}
+        out = {"current": current, "peak": peak, "entry_close": entry_close}
         if ma_50 is not None:
             out["ma_50"] = ma_50
         return out
@@ -197,7 +198,8 @@ def run_monitor(
         stats = _fetch_history_stats(w.ticker, w.entry_date)
         if stats is None:
             continue
-        entry = w.entry_price or stats["current"]
+        # explicit cost basis wins; else anchor to the close at the entry date
+        entry = w.entry_price or stats.get("entry_close") or stats["current"]
         signals.append(evaluate(
             PositionSnapshot(
                 ticker=w.ticker,

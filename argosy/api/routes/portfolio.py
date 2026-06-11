@@ -867,21 +867,54 @@ def get_high_potential_sleeve(
         5.0, ge=0.0, le=25.0,
         description="High-potential share of the redeployed cash (default 5%).",
     ),
+    live_radar: bool = Query(
+        False,
+        description=(
+            "When true, source the single-name carve-out LIVE from the trend "
+            "radar (network) instead of the advisor seeds; the UCITS thematic "
+            "core is always kept. Slower (~5s)."
+        ),
+    ),
+    radar_names: int = Query(
+        4, ge=1, le=10,
+        description="How many radar single-names to include when live_radar.",
+    ),
 ) -> HighPotentialSleeveDTO:
     """Conviction-weighted high-potential sleeve for a cash deployment.
 
     Blend vehicle: a UCITS thematic core (non-US-situs) + a single-name
     carve-out (US-situs — estate-tax accepted on that slice). Seed candidates
-    are the advisor's first pass (``source='advisor_seed'``); the agent fleet
-    validates/augments + final-sizes on the next live synth.
+    are the advisor's first pass (``source='advisor_seed'``); with
+    ``live_radar`` the carve-out is sourced from the trend radar
+    (``source='trend_radar'``). The agent fleet validates + final-sizes on the
+    next live synth.
     """
     from argosy.services.high_potential_sleeve import (
         build_high_potential_sleeve,
         sleeve_vehicle_split,
+        ucits_thematic_seeds,
     )
 
     budget = cash_usd * sleeve_pct / 100.0
-    allocs = build_high_potential_sleeve(budget)
+    candidates = None
+    radar_note = ""
+    if live_radar:
+        try:
+            from argosy.services.trend_radar import scan_trends, to_sleeve_candidates
+
+            scan = scan_trends(limit=radar_names)
+            single_names = to_sleeve_candidates(scan.shortlist, max_names=radar_names)
+            if single_names:
+                candidates = ucits_thematic_seeds() + single_names
+                radar_note = (
+                    f" Single-name carve-out sourced LIVE from the trend radar "
+                    f"({len(single_names)} names, scored + liquidity-filtered + "
+                    "pump-guarded). Pair every single name with the speculative "
+                    "monitor (/api/portfolio/speculative-monitor) for stop-loss."
+                )
+        except Exception:  # noqa: BLE001 — radar is best-effort; fall back to seeds
+            radar_note = " (live radar unavailable — showing advisor seeds.)"
+    allocs = build_high_potential_sleeve(budget, candidates)
     return HighPotentialSleeveDTO(
         cash_basis_usd=round(cash_usd, 2),
         sleeve_pct_of_cash=sleeve_pct,
@@ -906,6 +939,151 @@ def get_high_potential_sleeve(
             "Advisor first-pass seeds, conviction-weighted; the agent fleet "
             "validates + final-sizes on the next synthesis. UCITS thematic core "
             "is non-US-situs; single-name carve-out adds estate-tax exposure."
+            + radar_note
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/portfolio/trend-radar — live high-potential SOURCING. Fans out
+# across no-API-key signal families and surfaces names corroborated by >= 2
+# families and a clean liquidity profile. See argosy/services/trend_radar.py.
+# ---------------------------------------------------------------------------
+
+
+class TrendCandidateDTO(BaseModel):
+    ticker: str
+    name: str
+    score: float
+    families: list[str]
+    reasons: list[str]
+    price: float | None
+    market_cap: float | None
+    dollar_volume: float | None
+    pct_change: float | None
+
+
+class TrendRadarDTO(BaseModel):
+    shortlist: list[TrendCandidateDTO]
+    quarantine_count: int
+    source_counts: dict[str, object]
+    note: str
+
+
+@router.get("/trend-radar", response_model=TrendRadarDTO)
+def get_trend_radar(
+    limit: int = Query(15, ge=1, le=50),
+    cap_max_b: float = Query(
+        8.0, ge=0.5, le=500.0,
+        description="Max market cap in $B for the satellite band (default 8).",
+    ),
+) -> TrendRadarDTO:
+    """Live trend-radar scan (network ~5s). High-risk SOURCING for the sleeve
+    carve-out; every name needs the speculative monitor + stop-loss before
+    acting. NOT advice — candidates require fleet validation + a backtest."""
+    from argosy.services.trend_radar import LiquidityFilter, scan_trends
+
+    scan = scan_trends(filters=LiquidityFilter(cap_max=cap_max_b * 1e9), limit=limit)
+    return TrendRadarDTO(
+        shortlist=[
+            TrendCandidateDTO(
+                ticker=c.ticker, name=c.name, score=c.score,
+                families=list(c.families), reasons=list(c.reasons),
+                price=c.price, market_cap=c.market_cap,
+                dollar_volume=c.dollar_volume, pct_change=c.pct_change,
+            )
+            for c in scan.shortlist
+        ],
+        quarantine_count=len(scan.quarantine),
+        source_counts=scan.source_counts,
+        note=(
+            "Cross-source momentum/attention/growth signal, pump-guarded "
+            "(>=2 families) + liquidity-filtered. High-risk single names are "
+            "US-situs; size small and pair with a stop-loss. Backtest / paper-"
+            "trade before committing real capital."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/portfolio/speculative-monitor — daily exit-discipline read on the
+# high-risk single names. Hard + trailing stop + momentum break per position.
+# See argosy/services/speculative_monitor.py.
+# ---------------------------------------------------------------------------
+
+
+class MonitorSignalDTO(BaseModel):
+    ticker: str
+    name: str
+    action: str  # SELL | TRIM | WATCH | HOLD
+    reason: str
+    current_price: float
+    entry_price: float
+    peak_price: float
+    hard_stop_level: float
+    trailing_stop_level: float
+    binding_stop_level: float
+    pct_from_entry: float
+    pct_from_peak: float
+    distance_to_stop_pct: float
+
+
+class SpeculativeMonitorDTO(BaseModel):
+    signals: list[MonitorSignalDTO]
+    hard_stop_pct: float
+    trailing_stop_pct: float
+    note: str
+
+
+@router.get("/speculative-monitor", response_model=SpeculativeMonitorDTO)
+def get_speculative_monitor(
+    tickers: str = Query(
+        "",
+        description=(
+            "Comma-separated tickers to monitor. When omitted, monitors the "
+            "currently-held single-name sleeve seeds."
+        ),
+    ),
+    hard_stop_pct: float = Query(20.0, ge=1.0, le=90.0),
+    trailing_stop_pct: float = Query(25.0, ge=1.0, le=90.0),
+) -> SpeculativeMonitorDTO:
+    """Live stop-loss / sell-signal read on speculative single names.
+
+    Entry price defaults to today's price when a cost basis is unknown (so the
+    stop levels are anchored from today); supply real entries once bought.
+    Network-bound (yfinance per ticker)."""
+    from datetime import date, timedelta
+
+    from argosy.services.high_potential_sleeve import _SEED_CANDIDATES
+    from argosy.services.speculative_monitor import (
+        MonitorConfig,
+        WatchEntry,
+        run_monitor,
+    )
+
+    syms = [t.strip().upper() for t in tickers.split(",") if t.strip()]
+    if not syms:
+        syms = [
+            c.ticker for c in _SEED_CANDIDATES
+            if c.vehicle == "single_name" and c.held_today
+        ]
+    # v1: entry unknown → anchor stops from today; peak tracked over ~90d.
+    entry_date = date.today() - timedelta(days=90)
+    watch = [WatchEntry(ticker=s, entry_price=0.0, entry_date=entry_date) for s in syms]
+    cfg = MonitorConfig(
+        hard_stop_pct=hard_stop_pct / 100.0,
+        trailing_stop_pct=trailing_stop_pct / 100.0,
+    )
+    signals = run_monitor(watch, cfg=cfg)
+    return SpeculativeMonitorDTO(
+        signals=[MonitorSignalDTO(**vars(s)) for s in signals],
+        hard_stop_pct=hard_stop_pct,
+        trailing_stop_pct=trailing_stop_pct,
+        note=(
+            "Mechanical exit discipline for high-risk names. Entry defaults to "
+            "the price ~90d ago when no cost basis is known. SELL = a stop "
+            "breached; TRIM = momentum break below the 50d MA; WATCH = near a "
+            "stop. Re-checked daily by the scheduler."
         ),
     )
 

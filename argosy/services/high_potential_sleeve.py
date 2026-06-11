@@ -105,6 +105,12 @@ _SEED_CANDIDATES: tuple[SleeveCandidate, ...] = (
 )
 
 
+def ucits_thematic_seeds() -> tuple[SleeveCandidate, ...]:
+    """The non-US-situs UCITS thematic CORE seeds — kept as the sleeve core
+    even when the single-name carve-out is sourced live from the trend radar."""
+    return tuple(c for c in _SEED_CANDIDATES if c.vehicle == "ucits_thematic")
+
+
 def build_high_potential_sleeve(
     sleeve_budget_usd: float,
     candidates: tuple[SleeveCandidate, ...] | None = None,
@@ -144,4 +150,5 @@ __all__ = [
     "SleeveAllocation",
     "build_high_potential_sleeve",
     "sleeve_vehicle_split",
+    "ucits_thematic_seeds",
 ]
