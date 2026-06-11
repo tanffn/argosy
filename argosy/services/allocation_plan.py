@@ -86,7 +86,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=28.0,
         instruments=(
             AllocationInstrument(
-                symbol="CSPX", role="primary", weight_within_class_pct=100.0,
+                symbol="CSPX", role="primary", weight_within_class_pct=100.0, domicile="IE",
                 rationale=(
                     "S&P 500 core via the Irish-domiciled UCITS CSPX (Acc, ~0.07% TER), "
                     "NOT US-domiciled VOO. For a non-US-person, UCITS shares are NOT "
@@ -114,7 +114,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=19.0,
         instruments=(
             AllocationInstrument(
-                symbol="FUSA", role="primary", weight_within_class_pct=100.0,
+                symbol="FUSA", role="primary", weight_within_class_pct=100.0, domicile="IE",
                 rationale=(
                     "US quality-income via the Irish UCITS FUSA (Fidelity US Quality "
                     "Income, Acc, ~0.25% TER), NOT US-domiciled SCHD. There is no exact "
@@ -148,7 +148,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=12.0,
         instruments=(
             AllocationInstrument(
-                symbol="EXUS", role="primary", weight_within_class_pct=100.0,
+                symbol="EXUS", role="primary", weight_within_class_pct=100.0, domicile="IE",
                 rationale=(
                     "Developed-world ex-US equity via the Irish UCITS EXUS (Xtrackers "
                     "MSCI World ex-USA, Acc, ~0.15% TER), NOT US-domiciled VEA. Closest "
@@ -178,7 +178,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=6.0,
         instruments=(
             AllocationInstrument(
-                symbol="R1GR", role="primary", weight_within_class_pct=100.0,
+                symbol="R1GR", role="primary", weight_within_class_pct=100.0, domicile="IE",
                 rationale=(
                     "US large-cap growth via the Irish UCITS R1GR (iShares Russell 1000 "
                     "Growth, Acc, ~0.18% TER), NOT US-domiciled SCHG. Closest UCITS growth "
@@ -205,7 +205,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=6.0,
         instruments=(
             AllocationInstrument(
-                symbol="SPMV", role="primary", weight_within_class_pct=100.0,
+                symbol="SPMV", role="primary", weight_within_class_pct=100.0, domicile="IE",
                 rationale=(
                     "US min-volatility via the Irish UCITS SPMV (iShares S&P 500 Min "
                     "Volatility, Acc, ~0.20% TER), NOT US-domiciled USMV. Kept US-only "
@@ -231,7 +231,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ratio=1.0,
         instruments=(
             AllocationInstrument(
-                symbol="DPYA", role="primary", weight_within_class_pct=100.0,
+                symbol="DPYA", role="primary", weight_within_class_pct=100.0, domicile="IE",
                 rationale=(
                     "Real-assets sliver via the Irish UCITS DPYA (iShares Developed "
                     "Markets Property Yield, Acc, ~0.59% TER), NOT US-domiciled VNQ. This "
@@ -258,7 +258,7 @@ _NVDA_SLEEVE = _PanelSleeve(
     ratio=0.0,  # fixed weight, not part of the renormalised ratios
     instruments=(
         AllocationInstrument(
-            symbol="NVDA", role="primary", weight_within_class_pct=100.0,
+            symbol="NVDA", role="primary", weight_within_class_pct=100.0, domicile="US",
             rationale="The strategic single-stock position itself.",
         ),
     ),
@@ -368,7 +368,7 @@ _FI_CASH = AllocationClass(
     ),
     instruments=(
         AllocationInstrument(
-            symbol="IB01", role="primary", weight_within_class_pct=100.0,
+            symbol="IB01", role="primary", weight_within_class_pct=100.0, domicile="IE",
             rationale=(
                 "0-1yr US Treasuries via the Irish UCITS IB01 (iShares $ Treasury Bond "
                 "0-1yr, Acc, ~0.07% TER), NOT US-domiciled SGOV. Cleanest of all for a "
@@ -395,7 +395,7 @@ _FI_BONDS = AllocationClass(
     dissent="Part of the contested FI sleeve; weight follows the derived FI total.",
     instruments=(
         AllocationInstrument(
-            symbol="IBTA", role="primary", weight_within_class_pct=100.0,
+            symbol="IBTA", role="primary", weight_within_class_pct=100.0, domicile="IE",
             rationale=(
                 "1-3yr US Treasuries via the Irish UCITS IBTA (iShares $ Treasury Bond "
                 "1-3yr, Acc, ~0.07% TER), NOT US-domiciled VGSH. As with the cash sleeve, "

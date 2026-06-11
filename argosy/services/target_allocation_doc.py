@@ -25,12 +25,23 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 class AllocationInstrument(BaseModel):
-    """A named holding within an asset class (e.g. ``VOO`` inside the core sleeve)."""
+    """A named holding within an asset class (e.g. ``CSPX`` inside the core sleeve)."""
 
     symbol: str
     role: Literal["primary", "alt", "hold", "exit"]
     weight_within_class_pct: float  # sums to 100 within its class
     rationale: str = ""
+    # Fund/issuer domicile. The single most important attribute the doc was
+    # missing: without it nothing could validate that the chosen instruments
+    # don't rebuild US-situs estate exposure for a non-US-person. "IE"/"LU"/etc
+    # UCITS shares are NOT US-situs; "US" shares ARE. ``None`` = not yet stamped
+    # (the validator treats unknown as a warning, never silently OK).
+    domicile: Literal["US", "IE", "LU", "UK", "IL", "DE", "unknown"] | None = None
+
+    @property
+    def is_us_situs(self) -> bool:
+        """True iff a non-US-person's estate would count these shares as US-situs."""
+        return self.domicile == "US"
 
 
 class AllocationClassDoc(BaseModel):
@@ -66,6 +77,72 @@ class TargetAllocationDoc(BaseModel):
     provenance: str
     classes: list[AllocationClassDoc]
     glide: list[GlideWaypoint]  # today -> target over N quarters
+
+
+# --- Domicile / estate-tax validation over the STRUCTURED doc --------------
+# The systemic guardrail that was missing (S18): the canonical instruments were
+# never validated against the estate-tax domain knowledge, so a frozen US-domiciled
+# choice (VOO/SCHD/...) silently rebuilt the ~$1M US-situs estate tail for a
+# non-US-person. This validator runs on the structured doc (NOT the prose, which
+# the plan-critique agent already reads) so the one place the plan commits to
+# tickers is the place domicile is enforced. Cite
+# domain_knowledge/tax/us/estate_tax_nonresidents.md.
+
+# NVDA is the one sanctioned US-situs holding (managed down by the trim glide);
+# everything else must be non-US-situs for a non-US-person.
+_SANCTIONED_US_SITUS_SYMBOLS: frozenset[str] = frozenset({"NVDA"})
+
+
+class DomicileViolation(BaseModel):
+    symbol: str
+    class_label: str
+    domicile: str | None
+    severity: Literal["RED", "YELLOW"]
+    reason: str
+
+
+def validate_instrument_domicile(
+    doc: "TargetAllocationDoc",
+    *,
+    non_us_person: bool = True,
+    sanctioned_us_situs: frozenset[str] = _SANCTIONED_US_SITUS_SYMBOLS,
+) -> list[DomicileViolation]:
+    """Flag canonical instruments that add US-situs estate exposure (RED) or whose
+    domicile is unstamped (YELLOW). Empty list = clean.
+
+    For a non-US-person there is no US-Israel estate treaty: US-situs assets above
+    a $60K exemption are taxed up to 40%. US-domiciled ETF shares ARE US-situs;
+    Irish/Lux UCITS shares are not. This is reporting-grade only when
+    ``non_us_person`` is False (returns []).
+    """
+    if not non_us_person:
+        return []
+    out: list[DomicileViolation] = []
+    for c in doc.classes:
+        for instr in c.instruments:
+            sym = instr.symbol.upper()
+            if sym in sanctioned_us_situs:
+                continue
+            if instr.domicile == "US":
+                out.append(DomicileViolation(
+                    symbol=instr.symbol, class_label=c.label, domicile=instr.domicile,
+                    severity="RED",
+                    reason=(
+                        f"{instr.symbol} is US-domiciled → US-situs for a non-US-person; "
+                        f"adds to the estate-tax tail. Use the Irish UCITS twin. "
+                        f"Cite estate_tax_nonresidents.md."
+                    ),
+                ))
+            elif instr.domicile is None or instr.domicile == "unknown":
+                out.append(DomicileViolation(
+                    symbol=instr.symbol, class_label=c.label, domicile=instr.domicile,
+                    severity="YELLOW",
+                    reason=(
+                        f"{instr.symbol} has no stamped domicile — cannot confirm it is "
+                        f"non-US-situs. Stamp domicile so the estate guardrail can pass it."
+                    ),
+                ))
+    return out
 
 
 # --- Deriving TODAY's full-tradeable-book composition (the glide's t0) --------
