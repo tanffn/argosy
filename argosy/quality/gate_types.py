@@ -27,6 +27,11 @@ class GateCheck(str, Enum):
     # a non-sanctioned US-domiciled primary; blocks promotion. Runs on the
     # STRUCTURED TargetAllocationDoc, the one artifact that commits to tickers.
     INSTRUMENT_DOMICILE = "instrument_domicile"
+    # S18 — a symbol-level technical reading cited in the prose (e.g. "RSI
+    # 73.4") must match the run's TechnicalAnalyst payload. Blocks the
+    # stale-carry-forward fabrication the fund manager rejected (RSI 73.4
+    # carried six versions while the live payload read 56.05).
+    TECHNICAL_CITATION = "technical_citation"
 
 
 @dataclass(frozen=True)

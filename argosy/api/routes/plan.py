@@ -3318,6 +3318,34 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
                 "instrument_domicile_check_failed pv=%s", getattr(pv, "id", "?"),
             )
 
+        # S18 — technical-citation integrity. A symbol-level reading cited in
+        # the prose (e.g. "RSI 73.4") must match the run's TechnicalAnalyst
+        # payload. Auto-blocking (∉ the WARN set). Guards the stale
+        # carry-forward the FM rejected on run 95. Best-effort: a missing
+        # technical report → empty payload → check simply does not run (we do
+        # NOT fail closed here — unlike the headline resolver, a plan with no
+        # technical citations is legitimately un-checkable, not unvalidated).
+        try:
+            if db is not None and pv.decision_run_id is not None:
+                from argosy.quality.technical_citation_gate import (
+                    check_technical_citation_integrity,
+                    load_run_technical_indicators,
+                )
+                _indicators = load_run_technical_indicators(
+                    db, pv.decision_run_id
+                )
+                if _indicators:
+                    verdict.extend(
+                        check_technical_citation_integrity(
+                            horizon_text, _indicators
+                        )
+                    )
+        except Exception:  # noqa: BLE001 — defense-in-depth, never break accept
+            import logging
+            logging.getLogger(__name__).warning(
+                "technical_citation_check_failed pv=%s", getattr(pv, "id", "?"),
+            )
+
         # Fail closed: if the numeric manifest could not be rebuilt and the
         # gate is in ENFORCE mode, record a violation so the draft cannot
         # promote unvalidated. In warn mode we don't manufacture a false
