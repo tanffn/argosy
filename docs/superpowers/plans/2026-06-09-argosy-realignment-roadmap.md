@@ -139,6 +139,28 @@ Full backend suite after the spine: **3692 passed / 9 failed / 16 skipped (44 mi
 > these date-relative tests should inject a frozen `today`, not use `date.today()` with tight
 > tolerances. Log: `tmp_review/full_suite_s17_final.txt`.
 
+> **s18 (2026-06-11) — reinvest-$250k question → UCITS domicile fix + high-potential
+> sleeve + thesis readability.** User asked how to reinvest ~$250k NVDA-sale cash,
+> where the UI says what to buy, and for a ≥5% high-potential (med-high-risk) slice;
+> then flagged that the plan should hold UCITS, not US-domiciled ETFs. Findings (live
+> v34): the canonical instrument layer hardcoded US-domiciled primaries
+> (VOO/SCHD/VEA/…) — US-situs for a non-US-person, contradicting the documented
+> estate-tax UCITS-migration strategy and marking the user's UCITS funds for exit.
+> Shipped (4 commits, all tested; tsc+eslint clean): **`612d352`** UCITS-preferred
+> domicile-aware allocation (codex-verified map VOO→CSPX/SCHD→FUSA/VEA→EXUS/SCHG→R1GR/
+> USMV→SPMV/VNQ→DPYA/SGOV→IB01/VGSH→IBTA) + guardrail test + classifier updates;
+> **`e8aced2`** per-position thesis raw-JSON sanitizer + domicile-swap framing (SCHD is
+> sound — reduced only for domicile, not a momentum sell); **`816aaa8`**
+> `high_potential_sleeve.py` conviction-weighted blend (UCITS thematic core +
+> single-name carve-out); **`30c55a6`** sleeve route + `HighPotentialSleeveCard` on
+> /proposals. Wrap: touched suites 59 passed, smoke 128 passed. **OPEN (you-in-the-loop):**
+> surfaces still show old US tickers until a **re-synthesis** propagates the new doc;
+> the **5%-of-book canonical satellite class** is headline-moving (sigma→FI→age-47) so
+> only the $12.5k sleeve was built and the book-level class is flagged for sign-off;
+> the core "$250k → buy this" UI list still uses the legacy hardcoded windfall map
+> (rebind to `diff_plan_vs_holdings` next); snapshot is 79d stale. Full report:
+> `tmp_review/SESSION18_HANDOVER.md`.
+
 - **4 caplog/structlog full-suite isolation** — `test_allocation_glidepath` ×2, `test_lifecycle`, `test_plan_language_rewriter`. Pass in isolation; fail only in the full suite (a structlog/caplog global-state contaminator). s14's flaky-fix (`d5faca1`) fixed `test_cadence_loop_tick_widening` + addressed the named root causes (structlog `cache_logger_on_first_use=False`, conftest `logging.disable` reset + `clear_contextvars`), but a **further full-suite contaminator remains** → needs a contaminator bisect. **DEFERRED** (test-infra, not product). **Record correction:** `d5faca1`'s message over-states "repair 5 failures" — the true outcome is **1 fixed + 4 root-caused-but-still-failing** in the full suite (I committed on repro-evidence before the full-suite confirmation).
 - **5 discord network/mock** — `test_discord_attachment_fetch` ×5. Environment-dependent; the failing count varies run-to-run.
 
