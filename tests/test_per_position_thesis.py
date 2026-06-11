@@ -301,6 +301,55 @@ def test_reasoning_capped_at_500_chars():
     assert len(nvda.reasoning_md) <= 501  # 500 chars + the "…" ellipsis
 
 
+def test_reasoning_skips_raw_indicator_json_blobs():
+    """A technical analyst that dumps raw indicator JSON into response_text must
+    NOT leak that machine-data verbatim into the card's reasoning (the unreadable
+    'SCHD … "rsi_14": 54.62 … "yfinance:RKT:1d"]' bug). Prose rationale survives;
+    the raw-data excerpt is dropped."""
+    positions = [_make_position("SCHD", 100, 260.0)]
+    horizon_long = _make_horizon(
+        "long",
+        actions=[{
+            "label": "Migrate SCHD to a UCITS dividend twin",
+            "detail": "Swap to FUSA for estate-tax domicile; SCHD thesis intact.",
+            "rationale": "Domicile swap, not a momentum sell.",
+        }],
+    )
+    raw_blob = (
+        '{"SCHD": {"ticker": "SCHD", "indicators": {"rsi_14": 54.62, '
+        '"macd": 0.22, "macd_signal": 0.27, "ma_50": 31.60, "price": 32.34}, '
+        '"sources": ["yfinance:SCHD:1d", "indicators/SCHD"]}}'
+    )
+    pv = _plan_version(horizon_long=horizon_long)
+    snap = _portfolio(positions)
+    reports = [_agent_report("technical", raw_blob, confidence="LOW")]
+    out = derive_position_theses(pv, snap, reports)
+    schd = next(c for c in out if c.ticker == "SCHD")
+    # No raw-data tokens leaked.
+    for needle in ('"rsi_14"', "macd_signal", "yfinance:", '"indicators"', "}}"):
+        assert needle not in schd.reasoning_md, f"raw data {needle!r} leaked into card"
+    # The human-readable plan rationale still made it through.
+    assert "domicile" in schd.reasoning_md.lower() or "ucits" in schd.reasoning_md.lower()
+
+
+def test_held_us_domiciled_etf_gets_domicile_swap_note():
+    """A held US-domiciled ETF (SCHD) the plan replaces with a UCITS twin must be
+    framed as an estate-tax DOMICILE swap — not a momentum/fundamental sell —
+    even when the horizon JSON carries no explicit text about it. The note names
+    the UCITS twin so the user understands SCHD itself is still sound."""
+    positions = [_make_position("SCHD", 100, 260.0)]
+    pv = _plan_version()  # no horizon mentions at all
+    snap = _portfolio(positions)
+    out = derive_position_theses(pv, snap, [])
+    schd = next(c for c in out if c.ticker == "SCHD")
+    low = schd.reasoning_md.lower()
+    assert "ucits" in low and "fusa" in low
+    assert "estate" in low or "domicile" in low
+    # It is framed as a domicile swap that preserves exposure, explicitly NOT a
+    # momentum/fundamental sell.
+    assert "preserves" in low and "not a momentum or fundamental sell" in low
+
+
 def test_action_with_buy_cue_classifies_buy():
     """An action that says "accumulate" → BUY verdict for a held ticker."""
     positions = [_make_position("CSPX", 5, 10.0)]

@@ -53,6 +53,38 @@ _REASONING_CAP_CHARS = 500
 sentences; UI doesn't need a wall of text."""
 
 
+# US-domiciled ETFs the domicile-aware canonical plan replaces with their Irish
+# UCITS twin (see allocation_plan.py / feedback_canonical_allocation_ucits_preferred).
+# A held position in any of these reads as TRIM/SELL only because the plan target
+# is the UCITS twin — NOT a momentum or fundamental call. The card prepends an
+# estate-tax domicile note so a long-hold investor isn't told to "sell SCHD"
+# without the real reason.
+_US_DOMICILED_UCITS_SWAP: dict[str, str] = {
+    "VOO": "CSPX", "VTI": "CSPX",
+    "SCHD": "FUSA", "VIG": "FUSA",
+    "VEA": "EXUS", "VXUS": "EXUS",
+    "SCHG": "R1GR",
+    "USMV": "SPMV",
+    "VNQ": "DPYA",
+    "SGOV": "IB01",
+    "VGSH": "IBTA",
+}
+
+
+def _domicile_swap_note(ticker: str) -> str | None:
+    """Estate-tax domicile-swap explanation for a held US-domiciled ETF, or None."""
+    twin = _US_DOMICILED_UCITS_SWAP.get(ticker.upper())
+    if not twin:
+        return None
+    return (
+        f"Plan reduces {ticker.upper()} only to migrate to its UCITS twin "
+        f"{twin} for estate-tax reasons (US-domiciled ETF shares are US-situs for "
+        f"a non-US-person; the Irish UCITS is not). This is a DOMICILE swap that "
+        f"preserves the same economic exposure — {ticker.upper()} itself is sound; "
+        f"it is not a momentum or fundamental sell."
+    )
+
+
 @dataclass
 class PositionThesis:
     """One per-position card.
@@ -377,6 +409,32 @@ def _collect_cited_sources(
     return out
 
 
+def _looks_like_raw_data(text: str) -> bool:
+    """True when ``text`` is a machine-data blob (JSON / indicator dump) rather
+    than human prose.
+
+    Guards the card reasoning against leaking raw analyst payloads like
+    ``{"SCHD": {"indicators": {"rsi_14": 54.62, ...}}, "sources":
+    ["yfinance:SCHD:1d"]}`` — the unreadable text the user saw. A long-hold
+    investor's card should never show momentum-indicator JSON. Heuristic, not a
+    parser: prose has few structural chars; a data blob is dense with
+    ``{}[]":`` and key-value patterns.
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    # Telltale machine tokens (indicator keys / data-source locators).
+    for needle in ('":', "rsi_14", "macd", "yfinance:", "indicators", "ma_50",
+                   "1d\"", "ohlc", "{\""):
+        if needle in s.lower() if needle.islower() else needle in s:
+            # Only the JSON-structural ones are decisive on their own.
+            if needle in ('":', "{\"", "yfinance:"):
+                return True
+    structural = sum(s.count(c) for c in '{}[]":')
+    # >8% structural chars => not prose (a typical sentence is ~1-2%).
+    return len(s) > 0 and structural / len(s) > 0.08
+
+
 def _assemble_reasoning(
     ticker: str,
     rationale_snippets: list[str],
@@ -409,6 +467,11 @@ def _assemble_reasoning(
         text = row.get("response_text") or ""
         if not _mentions(text, ticker):
             continue
+        # Skip analysts whose payload is a raw data/JSON dump (e.g. a
+        # technical-indicator blob) — that's the unreadable text the user
+        # saw, and momentum data shouldn't drive a long-hold investor's card.
+        if _looks_like_raw_data(text):
+            continue
         # Pull a short window around the first ticker mention so the
         # excerpt is contextual.
         upper = text.upper()
@@ -418,7 +481,7 @@ def _assemble_reasoning(
         start = max(0, idx - 40)
         end = min(len(text), idx + 200)
         excerpt = text[start:end].strip()
-        if excerpt:
+        if excerpt and not _looks_like_raw_data(excerpt):
             # Map internal agent_role to a user-friendly label so the UI
             # doesn't see "(fundamentals_analyst)" verbatim. See
             # argosy/services/plain_english_labels.py.
@@ -628,6 +691,14 @@ def derive_position_theses(
         conviction = _aggregate_conviction(analyst_norm, ticker)
         cited = _collect_cited_sources(analyst_norm, ticker)
         reasoning = _assemble_reasoning(ticker, all_snippets, analyst_norm)
+        # If this is a US-domiciled ETF the plan swaps for a UCITS twin, lead with
+        # the estate-tax domicile reason so the card never reads as a momentum sell.
+        swap_note = _domicile_swap_note(ticker)
+        if swap_note:
+            reasoning = (swap_note + ("\n\n" + reasoning if reasoning else "")).strip()
+            if len(reasoning) > _REASONING_CAP_CHARS:
+                cut = reasoning.rfind(" ", 0, _REASONING_CAP_CHARS - 1)
+                reasoning = reasoning[: cut if cut > 0 else _REASONING_CAP_CHARS - 1].rstrip() + "…"
 
         held_cards.append(PositionThesis(
             ticker=ticker,
