@@ -32,10 +32,25 @@ interface SeriesPoint {
   shares: number;
 }
 
-// Distribute the reduction program across N quarterly steps starting today.
-// Each step subtracts an even fraction of `reduction.remaining` so the
-// cumulative line bends down quarterly.
-const REDUCTION_PROGRAM_QUARTERS = 8;
+interface Marker {
+  t_ms: number;
+  shares: number;
+  note: string;
+}
+
+interface Trajectory {
+  line: SeriesPoint[];
+  vestMarkers: Marker[];
+  plannedSellMarkers: Marker[];
+  pastSaleMarkers: Marker[];
+}
+
+const EMPTY_TRAJECTORY: Trajectory = {
+  line: [],
+  vestMarkers: [],
+  plannedSellMarkers: [],
+  pastSaleMarkers: [],
+};
 
 function parseMonthMs(date: string): number {
   // Accept "YYYY-MM" or "YYYY-MM-DD". Default day = 15 for month-only so
@@ -44,95 +59,100 @@ function parseMonthMs(date: string): number {
   return Date.parse(`${s}T00:00:00Z`);
 }
 
-function buildSeries(data: NvdaTrajectoryResponse): SeriesPoint[] {
-  if (data.today_shares == null) return [];
+function iso(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+const QUARTER_MS = 91 * 86400_000;
+
+/**
+ * One running-share-count walk: past sales (down), today, then the future as a
+ * REALISTIC zigzag — each RSU vest steps the count UP, each ~quarterly sell
+ * steps it DOWN — landing exactly on the canonical target (the 13% cap). The
+ * total sold is sized to absorb today's shares PLUS all future vests minus the
+ * target, so vesting is taken into account. Vest + sell markers read their y
+ * off this same line so they sit on it (not floating).
+ */
+function buildTrajectory(data: NvdaTrajectoryResponse): Trajectory {
+  if (data.today_shares == null) return EMPTY_TRAJECTORY;
   const todayMs = Date.parse(data.today_date + "T00:00:00Z");
-  if (Number.isNaN(todayMs)) return [];
+  if (Number.isNaN(todayMs)) return EMPTY_TRAJECTORY;
+  const todayShares = data.today_shares;
 
-  // ----- Build the FUTURE half (vests + reduction program) -----
-  type Event = { t_ms: number; delta: number };
-  const futureEvents: Event[] = [];
-  for (const v of data.vests) {
-    const ms = parseMonthMs(v.date);
-    if (!Number.isNaN(ms) && ms >= todayMs) {
-      futureEvents.push({ t_ms: ms, delta: v.shares });
-    }
-  }
-  const remaining = data.reduction_program.remaining;
-  if (remaining && remaining > 0) {
-    const perStep = Math.round(remaining / REDUCTION_PROGRAM_QUARTERS);
-    for (let i = 1; i <= REDUCTION_PROGRAM_QUARTERS; i++) {
-      const ms = todayMs + i * 90 * 86400_000;
-      futureEvents.push({ t_ms: ms, delta: -perStep });
-    }
-  }
-  futureEvents.sort((a, b) => a.t_ms - b.t_ms);
+  const line: SeriesPoint[] = [];
+  const vestMarkers: Marker[] = [];
+  const plannedSellMarkers: Marker[] = [];
+  const pastSaleMarkers: Marker[] = [];
 
-  // ----- Build the PAST half from sales history -----
-  // We can't perfectly reconstruct past share counts because we don't have
-  // past vest events recorded — only the future schedule. So we approximate
-  // by walking BACKWARDS from today's share count: pre-sale = today + sales
-  // that occurred AFTER that month. This shows the user the curve their
-  // sales drew on the share count, ignoring past vest noise.
-  const pastEvents: Event[] = data.past_sales
-    .map((s) => ({ t_ms: parseMonthMs(s.date), delta: s.shares }))
+  // ----- PAST half: reconstruct by walking BACKWARDS from today -----
+  const pastEvents = data.past_sales
+    .map((s) => ({ t_ms: parseMonthMs(s.date), shares: s.shares, price: s.price_usd }))
     .filter((e) => !Number.isNaN(e.t_ms) && e.t_ms < todayMs)
     .sort((a, b) => a.t_ms - b.t_ms);
-
-  const points: SeriesPoint[] = [];
-
-  // Walk past events forward from earliest, with starting share count =
-  // today_shares + sum(all past sales) (i.e. before any of them happened).
-  const totalPastSold = pastEvents.reduce((s, e) => s + e.delta, 0);
-  let running = data.today_shares + totalPastSold;
+  const totalPastSold = pastEvents.reduce((s, e) => s + e.shares, 0);
+  let running = todayShares + totalPastSold;
   for (const e of pastEvents) {
-    // Plot a point just BEFORE the sale (current running count) and just
-    // AFTER (running - shares_sold), so the chart shows the step-down at
-    // the sale month.
-    points.push({
-      t_ms: e.t_ms - 86400_000, // 1 day before
-      date_iso: new Date(e.t_ms - 86400_000).toISOString().slice(0, 10),
-      shares: running,
-    });
-    running -= e.delta;
-    points.push({
+    line.push({ t_ms: e.t_ms - 86400_000, date_iso: iso(e.t_ms - 86400_000), shares: running });
+    running -= e.shares;
+    line.push({ t_ms: e.t_ms, date_iso: iso(e.t_ms), shares: running });
+    pastSaleMarkers.push({
       t_ms: e.t_ms,
-      date_iso: new Date(e.t_ms).toISOString().slice(0, 10),
       shares: running,
+      note: `Sold ${e.shares.toLocaleString()}${e.price != null ? ` @ $${e.price}` : ""}`,
     });
   }
 
-  // Today's anchor point.
-  points.push({
-    t_ms: todayMs,
-    date_iso: data.today_date,
-    shares: data.today_shares,
-  });
+  // Today's anchor.
+  line.push({ t_ms: todayMs, date_iso: data.today_date, shares: todayShares });
 
-  // ----- FUTURE half -----
-  // Prefer the canonical forward sell glide (today_shares → target_shares at
-  // the 13% cap) from the projection — the real planned reduction path. Only
-  // when it is absent do we fall back to distributing the small 2026 reduction
-  // program over a few quarters (which never reaches the canonical target).
+  // ----- FUTURE half: vests UP + quarterly sells DOWN to the target -----
+  const target = data.ceiling_target_shares;
   const path = data.projected_path ?? [];
-  if (path.length > 1) {
-    for (const p of path) {
-      const ms = Date.parse(p.date + "T00:00:00Z");
-      if (Number.isNaN(ms) || ms <= todayMs) continue;
-      points.push({ t_ms: ms, date_iso: p.date, shares: p.shares });
+  const targetMs = path.length ? Date.parse(path[path.length - 1].date + "T00:00:00Z") : null;
+  const futureVests = data.vests
+    .map((v) => ({ t_ms: parseMonthMs(v.date), shares: v.shares, note: v.note }))
+    .filter((e) => !Number.isNaN(e.t_ms) && e.t_ms > todayMs);
+
+  if (target != null && targetMs != null && targetMs > todayMs) {
+    const totalVest = futureVests.reduce((s, e) => s + e.shares, 0);
+    const totalToSell = todayShares + totalVest - target;
+    const sellDates: number[] = [];
+    for (let d = todayMs + QUARTER_MS; d <= targetMs + 1; d += QUARTER_MS) {
+      sellDates.push(Math.min(d, targetMs));
     }
-  } else {
-    running = data.today_shares;
-    for (const e of futureEvents) {
+    if (sellDates.length === 0) sellDates.push(targetMs);
+    const perSell = totalToSell > 0 ? totalToSell / sellDates.length : 0;
+
+    type Ev = { t_ms: number; delta: number; kind: "vest" | "sell"; note: string };
+    const events: Ev[] = [
+      ...futureVests.map((v) => ({ t_ms: v.t_ms, delta: v.shares, kind: "vest" as const, note: v.note })),
+      ...sellDates.map((ms) => ({ t_ms: ms, delta: -perSell, kind: "sell" as const, note: "" })),
+    ].sort((a, b) => a.t_ms - b.t_ms);
+
+    running = todayShares;
+    let prevShares = todayShares;
+    for (const e of events) {
       running += e.delta;
-      points.push({
-        t_ms: e.t_ms,
-        date_iso: new Date(e.t_ms).toISOString().slice(0, 10),
-        shares: running,
-      });
+      const sh = Math.max(0, Math.round(running));
+      line.push({ t_ms: e.t_ms, date_iso: iso(e.t_ms), shares: sh });
+      if (e.kind === "vest") {
+        vestMarkers.push({ t_ms: e.t_ms, shares: sh, note: `Vest +${e.delta.toLocaleString()} → ${sh.toLocaleString()} sh` });
+      } else {
+        plannedSellMarkers.push({
+          t_ms: e.t_ms,
+          shares: sh,
+          note: `Planned sell ~${Math.round(prevShares - sh).toLocaleString()} → ${sh.toLocaleString()} sh`,
+        });
+      }
+      prevShares = sh;
+    }
+    // Land exactly on the target.
+    if (line.length && line[line.length - 1].shares !== target) {
+      line.push({ t_ms: targetMs, date_iso: iso(targetMs), shares: target });
     }
   }
-  return points;
+
+  return { line, vestMarkers, plannedSellMarkers, pastSaleMarkers };
 }
 
 function fmtTick(ms: number): string {
@@ -143,76 +163,19 @@ function fmtTick(ms: number): string {
 export function NvdaTrajectoryChart(props: NvdaTrajectoryChartProps) {
   const { data } = props;
 
-  const series = useMemo(() => (data ? buildSeries(data) : []), [data]);
-
-  const vestDots = useMemo(() => {
-    if (!data || data.today_shares == null) return [];
-    let running = data.today_shares;
-    const dots: Array<{ t_ms: number; shares: number; note: string }> = [];
-    for (const v of data.vests) {
-      const ms = parseMonthMs(v.date);
-      if (Number.isNaN(ms)) continue;
-      running += v.shares;
-      dots.push({ t_ms: ms, shares: running, note: v.note });
-    }
-    return dots;
-  }, [data]);
-
-  // Sale dots show where the user actually transacted, plotted at the
-  // share-count immediately AFTER each sale.
-  const saleDots = useMemo(() => {
-    if (!data || data.today_shares == null) return [];
-    const totalSold = data.past_sales.reduce((s, x) => s + x.shares, 0);
-    let running = data.today_shares + totalSold;
-    const dots: Array<{ t_ms: number; shares: number; note: string }> = [];
-    for (const s of data.past_sales) {
-      const ms = parseMonthMs(s.date);
-      if (Number.isNaN(ms)) continue;
-      running -= s.shares;
-      dots.push({
-        t_ms: ms,
-        shares: running,
-        note: `Sold ${s.shares.toLocaleString()}${
-          s.price_usd != null ? ` @ $${s.price_usd}` : ""
-        }`,
-      });
-    }
-    return dots;
-  }, [data]);
+  const traj = useMemo(
+    () => (data ? buildTrajectory(data) : EMPTY_TRAJECTORY),
+    [data],
+  );
+  const series = traj.line;
+  const vestDots = traj.vestMarkers;
+  const saleDots = traj.pastSaleMarkers;
+  const plannedSellDots = traj.plannedSellMarkers;
 
   const todayMs = useMemo(
     () => (data ? Date.parse(data.today_date + "T00:00:00Z") : null),
     [data],
   );
-
-  // "Imaginary" future sell points — the PLANNED sells along the canonical
-  // forward glide, sampled ~quarterly. Drawn as hollow red dots to distinguish
-  // them from the solid red dots of sales the user has actually transacted.
-  const plannedSellDots = useMemo(() => {
-    const path = data?.projected_path ?? [];
-    if (todayMs == null || data?.today_shares == null || path.length < 2) {
-      return [] as Array<{ t_ms: number; shares: number; note: string }>;
-    }
-    const dots: Array<{ t_ms: number; shares: number; note: string }> = [];
-    const QUARTER_MS = 85 * 86400_000;
-    let lastMs = todayMs;
-    let lastShares = data.today_shares;
-    for (const p of path) {
-      const ms = Date.parse(p.date + "T00:00:00Z");
-      if (Number.isNaN(ms) || ms <= todayMs) continue;
-      if (ms - lastMs >= QUARTER_MS) {
-        const sold = Math.max(0, lastShares - p.shares);
-        dots.push({
-          t_ms: ms,
-          shares: p.shares,
-          note: `Planned sell ~${sold.toLocaleString()} → ${p.shares.toLocaleString()} sh`,
-        });
-        lastMs = ms;
-        lastShares = p.shares;
-      }
-    }
-    return dots;
-  }, [data, todayMs]);
 
   return (
     <Card>
