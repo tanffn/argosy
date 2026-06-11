@@ -224,8 +224,10 @@ class TestAllocator:
         plan = propose_allocations(event)
         growth_picks = [p.instrument for p in plan.long_term
                         if p.asset_class == "Growth"]
-        # Should be QQQM (first preferred for Growth in the registry)
-        assert "QQQM" in growth_picks
+        # Domicile-aware (S18): first preferred for Growth is the UCITS twin CNDX,
+        # NOT US-domiciled QQQM (US-situs estate exposure for a non-US-person).
+        assert "CNDX" in growth_picks
+        assert "QQQM" not in growth_picks
 
     def test_medium_short_have_placeholder_rationale(self) -> None:
         event = _stub_event(windfall_usd=100_000)

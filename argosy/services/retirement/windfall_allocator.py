@@ -32,14 +32,20 @@ Horizon = Literal["long", "medium", "short"]
 # Map asset_class names from the TSV to preferred instruments. Picks
 # instruments the user already holds when possible (per user spec: "prefer
 # what's in your portfolio"). Falls back to a sensible default if none.
+# DOMICILE-AWARE (S18): UCITS (Irish-domiciled) twins, NOT US-domiciled ETFs —
+# for a non-US-person US-domiciled shares are US-situs and rebuild the estate-tax
+# tail (cite estate_tax_nonresidents.md / feedback_canonical_allocation_ucits_preferred).
+# This mirrors the canonical allocation_plan engine. NOTE: this hardcoded map is
+# the legacy class-level path; the proper fix is to bind windfall buys to the
+# canonical instrument-level TargetAllocationDoc (diff_plan_vs_holdings) — tracked.
 _PREFERRED_INSTRUMENTS_BY_CLASS: dict[str, list[str]] = {
-    "Core Equity":       ["VOO", "CSPX", "ACWD"],
-    "Defensive":         ["SGOV"],
-    "Dividend":          ["SCHD"],
-    "Growth":            ["QQQM", "SCHG", "SPMO", "CNDX"],
-    "Individual Stocks": ["AMD", "GOOG", "AMZN", "META", "BRK.B"],
-    "International":     ["MSCI World", "FWRA"],
-    "Alternative":       ["IBIT"],
+    "Core Equity":       ["CSPX", "ACWD"],
+    "Defensive":         ["IB01", "IBTA"],
+    "Dividend":          ["FUSA"],
+    "Growth":            ["CNDX", "R1GR"],
+    "Individual Stocks": ["SMGB", "WTAI"],  # high-potential via UCITS thematic, non-US-situs
+    "International":     ["EXUS", "FWRA"],
+    "Alternative":       ["DPYA"],
 }
 
 
@@ -225,8 +231,9 @@ def _stub_short_term(
         rationale=(
             f"Short-term budget (${budget:,.0f}) — opportunistic entries "
             "from the watchlist + recent investor-event signals. If no "
-            "high-conviction entries, parks in SGOV (~4% yield) for 1-3 "
-            "months until something surfaces."
+            "high-conviction entries, parks in IB01 (~4% yield, Irish UCITS "
+            "$-Treasury — non-US-situs) or a direct T-bill for 1-3 months "
+            "until something surfaces."
         ),
         closes_delta_usd=0,
         confidence="low",

@@ -3290,6 +3290,34 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
             resolved=resolved,
         )
 
+        # S18 — instrument-domicile check on the STRUCTURED doc. The frozen
+        # US-domiciled-ETF ship slipped through because nothing validated the
+        # doc's tickers against the estate-tax knowledge. RED = a non-sanctioned
+        # US-situs primary → block (auto-blocking: INSTRUMENT_DOMICILE ∉ the
+        # WARN set). Unknown-domicile (YELLOW) is NOT added so legacy plans with
+        # unstamped instruments aren't blocked retroactively.
+        try:
+            from argosy.services.target_allocation_doc import (
+                load_plan_target_allocation,
+                validate_instrument_domicile,
+            )
+            _doc = load_plan_target_allocation(pv)
+            if _doc is not None:
+                for _viol in validate_instrument_domicile(_doc):
+                    if _viol.severity == "RED":
+                        verdict.add(
+                            GateViolation(
+                                check=GateCheck.INSTRUMENT_DOMICILE,
+                                detail=_viol.reason,
+                                locator=f"class={_viol.class_label} symbol={_viol.symbol}",
+                            )
+                        )
+        except Exception:  # noqa: BLE001 — defense-in-depth, never break accept
+            import logging
+            logging.getLogger(__name__).warning(
+                "instrument_domicile_check_failed pv=%s", getattr(pv, "id", "?"),
+            )
+
         # Fail closed: if the numeric manifest could not be rebuilt and the
         # gate is in ENFORCE mode, record a violation so the draft cannot
         # promote unvalidated. In warn mode we don't manufacture a false

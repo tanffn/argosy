@@ -22,6 +22,11 @@ class GateCheck(str, Enum):
     # value from the deterministic resolver, or be rendered
     # "[derivation pending]". Kills the synth-fabricated-number reject.
     HEADLINE_NUMERIC_SOURCE = "headline_numeric_source"
+    # S18 — the canonical instruments must not add US-situs estate exposure for
+    # a non-US-person (the missing check behind the US-domiciled-ETF ship). RED =
+    # a non-sanctioned US-domiciled primary; blocks promotion. Runs on the
+    # STRUCTURED TargetAllocationDoc, the one artifact that commits to tickers.
+    INSTRUMENT_DOMICILE = "instrument_domicile"
 
 
 @dataclass(frozen=True)

@@ -131,11 +131,16 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         snapshot_category="Dividend",
         agreement="moderate",
         rationale=(
-            "SCHD/quality-payer sleeve turning the book into a cash-flow machine "
-            "that funds roughly half the net bridge draw, so less principal is sold "
-            "into drawdowns — the cleanest structural defense against sequence risk "
-            "in the 20-year no-pension window and a direct match to the household's "
-            "long-hold/dividend style."
+            "US quality-factor sleeve (the quality/profitability tilt that historically "
+            "cushions drawdowns) implemented via the ACCUMULATING UCITS FUSA — "
+            "deliberately accumulating, NOT distributing: for an Israeli holder a "
+            "distributed dividend is a non-deferrable annual tax event (~25-30%), so the "
+            "sleeve harvests total return through CONTROLLED SALES (CGT timed by the "
+            "household) rather than forced dividend income. Same sequence-risk defense as "
+            "a dividend sleeve, without the annual dividend-tax drag. Matches the "
+            "household's long-hold style. (If a true cash-distributing income stream is "
+            "wanted in drawdown, switch to the distributing share FUSD and accept the "
+            "dividend-tax event — a deliberate, separate choice.)"
         ),
         dissent=(
             "Style-vs-tax split (long-hold 30 keystone vs Boglehead 8): Israeli "
