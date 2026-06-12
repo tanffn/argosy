@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { PerPositionThesisSection } from "@/components/positions/per-position-thesis-section";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { GenerateTsvCard } from "@/components/portfolio/generate-tsv-card";
 import { PortfolioSnapshotUploadCard } from "@/components/portfolio/snapshot-upload-card";
 import { UnallocatedCashCard } from "@/components/portfolio/unallocated-cash-card";
@@ -250,7 +251,12 @@ export default function PortfolioPage() {
         </Card>
       ))}
 
-      <PerPositionThesisSection userId={USER_ID} withHeading />
+      <CollapsibleSection
+        title="Per-position thesis"
+        summary="Hold / Buy / Trim / Sell verdict + conviction per holding (plan-derived)"
+      >
+        <PerPositionThesisSection userId={USER_ID} />
+      </CollapsibleSection>
 
       {snap && snap.allocations.length > 0 && (
         <Card>
