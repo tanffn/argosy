@@ -10,7 +10,10 @@ import pytest
 from argosy.services.deployment_market_context import (
     DataFreshness,
     DeploymentMarketContext,
+    DEPLOY_FRESHNESS_MAX_AGE,
     NvdaVerification,
+    is_stale,
+    nvda_consistency,
 )
 
 
@@ -122,3 +125,106 @@ class TestDeploymentMarketContext:
         ctx = self._make_context()
         with pytest.raises((AttributeError, TypeError)):
             ctx.overall_age_label = "stale"  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Task 2: DEPLOY_FRESHNESS_MAX_AGE + is_stale + nvda_consistency
+# ---------------------------------------------------------------------------
+
+
+class TestDeployFreshnessMaxAge:
+    def test_keys_present(self):
+        assert "quotes" in DEPLOY_FRESHNESS_MAX_AGE
+        assert "macro" in DEPLOY_FRESHNESS_MAX_AGE
+        assert "fx" in DEPLOY_FRESHNESS_MAX_AGE
+        assert "news" in DEPLOY_FRESHNESS_MAX_AGE
+
+    def test_quotes_ttl(self):
+        assert DEPLOY_FRESHNESS_MAX_AGE["quotes"] == 900
+
+    def test_macro_ttl(self):
+        assert DEPLOY_FRESHNESS_MAX_AGE["macro"] == 86_400
+
+    def test_fx_ttl(self):
+        assert DEPLOY_FRESHNESS_MAX_AGE["fx"] == 86_400
+
+    def test_news_ttl(self):
+        assert DEPLOY_FRESHNESS_MAX_AGE["news"] == 172_800
+
+
+class TestIsStale:
+    def test_fresh_well_within_ttl(self):
+        assert is_stale(300.0, 900) is False
+
+    def test_stale_just_over_ttl(self):
+        assert is_stale(901.0, 900) is True
+
+    def test_boundary_exactly_at_ttl_is_not_stale(self):
+        assert is_stale(900.0, 900) is False
+
+    def test_age_zero_never_stale(self):
+        assert is_stale(0.0, 900) is False
+
+    def test_macro_within_24h(self):
+        assert is_stale(80_000.0, DEPLOY_FRESHNESS_MAX_AGE["macro"]) is False
+
+    def test_macro_over_24h(self):
+        assert is_stale(86_401.0, DEPLOY_FRESHNESS_MAX_AGE["macro"]) is True
+
+    def test_news_within_48h(self):
+        assert is_stale(170_000.0, DEPLOY_FRESHNESS_MAX_AGE["news"]) is False
+
+    def test_news_over_48h(self):
+        assert is_stale(172_801.0, DEPLOY_FRESHNESS_MAX_AGE["news"]) is True
+
+
+class TestNvdaConsistency:
+    """Unit tests for the pinned consistency formula: abs(mktcap/shares - price)/price <= 0.10"""
+
+    def test_consistent_at_exact_match(self):
+        # price = mktcap/shares exactly → drift = 0
+        price = 130.0
+        shares = 24_400_000_000.0
+        market_cap = price * shares
+        assert nvda_consistency(price, shares, market_cap) is True
+
+    def test_consistent_at_10pct_drift(self):
+        # drift == 0.10 (boundary) → still consistent (<=)
+        price = 100.0
+        shares = 1_000_000.0
+        market_cap = 110.0 * shares  # implied = 110, drift = 10/100 = 0.10
+        assert nvda_consistency(price, shares, market_cap) is True
+
+    def test_inconsistent_at_11pct_drift(self):
+        price = 100.0
+        shares = 1_000_000.0
+        market_cap = 111.0 * shares  # implied = 111, drift = 11/100 = 0.11
+        assert nvda_consistency(price, shares, market_cap) is False
+
+    def test_inconsistent_large_drift(self):
+        # Clearly wrong market cap
+        price = 130.0
+        shares = 24_400_000_000.0
+        market_cap = 5_000_000_000_000.0  # way too high
+        assert nvda_consistency(price, shares, market_cap) is False
+
+    def test_none_when_shares_is_none(self):
+        assert nvda_consistency(130.0, None, 3_172_000_000_000.0) is None
+
+    def test_none_when_market_cap_is_none(self):
+        assert nvda_consistency(130.0, 24_400_000_000.0, None) is None
+
+    def test_none_when_shares_zero(self):
+        assert nvda_consistency(130.0, 0.0, 3_172_000_000_000.0) is None
+
+    def test_none_when_market_cap_zero(self):
+        assert nvda_consistency(130.0, 24_400_000_000.0, 0.0) is None
+
+    def test_none_when_shares_negative(self):
+        assert nvda_consistency(130.0, -1.0, 3_172_000_000_000.0) is None
+
+    def test_none_when_market_cap_negative(self):
+        assert nvda_consistency(130.0, 24_400_000_000.0, -1.0) is None
+
+    def test_none_when_both_missing(self):
+        assert nvda_consistency(130.0, None, None) is None
