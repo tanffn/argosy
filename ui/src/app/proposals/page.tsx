@@ -34,7 +34,6 @@ import { CustomizeModal } from "@/components/proposals/CustomizeModal";
 import { DeferModal } from "@/components/proposals/DeferModal";
 import { RejectModal } from "@/components/proposals/RejectModal";
 import { WindfallCard } from "@/components/retirement/WindfallCard";
-import { HighPotentialSleeveCard } from "@/components/portfolio/high-potential-sleeve-card";
 import { TrendRadarCard } from "@/components/portfolio/trend-radar-card";
 import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monitor-card";
 import { DiscoveryCard } from "@/components/portfolio/discovery-card";
@@ -564,61 +563,6 @@ export default function ProposalsPage() {
         </CollapsibleSection>
       </section>
 
-      {/* Spec E commit #6 — Action proposals section. Sits ABOVE the
-          allocation / windfall section so the unified action-proposal
-          queue (all 8 kinds: allocate / repatriate_currency /
-          rebalance / replan_full / add_life_event_phase /
-          update_plan_assumption / set_watchlist / note_only) is the
-          first thing the user sees. The windfall / trade-proposal
-          surfaces below remain unchanged. */}
-      <section id="action-proposals" className="scroll-mt-6">
-        <CollapsibleSection
-          title="Action proposals"
-          summary={
-            actionLoading
-              ? "loading…"
-              : `${actionProposals.length} open · accept / defer / reject — you decide`
-          }
-          defaultOpen
-        >
-          <p className="text-xs text-muted-foreground">
-            System-proposed actions across all kinds (allocate / rebalance /
-            repatriate / replan / life-event / plan-assumption / watchlist /
-            note). Each is derived from a state observation; Argosy never
-            executes — you decide.
-          </p>
-          {actionError && (
-            <p className="text-sm text-error font-mono">{actionError}</p>
-          )}
-          {actionLoading && (
-            <p className="text-sm text-muted-foreground">Loading action proposals…</p>
-          )}
-          {!actionLoading && actionProposals.length === 0 && (
-            <Card>
-              <CardContent className="py-6 text-center text-sm text-muted-foreground">
-                No open action proposals.
-              </CardContent>
-            </Card>
-          )}
-          {actionProposals.length > 0 && (
-            <ul className="flex flex-col gap-3">
-              {actionProposals.map((p) => (
-                <li key={p.id}>
-                  <ActionProposalCard
-                    proposal={p}
-                    busy={actionBusy === p.id}
-                    onAccept={() => onActionAccept(p.id)}
-                    onDefer={() => setDeferTarget(p)}
-                    onReject={() => setRejectTarget(p)}
-                    onCustomize={() => setCustomizeTarget(p)}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-        </CollapsibleSection>
-      </section>
-
       <DeferModal
         open={deferTarget !== null}
         onOpenChange={(o) => {
@@ -662,10 +606,9 @@ export default function ProposalsPage() {
         <div className="space-y-4">
           <DiscoveryCard />
           <CollapsibleSection
-            title="Sleeve sizing & raw sourcing"
-            summary="legacy cards — sleeve $-sizing, trend radar, exit monitor"
+            title="Raw sourcing (advanced)"
+            summary="trend radar + exit monitor — the conviction picks above supersede the old $-sized sleeve"
           >
-            <HighPotentialSleeveCard />
             <TrendRadarCard />
             <SpeculativeMonitorCard />
           </CollapsibleSection>
@@ -898,6 +841,57 @@ export default function ProposalsPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Action proposals — system-derived observations (mostly notes /
+          watchlist / plan-assumption nudges, not buy/sell orders). Moved to the
+          END and collapsed by default: it's a low-urgency backlog, so the
+          action-oriented surfaces (Ask the team, allocation, discovery) lead. */}
+      <section id="action-proposals" className="scroll-mt-6">
+        <CollapsibleSection
+          title="Action proposals"
+          summary={
+            actionLoading
+              ? "loading…"
+              : `${actionProposals.length} open · system observations — defer / reject / accept`
+          }
+        >
+          <p className="text-xs text-muted-foreground">
+            System-proposed nudges derived from state observations (allocation
+            drift, cash overweight, plan-assumption drift, watchlist). These are
+            mostly notes, not buy/sell orders — Accept records your decision
+            (it never moves money), Defer snoozes it, Reject dismisses it.
+          </p>
+          {actionError && (
+            <p className="text-sm text-error font-mono">{actionError}</p>
+          )}
+          {actionLoading && (
+            <p className="text-sm text-muted-foreground">Loading action proposals…</p>
+          )}
+          {!actionLoading && actionProposals.length === 0 && (
+            <Card>
+              <CardContent className="py-6 text-center text-sm text-muted-foreground">
+                No open action proposals.
+              </CardContent>
+            </Card>
+          )}
+          {actionProposals.length > 0 && (
+            <ul className="flex flex-col gap-3">
+              {actionProposals.map((p) => (
+                <li key={p.id}>
+                  <ActionProposalCard
+                    proposal={p}
+                    busy={actionBusy === p.id}
+                    onAccept={() => onActionAccept(p.id)}
+                    onDefer={() => setDeferTarget(p)}
+                    onReject={() => setRejectTarget(p)}
+                    onCustomize={() => setCustomizeTarget(p)}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </CollapsibleSection>
+      </section>
     </main>
   );
 }
