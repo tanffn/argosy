@@ -46,6 +46,9 @@ class DeploymentLine:
     # Current aggregate (whole-book, cross-account) holding value of this symbol,
     # so the NEW/held call is auditable. is_new == (held_value_usd <= 0).
     held_value_usd: float = 0.0
+    # P2 market-aware pacing rationale. Empty string when market_context is None
+    # (P1 behavior preserved). Set by pace_for_line when context is supplied.
+    pace_rationale: str = ""
 
 
 @dataclass(frozen=True)
@@ -191,20 +194,109 @@ def _instrument_type(doc, symbol: str) -> str:
     return "ETF"
 
 
+# ---------------------------------------------------------------------------
+# P2 T6: market-aware per-line pacing
+# ---------------------------------------------------------------------------
+
+# Lines at or below this threshold are always deployed as a lump regardless of
+# market conditions (small orders; DCA friction outweighs smoothing benefit).
+DCA_LUMP_THRESHOLD_USD: float = 5_000.0
+
+
+def pace_for_line(amount_usd: float, market_context) -> tuple[str, str]:
+    """Return ``(timing, pace_rationale)`` for a single deploy line.
+
+    Uses market_context.snapshot (``dict[str, float]``) to derive VIX and
+    S&P-vs-trend and size the DCA window.
+
+    # INTERIM pacing — codex methodology review (codex_pacing_verdict) refines
+    # direction + formula; see plan P2 T6.
+
+    Formula (INTERIM):
+        - If ``amount_usd <= DCA_LUMP_THRESHOLD_USD`` → lump ("now").
+        - Else: N = max(1, min(8, round(1 + (vix-20)/10_excess + sp_excess/5)))
+          where excesses are clipped to 0 from below; spread over N weeks.
+
+    Missing snapshot keys default to vix=20.0, sp_vs_trend_pct=0.0 (=> N=1,
+    effectively a lump) and the rationale says so.
+    """
+    if amount_usd <= DCA_LUMP_THRESHOLD_USD:
+        return ("now", "small line — deploy whole")
+
+    snap: dict = market_context.snapshot
+    missing_keys: list[str] = []
+
+    # Extract vix from snapshot (dict[str, float] shape from DeploymentMarketContext).
+    # The snapshot values are plain floats (already unwrapped from the (value, DataFreshness)
+    # tuple in the live assembler path). Default to 20.0 (neutral) if absent.
+    raw_vix = snap.get("vix")
+    if raw_vix is None:
+        vix = 20.0
+        missing_keys.append("vix")
+    else:
+        # Guard: if somehow the raw (value, DataFreshness) tuple arrived, unwrap it.
+        vix = float(raw_vix[0]) if isinstance(raw_vix, tuple) else float(raw_vix)
+
+    raw_sp = snap.get("sp500")
+    if raw_sp is None:
+        sp500 = 0.0
+        missing_keys.append("sp500")
+    else:
+        sp500 = float(raw_sp[0]) if isinstance(raw_sp, tuple) else float(raw_sp)
+
+    # Derive S&P % deviation from its simple 200-day-proxy trend.
+    # INTERIM: we use a hard-coded reference of 5500 as a rough 200d proxy; codex
+    # review (codex_pacing_verdict) will replace this with a real computed trend.
+    SP_TREND_REFERENCE: float = 5_500.0
+    sp_vs_trend_pct: float = (
+        (sp500 - SP_TREND_REFERENCE) / SP_TREND_REFERENCE * 100.0
+        if sp500 > 0.0
+        else 0.0
+    )
+
+    # N = 1 + excess-VIX weeks + excess-stretch weeks, clamped to [1, 8].
+    vix_excess = max(0.0, (vix - 20.0) / 10.0)
+    sp_excess = max(0.0, sp_vs_trend_pct / 5.0)
+    N = max(1, min(8, round(1 + vix_excess + sp_excess)))
+
+    if missing_keys:
+        rationale = (
+            f"large line; snapshot missing {missing_keys} — defaulting to N=1 lump; "
+            f"VIX={vix:.0f}, S&P {sp_vs_trend_pct:+.0f}% vs trend -> spread over {N} weeks"
+        )
+    else:
+        rationale = (
+            f"large line; VIX={vix:.0f}, S&P {sp_vs_trend_pct:+.0f}% vs trend"
+            f" -> spread over {N} weeks"
+        )
+
+    return (f"DCA {N}wk", rationale)
+
+
 def assemble_deployment_plan(
     *, doc, holdings: dict[str, float], deploy_amount_usd: float, as_of: date,
+    market_context=None,
 ) -> DeploymentPlan:
-    """Build the P1 deploy plan: plan-bound ``cash_only_deploy`` buys, each
-    annotated with tier/estate/cap/tax/horizon, grouped into tiers that sum to
-    ``deploy_amount_usd``. P1: reserve=0, medium/high empty, core = full amount.
+    """Build the deploy plan: plan-bound ``cash_only_deploy`` buys, each
+    annotated with tier/estate/cap/tax/horizon/pacing, grouped into tiers that
+    sum to ``deploy_amount_usd``.
+
+    P1 (``market_context=None``): reserve=0, medium/high empty, core = full
+    amount; all lines get ``timing="now"`` and ``pace_rationale=""``.
+    P2 (``market_context`` provided): lines are paced via ``pace_for_line``;
+    staleness is surfaced as a caveat.
     """
     amount = round(deploy_amount_usd, 2)
+
+    # Resolve market_context_age up front.
+    mca: str | None = market_context.overall_age_label if market_context is not None else None
+
     if doc is None:
         empty = tuple(DeploymentTier(n, DEPLOY_TIER_CAPS.get(n, 0.0)) for n in TIER_NAMES)
         return DeploymentPlan(
             deploy_amount_usd=amount, as_of=as_of, tiers=empty,
             us_situs_exposed_usd=0.0, us_situs_sanctioned_usd=0.0,
-            undeployed_remainder_usd=amount, market_context_age=None,
+            undeployed_remainder_usd=amount, market_context_age=mca,
             caveats=_CAVEATS + (_remainder_caveat(amount),) if amount > 0.005 else _CAVEATS,
             note="No current canonical plan — accept a plan first.",
         )
@@ -242,13 +334,18 @@ def assemble_deployment_plan(
             elif estate.status == "us_situs_sanctioned":
                 sanctioned_total += amt
             held_value = round(float(holdings.get(sym, 0.0)), 2)
+            if market_context is not None:
+                timing, p_rationale = pace_for_line(amt, market_context)
+            else:
+                timing, p_rationale = "now", ""
             line = DeploymentLine(
                 symbol=sym, type=_instrument_type(doc, sym), amount_usd=amt,
-                timing="now", is_new=(held_value <= 0.0),
+                timing=timing, is_new=(held_value <= 0.0),
                 tier=tier, horizon=_TIER_HORIZON[tier], estate=estate,
                 cap_note=cap_note_for(doc, symbol=sym),
                 net_of_tax_caveat=NET_OF_TAX_CAVEAT, rationale=cand.rationale,
                 cites=cand.cites, held_value_usd=held_value,
+                pace_rationale=p_rationale,
             )
             # P1: only core is populated; a non-core classification would be a
             # tactical line cash_only_deploy should never emit. Keep it in core
@@ -273,12 +370,23 @@ def assemble_deployment_plan(
     # pro-rata rounding noise (the exact figure is still on undeployed_remainder_usd).
     if remainder >= 1.0:
         caveats = caveats + (_remainder_caveat(remainder),)
+    # P2: loud staleness caveat when any context feed is stale.
+    if market_context is not None and market_context.is_any_stale:
+        caveats = caveats + (
+            f"WARNING: market context data is stale (age: {mca}). "
+            "Pacing decisions are based on potentially outdated market data — "
+            "refresh market context before executing.",
+        )
+    if market_context is None:
+        note = ("Plan-only deploy (P1): live market context and tactical sleeves "
+                "arrive in later phases.")
+    else:
+        note = f"Market-aware deploy (P2): context age {mca}."
     return DeploymentPlan(
         deploy_amount_usd=amount, as_of=as_of, tiers=tiers,
         us_situs_exposed_usd=round(exposed_total, 2),
         us_situs_sanctioned_usd=round(sanctioned_total, 2),
-        undeployed_remainder_usd=remainder, market_context_age=None,
+        undeployed_remainder_usd=remainder, market_context_age=mca,
         caveats=caveats,
-        note=("Plan-only deploy (P1): live market context and tactical sleeves "
-              "arrive in later phases."),
+        note=note,
     )

@@ -273,6 +273,7 @@ class DeploymentLineDTO(BaseModel):
     rationale: str
     cites: list[str] = []
     held_value_usd: float = 0.0
+    pace_rationale: str = ""
 
 
 class DeploymentTierDTO(BaseModel):
@@ -313,6 +314,7 @@ def deployment_plan_to_dto(plan) -> DeploymentPlanDTO:
                                     note=l.estate.note),
                 cap_note=l.cap_note, net_of_tax_caveat=l.net_of_tax_caveat,
                 rationale=l.rationale, cites=list(l.cites), held_value_usd=l.held_value_usd,
+                pace_rationale=l.pace_rationale,
             ) for l in t.lines],
         ) for t in plan.tiers],
         caveats=list(plan.caveats), note=plan.note,

@@ -310,3 +310,128 @@ class TestRemediation:
         line = next(l for t in plan.tiers for l in t.lines if l.symbol == "CSPX")
         assert line.held_value_usd == pytest.approx(12_345.0)
         assert line.is_new is False
+
+
+# ----------------------------------------------------------------------
+# P2 T6: market-aware size + math pacing
+# Verifies:
+# (a) market_context=None -> P1 behavior unchanged (timing="now", pace_rationale="",
+#     market_context_age=None)
+# (b) market_context supplied + large line -> "DCA Nwk" timing + non-empty rationale
+# (c) market_context supplied + small line (<=5k) -> "now" (lump)
+# (d) is_any_stale context -> staleness caveat in plan.caveats
+# ----------------------------------------------------------------------
+
+def _stub_market_context(*, vix: float, sp500: float, is_stale: bool):
+    """Build a minimal DeploymentMarketContext stub for pacing tests."""
+    from argosy.services.deployment_market_context import (
+        DataFreshness, DeploymentMarketContext, NvdaVerification,
+    )
+    from datetime import datetime, timezone
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    freshness = DataFreshness(
+        field="vix", fetched_at=now_iso,
+        age_seconds=999_999.0 if is_stale else 1.0,
+        source="test", is_stale=is_stale,
+    )
+    return DeploymentMarketContext(
+        snapshot={"vix": vix, "sp500": sp500},
+        freshness=(freshness,),
+        nvda=None,
+        overall_age_label="live" if not is_stale else "cached (stale)",
+    )
+
+
+class TestP2Pacing:
+    """P2 T6: market_context wiring + pace_for_line behaviour."""
+
+    def _doc(self):
+        return _doc_with({
+            "US broad-market core": [("CSPX", "IE")],
+            "International developed (ex-US)": [("EXUS", "IE")],
+        })
+
+    # ------------------------------------------------------------------
+    # (a) P1 unchanged when market_context=None
+    # ------------------------------------------------------------------
+    def test_no_context_all_lines_timing_now_pace_rationale_empty(self, monkeypatch):
+        """market_context=None -> P1 unchanged: timing 'now', pace_rationale '', age None."""
+        from datetime import date
+        import argosy.services.allocation_engine as eng
+        monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
+            ("BUY", "CSPX", 50_000.0, "cash"),
+        )])
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=50_000.0,
+            as_of=date(2026, 6, 12),
+        )
+        assert plan.market_context_age is None
+        lines = [l for t in plan.tiers for l in t.lines]
+        assert all(l.timing == "now" for l in lines)
+        assert all(l.pace_rationale == "" for l in lines)
+
+    # ------------------------------------------------------------------
+    # (b) Large line + high VIX -> DCA Nwk, non-empty pace_rationale
+    # ------------------------------------------------------------------
+    def test_large_line_high_vix_gets_dca_timing(self, monkeypatch):
+        """Large line + high VIX + stretched S&P -> DCA Nwk timing + non-empty rationale."""
+        from datetime import date
+        import argosy.services.allocation_engine as eng
+        monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
+            ("BUY", "CSPX", 50_000.0, "cash"),  # large line
+        )])
+        ctx = _stub_market_context(vix=35.0, sp500=6_000.0, is_stale=False)
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=50_000.0,
+            as_of=date(2026, 6, 12), market_context=ctx,
+        )
+        assert plan.market_context_age == "live"
+        lines = [l for t in plan.tiers for l in t.lines]
+        assert len(lines) == 1
+        line = lines[0]
+        assert line.timing.startswith("DCA"), f"expected DCA timing, got {line.timing!r}"
+        assert "wk" in line.timing
+        assert line.pace_rationale  # non-empty
+        assert "VIX" in line.pace_rationale
+
+    # ------------------------------------------------------------------
+    # (c) Small line (<= 5k) -> lump ("now") even with context
+    # ------------------------------------------------------------------
+    def test_small_line_stays_now_with_context(self, monkeypatch):
+        """Lines <= DCA_LUMP_THRESHOLD_USD always get timing='now' regardless of context."""
+        from datetime import date
+        import argosy.services.allocation_engine as eng
+        # Patch to emit one small line and one large line.
+        monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [
+            _candidate(("BUY", "CSPX", 4_000.0, "cash")),   # small -> lump
+            _candidate(("BUY", "EXUS", 20_000.0, "cash")),  # large -> DCA
+        ])
+        ctx = _stub_market_context(vix=35.0, sp500=6_000.0, is_stale=False)
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=24_000.0,
+            as_of=date(2026, 6, 12), market_context=ctx,
+        )
+        lines = {l.symbol: l for t in plan.tiers for l in t.lines}
+        assert lines["CSPX"].timing == "now", "small line must stay lump"
+        assert lines["CSPX"].pace_rationale == "small line — deploy whole"
+        assert lines["EXUS"].timing.startswith("DCA"), "large line must be DCA"
+
+    # ------------------------------------------------------------------
+    # (d) Stale context -> staleness caveat in plan.caveats
+    # ------------------------------------------------------------------
+    def test_stale_context_adds_staleness_caveat(self, monkeypatch):
+        """is_any_stale context -> WARNING caveat in plan.caveats."""
+        from datetime import date
+        import argosy.services.allocation_engine as eng
+        monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
+            ("BUY", "CSPX", 10_000.0, "cash"),
+        )])
+        ctx = _stub_market_context(vix=20.0, sp500=5_500.0, is_stale=True)
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=10_000.0,
+            as_of=date(2026, 6, 12), market_context=ctx,
+        )
+        assert ctx.is_any_stale is True
+        stale_caveats = [c for c in plan.caveats if "stale" in c.lower() or "WARNING" in c]
+        assert stale_caveats, f"expected staleness caveat; got caveats={plan.caveats}"
