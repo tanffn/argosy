@@ -459,6 +459,46 @@ export interface UnallocatedCashProposalDTO {
   }>;
 }
 
+// Deploy Cash — risk-tiered, estate-annotated BUY list for a net-of-tax
+// cash amount. Mirrors argosy/services/contracts.py:
+// EstateTagDTO / DeploymentLineDTO / DeploymentTierDTO / DeploymentPlanDTO
+// (Task 6 of docs/superpowers/plans/2026-06-12-deployment-advisor.md).
+export interface EstateTagDTO {
+  domicile: string | null;
+  status: "estate_safe" | "us_situs_sanctioned" | "us_situs_exposed" | "unstamped";
+  note: string;
+}
+export interface DeploymentLineDTO {
+  symbol: string;
+  type: string;
+  amount_usd: number;
+  timing: string;
+  is_new: boolean;
+  tier: "reserve" | "core" | "medium" | "high";
+  horizon: string;
+  estate: EstateTagDTO;
+  cap_note: string;
+  net_of_tax_caveat: string;
+  rationale: string;
+  cites: string[];
+}
+export interface DeploymentTierDTO {
+  name: "reserve" | "core" | "medium" | "high";
+  cap_pct: number;
+  total_usd: number;
+  lines: DeploymentLineDTO[];
+}
+export interface DeploymentPlanDTO {
+  deploy_amount_usd: number;
+  as_of: string;
+  deployed_total_usd: number;
+  us_situs_total_usd: number;
+  market_context_age: string | null;
+  tiers: DeploymentTierDTO[];
+  caveats: string[];
+  note: string;
+}
+
 // ----------------------------------------------------------------------
 // Holistic timeline (sprint commit #10, 2026-05-29).
 //
@@ -1794,6 +1834,13 @@ export const api = {
         userId,
       )}&overage_ratio=${overageRatio}`,
     ),
+  // Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax
+  // cash amount. GET /api/portfolio/deploy-cash (P1 delivery — deterministic,
+  // plan-only; live market context arrives in P2).
+  deployCashPlan: (userId: string, cashUsd: number): Promise<DeploymentPlanDTO> => {
+    const qs = new URLSearchParams({ user_id: userId, cash_usd: String(cashUsd) });
+    return getJSON<DeploymentPlanDTO>(`/api/portfolio/deploy-cash?${qs.toString()}`);
+  },
   portfolioHighPotentialSleeve: (
     cashUsd: number = 250_000,
     sleevePct: number = 5.0,
