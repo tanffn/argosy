@@ -125,3 +125,24 @@ def classify_tier(*, kind: str, symbol: str, is_plan_instrument: bool) -> TierNa
     if is_plan_instrument:
         return "core"
     return "medium"
+
+
+# Decision 8: the entered amount is already net of Israeli CGT — Argosy models no
+# holdback. This is a per-line reminder only, never a sizing input.
+NET_OF_TAX_CAVEAT = (
+    "Amount assumed net of Israeli capital gains tax (CGT); confirm deployable cash before ordering."
+)
+
+
+def cap_note_for(doc, *, symbol: str) -> str:
+    """One-line cap/class context for a deploy line.
+
+    Names the canonical class the buy fills and, for the sanctioned NVDA sleeve,
+    surfaces the plan's NVDA cap. The correlated-exposure cap (NVDA/semis/AI) is P4.
+    """
+    for cls in doc.classes:
+        if any(inst.symbol == symbol for inst in cls.instruments):
+            if symbol in SANCTIONED_US_SITUS:
+                return f"fills {cls.label}; NVDA cap {doc.nvda_cap_pct:.0f}% of book"
+            return f"fills {cls.label}"
+    return "not in canonical plan (tactical)"

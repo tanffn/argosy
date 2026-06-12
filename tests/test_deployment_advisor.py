@@ -8,6 +8,8 @@ from argosy.services.deployment_advisor import (
     DEPLOY_TIER_CAPS,
     classify_tier,
     build_estate_map,
+    NET_OF_TAX_CAVEAT,
+    cap_note_for,
 )
 
 
@@ -110,3 +112,19 @@ class TestEstateAnnotation:
         doc = _doc_with({"Mystery": [("XXXX", None)]})
         emap = build_estate_map(doc)
         assert emap["XXXX"].status == "unstamped"
+
+
+class TestCapAndTaxAnnotation:
+    def test_cap_note_names_the_class_the_buy_fills(self):
+        doc = _doc_with({"US broad-market core": [("CSPX", "IE")]})
+        note = cap_note_for(doc, symbol="CSPX")
+        assert "US broad-market core" in note
+
+    def test_cap_note_flags_nvda_against_the_cap(self):
+        doc = _doc_with({"Strategic single-stock (NVDA)": [("NVDA", "US")]})
+        note = cap_note_for(doc, symbol="NVDA")
+        assert "13" in note  # nvda_cap_pct surfaced
+
+    def test_net_of_tax_caveat_is_a_nonempty_static_string(self):
+        assert "net" in NET_OF_TAX_CAVEAT.lower()
+        assert "tax" in NET_OF_TAX_CAVEAT.lower()
