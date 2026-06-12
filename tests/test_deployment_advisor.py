@@ -1,4 +1,5 @@
 """Deployment advisor (P1) — deterministic plan-bound deploy-cash service."""
+import pytest
 from argosy.services.deployment_advisor import (
     DeploymentLine,
     DeploymentPlan,
@@ -10,6 +11,7 @@ from argosy.services.deployment_advisor import (
     build_estate_map,
     NET_OF_TAX_CAVEAT,
     cap_note_for,
+    assemble_deployment_plan,
 )
 
 
@@ -128,3 +130,90 @@ class TestCapAndTaxAnnotation:
     def test_net_of_tax_caveat_is_a_nonempty_static_string(self):
         assert "net" in NET_OF_TAX_CAVEAT.lower()
         assert "tax" in NET_OF_TAX_CAVEAT.lower()
+
+
+class TestAssemble:
+    def _doc_holdings(self):
+        # cash_only_deploy requires class percentages to sum to ~100.
+        # Two classes at 50% each satisfies the conservation invariant.
+        from argosy.services.target_allocation_doc import (
+            AllocationClassDoc, AllocationInstrument, TargetAllocationDoc,
+        )
+        def _cls(label, symbol, domicile):
+            return AllocationClassDoc(
+                label=label, snapshot_category=label, sigma_class="us_equity",
+                target_pct=50.0,
+                instruments=[AllocationInstrument(
+                    symbol=symbol, role="primary",
+                    weight_within_class_pct=100.0, rationale="", domicile=domicile,
+                )],
+                agreement="", rationale="", dissent="",
+            )
+        doc = TargetAllocationDoc(
+            anchor_sigma=0.18, blended_sigma=0.16, nvda_cap_pct=13.0, fi_pct=10.0,
+            provenance="test",
+            classes=[
+                _cls("US broad-market core", "CSPX", "IE"),
+                _cls("International developed (ex-US)", "EXUS", "IE"),
+            ],
+            glide=[],
+        )
+        holdings = {"CSPX": 1000.0}  # CSPX held, EXUS new
+        return doc, holdings
+
+    def test_buckets_sum_to_deploy_amount(self):
+        from datetime import date
+        doc, holdings = self._doc_holdings()
+        plan = assemble_deployment_plan(
+            doc=doc, holdings=holdings, deploy_amount_usd=10_000.0,
+            as_of=date(2026, 6, 12),
+        )
+        assert plan.deployed_total_usd == pytest.approx(10_000.0, abs=1.0)
+
+    def test_all_lines_are_core_in_p1_and_reserve_is_zero(self):
+        from datetime import date
+        doc, holdings = self._doc_holdings()
+        plan = assemble_deployment_plan(
+            doc=doc, holdings=holdings, deploy_amount_usd=10_000.0,
+            as_of=date(2026, 6, 12),
+        )
+        by_name = {t.name: t for t in plan.tiers}
+        assert by_name["reserve"].total_usd == 0.0
+        assert by_name["medium"].total_usd == 0.0
+        assert by_name["high"].total_usd == 0.0
+        assert by_name["core"].total_usd == pytest.approx(10_000.0, abs=1.0)
+        assert all(l.tier == "core" for l in by_name["core"].lines)
+
+    def test_new_vs_held_flagged_per_line(self):
+        from datetime import date
+        doc, holdings = self._doc_holdings()
+        plan = assemble_deployment_plan(
+            doc=doc, holdings=holdings, deploy_amount_usd=10_000.0,
+            as_of=date(2026, 6, 12),
+        )
+        lines = {l.symbol: l for t in plan.tiers for l in t.lines}
+        assert lines["EXUS"].is_new is True
+        assert lines["CSPX"].is_new is False
+
+    def test_each_line_carries_estate_cap_tax_horizon(self):
+        from datetime import date
+        doc, holdings = self._doc_holdings()
+        plan = assemble_deployment_plan(
+            doc=doc, holdings=holdings, deploy_amount_usd=10_000.0,
+            as_of=date(2026, 6, 12),
+        )
+        line = next(l for t in plan.tiers for l in t.lines)
+        assert line.estate.status in {
+            "estate_safe", "us_situs_sanctioned", "us_situs_exposed", "unstamped"}
+        assert line.cap_note
+        assert line.net_of_tax_caveat == NET_OF_TAX_CAVEAT
+        assert line.horizon == "10yr+"      # core default
+        assert line.timing == "now"
+
+    def test_no_plan_returns_empty_plan_with_note(self):
+        from datetime import date
+        plan = assemble_deployment_plan(
+            doc=None, holdings={}, deploy_amount_usd=10_000.0, as_of=date(2026, 6, 12),
+        )
+        assert plan.deployed_total_usd == 0.0
+        assert "plan" in plan.note.lower()

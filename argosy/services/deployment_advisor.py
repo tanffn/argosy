@@ -146,3 +146,85 @@ def cap_note_for(doc, *, symbol: str) -> str:
                 return f"fills {cls.label}; NVDA cap {doc.nvda_cap_pct:.0f}% of book"
             return f"fills {cls.label}"
     return "not in canonical plan (tactical)"
+
+
+# Default hold-horizon by tier (decision 6; user override is P4).
+_TIER_HORIZON: dict[str, str] = {
+    "reserve": "<=1yr", "core": "10yr+", "medium": "5-10yr", "high": "<=5yr"
+}
+
+_CAVEATS: tuple[str, ...] = (
+    NET_OF_TAX_CAVEAT,
+    "Single-name US-situs holdings carry US estate exposure above the $60k "
+    "non-resident exemption; estate status is shown per line.",
+)
+
+
+def _instrument_type(doc, symbol: str) -> str:
+    """Coarse instrument type for the SYMBOL|TYPE column."""
+    if symbol in SANCTIONED_US_SITUS:
+        return "Stock"
+    return "ETF"
+
+
+def assemble_deployment_plan(
+    *, doc, holdings: dict[str, float], deploy_amount_usd: float, as_of: date,
+) -> DeploymentPlan:
+    """Build the P1 deploy plan: plan-bound ``cash_only_deploy`` buys, each
+    annotated with tier/estate/cap/tax/horizon, grouped into tiers that sum to
+    ``deploy_amount_usd``. P1: reserve=0, medium/high empty, core = full amount.
+    """
+    if doc is None:
+        empty = tuple(DeploymentTier(n, DEPLOY_TIER_CAPS.get(n, 0.0)) for n in TIER_NAMES)
+        return DeploymentPlan(
+            deploy_amount_usd=deploy_amount_usd, as_of=as_of, tiers=empty,
+            us_situs_total_usd=0.0, market_context_age=None, caveats=_CAVEATS,
+            note="No current canonical plan — accept a plan first.",
+        )
+
+    from argosy.services.allocation_engine import cash_only_deploy
+
+    estate_map = build_estate_map(doc)
+    plan_symbols = set(estate_map)
+    candidates = cash_only_deploy(doc, holdings, deploy_amount_usd, as_of=as_of)
+
+    core_lines: list[DeploymentLine] = []
+    us_situs_total = 0.0
+    for cand in candidates:
+        for leg in cand.legs:
+            if leg.side != "BUY":
+                continue
+            sym = leg.symbol
+            is_plan = sym in plan_symbols
+            tier = classify_tier(kind=cand.kind, symbol=sym, is_plan_instrument=is_plan)
+            estate = estate_map.get(
+                sym, EstateTag(domicile=None, status="unstamped", note="not in plan"))
+            amt = round(abs(leg.notional_usd), 2)
+            if estate.status in {"us_situs_exposed", "us_situs_sanctioned"}:
+                us_situs_total += amt
+            line = DeploymentLine(
+                symbol=sym, type=_instrument_type(doc, sym), amount_usd=amt,
+                timing="now", is_new=(sym not in holdings or holdings.get(sym, 0.0) == 0.0),
+                tier=tier, horizon=_TIER_HORIZON[tier], estate=estate,
+                cap_note=cap_note_for(doc, symbol=sym),
+                net_of_tax_caveat=NET_OF_TAX_CAVEAT, rationale=cand.rationale,
+                cites=cand.cites,
+            )
+            # P1: only core is populated; a non-core classification would be a
+            # tactical line cash_only_deploy should never emit. Keep it in core
+            # but the tier label stays honest.
+            core_lines.append(line)
+
+    tiers = (
+        DeploymentTier("reserve", 0.0, ()),
+        DeploymentTier("core", DEPLOY_TIER_CAPS["core"], tuple(core_lines)),
+        DeploymentTier("medium", DEPLOY_TIER_CAPS["medium"], ()),
+        DeploymentTier("high", DEPLOY_TIER_CAPS["high"], ()),
+    )
+    return DeploymentPlan(
+        deploy_amount_usd=round(deploy_amount_usd, 2), as_of=as_of, tiers=tiers,
+        us_situs_total_usd=round(us_situs_total, 2), market_context_age=None,
+        caveats=_CAVEATS,
+        note=("Plan-only deploy (P1): live market context and tactical sleeves "
+              "arrive in later phases."),
+    )
