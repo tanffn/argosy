@@ -77,6 +77,11 @@ def target_values_by_symbol(doc, total: float, as_of: date) -> dict[str, float]:
         raise ValueError(
             f"glide-aware class percentages sum to {pct_sum:.2f}, not ~100 "
             f"(as_of={as_of}); refusing to size targets off a non-conserving plan")
+    # Within tolerance (float rounding) renormalize to exactly 100 so the
+    # residual fraction is conserved into the targets, never silently dropped
+    # (codex r3 #2).
+    if pct_sum > 0 and pct_sum != 100.0:
+        class_pct = {k: v * 100.0 / pct_sum for k, v in class_pct.items()}
     by_label = {c.label: c for c in doc.classes}
     out: dict[str, float] = {}
     for label, pct in class_pct.items():
@@ -122,6 +127,35 @@ def tradeable_holdings(snapshot) -> tuple[dict[str, float], float]:
     return holdings, round(cash, 2)
 
 
+def _effective_named_targets(doc, holdings: dict[str, float], total: float,
+                             as_of: date) -> tuple[dict[str, float], float,
+                                                    set[str], dict[str, float]]:
+    """Named-symbol -> target USD with the PHANTOM portion of the redeploy band
+    redistributed across the named instruments, plus (unmapped_target,
+    swap_sources, legacy_holdings).
+
+    The redeploy band only reserves book value to the extent real legacy
+    holdings occupy it. Any phantom remainder (band target with no legacy behind
+    it) must not pull named instruments down into cash / leave cash undeployed
+    (codex r3 #1) — it is spread pro-rata onto the named targets. A held symbol
+    whose UCITS twin is a named target (VOO→CSPX) is a SWAP SOURCE, fully exited
+    and therefore not part of the band."""
+    targets = target_values_by_symbol(doc, total, as_of)
+    unmapped_target = targets.pop(UNMAPPED_BUCKET, 0.0)
+    named = set(targets)
+    swap_sources = {s for s in holdings
+                    if s not in named and REPLACES_SYMBOLS.get(s) in named}
+    legacy = {s: v for s, v in holdings.items()
+              if s not in named and s not in swap_sources}
+    legacy_held = sum(legacy.values())
+    phantom = max(0.0, unmapped_target - legacy_held)
+    named_total = sum(targets.values())
+    if phantom > 0 and named_total > 0:
+        for s in list(targets):
+            targets[s] = round(targets[s] + phantom * targets[s] / named_total, 2)
+    return targets, unmapped_target, swap_sources, legacy
+
+
 def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
                      as_of: date, account_id: str = "ibkr",
                      currency: str = "USD") -> list[AllocationCandidate]:
@@ -132,13 +166,14 @@ def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
     deployed to gaps; if total gap exceeds cash, it is rationed pro-rata to the
     gaps (water-fill). NEVER emits a trim; buys sum to min(total_gap, cash).
     Returns one BUY candidate per funded symbol, largest first. The unmapped/
-    redeploy bucket is never a buy target (you cannot buy an unnamed instrument).
+    redeploy bucket is never a buy target; any phantom band (no backing legacy
+    holdings) is redistributed onto the named instruments so cash isn't left idle.
     """
     if cash_usd <= 0:
         return []
     post_book = round(sum(holdings.values()) + cash_usd, 2)
-    targets = target_values_by_symbol(doc, post_book, as_of)
-    targets.pop(UNMAPPED_BUCKET, None)
+    targets, _unmapped, _swaps, _legacy = _effective_named_targets(
+        doc, holdings, post_book, as_of)
     gaps = {sym: max(0.0, tv - holdings.get(sym, 0.0)) for sym, tv in targets.items()}
     gaps = {s: g for s, g in gaps.items() if g > 0.0}
     total_gap = sum(gaps.values())
@@ -183,26 +218,22 @@ def _named_deltas(doc, holdings: dict[str, float], *, as_of: date,
     total = round(sum(holdings.values()) + extra_cash, 2)
     if total <= 0:
         return {}, {}
-    targets = target_values_by_symbol(doc, total, as_of)
-    unmapped_target = targets.pop(UNMAPPED_BUCKET, 0.0)
+    # Glide-aware named targets with the phantom band redistributed (codex r3
+    # #1) + swap sources + legacy band identified — the SAME basis cash_only_deploy
+    # uses, so the two modes agree.
+    targets, unmapped_target, swap_sources, legacy = _effective_named_targets(
+        doc, holdings, total, as_of)
     named = set(targets)
     band = total * keep_band_pct / 100.0
 
     # Raw named-target deltas.
     named_delta = {sym: targets[sym] - holdings.get(sym, 0.0) for sym in named}
 
-    # Swap sources: a held symbol whose UCITS twin is a named target (e.g.
-    # VOO→CSPX) is being REPLACED — it fully exits, it is NOT part of any band
-    # (codex r2 #1). Its whole holding becomes a trim that pairs into a SWAP.
-    swap_sources = {s for s in holdings
-                    if s not in named and REPLACES_SYMBOLS.get(s) in named}
+    # Swap sources fully exit and pair into a SWAP (codex r2 #1).
     swap_total = sum(holdings[s] for s in swap_sources)
 
-    # Legacy / redeploy band: holdings that are neither a named target nor a
-    # swap source. Only their COLLECTIVE excess over the band's glide value is
-    # trimmed; never force-exited.
-    legacy = {s: v for s, v in holdings.items()
-              if s not in named and s not in swap_sources}
+    # Legacy / redeploy band: trim only the COLLECTIVE excess over the band's
+    # glide value; never force-exited.
     total_legacy = sum(legacy.values())
     band_excess = total_legacy - unmapped_target
 

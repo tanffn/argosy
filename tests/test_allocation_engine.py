@@ -330,6 +330,52 @@ def test_pure_rebalance_does_not_create_unfunded_buys():
     assert round(buys, 2) == 15000.0 and round(sells, 2) == 15000.0
 
 
+def test_target_values_renormalizes_within_tolerance_no_silent_drop():
+    """codex r3 #2: a glide summing to 99.6 (float rounding, within tolerance)
+    must be renormalized to 100, not silently drop the residual $4k."""
+    from datetime import date
+    from argosy.services.allocation_engine import target_values_by_symbol
+    doc = _doc(glide_dates_pct=[(date(2026, 1, 1), {"Core": 99.6})],
+               class_final=[("Core", 100.0, "CSPX")])
+    out = target_values_by_symbol(doc, total=1_000_000.0, as_of=date(2026, 6, 1))
+    assert round(out["CSPX"], 2) == 1_000_000.0
+
+
+def test_pure_rebalance_no_sell_into_cash_for_phantom_band():
+    """codex r3 #1: when the redeploy band has NO backing legacy holdings, don't
+    sell a named instrument into cash to reserve a band with nothing to wind down."""
+    from datetime import date
+    from argosy.services.allocation_engine import rebalance_candidates
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1),
+                          {"Core": 70.0,
+                           "Individual Stocks (non-NVDA, to redeploy)": 30.0})],
+        class_final=[("Core", 70.0, "CSPX")],
+    )
+    assert rebalance_candidates(doc, {"CSPX": 1000.0}, as_of=date(2026, 6, 1)) == []
+
+
+def test_rebalance_phantom_band_full_swap_conserves():
+    """codex r3 #1: a swap source is fully swapped and the phantom band does not
+    leak proceeds to cash — Σ buys == Σ sells."""
+    from datetime import date
+    from argosy.services.allocation_engine import rebalance_candidates
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1),
+                          {"Core": 70.0,
+                           "Individual Stocks (non-NVDA, to redeploy)": 30.0})],
+        class_final=[("Core", 70.0, "CSPX")],
+    )
+    cands = rebalance_candidates(doc, {"CSPX": 300.0, "VOO": 700.0},
+                                 as_of=date(2026, 6, 1))
+    buys = sum(l.notional_usd for c in cands for l in c.legs if l.side == "BUY")
+    sells = sum(l.notional_usd for c in cands for l in c.legs if l.side == "SELL")
+    assert round(buys, 2) == round(sells, 2)
+    voo_sold = sum(l.notional_usd for c in cands for l in c.legs
+                   if l.symbol == "VOO" and l.side == "SELL")
+    assert round(voo_sold, 2) == 700.0
+
+
 def test_compute_allocation_dispatches_modes():
     from datetime import date
     from argosy.services.allocation_engine import compute_allocation, AllocationMode
