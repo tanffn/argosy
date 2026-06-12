@@ -38,6 +38,7 @@ import { HighPotentialSleeveCard } from "@/components/portfolio/high-potential-s
 import { TrendRadarCard } from "@/components/portfolio/trend-radar-card";
 import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monitor-card";
 import { DiscoveryCard } from "@/components/portfolio/discovery-card";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { useWSEvents } from "@/lib/ws";
 
 const USER_ID = "ariel";
@@ -635,16 +636,21 @@ export default function ProposalsPage() {
       {/* High-potential satellite sleeve — the med-high-risk slice (≥5% of a
           cash deployment), conviction-weighted, blend vehicle (UCITS thematic
           core + single-name carve-out). */}
-      <section id="high-potential" className="scroll-mt-6 space-y-4">
-        {/* Combined fleet-graded discovery (Slice 2): conviction-only picks +
-            estimator shortlist with a smart refresh. The cards below remain
-            until consumers fully migrate to this surface. */}
-        <DiscoveryCard />
-        <HighPotentialSleeveCard />
-        {/* Live SOURCING for the single-name carve-out + the exit-discipline
-            monitor (stop-loss / sell signals) for the high-risk names. */}
-        <TrendRadarCard />
-        <SpeculativeMonitorCard />
+      <section id="high-potential" className="scroll-mt-6">
+        {/* Combined fleet-graded discovery (Slice 2) on top; the legacy sleeve/
+            radar/monitor cards are collapsed below until consumers fully migrate
+            to the discovery surface. */}
+        <div className="space-y-4">
+          <DiscoveryCard />
+          <CollapsibleSection
+            title="Sleeve sizing & raw sourcing"
+            summary="legacy cards — sleeve $-sizing, trend radar, exit monitor"
+          >
+            <HighPotentialSleeveCard />
+            <TrendRadarCard />
+            <SpeculativeMonitorCard />
+          </CollapsibleSection>
+        </div>
       </section>
 
       {error && <p className="text-sm text-error font-mono">{error}</p>}
