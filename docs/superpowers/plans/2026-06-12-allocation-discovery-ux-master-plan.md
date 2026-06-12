@@ -104,19 +104,39 @@ class ExecutableTask:
     cites: tuple[str, ...] = ()
 
 
+def _fingerprint(c: AllocationCandidate) -> tuple:
+    """Identity of a candidate — kind + every leg's (side,symbol,account,
+    currency,funding,notional). Notional-only matching is NOT enough (codex):
+    it lets the agent swap a same-dollar ticker or duplicate a candidate."""
+    return (c.kind, tuple(sorted(
+        (l.side, l.symbol, l.account_id, l.currency, l.funding_source,
+         round(l.notional_usd, 2)) for l in c.legs)))
+
+
 def reconcile_or_raise(tasks: list[ExecutableTask],
                        candidates: list[AllocationCandidate]) -> None:
-    """Raise ValueError if any task's notional doesn't match some candidate."""
-    pool = [round(c.total_notional_usd, 2) for c in candidates]
+    """Enforce that the task set is EXACTLY the candidate set — same identities,
+    each used once, none invented (codex: identity + uniqueness + coverage)."""
+    want = {}
+    for c in candidates:
+        want.setdefault(_fingerprint(c), 0)
+        want[_fingerprint(c)] += 1
+    got = {}
     for t in tasks:
-        amt = round(t.candidate.total_notional_usd, 2)
-        if not any(abs(amt - p) <= _TOL_USD for p in pool):
-            raise ValueError(
-                f"task seq={t.seq} notional ${amt} reconciles to no 1a candidate")
+        fp = _fingerprint(t.candidate)
+        if fp not in want:
+            raise ValueError(f"task seq={t.seq} wraps an unknown/invented candidate {fp}")
+        got[fp] = got.get(fp, 0) + 1
+    if got != want:
+        raise ValueError(
+            f"task set does not cover candidates 1:1 (missing/duplicated): "
+            f"want={want} got={got}")
 
 
 __all__ = ["ExecutableTask", "reconcile_or_raise"]
 ```
+
+(The test now also asserts a DROPPED candidate and a DUPLICATED candidate each raise.)
 
 - [ ] **Step 4: Run → PASS.**
 - [ ] **Step 5: Commit** `feat(alloc): ExecutableTask + reconciliation gate`.
@@ -268,3 +288,27 @@ Exit criterion: Proposals sits beside Portfolio, is the single action hub (Consu
 - Phases 1a/1b bind to run-96's clean UCITS `TargetAllocationDoc`.
 - Phase 2 reuses `trend_radar.py`, `speculative_monitor.py`, the consult/decision fleet, and the scheduler — all already committed.
 - Migration 0066 is the only schema change.
+
+---
+
+## Codex review v1 — revisions applied (2026-06-12)
+
+Verdict was REVISE; full verdict in `tmp_review/codex_masterplan_verdict.txt`. Resolutions (numbered to the findings):
+
+1. **1a glide labels first-class.** `class_targets_as_of` returns the glide waypoint's `composition_pct_by_class` verbatim (already authoritative); `target_values_by_symbol` must map glide labels → class instruments and assert Σ class pct ≈ 100 (±0.5). Add a **conservation test**: Σ target values == book total; an unmapped/exit-band label (e.g. "Individual Stocks (non-NVDA, to redeploy)") is surfaced as an explicit `exit`/`unmapped` bucket, never silently dropped. (Phase 1a, Tasks 2–3.)
+2. **1a output is ADVISORY in v1.** Legs carry `account_id`/`currency` best-effort from the snapshot, but Phase 1a output is labeled advisory-not-execution-ready until account/currency/lot bucketing lands (a later task). The endpoint note says so.
+3. **1a swap residual fixed inline** (slice1a plan): decrement both legs by the paired amount, emit residual TRIM/BUY, conservation test added.
+4. **1b reconciliation fixed inline** (above): identity-fingerprint + uniqueness + 1:1 coverage; tests assert drop/duplicate/invented all raise.
+5. **1b agent = `BaseAgent` subclass.** `AllocationAgent(BaseAgent)` with an explicit pydantic `output_model` (`AllocationOrdering{tasks:[{candidate_index,horizon,pace,pace_rationale,rationale}]}`), a fixed model role defaulting to Opus, `require_citations=False`, and the async `_call_model` path tests already monkeypatch. No module-level `_run_model`. (Phase 1b, Task 1b.2.)
+6. **Phase 2 fleet reuse → `grade_discovery_ticker` service** (`argosy/services/discovery_grader.py`): a dedicated single-ticker grader wrapping the route-orchestration + `run_per_ticker_analysts` path (NOT raw `DecisionFlow.run`), with an explicit tier, an idempotency key (ticker+radar-fingerprint+day), a concurrency cap, a top-K limit, a "no proposal persistence" policy, and a per-run cost guard. The funnel calls this, never the raw flow.
+7. **Estimator pinned to Sonnet.** `QuickEstimatorAgent(BaseAgent)` passes `model="claude-sonnet-4-6"` explicitly (unknown roles default to Opus). (Phase 2, Task 2.2.)
+8. **Smart-refresh diff hardened.** `ScanState` persists `last_seen_at`, `status` (active/quarantined/dropped), `rank`, `quarantine_reason`, a `radar_fingerprint` (score+families+liquidity), and estimator/fleet timestamps. The diff re-estimates when the fingerprint changes OR the estimate is older than a TTL; names absent from the latest radar are marked `dropped` (TTL-evicted); GET filters expired/dropped. (Phase 2, Tasks 2.1/2.3.)
+9. **Migration path/convention corrected.** `alembic/versions/0066_trend_scan_state.py`, `down_revision="0065_plan_sections_json"`, JSON columns as `Text` + `json_valid` CHECK (mirroring `0049`), indexes on `(user_id,status)`, a real `downgrade`, and matching `Text` model fields. (Phase 2, Task 2.1.)
+10. **Separate `DiscoveryFunnelLoop`** (own cadence, timeout, cost budget, failure isolation) — the funnel is NOT folded into `SpeculativeMonitorLoop`. The monitor stays a cheap daily yfinance sweep. (Phase 2, Task 2.4.)
+11. **Consult fold = extract first.** New `ui/src/components/consult/consult-runner.tsx` extracted from `consult/page.tsx` (preserving multi-row/modes/tiers/result rendering + tests), then mounted in the Proposals hub; `/consult` keeps working (renders the same component) and only later optionally redirects. (Phase 3, Task 3.3.)
+12. **Phase 2.5 = new DTO, keep old.** A new `DiscoveryDTO`/`/api/portfolio/discovery` is added; the existing `$`-based `high-potential-sleeve` endpoint + card stay until consumers migrate, then are removed in a final cleanup task. No in-place break of `api.ts`.
+13. **Phase 0 — versioned contracts FIRST.** New Phase 0 ahead of agents/UI: define `AllocationCandidate`, `ExecutableTask`, `EstimatorVerdict`, `FleetPick`, `ScanState` as domain models + wire DTOs with serialization + fingerprint tests. Everything downstream imports these.
+14. **Shippability relabeled.** Sub-phases are TESTABLE MILESTONES; real SHIP POINTS are: (1a) the `/allocation-tasks` endpoint live; (1b) `?with_agent` live; (2) the Discovery endpoint+card live together (2.1–2.5 ship as one slice); (3) the Proposals-hub UX. 2.1/2.2/2.3 are internal milestones, not standalone ships.
+15. **Under-specified inputs pinned.** Market context = the run's `macro_snapshot` (FRED, incl. a volatility proxy) + FX; per-position verdicts = the existing Portfolio Verdict source; tax = the advisory `est_tax_nis`/`surtax_split_suggested` from 1a (no new source); current-doc loading = `PlanVersion(role="current")` → `load_plan_target_allocation`; "click-to-zoom" + "size this" get explicit component DTOs in Task 2.5. Each carries a fallback (empty/none) + a test.
+
+A Phase 0 + the revised Phase 2 services warrant a re-review before execution.

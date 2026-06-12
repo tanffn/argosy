@@ -521,52 +521,61 @@ def rebalance_candidates(doc, holdings: dict[str, float], *, as_of: date,
     adds = {d.symbol: d for d in deltas if d.action == "add"}
     trims = {d.symbol: d for d in deltas if d.action == "trim"}
 
+    # Remaining (unpaired) magnitudes — DECREMENT by the paired amount so the
+    # residual is never dropped (codex: min() must not discard the larger leg).
+    trim_rem = {d.symbol: abs(d.delta_value_usd) for d in trims.values()}
+    add_rem = {d.symbol: abs(d.delta_value_usd) for d in adds.values()}
     out: list[AllocationCandidate] = []
-    paired_adds: set[str] = set()
-    for old_sym, trim in list(trims.items()):
+    for old_sym in list(trim_rem):
         new_sym = REPLACES_SYMBOLS.get(old_sym)
-        add = adds.get(new_sym) if new_sym else None
-        if add is not None:
-            notional = round(min(abs(trim.delta_value_usd), abs(add.delta_value_usd)), 2)
-            out.append(AllocationCandidate(
-                kind="SWAP",
-                legs=(
-                    AllocationLeg(side="SELL", symbol=old_sym, account_id=account_id,
-                                  currency=currency, notional_usd=notional,
-                                  funding_source="trim_proceeds"),
-                    AllocationLeg(side="BUY", symbol=new_sym, account_id=account_id,
-                                  currency=currency, notional_usd=notional,
-                                  funding_source="trim_proceeds"),
-                ),
-                horizon="this_quarter",
-                surtax_split_suggested=False,
-                rationale=f"Domicile swap {old_sym}→{new_sym} (UCITS); size-matched.",
-                cites=(f"plan_target:{new_sym}", f"replaces:{old_sym}"),
-            ))
-            paired_adds.add(new_sym)
-            del trims[old_sym]
+        if not new_sym or new_sym not in add_rem:
+            continue
+        notional = round(min(trim_rem[old_sym], add_rem[new_sym]), 2)
+        if notional <= 0:
+            continue
+        out.append(AllocationCandidate(
+            kind="SWAP",
+            legs=(
+                AllocationLeg(side="SELL", symbol=old_sym, account_id=account_id,
+                              currency=currency, notional_usd=notional,
+                              funding_source="trim_proceeds"),
+                AllocationLeg(side="BUY", symbol=new_sym, account_id=account_id,
+                              currency=currency, notional_usd=notional,
+                              funding_source="trim_proceeds"),
+            ),
+            horizon="this_quarter",
+            rationale=f"Domicile swap {old_sym}→{new_sym} (UCITS); size-matched.",
+            cites=(f"plan_target:{new_sym}", f"replaces:{old_sym}"),
+        ))
+        trim_rem[old_sym] = round(trim_rem[old_sym] - notional, 2)
+        add_rem[new_sym] = round(add_rem[new_sym] - notional, 2)
 
-    for sym, trim in trims.items():
+    # Residual trims / buys (incl. the larger side of an unequal swap).
+    for sym, amt in trim_rem.items():
+        if amt <= 0:
+            continue
         out.append(AllocationCandidate(
             kind="TRIM",
             legs=(AllocationLeg(side="SELL", symbol=sym, account_id=account_id,
-                                currency=currency, notional_usd=round(abs(trim.delta_value_usd), 2),
+                                currency=currency, notional_usd=round(amt, 2),
                                 funding_source="trim_proceeds"),),
-            horizon="this_quarter", rationale=trim.rationale, cites=(f"plan_target:{sym}",),
-        ))
-    for sym, add in adds.items():
-        if sym in paired_adds:
+            horizon="this_quarter", rationale=trims[sym].rationale,
+            cites=(f"plan_target:{sym}",)))
+    for sym, amt in add_rem.items():
+        if amt <= 0:
             continue
         out.append(AllocationCandidate(
             kind="BUY",
             legs=(AllocationLeg(side="BUY", symbol=sym, account_id=account_id,
-                                currency=currency, notional_usd=round(add.delta_value_usd, 2),
+                                currency=currency, notional_usd=round(amt, 2),
                                 funding_source="trim_proceeds"),),
-            horizon="this_quarter", rationale=add.rationale, cites=(f"plan_target:{sym}",),
-        ))
+            horizon="this_quarter", rationale=adds[sym].rationale,
+            cites=(f"plan_target:{sym}",)))
     out.sort(key=lambda c: -c.total_notional_usd)
     return out
 ```
+
+Add an **unequal-leg test** to Step 1: holdings `{"SCHD": 1000}` with plan target FUSA 100% but a *second* under-target class forcing the FUSA add to only 600 → expect a SWAP of 600 (SCHD↔FUSA) **plus** a residual TRIM of 400 SCHD (the leftover), asserting `sum(SELL legs)==1000` (conservation).
 
 Update `__all__` to add `"rebalance_candidates"`.
 
