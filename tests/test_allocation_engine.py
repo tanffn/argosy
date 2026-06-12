@@ -123,3 +123,53 @@ def test_tradeable_holdings_filters_cash_and_nontradeable():
     holdings, cash = tradeable_holdings(Snap())
     assert holdings == {"CSPX": 600.0, "IB01": 400.0}
     assert cash == 500.0  # both cash rows aggregated, kept out of holdings
+
+
+def test_cash_only_deploy_never_trims_and_caps_at_cash():
+    from datetime import date
+    from argosy.services.allocation_engine import cash_only_deploy
+    # codex case: A=70, B=30, target 50/50, cash=10 -> buy only $10 of B, no trim of A
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1), {"A": 50.0, "B": 50.0})],
+        class_final=[("A", 50.0, "A"), ("B", 50.0, "B")],
+    )
+    cands = cash_only_deploy(doc, {"A": 70.0, "B": 30.0}, cash_usd=10.0,
+                             as_of=date(2026, 6, 1), account_id="ibkr")
+    # only one BUY leg, for B, exactly $10, funded by cash; A untouched
+    assert len(cands) == 1
+    leg = cands[0].legs[0]
+    assert (leg.side, leg.symbol, leg.notional_usd, leg.funding_source) == \
+           ("BUY", "B", 10.0, "cash")
+    assert all(l.side != "SELL" for c in cands for l in c.legs)
+
+
+def test_cash_only_deploy_rations_proportionally_when_cash_short():
+    from datetime import date
+    from argosy.services.allocation_engine import cash_only_deploy
+    # both under target by equal gaps; cash less than total gap -> split 50/50
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1), {"A": 50.0, "B": 50.0})],
+        class_final=[("A", 50.0, "A"), ("B", 50.0, "B")],
+    )
+    cands = cash_only_deploy(doc, {"A": 0.0, "B": 0.0}, cash_usd=100.0,
+                             as_of=date(2026, 6, 1), account_id="ibkr")
+    by = {c.legs[0].symbol: c.legs[0].notional_usd for c in cands}
+    assert by == {"A": 50.0, "B": 50.0}
+    assert round(sum(by.values()), 2) == 100.0
+
+
+def test_cash_only_deploy_never_buys_the_unmapped_bucket():
+    """The transitional/redeploy band is not a named instrument — cash is never
+    deployed into it even though it carries target value (codex #1 follow-on)."""
+    from datetime import date
+    from argosy.services.allocation_engine import cash_only_deploy, UNMAPPED_BUCKET
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1),
+                          {"Core": 50.0,
+                           "Individual Stocks (non-NVDA, to redeploy)": 50.0})],
+        class_final=[("Core", 100.0, "CSPX")],
+    )
+    cands = cash_only_deploy(doc, {}, cash_usd=100.0, as_of=date(2026, 6, 1))
+    symbols = {l.symbol for c in cands for l in c.legs}
+    assert UNMAPPED_BUCKET not in symbols
+    assert symbols == {"CSPX"}  # only the named instrument is bought

@@ -122,8 +122,49 @@ def tradeable_holdings(snapshot) -> tuple[dict[str, float], float]:
     return holdings, round(cash, 2)
 
 
+def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
+                     as_of: date, account_id: str = "ibkr",
+                     currency: str = "USD") -> list[AllocationCandidate]:
+    """Buy-only, cash-constrained deployment toward the glide-aware targets.
+
+    Targets are computed on the POST-deploy book (current + cash). Each
+    under-target symbol's gap = max(0, target_value - current). Cash is
+    deployed to gaps; if total gap exceeds cash, it is rationed pro-rata to the
+    gaps (water-fill). NEVER emits a trim; buys sum to min(total_gap, cash).
+    Returns one BUY candidate per funded symbol, largest first. The unmapped/
+    redeploy bucket is never a buy target (you cannot buy an unnamed instrument).
+    """
+    if cash_usd <= 0:
+        return []
+    post_book = round(sum(holdings.values()) + cash_usd, 2)
+    targets = target_values_by_symbol(doc, post_book, as_of)
+    targets.pop(UNMAPPED_BUCKET, None)
+    gaps = {sym: max(0.0, tv - holdings.get(sym, 0.0)) for sym, tv in targets.items()}
+    gaps = {s: g for s, g in gaps.items() if g > 0.0}
+    total_gap = sum(gaps.values())
+    if total_gap <= 0.0:
+        return []
+    scale = 1.0 if total_gap <= cash_usd else cash_usd / total_gap
+    out: list[AllocationCandidate] = []
+    for sym, gap in gaps.items():
+        amount = round(gap * scale, 2)
+        if amount <= 0.0:
+            continue
+        out.append(AllocationCandidate(
+            kind="BUY",
+            legs=(AllocationLeg(side="BUY", symbol=sym, account_id=account_id,
+                                currency=currency, notional_usd=amount,
+                                funding_source="cash"),),
+            horizon="now",
+            rationale=f"Deploy ${amount:,.0f} cash into {sym} toward its plan target.",
+            cites=(f"plan_target:{sym}",),
+        ))
+    out.sort(key=lambda c: -c.total_notional_usd)
+    return out
+
+
 __all__ = [
     "AllocationMode", "AllocationLeg", "AllocationCandidate", "REPLACES_SYMBOLS",
     "UNMAPPED_BUCKET", "class_targets_as_of", "target_values_by_symbol",
-    "tradeable_holdings",
+    "tradeable_holdings", "cash_only_deploy",
 ]
