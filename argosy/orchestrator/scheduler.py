@@ -129,6 +129,21 @@ class Scheduler:
             )
         )
 
+        # Discovery funnel — a SEPARATE daily loop (codex #10): heavier
+        # radar->estimator->fleet pass with its own cadence + failure isolation,
+        # kept apart from the cheap speculative monitor. Smart refresh.
+        from argosy.orchestrator.loops.discovery_funnel_loop import (
+            DiscoveryFunnelLoop,
+        )
+
+        self.register_loop(
+            DiscoveryFunnelLoop(
+                schedule=LoopSchedule(interval_seconds=86_400),
+                enabled=True,
+                user_id=self.user_id,
+            )
+        )
+
         # Phase 4: ReconcileLoop polls open broker orders during market
         # hours and updates fills + pending_orders. Without this loop,
         # live orders would sit in pending_orders forever.

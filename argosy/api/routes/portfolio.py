@@ -1282,6 +1282,118 @@ def get_allocation_tasks(
     )
 
 
+# --- Combined high-potential discovery surface (Slice 2) -------------------
+# A NEW DTO + endpoints (codex #12): the existing $-based high-potential-sleeve
+# endpoint/card stay until consumers migrate. This surface is CONVICTION-only
+# (no dollar sizing) — fleet-graded picks + the cheap estimator shortlist.
+
+class DiscoveryPickDTO(BaseModel):
+    ticker: str
+    conviction: str
+    verdict: str
+    thesis_md: str
+    cites: list[str] = []
+
+
+class DiscoveryEstimateDTO(BaseModel):
+    ticker: str
+    go: bool
+    conviction: str
+    sentiment: float
+    one_line: str
+
+
+class DiscoveryDTO(BaseModel):
+    picks: list[DiscoveryPickDTO]
+    estimated: list[DiscoveryEstimateDTO]
+    last_refreshed_at: str | None
+    note: str
+
+
+_DISCOVERY_NOTE = (
+    "Fleet-graded high-potential discovery: radar -> cheap estimator triage -> "
+    "Opus fleet grade. Conviction/verdict only (no dollar sizing). Refresh is "
+    "smart — only new/changed names are re-researched."
+)
+
+
+def _load_discovery_state(user_id: str):
+    """(picks, estimated, last_refreshed_at) from the persisted ScanState — only
+    ``active`` rows (dropped/quarantined are filtered, codex #8). Returns domain
+    objects (FleetPick / EstimatorVerdict); the route maps them to DTOs.
+    Best-effort."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.services.high_potential_funnel import (
+        _pick_from_json,
+        _verdict_from_json,
+    )
+    from argosy.state.models import ScanState
+
+    url = str(get_settings().database_url).replace("+aiosqlite", "")
+    factory = sessionmaker(bind=create_engine(
+        url, connect_args={"check_same_thread": False}))
+    picks = []
+    estimated = []
+    last: str | None = None
+    with factory() as db:
+        rows = db.execute(select(ScanState).where(
+            ScanState.user_id == user_id, ScanState.status == "active",
+        )).scalars().all()
+        for r in rows:
+            if r.last_radar_at is not None:
+                iso = r.last_radar_at.isoformat()
+                last = iso if last is None or iso > last else last
+            if r.estimator_json:
+                try:
+                    estimated.append(_verdict_from_json(r.estimator_json))
+                except (ValueError, KeyError):
+                    pass
+            if r.fleet_json:
+                try:
+                    picks.append(_pick_from_json(r.fleet_json))
+                except (ValueError, KeyError):
+                    pass
+    return picks, estimated, last
+
+
+@router.get("/discovery", response_model=DiscoveryDTO)
+def get_discovery(user_id: str = Query("ariel")) -> DiscoveryDTO:
+    """Cached discovery highlights (instant): fleet picks + estimator shortlist
+    from the persisted ScanState. Use POST /discovery/refresh to re-run."""
+    picks, estimated, last = _load_discovery_state(user_id)
+    return DiscoveryDTO(
+        picks=[DiscoveryPickDTO(ticker=p.ticker, conviction=p.conviction,
+               verdict=p.verdict, thesis_md=p.thesis_md, cites=list(p.cites))
+               for p in picks],
+        estimated=[DiscoveryEstimateDTO(ticker=v.ticker, go=v.go,
+                   conviction=v.conviction, sentiment=v.sentiment,
+                   one_line=v.one_line) for v in estimated],
+        last_refreshed_at=last, note=_DISCOVERY_NOTE)
+
+
+@router.post("/discovery/refresh", response_model=DiscoveryDTO)
+async def refresh_discovery(
+    user_id: str = Query("ariel"),
+    force: bool = Query(False),
+) -> DiscoveryDTO:
+    """Run the discovery funnel (smart by default; ``force=true`` re-researches
+    everything) and return the refreshed highlights."""
+    from argosy.services.high_potential_funnel import run_funnel
+
+    result = await run_funnel(user_id, force=force)
+    return DiscoveryDTO(
+        picks=[DiscoveryPickDTO(ticker=p.ticker, conviction=p.conviction,
+               verdict=p.verdict, thesis_md=p.thesis_md, cites=list(p.cites))
+               for p in result.picks],
+        estimated=[DiscoveryEstimateDTO(ticker=v.ticker, go=v.go,
+                   conviction=v.conviction, sentiment=v.sentiment,
+                   one_line=v.one_line) for v in result.estimated],
+        last_refreshed_at=result.last_refreshed_at, note=_DISCOVERY_NOTE,
+    )
+
+
 def _allocation_agent_context(user_id: str) -> tuple[dict, dict]:
     """(per-position verdicts, market-context snapshot) for the allocation agent.
 
