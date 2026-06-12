@@ -9,7 +9,7 @@ docs/superpowers/plans/2026-06-12-deployment-advisor.md.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
