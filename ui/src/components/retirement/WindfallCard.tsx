@@ -9,8 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import {
   api,
+  type AllocationBreakdownDTO,
   type WindfallActionListItem,
-  type WindfallAllocationLineDTO,
   type WindfallClassifiedSource,
   type WindfallDetectResponse,
   type WindfallEventDTO,
@@ -81,7 +81,7 @@ export function WindfallCard() {
   return (
     <div className="space-y-3">
       <WindfallHero event={event} plan={plan} />
-      <AllocationDeltaTable rows={event.allocation_delta_table} />
+      <AllocationDeltaTable />
       <ProposalsGrid plan={plan} event={event} />
 
       <DrilldownSection title="Matching equity sales (same month)">
@@ -185,17 +185,31 @@ function WindfallHero({ event, plan }: WindfallHeroProps) {
   );
 }
 
-interface AllocationDeltaTableProps {
-  rows: WindfallAllocationLineDTO[];
-}
-
-function AllocationDeltaTable({ rows }: AllocationDeltaTableProps) {
+function AllocationDeltaTable() {
+  // Rebound to the CANONICAL source (codex / user 2026-06-12): this table now
+  // reads /api/portfolio/allocation-breakdown — the SAME canonical plan targets
+  // the /portfolio card shows — instead of the windfall detector's TSV targets,
+  // so the two surfaces can never disagree. Only classes with a plan target are
+  // shown (they're the deployment destinations).
+  const [data, setData] = useState<AllocationBreakdownDTO | null>(null);
+  useEffect(() => {
+    api.portfolioAllocationBreakdown().then(setData).catch(() => {});
+  }, []);
+  if (!data) return null;
+  const rows = data.rows
+    .filter((r) => r.target_pct !== null)
+    .map((r) => ({
+      asset_class: r.label,
+      current_pct: r.current_pct / 100,
+      target_pct: (r.target_pct ?? 0) / 100,
+      delta_k_usd: (((r.target_pct ?? 0) - r.current_pct) / 100) * data.total_value_k,
+    }));
   const sorted = [...rows].sort((a, b) => b.delta_k_usd - a.delta_k_usd);
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base font-mono">
-          Current allocation vs plan target
+          Where new cash would go &mdash; vs plan target
         </CardTitle>
       </CardHeader>
       <CardContent>
