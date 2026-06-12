@@ -23,7 +23,7 @@ def _patch(monkeypatch, derive_calls, emit_calls):
     positions._THESIS_CACHE.clear()
     monkeypatch.setattr(positions, "get_pending_draft", lambda db, uid: _PV())
     monkeypatch.setattr(positions, "get_current_plan", lambda db, uid: _PV())
-    monkeypatch.setattr(positions, "_load_portfolio_snapshot", lambda uid: _Snap())
+    monkeypatch.setattr(positions, "_load_portfolio_snapshot", lambda uid, db=None: _Snap())
 
     def fake_derive(**kwargs):
         derive_calls.append(1)

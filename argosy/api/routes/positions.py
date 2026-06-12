@@ -75,15 +75,28 @@ def _to_dto(t: PositionThesis) -> PositionThesisDTO:
     return PositionThesisDTO(**t.to_dict())
 
 
-def _load_portfolio_snapshot(user_id: str) -> object | None:
+def _load_portfolio_snapshot(user_id: str, db: Session | None = None) -> object | None:
     """Return the freshest portfolio snapshot or None.
 
-    Re-uses the same TSV-discovery + parser the /api/portfolio/snapshot
-    route uses so the per-position cards agree with the allocation
-    chart on "today's holdings". ``user_id`` is accepted for parity
-    with other routes but Phase 2 still uses a global file lookup.
+    DB-FIRST (matching /api/portfolio/snapshot) so the per-position cards agree
+    with the allocation chart AND load fast: the prior TSV-discovery path walked
+    ARGOSY_HOME (which includes the Google Drive folder) + re-parsed the TSV on
+    EVERY request — ~1.4s, the real cost behind the slow Verdict column. The DB
+    row is the same data the snapshot endpoint serves; we fall back to the TSV
+    walk only when the DB has nothing.
     """
-    _ = user_id  # multi-tenant slot; matches /api/portfolio/snapshot
+    try:
+        from argosy.services.portfolio_snapshot_store import (
+            get_latest_snapshot_row,
+            row_to_snapshot,
+        )
+
+        if db is not None:
+            row = get_latest_snapshot_row(db, user_id)
+            if row is not None:
+                return row_to_snapshot(row)
+    except Exception:  # noqa: BLE001 - fall through to the filesystem path
+        logger.warning("portfolio snapshot DB lookup failed", exc_info=True)
     try:
         from argosy.api.routes.portfolio import _find_latest_tsv
         from argosy.ingest.tsv import parse_portfolio_tsv
@@ -115,7 +128,7 @@ def get_position_theses(
     if pv is None:
         return []
 
-    snapshot = _load_portfolio_snapshot(user_id)
+    snapshot = _load_portfolio_snapshot(user_id, db)
 
     # Cache hit -> return immediately (no derivation, no analyst-report load, no
     # ledger write). Keyed on the plan version + snapshot identity.

@@ -411,7 +411,7 @@ def test_route_returns_cards_from_draft(client_with_db):
     # Patch the snapshot loader so we don't depend on filesystem state.
     import argosy.api.routes.positions as positions_route
 
-    def fake_snapshot(_uid: str):
+    def fake_snapshot(_uid: str, _db=None):
         return SimpleNamespace(
             positions=[
                 {"symbol": "NVDA", "shares": 100, "usd_value_k": 50.0},
