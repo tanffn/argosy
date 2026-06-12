@@ -3593,3 +3593,77 @@ class PendingReevaluation(Base):
     # decision_run doesn't silently null the resolution link — the
     # daily job nulls it explicitly when re-queuing.
     resolved_decision_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ScanState(Base):
+    """Per-(user, ticker) discovery memory for the high-potential funnel's smart
+    refresh (Phase 2). Records the last radar score + a radar fingerprint, the
+    cached estimator/fleet verdicts (JSON), a status/rank/quarantine, and the
+    per-stage timestamps. The funnel diffs against this to re-research only
+    new/changed names; ``status`` evicts dropped tickers and quarantines bad ones.
+
+    Migration: alembic 0066. JSON columns are Text + ``json_valid`` CHECK
+    (mirrors 0049); composite PK ``(user_id, ticker)``; covering index on
+    ``(user_id, status)`` for the GET path.
+    """
+
+    __tablename__ = "trend_scan_state"
+
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ticker: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active",
+        server_default=_sa_text("'active'"),
+    )
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    quarantine_reason: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=_sa_text("''"),
+    )
+    radar_fingerprint: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=_sa_text("''"),
+    )
+    estimator_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fleet_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_radar_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_estimated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_fleet_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=_sa_text("CURRENT_TIMESTAMP"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "estimator_json IS NULL OR json_valid(estimator_json)",
+            name="ck_trend_scan_state_estimator_json_valid",
+        ),
+        CheckConstraint(
+            "fleet_json IS NULL OR json_valid(fleet_json)",
+            name="ck_trend_scan_state_fleet_json_valid",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'quarantined', 'dropped')",
+            name="ck_trend_scan_state_status",
+        ),
+        Index("ix_trend_scan_state_user_status", "user_id", "status"),
+    )
