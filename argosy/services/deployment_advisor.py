@@ -77,6 +77,43 @@ class DeploymentPlan:
 DEPLOY_TIER_CAPS: dict[str, float] = {"core": 70.0, "medium": 25.0, "high": 5.0}
 
 
+SANCTIONED_US_SITUS: frozenset[str] = frozenset({"NVDA"})
+
+
+def build_estate_map(doc) -> dict[str, EstateTag]:
+    """Per-symbol :class:`EstateTag` for every instrument in the canonical doc.
+
+    Reuses ``validate_instrument_domicile`` for the RED/YELLOW verdict, then maps
+    each symbol to a deploy-surface estate status. Symbols with no violation and a
+    non-US domicile are ``estate_safe``; sanctioned US-situs (NVDA) is
+    ``us_situs_sanctioned``.
+    """
+    from argosy.services.target_allocation_doc import validate_instrument_domicile
+
+    violations = {
+        v.symbol: v for v in validate_instrument_domicile(
+            doc, non_us_person=True, sanctioned_us_situs=SANCTIONED_US_SITUS
+        )
+    }
+    out: dict[str, EstateTag] = {}
+    for cls in doc.classes:
+        for inst in cls.instruments:
+            sym = inst.symbol
+            dom = inst.domicile
+            v = violations.get(sym)
+            if v is not None and v.severity == "RED":
+                status: EstateStatus = "us_situs_exposed"
+                note = v.reason
+            elif v is not None and v.severity == "YELLOW":
+                status, note = "unstamped", v.reason
+            elif sym in SANCTIONED_US_SITUS:
+                status, note = "us_situs_sanctioned", "sanctioned US-situs sleeve (NVDA)"
+            else:
+                status, note = "estate_safe", f"non-US-situs ({dom})"
+            out[sym] = EstateTag(domicile=dom, status=status, note=note)
+    return out
+
+
 def classify_tier(*, kind: str, symbol: str, is_plan_instrument: bool) -> TierName:
     """Assign a deploy line to a risk tier.
 
