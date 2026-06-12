@@ -1,0 +1,238 @@
+"""Versioned cross-phase domain contracts — defined once, imported everywhere.
+
+These value objects are the seams between the deterministic allocation engine
+(Slice 1a), the allocation agent (Slice 1b), and the high-potential discovery
+funnel (Slice 2). Centralising them here gives three guarantees the codex review
+required:
+
+- **One canonical candidate identity.** :func:`candidate_fingerprint` is the
+  single fingerprint used by both the engine and the agent's reconciliation
+  gate, so a task can never wrap a same-dollar-but-different-instrument
+  candidate or silently duplicate one. Identity = kind + every leg's
+  (side, symbol, account, currency, funding, rounded notional); NOT
+  notional-only.
+- **Versioned serialization.** :func:`serialize_candidate` stamps
+  :data:`CONTRACTS_SCHEMA_VERSION`; :func:`deserialize_candidate` refuses a
+  newer schema rather than silently mis-reading it.
+- **Stable names.** Everything downstream imports these types from here, so the
+  engine/agent/funnel modules re-export rather than redefine them.
+
+All value objects are frozen dataclasses (the repo convention for pure value
+objects, e.g. ``ProposalDelta``); pydantic wire DTOs for the API surface live at
+the bottom of the module.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Literal
+
+from pydantic import BaseModel
+
+CONTRACTS_SCHEMA_VERSION = 1
+
+
+# --- allocation value objects (Slice 1a output / 1b input) -----------------
+
+@dataclass(frozen=True)
+class AllocationLeg:
+    side: str                 # "BUY" | "SELL"
+    symbol: str
+    account_id: str
+    currency: str
+    notional_usd: float
+    funding_source: str       # "cash" | "trim_proceeds"
+    quantity: float | None = None
+
+
+@dataclass(frozen=True)
+class AllocationCandidate:
+    kind: str                 # "BUY" | "TRIM" | "SWAP"
+    legs: tuple[AllocationLeg, ...]
+    horizon: str              # "now" | "this_quarter" | "later"
+    est_tax_nis: float | None = None
+    surtax_split_suggested: bool = False
+    rationale: str = ""
+    cites: tuple[str, ...] = ()
+
+    @property
+    def total_notional_usd(self) -> float:
+        return round(sum(abs(l.notional_usd) for l in self.legs), 2)
+
+    def fingerprint(self) -> tuple:
+        return candidate_fingerprint(self)
+
+
+# --- allocation agent output (Slice 1b) ------------------------------------
+
+@dataclass(frozen=True)
+class ExecutableTask:
+    seq: int
+    candidate: AllocationCandidate
+    horizon: Literal["now", "this_quarter", "later"]
+    pace: Literal["lump", "tranched"]
+    pace_rationale: str
+    rationale: str
+    cites: tuple[str, ...] = ()
+
+
+# --- discovery funnel value objects (Slice 2) ------------------------------
+
+@dataclass(frozen=True)
+class EstimatorVerdict:
+    """Cheap Sonnet triage screen for a single radar ticker."""
+
+    ticker: str
+    go: bool
+    conviction: str           # "HIGH" | "MED" | "LOW"
+    sentiment: float          # -1.0 .. 1.0
+    one_line: str
+
+
+@dataclass(frozen=True)
+class FleetPick:
+    """A radar ticker that survived to a full Opus fleet grading."""
+
+    ticker: str
+    conviction: str           # "HIGH" | "MED" | "LOW"
+    thesis_md: str
+    verdict: str              # "BUY" | "WATCH" | "PASS"
+    cites: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ScanState:
+    """Per-(user, ticker) discovery memory for smart-refresh diffing.
+
+    The domain shape; the Slice-2 persistence layer mirrors these fields onto a
+    SQLAlchemy row (migration 0066). Timestamps are ISO-8601 strings so the
+    contract stays serialization-clean and clock-free."""
+
+    user_id: str
+    ticker: str
+    last_score: float
+    estimator: EstimatorVerdict | None = None
+    fleet: FleetPick | None = None
+    status: str = "active"            # "active" | "quarantined" | "dropped"
+    rank: int | None = None
+    quarantine_reason: str = ""
+    radar_fingerprint: str = ""
+    last_radar_at: str | None = None
+    last_estimated_at: str | None = None
+    last_fleet_at: str | None = None
+    last_seen_at: str | None = None
+
+
+# --- canonical candidate identity ------------------------------------------
+
+def candidate_fingerprint(c: AllocationCandidate) -> tuple:
+    """The identity of a candidate — kind + every leg's (side, symbol, account,
+    currency, funding, rounded notional), order-insensitive across legs.
+
+    Notional-only matching is NOT enough (codex): it would let an agent swap a
+    same-dollar ticker or duplicate a candidate and still reconcile."""
+    return (c.kind, tuple(sorted(
+        (l.side, l.symbol, l.account_id, l.currency, l.funding_source,
+         round(l.notional_usd, 2)) for l in c.legs)))
+
+
+# --- versioned serialization -----------------------------------------------
+
+def serialize_candidate(c: AllocationCandidate) -> dict[str, Any]:
+    """A version-stamped plain-dict form of a candidate (for persistence / wire)."""
+    return {
+        "schema_version": CONTRACTS_SCHEMA_VERSION,
+        "kind": c.kind,
+        "horizon": c.horizon,
+        "est_tax_nis": c.est_tax_nis,
+        "surtax_split_suggested": c.surtax_split_suggested,
+        "rationale": c.rationale,
+        "cites": list(c.cites),
+        "legs": [
+            {
+                "side": l.side, "symbol": l.symbol, "account_id": l.account_id,
+                "currency": l.currency, "notional_usd": l.notional_usd,
+                "funding_source": l.funding_source, "quantity": l.quantity,
+            }
+            for l in c.legs
+        ],
+    }
+
+
+def deserialize_candidate(blob: dict[str, Any]) -> AllocationCandidate:
+    """Inverse of :func:`serialize_candidate`. Refuses a newer schema version."""
+    ver = blob.get("schema_version", CONTRACTS_SCHEMA_VERSION)
+    if ver > CONTRACTS_SCHEMA_VERSION:
+        raise ValueError(
+            f"candidate schema_version {ver} is newer than this build "
+            f"({CONTRACTS_SCHEMA_VERSION}); refusing to mis-read it")
+    legs = tuple(
+        AllocationLeg(
+            side=l["side"], symbol=l["symbol"], account_id=l["account_id"],
+            currency=l["currency"], notional_usd=l["notional_usd"],
+            funding_source=l["funding_source"], quantity=l.get("quantity"),
+        )
+        for l in blob.get("legs", [])
+    )
+    return AllocationCandidate(
+        kind=blob["kind"], legs=legs, horizon=blob["horizon"],
+        est_tax_nis=blob.get("est_tax_nis"),
+        surtax_split_suggested=blob.get("surtax_split_suggested", False),
+        rationale=blob.get("rationale", ""),
+        cites=tuple(blob.get("cites", ())),
+    )
+
+
+# --- pydantic wire DTOs (API surface) --------------------------------------
+
+class AllocationLegDTO(BaseModel):
+    side: str
+    symbol: str
+    account_id: str
+    currency: str
+    notional_usd: float
+    funding_source: str
+    quantity: float | None = None
+
+
+class AllocationCandidateDTO(BaseModel):
+    kind: str
+    legs: list[AllocationLegDTO]
+    horizon: str
+    est_tax_nis: float | None = None
+    surtax_split_suggested: bool = False
+    rationale: str = ""
+    cites: list[str] = []
+
+
+def candidate_to_dto(c: AllocationCandidate) -> AllocationCandidateDTO:
+    """Map a domain candidate onto its wire DTO (the one place this mapping lives)."""
+    return AllocationCandidateDTO(
+        kind=c.kind, horizon=c.horizon, est_tax_nis=c.est_tax_nis,
+        surtax_split_suggested=c.surtax_split_suggested, rationale=c.rationale,
+        cites=list(c.cites),
+        legs=[
+            AllocationLegDTO(
+                side=l.side, symbol=l.symbol, account_id=l.account_id,
+                currency=l.currency, notional_usd=l.notional_usd,
+                funding_source=l.funding_source, quantity=l.quantity,
+            )
+            for l in c.legs
+        ],
+    )
+
+
+__all__ = [
+    "CONTRACTS_SCHEMA_VERSION",
+    "AllocationLeg",
+    "AllocationCandidate",
+    "ExecutableTask",
+    "EstimatorVerdict",
+    "FleetPick",
+    "ScanState",
+    "candidate_fingerprint",
+    "serialize_candidate",
+    "deserialize_candidate",
+    "AllocationLegDTO",
+    "AllocationCandidateDTO",
+    "candidate_to_dto",
+]
