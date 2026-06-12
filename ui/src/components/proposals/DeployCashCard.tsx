@@ -98,6 +98,19 @@ export function DeployCashCard({
           {plan.note && (
             <div className="mt-2 text-sm italic">{plan.note}</div>
           )}
+          <div className="mt-2 text-sm">
+            <span>{`Deployed: $${plan.deployed_total_usd.toLocaleString()}`}</span>
+            {plan.undeployed_remainder_usd > 0 && (
+              <span className="ml-3 text-amber-600">
+                {`Undeployed remainder: $${plan.undeployed_remainder_usd.toLocaleString()}`}
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {`US-situs estate exposure (planned buys): $${plan.us_situs_exposed_usd.toLocaleString()}`}
+            {plan.us_situs_sanctioned_usd > 0 &&
+              ` · sanctioned NVDA sleeve: $${plan.us_situs_sanctioned_usd.toLocaleString()}`}
+          </div>
           {plan.tiers.map((t) => (
             <TierBlock key={t.name} tier={t} />
           ))}

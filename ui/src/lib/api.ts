@@ -481,6 +481,7 @@ export interface DeploymentLineDTO {
   net_of_tax_caveat: string;
   rationale: string;
   cites: string[];
+  held_value_usd: number;
 }
 export interface DeploymentTierDTO {
   name: "reserve" | "core" | "medium" | "high";
@@ -492,7 +493,9 @@ export interface DeploymentPlanDTO {
   deploy_amount_usd: number;
   as_of: string;
   deployed_total_usd: number;
-  us_situs_total_usd: number;
+  us_situs_exposed_usd: number;
+  us_situs_sanctioned_usd: number;
+  undeployed_remainder_usd: number;
   market_context_age: string | null;
   tiers: DeploymentTierDTO[];
   caveats: string[];

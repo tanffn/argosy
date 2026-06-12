@@ -51,7 +51,8 @@ class TestContracts:
         plan = DeploymentPlan(
             deploy_amount_usd=1000.0, as_of=__import__("datetime").date(2026, 6, 12),
             tiers=(empty("reserve", 0.0), core, empty("medium", 25.0), empty("high", 5.0)),
-            us_situs_total_usd=0.0, market_context_age=None, caveats=(), note="",
+            us_situs_exposed_usd=0.0, us_situs_sanctioned_usd=0.0,
+            undeployed_remainder_usd=0.0, market_context_age=None, caveats=(), note="",
         )
         assert plan.deployed_total_usd == 1000.0
 
@@ -217,3 +218,95 @@ class TestAssemble:
         )
         assert plan.deployed_total_usd == 0.0
         assert "plan" in plan.note.lower()
+        # Nothing-lost: with no plan the whole amount is an explicit remainder.
+        assert plan.undeployed_remainder_usd == pytest.approx(10_000.0)
+
+
+# ----------------------------------------------------------------------
+# Remediation of codex money-math review (deploy_assemble_review):
+# (1) sum invariant ENFORCED via an explicit undeployed remainder,
+# (2) estate headline splits sanctioned NVDA from real RED exposure,
+# (3) BUY-leg funding is defensively enforced (raise on non-cash),
+# (4) per-line held_value_usd is exposed (audit the NEW/held call).
+# These use a monkeypatched engine to drive deterministic leg shapes.
+# ----------------------------------------------------------------------
+def _candidate(*legs):
+    from argosy.services.contracts import AllocationCandidate, AllocationLeg
+    return AllocationCandidate(
+        kind="BUY",
+        legs=tuple(
+            AllocationLeg(side=s, symbol=sym, account_id="ibkr", currency="USD",
+                          notional_usd=n, funding_source=f)
+            for (s, sym, n, f) in legs
+        ),
+        horizon="now", rationale="probe",
+    )
+
+
+class TestRemediation:
+    def _doc(self):
+        return _doc_with({
+            "US broad-market core": [("CSPX", "IE")],
+            "Strategic single-stock (NVDA)": [("NVDA", "US")],
+            "US growth (ex-NVDA)": [("VOO", "US")],  # unsanctioned US -> RED
+        })
+
+    def test_underdeployment_surfaces_explicit_remainder(self, monkeypatch):
+        from datetime import date
+        import argosy.services.allocation_engine as eng
+        # Engine places only $50k of a $250k deploy (e.g. thin/ malformed targets).
+        monkeypatch.setattr(eng, "cash_only_deploy",
+                            lambda *a, **k: [_candidate(("BUY", "CSPX", 50_000.0, "cash"))])
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=250_000.0,
+            as_of=date(2026, 6, 12),
+        )
+        assert plan.deployed_total_usd == pytest.approx(50_000.0)
+        assert plan.undeployed_remainder_usd == pytest.approx(200_000.0)
+        # Enforced invariant: deployed + remainder == entered amount (to the cent).
+        assert plan.deployed_total_usd + plan.undeployed_remainder_usd == pytest.approx(
+            250_000.0, abs=0.01)
+        # Nothing hidden: the remainder is called out in the caveats.
+        assert any("remainder" in c.lower() or "undeployed" in c.lower()
+                   for c in plan.caveats)
+
+    def test_estate_headline_splits_sanctioned_from_exposed(self, monkeypatch):
+        from datetime import date
+        import argosy.services.allocation_engine as eng
+        monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
+            ("BUY", "NVDA", 40_000.0, "cash"),   # sanctioned US-situs
+            ("BUY", "VOO", 30_000.0, "cash"),    # unsanctioned US-situs (RED)
+            ("BUY", "CSPX", 30_000.0, "cash"),   # estate-safe
+        )])
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=100_000.0,
+            as_of=date(2026, 6, 12),
+        )
+        assert plan.us_situs_sanctioned_usd == pytest.approx(40_000.0)
+        assert plan.us_situs_exposed_usd == pytest.approx(30_000.0)  # NVDA NOT folded in
+
+    def test_buy_leg_with_noncash_funding_raises(self, monkeypatch):
+        from datetime import date
+        import argosy.services.allocation_engine as eng
+        monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
+            ("BUY", "CSPX", 10_000.0, "trim_proceeds"),  # NOT cash -> must fail loud
+        )])
+        with pytest.raises(ValueError):
+            assemble_deployment_plan(
+                doc=self._doc(), holdings={}, deploy_amount_usd=10_000.0,
+                as_of=date(2026, 6, 12),
+            )
+
+    def test_line_exposes_held_value(self, monkeypatch):
+        from datetime import date
+        import argosy.services.allocation_engine as eng
+        monkeypatch.setattr(eng, "cash_only_deploy", lambda *a, **k: [_candidate(
+            ("BUY", "CSPX", 5_000.0, "cash"),
+        )])
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={"CSPX": 12_345.0}, deploy_amount_usd=5_000.0,
+            as_of=date(2026, 6, 12),
+        )
+        line = next(l for t in plan.tiers for l in t.lines if l.symbol == "CSPX")
+        assert line.held_value_usd == pytest.approx(12_345.0)
+        assert line.is_new is False

@@ -35,7 +35,7 @@ class DeploymentLine:
     type: str            # "ETF" | "Stock" | "Gold ETC" | "T-bill" ...
     amount_usd: float
     timing: str          # P1: always "now"
-    is_new: bool         # NEW vs already-held
+    is_new: bool         # NEW vs already-held in the aggregate tradeable book
     tier: TierName
     horizon: str         # "10yr+" | "5-10yr" | "<=5yr"
     estate: EstateTag
@@ -43,6 +43,9 @@ class DeploymentLine:
     net_of_tax_caveat: str
     rationale: str
     cites: tuple[str, ...] = ()
+    # Current aggregate (whole-book, cross-account) holding value of this symbol,
+    # so the NEW/held call is auditable. is_new == (held_value_usd <= 0).
+    held_value_usd: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -61,7 +64,13 @@ class DeploymentPlan:
     deploy_amount_usd: float
     as_of: date
     tiers: tuple[DeploymentTier, ...]
-    us_situs_total_usd: float
+    # Estate exposure of the PLANNED BUYS only (not whole-book), split so the
+    # sanctioned NVDA sleeve is never conflated with real RED estate exposure.
+    us_situs_exposed_usd: float        # unsanctioned US-domiciled buys (RED)
+    us_situs_sanctioned_usd: float     # the sanctioned NVDA sleeve
+    # Cash the engine could NOT place against plan targets — surfaced explicitly
+    # so nothing is silently lost. deployed_total + remainder == deploy_amount.
+    undeployed_remainder_usd: float
     market_context_age: str | None   # P1: None ("plan-only"); P2 fills cached-read age
     caveats: tuple[str, ...]
     note: str = ""
@@ -160,6 +169,14 @@ _CAVEATS: tuple[str, ...] = (
 )
 
 
+def _remainder_caveat(remainder_usd: float) -> str:
+    """Caveat shown when the engine could not place the full deploy amount."""
+    return (
+        f"${remainder_usd:,.0f} could not be placed against current plan targets "
+        f"and is shown as an undeployed remainder (not silently dropped)."
+    )
+
+
 def _instrument_type(doc, symbol: str) -> str:
     """Coarse instrument type for the SYMBOL|TYPE column."""
     if symbol in SANCTIONED_US_SITUS:
@@ -174,11 +191,14 @@ def assemble_deployment_plan(
     annotated with tier/estate/cap/tax/horizon, grouped into tiers that sum to
     ``deploy_amount_usd``. P1: reserve=0, medium/high empty, core = full amount.
     """
+    amount = round(deploy_amount_usd, 2)
     if doc is None:
         empty = tuple(DeploymentTier(n, DEPLOY_TIER_CAPS.get(n, 0.0)) for n in TIER_NAMES)
         return DeploymentPlan(
-            deploy_amount_usd=deploy_amount_usd, as_of=as_of, tiers=empty,
-            us_situs_total_usd=0.0, market_context_age=None, caveats=_CAVEATS,
+            deploy_amount_usd=amount, as_of=as_of, tiers=empty,
+            us_situs_exposed_usd=0.0, us_situs_sanctioned_usd=0.0,
+            undeployed_remainder_usd=amount, market_context_age=None,
+            caveats=_CAVEATS + (_remainder_caveat(amount),) if amount > 0.005 else _CAVEATS,
             note="No current canonical plan — accept a plan first.",
         )
 
@@ -189,26 +209,39 @@ def assemble_deployment_plan(
     candidates = cash_only_deploy(doc, holdings, deploy_amount_usd, as_of=as_of)
 
     core_lines: list[DeploymentLine] = []
-    us_situs_total = 0.0
+    exposed_total = 0.0
+    sanctioned_total = 0.0
     for cand in candidates:
         for leg in cand.legs:
             if leg.side != "BUY":
                 continue
+            # Fail loud: this path is cash-only. A BUY funded by trim proceeds (or
+            # any non-cash source) would miscount non-cash buys against the entered
+            # cash amount — never silently absorb it (trust doctrine).
+            funding = getattr(leg, "funding_source", "cash")
+            if funding != "cash":
+                raise ValueError(
+                    f"deploy-cash expects cash-funded BUY legs only; got "
+                    f"{leg.symbol!r} funded by {funding!r} (kind={cand.kind})"
+                )
             sym = leg.symbol
             is_plan = sym in plan_symbols
             tier = classify_tier(kind=cand.kind, symbol=sym, is_plan_instrument=is_plan)
             estate = estate_map.get(
                 sym, EstateTag(domicile=None, status="unstamped", note="not in plan"))
             amt = round(abs(leg.notional_usd), 2)
-            if estate.status in {"us_situs_exposed", "us_situs_sanctioned"}:
-                us_situs_total += amt
+            if estate.status == "us_situs_exposed":
+                exposed_total += amt
+            elif estate.status == "us_situs_sanctioned":
+                sanctioned_total += amt
+            held_value = round(float(holdings.get(sym, 0.0)), 2)
             line = DeploymentLine(
                 symbol=sym, type=_instrument_type(doc, sym), amount_usd=amt,
-                timing="now", is_new=(sym not in holdings or holdings.get(sym, 0.0) == 0.0),
+                timing="now", is_new=(held_value <= 0.0),
                 tier=tier, horizon=_TIER_HORIZON[tier], estate=estate,
                 cap_note=cap_note_for(doc, symbol=sym),
                 net_of_tax_caveat=NET_OF_TAX_CAVEAT, rationale=cand.rationale,
-                cites=cand.cites,
+                cites=cand.cites, held_value_usd=held_value,
             )
             # P1: only core is populated; a non-core classification would be a
             # tactical line cash_only_deploy should never emit. Keep it in core
@@ -221,10 +254,22 @@ def assemble_deployment_plan(
         DeploymentTier("medium", DEPLOY_TIER_CAPS["medium"], ()),
         DeploymentTier("high", DEPLOY_TIER_CAPS["high"], ()),
     )
+    deployed = round(sum(t.total_usd for t in tiers), 2)
+    if deployed - amount > 0.01:
+        # Over-deploy is never allowed — the engine water-fills to <= cash.
+        raise ValueError(
+            f"deploy-cash over-allocated: buys total {deployed} > amount {amount}"
+        )
+    remainder = round(max(0.0, amount - deployed), 2)
+    caveats = _CAVEATS
+    if remainder > 0.005:
+        caveats = caveats + (_remainder_caveat(remainder),)
     return DeploymentPlan(
-        deploy_amount_usd=round(deploy_amount_usd, 2), as_of=as_of, tiers=tiers,
-        us_situs_total_usd=round(us_situs_total, 2), market_context_age=None,
-        caveats=_CAVEATS,
+        deploy_amount_usd=amount, as_of=as_of, tiers=tiers,
+        us_situs_exposed_usd=round(exposed_total, 2),
+        us_situs_sanctioned_usd=round(sanctioned_total, 2),
+        undeployed_remainder_usd=remainder, market_context_age=None,
+        caveats=caveats,
         note=("Plan-only deploy (P1): live market context and tactical sleeves "
               "arrive in later phases."),
     )

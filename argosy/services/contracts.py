@@ -272,6 +272,7 @@ class DeploymentLineDTO(BaseModel):
     net_of_tax_caveat: str
     rationale: str
     cites: list[str] = []
+    held_value_usd: float = 0.0
 
 
 class DeploymentTierDTO(BaseModel):
@@ -285,7 +286,9 @@ class DeploymentPlanDTO(BaseModel):
     deploy_amount_usd: float
     as_of: str
     deployed_total_usd: float
-    us_situs_total_usd: float
+    us_situs_exposed_usd: float
+    us_situs_sanctioned_usd: float
+    undeployed_remainder_usd: float
     market_context_age: str | None = None
     tiers: list[DeploymentTierDTO]
     caveats: list[str]
@@ -297,7 +300,9 @@ def deployment_plan_to_dto(plan) -> DeploymentPlanDTO:
         deploy_amount_usd=plan.deploy_amount_usd,
         as_of=plan.as_of.isoformat(),
         deployed_total_usd=plan.deployed_total_usd,
-        us_situs_total_usd=plan.us_situs_total_usd,
+        us_situs_exposed_usd=plan.us_situs_exposed_usd,
+        us_situs_sanctioned_usd=plan.us_situs_sanctioned_usd,
+        undeployed_remainder_usd=plan.undeployed_remainder_usd,
         market_context_age=plan.market_context_age,
         tiers=[DeploymentTierDTO(
             name=t.name, cap_pct=t.cap_pct, total_usd=t.total_usd,
@@ -307,7 +312,7 @@ def deployment_plan_to_dto(plan) -> DeploymentPlanDTO:
                 estate=EstateTagDTO(domicile=l.estate.domicile, status=l.estate.status,
                                     note=l.estate.note),
                 cap_note=l.cap_note, net_of_tax_caveat=l.net_of_tax_caveat,
-                rationale=l.rationale, cites=list(l.cites),
+                rationale=l.rationale, cites=list(l.cites), held_value_usd=l.held_value_usd,
             ) for l in t.lines],
         ) for t in plan.tiers],
         caveats=list(plan.caveats), note=plan.note,

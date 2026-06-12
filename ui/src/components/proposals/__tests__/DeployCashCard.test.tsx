@@ -6,7 +6,8 @@ import type { DeploymentPlanDTO } from "@/lib/api";
 
 const PLAN: DeploymentPlanDTO = {
   deploy_amount_usd: 10000, as_of: "2026-06-12", deployed_total_usd: 10000,
-  us_situs_total_usd: 0, market_context_age: null,
+  us_situs_exposed_usd: 0, us_situs_sanctioned_usd: 0, undeployed_remainder_usd: 0,
+  market_context_age: null,
   tiers: [
     { name: "reserve", cap_pct: 0, total_usd: 0, lines: [] },
     { name: "core", cap_pct: 70, total_usd: 10000, lines: [{
@@ -14,7 +15,7 @@ const PLAN: DeploymentPlanDTO = {
       tier: "core", horizon: "10yr+",
       estate: { domicile: "IE", status: "estate_safe", note: "non-US-situs (IE)" },
       cap_note: "fills US broad-market core", net_of_tax_caveat: "net of CGT",
-      rationale: "gap-fill", cites: [],
+      rationale: "gap-fill", cites: [], held_value_usd: 47890,
     }] },
     { name: "medium", cap_pct: 25, total_usd: 0, lines: [] },
     { name: "high", cap_pct: 5, total_usd: 0, lines: [] },
