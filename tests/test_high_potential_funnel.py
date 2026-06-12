@@ -48,6 +48,24 @@ def _setup(monkeypatch, shortlist, existing, estimate_calls, *, fleet_pick=True)
     return store
 
 
+def test_run_funnel_offloads_sync_estimator_off_event_loop(monkeypatch):
+    """Live regression: the funnel is async, but the real estimator uses
+    run_sync (asyncio.run internally). Calling it directly in the running loop
+    raises 'asyncio.run() cannot be called from a running event loop'. The funnel
+    must offload it to a thread."""
+    now = datetime(2026, 6, 12, 12, 0, tzinfo=timezone.utc)
+    c = _cand("PLTR", 80.0)
+    _setup(monkeypatch, [c], {}, [], fleet_pick=False)
+
+    def estimate_via_asyncio_run(candidate, *, user_id="ariel"):
+        asyncio.run(asyncio.sleep(0))  # mimics BaseAgent.run_sync's asyncio.run
+        return EstimatorVerdict(ticker=candidate.ticker, go=True,
+                                conviction="HIGH", sentiment=0.8, one_line="go")
+    monkeypatch.setattr(hpf, "_estimate", estimate_via_asyncio_run)
+    # Must NOT raise (would raise if _estimate were called inline in the loop).
+    asyncio.run(hpf.run_funnel("ariel", force=False, now=now))
+
+
 def test_unchanged_ticker_is_not_re_estimated(monkeypatch):
     now = datetime(2026, 6, 12, 12, 0, tzinfo=timezone.utc)
     c = _cand("PLTR", 80.0)

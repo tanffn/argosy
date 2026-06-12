@@ -13,6 +13,7 @@ stubbed in tests and swapped without touching the orchestration.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -201,7 +202,9 @@ async def run_funnel(user_id: str, *, force: bool = False,
             verdict = _verdict_from_json(prev["estimator_json"])
             last_estimated_at = prev.get("last_estimated_at")
         else:
-            verdict = _estimate(c, user_id=user_id)
+            # The estimator is a sync agent (run_sync -> asyncio.run); offload it
+            # so it never calls asyncio.run() inside this running event loop.
+            verdict = await asyncio.to_thread(_estimate, c, user_id=user_id)
             last_estimated_at = now.isoformat()
         estimated.append(verdict)
         # Carry a stored fleet grade forward ONLY when the fingerprint is
