@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/positions", tags=["positions"])
 
+# In-process thesis cache (perf). Derivation is deterministic in
+# (plan_version, snapshot), so we recompute only when one of those changes —
+# steady-state /portfolio refreshes are served from cache with ZERO derivation
+# and ZERO reliability-ledger writes (the emit happens only on a cache MISS,
+# once per plan/snapshot). Bounded; a handful of entries in practice. Cleared
+# on server restart. A new plan draft is a new row (new id) so it misses
+# naturally; a new snapshot changes the snapshot key.
+_THESIS_CACHE: dict[tuple, list["PositionThesisDTO"]] = {}
+_THESIS_CACHE_MAX = 32
+
+
+def _snapshot_cache_key(snapshot) -> tuple:
+    return (
+        getattr(snapshot, "snapshot_date", None),
+        len(getattr(snapshot, "positions", []) or []),
+        round(float(getattr(snapshot, "total_usd_value_k", 0.0) or 0.0), 2),
+    )
+
 
 class PositionThesisDTO(BaseModel):
     """Wire-format mirror of :class:`PositionThesis`.
@@ -99,6 +117,13 @@ def get_position_theses(
 
     snapshot = _load_portfolio_snapshot(user_id)
 
+    # Cache hit -> return immediately (no derivation, no analyst-report load, no
+    # ledger write). Keyed on the plan version + snapshot identity.
+    cache_key = (user_id, pv.id, _snapshot_cache_key(snapshot))
+    cached = _THESIS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
     # Pull analyst reports for the draft's synthesis decision_run so we
     # can attribute conviction + cited sources. When the draft wasn't
     # produced by a synthesis run (manual ingest / legacy), we simply
@@ -156,7 +181,11 @@ def get_position_theses(
         provenance_weights_applied=(pv.decision_run_id is not None),
     )
 
-    return [_to_dto(t) for t in theses]
+    dtos = [_to_dto(t) for t in theses]
+    if len(_THESIS_CACHE) >= _THESIS_CACHE_MAX:
+        _THESIS_CACHE.clear()  # simple bound — keys are plan/snapshot scoped
+    _THESIS_CACHE[cache_key] = dtos
+    return dtos
 
 
 __all__ = ["PositionThesisDTO", "router"]
