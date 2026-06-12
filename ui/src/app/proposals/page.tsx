@@ -23,6 +23,7 @@ import {
   api,
   type ActionProposalDTO,
   type ActionProposalPayload,
+  type DeploymentPlanDTO,
   type FillItem,
   type ProposalDetail,
   type ProposalListItem,
@@ -33,6 +34,7 @@ import { ActionProposalCard } from "@/components/proposals/ActionProposalCard";
 import { CustomizeModal } from "@/components/proposals/CustomizeModal";
 import { DeferModal } from "@/components/proposals/DeferModal";
 import { RejectModal } from "@/components/proposals/RejectModal";
+import { DeployCashCard } from "@/components/proposals/DeployCashCard";
 import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { TrendRadarCard } from "@/components/portfolio/trend-radar-card";
 import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monitor-card";
@@ -277,6 +279,53 @@ export default function ProposalsPage() {
   );
   const [customizeTarget, setCustomizeTarget] =
     useState<ActionProposalDTO | null>(null);
+
+  // -------------------------------------------------------------------
+  // Deploy Cash surface (Task 9 / P1). State is here so the card stays
+  // presentational. deployAmount drives the fetch; the effect re-fires
+  // on every change (debouncing is a P2 polish concern). Prefill from
+  // detected idle cash on mount.
+  // -------------------------------------------------------------------
+  const [deployAmount, setDeployAmount] = useState<number>(0);
+  const [deployPlan, setDeployPlan] = useState<DeploymentPlanDTO | null>(null);
+  const [deployLoading, setDeployLoading] = useState(false);
+  const [unallocatedUsd, setUnallocatedUsd] = useState<number>(0);
+
+  // Prefill unallocatedUsd + initial deployAmount from detected idle cash.
+  useEffect(() => {
+    api
+      .portfolioUnallocatedCashProposal(USER_ID)
+      .then((r) => {
+        if (r && r.excess_usd > 0) {
+          setUnallocatedUsd(r.excess_usd);
+          setDeployAmount(r.excess_usd);
+        }
+      })
+      .catch(() => {
+        // prefill is best-effort; stubbed to 0 on failure
+      });
+  }, []);
+
+  // Fetch the deploy plan whenever deployAmount changes (and is > 0).
+  useEffect(() => {
+    let cancelled = false;
+    if (deployAmount <= 0) {
+      setDeployPlan(null);
+      return;
+    }
+    setDeployLoading(true);
+    api
+      .deployCashPlan(USER_ID, deployAmount)
+      .then((p) => {
+        if (!cancelled) setDeployPlan(p);
+      })
+      .finally(() => {
+        if (!cancelled) setDeployLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deployAmount]);
 
   const refreshActionProposals = useCallback(async () => {
     try {
@@ -594,6 +643,19 @@ export default function ProposalsPage() {
           tile both deep-link here via /proposals#allocation. */}
       <section id="allocation" className="scroll-mt-6">
         <WindfallCard />
+      </section>
+
+      {/* Deploy Cash surface (P1) — plan-bound, estate-annotated BUY list
+          for a net-of-tax cash amount. Prefilled from detected idle cash;
+          user can adjust the amount and regenerate the plan. */}
+      <section id="deploy-cash" className="scroll-mt-6">
+        <DeployCashCard
+          plan={deployPlan}
+          loading={deployLoading}
+          amount={deployAmount}
+          onAmountChange={setDeployAmount}
+          unallocatedUsd={unallocatedUsd}
+        />
       </section>
 
       {/* High-potential satellite sleeve — the med-high-risk slice (≥5% of a
