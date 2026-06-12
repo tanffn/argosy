@@ -64,6 +64,15 @@ FRED_DATA: dict[str, list[dict[str, Any]]] = {
     "IRSTCI01ILM156N": _fred_rows(("2026-04-01", 4.5), ("2026-05-01", 4.25)),
 }
 
+# S&P needs >=50 observations for the 200-day trend computation; give the nominal
+# fixture a realistic ~60-point ramp ending at 5400 (so sp500 latest stays 5400).
+_sp_base = datetime(2026, 3, 1, tzinfo=timezone.utc).date()
+FRED_DATA["SP500"] = [
+    {"date": (_sp_base + __import__("datetime").timedelta(days=i)).isoformat(),
+     "value": float(5341 + i)}
+    for i in range(60)
+]
+
 
 class TestMarketSnapshotNominal:
     """All adapters return data — verify values and DataFreshness stamps."""
@@ -84,7 +93,7 @@ class TestMarketSnapshotNominal:
 
     def test_returns_all_six_keys(self):
         result = market_snapshot(session=None)
-        assert set(result.keys()) == {"sp500", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"}
+        assert set(result.keys()) == {"sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"}
 
     def test_vix_value(self):
         result = market_snapshot(session=None)
@@ -174,7 +183,7 @@ class TestMarketSnapshotMissingData:
 
     def test_still_returns_all_six_keys(self):
         result = market_snapshot(session=None)
-        assert set(result.keys()) == {"sp500", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"}
+        assert set(result.keys()) == {"sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"}
 
     def test_missing_fred_series_flagged_stale(self):
         result = market_snapshot(session=None)
@@ -215,7 +224,7 @@ class TestMarketSnapshotBoiFailure:
 
     def test_returns_six_keys_despite_boi_failure(self):
         result = market_snapshot(session=None)
-        assert set(result.keys()) == {"sp500", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"}
+        assert set(result.keys()) == {"sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"}
 
     def test_usd_nis_flagged_stale_on_failure(self):
         result = market_snapshot(session=None)
@@ -268,3 +277,23 @@ class TestCpiYoY:
         # latest=317, year_ago=309 → (317/309 - 1)*100 ≈ 2.589
         assert val == pytest.approx((317.0 / 309.0 - 1.0) * 100.0, abs=0.1)
         assert not fresh.is_stale
+
+
+class TestSpVsTrend:
+    """_compute_sp_vs_trend: S&P deviation from its trailing-window mean."""
+
+    def test_above_trend_is_positive(self):
+        from argosy.services.market_snapshot import _compute_sp_vs_trend
+        # 200 obs at 100 then a final 110 -> latest 110 vs mean ~100.05 => ~+9.9%
+        rows = [{"date": f"2025-{1+i//28:02d}-{1+i%28:02d}", "value": 100.0} for i in range(200)]
+        rows.append({"date": "2026-01-01", "value": 110.0})
+        pct, ok = _compute_sp_vs_trend(rows)
+        assert ok is True
+        assert pct > 8.0
+
+    def test_insufficient_history_not_ok(self):
+        from argosy.services.market_snapshot import _compute_sp_vs_trend
+        rows = [{"date": "2026-01-01", "value": 100.0}]
+        pct, ok = _compute_sp_vs_trend(rows)
+        assert ok is False
+        assert pct == 0.0

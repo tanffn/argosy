@@ -164,6 +164,32 @@ def _compute_cpi_yoy(rows: list[dict[str, Any]]) -> tuple[float, bool]:
 # ---------------------------------------------------------------------------
 
 
+def _compute_sp_vs_trend(rows: list[dict[str, Any]], window: int = 200) -> tuple[float, bool]:
+    """S&P % deviation from its trailing ``window``-observation simple mean.
+
+    `(latest - mean(last window obs)) / mean * 100`. The FRED SP500 series is a
+    daily (business-day) index level, so ~200 observations ≈ the 200-day trend.
+    Returns (pct, ok); ok=False when there is too little history to be meaningful.
+    """
+    vals: list[float] = []
+    for row in rows or []:
+        v = row.get("value") if isinstance(row, dict) else None
+        if v is None:
+            continue
+        try:
+            vals.append(float(v))
+        except (TypeError, ValueError):
+            continue
+    if len(vals) < max(50, window // 4):
+        return 0.0, False
+    latest = vals[-1]
+    trailing = vals[-window:]
+    ma = sum(trailing) / len(trailing)
+    if ma <= 0:
+        return 0.0, False
+    return (latest - ma) / ma * 100.0, True
+
+
 def market_snapshot(
     session: Any,
 ) -> dict[str, tuple[float, DataFreshness]]:
@@ -219,6 +245,17 @@ def market_snapshot(
                 result[field] = (0.0, _freshness_missing(field, f"{series_id}:no_data"))
             else:
                 result[field] = (val, _freshness_now(field, f"fred:{series_id}"))
+            if field == "sp500":
+                trend_pct, ok = _compute_sp_vs_trend(rows)
+                if ok:
+                    result["sp_vs_trend_pct"] = (
+                        trend_pct, _freshness_now("sp_vs_trend_pct", f"fred:{series_id}:ma200"),
+                    )
+                else:
+                    result["sp_vs_trend_pct"] = (
+                        0.0,
+                        _freshness_missing("sp_vs_trend_pct", f"{series_id}:insufficient_history"),
+                    )
 
     # --- USD/NIS via BoI adapter ---
     try:
@@ -247,7 +284,7 @@ def market_snapshot(
         result["usd_nis"] = (0.0, _freshness_missing("usd_nis", f"boi:{exc!s:.60}"))
 
     # Ensure all six keys always present (defensive).
-    for key in ("sp500", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"):
+    for key in ("sp500", "sp_vs_trend_pct", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"):
         if key not in result:
             result[key] = (0.0, _freshness_missing(key, "unexpected_missing"))
 

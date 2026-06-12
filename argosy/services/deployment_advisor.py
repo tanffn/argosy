@@ -236,7 +236,7 @@ def pace_for_line(
     if scope_pct < 0.005:
         return ("now", "immaterial vs book — timing risk not retirement-material")
     if sp_vs_trend_pct <= 8.0:
-        return ("now", f"market not stretched (S&P {sp_vs_trend_pct:+.0f}% vs trend) — lump-now is the EV default")
+        return ("now", f"market not stretched (S&P {sp_vs_trend_pct:+.1f}% vs trend) — lump-now is the EV default")
     if vix < 20.0:
         return ("now", f"extended but VIX={vix:.0f}<20 — not turbulent enough to justify DCA")
 
@@ -256,10 +256,10 @@ def pace_for_line(
     n = max(1, min(n, int(amount_usd // DCA_MIN_INSTALLMENT_USD) or 1))
 
     if n == 1:
-        return ("now", f"stretched (S&P {sp_vs_trend_pct:+.0f}%, VIX {vix:.0f}) but line too small to slice")
+        return ("now", f"stretched (S&P {sp_vs_trend_pct:+.1f}%, VIX {vix:.0f}) but line too small to slice")
     return (
         f"DCA {n}wk",
-        f"stretched (S&P {sp_vs_trend_pct:+.0f}% vs trend) + elevated VIX {vix:.0f}; "
+        f"stretched (S&P {sp_vs_trend_pct:+.1f}% vs trend) + elevated VIX {vix:.0f}; "
         f"spread over {n} equal weekly buys (FX converted with each)",
     )
 
