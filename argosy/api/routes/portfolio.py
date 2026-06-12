@@ -24,6 +24,7 @@ from argosy.api.routes.plan import get_db
 from argosy.config import get_settings
 from argosy.ingest.tsv import parse_portfolio_tsv
 from argosy.logging import get_logger
+from argosy.services.contracts import AllocationCandidateDTO, candidate_to_dto
 from argosy.services.portfolio_snapshot_store import (
     get_latest_snapshot_row,
     row_to_snapshot,
@@ -1167,6 +1168,81 @@ def refresh_rsu_vests(
         total_duplicates=total_duplicates,
         results=[RsuVestIngestFileResult(**r) for r in results],
         detail=None,
+    )
+
+
+# --- Plan-bound deterministic allocation tasks (Slice 1a) ------------------
+# 'Plan target' here is the canonical, glide-aware TargetAllocationDoc — never
+# the TSV spreadsheet (the headline bug this slice fixes). The wire DTOs and the
+# candidate->DTO mapping live in argosy.services.contracts (Phase 0).
+
+class AllocationTasksDTO(BaseModel):
+    mode: str
+    cash_usd: float
+    candidates: list[AllocationCandidateDTO]
+    note: str
+
+
+def _load_current_doc_and_holdings(user_id: str):
+    """(TargetAllocationDoc | None, holdings_by_symbol, cash_usd) from the user's
+    current accepted plan (PlanVersion role='current') + latest snapshot.
+    Best-effort; ({}, 0.0) on miss — never raises."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.services.allocation_engine import tradeable_holdings
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.queries import get_current_plan
+
+    url = str(get_settings().database_url).replace("+aiosqlite", "")
+    factory = sessionmaker(
+        bind=create_engine(url, connect_args={"check_same_thread": False}),
+        expire_on_commit=False)
+    with factory() as db:
+        pv = get_current_plan(db, user_id)
+        doc = load_plan_target_allocation(pv) if pv is not None else None
+        row = get_latest_snapshot_row(db, user_id)
+        holdings, cash = ({}, 0.0)
+        if row is not None:
+            holdings, cash = tradeable_holdings(row_to_snapshot(row))
+    return doc, holdings, cash
+
+
+@router.get("/allocation-tasks", response_model=AllocationTasksDTO)
+def get_allocation_tasks(
+    mode: str = Query("cash_only_deploy"),
+    cash_usd: float = Query(0.0, ge=0.0),
+    user_id: str = Query("ariel"),
+) -> AllocationTasksDTO:
+    """Deterministic, plan-bound allocation candidates (no LLM). 'Plan target'
+    is the canonical TargetAllocationDoc (glide-aware) — never the TSV. Amounts
+    are deterministic; legs are ADVISORY (best-effort account/currency) and tax
+    is advisory-only until lot/cash bucketing lands. The Slice-1b agent orders +
+    explains these on demand."""
+    from argosy.services.allocation_engine import AllocationMode, compute_allocation
+
+    doc, holdings, snap_cash = _load_current_doc_and_holdings(user_id)
+    if doc is None:
+        return AllocationTasksDTO(mode=mode, cash_usd=cash_usd, candidates=[],
+                                  note="No current canonical plan — accept a plan first.")
+    deploy_cash = cash_usd or snap_cash
+    try:
+        cands = compute_allocation(doc, holdings, AllocationMode(mode),
+                                   cash_usd=deploy_cash)
+    except ValueError as exc:
+        # Fail loud: a non-conserving / malformed plan must surface, never
+        # silently produce a mis-sized allocation.
+        _log.warning("allocation-tasks could not size plan: %s", exc)
+        return AllocationTasksDTO(
+            mode=mode, cash_usd=deploy_cash, candidates=[],
+            note=f"Could not size allocation from the current plan: {exc}")
+    return AllocationTasksDTO(
+        mode=mode, cash_usd=deploy_cash,
+        candidates=[candidate_to_dto(c) for c in cands],
+        note=("Plan-bound (canonical TargetAllocationDoc, glide-aware). Amounts "
+              "deterministic; legs advisory (account/currency best-effort) and "
+              "tax shown as advisory only. The agent (Slice 1b) orders + "
+              "explains these."),
     )
 
 
