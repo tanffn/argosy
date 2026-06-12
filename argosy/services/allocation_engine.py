@@ -188,24 +188,44 @@ def _named_deltas(doc, holdings: dict[str, float], *, as_of: date,
     named = set(targets)
     band = total * keep_band_pct / 100.0
 
+    # Raw named-target deltas.
+    named_delta = {sym: targets[sym] - holdings.get(sym, 0.0) for sym in named}
+
+    # Swap sources: a held symbol whose UCITS twin is a named target (e.g.
+    # VOO→CSPX) is being REPLACED — it fully exits, it is NOT part of any band
+    # (codex r2 #1). Its whole holding becomes a trim that pairs into a SWAP.
+    swap_sources = {s for s in holdings
+                    if s not in named and REPLACES_SYMBOLS.get(s) in named}
+    swap_total = sum(holdings[s] for s in swap_sources)
+
+    # Legacy / redeploy band: holdings that are neither a named target nor a
+    # swap source. Only their COLLECTIVE excess over the band's glide value is
+    # trimmed; never force-exited.
+    legacy = {s: v for s, v in holdings.items()
+              if s not in named and s not in swap_sources}
+    total_legacy = sum(legacy.values())
+    band_excess = total_legacy - unmapped_target
+
+    # Act-or-no-op gate (codex r2 #2): keep_band decides WHETHER to rebalance;
+    # once we act we act on ALL named deltas (incl. sub-band ones) so the closed
+    # book stays funded — never drop an offsetting trim while keeping a buy.
+    max_dev = max([abs(d) for d in named_delta.values()] + [0.0])
+    if max_dev < band and swap_total <= 0 and band_excess <= band:
+        return {}, {}
+
     adds: dict[str, float] = {}
     trims: dict[str, float] = {}
-    for sym in named:
-        delta = targets[sym] - holdings.get(sym, 0.0)
-        if abs(delta) < band:
-            continue
+    for sym, delta in named_delta.items():
         if delta > 0:
             adds[sym] = round(delta, 2)
-        else:
+        elif delta < 0:
             trims[sym] = round(-delta, 2)
-
-    # Legacy / unmapped holdings (not a named target) collectively belong to the
-    # redeploy band; trim only their excess over the band's current glide value.
-    legacy = {s: v for s, v in holdings.items() if s not in named}
-    total_legacy = sum(legacy.values())
-    excess = total_legacy - unmapped_target
-    if total_legacy > 0 and excess > band:
-        scale = excess / total_legacy
+    for s in swap_sources:
+        amt = round(holdings[s], 2)
+        if amt > 0:
+            trims[s] = round(trims.get(s, 0.0) + amt, 2)
+    if total_legacy > 0 and band_excess > 0:
+        scale = band_excess / total_legacy
         for s, v in legacy.items():
             amt = round(v * scale, 2)
             if amt > 0:

@@ -291,6 +291,45 @@ def test_rebalance_plus_cash_no_buy_then_sell_with_unmapped_band():
     assert not (buys & sells)
 
 
+def test_rebalance_fully_swaps_us_source_not_treats_as_band():
+    """codex r2 bug 1: a held US-domiciled symbol whose UCITS twin is a named
+    target (VOO->CSPX) must be FULLY swapped, not partially protected as the
+    redeploy band. The genuine legacy single (GOOG) is the band."""
+    from datetime import date
+    from argosy.services.allocation_engine import rebalance_candidates
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1),
+                          {"Core": 70.0,
+                           "Individual Stocks (non-NVDA, to redeploy)": 30.0})],
+        class_final=[("Core", 70.0, "CSPX")],
+    )
+    cands = rebalance_candidates(doc, {"VOO": 700.0, "GOOG": 300.0},
+                                 as_of=date(2026, 6, 1))
+    swaps = [c for c in cands if c.kind == "SWAP"]
+    assert len(swaps) == 1
+    swap_sell = next(l.notional_usd for l in swaps[0].legs
+                     if l.side == "SELL" and l.symbol == "VOO")
+    assert round(swap_sell, 2) == 700.0  # all of VOO swapped to CSPX
+    assert [l for c in cands for l in c.legs if l.symbol == "GOOG"] == []  # band held
+
+
+def test_pure_rebalance_does_not_create_unfunded_buys():
+    """codex r2 bug 2: per-symbol keep-band must not drop offsetting trims while
+    keeping an over-band buy (unfunded buying power). Σ buys <= Σ sells."""
+    from datetime import date
+    from argosy.services.allocation_engine import rebalance_candidates
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1), {"A": 50.0, "B": 25.0, "C": 25.0})],
+        class_final=[("A", 50.0, "A"), ("B", 25.0, "B"), ("C", 25.0, "C")],
+    )
+    cands = rebalance_candidates(doc, {"A": 485000.0, "B": 257500.0, "C": 257500.0},
+                                 as_of=date(2026, 6, 1))
+    buys = sum(l.notional_usd for c in cands for l in c.legs if l.side == "BUY")
+    sells = sum(l.notional_usd for c in cands for l in c.legs if l.side == "SELL")
+    assert round(buys, 2) <= round(sells, 2) + 0.01  # closed-book funded
+    assert round(buys, 2) == 15000.0 and round(sells, 2) == 15000.0
+
+
 def test_compute_allocation_dispatches_modes():
     from datetime import date
     from argosy.services.allocation_engine import compute_allocation, AllocationMode
