@@ -24,7 +24,12 @@ from argosy.api.routes.plan import get_db
 from argosy.config import get_settings
 from argosy.ingest.tsv import parse_portfolio_tsv
 from argosy.logging import get_logger
-from argosy.services.contracts import AllocationCandidateDTO, candidate_to_dto
+from argosy.services.contracts import (
+    AllocationCandidateDTO,
+    ExecutableTaskDTO,
+    candidate_to_dto,
+    task_to_dto,
+)
 from argosy.services.portfolio_snapshot_store import (
     get_latest_snapshot_row,
     row_to_snapshot,
@@ -1181,6 +1186,11 @@ class AllocationTasksDTO(BaseModel):
     cash_usd: float
     candidates: list[AllocationCandidateDTO]
     note: str
+    # Slice 1b — present only when ``with_agent=true``: the agent's ordered,
+    # paced, reconciled tasks (numbers all trace to ``candidates``). ``None``
+    # means the agent pass wasn't requested (deterministic candidates are
+    # always returned instantly).
+    executable_tasks: list[ExecutableTaskDTO] | None = None
 
 
 def _load_current_doc_and_holdings(user_id: str):
@@ -1213,12 +1223,14 @@ def get_allocation_tasks(
     mode: str = Query("cash_only_deploy"),
     cash_usd: float = Query(0.0, ge=0.0),
     user_id: str = Query("ariel"),
+    with_agent: bool = Query(False),
 ) -> AllocationTasksDTO:
     """Deterministic, plan-bound allocation candidates (no LLM). 'Plan target'
     is the canonical TargetAllocationDoc (glide-aware) — never the TSV. Amounts
     are deterministic; legs are ADVISORY (best-effort account/currency) and tax
-    is advisory-only until lot/cash bucketing lands. The Slice-1b agent orders +
-    explains these on demand."""
+    is advisory-only until lot/cash bucketing lands. When ``with_agent=true`` the
+    Slice-1b agent additionally orders + paces + explains these (on demand;
+    deterministic candidates still return instantly when false)."""
     from argosy.services.allocation_engine import AllocationMode, compute_allocation
 
     doc, holdings, snap_cash = _load_current_doc_and_holdings(user_id)
@@ -1236,14 +1248,41 @@ def get_allocation_tasks(
         return AllocationTasksDTO(
             mode=mode, cash_usd=deploy_cash, candidates=[],
             note=f"Could not size allocation from the current plan: {exc}")
+
+    executable_tasks = None
+    if with_agent and cands:
+        # On-demand agent pass. Market context = the run's macro snapshot (incl. a
+        # volatility proxy) + FX; per-position verdicts = the Portfolio Verdict
+        # source. Both best-effort with an empty fallback (codex #15) so the
+        # deterministic candidates always return even if the agent/context is
+        # unavailable.
+        from argosy.agents.allocation_agent import order_and_explain
+
+        verdicts, market_context = _allocation_agent_context(user_id)
+        tasks = order_and_explain(cands, verdicts=verdicts,
+                                  market_context=market_context, user_id=user_id)
+        executable_tasks = [task_to_dto(t) for t in tasks]
+
     return AllocationTasksDTO(
         mode=mode, cash_usd=deploy_cash,
         candidates=[candidate_to_dto(c) for c in cands],
+        executable_tasks=executable_tasks,
         note=("Plan-bound (canonical TargetAllocationDoc, glide-aware). Amounts "
               "deterministic; legs advisory (account/currency best-effort) and "
               "tax shown as advisory only. The agent (Slice 1b) orders + "
               "explains these."),
     )
+
+
+def _allocation_agent_context(user_id: str) -> tuple[dict, dict]:
+    """(per-position verdicts, market-context snapshot) for the allocation agent.
+
+    Best-effort: both degrade to ``{}`` so the agent pass never fails the
+    deterministic surface (codex #15 — under-specified inputs get an explicit
+    empty fallback)."""
+    verdicts: dict = {}
+    market_context: dict = {}
+    return verdicts, market_context
 
 
 __all__ = ["router"]

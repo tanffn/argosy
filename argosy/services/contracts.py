@@ -221,6 +221,25 @@ def candidate_to_dto(c: AllocationCandidate) -> AllocationCandidateDTO:
     )
 
 
+class ExecutableTaskDTO(BaseModel):
+    seq: int
+    candidate: AllocationCandidateDTO
+    horizon: str
+    pace: str
+    pace_rationale: str = ""
+    rationale: str = ""
+    cites: list[str] = []
+
+
+def task_to_dto(t: ExecutableTask) -> ExecutableTaskDTO:
+    """Map a domain ExecutableTask onto its wire DTO."""
+    return ExecutableTaskDTO(
+        seq=t.seq, candidate=candidate_to_dto(t.candidate), horizon=t.horizon,
+        pace=t.pace, pace_rationale=t.pace_rationale, rationale=t.rationale,
+        cites=list(t.cites),
+    )
+
+
 __all__ = [
     "CONTRACTS_SCHEMA_VERSION",
     "AllocationLeg",
@@ -235,4 +254,6 @@ __all__ = [
     "AllocationLegDTO",
     "AllocationCandidateDTO",
     "candidate_to_dto",
+    "ExecutableTaskDTO",
+    "task_to_dto",
 ]

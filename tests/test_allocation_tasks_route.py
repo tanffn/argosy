@@ -35,6 +35,46 @@ def test_allocation_tasks_cash_deploy(monkeypatch):
     assert all(leg["side"] == "BUY" for c in body["candidates"] for leg in c["legs"])
 
 
+def test_allocation_tasks_without_agent_has_no_executable_tasks(monkeypatch):
+    monkeypatch.setattr(portfolio_routes, "_load_current_doc_and_holdings",
+                        lambda user_id: (_doc(), {"CSPX": 1000.0}, 0.0))
+    client = TestClient(create_app())
+    r = client.get("/api/portfolio/allocation-tasks",
+                   params={"mode": "cash_only_deploy", "cash_usd": 500, "with_agent": "false"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["candidates"]
+    assert body["executable_tasks"] is None
+
+
+def test_allocation_tasks_with_agent_reconciles(monkeypatch):
+    import json as _json
+    import argosy.agents.allocation_agent as aa
+    from argosy.agents.base import ModelCall
+
+    monkeypatch.setattr(portfolio_routes, "_load_current_doc_and_holdings",
+                        lambda user_id: (_doc(), {"CSPX": 1000.0}, 0.0))
+
+    async def fake_call(self, **kwargs):
+        # one candidate (BUY CSPX) -> one task covering index 0
+        return ModelCall(text=_json.dumps({"tasks": [
+            {"candidate_index": 0, "horizon": "now", "pace": "lump",
+             "pace_rationale": "", "rationale": "deploy core"}]}),
+            tokens_in=1, tokens_out=1, model="claude-opus-4-7")
+    monkeypatch.setattr(aa.AllocationAgent, "_call_model", fake_call)
+
+    client = TestClient(create_app())
+    r = client.get("/api/portfolio/allocation-tasks",
+                   params={"mode": "cash_only_deploy", "cash_usd": 500, "with_agent": "true"})
+    assert r.status_code == 200
+    body = r.json()
+    tasks = body["executable_tasks"]
+    assert tasks is not None and len(tasks) == len(body["candidates"])
+    # task legs reconcile to the deterministic candidates (same symbols/amounts)
+    assert tasks[0]["candidate"]["legs"][0]["symbol"] == "CSPX"
+    assert tasks[0]["pace"] == "lump"
+
+
 def test_allocation_tasks_no_plan_returns_empty_with_note(monkeypatch):
     monkeypatch.setattr(portfolio_routes, "_load_current_doc_and_holdings",
                         lambda user_id: (None, {}, 0.0))
