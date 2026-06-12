@@ -281,15 +281,17 @@ export default function ProposalsPage() {
     useState<ActionProposalDTO | null>(null);
 
   // -------------------------------------------------------------------
-  // Deploy Cash surface (Task 9 / P1). State is here so the card stays
+  // Deploy Cash surface (Task 9 / P1, P2). State is here so the card stays
   // presentational. deployAmount drives the fetch; the effect re-fires
   // on every change (debouncing is a P2 polish concern). Prefill from
-  // detected idle cash on mount.
+  // detected idle cash on mount. deployLive (P2) requests live market
+  // context from the backend when true.
   // -------------------------------------------------------------------
   const [deployAmount, setDeployAmount] = useState<number>(0);
   const [deployPlan, setDeployPlan] = useState<DeploymentPlanDTO | null>(null);
   const [deployLoading, setDeployLoading] = useState(false);
   const [unallocatedUsd, setUnallocatedUsd] = useState<number>(0);
+  const [deployLive, setDeployLive] = useState<boolean>(false);
 
   // Prefill unallocatedUsd + initial deployAmount from detected idle cash.
   useEffect(() => {
@@ -306,7 +308,7 @@ export default function ProposalsPage() {
       });
   }, []);
 
-  // Fetch the deploy plan whenever deployAmount changes (and is > 0).
+  // Fetch the deploy plan whenever deployAmount or deployLive changes (and amount > 0).
   useEffect(() => {
     let cancelled = false;
     if (deployAmount <= 0) {
@@ -315,7 +317,7 @@ export default function ProposalsPage() {
     }
     setDeployLoading(true);
     api
-      .deployCashPlan(USER_ID, deployAmount)
+      .deployCashPlan(USER_ID, deployAmount, deployLive)
       .then((p) => {
         if (!cancelled) setDeployPlan(p);
       })
@@ -325,7 +327,7 @@ export default function ProposalsPage() {
     return () => {
       cancelled = true;
     };
-  }, [deployAmount]);
+  }, [deployAmount, deployLive]);
 
   const refreshActionProposals = useCallback(async () => {
     try {
@@ -655,6 +657,8 @@ export default function ProposalsPage() {
           amount={deployAmount}
           onAmountChange={setDeployAmount}
           unallocatedUsd={unallocatedUsd}
+          live={deployLive}
+          onLiveChange={setDeployLive}
         />
       </section>
 

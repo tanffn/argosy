@@ -482,6 +482,8 @@ export interface DeploymentLineDTO {
   rationale: string;
   cites: string[];
   held_value_usd: number;
+  /** P2: DCA pacing explanation set by the market-aware advisor. */
+  pace_rationale: string;
 }
 export interface DeploymentTierDTO {
   name: "reserve" | "core" | "medium" | "high";
@@ -489,6 +491,34 @@ export interface DeploymentTierDTO {
   total_usd: number;
   lines: DeploymentLineDTO[];
 }
+
+/** P2: per-field data freshness from the market context assembler. */
+export interface DataFreshnessDTO {
+  field: string;
+  fetched_at: string;
+  age_seconds: number;
+  source: string;
+  is_stale: boolean;
+}
+
+/** P2: NVDA live-quote + share-count verification result. */
+export interface NvdaVerificationDTO {
+  price: number;
+  shares: number | null;
+  market_cap: number | null;
+  consistent: boolean | null;
+  note: string;
+}
+
+/** P2: market context block returned when ?live=true. */
+export interface DeploymentMarketContextDTO {
+  snapshot: Record<string, number>;
+  freshness: DataFreshnessDTO[];
+  nvda: NvdaVerificationDTO | null;
+  overall_age_label: string;
+  is_any_stale: boolean;
+}
+
 export interface DeploymentPlanDTO {
   deploy_amount_usd: number;
   as_of: string;
@@ -497,6 +527,8 @@ export interface DeploymentPlanDTO {
   us_situs_sanctioned_usd: number;
   undeployed_remainder_usd: number;
   market_context_age: string | null;
+  /** P2: live market context; null when ?live=true was not supplied. */
+  market_context: DeploymentMarketContextDTO | null;
   tiers: DeploymentTierDTO[];
   caveats: string[];
   note: string;
@@ -1838,10 +1870,13 @@ export const api = {
       )}&overage_ratio=${overageRatio}`,
     ),
   // Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax
-  // cash amount. GET /api/portfolio/deploy-cash (P1 delivery — deterministic,
-  // plan-only; live market context arrives in P2).
-  deployCashPlan: (userId: string, cashUsd: number): Promise<DeploymentPlanDTO> => {
+  // cash amount. GET /api/portfolio/deploy-cash. Pass live=true to request
+  // live market context (P2): assembles macro snapshot + NVDA verification +
+  // freshness metadata + per-line DCA pacing. Default live=false preserves P1
+  // behavior (no live adapter calls).
+  deployCashPlan: (userId: string, cashUsd: number, live = false): Promise<DeploymentPlanDTO> => {
     const qs = new URLSearchParams({ user_id: userId, cash_usd: String(cashUsd) });
+    if (live) qs.set("live", "true");
     return getJSON<DeploymentPlanDTO>(`/api/portfolio/deploy-cash?${qs.toString()}`);
   },
   portfolioHighPotentialSleeve: (

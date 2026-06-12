@@ -273,6 +273,7 @@ class DeploymentLineDTO(BaseModel):
     rationale: str
     cites: list[str] = []
     held_value_usd: float = 0.0
+    pace_rationale: str = ""
 
 
 class DeploymentTierDTO(BaseModel):
@@ -280,6 +281,73 @@ class DeploymentTierDTO(BaseModel):
     cap_pct: float
     total_usd: float
     lines: list[DeploymentLineDTO]
+
+
+class DataFreshnessDTO(BaseModel):
+    field: str
+    fetched_at: str          # ISO-8601 string
+    age_seconds: float
+    source: str
+    is_stale: bool
+
+
+class NvdaVerificationDTO(BaseModel):
+    price: float
+    shares: float | None
+    market_cap: float | None
+    consistent: bool | None
+    note: str
+
+
+class DeploymentMarketContextDTO(BaseModel):
+    snapshot: dict[str, float]
+    freshness: list[DataFreshnessDTO]
+    nvda: NvdaVerificationDTO | None
+    overall_age_label: str
+    is_any_stale: bool
+
+
+def market_context_to_dto(ctx) -> DeploymentMarketContextDTO:
+    """Convert a DeploymentMarketContext dataclass to its wire DTO.
+
+    Coerces snapshot values to plain floats (the live path stores
+    (float, DataFreshness) tuples; the cached path stores plain floats).
+    """
+    coerced_snapshot: dict[str, float] = {}
+    for k, v in ctx.snapshot.items():
+        if isinstance(v, tuple):
+            coerced_snapshot[k] = float(v[0])
+        else:
+            coerced_snapshot[k] = float(v)
+
+    freshness_dtos = [
+        DataFreshnessDTO(
+            field=f.field,
+            fetched_at=f.fetched_at,
+            age_seconds=f.age_seconds,
+            source=f.source,
+            is_stale=f.is_stale,
+        )
+        for f in ctx.freshness
+    ]
+
+    nvda_dto: NvdaVerificationDTO | None = None
+    if ctx.nvda is not None:
+        nvda_dto = NvdaVerificationDTO(
+            price=ctx.nvda.price,
+            shares=ctx.nvda.shares,
+            market_cap=ctx.nvda.market_cap,
+            consistent=ctx.nvda.consistent,
+            note=ctx.nvda.note,
+        )
+
+    return DeploymentMarketContextDTO(
+        snapshot=coerced_snapshot,
+        freshness=freshness_dtos,
+        nvda=nvda_dto,
+        overall_age_label=ctx.overall_age_label,
+        is_any_stale=ctx.is_any_stale,
+    )
 
 
 class DeploymentPlanDTO(BaseModel):
@@ -290,12 +358,14 @@ class DeploymentPlanDTO(BaseModel):
     us_situs_sanctioned_usd: float
     undeployed_remainder_usd: float
     market_context_age: str | None = None
+    market_context: DeploymentMarketContextDTO | None = None
     tiers: list[DeploymentTierDTO]
     caveats: list[str]
     note: str = ""
 
 
-def deployment_plan_to_dto(plan) -> DeploymentPlanDTO:
+def deployment_plan_to_dto(plan, market_context=None) -> DeploymentPlanDTO:
+    ctx_dto = market_context_to_dto(market_context) if market_context is not None else None
     return DeploymentPlanDTO(
         deploy_amount_usd=plan.deploy_amount_usd,
         as_of=plan.as_of.isoformat(),
@@ -304,6 +374,7 @@ def deployment_plan_to_dto(plan) -> DeploymentPlanDTO:
         us_situs_sanctioned_usd=plan.us_situs_sanctioned_usd,
         undeployed_remainder_usd=plan.undeployed_remainder_usd,
         market_context_age=plan.market_context_age,
+        market_context=ctx_dto,
         tiers=[DeploymentTierDTO(
             name=t.name, cap_pct=t.cap_pct, total_usd=t.total_usd,
             lines=[DeploymentLineDTO(
@@ -313,6 +384,7 @@ def deployment_plan_to_dto(plan) -> DeploymentPlanDTO:
                                     note=l.estate.note),
                 cap_note=l.cap_note, net_of_tax_caveat=l.net_of_tax_caveat,
                 rationale=l.rationale, cites=list(l.cites), held_value_usd=l.held_value_usd,
+                pace_rationale=l.pace_rationale,
             ) for l in t.lines],
         ) for t in plan.tiers],
         caveats=list(plan.caveats), note=plan.note,
@@ -338,6 +410,10 @@ __all__ = [
     "EstateTagDTO",
     "DeploymentLineDTO",
     "DeploymentTierDTO",
+    "DataFreshnessDTO",
+    "NvdaVerificationDTO",
+    "DeploymentMarketContextDTO",
+    "market_context_to_dto",
     "DeploymentPlanDTO",
     "deployment_plan_to_dto",
 ]

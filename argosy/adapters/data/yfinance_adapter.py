@@ -404,5 +404,94 @@ class YFinanceAdapter:
         )
         return Quote(**payload)
 
+    async def get_quote_with_fundamentals(
+        self, ticker: str, *, ttl_seconds: int = 300
+    ) -> dict[str, Any]:
+        """Latest quote + shares outstanding + market cap.
+
+        Returns a dict with keys:
+          ``ticker``, ``price``, ``shares``, ``market_cap``,
+          ``currency``, ``timestamp_utc``.
+
+        ``shares`` and ``market_cap`` may be ``None`` when yfinance does not
+        carry them for the given ticker (e.g. ETFs).  ``price`` is ``None``
+        when the underlying call fails — callers should treat all-None as a
+        missing data signal.
+
+        Data comes from ``yfinance.Ticker.info`` (the full info dict) which
+        carries ``sharesOutstanding`` and ``marketCap`` alongside the standard
+        price fields.  Falls back to ``fast_info`` for price-only when ``.info``
+        is empty.
+        """
+        client = self._resolve_client()
+        key = f"quote_fundamentals:{ticker}"
+
+        def _fetch() -> dict[str, Any]:
+            tk = client.Ticker(ticker)
+            info_dict: dict[str, Any] = getattr(tk, "info", {}) or {}
+            price: float | None = None
+            shares: float | None = None
+            market_cap: float | None = None
+            currency: str | None = None
+
+            # Prefer full info dict — it carries shares/market_cap.
+            if info_dict:
+                raw_price = (
+                    info_dict.get("currentPrice")
+                    or info_dict.get("regularMarketPrice")
+                )
+                if raw_price is not None:
+                    try:
+                        price = float(raw_price)
+                    except (TypeError, ValueError):
+                        pass
+                raw_shares = info_dict.get("sharesOutstanding")
+                if raw_shares is not None:
+                    try:
+                        shares = float(raw_shares)
+                    except (TypeError, ValueError):
+                        pass
+                raw_mc = info_dict.get("marketCap")
+                if raw_mc is not None:
+                    try:
+                        market_cap = float(raw_mc)
+                    except (TypeError, ValueError):
+                        pass
+                currency = info_dict.get("currency")
+
+            # Fallback to fast_info for price when info dict missed it.
+            if price is None:
+                fi = getattr(tk, "fast_info", None)
+                if fi is not None:
+                    raw_price = (
+                        getattr(fi, "last_price", None)
+                        or getattr(fi, "lastPrice", None)
+                    )
+                    if raw_price is not None:
+                        try:
+                            price = float(raw_price)
+                        except (TypeError, ValueError):
+                            pass
+                    if currency is None:
+                        currency = getattr(fi, "currency", None)
+
+            return {
+                "ticker": ticker,
+                "price": price,
+                "shares": shares,
+                "market_cap": market_cap,
+                "currency": currency,
+                "timestamp_utc": None,
+            }
+
+        payload = await cached_call(
+            kind=CacheKind.PRICES,
+            provider=self.PROVIDER,
+            key=key,
+            ttl_seconds=ttl_seconds,
+            fetch=_fetch,
+        )
+        return payload
+
 
 __all__ = ["Quote", "YFinanceAdapter"]

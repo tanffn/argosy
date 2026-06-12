@@ -46,6 +46,9 @@ class DeploymentLine:
     # Current aggregate (whole-book, cross-account) holding value of this symbol,
     # so the NEW/held call is auditable. is_new == (held_value_usd <= 0).
     held_value_usd: float = 0.0
+    # P2 market-aware pacing rationale. Empty string when market_context is None
+    # (P1 behavior preserved). Set by pace_for_line when context is supplied.
+    pace_rationale: str = ""
 
 
 @dataclass(frozen=True)
@@ -191,20 +194,100 @@ def _instrument_type(doc, symbol: str) -> str:
     return "ETF"
 
 
+# ---------------------------------------------------------------------------
+# P2 T6: market-aware per-line pacing
+# ---------------------------------------------------------------------------
+
+# Minimum per-installment ticket — an execution floor (not a smoothing rule):
+# a DCA window is capped so each weekly chunk is at least this size.
+DCA_MIN_INSTALLMENT_USD: float = 1_000.0
+
+
+def _snap_value(snapshot, key: str, default: float) -> float:
+    """Read a float from a market-context snapshot, tolerating either a plain
+    float or a ``(value, DataFreshness)`` tuple, with a default when absent."""
+    raw = snapshot.get(key) if snapshot else None
+    if raw is None:
+        return default
+    return float(raw[0]) if isinstance(raw, tuple) else float(raw)
+
+
+def pace_for_line(
+    amount_usd: float, market_context, *, book_usd: float, tranche_usd: float,
+) -> tuple[str, str]:
+    """Return ``(timing, pace_rationale)`` for one deploy line.
+
+    Codex-reviewed rule (codex_pacing_verdict): **lump-now is the default**;
+    DCA is a bounded regret-control concession used ONLY when the program is
+    material (>=0.5% of the post-deploy book), the market is stretched
+    (S&P > +8% vs trend), AND volatility is elevated (VIX >= 20). High VIX alone
+    never slows buying; a below-trend market never triggers DCA — for a
+    long-hold retirement-maximizing investor that points to FASTER deployment.
+    The materiality boundary is % of book (not a fixed-dollar floor). FX
+    conversion is paced WITH the equity buy (no separate currency bet).
+    """
+    if amount_usd <= 0:
+        return ("now", "no positive buy amount")
+    snap = market_context.snapshot
+    vix = _snap_value(snap, "vix", 20.0)
+    sp_vs_trend_pct = _snap_value(snap, "sp_vs_trend_pct", 0.0)
+    scope_pct = (tranche_usd / book_usd) if book_usd > 0 else 0.0
+
+    if scope_pct < 0.005:
+        return ("now", "immaterial vs book — timing risk not retirement-material")
+    if sp_vs_trend_pct <= 8.0:
+        return ("now", f"market not stretched (S&P {sp_vs_trend_pct:+.1f}% vs trend) — lump-now is the EV default")
+    if vix < 20.0:
+        return ("now", f"extended but VIX={vix:.0f}<20 — not turbulent enough to justify DCA")
+
+    # Stretched AND volatile: DCA concession. N grows with stretch, vol, and size.
+    if sp_vs_trend_pct <= 15.0 and vix < 30.0:
+        n = 2
+    elif sp_vs_trend_pct <= 15.0 or vix < 30.0:
+        n = 4
+    else:
+        n = 6
+    if scope_pct >= 0.05:
+        n += 4
+    elif scope_pct >= 0.02:
+        n += 2
+    n = min(n, 8)
+    # Execution floor: don't slice below the min ticket.
+    n = max(1, min(n, int(amount_usd // DCA_MIN_INSTALLMENT_USD) or 1))
+
+    if n == 1:
+        return ("now", f"stretched (S&P {sp_vs_trend_pct:+.1f}%, VIX {vix:.0f}) but line too small to slice")
+    return (
+        f"DCA {n}wk",
+        f"stretched (S&P {sp_vs_trend_pct:+.1f}% vs trend) + elevated VIX {vix:.0f}; "
+        f"spread over {n} equal weekly buys (FX converted with each)",
+    )
+
+
 def assemble_deployment_plan(
     *, doc, holdings: dict[str, float], deploy_amount_usd: float, as_of: date,
+    market_context=None,
 ) -> DeploymentPlan:
-    """Build the P1 deploy plan: plan-bound ``cash_only_deploy`` buys, each
-    annotated with tier/estate/cap/tax/horizon, grouped into tiers that sum to
-    ``deploy_amount_usd``. P1: reserve=0, medium/high empty, core = full amount.
+    """Build the deploy plan: plan-bound ``cash_only_deploy`` buys, each
+    annotated with tier/estate/cap/tax/horizon/pacing, grouped into tiers that
+    sum to ``deploy_amount_usd``.
+
+    P1 (``market_context=None``): reserve=0, medium/high empty, core = full
+    amount; all lines get ``timing="now"`` and ``pace_rationale=""``.
+    P2 (``market_context`` provided): lines are paced via ``pace_for_line``;
+    staleness is surfaced as a caveat.
     """
     amount = round(deploy_amount_usd, 2)
+
+    # Resolve market_context_age up front.
+    mca: str | None = market_context.overall_age_label if market_context is not None else None
+
     if doc is None:
         empty = tuple(DeploymentTier(n, DEPLOY_TIER_CAPS.get(n, 0.0)) for n in TIER_NAMES)
         return DeploymentPlan(
             deploy_amount_usd=amount, as_of=as_of, tiers=empty,
             us_situs_exposed_usd=0.0, us_situs_sanctioned_usd=0.0,
-            undeployed_remainder_usd=amount, market_context_age=None,
+            undeployed_remainder_usd=amount, market_context_age=mca,
             caveats=_CAVEATS + (_remainder_caveat(amount),) if amount > 0.005 else _CAVEATS,
             note="No current canonical plan — accept a plan first.",
         )
@@ -214,6 +297,8 @@ def assemble_deployment_plan(
     estate_map = build_estate_map(doc)
     plan_symbols = set(estate_map)
     candidates = cash_only_deploy(doc, holdings, deploy_amount_usd, as_of=as_of)
+    # Post-deploy investable book — the materiality denominator for pacing.
+    book_usd = round(sum(holdings.values()) + amount, 2)
 
     core_lines: list[DeploymentLine] = []
     exposed_total = 0.0
@@ -242,13 +327,19 @@ def assemble_deployment_plan(
             elif estate.status == "us_situs_sanctioned":
                 sanctioned_total += amt
             held_value = round(float(holdings.get(sym, 0.0)), 2)
+            if market_context is not None:
+                timing, p_rationale = pace_for_line(
+                    amt, market_context, book_usd=book_usd, tranche_usd=amount)
+            else:
+                timing, p_rationale = "now", ""
             line = DeploymentLine(
                 symbol=sym, type=_instrument_type(doc, sym), amount_usd=amt,
-                timing="now", is_new=(held_value <= 0.0),
+                timing=timing, is_new=(held_value <= 0.0),
                 tier=tier, horizon=_TIER_HORIZON[tier], estate=estate,
                 cap_note=cap_note_for(doc, symbol=sym),
                 net_of_tax_caveat=NET_OF_TAX_CAVEAT, rationale=cand.rationale,
                 cites=cand.cites, held_value_usd=held_value,
+                pace_rationale=p_rationale,
             )
             # P1: only core is populated; a non-core classification would be a
             # tactical line cash_only_deploy should never emit. Keep it in core
@@ -273,12 +364,23 @@ def assemble_deployment_plan(
     # pro-rata rounding noise (the exact figure is still on undeployed_remainder_usd).
     if remainder >= 1.0:
         caveats = caveats + (_remainder_caveat(remainder),)
+    # P2: loud staleness caveat when any context feed is stale.
+    if market_context is not None and market_context.is_any_stale:
+        caveats = caveats + (
+            f"WARNING: market context data is stale (age: {mca}). "
+            "Pacing decisions are based on potentially outdated market data — "
+            "refresh market context before executing.",
+        )
+    if market_context is None:
+        note = ("Plan-only deploy: live market context not requested (pass live=true "
+                "for market-aware pacing); tactical sleeves arrive in later phases.")
+    else:
+        note = f"Market-aware deploy (P2): context age {mca}."
     return DeploymentPlan(
         deploy_amount_usd=amount, as_of=as_of, tiers=tiers,
         us_situs_exposed_usd=round(exposed_total, 2),
         us_situs_sanctioned_usd=round(sanctioned_total, 2),
-        undeployed_remainder_usd=remainder, market_context_age=None,
+        undeployed_remainder_usd=remainder, market_context_age=mca,
         caveats=caveats,
-        note=("Plan-only deploy (P1): live market context and tactical sleeves "
-              "arrive in later phases."),
+        note=note,
     )

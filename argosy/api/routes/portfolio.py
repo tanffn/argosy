@@ -1347,12 +1347,19 @@ def get_allocation_tasks(
 def get_deploy_cash(
     cash_usd: float | None = Query(None, ge=0.0),
     user_id: str = Query("ariel"),
+    live: bool = Query(False),
+    db: Session = Depends(get_db),
 ) -> DeploymentPlanDTO:
     """Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax amount.
 
     ``cash_usd`` is the deployable (net-of-tax) amount. Omit it (None) to default
     to the detected idle cash from the latest snapshot; pass an explicit ``0`` to
     get an empty/zero plan (no silent substitution).
+
+    ``live=true`` assembles a live market context (S&P/VIX/FX/BoI/CPI + NVDA
+    verification) and threads it through the deployment plan and its DTO. When
+    ``live`` is omitted or false the route behaves exactly as in P1 (no live
+    calls, ``market_context`` is null in the response).
     """
     from datetime import date as _date
 
@@ -1360,10 +1367,19 @@ def get_deploy_cash(
 
     doc, holdings, snap_cash = _load_current_doc_and_holdings(user_id)
     amount = cash_usd if cash_usd is not None else snap_cash
+
+    ctx = None
+    if live:
+        from argosy.services.deployment_market_context import (
+            assemble_deployment_market_context,
+        )
+        ctx = assemble_deployment_market_context(db)
+
     plan = assemble_deployment_plan(
         doc=doc, holdings=holdings, deploy_amount_usd=amount, as_of=_date.today(),
+        market_context=ctx,
     )
-    return deployment_plan_to_dto(plan)
+    return deployment_plan_to_dto(plan, market_context=ctx)
 
 
 # --- Combined high-potential discovery surface (Slice 2) -------------------
