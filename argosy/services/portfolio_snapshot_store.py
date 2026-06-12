@@ -41,6 +41,7 @@ def persist_snapshot(
     *,
     user_id: str,
     snapshot: PortfolioSnapshot,
+    commit: bool = True,
 ) -> PortfolioSnapshotRow:
     """Write one parsed snapshot row. Returns the persisted ORM row.
 
@@ -52,6 +53,11 @@ def persist_snapshot(
     so re-running the same TSV doesn't bloat the table with duplicates.
     This function is intentionally dumb (always writes); the idempotency
     decision lives at the call site.
+
+    ``commit=False`` adds + flushes but leaves the commit to the caller —
+    for write-throughs that must be ATOMIC with a surrounding batch (e.g.
+    the XLS↔Osh pairing resolution runs mid-ingest; an internal commit
+    there would split the ingest's atomic transaction).
     """
     row = PortfolioSnapshotRow(
         user_id=user_id,
@@ -82,7 +88,10 @@ def persist_snapshot(
         parse_warnings_json=json.dumps(list(snapshot.parse_warnings)),
     )
     session.add(row)
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     session.refresh(row)
     return row
 
@@ -172,7 +181,8 @@ def latest_matches_snapshot(
 
 
 def write_through_if_changed(
-    session: Session, *, user_id: str, snapshot: PortfolioSnapshot
+    session: Session, *, user_id: str, snapshot: PortfolioSnapshot,
+    commit: bool = True,
 ) -> PortfolioSnapshotRow | None:
     """Persist ``snapshot`` iff the latest row doesn't already match it.
 
@@ -181,10 +191,15 @@ def write_through_if_changed(
     entry point ``/api/portfolio/snapshot`` and the synthesis input
     assembler use when they fall back to filesystem-walk + parse but want
     future requests to read from the DB.
+
+    ``commit=False`` defers the commit to the caller (atomic write-through
+    inside a surrounding batch — see ``persist_snapshot``).
     """
     if latest_matches_snapshot(session, user_id=user_id, snapshot=snapshot):
         return None
-    return persist_snapshot(session, user_id=user_id, snapshot=snapshot)
+    return persist_snapshot(
+        session, user_id=user_id, snapshot=snapshot, commit=commit,
+    )
 
 
 __all__ = [

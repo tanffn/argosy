@@ -327,6 +327,62 @@ class TestOshHookResolvesPending:
         finally:
             sess.close()
 
+    def test_osh_arrival_writes_through_snapshot_store(
+        self, client_with_db, snapshot_root,
+    ):
+        """Regression (write-through gap): resolving the pair must write the
+        merged snapshot THROUGH to the DB snapshot store so GET /snapshot (which
+        is DB-first) reflects the new month. Before the fix the resolution wrote
+        only the TSV file and the UI silently kept showing the prior snapshot."""
+        from argosy.services.portfolio_ingest.xls_osh_pair import (
+            try_resolve_pending_on_osh_arrival,
+        )
+        from argosy.services.portfolio_snapshot_store import (
+            get_latest_snapshot_row,
+        )
+
+        _seed_user(client_with_db.app.state.session_factory)
+        xls_bytes = FIXTURE_XLS.read_bytes()
+        r1 = client_with_db.post(
+            "/api/portfolio/upload-snapshot",
+            data={"user_id": "ariel"},
+            files={"file": ("a.xls", xls_bytes, "application/vnd.ms-excel")},
+        )
+        assert r1.json()["detect_status"] == "pending_pair"
+        xls_date = r1.json()["snapshot_date"]  # the parsed XLS snapshot_date
+
+        stmt_id = _seed_leumi_osh(
+            client_with_db.app.state.session_factory,
+            user_id="ariel",
+            period_end=date(2026, 4, 30),
+            closing_balance_nis=75_000.0,
+        )
+        sess = client_with_db.app.state.session_factory()
+        try:
+            res = try_resolve_pending_on_osh_arrival(
+                db=sess, statement_id=stmt_id, snapshot_root=snapshot_root,
+            )
+            sess.commit()  # the caller owns the commit (atomic with the batch)
+        finally:
+            sess.close()
+        assert res is not None and res.status == "resolved"
+
+        # The merged snapshot is now the LIVE DB snapshot (the gap: silently not
+        # written, so the store had no row / kept the stale one).
+        sess = client_with_db.app.state.session_factory()
+        try:
+            row = get_latest_snapshot_row(sess, "ariel")
+            assert row is not None, "pairing did not write the snapshot through"
+            assert row.snapshot_date.isoformat() == xls_date
+        finally:
+            sess.close()
+
+        # And the user-facing surface reflects the new month.
+        snap = client_with_db.get(
+            "/api/portfolio/snapshot?user_id=ariel"
+        ).json()
+        assert snap["snapshot_date"] == xls_date
+
 
 class TestSplice:
     """The TSV splice preserves non-Leumi rows + recomputes allocations."""

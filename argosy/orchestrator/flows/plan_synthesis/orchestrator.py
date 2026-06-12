@@ -845,27 +845,16 @@ def run_synthesis(
     _short_horizon_md = _pkg._strip_history_leak(_short_horizon_md)
 
     # T1.5 — persist the canonical instrument-level TargetAllocationDoc so every
-    # surface projects ONE plan. Additive + best-effort: a missing composition
-    # (no concentration report / snapshot) leaves the column NULL and surfaces
-    # fall back to the legacy path — it must never fail synthesis.
-    try:
-        from argosy.services.target_allocation_doc import (
-            build_plan_target_allocation_doc,
-        )
+    # surface projects ONE plan AND the numeric-source gate has the canonical
+    # NVDA cap to trace. Best-effort + never fatal, but NOT silently-NULL: a
+    # transient build failure (concentration report / snapshot not yet visible in
+    # this transaction) carries forward the prior CURRENT plan's doc rather than
+    # producing an un-anchored draft — the regression behind the draft-36 422.
+    from argosy.services.target_allocation_doc import resolve_target_allocation_json
 
-        _ta_doc = build_plan_target_allocation_doc(
-            session, user_id, decision_run_id, datetime.now(timezone.utc).date()
-        )
-        _target_allocation_json = (
-            _ta_doc.model_dump_json() if _ta_doc is not None else None
-        )
-    except Exception as _exc:  # noqa: BLE001 — the doc is additive, never fatal
-        log.warning(
-            "plan_synthesis.target_allocation_doc_failed",
-            user_id=user_id,
-            error=str(_exc),
-        )
-        _target_allocation_json = None
+    _target_allocation_json = resolve_target_allocation_json(
+        session, user_id, decision_run_id, datetime.now(timezone.utc).date()
+    )
 
     draft = PlanVersion(
         user_id=user_id,

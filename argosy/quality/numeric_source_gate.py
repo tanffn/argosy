@@ -252,13 +252,90 @@ _CLAUSE_BOUNDARY = re.compile(r"(?<!\d)[.;](?!\d)|\n")
 _KINDS = {"nis": "₪ amount", "pct": "percent", "age": "age"}
 
 
-def _clause(text: str) -> str:
-    """Drop parenthetical asides, then cut at the first sentence boundary
+def _clause(text: str, *, from_end: bool = False) -> str:
+    """Drop parenthetical asides, then return the clause adjacent to the subject
     (decimal-safe). Parens are stripped BEFORE measuring so a number in a
     derivation note (e.g. "(90% MC solvency to 95)") can't be the bound value
-    and the stated value following the aside is reached within the window."""
+    and the stated value following the aside is reached within the window.
+
+    For the window AFTER the subject the adjacent clause is the FIRST segment
+    (default). For the window BEFORE the subject (``from_end=True``) the adjacent
+    clause is the LAST segment — otherwise the value-before path reaches back
+    across a ``;``/``.`` boundary and binds a number from a different clause
+    (e.g. "...shock is -50.7%; at current NVDA weight" wrongly bound -50.7%)."""
     text = re.sub(r"\([^)]*\)", " ", text)
-    return _CLAUSE_BOUNDARY.split(text, maxsplit=1)[0]
+    parts = _CLAUSE_BOUNDARY.split(text)
+    return parts[-1] if from_end else parts[0]
+
+
+# A number only binds to a headline subject when it is GRAMMATICALLY ATTACHED to
+# it — the subject "owns" the value. It does NOT when the value is really some
+# DIFFERENT QUANTITY's value (an impact, shock, delta, drawdown, …). That shows
+# up two structurally distinct ways, so we guard both:
+#
+#   (a) the other-quantity word sits BETWEEN the subject and the value:
+#       "current NVDA weight the implied p10 IMPACT is -33%" — the -33% follows
+#       "impact". -> _OTHER_QUANTITY, checked between subject and value.
+#   (b) the other-quantity word is the grammatical SUBJECT before a prepositional
+#       phrase that the headline subject sits inside:
+#       "p10 portfolio DELTA at current NVDA weight is -33%" — "delta" owns the
+#       -33%; "at current NVDA weight" is a qualifier. -> _QUALIFIER_OF_OTHER,
+#       checked on the text BEFORE the subject.
+#
+# This structural model replaces the brittle preposition/present-state/sign
+# heuristics. It FLAGS declarations regardless of phrasing ("The current NVDA
+# weight is 99%", "Given the NVDA cap is 99%", "NVDA cap equals 13%") and DROPS
+# different-quantity numbers regardless of preposition/filler. A negative cap
+# typo ("NVDA cap -12%") stays bound (no other-quantity context) and is flagged.
+#
+# Deliberately EXCLUDES copulas ("equals"/"is"): they are legitimate declaration
+# verbs ("NVDA cap equals 13%"), and the impact phrasings that use them are
+# already caught by the (b) left-qualifier guard via their leading noun.
+# Pure different-QUANTITY nouns only. Deliberately EXCLUDES subject-movement
+# verbs (drop/move/fall/decline/gain/rise/...): those describe the SUBJECT's own
+# change ("the NVDA cap should DROP to 99%", "target should MOVE to 99%") and
+# must stay BOUND so a fabricated target is flagged (codex r5). A different
+# quantity is named by a noun, so keying on nouns avoids that false negative.
+_OTHER_QUANTITY_NOUN = (
+    r"(?:impact|shock|loss(?:es)?|drawdown|delta|downside|upside|drag|"
+    r"stress|sensitivity|var|cvar)"
+)
+_OTHER_QUANTITY = re.compile(r"\b" + _OTHER_QUANTITY_NOUN + r"\b", re.IGNORECASE)
+
+# (b): the subject is a prepositional qualifier of a leading different-quantity
+# noun. Matches when an other-quantity noun appears, then (within the same
+# clause — no .;) a preposition + optional state/scope fillers right before the
+# subject. "Given the NVDA cap is 99%" does NOT match (no leading quantity noun),
+# so genuine declarations still bind.
+_QUALIFIER_OF_OTHER = re.compile(
+    r"\b" + _OTHER_QUANTITY_NOUN + r"\b[^.;]*?\b"
+    r"(?:at|with|under|for|by|given|versus|vs)\s+"
+    r"(?:the\s+|current\s+|today'?s\s+|portfolio\s+|full[- ]?book\s+|"
+    r"tradeable\s+|a\s+|\*+\s*)*$",
+    re.IGNORECASE,
+)
+
+
+def _is_qualifier_of_other_quantity(line: str, subject_start: int) -> bool:
+    """True when the subject sits in a prepositional phrase qualifying a leading
+    different-quantity noun ("p10 delta AT current NVDA weight ...")."""
+    return _QUALIFIER_OF_OTHER.search(line[:subject_start]) is not None
+
+
+def _value_belongs_to_other_quantity(segment: str, unit: str, *, value_at_end: bool) -> bool:
+    """True when the first/last value token in ``segment`` is the value of a
+    DIFFERENT quantity (an impact/shock/…), not the headline subject.
+
+    ``value_at_end=False`` (the after-subject clause): a different-quantity word
+    appears BEFORE the token. ``value_at_end=True`` (the before-subject clause,
+    where the value is end-anchored): the word appears anywhere in the clause
+    ahead of the value."""
+    regs = {"nis": _NIS_TOKEN, "pct": _PCT_TOKEN, "age": _AGE_VALUE}
+    ms = list(regs[unit].finditer(segment))
+    if not ms:
+        return False
+    m = ms[-1] if value_at_end else ms[0]
+    return _OTHER_QUANTITY.search(segment[: m.start()]) is not None
 
 
 def _token_in(
@@ -310,6 +387,12 @@ def _bind_value(
     the subject — "FI target (₪21M)". Returns ``(kind, token, why)`` on a
     non-tracing value, else ``None`` (no inline value / pending escape / traces).
     """
+    # (b) The subject is a prepositional qualifier of a leading different-quantity
+    # noun ("p10 portfolio delta at current NVDA weight is -33%") → it states no
+    # value of its own; bind nothing.
+    if _is_qualifier_of_other_quantity(line, s):
+        return None
+
     right_raw = line[e: e + window]
     right = _clause(right_raw)
 
@@ -319,20 +402,31 @@ def _bind_value(
     if pend != -1 and (fd is None or pend < fd.start()):
         return None
 
-    found = _token_in(right, unit)
+    # (1) after-subject clause — but only if the value is grammatically attached
+    # to the subject (no different-quantity word like "impact"/"equals" between
+    # them; otherwise the number is that quantity's value, not the subject's).
+    found = None
+    if not _value_belongs_to_other_quantity(right, unit, value_at_end=False):
+        found = _token_in(right, unit)
 
-    # (2) value-before-subject — must be IMMEDIATELY adjacent (end-anchored).
+    # (2) value-before-subject — must be IMMEDIATELY adjacent (end-anchored), and
+    # not the value of a different quantity stated in the same clause.
     if found is None:
-        left = _clause(line[max(0, s - 20): s])
-        end_pat = {"nis": _NIS_END, "pct": _PCT_END, "age": _AGE_END}[unit]
-        em = end_pat.search(left)
-        if em is not None:
-            found = _token_in(em.group(1), unit, last=True)
+        left = _clause(line[max(0, s - 20): s], from_end=True)
+        if not _value_belongs_to_other_quantity(left, unit, value_at_end=True):
+            end_pat = {"nis": _NIS_END, "pct": _PCT_END, "age": _AGE_END}[unit]
+            em = end_pat.search(left)
+            if em is not None:
+                found = _token_in(em.group(1), unit, last=True)
 
     # (3) parenthesized value immediately after the subject — "FI target (₪21M)".
+    # Same attachment rule: skip when a different-quantity word precedes the value
+    # inside the parens ("current NVDA weight (p10 impact -33%)").
     if found is None:
         pm = re.match(r"\s*\(([^)]*)\)", right_raw)
-        if pm is not None:
+        if pm is not None and not _value_belongs_to_other_quantity(
+            pm.group(1), unit, value_at_end=False
+        ):
             found = _token_in(pm.group(1), unit)
 
     if found is None:

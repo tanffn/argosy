@@ -43,6 +43,10 @@ class UploadFileResult(BaseModel):
     refunds_matched: int = 0
     parser_name: str | None = None
     error: str | None = None
+    # Statement-merge reconciliation notes (bank statements): overlap-dedup
+    # removals + gap/balance-continuity warnings. Surfaced so a double-counted
+    # overlap or an unreconciled date gap is never silently absorbed.
+    reconciliation_warnings: list[str] = []
 
 
 class UploadResponse(BaseModel):
@@ -128,6 +132,7 @@ def upload_statements(
             categories_resolved=ing.categories_resolved,
             refunds_matched=ing.refunds_matched,
             parser_name=ing.parser_name,
+            reconciliation_warnings=ing.reconciliation_warnings,
         ))
 
         # EX2 — event-driven anomaly check after a Discount Bank

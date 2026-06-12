@@ -221,25 +221,17 @@ def _medium_worker(*, session: Session, user_id: str,
         if _appendices:
             _long_md = _long_md.rstrip() + "\n\n" + _appendices
 
-        # T1.5 — persist the canonical TargetAllocationDoc (additive, best-effort;
-        # NULL on failure -> surfaces fall back, never fail the amendment).
-        try:
-            from argosy.services.target_allocation_doc import (
-                build_plan_target_allocation_doc,
-            )
+        # T1.5 — persist the canonical TargetAllocationDoc. Best-effort + never
+        # fatal, but NOT silently-NULL: a transient build failure carries forward
+        # the prior CURRENT plan's doc so the amendment draft is never un-anchored
+        # (the regression behind the draft-36 422).
+        from argosy.services.target_allocation_doc import (
+            resolve_target_allocation_json,
+        )
 
-            _ta_doc = build_plan_target_allocation_doc(
-                session, user_id, decision_run.id, datetime.now(timezone.utc).date()
-            )
-            _target_allocation_json = (
-                _ta_doc.model_dump_json() if _ta_doc is not None else None
-            )
-        except Exception as _exc:  # noqa: BLE001 — additive, never fatal
-            log.warning(
-                "plan_amendment.target_allocation_doc_failed",
-                user_id=user_id, error=str(_exc),
-            )
-            _target_allocation_json = None
+        _target_allocation_json = resolve_target_allocation_json(
+            session, user_id, decision_run.id, datetime.now(timezone.utc).date()
+        )
 
         draft = PlanVersion(
             user_id=user_id, role="draft",

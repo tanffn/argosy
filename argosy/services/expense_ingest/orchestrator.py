@@ -16,7 +16,8 @@ can render a useful response.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -82,6 +83,15 @@ class IngestResult:
     categories_resolved: int
     refunds_matched: int
     parser_name: str
+    # Statement-merge reconciliation (bank statements): human-readable notes on
+    # overlap-dedup removals + any gap/balance-continuity warning. Surfaced to the
+    # upload caller so nothing is silently double-counted or dropped.
+    reconciliation_warnings: list[str] = field(default_factory=list)
+    # Count of cross-statement overlap duplicates removed. ``transactions_inserted``
+    # is left as the raw persist count (truthful for THIS run); the live row count
+    # is ``transactions_inserted - overlap_duplicates_removed``. Kept separate so
+    # the figure can never read negative (codex nit).
+    overlap_duplicates_removed: int = 0
 
 
 def _ensure_categories_seeded(session: Session, user_id: str) -> None:
@@ -235,6 +245,40 @@ def ingest_user_file(
         session, stmt, src.id, user_id, result.transactions
     )
 
+    # Statement-merge reconciliation for bank statements (Osh / USD): dedup
+    # transactions that arrive twice in overlapping dumps (the content hash is
+    # statement-scoped, so cross-statement overlaps would otherwise double-count)
+    # and flag a date gap that the running balance can't reconcile. Best-effort —
+    # reconciliation must NEVER break ingest. Cards are excluded: they carry no
+    # running balance, so a monthly cycle "gap" would be false-flag noise.
+    reconciliation_warnings: list[str] = []
+    overlap_removed = 0
+    if src.kind == "bank":
+        try:
+            from argosy.services.expense_ingest.statement_reconciliation import (
+                reconcile_statement,
+            )
+
+            # Savepoint-isolate: a reconcile failure rolls back ONLY the
+            # reconcile (its deletes/flush), leaving the ingest transaction
+            # usable so later steps + the route's commit still succeed.
+            with session.begin_nested():
+                receipt = reconcile_statement(
+                    session, user_id=user_id, source_id=src.id, statement_id=stmt.id,
+                )
+            reconciliation_warnings = receipt.warnings
+            overlap_removed = receipt.overlap_duplicates_removed
+            if receipt.warnings:
+                logging.getLogger(__name__).warning(
+                    "statement_reconciliation.flags",
+                    extra={"statement_id": stmt.id, "warnings": receipt.warnings},
+                )
+        except Exception as exc:  # noqa: BLE001 — never fail ingest on reconciliation
+            logging.getLogger(__name__).warning(
+                "statement_reconciliation.failed",
+                extra={"statement_id": stmt.id, "error": str(exc)},
+            )
+
     correlations = correlate_for_user(session, user_id)
     resolved = resolve_categories_for_user(session, user_id)
     refunds = match_refunds_for_user(session, user_id)
@@ -276,7 +320,9 @@ def ingest_user_file(
                 snapshot_root=snapshot_root,
             )
         except Exception as exc:  # noqa: BLE001 -- never fail ingest
-            import logging
+            # Module-level `logging` (top of file); a LOCAL import here would make
+            # `logging` function-local for all of ingest_user_file and
+            # UnboundLocalError the earlier reconciliation logging (codex r2 B1).
             logging.getLogger(__name__).warning(
                 "xls_osh_pair.osh_hook_failed",
                 extra={"statement_id": stmt.id, "error": str(exc)},
@@ -304,4 +350,6 @@ def ingest_user_file(
         categories_resolved=resolved,
         refunds_matched=refunds,
         parser_name=parser_name.value,
+        reconciliation_warnings=reconciliation_warnings,
+        overlap_duplicates_removed=overlap_removed,
     )

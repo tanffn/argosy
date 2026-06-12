@@ -20,8 +20,12 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
+from argosy.logging import get_logger
+
 if TYPE_CHECKING:  # pragma: no cover
     from sqlalchemy.orm import Session
+
+log = get_logger(__name__)
 
 
 class AllocationInstrument(BaseModel):
@@ -368,6 +372,99 @@ def build_plan_target_allocation_doc(
     return build_target_allocation_doc(
         today=today, today_composition=comp, quarters=quarters
     )
+
+
+def resolve_target_allocation_json(
+    db: "Session", user_id: str, decision_run_id: int, today: date
+) -> str | None:
+    """Persistence-time resolver: the canonical doc JSON for a new draft, with a
+    carry-forward fallback so a transient build failure never produces an
+    un-anchored draft.
+
+    The doc is the single source of truth every surface projects AND the value
+    the numeric-source gate's NVDA-cap override reads. A silently-NULL column
+    (the prior "additive, never fatal" behaviour) let a draft reach /accept with
+    no canonical cap to trace — the gate then false-flagged the body's correct
+    "13% cap" as a fabrication (the draft-36 422). The build legitimately returns
+    ``None`` on a partially-committed transaction (concentration report / snapshot
+    not yet visible), so rather than swallow that, we:
+
+      1. build the fresh doc for this run;
+      2. on failure/``None``, carry forward the prior CURRENT plan's doc — its
+         engine-authored classes + cap are stable run-to-run, so a slightly stale
+         glide ``q0`` anchor is strictly better than no anchor;
+      3. only return ``None`` (logged at ERROR) when there is no prior doc either —
+         a genuinely un-anchored first plan, which the caller still persists but
+         which the gate will fail-closed on in enforce mode.
+
+    Best-effort and never raises: every failure path is logged and degrades, so
+    synthesis is never broken by the allocation doc.
+    """
+    try:
+        doc = build_plan_target_allocation_doc(db, user_id, decision_run_id, today)
+        if doc is not None:
+            return doc.model_dump_json()
+        log.warning(
+            "plan_alloc_doc.build_returned_none",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — never break synthesis on the doc
+        log.warning(
+            "plan_alloc_doc.build_failed",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            error=str(exc),
+        )
+
+    # Carry forward the prior CURRENT plan's canonical doc rather than NULL.
+    try:
+        from argosy.state.queries import get_current_plan
+
+        prior = get_current_plan(db, user_id)
+        carried = getattr(prior, "target_allocation_json", None) if prior else None
+        if carried:
+            prior_id = getattr(prior, "id", None)
+            log.warning(
+                "plan_alloc_doc.carried_forward_from_prior_current",
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                prior_plan_version_id=prior_id,
+            )
+            # Stamp provenance so the carried doc is NOT mistaken for a fresh,
+            # this-run-canonical doc downstream (codex r2 B3): a reader (or the
+            # accept-time numeric resolver) can see the cap/glide came from a
+            # PRIOR run because the fresh build failed. If the prior doc is
+            # corrupt/unparseable, fall back to the verbatim string (still better
+            # than NULL, which false-flags the body's correct cap).
+            try:
+                doc = TargetAllocationDoc.model_validate_json(carried)
+                doc.provenance = (
+                    f"{doc.provenance} | CARRIED-FORWARD from plan_version "
+                    f"{prior_id} (run {decision_run_id} fresh build failed)"
+                )
+                return doc.model_dump_json()
+            except (ValueError, TypeError):
+                return carried
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "plan_alloc_doc.carry_forward_failed",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            error=str(exc),
+        )
+
+    log.error(
+        "plan_alloc_doc.unanchored_draft",
+        user_id=user_id,
+        decision_run_id=decision_run_id,
+        detail=(
+            "no fresh canonical allocation doc and no prior CURRENT plan to carry "
+            "forward — draft has no canonical allocation anchor; the plan-output "
+            "gate will fail-closed on its allocation/cap numbers in enforce mode"
+        ),
+    )
+    return None
 
 
 def doc_equity_bond_cash(doc: TargetAllocationDoc) -> tuple[float, float, float]:

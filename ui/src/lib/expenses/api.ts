@@ -70,6 +70,9 @@ export interface UploadFileResult {
   refunds_matched: number;
   parser_name: string | null;
   error: string | null;
+  // Statement-merge reconciliation notes (bank statements): overlap-dedup
+  // removals + gap/balance-continuity warnings. Optional for backward compat.
+  reconciliation_warnings?: string[];
 }
 
 export interface UploadStatementsResponse {

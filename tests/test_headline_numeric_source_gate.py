@@ -397,3 +397,154 @@ class TestSubjectBindingBeforeAndParens:
         resolved = _resolved(**{"concentration.nvda_cap_pct": 0.13})
         md = {"long": "NVDA fell 30%, raising concentration cap worries."}
         assert check_headline_numeric_source(md, resolved) == []
+
+
+class TestMcShockNarrativeNotBound:
+    """Regression: p10 Monte-Carlo SHOCK/IMPACT percentages mentioned near an
+    'NVDA weight' qualifier phrase must not bind to the NVDA weight subject.
+
+    Both are negative, derived sensitivity figures (not the allocation), and
+    the subject 'at current NVDA weight' is a descriptive qualifier, not a
+    target declaration. The live draft-36 reject surfaced two distinct binding
+    bugs these tests pin:
+
+      * cross-clause LEFT reach — '...shock is approximately -50.7%; at current
+        NVDA weight ...' wrongly bound -50.7% (from the PRIOR clause) as the
+        weight's value, because the value-before-subject clause split took the
+        farthest segment instead of the one adjacent to the subject;
+      * negative impact AFTER the qualifier — 'p10 portfolio impact at current
+        NVDA weight equals approximately -33%' wrongly bound -33% (the impact,
+        not the weight) — a negative percent is never an allocation weight/cap.
+    """
+
+    def _resolved_conc(self):
+        return _resolved(
+            **{
+                "concentration.nvda_cap_pct": 0.13,
+                "concentration.nvda_current_pct": 0.6486,
+            }
+        )
+
+    def test_cross_clause_shock_not_bound_to_weight(self):
+        md = {
+            "long": (
+                "p10 1y NVDA shock is approximately -50.7%; at current NVDA "
+                "weight the implied p10 portfolio impact is approximately -33%."
+            )
+        }
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_negative_impact_after_qualifier_not_bound(self):
+        md = {
+            "long": (
+                "p10 portfolio impact at current NVDA weight equals "
+                "approximately -33 percent — value: `-33 %`"
+            )
+        }
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_qualifier_context_observation_not_flagged(self):
+        # "At current NVDA weight ..." is a preposition-qualified CONDITION, not
+        # a target declaration — the trailing number belongs to another noun, so
+        # the subject is disarmed and nothing is flagged.
+        md = {"long": "At current NVDA weight of 64.86% the book is concentrated."}
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_positive_fabricated_weight_still_flagged(self):
+        # A non-qualified target declaration with a wrong (positive) weight must
+        # still be caught.
+        md = {"long": "The NVDA target weight is 40%."}
+        v = check_headline_numeric_source(md, self._resolved_conc())
+        assert len(v) == 1 and "40%" in v[0].detail
+
+    def test_tight_hyphen_cap_value_still_flagged(self):
+        # Codex r1 blocker-1 regression: a tight-hyphen "cap -12%" must NOT be
+        # silently swallowed as a "negative". It is a separator-typo / wrong cap
+        # and must be flagged (real cap is 13%). Keys on the subject, not the sign.
+        md = {"long": "NVDA cap -12% of the book."}
+        v = check_headline_numeric_source(md, self._resolved_conc())
+        assert len(v) == 1 and "12%" in v[0].detail
+
+    def test_given_declaration_not_over_skipped(self):
+        # Codex r2 blocker-1 regression: "Given the NVDA cap is 99%" is a
+        # DECLARATION (no "current"), so it must still bind and flag the 99%.
+        md = {"long": "Given the NVDA cap is 99%, trim aggressively."}
+        v = check_headline_numeric_source(md, self._resolved_conc())
+        assert len(v) == 1 and "99%" in v[0].detail
+
+    def test_with_current_qualifier_not_bound(self):
+        # Codex r2 blocker-2: the preposition varies ("with"), so we key on
+        # "current" not the preposition. The -33% impact must not bind.
+        md = {"long": "p10 portfolio impact with current NVDA weight equals approximately -33%."}
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_markdown_bold_current_qualifier_not_bound(self):
+        # Codex r2 blocker-2: markdown bold around the qualifier must not defeat
+        # the guard.
+        md = {"long": "p10 portfolio impact at **current NVDA weight** equals approximately -33%."}
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_current_weight_declaration_is_flagged(self):
+        # Codex r3 blocker-1: "The current NVDA weight is 99%" is a DECLARATION
+        # of present state (value attached via "is") — it must bind and flag
+        # (real current weight 64.86%). The structural model keys on attachment,
+        # so present-state declarations are still verified.
+        md = {"long": "The current NVDA weight is 99%."}
+        v = check_headline_numeric_source(md, self._resolved_conc())
+        assert len(v) == 1 and "99%" in v[0].detail
+
+    def test_current_weight_observation_traces_and_passes(self):
+        # The same declaration with the TRUE current weight traces → no flag.
+        md = {"long": "The current NVDA weight is 64.86%."}
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_filler_noun_between_current_and_subject_not_bound(self):
+        # Codex r3 blocker-2: "current portfolio NVDA weight" — a filler noun
+        # ("portfolio") separates "current" from the subject, but the impact
+        # number is still detached by the "equals" other-quantity word.
+        md = {"long": "p10 portfolio impact at current portfolio NVDA weight equals approximately -33%."}
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_impact_clause_before_subject_not_bound(self):
+        # The before-subject path also rejects a different-quantity value:
+        # "...impact is -33% NVDA weight" must not bind -33% to the weight.
+        md = {"long": "The p10 impact is -33% at the NVDA weight today."}
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_cap_equals_declaration_is_bound(self):
+        # Codex r4 blocker-1: "equals" is a legitimate copula, not a
+        # different-quantity word. "NVDA cap equals 13%" is a declaration that
+        # must bind (and here traces to the resolved 13%).
+        md = {"long": "NVDA cap equals 13%."}
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_cap_equals_fabrication_is_flagged(self):
+        # ...and a wrong "equals" declaration must be flagged (not skipped).
+        md = {"long": "NVDA cap equals 99%."}
+        v = check_headline_numeric_source(md, self._resolved_conc())
+        assert len(v) == 1 and "99%" in v[0].detail
+
+    def test_leading_quantity_noun_qualifier_not_bound(self):
+        # Codex r4 blocker-2: the different-quantity noun is BEFORE the subject
+        # ("p10 portfolio delta at current NVDA weight is -33%") with only a
+        # copula after — the subject is a qualifier of "delta", so -33% must not
+        # bind to the weight.
+        md = {"long": "p10 portfolio delta at current NVDA weight is approximately -33%."}
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_parenthesized_other_quantity_not_bound(self):
+        # Codex r4 nit: a parenthesized different-quantity value must not bind.
+        md = {"long": "current NVDA weight (p10 impact -33%)."}
+        assert check_headline_numeric_source(md, self._resolved_conc()) == []
+
+    def test_subject_movement_verb_declaration_is_flagged(self):
+        # Codex r5 blocker-2: subject-movement verbs ("drop"/"move") describe the
+        # SUBJECT's own change — they must NOT be deny words, so a fabricated
+        # "cap should drop to 99%" / "target should move to 99%" stays bound and
+        # is flagged (real cap 13%).
+        for txt in (
+            "The NVDA cap should drop to 99%.",
+            "The NVDA target weight should move to 99%.",
+        ):
+            v = check_headline_numeric_source({"long": txt}, self._resolved_conc())
+            assert len(v) == 1 and "99%" in v[0].detail, txt

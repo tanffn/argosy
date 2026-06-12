@@ -254,6 +254,13 @@ def handle_xls_upload(
         extra={"path": str(target_path)},
     )
 
+    # Write the merged snapshot THROUGH to the DB store so GET /snapshot (which
+    # is DB-first) reflects the paired month. commit=True: the part row was
+    # already committed by _add_part_with_race_recovery, so this is a standalone
+    # upload-time write.
+    _write_through_resolved_snapshot(db, user_id=user_id, tsv_path=target_path,
+                                     commit=True)
+
     return PairResolution(
         status="resolved",
         pending_pair_id=part.id,
@@ -263,6 +270,32 @@ def handle_xls_upload(
         detail=None,
         parse_warnings=xls.parse_warnings + synth_warnings,
     )
+
+
+def _write_through_resolved_snapshot(
+    db: Session, *, user_id: str, tsv_path: Path, commit: bool,
+) -> None:
+    """Persist the freshly-synthesized merged TSV into the DB snapshot store so
+    GET /snapshot (DB-first) reflects the paired month immediately — instead of
+    silently leaving the prior snapshot live (the write-through gap).
+
+    Best-effort: the pair is already durable (file + part row), so a write-through
+    failure must NEVER break the resolution — it degrades to "the next snapshot
+    read picks it up on its own filesystem fallback." ``commit`` is False when the
+    caller owns an atomic batch (the Osh-arrival hook runs mid-ingest)."""
+    try:
+        from argosy.ingest.tsv import parse_portfolio_tsv
+        from argosy.services.portfolio_snapshot_store import (
+            write_through_if_changed,
+        )
+
+        snap = parse_portfolio_tsv(tsv_path)
+        write_through_if_changed(db, user_id=user_id, snapshot=snap, commit=commit)
+    except Exception as exc:  # noqa: BLE001 — additive; never break the pair
+        _log.warning(
+            "portfolio_snapshot.pair_write_through_failed",
+            extra={"path": str(tsv_path), "error": str(exc)},
+        )
 
 
 def try_resolve_pending_on_osh_arrival(
@@ -353,6 +386,12 @@ def try_resolve_pending_on_osh_arrival(
         "portfolio_snapshot.osh_arrival_resolved_pair",
         extra={"path": str(target_path), "osh_id": osh.id},
     )
+
+    # Write-through so /portfolio reflects the paired month. commit=False: this
+    # hook runs mid-ingest and the caller (orchestrator/route) owns the commit,
+    # so the snapshot row lands atomically with the part resolution.
+    _write_through_resolved_snapshot(db, user_id=osh.user_id,
+                                     tsv_path=target_path, commit=False)
 
     return PairResolution(
         status="resolved",

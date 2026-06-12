@@ -265,3 +265,89 @@ def test_derived_composition_drives_a_two_sided_glide() -> None:
     assert doc.glide[-1].composition_pct_by_class.get(OTHER_SINGLES_LABEL, 0.0) == pytest.approx(0.0, abs=0.01)
     for wp in doc.glide:
         assert sum(wp.composition_pct_by_class.values()) == pytest.approx(100.0, abs=0.1)
+
+
+# --------------------------------------------------------------------------
+# resolve_target_allocation_json — persistence-time carry-forward fallback.
+# A transient build failure must NOT silently persist NULL (the draft-36
+# 422 regression): it carries forward the prior CURRENT plan's canonical doc.
+# --------------------------------------------------------------------------
+
+class _PriorPlan:
+    def __init__(self, taj: str | None, pid: int = 99) -> None:
+        self.id = pid
+        self.target_allocation_json = taj
+
+
+def _patch_resolve(monkeypatch, *, build_result, prior_plan):
+    """Patch the helper's two dependencies: the fresh build + prior-current lookup."""
+    import argosy.services.target_allocation_doc as tad
+    import argosy.state.queries as queries
+
+    def _build(*_a, **_k):
+        if isinstance(build_result, Exception):
+            raise build_result
+        return build_result
+
+    monkeypatch.setattr(tad, "build_plan_target_allocation_doc", _build)
+    monkeypatch.setattr(queries, "get_current_plan", lambda *_a, **_k: prior_plan)
+
+
+def test_resolve_returns_fresh_build_json(monkeypatch) -> None:
+    from argosy.services.target_allocation_doc import resolve_target_allocation_json
+
+    doc = build_target_allocation_doc(today=date(2026, 6, 12), today_composition=_TODAY_FULL_BOOK)
+    _patch_resolve(monkeypatch, build_result=doc, prior_plan=_PriorPlan("STALE"))
+    out = resolve_target_allocation_json(None, "ariel", 96, date(2026, 6, 12))
+    # Fresh build wins — the prior doc is NOT consulted.
+    assert out == doc.model_dump_json()
+
+
+def test_resolve_carries_forward_when_build_none(monkeypatch) -> None:
+    from argosy.services.target_allocation_doc import resolve_target_allocation_json
+
+    _patch_resolve(monkeypatch, build_result=None, prior_plan=_PriorPlan('{"prior":"doc"}'))
+    out = resolve_target_allocation_json(None, "ariel", 96, date(2026, 6, 12))
+    assert out == '{"prior":"doc"}'
+
+
+def test_resolve_stamps_provenance_on_valid_carried_doc(monkeypatch) -> None:
+    from argosy.services.target_allocation_doc import resolve_target_allocation_json
+
+    prior_doc = build_target_allocation_doc(
+        today=date(2026, 6, 12), today_composition=_TODAY_FULL_BOOK
+    )
+    _patch_resolve(
+        monkeypatch, build_result=None, prior_plan=_PriorPlan(prior_doc.model_dump_json(), pid=42)
+    )
+    out = resolve_target_allocation_json(None, "ariel", 96, date(2026, 6, 12))
+    assert out is not None
+    carried = TargetAllocationDoc.model_validate_json(out)
+    # Cap + classes are preserved; provenance is marked carried-forward so the
+    # doc is never mistaken for a fresh same-run build (codex r2 B3).
+    assert carried.nvda_cap_pct == prior_doc.nvda_cap_pct
+    assert "CARRIED-FORWARD" in carried.provenance
+    assert "42" in carried.provenance
+
+
+def test_resolve_carries_forward_when_build_raises(monkeypatch) -> None:
+    from argosy.services.target_allocation_doc import resolve_target_allocation_json
+
+    _patch_resolve(
+        monkeypatch, build_result=RuntimeError("transient"), prior_plan=_PriorPlan('{"prior":"doc"}')
+    )
+    out = resolve_target_allocation_json(None, "ariel", 96, date(2026, 6, 12))
+    assert out == '{"prior":"doc"}'
+
+
+def test_resolve_returns_none_when_no_fresh_and_no_prior(monkeypatch) -> None:
+    from argosy.services.target_allocation_doc import resolve_target_allocation_json
+
+    # No fresh build AND no prior current plan (first-ever plan, un-anchored).
+    _patch_resolve(monkeypatch, build_result=None, prior_plan=None)
+    out = resolve_target_allocation_json(None, "ariel", 96, date(2026, 6, 12))
+    assert out is None
+
+    # Prior exists but has no doc → still None (nothing to carry forward).
+    _patch_resolve(monkeypatch, build_result=None, prior_plan=_PriorPlan(None))
+    assert resolve_target_allocation_json(None, "ariel", 96, date(2026, 6, 12)) is None

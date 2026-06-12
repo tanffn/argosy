@@ -217,6 +217,14 @@ export function UploadStatementsCard({ userId, onUploadComplete }: Props) {
                       {r.error ?? "unknown error"}
                     </div>
                   )}
+                  {r.reconciliation_warnings &&
+                  r.reconciliation_warnings.length > 0 ? (
+                    <ul className="mt-1.5 list-disc space-y-0.5 pl-4 font-mono text-[11px] text-amber-300/90">
+                      {r.reconciliation_warnings.map((w, j) => (
+                        <li key={j}>⚠ {w}</li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </li>
               ))}
             </ul>

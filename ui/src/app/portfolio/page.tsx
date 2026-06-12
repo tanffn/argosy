@@ -114,6 +114,24 @@ export default function PortfolioPage() {
       {loading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {error && <p className="text-sm text-error font-mono">{error}</p>}
 
+      {/* Parse warnings surfaced (nothing hidden, nothing lost): the snapshot
+          DTO has always carried parse_warnings; this renders them so a row the
+          parser couldn't fully read is visible rather than silently dropped. */}
+      {snap?.parse_warnings && snap.parse_warnings.length > 0 && (
+        <div className="rounded-md border border-amber-400/40 bg-amber-400/10 p-3">
+          <p className="text-sm font-medium text-amber-300">
+            ⚠ {snap.parse_warnings.length} parse warning
+            {snap.parse_warnings.length > 1 ? "s" : ""} on this snapshot —
+            surfaced, not dropped silently:
+          </p>
+          <ul className="mt-1 list-disc pl-5 text-xs font-mono text-amber-200/90 space-y-0.5">
+            {snap.parse_warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Monthly portfolio-snapshot upload tile (2026-05-29). User
          drops the monthly Family Finances Status TSV; the route
          persists under ARGOSY_EXPENSE_SAMPLES_ROOT and fires the
