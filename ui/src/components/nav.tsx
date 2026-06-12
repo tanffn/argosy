@@ -16,7 +16,6 @@ import {
   PieChart,
   ScrollText,
   Settings,
-  Target,
   Users,
   Wallet,
 } from "lucide-react";
@@ -39,8 +38,10 @@ interface NavTab {
 // -> Retirement for the verdict -> Consult on a ticker -> Proposals
 // to approve).
 // Proposals sits immediately after Portfolio: the action hub lives next to the
-// state it acts on (read your portfolio -> act on it). Exported so the ordering
-// invariant is unit-testable.
+// state it acts on (read your portfolio -> act on it). Consult is NOT a primary
+// tab — it's folded into the Proposals hub as "Ask the team"; the /consult
+// route stays as a working deep link. Exported so the ordering invariant is
+// unit-testable.
 export const PRIMARY_TABS: NavTab[] = [
   { href: "/", label: "Home", Icon: Home },
   { href: "/advisor", label: "Advisor", Icon: MessageCircle },
@@ -49,7 +50,6 @@ export const PRIMARY_TABS: NavTab[] = [
   { href: "/expenses", label: "Expenses", Icon: Wallet },
   { href: "/plan", label: "Plan", Icon: ClipboardList },
   { href: "/retirement", label: "Retirement", Icon: Flag },
-  { href: "/consult", label: "Consult", Icon: Target },
 ];
 
 // INSPECTION tabs live behind a "More" dropdown -- occasional use

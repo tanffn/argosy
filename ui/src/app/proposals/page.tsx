@@ -571,46 +571,52 @@ export default function ProposalsPage() {
           update_plan_assumption / set_watchlist / note_only) is the
           first thing the user sees. The windfall / trade-proposal
           surfaces below remain unchanged. */}
-      <section id="action-proposals" className="scroll-mt-6 flex flex-col gap-3">
-        <header>
-          <h2 className="text-lg font-semibold tracking-tight">
-            Action proposals
-          </h2>
+      <section id="action-proposals" className="scroll-mt-6">
+        <CollapsibleSection
+          title="Action proposals"
+          summary={
+            actionLoading
+              ? "loading…"
+              : `${actionProposals.length} open · accept / defer / reject — you decide`
+          }
+          defaultOpen
+        >
           <p className="text-xs text-muted-foreground">
-            System-proposed actions across all kinds. Accept / Defer /
-            Reject / Customize per row — Argosy never executes; you
-            decide.
+            System-proposed actions across all kinds (allocate / rebalance /
+            repatriate / replan / life-event / plan-assumption / watchlist /
+            note). Each is derived from a state observation; Argosy never
+            executes — you decide.
           </p>
-        </header>
-        {actionError && (
-          <p className="text-sm text-error font-mono">{actionError}</p>
-        )}
-        {actionLoading && (
-          <p className="text-sm text-muted-foreground">Loading action proposals…</p>
-        )}
-        {!actionLoading && actionProposals.length === 0 && (
-          <Card>
-            <CardContent className="py-6 text-center text-sm text-muted-foreground">
-              No open action proposals.
-            </CardContent>
-          </Card>
-        )}
-        {actionProposals.length > 0 && (
-          <ul className="flex flex-col gap-3">
-            {actionProposals.map((p) => (
-              <li key={p.id}>
-                <ActionProposalCard
-                  proposal={p}
-                  busy={actionBusy === p.id}
-                  onAccept={() => onActionAccept(p.id)}
-                  onDefer={() => setDeferTarget(p)}
-                  onReject={() => setRejectTarget(p)}
-                  onCustomize={() => setCustomizeTarget(p)}
-                />
-              </li>
-            ))}
-          </ul>
-        )}
+          {actionError && (
+            <p className="text-sm text-error font-mono">{actionError}</p>
+          )}
+          {actionLoading && (
+            <p className="text-sm text-muted-foreground">Loading action proposals…</p>
+          )}
+          {!actionLoading && actionProposals.length === 0 && (
+            <Card>
+              <CardContent className="py-6 text-center text-sm text-muted-foreground">
+                No open action proposals.
+              </CardContent>
+            </Card>
+          )}
+          {actionProposals.length > 0 && (
+            <ul className="flex flex-col gap-3">
+              {actionProposals.map((p) => (
+                <li key={p.id}>
+                  <ActionProposalCard
+                    proposal={p}
+                    busy={actionBusy === p.id}
+                    onAccept={() => onActionAccept(p.id)}
+                    onDefer={() => setDeferTarget(p)}
+                    onReject={() => setRejectTarget(p)}
+                    onCustomize={() => setCustomizeTarget(p)}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </CollapsibleSection>
       </section>
 
       <DeferModal
