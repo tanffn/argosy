@@ -156,6 +156,39 @@ def _effective_named_targets(doc, holdings: dict[str, float], total: float,
     return targets, unmapped_target, swap_sources, legacy
 
 
+def _cash_deploy_no_buy_symbols(doc) -> set[str]:
+    """Symbols that must NEVER be a cash-deploy BUY target.
+
+    The ``concentrated_equity`` sleeve (NVDA) is being actively wound down under
+    the deconcentration glide; its plan semantics are "cap / trim-on-breach",
+    not "buy on dilution". Fresh cash that dilutes it below its cap is desirable
+    (lowers employer-stock concentration + US-situs estate exposure + avoids the
+    churn of buying now to sell later). So we exclude it from cash-deploy buys
+    and redistribute its target dollars onto the buyable named instruments.
+    """
+    return {
+        instr.symbol
+        for cls in doc.classes
+        if cls.sigma_class == "concentrated_equity"
+        for instr in cls.instruments
+    }
+
+
+def _redistribute_removed_targets(
+    targets: dict[str, float], excluded: set[str]
+) -> dict[str, float]:
+    """Drop ``excluded`` symbols and spread their target dollars pro-rata across
+    the remaining named targets, so total target dollars are conserved and the
+    cash flows to the buyable instruments instead of being left idle."""
+    out = {s: v for s, v in targets.items() if s not in excluded}
+    removed = sum(targets.get(s, 0.0) for s in excluded)
+    eligible_total = sum(out.values())
+    if removed > 0 and eligible_total > 0:
+        for sym in list(out):
+            out[sym] = round(out[sym] + removed * out[sym] / eligible_total, 2)
+    return out
+
+
 def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
                      as_of: date, account_id: str = "ibkr",
                      currency: str = "USD") -> list[AllocationCandidate]:
@@ -168,12 +201,15 @@ def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
     Returns one BUY candidate per funded symbol, largest first. The unmapped/
     redeploy bucket is never a buy target; any phantom band (no backing legacy
     holdings) is redistributed onto the named instruments so cash isn't left idle.
+    The ``concentrated_equity`` (NVDA) sleeve is excluded from buy targets — see
+    :func:`_cash_deploy_no_buy_symbols` — and its target dollars redistributed.
     """
     if cash_usd <= 0:
         return []
     post_book = round(sum(holdings.values()) + cash_usd, 2)
     targets, _unmapped, _swaps, _legacy = _effective_named_targets(
         doc, holdings, post_book, as_of)
+    targets = _redistribute_removed_targets(targets, _cash_deploy_no_buy_symbols(doc))
     gaps = {sym: max(0.0, tv - holdings.get(sym, 0.0)) for sym, tv in targets.items()}
     gaps = {s: g for s, g in gaps.items() if g > 0.0}
     total_gap = sum(gaps.values())

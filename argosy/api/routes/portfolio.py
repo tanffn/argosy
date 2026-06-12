@@ -1345,16 +1345,21 @@ def get_allocation_tasks(
 
 @router.get("/deploy-cash", response_model=DeploymentPlanDTO)
 def get_deploy_cash(
-    cash_usd: float = Query(0.0, ge=0.0),
+    cash_usd: float | None = Query(None, ge=0.0),
     user_id: str = Query("ariel"),
 ) -> DeploymentPlanDTO:
-    """Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax amount."""
+    """Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax amount.
+
+    ``cash_usd`` is the deployable (net-of-tax) amount. Omit it (None) to default
+    to the detected idle cash from the latest snapshot; pass an explicit ``0`` to
+    get an empty/zero plan (no silent substitution).
+    """
     from datetime import date as _date
 
     from argosy.services.deployment_advisor import assemble_deployment_plan
 
     doc, holdings, snap_cash = _load_current_doc_and_holdings(user_id)
-    amount = cash_usd or snap_cash
+    amount = cash_usd if cash_usd is not None else snap_cash
     plan = assemble_deployment_plan(
         doc=doc, holdings=holdings, deploy_amount_usd=amount, as_of=_date.today(),
     )

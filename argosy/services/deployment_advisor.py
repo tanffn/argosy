@@ -32,7 +32,7 @@ class EstateTag:
 @dataclass(frozen=True)
 class DeploymentLine:
     symbol: str
-    type: str            # "ETF" | "Stock" | "Gold ETC" | "T-bill" ...
+    type: str            # P1 emits "ETF" | "Stock" only; richer types in P3
     amount_usd: float
     timing: str          # P1: always "now"
     is_new: bool         # NEW vs already-held in the aggregate tradeable book
@@ -178,7 +178,14 @@ def _remainder_caveat(remainder_usd: float) -> str:
 
 
 def _instrument_type(doc, symbol: str) -> str:
-    """Coarse instrument type for the SYMBOL|TYPE column."""
+    """Coarse instrument type for the SYMBOL|TYPE column.
+
+    P1 only distinguishes the sanctioned single-stock sleeve (NVDA) from
+    everything else (which is UCITS ETFs in the current plan). This is a P1
+    stub — it CANNOT yet emit "Gold ETC" / "T-bill" etc.
+    TODO(P3): derive the real type from ``AllocationInstrument`` once it carries
+    an ``asset_type`` (gold ETC + bond/T-bill classes arrive in P3).
+    """
     if symbol in SANCTIONED_US_SITUS:
         return "Stock"
     return "ETF"
@@ -217,12 +224,12 @@ def assemble_deployment_plan(
                 continue
             # Fail loud: this path is cash-only. A BUY funded by trim proceeds (or
             # any non-cash source) would miscount non-cash buys against the entered
-            # cash amount — never silently absorb it (trust doctrine).
-            funding = getattr(leg, "funding_source", "cash")
-            if funding != "cash":
+            # cash amount — never silently absorb it (trust doctrine). Read the
+            # required field directly so a malformed leg raises, not slips through.
+            if leg.funding_source != "cash":
                 raise ValueError(
                     f"deploy-cash expects cash-funded BUY legs only; got "
-                    f"{leg.symbol!r} funded by {funding!r} (kind={cand.kind})"
+                    f"{leg.symbol!r} funded by {leg.funding_source!r} (kind={cand.kind})"
                 )
             sym = leg.symbol
             is_plan = sym in plan_symbols
@@ -262,7 +269,9 @@ def assemble_deployment_plan(
         )
     remainder = round(max(0.0, amount - deployed), 2)
     caveats = _CAVEATS
-    if remainder > 0.005:
+    # Surface the caveat only for a MATERIAL remainder; sub-dollar drift is just
+    # pro-rata rounding noise (the exact figure is still on undeployed_remainder_usd).
+    if remainder >= 1.0:
         caveats = caveats + (_remainder_caveat(remainder),)
     return DeploymentPlan(
         deploy_amount_usd=amount, as_of=as_of, tiers=tiers,
