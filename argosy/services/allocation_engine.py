@@ -33,6 +33,15 @@ REPLACES_SYMBOLS: dict[str, str] = {
 }
 
 
+# Sentinel symbol for book percentage that sits in a glide label with no named
+# instrument class (e.g. the transitional "Individual Stocks (non-NVDA, to
+# redeploy)" band). Surfaced — never silently dropped — so target values always
+# conserve to the book total. Callers that deploy cash exclude this bucket (you
+# cannot BUY an unnamed instrument); it represents legacy holdings being wound
+# down, not a buy target.
+UNMAPPED_BUCKET = "__UNMAPPED__"
+
+
 def class_targets_as_of(doc, as_of: date) -> dict[str, float]:
     """Class-label -> target % as of ``as_of`` along the glide.
 
@@ -54,7 +63,67 @@ def class_targets_as_of(doc, as_of: date) -> dict[str, float]:
     return {c.label: c.target_pct for c in doc.classes}
 
 
+def target_values_by_symbol(doc, total: float, as_of: date) -> dict[str, float]:
+    """symbol -> target USD value, using glide-aware class %s and per-instrument
+    weights. A symbol in >1 class is summed.
+
+    Conservation (codex #1): the glide-aware class percentages are the authority,
+    so they must sum to ~100; a glide label with no matching instrument class is
+    surfaced under :data:`UNMAPPED_BUCKET` rather than dropped, so the returned
+    values always sum to ``total``."""
+    class_pct = class_targets_as_of(doc, as_of)
+    pct_sum = sum(class_pct.values())
+    if abs(pct_sum - 100.0) > 0.5:
+        raise ValueError(
+            f"glide-aware class percentages sum to {pct_sum:.2f}, not ~100 "
+            f"(as_of={as_of}); refusing to size targets off a non-conserving plan")
+    by_label = {c.label: c for c in doc.classes}
+    out: dict[str, float] = {}
+    for label, pct in class_pct.items():
+        frac = pct / 100.0
+        cls = by_label.get(label)
+        if cls is None:
+            # Transitional/redeploy band with no named instruments — keep it
+            # explicit so the book total is conserved.
+            out[UNMAPPED_BUCKET] = round(out.get(UNMAPPED_BUCKET, 0.0) + frac * total, 2)
+            continue
+        for instr in cls.instruments:
+            v = frac * (instr.weight_within_class_pct / 100.0) * total
+            out[instr.symbol] = round(out.get(instr.symbol, 0.0) + v, 2)
+    return out
+
+
+_CASH_TYPES = {"cash", "money_market", "mmf"}
+
+
+def tradeable_holdings(snapshot) -> tuple[dict[str, float], float]:
+    """(holdings_by_symbol_usd, total_cash_usd) from a PortfolioSnapshot.
+
+    Filters the cash sentinel ("-"/blank) and cash-typed rows out of holdings
+    and aggregates them into total_cash_usd. Symbols are upper-cased + summed.
+    Account/currency splitting is deferred (v1 needs only the total for the
+    cash-deploy math)."""
+    holdings: dict[str, float] = {}
+    cash = 0.0
+    for p in getattr(snapshot, "positions", []) or []:
+        sym = (getattr(p, "symbol", "") or "").strip().upper()
+        usd_k = getattr(p, "usd_value_k", None) or 0.0
+        usd = float(usd_k) * 1000.0
+        asset_type = (getattr(p, "asset_type", "") or "").lower()
+        if asset_type in _CASH_TYPES:
+            cash += usd
+            continue
+        if not sym or sym == "-":
+            cash += usd  # blank-symbol rows are cash lines
+            continue
+        if usd == 0.0:
+            continue
+        holdings[sym] = round(holdings.get(sym, 0.0) + usd, 2)
+    return holdings, round(cash, 2)
+
+
 __all__ = [
     "AllocationMode", "AllocationLeg", "AllocationCandidate", "REPLACES_SYMBOLS",
-    "class_targets_as_of",
+    "UNMAPPED_BUCKET", "class_targets_as_of", "target_values_by_symbol",
+    "tradeable_holdings",
 ]
