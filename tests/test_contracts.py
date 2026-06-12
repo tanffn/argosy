@@ -12,12 +12,14 @@ import pytest
 from argosy.services.contracts import (
     CONTRACTS_SCHEMA_VERSION,
     AllocationCandidate,
+    AllocationCandidateDTO,
     AllocationLeg,
     EstimatorVerdict,
     ExecutableTask,
     FleetPick,
     ScanState,
     candidate_fingerprint,
+    candidate_to_dto,
     deserialize_candidate,
     serialize_candidate,
 )
@@ -101,3 +103,23 @@ def test_deserialize_rejects_future_schema_version():
     blob["schema_version"] = CONTRACTS_SCHEMA_VERSION + 1
     with pytest.raises(ValueError):
         deserialize_candidate(blob)
+
+
+# --- wire DTO --------------------------------------------------------------
+
+def test_candidate_to_dto_preserves_fields():
+    cand = AllocationCandidate(
+        kind="SWAP", horizon="this_quarter", est_tax_nis=42.0,
+        surtax_split_suggested=True, rationale="r", cites=("a", "b"),
+        legs=(_leg("SCHD", 500.0, side="SELL", funding="trim_proceeds"),
+              _leg("FUSA", 500.0, side="BUY", funding="trim_proceeds")))
+    dto = candidate_to_dto(cand)
+    assert isinstance(dto, AllocationCandidateDTO)
+    dumped = dto.model_dump()
+    assert dumped["kind"] == "SWAP"
+    assert dumped["surtax_split_suggested"] is True
+    assert dumped["cites"] == ["a", "b"]
+    assert [l["symbol"] for l in dumped["legs"]] == ["SCHD", "FUSA"]
+    assert [l["side"] for l in dumped["legs"]] == ["SELL", "BUY"]
+    # DTO faithfully reflects the domain object's legs
+    assert dumped["legs"][0]["funding_source"] == "trim_proceeds"
