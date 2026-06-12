@@ -5,6 +5,8 @@ from argosy.services.deployment_advisor import (
     DeploymentTier,
     EstateTag,
     TIER_NAMES,
+    DEPLOY_TIER_CAPS,
+    classify_tier,
 )
 
 
@@ -47,3 +49,18 @@ class TestContracts:
             us_situs_total_usd=0.0, market_context_age=None, caveats=(), note="",
         )
         assert plan.deployed_total_usd == 1000.0
+
+
+class TestTierClassification:
+    def test_plan_bound_gap_fill_is_core_in_p1(self):
+        # Every cash_only_deploy candidate is plan-bound gap-fill -> core.
+        assert classify_tier(kind="BUY", symbol="CSPX", is_plan_instrument=True) == "core"
+        assert classify_tier(kind="SWAP", symbol="IB01", is_plan_instrument=True) == "core"
+
+    def test_non_plan_instrument_would_be_tactical_but_p1_emits_none(self):
+        # A symbol NOT in the canonical plan would be medium (tactical). cash_only_deploy
+        # never emits these in P1, but the classifier is honest about the rule.
+        assert classify_tier(kind="BUY", symbol="PLTR", is_plan_instrument=False) == "medium"
+
+    def test_tier_caps_are_70_25_5_on_tactical_post_reserve(self):
+        assert DEPLOY_TIER_CAPS == {"core": 70.0, "medium": 25.0, "high": 5.0}

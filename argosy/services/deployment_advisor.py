@@ -69,3 +69,22 @@ class DeploymentPlan:
     @property
     def deployed_total_usd(self) -> float:
         return round(sum(t.total_usd for t in self.tiers), 2)
+
+
+# Advisory tier ceilings (% of post-reserve deploy capital). Enforced only once
+# the tactical (medium/high) tiers are populated (P3/P4). In P1 only `core` is
+# filled, so core absorbs the remainder — the safe plan-bound default.
+DEPLOY_TIER_CAPS: dict[str, float] = {"core": 70.0, "medium": 25.0, "high": 5.0}
+
+
+def classify_tier(*, kind: str, symbol: str, is_plan_instrument: bool) -> TierName:
+    """Assign a deploy line to a risk tier.
+
+    P1 rule: a buy of a canonical-plan instrument (UCITS/cap/glide gap-fill from
+    ``cash_only_deploy``) is plan-bound -> ``core``. A buy of a symbol NOT in the
+    plan is a tactical deviation -> ``medium`` (the screen that would surface
+    these arrives in P3/P4; cash_only_deploy emits none in P1).
+    """
+    if is_plan_instrument:
+        return "core"
+    return "medium"
