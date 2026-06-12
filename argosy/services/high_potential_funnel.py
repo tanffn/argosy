@@ -189,7 +189,7 @@ async def run_funnel(user_id: str, *, force: bool = False,
 
     estimated: list[EstimatorVerdict] = []
     states: dict[str, dict] = {}
-    go_candidates: list[tuple[EstimatorVerdict, TrendCandidate, dict]] = []
+    go_candidates: list[tuple[EstimatorVerdict, TrendCandidate, dict, bool]] = []
 
     for rank, c in enumerate(shortlist, start=1):
         fp = radar_fingerprint(c)

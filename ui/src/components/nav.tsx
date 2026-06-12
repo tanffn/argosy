@@ -38,15 +38,18 @@ interface NavTab {
 // entry -> Portfolio/Expenses to read state -> Plan for the draft
 // -> Retirement for the verdict -> Consult on a ticker -> Proposals
 // to approve).
-const PRIMARY_TABS: NavTab[] = [
+// Proposals sits immediately after Portfolio: the action hub lives next to the
+// state it acts on (read your portfolio -> act on it). Exported so the ordering
+// invariant is unit-testable.
+export const PRIMARY_TABS: NavTab[] = [
   { href: "/", label: "Home", Icon: Home },
   { href: "/advisor", label: "Advisor", Icon: MessageCircle },
   { href: "/portfolio", label: "Portfolio", Icon: PieChart },
+  { href: "/proposals", label: "Proposals", Icon: Inbox },
   { href: "/expenses", label: "Expenses", Icon: Wallet },
   { href: "/plan", label: "Plan", Icon: ClipboardList },
   { href: "/retirement", label: "Retirement", Icon: Flag },
   { href: "/consult", label: "Consult", Icon: Target },
-  { href: "/proposals", label: "Proposals", Icon: Inbox },
 ];
 
 // INSPECTION tabs live behind a "More" dropdown -- occasional use
