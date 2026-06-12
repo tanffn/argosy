@@ -233,3 +233,21 @@ def test_rebalance_unequal_swap_emits_residual_trim_and_conserves():
     total_sell = sum(l.notional_usd for c in cands for l in c.legs
                      if l.side == "SELL" and l.symbol == "SCHD")
     assert round(total_sell, 2) == 1000.0
+
+
+def test_compute_allocation_dispatches_modes():
+    from datetime import date
+    from argosy.services.allocation_engine import compute_allocation, AllocationMode
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1), {"Core": 100.0})],
+        class_final=[("Core", 100.0, "CSPX")],
+    )
+    holdings = {"CSPX": 1000.0}
+    # cash-only deploy: a pure buy
+    c1 = compute_allocation(doc, holdings, AllocationMode.CASH_ONLY_DEPLOY,
+                            cash_usd=500.0, as_of=date(2026, 6, 1))
+    assert c1 and all(l.side == "BUY" for c in c1 for l in c.legs)
+    # pure rebalance with on-target book: nothing to do
+    c2 = compute_allocation(doc, holdings, AllocationMode.PURE_REBALANCE,
+                            as_of=date(2026, 6, 1))
+    assert c2 == []

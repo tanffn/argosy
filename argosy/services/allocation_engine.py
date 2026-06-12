@@ -236,8 +236,28 @@ def rebalance_candidates(doc, holdings: dict[str, float], *, as_of: date,
     return out
 
 
+def compute_allocation(doc, holdings: dict[str, float], mode: AllocationMode, *,
+                       cash_usd: float = 0.0, as_of: date | None = None,
+                       account_id: str = "ibkr") -> list[AllocationCandidate]:
+    """Dispatch to the requested mode. ``as_of`` defaults to today."""
+    from datetime import date as _date
+    when = as_of or _date.today()
+    if mode == AllocationMode.CASH_ONLY_DEPLOY:
+        return cash_only_deploy(doc, holdings, cash_usd, as_of=when, account_id=account_id)
+    if mode == AllocationMode.PURE_REBALANCE:
+        return rebalance_candidates(doc, holdings, as_of=when, account_id=account_id)
+    # REBALANCE_PLUS_CASH: deploy cash first, then rebalance the resulting book.
+    deploy = cash_only_deploy(doc, holdings, cash_usd, as_of=when, account_id=account_id)
+    post = dict(holdings)
+    for c in deploy:
+        for l in c.legs:
+            post[l.symbol] = post.get(l.symbol, 0.0) + l.notional_usd
+    return deploy + rebalance_candidates(doc, post, as_of=when, account_id=account_id)
+
+
 __all__ = [
     "AllocationMode", "AllocationLeg", "AllocationCandidate", "REPLACES_SYMBOLS",
     "UNMAPPED_BUCKET", "class_targets_as_of", "target_values_by_symbol",
     "tradeable_holdings", "cash_only_deploy", "rebalance_candidates",
+    "compute_allocation",
 ]
