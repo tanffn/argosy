@@ -290,3 +290,17 @@ def propose_allocations(
         remaining_unallocated_usd=remaining,
         headline=headline,
     )
+
+
+def propose_allocations_from_plan(doc, holdings, cash_usd, *, as_of):
+    """Plan-bound cash deployment — the canonical replacement for the TSV-driven
+    long-term path. Delegates to the deterministic allocation engine (glide-aware
+    targets, buy-only and cash-constrained), so 'plan target' is the canonical
+    instrument-level TargetAllocationDoc rather than the TSV's typed targets.
+
+    Returns ``AllocationCandidate[]`` (the cross-phase contract). The legacy
+    ``propose_allocations`` (TSV path) is retained for consumers not yet migrated."""
+    from argosy.services.allocation_engine import AllocationMode, compute_allocation
+
+    return compute_allocation(doc, holdings, AllocationMode.CASH_ONLY_DEPLOY,
+                              cash_usd=cash_usd, as_of=as_of)
