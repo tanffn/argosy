@@ -37,6 +37,7 @@ import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { HighPotentialSleeveCard } from "@/components/portfolio/high-potential-sleeve-card";
 import { TrendRadarCard } from "@/components/portfolio/trend-radar-card";
 import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monitor-card";
+import { DiscoveryCard } from "@/components/portfolio/discovery-card";
 import { useWSEvents } from "@/lib/ws";
 
 const USER_ID = "ariel";
@@ -635,6 +636,10 @@ export default function ProposalsPage() {
           cash deployment), conviction-weighted, blend vehicle (UCITS thematic
           core + single-name carve-out). */}
       <section id="high-potential" className="scroll-mt-6 space-y-4">
+        {/* Combined fleet-graded discovery (Slice 2): conviction-only picks +
+            estimator shortlist with a smart refresh. The cards below remain
+            until consumers fully migrate to this surface. */}
+        <DiscoveryCard />
         <HighPotentialSleeveCard />
         {/* Live SOURCING for the single-name carve-out + the exit-discipline
             monitor (stop-loss / sell signals) for the high-risk names. */}

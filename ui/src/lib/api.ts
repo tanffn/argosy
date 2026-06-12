@@ -356,6 +356,31 @@ export interface TrendRadarDTO {
   note: string;
 }
 
+// Combined high-potential discovery (Slice 2) — fleet-graded picks + the cheap
+// estimator shortlist. CONVICTION-only (no dollar sizing); smart refresh.
+export interface DiscoveryPickDTO {
+  ticker: string;
+  conviction: string;
+  verdict: string;
+  thesis_md: string;
+  cites: string[];
+}
+
+export interface DiscoveryEstimateDTO {
+  ticker: string;
+  go: boolean;
+  conviction: string;
+  sentiment: number;
+  one_line: string;
+}
+
+export interface DiscoveryDTO {
+  picks: DiscoveryPickDTO[];
+  estimated: DiscoveryEstimateDTO[];
+  last_refreshed_at: string | null;
+  note: string;
+}
+
 // Speculative-position monitor (S18) — stop-loss / sell signals for the
 // high-risk single names (hard + trailing stop + 50d-MA momentum break).
 export interface MonitorSignalDTO {
@@ -1758,6 +1783,12 @@ export const api = {
     ),
   portfolioTrendRadar: (limit: number = 15): Promise<TrendRadarDTO> =>
     getJSON<TrendRadarDTO>(`/api/portfolio/trend-radar?limit=${limit}`),
+  // Combined discovery surface (Slice 2): GET = instant cached highlights;
+  // POST refresh = run the funnel (smart by default).
+  portfolioDiscovery: (): Promise<DiscoveryDTO> =>
+    getJSON<DiscoveryDTO>(`/api/portfolio/discovery`),
+  portfolioDiscoveryRefresh: (force: boolean = false): Promise<DiscoveryDTO> =>
+    postJSON<DiscoveryDTO>(`/api/portfolio/discovery/refresh?force=${force}`, {}),
   portfolioSpeculativeMonitor: (
     tickers: string = "",
     hardStopPct: number = 20.0,
