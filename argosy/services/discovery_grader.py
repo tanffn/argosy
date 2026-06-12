@@ -91,7 +91,7 @@ def discovery_idempotency_key(user_id: str, ticker: str,
 async def _close_decision_run(*, decision_run_id: int, status: str) -> None:
     """Close the lineage decision_run row (completed/blocked). Best-effort —
     discovery grading never persists a proposal, only the analyst reports' run."""
-    from argosy.state import database as db_mod
+    from argosy.state import db as db_mod
     from argosy.state.models import DecisionRun
 
     async with db_mod.get_session() as session:
@@ -130,9 +130,15 @@ async def grade_discovery_ticker(user_id: str, candidate, *,
         await _close_decision_run(decision_run_id=run_id, status="blocked")
         raise
 
-    agent = DiscoveryGraderAgent(user_id=user_id)
-    out: FleetGradeOutput = (await agent.run(
-        ticker=ticker, analyst_reports=list(result.reports))).output
+    # Synthesis is inside the guard too (codex p2 #4): a grader-agent failure
+    # must close the run blocked, never leave it 'running'.
+    try:
+        agent = DiscoveryGraderAgent(user_id=user_id)
+        out: FleetGradeOutput = (await agent.run(
+            ticker=ticker, analyst_reports=list(result.reports))).output
+    except Exception:
+        await _close_decision_run(decision_run_id=run_id, status="blocked")
+        raise
     await _close_decision_run(decision_run_id=run_id, status="completed")
 
     return FleetPick(

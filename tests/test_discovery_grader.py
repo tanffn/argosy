@@ -74,3 +74,30 @@ def test_grade_returns_none_on_quorum_failure(monkeypatch):
     _stub_pipeline(monkeypatch, {}, quorum_fail=True)
     pick = asyncio.run(dg.grade_discovery_ticker("ariel", _cand("ZZZZ")))
     assert pick is None
+
+
+def test_synthesis_failure_closes_run_blocked(monkeypatch):
+    """codex p2 #4: if the synthesis agent raises (after analysts succeed), the
+    decision run must be closed 'blocked', not left 'running'."""
+    closed: list[tuple[int, str]] = []
+
+    async def fake_open(**kwargs):
+        return 7777
+
+    async def fake_close(*, decision_run_id, status):
+        closed.append((decision_run_id, status))
+
+    async def fake_analysts(**kwargs):
+        return _Result([_Report("fundamentals", "ok")])
+
+    async def boom(self, **kwargs):
+        raise RuntimeError("synthesis exploded")
+
+    monkeypatch.setattr(dg, "open_decision_run_for_consult", fake_open)
+    monkeypatch.setattr(dg, "_close_decision_run", fake_close)
+    monkeypatch.setattr(dg, "run_per_ticker_analysts", fake_analysts)
+    monkeypatch.setattr(dg.DiscoveryGraderAgent, "_call_model", boom)
+
+    with pytest.raises(Exception):
+        asyncio.run(dg.grade_discovery_ticker("ariel", _cand("PLTR")))
+    assert closed and closed[-1][1] == "blocked"

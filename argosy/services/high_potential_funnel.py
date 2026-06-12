@@ -121,14 +121,20 @@ def _iso(dt) -> str | None:
 
 
 def _parse(s) -> datetime | None:
+    """Parse an ISO string (or pass a datetime) to a tz-AWARE datetime. SQLite
+    DateTime(timezone=True) round-trips as naive; assume UTC so freshness diffs
+    against an aware ``now`` never raise (codex p2 #5)."""
     if not s:
         return None
-    if isinstance(s, datetime):
-        return s
-    try:
-        return datetime.fromisoformat(s)
-    except ValueError:
-        return None
+    dt = s if isinstance(s, datetime) else None
+    if dt is None:
+        try:
+            dt = datetime.fromisoformat(s)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def radar_fingerprint(c: TrendCandidate) -> str:
@@ -175,7 +181,9 @@ async def run_funnel(user_id: str, *, force: bool = False,
     """Radar -> diff vs ScanState -> estimate new/changed -> grade top-K go
     names -> persist. ``force`` re-estimates + re-grades everything."""
     now = now or datetime.now(timezone.utc)
-    shortlist = list(_scan_radar().shortlist)
+    scan = _scan_radar()
+    shortlist = list(scan.shortlist)
+    _scan_quarantine = list(scan.quarantine or ())
     existing = _load_scan_states(user_id)
     radar_tickers = {c.ticker for c in shortlist}
 
@@ -186,9 +194,8 @@ async def run_funnel(user_id: str, *, force: bool = False,
     for rank, c in enumerate(shortlist, start=1):
         fp = radar_fingerprint(c)
         prev = existing.get(c.ticker)
-        reuse = (not force and prev is not None
-                 and prev.get("radar_fingerprint") == fp
-                 and prev.get("estimator_json")
+        same_fp = prev is not None and prev.get("radar_fingerprint") == fp
+        reuse = (not force and same_fp and prev.get("estimator_json")
                  and _fresh(prev.get("last_estimated_at"), ESTIMATE_TTL, now))
         if reuse:
             verdict = _verdict_from_json(prev["estimator_json"])
@@ -197,19 +204,26 @@ async def run_funnel(user_id: str, *, force: bool = False,
             verdict = _estimate(c, user_id=user_id)
             last_estimated_at = now.isoformat()
         estimated.append(verdict)
+        # Carry a stored fleet grade forward ONLY when the fingerprint is
+        # unchanged AND it is still fresh AND we are not forcing — otherwise the
+        # old grade is for the OLD fingerprint and must not be persisted against
+        # the new one (codex p2 #1/#2). It is reset below if a fresh grade lands.
+        fleet_fresh = (not force and same_fp and prev is not None
+                       and prev.get("fleet_json")
+                       and _fresh(prev.get("last_fleet_at"), FLEET_TTL, now))
         state = {
             "ticker": c.ticker, "last_score": c.score, "radar_fingerprint": fp,
             "status": "active", "rank": rank, "quarantine_reason": "",
             "estimator_json": _verdict_to_json(verdict),
-            "fleet_json": prev.get("fleet_json") if prev else None,
+            "fleet_json": prev.get("fleet_json") if fleet_fresh else None,
             "last_estimated_at": last_estimated_at,
             "last_radar_at": now.isoformat(),
-            "last_fleet_at": prev.get("last_fleet_at") if prev else None,
+            "last_fleet_at": prev.get("last_fleet_at") if fleet_fresh else None,
             "last_seen_at": now.isoformat(),
         }
         states[c.ticker] = state
         if verdict.go:
-            go_candidates.append((verdict, c, state))
+            go_candidates.append((verdict, c, state, fleet_fresh))
 
     # Escalate the top-K go names (by conviction then sentiment) to the fleet,
     # reusing a fresh stored grade when the fingerprint is unchanged.
@@ -217,26 +231,38 @@ async def run_funnel(user_id: str, *, force: bool = False,
         key=lambda t: (_CONVICTION_RANK.get(t[0].conviction, 0), t[0].sentiment),
         reverse=True)
     picks: list[FleetPick] = []
-    for verdict, c, state in go_candidates[:TOP_K_TO_FLEET]:
-        prev = existing.get(c.ticker)
-        reuse_fleet = (not force and prev is not None
-                       and prev.get("radar_fingerprint") == state["radar_fingerprint"]
-                       and prev.get("fleet_json")
-                       and _fresh(prev.get("last_fleet_at"), FLEET_TTL, now))
-        if reuse_fleet:
-            pick = _pick_from_json(prev["fleet_json"])
-        else:
-            pick = await _grade(user_id, c)
-            if pick is not None:
-                state["fleet_json"] = _pick_to_json(pick)
-                state["last_fleet_at"] = now.isoformat()
+    for verdict, c, state, fleet_fresh in go_candidates[:TOP_K_TO_FLEET]:
+        if fleet_fresh:
+            picks.append(_pick_from_json(state["fleet_json"]))
+            continue
+        pick = await _grade(user_id, c)
         if pick is not None:
+            state["fleet_json"] = _pick_to_json(pick)
+            state["last_fleet_at"] = now.isoformat()
             picks.append(pick)
+
+    # Seen-but-quarantined (radar filtered them, e.g. liquidity) -> status
+    # 'quarantined' with the reason; NOT dropped (codex p2 #6).
+    for ticker, reason in _scan_quarantine:
+        if ticker in states:
+            continue
+        prev = existing.get(ticker, {})
+        states[ticker] = {**{"ticker": ticker, "last_score": prev.get("last_score", 0.0),
+                             "radar_fingerprint": prev.get("radar_fingerprint", ""),
+                             "rank": prev.get("rank"),
+                             "estimator_json": prev.get("estimator_json"),
+                             "fleet_json": prev.get("fleet_json"),
+                             "last_estimated_at": prev.get("last_estimated_at"),
+                             "last_radar_at": now.isoformat(),
+                             "last_fleet_at": prev.get("last_fleet_at")},
+                          "status": "quarantined", "quarantine_reason": reason,
+                          "last_seen_at": now.isoformat()}
 
     # TTL-evict: anything previously tracked but absent from this radar is
     # marked dropped (kept so the diff is stable; the GET filters it).
     for ticker, prev in existing.items():
-        if ticker not in radar_tickers and prev.get("status") != "dropped":
+        if (ticker not in radar_tickers and ticker not in states
+                and prev.get("status") != "dropped"):
             dropped = dict(prev)
             dropped["status"] = "dropped"
             states[ticker] = dropped
