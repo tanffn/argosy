@@ -125,14 +125,24 @@ class ScanState:
 # --- canonical candidate identity ------------------------------------------
 
 def candidate_fingerprint(c: AllocationCandidate) -> tuple:
-    """The identity of a candidate — kind + every leg's (side, symbol, account,
-    currency, funding, rounded notional), order-insensitive across legs.
+    """The identity of a candidate — kind + the material numeric fields
+    (est_tax_nis, surtax flag) + every leg's (side, symbol, account, currency,
+    funding, rounded notional, rounded quantity), order-insensitive across legs.
 
     Notional-only matching is NOT enough (codex): it would let an agent swap a
-    same-dollar ticker or duplicate a candidate and still reconcile."""
-    return (c.kind, tuple(sorted(
-        (l.side, l.symbol, l.account_id, l.currency, l.funding_source,
-         round(l.notional_usd, 2)) for l in c.legs)))
+    same-dollar ticker, duplicate a candidate, or alter tax/quantity and still
+    reconcile. The gate enforces the "agent invents no numbers" guarantee, so it
+    must key on every number a tampered candidate could change."""
+    return (
+        c.kind,
+        round(c.est_tax_nis, 2) if c.est_tax_nis is not None else None,
+        bool(c.surtax_split_suggested),
+        tuple(sorted(
+            (l.side, l.symbol, l.account_id, l.currency, l.funding_source,
+             round(l.notional_usd, 2),
+             round(l.quantity, 6) if l.quantity is not None else None)
+            for l in c.legs)),
+    )
 
 
 # --- versioned serialization -----------------------------------------------

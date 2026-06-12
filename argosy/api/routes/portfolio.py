@@ -1250,18 +1250,26 @@ def get_allocation_tasks(
             note=f"Could not size allocation from the current plan: {exc}")
 
     executable_tasks = None
+    agent_note = ""
     if with_agent and cands:
         # On-demand agent pass. Market context = the run's macro snapshot (incl. a
         # volatility proxy) + FX; per-position verdicts = the Portfolio Verdict
-        # source. Both best-effort with an empty fallback (codex #15) so the
-        # deterministic candidates always return even if the agent/context is
-        # unavailable.
-        from argosy.agents.allocation_agent import order_and_explain
+        # source. Both best-effort with an empty fallback (codex #15). The whole
+        # pass is guarded: an agent/reconciliation failure must NOT 500 — the
+        # deterministic candidates always return (codex 1b #4).
+        try:
+            from argosy.agents import allocation_agent as _aa
 
-        verdicts, market_context = _allocation_agent_context(user_id)
-        tasks = order_and_explain(cands, verdicts=verdicts,
-                                  market_context=market_context, user_id=user_id)
-        executable_tasks = [task_to_dto(t) for t in tasks]
+            verdicts, market_context = _allocation_agent_context(user_id)
+            tasks = _aa.order_and_explain(cands, verdicts=verdicts,
+                                          market_context=market_context,
+                                          user_id=user_id)
+            executable_tasks = [task_to_dto(t) for t in tasks]
+        except Exception as exc:  # noqa: BLE001 — agent pass is additive
+            _log.warning("allocation-tasks agent pass failed: %s", exc)
+            executable_tasks = None
+            agent_note = (" (agent ordering unavailable this run; showing the "
+                          "deterministic candidates only.)")
 
     return AllocationTasksDTO(
         mode=mode, cash_usd=deploy_cash,
@@ -1270,7 +1278,7 @@ def get_allocation_tasks(
         note=("Plan-bound (canonical TargetAllocationDoc, glide-aware). Amounts "
               "deterministic; legs advisory (account/currency best-effort) and "
               "tax shown as advisory only. The agent (Slice 1b) orders + "
-              "explains these."),
+              "explains these." + agent_note),
     )
 
 

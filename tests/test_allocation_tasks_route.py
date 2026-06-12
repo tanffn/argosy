@@ -75,6 +75,26 @@ def test_allocation_tasks_with_agent_reconciles(monkeypatch):
     assert tasks[0]["pace"] == "lump"
 
 
+def test_allocation_tasks_agent_error_preserves_candidates(monkeypatch):
+    """codex 1b #4: if the agent pass errors, the deterministic candidates must
+    still return (200, executable_tasks=None), never a 500."""
+    import argosy.agents.allocation_agent as aa
+    monkeypatch.setattr(portfolio_routes, "_load_current_doc_and_holdings",
+                        lambda user_id: (_doc(), {"CSPX": 1000.0}, 0.0))
+
+    def boom(*a, **k):
+        raise ValueError("agent reconciliation failed")
+    monkeypatch.setattr(aa, "order_and_explain", boom)
+
+    client = TestClient(create_app())
+    r = client.get("/api/portfolio/allocation-tasks",
+                   params={"cash_usd": 500, "with_agent": "true"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["candidates"]                 # deterministic surface preserved
+    assert body["executable_tasks"] is None
+
+
 def test_allocation_tasks_no_plan_returns_empty_with_note(monkeypatch):
     monkeypatch.setattr(portfolio_routes, "_load_current_doc_and_holdings",
                         lambda user_id: (None, {}, 0.0))

@@ -59,6 +59,34 @@ def test_agent_rejects_invented_candidate_index(monkeypatch):
         aa.order_and_explain(cands, verdicts={}, market_context={}, user_id="ariel")
 
 
+def test_agent_rejects_duplicate_index_even_when_fingerprints_collide(monkeypatch):
+    """codex 1b #1: two distinct candidates with identical legs share a
+    fingerprint; the model returning index 0 twice must NOT pass by dropping
+    candidate 1 — index coverage is checked, not just fingerprint counts."""
+    cands = [_c("BUY", "CSPX", 1000, "BUY"), _c("BUY", "CSPX", 1000, "BUY")]
+    _stub_model(monkeypatch, {"tasks": [
+        {"candidate_index": 0, "horizon": "now", "pace": "lump",
+         "pace_rationale": "", "rationale": "a"},
+        {"candidate_index": 0, "horizon": "later", "pace": "tranched",
+         "pace_rationale": "", "rationale": "b"},
+    ]})
+    with pytest.raises(ValueError):
+        aa.order_and_explain(cands, verdicts={}, market_context={}, user_id="ariel")
+
+
+def test_agent_rejects_invalid_horizon_or_pace(monkeypatch):
+    """codex 1b #3: an out-of-vocabulary horizon/pace must fail loud, not be
+    returned as a malformed ExecutableTask."""
+    from argosy.agents.errors import AgentRunError
+    cands = [_c("BUY", "CSPX", 1000, "BUY")]
+    _stub_model(monkeypatch, {"tasks": [
+        {"candidate_index": 0, "horizon": "yesterday", "pace": "warp",
+         "pace_rationale": "", "rationale": "x"},
+    ]})
+    with pytest.raises((AgentRunError, ValueError)):
+        aa.order_and_explain(cands, verdicts={}, market_context={}, user_id="ariel")
+
+
 def test_agent_rejects_dropped_candidate(monkeypatch):
     """The agent must cover every candidate exactly once (reconciliation)."""
     cands = [_c("BUY", "CSPX", 1000, "BUY"), _c("SWAP", "SCHD", 500, "SELL")]

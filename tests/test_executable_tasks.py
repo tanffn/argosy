@@ -51,3 +51,23 @@ def test_reconcile_raises_on_duplicated_candidate():
     c = _cand("CSPX", 1000.0)
     with pytest.raises(ValueError):
         reconcile_or_raise([_task(c, 1), _task(c, 2)], [c])  # c used twice
+
+
+def test_reconcile_rejects_modified_tax_and_quantity():
+    """codex 1b #2: the gate's identity must include the material numeric fields
+    (est_tax_nis, surtax flag, leg quantity), not just notional — else a task
+    that altered tax/quantity would falsely reconcile."""
+    real = AllocationCandidate(kind="TRIM", horizon="this_quarter",
+        est_tax_nis=100.0, surtax_split_suggested=False,
+        legs=(AllocationLeg(side="SELL", symbol="VOO", account_id="ibkr",
+              currency="USD", notional_usd=1000.0, funding_source="trim_proceeds",
+              quantity=10.0),))
+    tampered = AllocationCandidate(kind="TRIM", horizon="this_quarter",
+        est_tax_nis=999999.0, surtax_split_suggested=True,
+        legs=(AllocationLeg(side="SELL", symbol="VOO", account_id="ibkr",
+              currency="USD", notional_usd=1000.0, funding_source="trim_proceeds",
+              quantity=999.0),))
+    t = ExecutableTask(seq=1, candidate=tampered, horizon="this_quarter",
+                       pace="lump", pace_rationale="", rationale="x")
+    with pytest.raises(ValueError):
+        reconcile_or_raise([t], [real])

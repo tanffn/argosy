@@ -15,6 +15,7 @@ task that wraps an invented/duplicated/dropped candidate fails loud.
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -25,8 +26,10 @@ from argosy.services.executable_tasks import reconcile_or_raise
 
 class AllocationTaskSpec(BaseModel):
     candidate_index: int
-    horizon: str            # "now" | "this_quarter" | "later"
-    pace: str               # "lump" | "tranched"
+    # Literal so an out-of-vocabulary value from the model fails schema
+    # validation (codex 1b #3) rather than producing a malformed task.
+    horizon: Literal["now", "this_quarter", "later"]
+    pace: Literal["lump", "tranched"]
     pace_rationale: str = ""
     rationale: str = ""
 
@@ -102,17 +105,27 @@ def order_and_explain(candidates, verdicts, market_context, *,
                             market_context=market_context)
     ordering: AllocationOrdering = report.output
     tasks: list[ExecutableTask] = []
+    used: list[int] = []
     for seq, spec in enumerate(ordering.tasks, start=1):
         idx = spec.candidate_index
         if idx < 0 or idx >= len(candidates):
             raise ValueError(
                 f"allocation agent referenced out-of-range candidate_index {idx} "
                 f"(have {len(candidates)} candidates)")
+        used.append(idx)
         cand = candidates[idx]
         tasks.append(ExecutableTask(
             seq=seq, candidate=cand, horizon=spec.horizon, pace=spec.pace,
             pace_rationale=spec.pace_rationale, rationale=spec.rationale,
             cites=cand.cites))
+    # Coverage on INDICES, not fingerprints: two distinct candidates may share a
+    # fingerprint (identical legs), so a duplicated index that drops another
+    # candidate would slip past the fingerprint-count gate (codex 1b #1). Require
+    # each index used exactly once.
+    if sorted(used) != list(range(len(candidates))):
+        raise ValueError(
+            f"allocation agent must wrap each candidate index exactly once; "
+            f"got indices {sorted(used)} for {len(candidates)} candidates")
     reconcile_or_raise(tasks, candidates)
     return tasks
 
