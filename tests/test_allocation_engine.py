@@ -173,3 +173,63 @@ def test_cash_only_deploy_never_buys_the_unmapped_bucket():
     symbols = {l.symbol for c in cands for l in c.legs}
     assert UNMAPPED_BUCKET not in symbols
     assert symbols == {"CSPX"}  # only the named instrument is bought
+
+
+def test_rebalance_pairs_trim_and_add_into_one_swap():
+    from datetime import date
+    from argosy.services.allocation_engine import rebalance_candidates
+    # plan targets FUSA 100%; holdings are all SCHD -> trim SCHD + add FUSA,
+    # and SCHD->FUSA is in REPLACES_SYMBOLS, so it becomes ONE SWAP candidate.
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1), {"Dividend": 100.0})],
+        class_final=[("Dividend", 100.0, "FUSA")],
+    )
+    cands = rebalance_candidates(doc, {"SCHD": 1000.0}, as_of=date(2026, 6, 1),
+                                 account_id="leumi")
+    swaps = [c for c in cands if c.kind == "SWAP"]
+    assert len(swaps) == 1
+    sides = {l.symbol: l.side for l in swaps[0].legs}
+    assert sides == {"SCHD": "SELL", "FUSA": "BUY"}
+    # legs reconcile: sell notional ~= buy notional
+    sell = next(l.notional_usd for l in swaps[0].legs if l.side == "SELL")
+    buy = next(l.notional_usd for l in swaps[0].legs if l.side == "BUY")
+    assert abs(sell - buy) < 1.0
+
+
+def test_rebalance_unpaired_trim_and_add_stay_separate():
+    from datetime import date
+    from argosy.services.allocation_engine import rebalance_candidates
+    # holding XYZ (not in plan, not in replacement map) -> standalone TRIM
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1), {"Core": 100.0})],
+        class_final=[("Core", 100.0, "CSPX")],
+    )
+    cands = rebalance_candidates(doc, {"XYZ": 500.0, "CSPX": 500.0},
+                                 as_of=date(2026, 6, 1), account_id="ibkr")
+    kinds = sorted(c.kind for c in cands)
+    assert "TRIM" in kinds and "BUY" in kinds and "SWAP" not in kinds
+
+
+def test_rebalance_unequal_swap_emits_residual_trim_and_conserves():
+    """codex #3: when the trim leg exceeds the paired buy, decrement both legs by
+    the paired amount and emit the residual as a standalone TRIM — never drop it.
+    SCHD 1000 vs FUSA target 600 -> SWAP 600 + residual TRIM 400; Σ SELL == 1000."""
+    from datetime import date
+    from argosy.services.allocation_engine import rebalance_candidates
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1), {"Dividend": 60.0, "Core": 40.0})],
+        class_final=[("Dividend", 60.0, "FUSA"), ("Core", 40.0, "CSPX")],
+    )
+    cands = rebalance_candidates(doc, {"SCHD": 1000.0}, as_of=date(2026, 6, 1))
+    swaps = [c for c in cands if c.kind == "SWAP"]
+    trims = [c for c in cands if c.kind == "TRIM"]
+    assert len(swaps) == 1
+    swap_sell = next(l.notional_usd for l in swaps[0].legs if l.side == "SELL")
+    assert round(swap_sell, 2) == 600.0
+    schd_trim = sum(l.notional_usd for c in trims for l in c.legs
+                    if l.symbol == "SCHD")
+    assert round(schd_trim, 2) == 400.0
+    # conservation: every SCHD SELL dollar is accounted for (no leg dropped)
+    total_sell = sum(l.notional_usd for c in cands for l in c.legs
+                     if l.side == "SELL" and l.symbol == "SCHD")
+    assert round(total_sell, 2) == 1000.0

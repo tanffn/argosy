@@ -163,8 +163,81 @@ def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
     return out
 
 
+def rebalance_candidates(doc, holdings: dict[str, float], *, as_of: date,
+                         account_id: str = "ibkr", currency: str = "USD",
+                         keep_band_pct: float = 1.0) -> list[AllocationCandidate]:
+    """Closed-book rebalance candidates from the glide-aware plan, pairing a
+    trim with its UCITS-replacement buy into a single SWAP where the
+    REPLACES_SYMBOLS map applies."""
+    from argosy.services.plan_proposal_diff import diff_plan_vs_holdings
+
+    # Build a glide-adjusted doc view by overriding class target_pct with the
+    # as-of waypoint; diff_plan_vs_holdings reads class.target_pct.
+    pct = class_targets_as_of(doc, as_of)
+    adj_classes = [c.model_copy(update={"target_pct": pct.get(c.label, c.target_pct)})
+                   for c in doc.classes]
+    adj_doc = doc.model_copy(update={"classes": adj_classes})
+
+    deltas = diff_plan_vs_holdings(adj_doc, holdings, keep_band_pct=keep_band_pct)
+    adds = {d.symbol: d for d in deltas if d.action == "add"}
+    trims = {d.symbol: d for d in deltas if d.action == "trim"}
+
+    # Remaining (unpaired) magnitudes — DECREMENT by the paired amount so the
+    # residual is never dropped (codex: min() must not discard the larger leg).
+    trim_rem = {d.symbol: abs(d.delta_value_usd) for d in trims.values()}
+    add_rem = {d.symbol: abs(d.delta_value_usd) for d in adds.values()}
+    out: list[AllocationCandidate] = []
+    for old_sym in list(trim_rem):
+        new_sym = REPLACES_SYMBOLS.get(old_sym)
+        if not new_sym or new_sym not in add_rem:
+            continue
+        notional = round(min(trim_rem[old_sym], add_rem[new_sym]), 2)
+        if notional <= 0:
+            continue
+        out.append(AllocationCandidate(
+            kind="SWAP",
+            legs=(
+                AllocationLeg(side="SELL", symbol=old_sym, account_id=account_id,
+                              currency=currency, notional_usd=notional,
+                              funding_source="trim_proceeds"),
+                AllocationLeg(side="BUY", symbol=new_sym, account_id=account_id,
+                              currency=currency, notional_usd=notional,
+                              funding_source="trim_proceeds"),
+            ),
+            horizon="this_quarter",
+            rationale=f"Domicile swap {old_sym}→{new_sym} (UCITS); size-matched.",
+            cites=(f"plan_target:{new_sym}", f"replaces:{old_sym}"),
+        ))
+        trim_rem[old_sym] = round(trim_rem[old_sym] - notional, 2)
+        add_rem[new_sym] = round(add_rem[new_sym] - notional, 2)
+
+    # Residual trims / buys (incl. the larger side of an unequal swap).
+    for sym, amt in trim_rem.items():
+        if amt <= 0:
+            continue
+        out.append(AllocationCandidate(
+            kind="TRIM",
+            legs=(AllocationLeg(side="SELL", symbol=sym, account_id=account_id,
+                                currency=currency, notional_usd=round(amt, 2),
+                                funding_source="trim_proceeds"),),
+            horizon="this_quarter", rationale=trims[sym].rationale,
+            cites=(f"plan_target:{sym}",)))
+    for sym, amt in add_rem.items():
+        if amt <= 0:
+            continue
+        out.append(AllocationCandidate(
+            kind="BUY",
+            legs=(AllocationLeg(side="BUY", symbol=sym, account_id=account_id,
+                                currency=currency, notional_usd=round(amt, 2),
+                                funding_source="trim_proceeds"),),
+            horizon="this_quarter", rationale=adds[sym].rationale,
+            cites=(f"plan_target:{sym}",)))
+    out.sort(key=lambda c: -c.total_notional_usd)
+    return out
+
+
 __all__ = [
     "AllocationMode", "AllocationLeg", "AllocationCandidate", "REPLACES_SYMBOLS",
     "UNMAPPED_BUCKET", "class_targets_as_of", "target_values_by_symbol",
-    "tradeable_holdings", "cash_only_deploy",
+    "tradeable_holdings", "cash_only_deploy", "rebalance_candidates",
 ]
