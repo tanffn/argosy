@@ -356,6 +356,28 @@ export interface TrendRadarDTO {
   note: string;
 }
 
+// Live current-allocation vs plan-target, by class, with per-symbol drill-down.
+export interface HoldingRowDTO {
+  symbol: string;
+  name: string;
+  value_k: number;
+  pct: number;
+}
+
+export interface CategoryBreakdownDTO {
+  label: string;
+  current_pct: number;
+  target_pct: number | null;
+  current_value_k: number;
+  holdings: HoldingRowDTO[];
+}
+
+export interface AllocationBreakdownDTO {
+  rows: CategoryBreakdownDTO[];
+  total_value_k: number;
+  note: string;
+}
+
 // Combined high-potential discovery (Slice 2) — fleet-graded picks + the cheap
 // estimator shortlist. CONVICTION-only (no dollar sizing); smart refresh.
 export interface DiscoveryPickDTO {
@@ -1780,6 +1802,12 @@ export const api = {
     getJSON<HighPotentialSleeveDTO>(
       `/api/portfolio/high-potential-sleeve?cash_usd=${cashUsd}&sleeve_pct=${sleevePct}` +
         (liveRadar ? "&live_radar=true" : ""),
+    ),
+  portfolioAllocationBreakdown: (
+    userId: string = "ariel",
+  ): Promise<AllocationBreakdownDTO> =>
+    getJSON<AllocationBreakdownDTO>(
+      `/api/portfolio/allocation-breakdown?user_id=${encodeURIComponent(userId)}`,
     ),
   portfolioTrendRadar: (limit: number = 15): Promise<TrendRadarDTO> =>
     getJSON<TrendRadarDTO>(`/api/portfolio/trend-radar?limit=${limit}`),

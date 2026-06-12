@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ExportPlanButton } from "@/components/plan/export-plan-button";
 import { PerPositionThesisSection } from "@/components/positions/per-position-thesis-section";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
+import { AllocationBreakdownCard } from "@/components/portfolio/allocation-breakdown-card";
 import { GenerateTsvCard } from "@/components/portfolio/generate-tsv-card";
 import { PortfolioSnapshotUploadCard } from "@/components/portfolio/snapshot-upload-card";
 import { UnallocatedCashCard } from "@/components/portfolio/unallocated-cash-card";
@@ -258,43 +259,10 @@ export default function PortfolioPage() {
         <PerPositionThesisSection userId={USER_ID} />
       </CollapsibleSection>
 
-      {snap && snap.allocations.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Allocation vs target</CardTitle>
-            <CardDescription>Per category</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ul className="flex flex-col gap-2 text-sm font-mono">
-              {snap.allocations.map((a) => {
-                const actual = a.pct ?? 0;
-                const target = a.target_pct ?? 0;
-                const max = Math.max(actual, target, 1);
-                return (
-                  <li key={a.category} className="flex flex-col gap-1">
-                    <div className="flex items-center justify-between">
-                      <span>{a.category}</span>
-                      <span className="text-muted-foreground">
-                        {actual.toFixed(1)}% / {target.toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="flex h-2 gap-0.5 bg-muted/30 rounded">
-                      <div
-                        className="bg-primary/70 rounded-l"
-                        style={{ width: `${(actual / max) * 50}%` }}
-                      />
-                      <div
-                        className="bg-success/60 rounded-r"
-                        style={{ width: `${(target / max) * 50}%` }}
-                      />
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </CardContent>
-        </Card>
-      )}
+      {/* Live current allocation (your real holdings by class) vs the canonical
+          plan target, with per-symbol drill-down — replaces the prior chart that
+          compared the plan glide's modelled today-anchor to its end-state. */}
+      <AllocationBreakdownCard userId={USER_ID} />
     </main>
   );
 }

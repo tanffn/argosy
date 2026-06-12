@@ -1176,6 +1176,65 @@ def refresh_rsu_vests(
     )
 
 
+# --- Live current-allocation vs plan-target, by class, with drill-down -----
+
+class HoldingRowDTO(BaseModel):
+    symbol: str
+    name: str
+    value_k: float
+    pct: float
+
+
+class CategoryBreakdownDTO(BaseModel):
+    label: str
+    current_pct: float
+    target_pct: float | None
+    current_value_k: float
+    holdings: list[HoldingRowDTO]
+
+
+class AllocationBreakdownDTO(BaseModel):
+    rows: list[CategoryBreakdownDTO]
+    total_value_k: float
+    note: str
+
+
+@router.get("/allocation-breakdown", response_model=AllocationBreakdownDTO)
+def get_allocation_breakdown(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> AllocationBreakdownDTO:
+    """LIVE current allocation (from the snapshot holdings, grouped by class)
+    vs the canonical plan's class targets, with the per-symbol drill-down. This
+    is the real 'current vs plan target' — not the plan glide's modelled anchor."""
+    from argosy.services.allocation_breakdown import build_allocation_breakdown
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.queries import get_current_plan
+
+    row = get_latest_snapshot_row(db, user_id)
+    if row is None:
+        return AllocationBreakdownDTO(rows=[], total_value_k=0.0,
+                                      note="No portfolio snapshot found.")
+    snap = row_to_snapshot(row)
+    pv = get_current_plan(db, user_id)
+    doc = load_plan_target_allocation(pv) if pv is not None else None
+    rows = build_allocation_breakdown(snap, doc)
+    note = ("Current = your live holdings grouped by asset class; target = the "
+            "canonical plan's class targets. Click a class to see its symbols. "
+            + ("" if doc is not None
+               else "No current plan — targets shown blank."))
+    return AllocationBreakdownDTO(
+        rows=[CategoryBreakdownDTO(
+            label=r.label, current_pct=r.current_pct, target_pct=r.target_pct,
+            current_value_k=r.current_value_k,
+            holdings=[HoldingRowDTO(symbol=h.symbol, name=h.name,
+                      value_k=h.value_k, pct=h.pct) for h in r.holdings],
+        ) for r in rows],
+        total_value_k=round(sum(r.current_value_k for r in rows), 2),
+        note=note,
+    )
+
+
 # --- Plan-bound deterministic allocation tasks (Slice 1a) ------------------
 # 'Plan target' here is the canonical, glide-aware TargetAllocationDoc — never
 # the TSV spreadsheet (the headline bug this slice fixes). The wire DTOs and the
