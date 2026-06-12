@@ -11,14 +11,15 @@ import path from "node:path";
  * to render against. CLI / pure-logic tests can override per-file with
  * a ``// @vitest-environment node`` comment if needed.
  *
- * No setupFiles wired yet — when we want global ``@testing-library/jest-dom``
- * matchers we'll add ``setupFiles: ["./vitest.setup.ts"]`` here and create
- * that file with ``import "@testing-library/jest-dom/vitest"``.
+ * ``@testing-library/jest-dom`` matchers (``toBeInTheDocument``, etc.) are
+ * wired via ``setupFiles`` so they are available globally to all component
+ * tests without a per-file import.
  */
 export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    setupFiles: ["./vitest.setup.ts"],
     include: ["src/**/__tests__/**/*.{test,spec}.{ts,tsx}"],
   },
   resolve: {

@@ -175,6 +175,45 @@ def test_cash_only_deploy_never_buys_the_unmapped_bucket():
     assert symbols == {"CSPX"}  # only the named instrument is bought
 
 
+def test_cash_only_deploy_never_buys_the_concentrated_equity_sleeve():
+    """NVDA (concentrated_equity, actively deconcentrating) must NOT be a cash-buy
+    target even when fresh cash dilutes it below its plan target — the cash flows
+    to the buyable UCITS instruments instead (codex deploy_nvda_buy_question)."""
+    from datetime import date
+    from argosy.services.allocation_engine import cash_only_deploy
+    from argosy.services.target_allocation_doc import (
+        TargetAllocationDoc, AllocationClassDoc, AllocationInstrument, GlideWaypoint,
+    )
+    doc = TargetAllocationDoc(
+        schema_version=1, anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0,
+        fi_pct=0.0, provenance="test",
+        classes=[
+            AllocationClassDoc(label="Core", snapshot_category="Core",
+                               sigma_class="us_equity", target_pct=87.0,
+                               instruments=[AllocationInstrument(
+                                   symbol="CSPX", role="primary",
+                                   weight_within_class_pct=100.0, domicile="IE")]),
+            AllocationClassDoc(label="Strategic single-stock (NVDA)",
+                               snapshot_category="NVDA",
+                               sigma_class="concentrated_equity", target_pct=13.0,
+                               instruments=[AllocationInstrument(
+                                   symbol="NVDA", role="primary",
+                                   weight_within_class_pct=100.0, domicile="US")]),
+        ],
+        glide=[GlideWaypoint(quarter=0, date=date(2026, 1, 1),
+                             composition_pct_by_class={"Core": 87.0,
+                                                       "Strategic single-stock (NVDA)": 13.0})],
+    )
+    # NVDA held below its post-deploy target ($13 of $100 book) -> the un-fixed
+    # engine would buy ~$3 of NVDA. With the fix it buys zero NVDA.
+    cands = cash_only_deploy(doc, {"NVDA": 10.0, "CSPX": 0.0}, cash_usd=90.0,
+                             as_of=date(2026, 6, 1))
+    symbols = {l.symbol for c in cands for l in c.legs}
+    assert "NVDA" not in symbols          # the deconcentration sleeve is never bought
+    assert symbols == {"CSPX"}            # cash flows to the buyable UCITS instrument
+    assert round(sum(c.total_notional_usd for c in cands), 2) == 90.0  # full cash deployed
+
+
 def test_rebalance_pairs_trim_and_add_into_one_swap():
     from datetime import date
     from argosy.services.allocation_engine import rebalance_candidates

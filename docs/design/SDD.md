@@ -42,6 +42,7 @@ This document describes Argosy as it stands today. History (per-wave changes, pr
 | Add or modify an agent | `argosy/agents/<role>.py` | `argosy/agents/base.py` (esp. `DEFAULT_MODEL_BY_ROLE`), §3 |
 | Add a structured agent output type | `argosy/agents/<role>_types.py` (or alongside the agent) | existing pydantic types in `plan_synthesizer_types.py` for style |
 | Wire a new orchestration flow | `argosy/orchestrator/flows/` (packages: `plan_synthesis/`, `plan_amendment/`) | §6.11, §6.13 |
+| Deploy idle cash to the plan (risk-tiered, estate-aware buy list) | `argosy/services/deployment_advisor.py` (`assemble_deployment_plan`) | `GET /api/portfolio/deploy-cash`; `ui/src/components/proposals/DeployCashCard.tsx`; spec `docs/superpowers/specs/2026-06-12-deployment-advisor-design.md` |
 | Add or modify a cadence loop | `argosy/orchestrator/loops/` (`monthly_cycle.py`, `plan_watcher.py`, `daily_brief.py`, …) | §5.1 |
 | Trade-flow per-decision logic | `argosy/decisions/flow.py`, `argosy/decisions/risk_preflight.py`, `argosy/decisions/tiers.py` | §10 |
 | Add a REST endpoint | `argosy/api/routes/<resource>.py`; register in `argosy/api/main.py` | §11.7 (full endpoint inventory) |

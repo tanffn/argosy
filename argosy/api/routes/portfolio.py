@@ -26,8 +26,10 @@ from argosy.ingest.tsv import parse_portfolio_tsv
 from argosy.logging import get_logger
 from argosy.services.contracts import (
     AllocationCandidateDTO,
+    DeploymentPlanDTO,
     ExecutableTaskDTO,
     candidate_to_dto,
+    deployment_plan_to_dto,
     task_to_dto,
 )
 from argosy.services.portfolio_snapshot_store import (
@@ -1339,6 +1341,29 @@ def get_allocation_tasks(
               "tax shown as advisory only. The agent (Slice 1b) orders + "
               "explains these." + agent_note),
     )
+
+
+@router.get("/deploy-cash", response_model=DeploymentPlanDTO)
+def get_deploy_cash(
+    cash_usd: float | None = Query(None, ge=0.0),
+    user_id: str = Query("ariel"),
+) -> DeploymentPlanDTO:
+    """Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax amount.
+
+    ``cash_usd`` is the deployable (net-of-tax) amount. Omit it (None) to default
+    to the detected idle cash from the latest snapshot; pass an explicit ``0`` to
+    get an empty/zero plan (no silent substitution).
+    """
+    from datetime import date as _date
+
+    from argosy.services.deployment_advisor import assemble_deployment_plan
+
+    doc, holdings, snap_cash = _load_current_doc_and_holdings(user_id)
+    amount = cash_usd if cash_usd is not None else snap_cash
+    plan = assemble_deployment_plan(
+        doc=doc, holdings=holdings, deploy_amount_usd=amount, as_of=_date.today(),
+    )
+    return deployment_plan_to_dto(plan)
 
 
 # --- Combined high-potential discovery surface (Slice 2) -------------------
