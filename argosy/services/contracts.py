@@ -253,6 +253,67 @@ def task_to_dto(t: ExecutableTask) -> ExecutableTaskDTO:
     )
 
 
+class EstateTagDTO(BaseModel):
+    domicile: str | None
+    status: str
+    note: str
+
+
+class DeploymentLineDTO(BaseModel):
+    symbol: str
+    type: str
+    amount_usd: float
+    timing: str
+    is_new: bool
+    tier: str
+    horizon: str
+    estate: EstateTagDTO
+    cap_note: str
+    net_of_tax_caveat: str
+    rationale: str
+    cites: list[str] = []
+
+
+class DeploymentTierDTO(BaseModel):
+    name: str
+    cap_pct: float
+    total_usd: float
+    lines: list[DeploymentLineDTO]
+
+
+class DeploymentPlanDTO(BaseModel):
+    deploy_amount_usd: float
+    as_of: str
+    deployed_total_usd: float
+    us_situs_total_usd: float
+    market_context_age: str | None = None
+    tiers: list[DeploymentTierDTO]
+    caveats: list[str]
+    note: str = ""
+
+
+def deployment_plan_to_dto(plan) -> DeploymentPlanDTO:
+    return DeploymentPlanDTO(
+        deploy_amount_usd=plan.deploy_amount_usd,
+        as_of=plan.as_of.isoformat(),
+        deployed_total_usd=plan.deployed_total_usd,
+        us_situs_total_usd=plan.us_situs_total_usd,
+        market_context_age=plan.market_context_age,
+        tiers=[DeploymentTierDTO(
+            name=t.name, cap_pct=t.cap_pct, total_usd=t.total_usd,
+            lines=[DeploymentLineDTO(
+                symbol=l.symbol, type=l.type, amount_usd=l.amount_usd, timing=l.timing,
+                is_new=l.is_new, tier=l.tier, horizon=l.horizon,
+                estate=EstateTagDTO(domicile=l.estate.domicile, status=l.estate.status,
+                                    note=l.estate.note),
+                cap_note=l.cap_note, net_of_tax_caveat=l.net_of_tax_caveat,
+                rationale=l.rationale, cites=list(l.cites),
+            ) for l in t.lines],
+        ) for t in plan.tiers],
+        caveats=list(plan.caveats), note=plan.note,
+    )
+
+
 __all__ = [
     "CONTRACTS_SCHEMA_VERSION",
     "AllocationLeg",
@@ -269,4 +330,9 @@ __all__ = [
     "candidate_to_dto",
     "ExecutableTaskDTO",
     "task_to_dto",
+    "EstateTagDTO",
+    "DeploymentLineDTO",
+    "DeploymentTierDTO",
+    "DeploymentPlanDTO",
+    "deployment_plan_to_dto",
 ]
