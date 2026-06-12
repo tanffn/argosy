@@ -140,7 +140,10 @@ def candidate_fingerprint(c: AllocationCandidate) -> tuple:
         tuple(sorted(
             (l.side, l.symbol, l.account_id, l.currency, l.funding_source,
              round(l.notional_usd, 2),
-             round(l.quantity, 6) if l.quantity is not None else None)
+             # total-orderable quantity key: (is_none, value) — None and float
+             # legs must sort without a TypeError while staying distinguishable
+             # (codex 1b r2).
+             (l.quantity is None, round(l.quantity, 6) if l.quantity is not None else 0.0))
             for l in c.legs)),
     )
 

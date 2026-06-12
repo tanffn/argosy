@@ -71,6 +71,17 @@ def test_fingerprint_is_identity_not_notional_only():
     assert a.fingerprint() == candidate_fingerprint(a)
 
 
+def test_fingerprint_total_orderable_with_mixed_none_quantity():
+    """codex 1b r2: legs where quantity is None for one and float for another
+    must not crash the fingerprint's sort (None vs float is not comparable)."""
+    c = AllocationCandidate(kind="SWAP", horizon="now", legs=(
+        AllocationLeg("BUY", "CSPX", "ibkr", "USD", 1000.0, "cash", quantity=None),
+        AllocationLeg("BUY", "CSPX", "ibkr", "USD", 1000.0, "cash", quantity=10.0),
+    ))
+    # must not raise, and must be self-consistent
+    assert candidate_fingerprint(c) == candidate_fingerprint(c)
+
+
 def test_fingerprint_is_order_insensitive_across_legs():
     s1 = _cand(_leg("SCHD", 500.0, side="SELL", funding="trim_proceeds"),
                _leg("FUSA", 500.0, side="BUY", funding="trim_proceeds"),
