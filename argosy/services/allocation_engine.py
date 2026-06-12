@@ -145,11 +145,16 @@ def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
     if total_gap <= 0.0:
         return []
     scale = 1.0 if total_gap <= cash_usd else cash_usd / total_gap
+    # Largest gaps first; a running budget absorbs per-leg rounding so the buys
+    # can never sum to MORE than cash (codex bug 1 — independent rounding of N
+    # legs of cash/N overshoots by cents).
+    remaining = round(cash_usd, 2)
     out: list[AllocationCandidate] = []
-    for sym, gap in gaps.items():
-        amount = round(gap * scale, 2)
+    for sym, gap in sorted(gaps.items(), key=lambda kv: (-kv[1], kv[0])):
+        amount = min(round(gap * scale, 2), remaining)
         if amount <= 0.0:
             continue
+        remaining = round(remaining - amount, 2)
         out.append(AllocationCandidate(
             kind="BUY",
             legs=(AllocationLeg(side="BUY", symbol=sym, account_id=account_id,
@@ -163,29 +168,60 @@ def cash_only_deploy(doc, holdings: dict[str, float], cash_usd: float, *,
     return out
 
 
-def rebalance_candidates(doc, holdings: dict[str, float], *, as_of: date,
-                         account_id: str = "ibkr", currency: str = "USD",
-                         keep_band_pct: float = 1.0) -> list[AllocationCandidate]:
-    """Closed-book rebalance candidates from the glide-aware plan, pairing a
-    trim with its UCITS-replacement buy into a single SWAP where the
-    REPLACES_SYMBOLS map applies."""
-    from argosy.services.plan_proposal_diff import diff_plan_vs_holdings
+def _named_deltas(doc, holdings: dict[str, float], *, as_of: date,
+                  keep_band_pct: float, extra_cash: float = 0.0
+                  ) -> tuple[dict[str, float], dict[str, float]]:
+    """(adds, trims) in USD toward the glide-aware targets on the book
+    ``sum(holdings) + extra_cash``.
 
-    # Build a glide-adjusted doc view by overriding class target_pct with the
-    # as-of waypoint; diff_plan_vs_holdings reads class.target_pct.
-    pct = class_targets_as_of(doc, as_of)
-    adj_classes = [c.model_copy(update={"target_pct": pct.get(c.label, c.target_pct)})
-                   for c in doc.classes]
-    adj_doc = doc.model_copy(update={"classes": adj_classes})
+    Glide semantics are honoured directly off :func:`target_values_by_symbol`
+    (NOT a class-target override + diff): a glide label missing from the
+    waypoint contributes 0, and the UNMAPPED/redeploy band is respected —
+    holdings that are NOT a named plan instrument (legacy singles being wound
+    down) are kept up to the band's current glide value and only their
+    COLLECTIVE excess is trimmed, never force-exited (codex bugs 2 & 3)."""
+    total = round(sum(holdings.values()) + extra_cash, 2)
+    if total <= 0:
+        return {}, {}
+    targets = target_values_by_symbol(doc, total, as_of)
+    unmapped_target = targets.pop(UNMAPPED_BUCKET, 0.0)
+    named = set(targets)
+    band = total * keep_band_pct / 100.0
 
-    deltas = diff_plan_vs_holdings(adj_doc, holdings, keep_band_pct=keep_band_pct)
-    adds = {d.symbol: d for d in deltas if d.action == "add"}
-    trims = {d.symbol: d for d in deltas if d.action == "trim"}
+    adds: dict[str, float] = {}
+    trims: dict[str, float] = {}
+    for sym in named:
+        delta = targets[sym] - holdings.get(sym, 0.0)
+        if abs(delta) < band:
+            continue
+        if delta > 0:
+            adds[sym] = round(delta, 2)
+        else:
+            trims[sym] = round(-delta, 2)
 
-    # Remaining (unpaired) magnitudes — DECREMENT by the paired amount so the
-    # residual is never dropped (codex: min() must not discard the larger leg).
-    trim_rem = {d.symbol: abs(d.delta_value_usd) for d in trims.values()}
-    add_rem = {d.symbol: abs(d.delta_value_usd) for d in adds.values()}
+    # Legacy / unmapped holdings (not a named target) collectively belong to the
+    # redeploy band; trim only their excess over the band's current glide value.
+    legacy = {s: v for s, v in holdings.items() if s not in named}
+    total_legacy = sum(legacy.values())
+    excess = total_legacy - unmapped_target
+    if total_legacy > 0 and excess > band:
+        scale = excess / total_legacy
+        for s, v in legacy.items():
+            amt = round(v * scale, 2)
+            if amt > 0:
+                trims[s] = round(trims.get(s, 0.0) + amt, 2)
+    return adds, trims
+
+
+def _pair_into_candidates(adds: dict[str, float], trims: dict[str, float], *,
+                          account_id: str, currency: str,
+                          buy_funding: str = "trim_proceeds"
+                          ) -> list[AllocationCandidate]:
+    """Pair a trim with its UCITS-replacement buy into one SWAP (decrementing
+    BOTH legs by the matched amount so residuals are never dropped), then emit
+    leftover trims/buys as standalone candidates."""
+    trim_rem = dict(trims)
+    add_rem = dict(adds)
     out: list[AllocationCandidate] = []
     for old_sym in list(trim_rem):
         new_sym = REPLACES_SYMBOLS.get(old_sym)
@@ -211,7 +247,6 @@ def rebalance_candidates(doc, holdings: dict[str, float], *, as_of: date,
         trim_rem[old_sym] = round(trim_rem[old_sym] - notional, 2)
         add_rem[new_sym] = round(add_rem[new_sym] - notional, 2)
 
-    # Residual trims / buys (incl. the larger side of an unequal swap).
     for sym, amt in trim_rem.items():
         if amt <= 0:
             continue
@@ -220,7 +255,8 @@ def rebalance_candidates(doc, holdings: dict[str, float], *, as_of: date,
             legs=(AllocationLeg(side="SELL", symbol=sym, account_id=account_id,
                                 currency=currency, notional_usd=round(amt, 2),
                                 funding_source="trim_proceeds"),),
-            horizon="this_quarter", rationale=trims[sym].rationale,
+            horizon="this_quarter",
+            rationale=f"Trim ${amt:,.0f} of {sym} toward its plan target.",
             cites=(f"plan_target:{sym}",)))
     for sym, amt in add_rem.items():
         if amt <= 0:
@@ -229,11 +265,25 @@ def rebalance_candidates(doc, holdings: dict[str, float], *, as_of: date,
             kind="BUY",
             legs=(AllocationLeg(side="BUY", symbol=sym, account_id=account_id,
                                 currency=currency, notional_usd=round(amt, 2),
-                                funding_source="trim_proceeds"),),
-            horizon="this_quarter", rationale=adds[sym].rationale,
+                                funding_source=buy_funding),),
+            horizon="this_quarter",
+            rationale=f"Add ${amt:,.0f} of {sym} toward its plan target.",
             cites=(f"plan_target:{sym}",)))
     out.sort(key=lambda c: -c.total_notional_usd)
     return out
+
+
+def rebalance_candidates(doc, holdings: dict[str, float], *, as_of: date,
+                         account_id: str = "ibkr", currency: str = "USD",
+                         keep_band_pct: float = 1.0) -> list[AllocationCandidate]:
+    """Closed-book rebalance candidates from the glide-aware plan, pairing a
+    trim with its UCITS-replacement buy into a single SWAP where the
+    REPLACES_SYMBOLS map applies. Legacy holdings in the unmapped/redeploy band
+    are held at the band's glide weight (only collective excess is trimmed)."""
+    adds, trims = _named_deltas(doc, holdings, as_of=as_of,
+                                keep_band_pct=keep_band_pct)
+    return _pair_into_candidates(adds, trims, account_id=account_id,
+                                 currency=currency)
 
 
 def compute_allocation(doc, holdings: dict[str, float], mode: AllocationMode, *,
@@ -246,13 +296,14 @@ def compute_allocation(doc, holdings: dict[str, float], mode: AllocationMode, *,
         return cash_only_deploy(doc, holdings, cash_usd, as_of=when, account_id=account_id)
     if mode == AllocationMode.PURE_REBALANCE:
         return rebalance_candidates(doc, holdings, as_of=when, account_id=account_id)
-    # REBALANCE_PLUS_CASH: deploy cash first, then rebalance the resulting book.
-    deploy = cash_only_deploy(doc, holdings, cash_usd, as_of=when, account_id=account_id)
-    post = dict(holdings)
-    for c in deploy:
-        for l in c.legs:
-            post[l.symbol] = post.get(l.symbol, 0.0) + l.notional_usd
-    return deploy + rebalance_candidates(doc, post, as_of=when, account_id=account_id)
+    # REBALANCE_PLUS_CASH: a SINGLE closed-book computation on (holdings + cash)
+    # — not a sequential deploy-then-rebalance, which would buy an instrument and
+    # then trim part of it back when the targets are recomputed on a smaller book
+    # (codex bug 3). Cash funds the residual buys; trims fund swaps.
+    adds, trims = _named_deltas(doc, holdings, as_of=when, keep_band_pct=1.0,
+                               extra_cash=cash_usd)
+    return _pair_into_candidates(adds, trims, account_id=account_id,
+                                 currency="USD", buy_funding="cash")
 
 
 __all__ = [

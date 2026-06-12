@@ -235,6 +235,62 @@ def test_rebalance_unequal_swap_emits_residual_trim_and_conserves():
     assert round(total_sell, 2) == 1000.0
 
 
+def test_cash_only_deploy_sum_never_exceeds_cash_under_rounding():
+    """codex bug 1: independent per-leg rounding could push the buy total over
+    cash (7 classes at 100/7%, cash=100 -> 7x$14.29 = $100.03). The running
+    budget must keep Σ buys <= cash."""
+    from datetime import date
+    from argosy.services.allocation_engine import cash_only_deploy
+    n = 7
+    pct = round(100.0 / n, 6)
+    comp = {f"C{i}": pct for i in range(n)}
+    # nudge the last so the waypoint sums to exactly 100
+    comp[f"C{n-1}"] = round(100.0 - pct * (n - 1), 6)
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1), comp)],
+        class_final=[(f"C{i}", comp[f"C{i}"], f"C{i}") for i in range(n)],
+    )
+    cands = cash_only_deploy(doc, {}, cash_usd=100.0, as_of=date(2026, 6, 1))
+    total = round(sum(l.notional_usd for c in cands for l in c.legs), 2)
+    assert total <= 100.0
+
+
+def test_rebalance_holds_unmapped_legacy_band_not_liquidates_it():
+    """codex bug 2: a legacy holding that belongs to the glide's unmapped/redeploy
+    band must be held at the band's current glide weight, not force-exited."""
+    from datetime import date
+    from argosy.services.allocation_engine import rebalance_candidates
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1),
+                          {"Core": 70.0,
+                           "Individual Stocks (non-NVDA, to redeploy)": 30.0})],
+        class_final=[("Core", 70.0, "CSPX"), ("Bonds", 30.0, "IB01")],
+    )
+    cands = rebalance_candidates(doc, {"CSPX": 700.0, "GOOG": 300.0},
+                                 as_of=date(2026, 6, 1))
+    # GOOG sits exactly at the 30% redeploy-band weight -> no trade at all
+    assert cands == []
+
+
+def test_rebalance_plus_cash_no_buy_then_sell_with_unmapped_band():
+    """codex bug 3: deploying cash then rebalancing must not buy an instrument
+    and immediately sell part of it back."""
+    from datetime import date
+    from argosy.services.allocation_engine import compute_allocation, AllocationMode
+    doc = _doc(
+        glide_dates_pct=[(date(2026, 1, 1),
+                          {"Core": 50.0,
+                           "Individual Stocks (non-NVDA, to redeploy)": 50.0})],
+        class_final=[("Core", 50.0, "CSPX"), ("Bonds", 50.0, "IB01")],
+    )
+    cands = compute_allocation(doc, {}, AllocationMode.REBALANCE_PLUS_CASH,
+                               cash_usd=100.0, as_of=date(2026, 6, 1))
+    # net per symbol: no symbol is both bought and sold
+    buys = {l.symbol for c in cands for l in c.legs if l.side == "BUY"}
+    sells = {l.symbol for c in cands for l in c.legs if l.side == "SELL"}
+    assert not (buys & sells)
+
+
 def test_compute_allocation_dispatches_modes():
     from datetime import date
     from argosy.services.allocation_engine import compute_allocation, AllocationMode
