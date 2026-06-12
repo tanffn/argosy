@@ -8,6 +8,7 @@ Provides the value-object layer for the P2 deployment advisor market awareness:
 - ``is_stale`` — boundary-correct staleness predicate
 - ``nvda_consistency`` — hard consistency check per pinned doctrine (None = missing data)
 - ``verify_nvda`` — fetch live NVDA quote+fundamentals and return NvdaVerification
+- ``assemble_deployment_market_context`` — live + cached-fallback assembler (Task 5)
 
 See docs/superpowers/plans/2026-06-12-deployment-advisor-p2.md §Pinned technical definitions.
 """
@@ -190,3 +191,270 @@ def verify_nvda(session: Any) -> NvdaVerification:
             consistent=None,
             note=f"fetch failed: {exc!s:.120}",
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 5: assemble_deployment_market_context — live + cached-fallback assembler
+# ---------------------------------------------------------------------------
+
+# Default user_id for the single-user deployment (matches the seeded user).
+_DEFAULT_USER_ID = "ariel"
+
+# AgentReport roles that carry macro / FX context.
+_CACHE_ROLES = ("macro", "fx")
+
+
+def _human_age(age_seconds: float) -> str:
+    """Format an age in seconds as a human-readable string (e.g. '3h ago')."""
+    if age_seconds < 60:
+        return f"{int(age_seconds)}s ago"
+    if age_seconds < 3600:
+        return f"{int(age_seconds / 60)}m ago"
+    if age_seconds < 86_400:
+        return f"{int(age_seconds / 3600)}h ago"
+    return f"{int(age_seconds / 86_400)}d ago"
+
+
+def _query_latest_agent_report(
+    session: Any,
+    user_id: str,
+    role: str,
+) -> Any | None:
+    """Query the latest AgentReport row for the given user + role.
+
+    Works with a synchronous SQLAlchemy Session (the only context this
+    assembler is called from — the route is sync via a sync Depends(get_db)
+    session).  Never raises; returns None on any error or if no rows found.
+    """
+    from argosy.logging import get_logger
+
+    _log = get_logger("argosy.services.deployment_market_context")
+
+    try:
+        from sqlalchemy import desc, select
+
+        from argosy.state.models import AgentReport as AgentReportRow
+
+        row = session.execute(
+            select(AgentReportRow)
+            .where(AgentReportRow.user_id == user_id)
+            .where(AgentReportRow.agent_role == role)
+            .order_by(desc(AgentReportRow.created_at))
+            .limit(1)
+        ).scalars().first()
+        return row
+    except Exception as exc:
+        _log.warning(
+            "deployment_market_context.agent_report_query_failed",
+            role=role,
+            error=str(exc)[:200],
+        )
+        return None
+
+
+def _freshness_from_cache(
+    field: str,
+    role: str,
+    age_seconds: float,
+) -> DataFreshness:
+    """Build a DataFreshness from a cached AgentReport age."""
+    from datetime import datetime, timezone
+
+    fetched_at = (
+        datetime.now(timezone.utc).isoformat()
+    )
+    stale = is_stale(age_seconds, DEPLOY_FRESHNESS_MAX_AGE.get(role, DEPLOY_FRESHNESS_MAX_AGE["macro"]))
+    return DataFreshness(
+        field=field,
+        fetched_at=fetched_at,
+        age_seconds=age_seconds,
+        source=f"agent_reports:{role}",
+        is_stale=stale,
+    )
+
+
+def _build_cached_context(session: Any, user_id: str) -> "DeploymentMarketContext":
+    """Build a DeploymentMarketContext from the latest cached AgentReport rows.
+
+    Age is always computed from ``created_at`` and surfaced in ``overall_age_label``.
+    Snapshot values default to 0.0 when the cached report JSON cannot be parsed
+    (the spec requirement is age-surfacing, not perfect numeric extraction).
+    Never raises.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    from argosy.logging import get_logger
+
+    _log = get_logger("argosy.services.deployment_market_context")
+
+    now = datetime.now(timezone.utc)
+    snapshot: dict[str, float] = {}
+    freshness_list: list[DataFreshness] = []
+
+    # Field-to-role mapping: which AgentReport role supplies which snapshot key.
+    role_fields: dict[str, list[str]] = {
+        "macro": ["sp500", "vix", "oil_wti", "boi_rate", "cpi_yoy"],
+        "fx": ["usd_nis"],
+    }
+
+    max_age_seen: float = 0.0
+
+    for role in _CACHE_ROLES:
+        fields = role_fields.get(role, [])
+        row = _query_latest_agent_report(session, user_id, role)
+
+        if row is None:
+            # No cached row — mark all fields for this role as stale/missing.
+            age = float(DEPLOY_FRESHNESS_MAX_AGE.get(role, DEPLOY_FRESHNESS_MAX_AGE["macro"]) + 1)
+            for field in fields:
+                snapshot[field] = 0.0
+                freshness_list.append(
+                    DataFreshness(
+                        field=field,
+                        fetched_at=now.isoformat(),
+                        age_seconds=age,
+                        source=f"agent_reports:{role}:no_row",
+                        is_stale=True,
+                    )
+                )
+            max_age_seen = max(max_age_seen, age)
+            continue
+
+        # Compute real age from created_at.
+        try:
+            created_at = row.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            age_seconds = (now - created_at).total_seconds()
+        except Exception:
+            age_seconds = float(DEPLOY_FRESHNESS_MAX_AGE["macro"] + 1)
+
+        max_age_seen = max(max_age_seen, age_seconds)
+
+        # Attempt to parse numeric values from response_text JSON.
+        parsed: dict[str, float] = {}
+        try:
+            data = json.loads(row.response_text or "{}")
+            # The agent report may carry the snapshot at various nesting levels.
+            # Try top-level keys first, then look inside common wrappers.
+            candidate_dicts: list[dict] = [data]
+            for wrapper_key in ("snapshot", "macro", "market", "context", "data"):
+                if isinstance(data.get(wrapper_key), dict):
+                    candidate_dicts.append(data[wrapper_key])
+            for d in candidate_dicts:
+                for field in fields:
+                    if field in d:
+                        try:
+                            parsed[field] = float(d[field])
+                        except (TypeError, ValueError):
+                            pass
+        except Exception as exc:
+            _log.debug(
+                "deployment_market_context.cached_parse_failed",
+                role=role,
+                error=str(exc)[:100],
+            )
+
+        for field in fields:
+            snapshot[field] = parsed.get(field, 0.0)
+            freshness_list.append(_freshness_from_cache(field, role, age_seconds))
+
+    # Ensure all six canonical keys are present.
+    for key in ("sp500", "vix", "oil_wti", "usd_nis", "boi_rate", "cpi_yoy"):
+        if key not in snapshot:
+            snapshot[key] = 0.0
+            role = "fx" if key == "usd_nis" else "macro"
+            freshness_list.append(
+                DataFreshness(
+                    field=key,
+                    fetched_at=now.isoformat(),
+                    age_seconds=float(DEPLOY_FRESHNESS_MAX_AGE[role] + 1),
+                    source=f"agent_reports:{role}:missing",
+                    is_stale=True,
+                )
+            )
+
+    if max_age_seen <= 0:
+        age_label = "cached (unknown age)"
+    else:
+        age_label = f"cached ({_human_age(max_age_seen)})"
+
+    return DeploymentMarketContext(
+        snapshot=snapshot,
+        freshness=tuple(freshness_list),
+        nvda=None,
+        overall_age_label=age_label,
+    )
+
+
+def assemble_deployment_market_context(
+    session: Any,
+    *,
+    allow_live: bool = True,
+    user_id: str = _DEFAULT_USER_ID,
+) -> "DeploymentMarketContext":
+    """Assemble a :class:`DeploymentMarketContext` for the deployment advisor.
+
+    Live path (``allow_live=True``):
+        1. Call ``market_snapshot(session)`` to get the six macro/FX fields.
+        2. Call ``verify_nvda(session)`` to verify NVDA price/shares.
+        3. Build the context from the live results; ``age_seconds ≈ 0``
+           (freshly fetched), ``overall_age_label = "live"``.
+
+    Cached fallback (``allow_live=False`` OR any live exception):
+        - Query the latest ``AgentReport`` row for roles ``"macro"`` and ``"fx"``.
+        - Compute real age from ``created_at`` → stamp each ``DataFreshness``.
+        - Surface the age in ``overall_age_label`` (e.g. ``"cached (3h ago)"``).
+        - ``nvda`` is set to ``None`` (no live fetch; cached path cannot verify).
+
+    Contract:
+        - **Never returns a blank context.** When no cached rows exist, all
+          snapshot values are 0.0 and all freshness entries are ``is_stale=True``,
+          but the context object is always returned.
+        - **Age is always surfaced.** Stale data is never silently passed through.
+        - Never raises.
+
+    Args:
+        session: A synchronous SQLAlchemy ``Session`` (used for AgentReport
+            queries on the fallback path). Passed through to the live helpers
+            for API consistency; not used directly on the live path.
+        allow_live: When ``False``, skip the live fetch and go straight to
+            the cached fallback.
+        user_id: The user whose AgentReport rows to query. Defaults to
+            ``"ariel"`` (the single-tenant deployment user).
+
+    Returns:
+        A :class:`DeploymentMarketContext` instance.
+    """
+    import argosy.services.market_snapshot as _ms_module
+
+    from argosy.logging import get_logger
+
+    _log = get_logger("argosy.services.deployment_market_context")
+
+    if allow_live:
+        try:
+            snap = _ms_module.market_snapshot(session)
+            nvda = verify_nvda(session)
+
+            snapshot: dict[str, float] = {}
+            freshness_list: list[DataFreshness] = []
+            for key, (value, df) in snap.items():
+                snapshot[key] = value
+                freshness_list.append(df)
+
+            return DeploymentMarketContext(
+                snapshot=snapshot,
+                freshness=tuple(freshness_list),
+                nvda=nvda,
+                overall_age_label="live",
+            )
+        except Exception as exc:
+            _log.warning(
+                "deployment_market_context.live_fetch_failed_falling_back",
+                error=str(exc)[:200],
+            )
+            # Fall through to cached path.
+
+    return _build_cached_context(session, user_id)
