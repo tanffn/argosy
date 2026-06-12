@@ -372,8 +372,8 @@ def assemble_deployment_plan(
             "refresh market context before executing.",
         )
     if market_context is None:
-        note = ("Plan-only deploy (P1): live market context and tactical sleeves "
-                "arrive in later phases.")
+        note = ("Plan-only deploy: live market context not requested (pass live=true "
+                "for market-aware pacing); tactical sleeves arrive in later phases.")
     else:
         note = f"Market-aware deploy (P2): context age {mca}."
     return DeploymentPlan(

@@ -32,6 +32,7 @@ const SNAPSHOT_LABELS: Record<string, string> = {
   boi_rate: "BoI Rate",
   oil_wti: "Oil (WTI)",
   cpi_yoy: "CPI YoY",
+  sp_vs_trend_pct: "S&P vs 200-day MA (%)",
 };
 
 function MarketContextStrip({ ctx }: { ctx: DeploymentMarketContextDTO }) {
