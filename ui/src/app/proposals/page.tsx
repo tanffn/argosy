@@ -39,6 +39,7 @@ import { TrendRadarCard } from "@/components/portfolio/trend-radar-card";
 import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monitor-card";
 import { DiscoveryCard } from "@/components/portfolio/discovery-card";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
+import { ConsultRunner } from "@/components/consult/consult-runner";
 import { useWSEvents } from "@/lib/ws";
 
 const USER_ID = "ariel";
@@ -550,6 +551,18 @@ export default function ProposalsPage() {
           ))}
         </select>
       </header>
+
+      {/* Ask the team — the consult flow folded into the hub (codex #11). The
+          same ConsultRunner backs /consult (kept as a deep link). Collapsed by
+          default so the pending queue stays the focus. */}
+      <section id="ask" className="scroll-mt-6">
+        <CollapsibleSection
+          title="Ask the team"
+          summary="run the analyst fleet on a ticker"
+        >
+          <ConsultRunner />
+        </CollapsibleSection>
+      </section>
 
       {/* Spec E commit #6 — Action proposals section. Sits ABOVE the
           allocation / windfall section so the unified action-proposal
