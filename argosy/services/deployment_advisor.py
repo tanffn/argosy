@@ -198,79 +198,70 @@ def _instrument_type(doc, symbol: str) -> str:
 # P2 T6: market-aware per-line pacing
 # ---------------------------------------------------------------------------
 
-# Lines at or below this threshold are always deployed as a lump regardless of
-# market conditions (small orders; DCA friction outweighs smoothing benefit).
-DCA_LUMP_THRESHOLD_USD: float = 5_000.0
+# Minimum per-installment ticket — an execution floor (not a smoothing rule):
+# a DCA window is capped so each weekly chunk is at least this size.
+DCA_MIN_INSTALLMENT_USD: float = 1_000.0
 
 
-def pace_for_line(amount_usd: float, market_context) -> tuple[str, str]:
-    """Return ``(timing, pace_rationale)`` for a single deploy line.
+def _snap_value(snapshot, key: str, default: float) -> float:
+    """Read a float from a market-context snapshot, tolerating either a plain
+    float or a ``(value, DataFreshness)`` tuple, with a default when absent."""
+    raw = snapshot.get(key) if snapshot else None
+    if raw is None:
+        return default
+    return float(raw[0]) if isinstance(raw, tuple) else float(raw)
 
-    Uses market_context.snapshot (``dict[str, float]``) to derive VIX and
-    S&P-vs-trend and size the DCA window.
 
-    # INTERIM pacing — codex methodology review (codex_pacing_verdict) refines
-    # direction + formula; see plan P2 T6.
+def pace_for_line(
+    amount_usd: float, market_context, *, book_usd: float, tranche_usd: float,
+) -> tuple[str, str]:
+    """Return ``(timing, pace_rationale)`` for one deploy line.
 
-    Formula (INTERIM):
-        - If ``amount_usd <= DCA_LUMP_THRESHOLD_USD`` → lump ("now").
-        - Else: N = max(1, min(8, round(1 + (vix-20)/10_excess + sp_excess/5)))
-          where excesses are clipped to 0 from below; spread over N weeks.
-
-    Missing snapshot keys default to vix=20.0, sp_vs_trend_pct=0.0 (=> N=1,
-    effectively a lump) and the rationale says so.
+    Codex-reviewed rule (codex_pacing_verdict): **lump-now is the default**;
+    DCA is a bounded regret-control concession used ONLY when the program is
+    material (>=0.5% of the post-deploy book), the market is stretched
+    (S&P > +8% vs trend), AND volatility is elevated (VIX >= 20). High VIX alone
+    never slows buying; a below-trend market never triggers DCA — for a
+    long-hold retirement-maximizing investor that points to FASTER deployment.
+    The materiality boundary is % of book (not a fixed-dollar floor). FX
+    conversion is paced WITH the equity buy (no separate currency bet).
     """
-    if amount_usd <= DCA_LUMP_THRESHOLD_USD:
-        return ("now", "small line — deploy whole")
+    if amount_usd <= 0:
+        return ("now", "no positive buy amount")
+    snap = market_context.snapshot
+    vix = _snap_value(snap, "vix", 20.0)
+    sp_vs_trend_pct = _snap_value(snap, "sp_vs_trend_pct", 0.0)
+    scope_pct = (tranche_usd / book_usd) if book_usd > 0 else 0.0
 
-    snap: dict = market_context.snapshot
-    missing_keys: list[str] = []
+    if scope_pct < 0.005:
+        return ("now", "immaterial vs book — timing risk not retirement-material")
+    if sp_vs_trend_pct <= 8.0:
+        return ("now", f"market not stretched (S&P {sp_vs_trend_pct:+.0f}% vs trend) — lump-now is the EV default")
+    if vix < 20.0:
+        return ("now", f"extended but VIX={vix:.0f}<20 — not turbulent enough to justify DCA")
 
-    # Extract vix from snapshot (dict[str, float] shape from DeploymentMarketContext).
-    # The snapshot values are plain floats (already unwrapped from the (value, DataFreshness)
-    # tuple in the live assembler path). Default to 20.0 (neutral) if absent.
-    raw_vix = snap.get("vix")
-    if raw_vix is None:
-        vix = 20.0
-        missing_keys.append("vix")
+    # Stretched AND volatile: DCA concession. N grows with stretch, vol, and size.
+    if sp_vs_trend_pct <= 15.0 and vix < 30.0:
+        n = 2
+    elif sp_vs_trend_pct <= 15.0 or vix < 30.0:
+        n = 4
     else:
-        # Guard: if somehow the raw (value, DataFreshness) tuple arrived, unwrap it.
-        vix = float(raw_vix[0]) if isinstance(raw_vix, tuple) else float(raw_vix)
+        n = 6
+    if scope_pct >= 0.05:
+        n += 4
+    elif scope_pct >= 0.02:
+        n += 2
+    n = min(n, 8)
+    # Execution floor: don't slice below the min ticket.
+    n = max(1, min(n, int(amount_usd // DCA_MIN_INSTALLMENT_USD) or 1))
 
-    raw_sp = snap.get("sp500")
-    if raw_sp is None:
-        sp500 = 0.0
-        missing_keys.append("sp500")
-    else:
-        sp500 = float(raw_sp[0]) if isinstance(raw_sp, tuple) else float(raw_sp)
-
-    # Derive S&P % deviation from its simple 200-day-proxy trend.
-    # INTERIM: we use a hard-coded reference of 5500 as a rough 200d proxy; codex
-    # review (codex_pacing_verdict) will replace this with a real computed trend.
-    SP_TREND_REFERENCE: float = 5_500.0
-    sp_vs_trend_pct: float = (
-        (sp500 - SP_TREND_REFERENCE) / SP_TREND_REFERENCE * 100.0
-        if sp500 > 0.0
-        else 0.0
+    if n == 1:
+        return ("now", f"stretched (S&P {sp_vs_trend_pct:+.0f}%, VIX {vix:.0f}) but line too small to slice")
+    return (
+        f"DCA {n}wk",
+        f"stretched (S&P {sp_vs_trend_pct:+.0f}% vs trend) + elevated VIX {vix:.0f}; "
+        f"spread over {n} equal weekly buys (FX converted with each)",
     )
-
-    # N = 1 + excess-VIX weeks + excess-stretch weeks, clamped to [1, 8].
-    vix_excess = max(0.0, (vix - 20.0) / 10.0)
-    sp_excess = max(0.0, sp_vs_trend_pct / 5.0)
-    N = max(1, min(8, round(1 + vix_excess + sp_excess)))
-
-    if missing_keys:
-        rationale = (
-            f"large line; snapshot missing {missing_keys} — defaulting to N=1 lump; "
-            f"VIX={vix:.0f}, S&P {sp_vs_trend_pct:+.0f}% vs trend -> spread over {N} weeks"
-        )
-    else:
-        rationale = (
-            f"large line; VIX={vix:.0f}, S&P {sp_vs_trend_pct:+.0f}% vs trend"
-            f" -> spread over {N} weeks"
-        )
-
-    return (f"DCA {N}wk", rationale)
 
 
 def assemble_deployment_plan(
@@ -306,6 +297,8 @@ def assemble_deployment_plan(
     estate_map = build_estate_map(doc)
     plan_symbols = set(estate_map)
     candidates = cash_only_deploy(doc, holdings, deploy_amount_usd, as_of=as_of)
+    # Post-deploy investable book — the materiality denominator for pacing.
+    book_usd = round(sum(holdings.values()) + amount, 2)
 
     core_lines: list[DeploymentLine] = []
     exposed_total = 0.0
@@ -335,7 +328,8 @@ def assemble_deployment_plan(
                 sanctioned_total += amt
             held_value = round(float(holdings.get(sym, 0.0)), 2)
             if market_context is not None:
-                timing, p_rationale = pace_for_line(amt, market_context)
+                timing, p_rationale = pace_for_line(
+                    amt, market_context, book_usd=book_usd, tranche_usd=amount)
             else:
                 timing, p_rationale = "now", ""
             line = DeploymentLine(
