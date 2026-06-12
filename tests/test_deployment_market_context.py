@@ -1,9 +1,13 @@
-"""Tests for deployment_market_context — Tasks 1 and 2.
+"""Tests for deployment_market_context — Tasks 1, 2, and 4.
 
 All tests are pure (no network, no DB). The module is exercised by constructing
 dataclasses directly and calling the helper functions.
 """
 from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,6 +18,7 @@ from argosy.services.deployment_market_context import (
     NvdaVerification,
     is_stale,
     nvda_consistency,
+    verify_nvda,
 )
 
 
@@ -228,3 +233,187 @@ class TestNvdaConsistency:
 
     def test_none_when_both_missing(self):
         assert nvda_consistency(130.0, None, None) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 4: verify_nvda(session) — NVDA price/shares/market_cap verification
+# ---------------------------------------------------------------------------
+
+
+def _make_yf_adapter_with_info(
+    price: float | None,
+    shares: float | None,
+    market_cap: float | None,
+) -> Any:
+    """Return a fake YFinanceAdapter whose get_quote_with_fundamentals returns fixed data."""
+    adapter = MagicMock()
+
+    async def _get_quote_with_fundamentals(ticker: str, **kw: Any):  # noqa: ANN201
+        return {
+            "ticker": ticker,
+            "price": price,
+            "shares": shares,
+            "market_cap": market_cap,
+            "currency": "USD",
+            "timestamp_utc": "2026-06-12T20:00:00Z",
+        }
+
+    adapter.get_quote_with_fundamentals = _get_quote_with_fundamentals
+    return adapter
+
+
+class TestVerifyNvdaConsistent:
+    """verify_nvda returns NvdaVerification with consistent=True when drift <= 10%."""
+
+    @pytest.fixture(autouse=True)
+    def _patch(self, monkeypatch):
+        price = 130.0
+        shares = 24_400_000_000.0
+        market_cap = price * shares  # exact match → drift=0
+        adapter = _make_yf_adapter_with_info(price, shares, market_cap)
+        monkeypatch.setattr(
+            "argosy.services.deployment_market_context.YFinanceAdapter",
+            lambda **kw: adapter,
+        )
+
+    def test_returns_nvda_verification(self):
+        result = verify_nvda(session=None)
+        assert isinstance(result, NvdaVerification)
+
+    def test_price_set(self):
+        result = verify_nvda(session=None)
+        assert result.price == pytest.approx(130.0)
+
+    def test_shares_set(self):
+        result = verify_nvda(session=None)
+        assert result.shares == pytest.approx(24_400_000_000.0)
+
+    def test_market_cap_set(self):
+        result = verify_nvda(session=None)
+        assert result.market_cap == pytest.approx(130.0 * 24_400_000_000.0)
+
+    def test_consistent_true(self):
+        result = verify_nvda(session=None)
+        assert result.consistent is True
+
+    def test_note_non_empty(self):
+        result = verify_nvda(session=None)
+        assert result.note
+
+
+class TestVerifyNvdaInconsistent:
+    """verify_nvda flags consistent=False when market_cap/shares diverges >10% from price."""
+
+    @pytest.fixture(autouse=True)
+    def _patch(self, monkeypatch):
+        price = 130.0
+        shares = 24_400_000_000.0
+        market_cap = 200.0 * shares  # implied = 200, drift = 70/130 >> 10%
+        adapter = _make_yf_adapter_with_info(price, shares, market_cap)
+        monkeypatch.setattr(
+            "argosy.services.deployment_market_context.YFinanceAdapter",
+            lambda **kw: adapter,
+        )
+
+    def test_consistent_false(self):
+        result = verify_nvda(session=None)
+        assert result.consistent is False
+
+    def test_note_mentions_drift(self):
+        result = verify_nvda(session=None)
+        assert result.note  # non-empty; content describes the issue
+
+
+class TestVerifyNvdaMissingData:
+    """verify_nvda returns consistent=None when shares or market_cap are None."""
+
+    @pytest.fixture(autouse=True)
+    def _patch(self, monkeypatch):
+        adapter = _make_yf_adapter_with_info(130.0, None, None)
+        monkeypatch.setattr(
+            "argosy.services.deployment_market_context.YFinanceAdapter",
+            lambda **kw: adapter,
+        )
+
+    def test_consistent_none(self):
+        result = verify_nvda(session=None)
+        assert result.consistent is None
+
+    def test_shares_none(self):
+        result = verify_nvda(session=None)
+        assert result.shares is None
+
+    def test_market_cap_none(self):
+        result = verify_nvda(session=None)
+        assert result.market_cap is None
+
+
+class TestVerifyNvdaAdapterFailure:
+    """verify_nvda returns a safe NvdaVerification even when the adapter raises."""
+
+    @pytest.fixture(autouse=True)
+    def _patch(self, monkeypatch):
+        adapter = MagicMock()
+
+        async def _get_quote_with_fundamentals(ticker: str, **kw: Any):  # noqa: ANN201
+            raise RuntimeError("yfinance unreachable")
+
+        adapter.get_quote_with_fundamentals = _get_quote_with_fundamentals
+        monkeypatch.setattr(
+            "argosy.services.deployment_market_context.YFinanceAdapter",
+            lambda **kw: adapter,
+        )
+
+    def test_returns_nvda_verification_not_exception(self):
+        result = verify_nvda(session=None)
+        assert isinstance(result, NvdaVerification)
+
+    def test_price_zero_on_failure(self):
+        result = verify_nvda(session=None)
+        assert result.price == 0.0
+
+    def test_consistent_none_on_failure(self):
+        result = verify_nvda(session=None)
+        assert result.consistent is None
+
+    def test_note_describes_failure(self):
+        result = verify_nvda(session=None)
+        assert result.note
+
+
+class TestVerifyNvdaBoundary:
+    """Boundary: drift exactly 10% → still consistent."""
+
+    @pytest.fixture(autouse=True)
+    def _patch(self, monkeypatch):
+        price = 100.0
+        shares = 1_000_000.0
+        market_cap = 110.0 * shares  # drift = (110-100)/100 = 10% exactly
+        adapter = _make_yf_adapter_with_info(price, shares, market_cap)
+        monkeypatch.setattr(
+            "argosy.services.deployment_market_context.YFinanceAdapter",
+            lambda **kw: adapter,
+        )
+
+    def test_consistent_true_at_boundary(self):
+        result = verify_nvda(session=None)
+        assert result.consistent is True
+
+
+class TestVerifyNvdaJustOverBoundary:
+    """Drift 11% → inconsistent."""
+
+    @pytest.fixture(autouse=True)
+    def _patch(self, monkeypatch):
+        price = 100.0
+        shares = 1_000_000.0
+        market_cap = 111.0 * shares  # drift = 11%
+        adapter = _make_yf_adapter_with_info(price, shares, market_cap)
+        monkeypatch.setattr(
+            "argosy.services.deployment_market_context.YFinanceAdapter",
+            lambda **kw: adapter,
+        )
+
+    def test_consistent_false_just_over_boundary(self):
+        result = verify_nvda(session=None)
+        assert result.consistent is False

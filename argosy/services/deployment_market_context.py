@@ -7,12 +7,17 @@ Provides the value-object layer for the P2 deployment advisor market awareness:
 - ``DEPLOY_FRESHNESS_MAX_AGE`` — per-feed TTL config constants
 - ``is_stale`` — boundary-correct staleness predicate
 - ``nvda_consistency`` — hard consistency check per pinned doctrine (None = missing data)
+- ``verify_nvda`` — fetch live NVDA quote+fundamentals and return NvdaVerification
 
 See docs/superpowers/plans/2026-06-12-deployment-advisor-p2.md §Pinned technical definitions.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+from typing import Any
+
+from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
 
 
 @dataclass(frozen=True)
@@ -104,3 +109,84 @@ def nvda_consistency(
     implied_price = market_cap / shares
     drift = abs(implied_price - price) / price
     return drift <= 0.10
+
+
+# ---------------------------------------------------------------------------
+# Task 4: verify_nvda — live NVDA price/shares/market_cap verification
+# ---------------------------------------------------------------------------
+
+
+def verify_nvda(session: Any) -> NvdaVerification:
+    """Fetch NVDA price + shares outstanding + market cap and verify consistency.
+
+    Uses ``YFinanceAdapter.get_quote_with_fundamentals`` (async, bridged via
+    ``asyncio.run`` mirroring the ``inputs.py`` pattern).
+
+    Returns a ``NvdaVerification`` in all cases — never raises:
+    - If the fetch succeeds: ``consistent`` is the result of ``nvda_consistency``.
+    - If the fetch fails: price=0.0, shares=None, market_cap=None, consistent=None,
+      note describes the error.
+
+    The ``session`` parameter is accepted for API consistency and future use
+    (e.g. looking up cached price from the DB when the live fetch fails).
+    """
+    from argosy.logging import get_logger
+
+    _log = get_logger("argosy.services.deployment_market_context")
+
+    try:
+        adapter = YFinanceAdapter()
+        data: dict[str, Any] = asyncio.run(
+            adapter.get_quote_with_fundamentals("NVDA")
+        )
+        price_raw = data.get("price")
+        shares_raw = data.get("shares")
+        mc_raw = data.get("market_cap")
+
+        price: float = float(price_raw) if price_raw is not None else 0.0
+        shares: float | None = float(shares_raw) if shares_raw is not None else None
+        market_cap: float | None = float(mc_raw) if mc_raw is not None else None
+
+        consistent = nvda_consistency(price, shares, market_cap)
+        if consistent is True:
+            drift_note = "consistent: market_cap/shares within 10% of price"
+        elif consistent is False:
+            implied = (market_cap / shares) if (shares and market_cap) else None
+            drift_pct = (
+                abs(implied - price) / price * 100.0
+                if implied is not None and price > 0
+                else None
+            )
+            drift_note = (
+                f"INCONSISTENT: implied price ${implied:.2f} "
+                f"vs live ${price:.2f} "
+                f"({drift_pct:.1f}% drift)" if drift_pct is not None else "INCONSISTENT: drift > 10%"
+            )
+        else:
+            missing = []
+            if shares is None:
+                missing.append("shares")
+            if market_cap is None:
+                missing.append("market_cap")
+            drift_note = f"data missing: {', '.join(missing) or 'unknown'} — cannot verify"
+
+        return NvdaVerification(
+            price=price,
+            shares=shares,
+            market_cap=market_cap,
+            consistent=consistent,
+            note=drift_note,
+        )
+
+    except Exception as exc:
+        _log.warning(
+            "deployment_market_context.verify_nvda_failed",
+            error=str(exc)[:200],
+        )
+        return NvdaVerification(
+            price=0.0,
+            shares=None,
+            market_cap=None,
+            consistent=None,
+            note=f"fetch failed: {exc!s:.120}",
+        )
