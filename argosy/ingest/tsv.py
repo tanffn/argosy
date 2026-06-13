@@ -431,11 +431,15 @@ def _parse_real_estate_row(row: list[str], *, line_no: int) -> RealEstatePositio
     role = cells[COL_DETAILS]  # 'Home' | 'Loan'
     if not role:
         return None
+    # Read the value from COL_PRICE (c7), not COL_VALUE_LOCAL (c9): the
+    # "Current Value" column is unreliable for real estate (Atlanta's c9 is 0
+    # while c7 holds the actual $318k), per the codex net-equity review. c7 is
+    # the home value (Home row) / outstanding loan principal (Loan row).
     return RealEstatePosition(
         location=location,
         currency=cells[COL_CURRENCY],
         role=role,
-        value_local=_normalize_number(cells[COL_VALUE_LOCAL]),
+        value_local=_normalize_number(cells[COL_PRICE]),
         raw_line=line_no,
     )
 

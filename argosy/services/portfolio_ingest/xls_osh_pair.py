@@ -1200,9 +1200,13 @@ def _full_rewrite_from_snapshot(
         rows.append([])
         rows.append(["Real estate details:"])
         for re_row in prior_snapshot.real_estate:
+            # value_local is parsed from c7 (idx 7); write it back to c7/c8/c9
+            # (the source has all three equal) so a regenerate→reparse round
+            # trip preserves it. Writing only c9 would be lost on reparse.
+            v = f"{re_row.value_local:.2f}" if re_row.value_local else ""
             rows.append([
-                "", re_row.location, re_row.currency, re_row.role, "", "", "", "", "",
-                f"{re_row.value_local:.2f}" if re_row.value_local else "", "", "", "",
+                "", re_row.location, re_row.currency, re_row.role, "", "", "",
+                v, v, v, "", "", "",
             ])
     # Current allocation -- carry forward, but recompute current.
     if prior_snapshot.allocations:
