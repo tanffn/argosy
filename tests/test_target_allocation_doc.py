@@ -340,6 +340,63 @@ def test_resolve_carries_forward_when_build_raises(monkeypatch) -> None:
     assert out == '{"prior":"doc"}'
 
 
+def _prior_doc_with_alternatives() -> TargetAllocationDoc:
+    return TargetAllocationDoc(
+        anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0, fi_pct=20.0,
+        provenance="prior CURRENT plan", glide=[],
+        classes=[
+            AllocationClassDoc(
+                label="Alternatives", snapshot_category="Alternative",
+                sigma_class="alternatives", target_pct=3.0,
+                instruments=[AllocationInstrument(
+                    symbol="BITC", role="primary", weight_within_class_pct=100.0,
+                    domicile="JE")],
+            ),
+            AllocationClassDoc(
+                label="Cash & T-bills (incl. ILS tranche)", snapshot_category="Cash",
+                sigma_class="cash", target_pct=20.0, instruments=[]),
+        ],
+    )
+
+
+def test_carry_forward_strips_stale_alternatives_sleeve(monkeypatch) -> None:
+    # codex risk #6: a failed fresh build/verification must NOT silently preserve
+    # a stale team-sourced alternatives sleeve (dynamic, unverified-this-run).
+    from argosy.services.target_allocation_doc import resolve_target_allocation_json
+
+    prior = _prior_doc_with_alternatives()
+    _patch_resolve(monkeypatch, build_result=None,
+                   prior_plan=_PriorPlan(prior.model_dump_json(), pid=7))
+    out = resolve_target_allocation_json(None, "ariel", 96, date(2026, 6, 12))
+    carried = TargetAllocationDoc.model_validate_json(out)
+    # No alternatives class survives.
+    assert not any(c.sigma_class == "alternatives" for c in carried.classes)
+    assert not any(
+        i.symbol == "BITC" for c in carried.classes for i in c.instruments
+    )
+    # Provenance records the drop, and the stale 3% is folded into cash so the
+    # doc still anchors coherently (20% + 3% = 23%).
+    assert "alternatives" in carried.provenance.lower()
+    cash = next(c for c in carried.classes if c.sigma_class == "cash")
+    assert cash.target_pct == pytest.approx(23.0)
+
+
+def test_carry_forward_without_alternatives_is_unchanged_except_provenance(monkeypatch) -> None:
+    from argosy.services.target_allocation_doc import resolve_target_allocation_json
+
+    prior = build_target_allocation_doc(
+        today=date(2026, 6, 12), today_composition=_TODAY_FULL_BOOK
+    )
+    assert not any(c.sigma_class == "alternatives" for c in prior.classes)
+    _patch_resolve(monkeypatch, build_result=None,
+                   prior_plan=_PriorPlan(prior.model_dump_json(), pid=8))
+    out = resolve_target_allocation_json(None, "ariel", 96, date(2026, 6, 12))
+    carried = TargetAllocationDoc.model_validate_json(out)
+    # Non-alternatives classes carry forward intact.
+    assert {c.label for c in carried.classes} == {c.label for c in prior.classes}
+    assert "CARRIED-FORWARD" in carried.provenance
+
+
 def test_resolve_returns_none_when_no_fresh_and_no_prior(monkeypatch) -> None:
     from argosy.services.target_allocation_doc import resolve_target_allocation_json
 

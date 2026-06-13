@@ -380,6 +380,31 @@ def build_plan_target_allocation_doc(
     )
 
 
+def _strip_stale_alternatives(doc: "TargetAllocationDoc") -> None:
+    """Remove any Alternatives class from a CARRIED-FORWARD doc, in place.
+
+    The Alternatives sleeve is dynamically team-sourced + verified each run; a
+    carried-forward doc's sleeve is stale and was NOT re-verified this run, so
+    presenting its (possibly hallucination-era) instruments as current holdings
+    would reintroduce exactly the estate/trust risk the verifier exists to block
+    (codex risk #6). We drop the class entirely and fold its weight into the cash
+    sleeve so the doc still anchors coherently, stamping the provenance. The
+    correct sleeve (0% or a freshly-verified one) is rebuilt on the next good run.
+    """
+    alt_classes = [c for c in doc.classes if c.sigma_class == "alternatives"]
+    if not alt_classes:
+        return
+    dropped_pct = sum(c.target_pct for c in alt_classes)
+    doc.classes = [c for c in doc.classes if c.sigma_class != "alternatives"]
+    cash = next((c for c in doc.classes if c.sigma_class == "cash"), None)
+    if cash is not None:
+        cash.target_pct = round(cash.target_pct + dropped_pct, 4)
+    doc.provenance = (
+        f"{doc.provenance} | stale Alternatives sleeve ({dropped_pct:.1f}%) DROPPED "
+        f"(not re-verified this run; folded into cash → 0% alternatives this run)"
+    )
+
+
 def resolve_target_allocation_json(
     db: "Session", user_id: str, decision_run_id: int, today: date
 ) -> str | None:
@@ -449,6 +474,7 @@ def resolve_target_allocation_json(
                     f"{doc.provenance} | CARRIED-FORWARD from plan_version "
                     f"{prior_id} (run {decision_run_id} fresh build failed)"
                 )
+                _strip_stale_alternatives(doc)
                 return doc.model_dump_json()
             except (ValueError, TypeError):
                 return carried
