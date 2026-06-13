@@ -40,6 +40,8 @@ import yaml
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from argosy.services import instrument_reference
+
 from argosy.state.models import (
     AgentReport,
     PlanVersion,
@@ -353,6 +355,9 @@ _SECTOR_ORDER: tuple[str, ...] = (
     "Value ETF",
     "Israeli ETF",
     "Conglomerate",
+    "Financials",
+    "Healthcare",
+    "Real Estate",
     "Cash/T-Bill",
     "Crypto",
     "Other",
@@ -1180,8 +1185,17 @@ def _compositions(
         else:
             label = "(unlabeled)"
 
-        ac = _classify_asset_class(asset_type, symbol)
-        sec = _classify_sector(symbol, details)
+        # The curated instrument reference is the primary authority (keyed
+        # off the resolved ticker); it overrides the unreliable source
+        # asset_type (e.g. equity ETFs the export labels "REIT"). Raw-field
+        # heuristics are the fallback for instruments not in the table.
+        ref = instrument_reference.lookup(symbol, details)
+        if ref is not None:
+            ac = ref.asset_class
+            sec = ref.sector
+        else:
+            ac = _classify_asset_class(asset_type, symbol)
+            sec = _classify_sector(symbol, details)
 
         ab = asset_buckets.setdefault(ac, {"value": 0.0, "holdings": set()})
         ab["value"] += v_nis
