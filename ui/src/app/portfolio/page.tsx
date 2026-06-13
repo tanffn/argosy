@@ -120,6 +120,42 @@ export default function PortfolioPage() {
     [groups],
   );
 
+  // Per-account table sorting (applies to every account table). Click a
+  // sortable header to sort; click again to flip direction.
+  type SortKey = "symbol" | "type" | "value" | "verdict";
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(key === "value" ? "desc" : "asc");
+    }
+  }
+  // Verdict ranked by actionability (BUY/ADD → SELL); unrated sorts last.
+  const VERDICT_ORDER: Record<string, number> = {
+    BUY: 0, ADD: 1, HOLD: 2, TRIM: 3, SELL: 4,
+  };
+  function sortPositions(positions: PortfolioPosition[]): PortfolioPosition[] {
+    if (!sortKey) return positions;
+    const dir = sortDir === "asc" ? 1 : -1;
+    const key = (p: PortfolioPosition): string | number => {
+      if (sortKey === "symbol") return (p.symbol || p.details || "").toLowerCase();
+      if (sortKey === "type") return (p.asset_type || "").toLowerCase();
+      if (sortKey === "value") return p.usd_value_k ?? -Infinity;
+      const v = thesisByTicker[(p.symbol || "").toUpperCase()]?.verdict;
+      return v ? (VERDICT_ORDER[v] ?? 98) : 99;
+    };
+    return [...positions].sort((a, b) => {
+      const av = key(a);
+      const bv = key(b);
+      if (av < bv) return -dir;
+      if (av > bv) return dir;
+      return 0;
+    });
+  }
+
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
       <header className="flex items-start justify-between gap-4">
@@ -256,25 +292,49 @@ export default function PortfolioPage() {
           <CardContent>
             <table className="w-full text-sm font-mono">
               <thead>
-                <tr className="text-left text-xs text-muted-foreground border-b border-border">
-                  <th className="py-2">Symbol</th>
-                  <th className="py-2">Type</th>
+                <tr className="text-left text-xs text-muted-foreground border-b border-border select-none">
+                  <th
+                    className="py-2 cursor-pointer hover:text-foreground"
+                    onClick={() => toggleSort("symbol")}
+                  >
+                    Symbol{sortKey === "symbol" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                  </th>
+                  <th
+                    className="py-2 cursor-pointer hover:text-foreground"
+                    onClick={() => toggleSort("type")}
+                  >
+                    Type{sortKey === "type" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                  </th>
                   <th className="py-2 text-right">Shares</th>
                   <th className="py-2 text-right">Price</th>
-                  <th className="py-2 text-right">Value (K USD)</th>
-                  <th className="py-2 text-right">Verdict</th>
+                  <th
+                    className="py-2 text-right cursor-pointer hover:text-foreground"
+                    onClick={() => toggleSort("value")}
+                  >
+                    Value (K USD){sortKey === "value" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                  </th>
+                  <th
+                    className="py-2 text-right cursor-pointer hover:text-foreground"
+                    onClick={() => toggleSort("verdict")}
+                  >
+                    Verdict{sortKey === "verdict" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {g.positions.map((p, i) => {
+                {sortPositions(g.positions).map((p, i) => {
                   const t = (p.symbol || "").toUpperCase();
                   const thesis = t ? thesisByTicker[t] : undefined;
+                  const isCash = (p.asset_type || "").toLowerCase() === "cash";
+                  const symbolLabel = isCash
+                    ? `Cash (${(p.currency || "").toUpperCase() || "—"})`
+                    : p.symbol || p.details || "—";
                   return (
                     <tr
                       key={`${p.location}-${p.symbol || p.details}-${i}`}
                       className="border-b border-border/40"
                     >
-                      <td className="py-1.5">{p.symbol || p.details || "—"}</td>
+                      <td className="py-1.5">{symbolLabel}</td>
                       <td className="py-1.5 text-muted-foreground">{p.asset_type}</td>
                       <td className="py-1.5 text-right">
                         {p.shares !== null ? p.shares.toLocaleString() : "—"}

@@ -1185,6 +1185,7 @@ class HoldingRowDTO(BaseModel):
     name: str
     value_k: float
     pct: float
+    account: str = ""
 
 
 class CategoryBreakdownDTO(BaseModel):
@@ -1231,7 +1232,8 @@ def get_allocation_breakdown(
             label=r.label, current_pct=r.current_pct, target_pct=r.target_pct,
             current_value_k=r.current_value_k,
             holdings=[HoldingRowDTO(symbol=h.symbol, name=h.name,
-                      value_k=h.value_k, pct=h.pct) for h in r.holdings],
+                      value_k=h.value_k, pct=h.pct, account=h.account)
+                      for h in r.holdings],
         ) for r in rows],
         total_value_k=round(sum(r.current_value_k for r in rows), 2),
         note=note,

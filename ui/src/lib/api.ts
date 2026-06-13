@@ -362,6 +362,7 @@ export interface HoldingRowDTO {
   name: string;
   value_k: number;
   pct: number;
+  account: string;
 }
 
 export interface CategoryBreakdownDTO {
@@ -371,6 +372,7 @@ export interface CategoryBreakdownDTO {
   current_value_k: number;
   holdings: HoldingRowDTO[];
 }
+
 
 export interface AllocationBreakdownDTO {
   rows: CategoryBreakdownDTO[];

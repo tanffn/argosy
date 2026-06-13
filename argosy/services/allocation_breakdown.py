@@ -47,6 +47,7 @@ class HoldingRow:
     name: str
     value_k: float
     pct: float            # % of the full book
+    account: str = ""     # holding location (e.g. "Leumi", "schwab 876")
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,15 @@ def _holding_name(p) -> str:
     return (getattr(p, "details", "") or "").strip()
 
 
+def _holding_account(p) -> str:
+    """Normalised holding location — the NVDA RSU's bare "schwab" folds into
+    "schwab 876" (same account) so the same ticker reads consistently."""
+    loc = (getattr(p, "location", "") or "").strip()
+    if loc.lower() == "schwab":
+        return "schwab 876"
+    return loc
+
+
 def _is_nvda(p) -> bool:
     sym = (getattr(p, "symbol", "") or "").strip().upper()
     at = (getattr(p, "asset_type", "") or "").strip().lower()
@@ -173,6 +183,7 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
                     name=_holding_name(p),
                     value_k=round(float(getattr(p, "usd_value_k", 0.0) or 0.0), 2),
                     pct=round(100.0 * float(getattr(p, "usd_value_k", 0.0) or 0.0) / total, 2),
+                    account=_holding_account(p),
                 )
                 for p in ps
             ),

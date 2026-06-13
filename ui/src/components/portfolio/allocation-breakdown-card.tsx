@@ -136,12 +136,17 @@ export function AllocationBreakdownCard({ userId = "ariel" }: { userId?: string 
                   <div className="mt-1 ml-5 flex flex-col gap-0.5 text-xs text-muted-foreground">
                     {r.holdings.map((h, i) => (
                       <div
-                        key={`${h.symbol}-${i}`}
+                        key={`${h.symbol}-${h.account}-${i}`}
                         className="flex items-center justify-between gap-2"
+                        title={h.name || undefined}
                       >
                         <span>
                           <span className="text-foreground">{h.symbol}</span>
-                          {h.name ? ` · ${h.name}` : ""}
+                          {h.account ? (
+                            <span className="ml-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/80">
+                              [{h.account}]
+                            </span>
+                          ) : null}
                         </span>
                         <span className="tabular-nums">
                           {fmtK(h.value_k)} · {h.pct.toFixed(1)}%
