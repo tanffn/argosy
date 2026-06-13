@@ -58,19 +58,37 @@ class CategoryBreakdown:
     holdings: tuple[HoldingRow, ...] = field(default=())
 
 
+# Reference asset-class → canonical plan-class label, for the non-equity
+# classes. The raw asset_type is unreliable (SGOV is tagged "Defensive" but is
+# a T-bill = Cash & T-bills; EIMI is tagged "REIT" but is equity). The
+# instrument reference is authoritative for what a holding *is*.
+_ASSET_CLASS_TO_LABEL: dict[str, str] = {
+    "Cash": "Cash & T-bills (incl. ILS tranche)",
+    "Fixed Income": "Short-duration IG bonds",
+    "Real Estate": "Real assets (REIT/TIPS)",
+    "Alternatives": "Real assets (REIT/TIPS)",
+}
+
+
 def _label_for(asset_type: str, symbol: str = "", details: str = "") -> str:
-    # Pure non-US equity must not fall into a US / real-assets bucket via the
-    # raw asset_type (TA-200 is labeled "Core Equity"; EIMI is labeled "REIT").
-    # Route by the instrument reference's region — but ONLY pure non-US
-    # (Israel/Europe/EM); never "Global", since a global fund is partly US and
-    # is not ex-US exposure (codex review).
+    # The instrument reference is the classification authority; the raw
+    # asset_type is only a fallback for instruments not in the table.
     ref = instrument_reference.lookup(symbol, details)
-    if ref is not None and ref.asset_class == "Equity" and ref.region in (
-        instrument_reference.REGION_ISRAEL,
-        instrument_reference.REGION_EUROPE,
-        instrument_reference.REGION_EM,
-    ):
-        return _ASSET_TYPE_TO_LABEL["international"]
+    if ref is not None:
+        if ref.asset_class == "Equity":
+            # Pure non-US equity → International (TA-200 "Core Equity", EIMI
+            # "REIT"); never "Global" (partly US — codex review). US/Global
+            # equity falls through to the asset_type tilt crosswalk below.
+            if ref.region in (
+                instrument_reference.REGION_ISRAEL,
+                instrument_reference.REGION_EUROPE,
+                instrument_reference.REGION_EM,
+            ):
+                return _ASSET_TYPE_TO_LABEL["international"]
+        elif ref.asset_class in _ASSET_CLASS_TO_LABEL:
+            # Cash / Fixed Income / Real Estate — e.g. SGOV → Cash & T-bills,
+            # not "Short-duration IG bonds" off its "Defensive" asset_type.
+            return _ASSET_CLASS_TO_LABEL[ref.asset_class]
     at = (asset_type or "").strip().lower()
     return _ASSET_TYPE_TO_LABEL.get(at, asset_type.strip() or "Unclassified")
 

@@ -116,6 +116,25 @@ def test_breakdown_pure_non_us_equity_routes_to_international():
     assert "CSPX" in {h.symbol for h in by["US broad-market core"].holdings}
 
 
+def test_breakdown_sgov_counts_in_cash_and_tbills():
+    # SGOV's raw asset_type is "Defensive", but it's a T-bill ETF → the
+    # reference classifies it Cash, so it belongs in "Cash & T-bills", not
+    # "Short-duration IG bonds".
+    snap = _snap([
+        _pos("SGOV", "Defensive", 105.0, details="(...) SGOV"),
+        _pos("-", "Cash", 20.0, details="Cash"),
+        _pos("NVDA", "NVIDIA", 75.0),
+    ])
+    rows = build_allocation_breakdown(snap, _doc())
+    by = {r.label: r for r in rows}
+    cash = by.get("Cash & T-bills (incl. ILS tranche)")
+    assert cash is not None
+    assert {h.symbol for h in cash.holdings} >= {"SGOV"}
+    # SGOV ($105) + cash ($20) both land here.
+    assert round(cash.current_value_k, 1) == 125.0
+    assert "Short-duration IG bonds" not in by
+
+
 def test_breakdown_unmapped_category_surfaces_with_zero_target():
     snap = _snap([_pos("NVDA", "NVIDIA", 500.0),
                   _pos("WEIRD", "Crypto-thing", 500.0)])
