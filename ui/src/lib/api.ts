@@ -378,6 +378,22 @@ export interface AllocationBreakdownDTO {
   note: string;
 }
 
+export interface PropertyEquityDTO {
+  name: string;
+  currency: string;
+  home_local: number | null;
+  loan_local: number | null;
+  net_local: number | null;
+  net_usd_k: number | null;
+  warnings: string[];
+}
+
+export interface RealEstateEquityDTO {
+  properties: PropertyEquityDTO[];
+  total_net_usd_k: number;
+  note: string;
+}
+
 // Combined high-potential discovery (Slice 2) — fleet-graded picks + the cheap
 // estimator shortlist. CONVICTION-only (no dollar sizing); smart refresh.
 export interface DiscoveryPickDTO {
@@ -1887,6 +1903,12 @@ export const api = {
     getJSON<HighPotentialSleeveDTO>(
       `/api/portfolio/high-potential-sleeve?cash_usd=${cashUsd}&sleeve_pct=${sleevePct}` +
         (liveRadar ? "&live_radar=true" : ""),
+    ),
+  portfolioRealEstate: (
+    userId: string = "ariel",
+  ): Promise<RealEstateEquityDTO> =>
+    getJSON<RealEstateEquityDTO>(
+      `/api/portfolio/real-estate?user_id=${encodeURIComponent(userId)}`,
     ),
   portfolioAllocationBreakdown: (
     userId: string = "ariel",

@@ -1238,6 +1238,54 @@ def get_allocation_breakdown(
     )
 
 
+# --- Real-estate net equity (net worth, separate from the investable book) --
+
+class PropertyEquityDTO(BaseModel):
+    name: str
+    currency: str
+    home_local: float | None
+    loan_local: float | None
+    net_local: float | None
+    net_usd_k: float | None
+    warnings: list[str]
+
+
+class RealEstateEquityDTO(BaseModel):
+    properties: list[PropertyEquityDTO]
+    total_net_usd_k: float
+    note: str
+
+
+@router.get("/real-estate", response_model=RealEstateEquityDTO)
+def get_real_estate(
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> RealEstateEquityDTO:
+    """Per-property real-estate net equity (Home − Loan, FX-converted) from the
+    snapshot's "Real estate details". Net WORTH context — deliberately separate
+    from the investable allocation (a primary residence isn't investable)."""
+    from argosy.services.real_estate_equity import compute_real_estate_equity
+
+    row = get_latest_snapshot_row(db, user_id)
+    if row is None:
+        return RealEstateEquityDTO(properties=[], total_net_usd_k=0.0,
+                                   note="No portfolio snapshot found.")
+    snap = row_to_snapshot(row)
+    eq = compute_real_estate_equity(
+        snap.real_estate, fx_usd_nis=snap.fx_usd_nis, fx_usd_eur=snap.fx_usd_eur,
+    )
+    return RealEstateEquityDTO(
+        properties=[PropertyEquityDTO(
+            name=p.name, currency=p.currency, home_local=p.home_local,
+            loan_local=p.loan_local, net_local=p.net_local,
+            net_usd_k=p.net_usd_k, warnings=list(p.warnings),
+        ) for p in eq.properties],
+        total_net_usd_k=eq.total_net_usd_k,
+        note=("Net equity = current value − outstanding loan, converted to USD. "
+              "Net-worth context; not part of the investable allocation target."),
+    )
+
+
 # --- Plan-bound deterministic allocation tasks (Slice 1a) ------------------
 # 'Plan target' here is the canonical, glide-aware TargetAllocationDoc — never
 # the TSV spreadsheet (the headline bug this slice fixes). The wire DTOs and the

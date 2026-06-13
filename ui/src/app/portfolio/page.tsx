@@ -9,6 +9,7 @@ import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { AllocationBreakdownCard } from "@/components/portfolio/allocation-breakdown-card";
 import { GenerateTsvCard } from "@/components/portfolio/generate-tsv-card";
 import { PortfolioSnapshotUploadCard } from "@/components/portfolio/snapshot-upload-card";
+import { RealEstateCard } from "@/components/portfolio/real-estate-card";
 import { UnallocatedCashCard } from "@/components/portfolio/unallocated-cash-card";
 import { WealthDashboard } from "@/components/portfolio/wealth-dashboard";
 import {
@@ -54,10 +55,17 @@ function normalizeLocation(loc: string): string {
   return l || "(unknown)";
 }
 
+function isRealEstate(p: PortfolioPosition): boolean {
+  return (p.asset_type || "").trim().toLowerCase() === "real estate";
+}
+
 function groupByAccount(snap: PortfolioSnapshotDTO | null): AccountGroup[] {
   if (!snap) return [];
   const map = new Map<string, AccountGroup>();
   for (const p of snap.positions) {
+    // Real estate is surfaced in its own net-worth card, not as a brokerage
+    // account — keep it out of the per-account tables + liquid total.
+    if (isRealEstate(p)) continue;
     const key = normalizeLocation(p.location);
     const g = map.get(key) ?? { location: key, positions: [], total_usd_k: 0 };
     g.positions.push(p);
@@ -104,6 +112,13 @@ export default function PortfolioPage() {
   }, []);
 
   const groups = useMemo(() => groupByAccount(snap), [snap]);
+  // Liquid investable total = sum of the (real-estate-excluded) account
+  // groups, so the "Total liquid USD" stat reconciles with the tables below
+  // it. Real-estate net worth is shown separately in its own card.
+  const liquidTotalK = useMemo(
+    () => groups.reduce((s, g) => s + g.total_usd_k, 0),
+    [groups],
+  );
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
@@ -205,7 +220,7 @@ export default function PortfolioPage() {
             <CardHeader>
               <CardDescription>Total liquid USD</CardDescription>
               <CardTitle className="font-mono">
-                ${snap.total_usd_value_k.toLocaleString()}K
+                ${Math.round(liquidTotalK).toLocaleString()}K
               </CardTitle>
             </CardHeader>
           </Card>
@@ -293,6 +308,10 @@ export default function PortfolioPage() {
           </CardContent>
         </Card>
       ))}
+
+      {/* Real-estate net worth (4 properties, net of mortgage) — separate
+         from the investable book per the four-surface model. */}
+      <RealEstateCard userId={USER_ID} />
 
       <CollapsibleSection
         title="Per-position thesis"
