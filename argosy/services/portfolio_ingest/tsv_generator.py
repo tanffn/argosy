@@ -395,11 +395,17 @@ def _refresh_cash_rows_in_position_block(
             and asset_type.lower() == "cash"
         ):
             # Override with fresh closing balance per currency.
-            if currency == "NIS" and leumi_nis_cash is not None:
-                usd_k = (leumi_nis_cash / max(fx_usd_nis, 0.01)) / 1000.0
-                cells[9] = f"{leumi_nis_cash:.2f}"
-                cells[10] = f"{usd_k:.2f}"
-                out.append("\t".join(cells))
+            if currency == "NIS":
+                # Record the NIS-cash-row index whenever it's SEEN (so a
+                # missing USD row inserts right after it) — even if NIS
+                # extraction failed and we carry the prior value (codex r2).
+                if leumi_nis_cash is not None:
+                    usd_k = (leumi_nis_cash / max(fx_usd_nis, 0.01)) / 1000.0
+                    cells[9] = f"{leumi_nis_cash:.2f}"
+                    cells[10] = f"{usd_k:.2f}"
+                    out.append("\t".join(cells))
+                else:
+                    out.append(ln)
                 nis_row_idx = len(out) - 1
                 continue
             if currency == "USD":

@@ -412,12 +412,25 @@ def try_resolve_pending_on_osh_arrival(
         _get_usd_closing_balance(db, statement_id=usd_stmt.id)
         if usd_stmt is not None else None
     )
+    usd_warnings: list[str] = []
+    if usd_stmt is None:
+        usd_warnings.append(
+            "No Leumi USD (פמ\"ח) statement within "
+            f"{MATCH_WINDOW_DAYS}d of {part.snapshot_date}; the snapshot has NO "
+            "Leumi USD cash row — upload the Leumi USD statement to capture it."
+        )
+    elif usd_closing is None:
+        usd_warnings.append(
+            f"Leumi USD statement #{usd_stmt.id} found but its closing balance "
+            "could not be extracted; Leumi USD cash row omitted."
+        )
     tsv_text, synth_warnings = _synthesize_in_memory(
         xls=xls,
         osh_closing_nis=osh_closing_nis,
         snapshot_root=snapshot_root,
         usd_closing=usd_closing,
     )
+    synth_warnings = synth_warnings + usd_warnings
     target_name = _canonical_tsv_filename(part.snapshot_date)
     target_path = snapshot_root / target_name
 

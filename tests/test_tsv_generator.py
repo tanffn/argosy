@@ -395,3 +395,27 @@ def test_refresh_inserts_missing_leumi_usd_cash_row():
     # Inserted right after the NIS cash row (not at the very end).
     assert out[1].split("\t")[1:4] == ["Leumi", "NIS", "Cash"]
     assert out[2].split("\t")[1:4] == ["Leumi", "USD", "Cash"]
+
+
+def test_refresh_inserts_usd_row_even_when_nis_extraction_failed():
+    """If NIS balance couldn't be extracted (leumi_nis_cash=None) but USD did,
+    the USD row must still insert right after the (carried) NIS row, inside the
+    position block — not get appended after the whole TSV (codex r2)."""
+    from argosy.services.portfolio_ingest.tsv_generator import (
+        _refresh_cash_rows_in_position_block,
+    )
+    prior = [
+        "Bank account / funds allocation",
+        "\tLeumi\tNIS\tCash\t\t\t\t\t\t58944.86\t20.04\t\t",
+        "\tLeumi\tUSD\tEquity\tVOO\tVOO\t20\t678\t572\t13564\t13.56\t\t",
+        "Current allocation:",
+    ]
+    out = _refresh_cash_rows_in_position_block(
+        prior_lines=prior, leumi_nis_cash=None,
+        leumi_usd_cash=264997.33, fx_usd_nis=2.94161,
+    )
+    # USD cash row inserted directly after the NIS cash row, before the
+    # "Current allocation:" terminator (i.e. inside the position block).
+    assert out[1].split("\t")[1:4] == ["Leumi", "NIS", "Cash"]
+    assert out[2].split("\t")[1:4] == ["Leumi", "USD", "Cash"]
+    assert out[-1].lower().startswith("current allocation")
