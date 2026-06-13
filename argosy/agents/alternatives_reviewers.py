@@ -175,6 +175,11 @@ class AlternativesFundManagerAgent(BaseAgent[AltFundManagerVerdict]):
 
     agent_role = "alternatives_fund_manager"
     output_model = AltFundManagerVerdict
+    # The FM synthesizes its decision from the verified candidates (already cited
+    # by the sourcer) + the reviewer reports (already cited). It introduces no new
+    # external source, and AltFundManagerVerdict carries no cited_sources field —
+    # so it opts out of the citation gate (which defaults on in BaseAgent).
+    require_citations = False
 
     def __init__(self, *, user_id: str, model: str | None = None) -> None:
         super().__init__(user_id=user_id, model=model or "claude-opus-4-7")

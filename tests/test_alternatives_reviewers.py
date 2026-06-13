@@ -81,6 +81,19 @@ def test_fund_manager_role_and_schema():
     assert fm.output_model is AltFundManagerVerdict
 
 
+def test_fund_manager_opts_out_of_citation_gate():
+    # AltFundManagerVerdict has no cited_sources field; the citation gate (on by
+    # default in BaseAgent) would otherwise fail every FM run.
+    assert AlternativesFundManagerAgent(user_id="ariel").require_citations is False
+
+
+def test_reviewers_require_citations():
+    # Reviewers carry cited_sources and should cite their structure/liquidity/tax
+    # claims — the gate stays on for them.
+    for cls in REVIEWERS:
+        assert cls(user_id="ariel").require_citations is True
+
+
 def test_fund_manager_prompt_allows_zero_percent():
     fm = AlternativesFundManagerAgent(user_id="ariel")
     system, user = fm.build_prompt(
