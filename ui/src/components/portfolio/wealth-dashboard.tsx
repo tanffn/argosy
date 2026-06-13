@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -13,7 +13,13 @@ import {
   YAxis,
 } from "recharts";
 
-import { RetirementCard } from "@/components/portfolio/retirement-card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   StatCard,
   formatNis,
@@ -32,7 +38,8 @@ interface WealthDashboardProps {
  * sub-cards.
  *
  * Layout (matches the spec):
- *   ROW 1 — full-width retirement projection card (the headline).
+ *   ROW 1 — full-width net-worth summary (the FI projection itself lives on
+ *           the Retirement tab, which owns it rigorously).
  *   ROW 2 — 4-column grid: cash runway, NVDA concentration, savings rate,
  *           FX exposure.
  *   ROW 3 — 2-column grid: RSU income (next 12 months), estate exposure.
@@ -84,10 +91,7 @@ export function WealthDashboard({ userId }: WealthDashboardProps) {
 
   return (
     <section className="flex flex-col gap-4" data-testid="wealth-dashboard">
-      <RetirementCard
-        retirement={data.retirement}
-        assumptions={data.assumptions}
-      />
+      <NetWorthSummaryCard retirement={data.retirement} />
 
       {/* Row 2: 4-column stat grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -117,6 +121,92 @@ export function WealthDashboard({ userId }: WealthDashboardProps) {
         />
       </div>
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Net-worth summary — "where is our money" headline. The full FI projection
+// (scenarios, Monte Carlo, expected retirement age) lives on the Retirement
+// tab, which owns it rigorously; Portfolio shows only net worth + surplus.
+// ---------------------------------------------------------------------------
+
+function NetWorthSummaryCard({
+  retirement,
+}: {
+  retirement: WealthDashboardDTO["retirement"];
+}) {
+  const surplus = retirement.monthly_surplus_nis;
+  const surplusPct =
+    retirement.monthly_income_nis && retirement.monthly_income_nis > 0
+      ? ((surplus ?? 0) / retirement.monthly_income_nis) * 100
+      : null;
+  const surplusTone =
+    surplus == null ? "muted" : surplus > 0 ? "success" : "error";
+
+  return (
+    <Card className="w-full">
+      <CardHeader>
+        <CardTitle className="text-lg">Net worth</CardTitle>
+        <CardDescription>
+          Where our money is today. Retirement projection + expected date live
+          on the Retirement tab.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <SummaryStat
+            label="Net worth (NIS)"
+            value={formatNis(retirement.net_worth_nis)}
+            sub={retirement.net_worth_usd != null ? formatUsd(retirement.net_worth_usd) : null}
+          />
+          <SummaryStat label="Monthly burn" value={`${formatNis(retirement.monthly_burn_nis)} NIS`} />
+          <SummaryStat label="Monthly income" value={`${formatNis(retirement.monthly_income_nis)} NIS`} />
+          <SummaryStat
+            label="Monthly surplus"
+            value={`${formatNis(surplus)} NIS`}
+            sub={surplusPct != null ? `${formatPct(surplusPct, 0)} of income` : null}
+            tone={surplusTone}
+          />
+        </div>
+        {retirement.missing_reasons.length > 0 && (
+          <ul className="mt-3 text-xs text-warning flex flex-col gap-0.5">
+            {retirement.missing_reasons.map((r, i) => (
+              <li key={i}>• {r}</li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function SummaryStat({
+  label,
+  value,
+  sub,
+  tone,
+}: {
+  label: string;
+  value: ReactNode;
+  sub?: ReactNode;
+  tone?: "success" | "error" | "muted";
+}) {
+  const toneClass =
+    tone === "success"
+      ? "text-success"
+      : tone === "error"
+        ? "text-error"
+        : tone === "muted"
+          ? "text-muted-foreground"
+          : "text-foreground";
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="text-[10px] font-mono uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
+      <div className={cn("text-lg font-mono font-semibold", toneClass)}>{value}</div>
+      {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
+    </div>
   );
 }
 
