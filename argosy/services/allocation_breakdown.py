@@ -68,6 +68,27 @@ def _doc_targets_by_label(doc) -> dict[str, float]:
     return {c.label: c.target_pct for c in getattr(doc, "classes", [])}
 
 
+def _is_cash(p) -> bool:
+    return (getattr(p, "asset_type", "") or "").strip().lower() in ("cash", "money market")
+
+
+def _holding_symbol(p) -> str:
+    """Cash rows carry a blank/"-" symbol; label them by currency so the NIS
+    and USD cash tranches are distinct rather than both showing as "—"."""
+    sym = (getattr(p, "symbol", "") or "").strip()
+    if _is_cash(p) and sym in ("", "-"):
+        ccy = (getattr(p, "currency", "") or "").strip().upper()
+        return f"{ccy} cash" if ccy else "Cash"
+    return sym or "—"
+
+
+def _holding_name(p) -> str:
+    if _is_cash(p):
+        ccy = (getattr(p, "currency", "") or "").strip().upper()
+        return f"{ccy} cash balance" if ccy else "Cash balance"
+    return (getattr(p, "details", "") or "").strip()
+
+
 def _is_nvda(p) -> bool:
     sym = (getattr(p, "symbol", "") or "").strip().upper()
     at = (getattr(p, "asset_type", "") or "").strip().lower()
@@ -102,8 +123,8 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
         holdings = tuple(sorted(
             (
                 HoldingRow(
-                    symbol=(getattr(p, "symbol", "") or "—").strip() or "—",
-                    name=(getattr(p, "details", "") or "").strip(),
+                    symbol=_holding_symbol(p),
+                    name=_holding_name(p),
                     value_k=round(float(getattr(p, "usd_value_k", 0.0) or 0.0), 2),
                     pct=round(100.0 * float(getattr(p, "usd_value_k", 0.0) or 0.0) / total, 2),
                 )
