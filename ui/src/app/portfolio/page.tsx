@@ -10,7 +10,6 @@ import { AllocationBreakdownCard } from "@/components/portfolio/allocation-break
 import { GenerateTsvCard } from "@/components/portfolio/generate-tsv-card";
 import { PortfolioSnapshotUploadCard } from "@/components/portfolio/snapshot-upload-card";
 import { RealEstateCard } from "@/components/portfolio/real-estate-card";
-import { UnallocatedCashCard } from "@/components/portfolio/unallocated-cash-card";
 import { WealthDashboard } from "@/components/portfolio/wealth-dashboard";
 import {
   Card,
@@ -241,12 +240,6 @@ export default function PortfolioPage() {
           />
         </CardContent>
       </Card>
-
-      {/* Unallocated-cash proposal (2026-05-29). Self-tuning trigger
-         based on the plan-target cash row -- fires when current cash
-         exceeds plan target by ~1.5x. Renders nothing when no overage.
-         See argosy/services/unallocated_cash_detector.py. */}
-      <UnallocatedCashCard userId={USER_ID} />
 
       {/* Wealth dashboard — top-of-page retirement projection + 6 stat
          cards. Independent of the portfolio snapshot fetch above; renders

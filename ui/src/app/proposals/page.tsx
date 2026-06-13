@@ -39,6 +39,7 @@ import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { TrendRadarCard } from "@/components/portfolio/trend-radar-card";
 import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monitor-card";
 import { DiscoveryCard } from "@/components/portfolio/discovery-card";
+import { UnallocatedCashCard } from "@/components/portfolio/unallocated-cash-card";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ConsultRunner } from "@/components/consult/consult-runner";
 import { useWSEvents } from "@/lib/ws";
@@ -638,6 +639,13 @@ export default function ProposalsPage() {
         proposal={customizeTarget}
         onConfirm={onActionCustomizeSubmit}
       />
+
+      {/* Unallocated-cash proposal — the continuous "free cash above plan
+          target → here's where it could go" trigger (fires when current cash
+          exceeds the plan-target cash row by ~1.5x; renders nothing when no
+          overage). Leads the actions flow because deploying idle cash is
+          surface 4's primary job. See argosy/services/unallocated_cash_detector.py. */}
+      <UnallocatedCashCard userId={USER_ID} />
 
       {/* Allocation actions surface — WindfallCard self-suppresses when no
           event is detected, so the section renders as an empty scroll

@@ -45,7 +45,7 @@ function buildSourceRef(args: {
 }
 
 /**
- * /portfolio tile: "$X above your cash target -> here's where it could go".
+ * /proposals tile: "$X above your cash target -> here's where it could go".
  *
  * The continuous version of the windfall flow ([[unallocated cash]] memory).
  * Routine paycheck residue below the $25K windfall threshold still needs
