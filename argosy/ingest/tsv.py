@@ -363,6 +363,29 @@ def parse_portfolio_tsv(path: str | Path) -> PortfolioSnapshot:
     return snap
 
 
+# Matches the Leumi Details pattern "(<name>) TICKER [EXCHANGE]" and captures
+# the trailing ticker (first token after the closing paren). The ticker must
+# start with a latin letter so Hebrew-only names don't yield a bogus symbol.
+_TICKER_AFTER_PAREN = re.compile(r"\)\s*([A-Za-z][A-Za-z0-9./]*)")
+
+
+def _derive_symbol(details: str, raw_symbol: str) -> str:
+    """Return the canonical ticker for a position row.
+
+    The Leumi export's Symbol column is unreliable: the same literal 'O' was
+    observed pasted onto the STOXX Europe 600 and EIMI rows. The Details
+    column, however, reliably carries '(<name>) TICKER [EXCHANGE]' for Leumi
+    holdings, and that trailing ticker is authoritative. When Details has no
+    such latin ticker (Schwab rows whose Details is a plain category like
+    'ETF'/'RSU', or a Hebrew-only TASE name), keep the cell symbol verbatim.
+    """
+    if details:
+        m = _TICKER_AFTER_PAREN.search(details)
+        if m:
+            return m.group(1).strip()
+    return (raw_symbol or "").strip()
+
+
 def _parse_position_row(row: list[str], *, line_no: int) -> PortfolioPosition | None:
     """Parse one row of the position table. Return None for non-positions."""
     # Defensive: ensure at least the canonical column count.
@@ -386,7 +409,7 @@ def _parse_position_row(row: list[str], *, line_no: int) -> PortfolioPosition | 
         currency=cells[COL_CURRENCY],
         asset_type=cells[COL_TYPE],
         details=cells[COL_DETAILS],
-        symbol=cells[COL_SYMBOL],
+        symbol=_derive_symbol(cells[COL_DETAILS], cells[COL_SYMBOL]),
         shares=_normalize_number(cells[COL_SHARES]),
         current_price=_normalize_number(cells[COL_PRICE]),
         avg_price=_normalize_number(cells[COL_AVG]),

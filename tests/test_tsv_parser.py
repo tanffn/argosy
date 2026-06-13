@@ -10,7 +10,38 @@ from pathlib import Path
 
 import pytest
 
-from argosy.ingest.tsv import parse_portfolio_tsv
+from argosy.ingest.tsv import _derive_symbol, parse_portfolio_tsv
+
+
+class TestDeriveSymbol:
+    """The Leumi export's Symbol column is unreliable — observed 'O' pasted
+    onto the STOXX Europe 600 and EIMI rows. When Details carries the
+    canonical '(<name>) TICKER [EXCHANGE]' pattern, that trailing ticker is
+    authoritative and overrides the cell."""
+
+    def test_derives_ticker_after_parenthetical_overriding_bad_cell(self):
+        # EIMI row: cell wrongly says 'O', Details has the real ticker.
+        assert _derive_symbol("(ISHR CORE EM IMI) EIMI LN", "O") == "EIMI"
+
+    def test_keeps_correct_cell_when_derivation_agrees(self):
+        assert _derive_symbol("(ריאלטי אינקם) O", "O") == "O"
+        assert _derive_symbol("(ואנגארד S&P 500) VOO", "VOO") == "VOO"
+        assert _derive_symbol("(ברקשייר האת'וויי) BRK/B", "BRK/B") == "BRK/B"
+
+    def test_no_parenthetical_keeps_cell(self):
+        # Schwab rows: Details is a plain category, cell symbol is correct.
+        assert _derive_symbol("ETF", "SCHD") == "SCHD"
+        assert _derive_symbol("RSU", "NVDA") == "NVDA"
+        assert _derive_symbol("Treasuries", "SGOV") == "SGOV"
+
+    def test_hebrew_ticker_without_latin_is_preserved(self):
+        # TA-200 tracker: no latin ticker → keep the Hebrew symbol (stays Israeli).
+        assert _derive_symbol('ATF מחקה ת"א-200', 'מחקה ת"א-200') == 'מחקה ת"א-200'
+
+    def test_no_latin_ticker_and_no_paren_keeps_cell(self):
+        # STOXX row: no parenthetical, no derivable latin ticker — cell ('O')
+        # is wrong but unrecoverable here; documents the limitation.
+        assert _derive_symbol("אי בי אי מחקה STOXX Europe 600", "O") == "O"
 
 TSV_PATH = Path(
     r"D:/Google Drive/Family/Finances/Portfolio/Resources/Family Finances Status - 26 May.tsv"
