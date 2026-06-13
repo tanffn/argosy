@@ -942,6 +942,27 @@ class TestCompositionBreakdowns:
         assert "Equity" in ac_names
 
 
+class TestSectorClassifierIsraeliDetection:
+    """Regression: a US holding bought through Leumi carries a Hebrew
+    *description* in ``details`` but a latin *ticker* in ``symbol``. It
+    must NOT be classified 'Israeli ETF' — only genuinely TASE-listed
+    instruments (Hebrew/non-latin ticker) are Israeli. The prior rule
+    scanned ``details`` for Hebrew, which mislabeled AMD/GOOG/VOO/SCHD/…
+    (every Leumi-held US name) as Israeli."""
+
+    def test_us_stock_with_hebrew_description_is_not_israeli(self):
+        from argosy.services.wealth_dashboard import _classify_sector
+        # AMD bought via Leumi: latin ticker, Hebrew parenthetical name.
+        assert _classify_sector("AMD", "(אדוונסד מיקרו דיווייסז) AMD") == "Tech"
+        # Broad US ETF via Leumi.
+        assert _classify_sector("VOO", "(ואנגארד S&P 500) VOO") == "ETF/Index"
+
+    def test_tase_listed_instrument_is_israeli(self):
+        from argosy.services.wealth_dashboard import _classify_sector
+        # TA-200 tracker: Hebrew ticker, no latin symbol → genuinely Israeli.
+        assert _classify_sector('מחקה ת"א-200', 'ATF מחקה ת"א-200') == "Israeli ETF"
+
+
 # ===========================================================================
 # Route-level smoke
 # ===========================================================================

@@ -403,14 +403,22 @@ def _classify_asset_class(asset_type: str, symbol: str) -> str:
 
 
 def _is_israeli_etf(symbol: str, details: str) -> bool:
-    """Detect Israeli-market ETFs by Hebrew characters in symbol/details.
+    """Detect genuinely TASE-listed instruments by a Hebrew/non-latin
+    *ticker*.
 
-    The user's snapshot carries names like ``מחקה ת"א-200`` — robust to
-    label variations because we only need to know "this is a Hebrew
-    instrument". Range U+0590..U+05FF covers the Hebrew Unicode block.
+    The discriminator is the SYMBOL, not the description. A US holding
+    bought through Leumi (AMD, VOO, SCHD, …) carries a Hebrew
+    parenthetical name in ``details`` but a latin ticker in ``symbol`` —
+    it is NOT Israeli. Only instruments whose ticker itself is Hebrew /
+    non-latin (e.g. ``מחקה ת"א-200``, which has no latin ticker) are
+    TASE-listed. Range U+0590..U+05FF is the Hebrew Unicode block.
+
+    ``details`` is retained in the signature (callers pass it) but is
+    deliberately not scanned: a Hebrew description is not evidence the
+    instrument is Israeli.
     """
-    haystack = f"{symbol or ''} {details or ''}"
-    return any("֐" <= ch <= "׿" for ch in haystack)
+    del details  # intentionally unused — see docstring.
+    return any("֐" <= ch <= "׿" for ch in (symbol or ""))
 
 
 def _classify_sector(symbol: str, details: str) -> str:
