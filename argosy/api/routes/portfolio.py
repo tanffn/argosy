@@ -113,6 +113,7 @@ def _find_latest_tsv() -> Path | None:
 def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
     """Translate a parsed/hydrated PortfolioSnapshot to the route DTO."""
     from argosy.services import instrument_reference
+    from argosy.services.wealth_dashboard import _classify_asset_class
 
     # Resolve one asset_type per ticker (prefer non-blank): the hand-maintained
     # Schwab rows sometimes leave Type blank on a lot of a ticker that's typed
@@ -129,6 +130,15 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
     for p in snap.positions:
         sym = (p.symbol or "").strip().upper()
         asset_type = (p.asset_type or "").strip() or eff_type.get(sym, "")
+        # Correct a source Type that contradicts the instrument reference: the
+        # export mislabels STOXX Europe 600 + EIMI as "REIT" (they're equity
+        # ETFs) and IWDP as "Equity" (it's a property/REIT ETF). When the
+        # source asset_type implies a different asset CLASS than the reference,
+        # show the reference's sector — otherwise keep the source tilt
+        # (Growth/Dividend/Core), which the reference doesn't capture.
+        ref = instrument_reference.lookup(p.symbol or "", p.details or "")
+        if ref is not None and ref.asset_class != _classify_asset_class(asset_type, sym):
+            asset_type = ref.sector
         is_cash = asset_type.lower() in ("cash", "money market")
         estate_safe = (
             None if is_cash
