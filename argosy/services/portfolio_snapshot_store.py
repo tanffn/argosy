@@ -36,6 +36,34 @@ from argosy.ingest.tsv import PortfolioSnapshot
 from argosy.state.models import PortfolioSnapshotRow
 
 
+def _normalized_position_dicts(positions: list) -> list[dict]:
+    """Serialize positions with asset_type CORRECTED against the instrument
+    reference, so the stored snapshot is canonical for every consumer (not
+    just display-corrected per-surface).
+
+    The source Type column is hand-maintained and occasionally mislabels an
+    instrument's asset CLASS (STOXX Europe 600 + EIMI tagged "REIT" though
+    they're equity ETFs; IWDP tagged "Equity" though it's a property/REIT
+    ETF). When the source type implies a different class than the reference,
+    store the reference's sector; otherwise keep the source tilt
+    (Growth/Dividend/Core/REIT-for-genuine-REITs), which the reference
+    doesn't capture. Cash and unknown instruments are untouched.
+    """
+    from argosy.services import instrument_reference
+    from argosy.services.wealth_dashboard import _classify_asset_class
+
+    out: list[dict] = []
+    for p in positions:
+        d = p.model_dump()
+        sym = (d.get("symbol") or "").strip()
+        at = (d.get("asset_type") or "").strip()
+        ref = instrument_reference.lookup(sym, d.get("details") or "")
+        if ref is not None and ref.asset_class != _classify_asset_class(at, sym):
+            d["asset_type"] = ref.sector
+        out.append(d)
+    return out
+
+
 def persist_snapshot(
     session: Session,
     *,
@@ -65,7 +93,7 @@ def persist_snapshot(
         imported_at=datetime.now(timezone.utc),
         source_path=snapshot.source_path,
         positions_json=json.dumps(
-            [p.model_dump() for p in snapshot.positions], default=str,
+            _normalized_position_dicts(snapshot.positions), default=str,
         ),
         allocations_json=json.dumps(
             [a.model_dump() for a in snapshot.allocations], default=str,

@@ -137,7 +137,7 @@ _NAME_KEYWORD_FALLBACK: tuple[tuple[str, InstrumentRef], ...] = (
 _US_SITUS_TICKERS: frozenset[str] = frozenset({
     "NVDA", "AMD", "GOOG", "GOOGL", "AMZN", "META", "TSLA", "SOFI", "RKT",
     "BRK/B", "BRK.B", "BMY", "VOO", "VTI", "SCHD", "SCHG", "SPMO", "VTV",
-    "SGOV", "O", "IBIT",
+    "QQQM", "SGOV", "O", "IBIT",
 })
 
 # Flip the US-domiciled entries to estate-exposed (the table defaults safe).

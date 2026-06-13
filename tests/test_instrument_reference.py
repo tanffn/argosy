@@ -78,6 +78,8 @@ def test_estate_safe_us_domiciled_is_exposed():
     assert estate_safe_for("NVDA", "RSU") is False           # US-situs (sanctioned but exposed)
     assert estate_safe_for("AMD", "(...) AMD") is False
     assert estate_safe_for("VOO", "(...) VOO") is False       # US-domiciled ETF
+    assert estate_safe_for("QQQM", "(...) QQQM") is False      # US-domiciled (cf. UCITS CNDX)
+    assert estate_safe_for("CNDX", "(ISH NASDAQ100 $A) CNDX LN") is True  # UCITS twin
     assert estate_safe_for("SGOV", "(...) SGOV") is False
     assert estate_safe_for("O", "(ריאלטי אינקם) O") is False  # US REIT
 
