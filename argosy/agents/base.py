@@ -211,6 +211,14 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # over LLM cost": sourcing estate-safe (non-US-situs) instruments is a
     # high-consequence money path; the picks feed the domicile gate.
     "alternatives_sourcer": "claude-opus-4-7",
+    # Alternatives reviewer fleet + sleeve fund-manager (ETP-aware debate over
+    # the verified candidates). Opus per "accuracy over LLM cost"; these weigh
+    # wrapper/structure, diversification value, liquidity/tax, and the final
+    # sleeve size (which may be 0%) — a high-consequence money path.
+    "alt_exposure_structure": "claude-opus-4-7",
+    "alt_macro_diversification": "claude-opus-4-7",
+    "alt_risk_liquidity_tax": "claude-opus-4-7",
+    "alternatives_fund_manager": "claude-opus-4-7",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -298,6 +306,12 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     # sleeve sizing in one structured pass. Downstream picks feed the
     # domicile gate, so accuracy matters more than speed.
     "alternatives_sourcer":    "high",
+    # Alternatives reviewer fleet + sleeve FM — high effort (structured judgement
+    # over verified candidates feeding the sleeve decision + the FI solver).
+    "alt_exposure_structure":     "high",
+    "alt_macro_diversification":  "high",
+    "alt_risk_liquidity_tax":     "high",
+    "alternatives_fund_manager":  "high",
     # Single-ticker analysts + helpers — moderate (data formatting + light reasoning)
     "concentration":        "medium",
     "fx":                   "medium",
@@ -444,6 +458,11 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     # cites). 16K is generous headroom and keeps adaptive thinking
     # (effort=high) comfortably under the cap.
     "alternatives_sourcer": 16000,
+    # Alternatives reviewer fleet + sleeve FM — structured reports / decision.
+    "alt_exposure_structure": 16000,
+    "alt_macro_diversification": 16000,
+    "alt_risk_liquidity_tax": 16000,
+    "alternatives_fund_manager": 16000,
     # Conversational / categorical roles — no thinking, fallback-sized.
     "intake": 16000,
     "household_categorizer": 16000,
