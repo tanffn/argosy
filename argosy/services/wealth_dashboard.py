@@ -679,8 +679,19 @@ def _resolve_fx_usd_nis(
 def _net_worth(
     *, snapshot: PortfolioSnapshotRow | None, fx_usd_nis: float
 ) -> tuple[float | None, float | None]:
+    """True net worth = investable holdings + real-estate NET EQUITY.
+
+    The snapshot's ``total_usd_value_k`` carries only the legacy "$69K Aborad"
+    real-estate stub. Real net worth replaces that with the full per-property
+    net equity (Home − Loan, FX-converted) — the same figure the Real-estate
+    panel shows — so net worth and the panel agree.
+    """
     if snapshot is None:
         return None, None
+    from types import SimpleNamespace
+
+    from argosy.services.real_estate_equity import compute_real_estate_equity
+
     try:
         totals = json.loads(snapshot.totals_json or "{}")
     except json.JSONDecodeError:
@@ -688,7 +699,37 @@ def _net_worth(
     total_usd_k = totals.get("total_usd_value_k")
     if total_usd_k is None:
         return None, None
-    usd = float(total_usd_k) * 1000.0
+    base_k = float(total_usd_k)
+
+    # Swap the legacy real-estate stub (the "$69K Aborad" row in the position
+    # block) for the full per-property net equity — so net worth includes real
+    # estate properly and matches the Real-estate panel.
+    try:
+        positions = json.loads(snapshot.positions_json or "[]")
+    except json.JSONDecodeError:
+        positions = []
+    re_stub_k = sum(
+        float(p.get("usd_value_k") or 0.0)
+        for p in positions
+        if isinstance(p, dict) and (p.get("asset_type") or "").lower() == "real estate"
+    )
+    re_net_k = 0.0
+    try:
+        re_rows = json.loads(snapshot.real_estate_json or "[]")
+        re_objs = [SimpleNamespace(**r) for r in re_rows if isinstance(r, dict)]
+        if re_objs:
+            eq = compute_real_estate_equity(
+                re_objs,
+                fx_usd_nis=getattr(snapshot, "fx_usd_nis", None) or fx_usd_nis,
+                fx_usd_eur=getattr(snapshot, "fx_usd_eur", None),
+            )
+            re_net_k = eq.total_net_usd_k
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    usd = (base_k - re_stub_k + re_net_k) * 1000.0
+    if usd <= 0:
+        return None, None
     return usd * fx_usd_nis, usd
 
 
@@ -840,6 +881,11 @@ def _cash_runway(
         sym = (p.get("symbol") or "").upper()
         atype = (p.get("asset_type") or "").lower()
         currency = (p.get("currency") or "").upper()
+        if atype == "real estate":
+            # The "Aborad" property row has symbol "-"; without this guard the
+            # sym=="-" cash heuristic below would count illiquid real estate as
+            # cash and inflate the runway.
+            continue
         if sym == "SGOV":
             sgov_usd_k += float(v_k)
             continue
@@ -1136,6 +1182,7 @@ def _estate_exposure(
 
 def _compositions(
     *, snapshot: PortfolioSnapshotRow | None, fx_usd_nis: float,
+    exclude_nvda: bool = False,
 ) -> tuple[list[CompositionSlice], list[CompositionSlice]]:
     """Return (asset_class_composition, sector_composition).
 
@@ -1170,9 +1217,17 @@ def _compositions(
             continue
         if v_k_f <= 0:
             continue
-        v_nis = v_k_f * 1000.0 * fx_usd_nis
 
         symbol = (p.get("symbol") or "").strip()
+        # Exclude NVDA so its ~61% RSU concentration doesn't flatten every
+        # other slice (the same toggle the allocation card uses).
+        if exclude_nvda and (
+            symbol.upper() == "NVDA"
+            or "nvidia" in (p.get("asset_type") or "").lower()
+        ):
+            continue
+        v_nis = v_k_f * 1000.0 * fx_usd_nis
+
         details = (p.get("details") or "").strip()
         asset_type = p.get("asset_type") or ""
 
@@ -1250,6 +1305,7 @@ def compute_wealth_dashboard(
     *,
     user_id: str,
     today: date | None = None,
+    exclude_nvda: bool = False,
 ) -> WealthDashboard:
     """Build the full WealthDashboard for ``user_id`` from the live DB.
 
@@ -1331,7 +1387,7 @@ def compute_wealth_dashboard(
     )
     estate_exposure = _estate_exposure(snapshot=snapshot, fx_usd_nis=fx_usd_nis)
     asset_class_composition, sector_composition = _compositions(
-        snapshot=snapshot, fx_usd_nis=fx_usd_nis,
+        snapshot=snapshot, fx_usd_nis=fx_usd_nis, exclude_nvda=exclude_nvda,
     )
 
     assumptions = Assumptions(

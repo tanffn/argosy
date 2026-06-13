@@ -125,6 +125,10 @@ export default function PortfolioPage() {
   type SortKey = "symbol" | "type" | "value" | "verdict";
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  // Page-level exclude-NVDA toggle — drives the composition donuts AND the
+  // allocation-vs-target card so the whole view reads without NVDA's ~61%
+  // concentration flattening it. Default on (per Ariel).
+  const [excludeNvda, setExcludeNvda] = useState(true);
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -248,7 +252,22 @@ export default function PortfolioPage() {
          cards. Independent of the portfolio snapshot fetch above; renders
          on its own loading/error states. See
          argosy/services/wealth_dashboard.py for the aggregated payload. */}
-      <WealthDashboard userId={USER_ID} />
+      {/* Page-level exclude-NVDA toggle — applies to the composition donuts
+         and the allocation-vs-target card below. */}
+      <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none self-start">
+        <input
+          type="checkbox"
+          checked={excludeNvda}
+          onChange={(e) => setExcludeNvda(e.target.checked)}
+          className="accent-primary"
+        />
+        Exclude NVDA from charts &amp; allocation
+        <span className="text-xs text-muted-foreground/70">
+          (its ~61% RSU concentration otherwise dominates every view)
+        </span>
+      </label>
+
+      <WealthDashboard userId={USER_ID} excludeNvda={excludeNvda} />
 
       {snap && (
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -403,7 +422,7 @@ export default function PortfolioPage() {
       {/* Live current allocation (your real holdings by class) vs the canonical
           plan target, with per-symbol drill-down — replaces the prior chart that
           compared the plan glide's modelled today-anchor to its end-state. */}
-      <AllocationBreakdownCard userId={USER_ID} />
+      <AllocationBreakdownCard userId={USER_ID} excludeNvda={excludeNvda} />
     </main>
   );
 }

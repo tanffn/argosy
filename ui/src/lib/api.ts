@@ -2897,9 +2897,10 @@ export const api = {
   // see argosy/services/wealth_dashboard.py for per-block semantics.
   // ----------------------------------------------------------------------
 
-  wealthDashboard: (userId: string) =>
+  wealthDashboard: (userId: string, excludeNvda: boolean = false) =>
     getJSON<WealthDashboardDTO>(
-      `/api/portfolio/wealth-dashboard?user_id=${encodeURIComponent(userId)}`,
+      `/api/portfolio/wealth-dashboard?user_id=${encodeURIComponent(userId)}` +
+        (excludeNvda ? "&exclude_nvda=true" : ""),
     ),
 
   // ----------------------------------------------------------------------

@@ -1023,3 +1023,40 @@ class TestRouteSmoke:
         # Assumptions still populated with defaults.
         assert body["assumptions"]["swr_rate"] == SWR
         assert body["assumptions"]["current_age"] == DEFAULT_CURRENT_AGE
+
+
+def test_net_worth_swaps_real_estate_stub_for_full_equity():
+    """Net worth must include the FULL real-estate net equity, not the legacy
+    $69K stub carried in the position block."""
+    import json as _json
+    from types import SimpleNamespace
+    from argosy.services.wealth_dashboard import _net_worth
+    snap = SimpleNamespace(
+        totals_json=_json.dumps({"total_usd_value_k": 1069.0}),  # incl 69 stub
+        positions_json=_json.dumps([
+            {"asset_type": "Real estate", "usd_value_k": 69.0, "symbol": "-"},
+            {"asset_type": "Equity", "usd_value_k": 1000.0, "symbol": "VOO"},
+        ]),
+        real_estate_json=_json.dumps([
+            {"location": "Keret", "currency": "NIS", "role": "Home", "value_local": 2_500_000.0},
+            {"location": "Keret", "currency": "NIS", "role": "Loan", "value_local": -350_000.0},
+        ]),
+        fx_usd_nis=2.94161, fx_usd_eur=0.84931,
+    )
+    _nis, usd = _net_worth(snapshot=snap, fx_usd_nis=2.94161)
+    # 1069 - 69 stub + (2,150,000 NIS / 2.94161 / 1000 = 730.9K) = 1730.9K
+    assert round(usd / 1000.0) == round(1000 + 730.9)
+
+
+def test_cash_runway_excludes_real_estate():
+    """The "Aborad" property (symbol "-") must not be counted as cash."""
+    import json as _json
+    from types import SimpleNamespace
+    from argosy.services.wealth_dashboard import _cash_runway
+    snap = SimpleNamespace(positions_json=_json.dumps([
+        {"asset_type": "Real estate", "usd_value_k": 69.0, "symbol": "-", "currency": "USD"},
+        {"asset_type": "Cash", "usd_value_k": 10.0, "symbol": "-", "currency": "USD"},
+    ]))
+    blk = _cash_runway(snapshot=snap, burn_nis=10000.0, fx_usd_nis=3.0)
+    # Only the $10K cash counts (×1000×3 = 30,000 NIS), not the $69K property.
+    assert round(blk.cash_nis) == 30000

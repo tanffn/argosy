@@ -31,6 +31,7 @@ import { cn } from "@/lib/utils";
 
 interface WealthDashboardProps {
   userId: string;
+  excludeNvda?: boolean;
 }
 
 /**
@@ -51,7 +52,7 @@ interface WealthDashboardProps {
  * for a metric, the card renders "—" with the missing-data tooltip
  * surfaced via ``StatCard.missingReasons``.
  */
-export function WealthDashboard({ userId }: WealthDashboardProps) {
+export function WealthDashboard({ userId, excludeNvda = false }: WealthDashboardProps) {
   const [data, setData] = useState<WealthDashboardDTO | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,7 +65,7 @@ export function WealthDashboard({ userId }: WealthDashboardProps) {
     // the end; setting it true synchronously would trigger a cascading
     // render that the react-hooks/set-state-in-effect rule catches.
     api
-      .wealthDashboard(userId)
+      .wealthDashboard(userId, excludeNvda)
       .then((d) => {
         if (!cancelled) setData(d);
       })
@@ -77,7 +78,7 @@ export function WealthDashboard({ userId }: WealthDashboardProps) {
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [userId, excludeNvda]);
 
   if (loading) {
     return <WealthDashboardSkeleton />;

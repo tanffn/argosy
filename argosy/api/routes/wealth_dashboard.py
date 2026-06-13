@@ -160,6 +160,7 @@ class WealthDashboardDTO(BaseModel):
 @router.get("/wealth-dashboard", response_model=WealthDashboardDTO)
 def get_wealth_dashboard(
     user_id: str = Query("ariel"),
+    exclude_nvda: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> WealthDashboardDTO:
     """Compute the full /portfolio top-of-page dashboard for ``user_id``.
@@ -169,7 +170,8 @@ def get_wealth_dashboard(
     precondition fails, the relevant fields are ``None`` and the block's
     ``missing_reasons`` carries the human-readable cause.
     """
-    dash: WealthDashboard = compute_wealth_dashboard(db, user_id=user_id)
+    dash: WealthDashboard = compute_wealth_dashboard(
+        db, user_id=user_id, exclude_nvda=exclude_nvda)
     # asdict round-trip lands us straight in pydantic-validated shape.
     return WealthDashboardDTO(**wealth_dashboard_to_dict(dash))
 

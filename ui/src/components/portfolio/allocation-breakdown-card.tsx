@@ -45,13 +45,16 @@ function EstateBadge({ safe }: { safe: boolean | null }) {
  * This is the real "current vs plan target" — not the plan glide's modelled
  * today-anchor.
  */
-export function AllocationBreakdownCard({ userId = "ariel" }: { userId?: string }) {
+export function AllocationBreakdownCard({
+  userId = "ariel",
+  excludeNvda = false,
+}: {
+  userId?: string;
+  excludeNvda?: boolean;
+}) {
   const [data, setData] = useState<AllocationBreakdownDTO | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  // NVDA (~61% of the book) flattens every other class to a sliver, so the
-  // diversified core is unreadable. Default to excluding it; toggle to include.
-  const [excludeNvda, setExcludeNvda] = useState(true);
 
   useEffect(() => {
     api
@@ -97,18 +100,7 @@ export function AllocationBreakdownCard({ userId = "ariel" }: { userId?: string 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <CardTitle>Current allocation vs plan target</CardTitle>
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground whitespace-nowrap cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={excludeNvda}
-              onChange={(e) => setExcludeNvda(e.target.checked)}
-              className="accent-primary"
-            />
-            Exclude NVDA
-          </label>
-        </div>
+        <CardTitle>Current allocation vs plan target</CardTitle>
         <CardDescription>
           Your live holdings by asset class vs the canonical plan target. Click a
           class to see its symbols. Total {fmtK(data.total_value_k)}
