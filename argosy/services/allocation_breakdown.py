@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from argosy.services import instrument_reference
 from argosy.services.target_allocation_doc import OTHER_SINGLES_LABEL
 
 # Live snapshot ``asset_type`` (lower-cased) -> canonical plan class label.
@@ -57,7 +58,19 @@ class CategoryBreakdown:
     holdings: tuple[HoldingRow, ...] = field(default=())
 
 
-def _label_for(asset_type: str) -> str:
+def _label_for(asset_type: str, symbol: str = "", details: str = "") -> str:
+    # Pure non-US equity must not fall into a US / real-assets bucket via the
+    # raw asset_type (TA-200 is labeled "Core Equity"; EIMI is labeled "REIT").
+    # Route by the instrument reference's region — but ONLY pure non-US
+    # (Israel/Europe/EM); never "Global", since a global fund is partly US and
+    # is not ex-US exposure (codex review).
+    ref = instrument_reference.lookup(symbol, details)
+    if ref is not None and ref.asset_class == "Equity" and ref.region in (
+        instrument_reference.REGION_ISRAEL,
+        instrument_reference.REGION_EUROPE,
+        instrument_reference.REGION_EM,
+    ):
+        return _ASSET_TYPE_TO_LABEL["international"]
     at = (asset_type or "").strip().lower()
     return _ASSET_TYPE_TO_LABEL.get(at, asset_type.strip() or "Unclassified")
 
@@ -110,12 +123,27 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
         return []
 
     targets = _doc_targets_by_label(doc)
+
+    # Resolve one asset_type per ticker (prefer non-blank): the export leaves
+    # asset_type blank on some lots of a ticker held with a populated type
+    # elsewhere (e.g. the $3K Schwab SCHG vs the Leumi SCHG "Growth"). Without
+    # this the blank lot falls into "Unclassified".
+    effective_type: dict[str, str] = {}
+    for p in positions:
+        sym = (getattr(p, "symbol", "") or "").strip().upper()
+        at = (getattr(p, "asset_type", "") or "").strip()
+        if sym and at and sym not in effective_type:
+            effective_type[sym] = at
+
     grouped: dict[str, list] = {}
     for p in positions:
         v = float(getattr(p, "usd_value_k", 0.0) or 0.0)
         if v <= 0:
             continue
-        grouped.setdefault(_label_for(getattr(p, "asset_type", "")), []).append(p)
+        sym = (getattr(p, "symbol", "") or "").strip().upper()
+        at = (getattr(p, "asset_type", "") or "").strip() or effective_type.get(sym, "")
+        label = _label_for(at, getattr(p, "symbol", ""), getattr(p, "details", ""))
+        grouped.setdefault(label, []).append(p)
 
     rows: list[CategoryBreakdown] = []
     for label, ps in grouped.items():

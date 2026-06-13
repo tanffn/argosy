@@ -82,6 +82,40 @@ def test_breakdown_exclude_nvda_renormalizes_to_ex_nvda_book():
     assert round(sum(r.current_pct for r in rows), 1) == 100.0
 
 
+def test_breakdown_blank_asset_type_inherits_sibling_ticker_type():
+    # The $3K Schwab SCHG row has a blank asset_type; a $17K Leumi SCHG row is
+    # "Growth". Same ticker → the blank inherits Growth (US growth tilt), not
+    # the "Unclassified" bucket.
+    snap = _snap([
+        _pos("SCHG", "", 3.0, details=""),
+        _pos("SCHG", "Growth", 17.0, details="(...) SCHG"),
+        _pos("NVDA", "NVIDIA", 80.0),
+    ])
+    rows = build_allocation_breakdown(snap, _doc())
+    labels = {r.label for r in rows}
+    assert "Unclassified" not in labels
+    growth = next(r for r in rows if r.label == "US growth tilt (ex-NVDA)")
+    assert {h.symbol for h in growth.holdings} == {"SCHG"}
+    assert round(growth.current_value_k, 1) == 20.0
+
+
+def test_breakdown_pure_non_us_equity_routes_to_international():
+    # TA-200 (Israel) and EIMI (EM, source asset_type REIT) must NOT sit under
+    # "US broad-market core" / "Real assets" — they route to International.
+    snap = _snap([
+        _pos('מחקה ת"א-200', "Core Equity", 40.0, details='ATF מחקה ת"א-200'),
+        _pos("EIMI", "REIT", 16.0, details="(ISHR CORE EM IMI) EIMI LN"),
+        _pos("CSPX", "Core Equity", 44.0, details="(ISHR CORE S&P500) CSPX LN"),
+    ])
+    rows = build_allocation_breakdown(snap, _doc())
+    by = {r.label: r for r in rows}
+    intl = by.get("International developed (ex-US)")
+    assert intl is not None
+    assert {h.symbol for h in intl.holdings} == {'מחקה ת"א-200', "EIMI"}
+    # The genuine US ETF stays in US core.
+    assert "CSPX" in {h.symbol for h in by["US broad-market core"].holdings}
+
+
 def test_breakdown_unmapped_category_surfaces_with_zero_target():
     snap = _snap([_pos("NVDA", "NVIDIA", 500.0),
                   _pos("WEIRD", "Crypto-thing", 500.0)])
