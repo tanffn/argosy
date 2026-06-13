@@ -285,6 +285,29 @@ def handle_xls_upload(
     _write_through_resolved_snapshot(db, user_id=user_id, tsv_path=target_path,
                                      commit=True)
 
+    # Reconciliation gate: diff the persisted snapshot against the RAW source
+    # (XLS positions + both cash balances) and surface any mismatch LOUDLY.
+    # Internal consistency is not correctness — this catches a dropped cash
+    # currency or a symbol collision before it reaches the surfaces.
+    from argosy.services.portfolio_ingest.reconcile import reconcile_leumi_against_xls
+    try:
+        discrepancies = reconcile_leumi_against_xls(
+            snapshot_positions=parse_portfolio_tsv(target_path).positions,
+            xls_positions=xls.positions,
+            osh_closing_nis=osh_closing_nis,
+            usd_closing=usd_closing,
+        )
+        if discrepancies:
+            _log.warning(
+                "portfolio_snapshot.reconcile_discrepancies",
+                extra={"count": len(discrepancies), "issues": discrepancies},
+            )
+            synth_warnings = synth_warnings + [
+                "RECONCILIATION vs raw Leumi source: " + d for d in discrepancies
+            ]
+    except Exception as exc:  # noqa: BLE001 — never block ingest on the gate itself
+        _log.warning("portfolio_snapshot.reconcile_failed", extra={"error": str(exc)})
+
     return PairResolution(
         status="resolved",
         pending_pair_id=part.id,
