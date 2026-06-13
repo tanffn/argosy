@@ -3,8 +3,63 @@ ARGOSY — NEW SESSION HANDOVER  (plain text)
 Branch: feat/alternatives-asset-class   |   Off main @ 9941834   |   NOT merged
 ================================================================================
 
+********************************************************************************
+PART 1 — DISCUSSION & REVIEW POINTS FOR NEXT SESSION  (READ FIRST — the agenda)
+********************************************************************************
+
+This is the user's (Ariel's) framing of what each surface is FOR. Treat it as the
+authoritative product model and review the codebase against it. Where the build
+does not yet match this, that is the work — discuss with Ariel, don't assume.
+
+THE FOUR SURFACES — each has ONE clear job:
+
+1. PLAN tab = HIGH-LEVEL STRATEGIC PLANNING.
+   "How can we retire, given what we know right now?" — forecasts, analysis,
+   Monte Carlo, the strategic frame. This is where THE PLAN is generated across
+   horizons (policy, target, transition, glide, theses). Forward-looking.
+
+2. RETIREMENT tab = TRACKING PLAN EXECUTION.
+   "Are we on track?" — measures actual progress against the plan the Plan tab
+   produced; must show the expected retirement date. NOT a second planner.
+
+3. PORTFOLIO tab = CURRENT vs WHERE WE SHOULD BE.
+   Current allocation against the plan's target, INCLUDING FREE CASH in BOTH
+   USD and NIS (the system must know how much cash there is and where it sits),
+   "where is our money", and a high-level review of WHAT WE ALREADY OWN
+   (hold / sell / buy on existing holdings).
+
+4. PROPOSALS tab = ACTIONS TO TAKE.
+   - Surface NEW buy opportunities (new stocks worth buying).
+   - How to DEPLOY the free cash (it must know the cash balance, USD + NIS).
+   - DRIVEN BY A DAILY AGENT (this is a hard requirement): an agent runs every
+     day to decide whether changes are needed. Triggered NOT only by a free-cash
+     change but also by a MARKET-SENTIMENT change. Broad/long ETFs probably won't
+     change much; INDIVIDUAL STOCKS might — so the daily check must reason at the
+     per-holding / per-candidate level, not just on cash deltas.
+
+REVIEW POINTS / IMPLICATIONS to work through next session:
+- The Alternatives sleeve built this branch is NOT a standalone feature — it is
+  part of THE PLAN's target allocation. It is sourced during plan synthesis, so it
+  belongs on the PLAN tab (as part of the strategic target) and on PORTFOLIO
+  (current vs that target). "Where do I see it" = those surfaces once a synthesis
+  runs — verify each actually renders it, including the free-cash context.
+- The PROPOSALS daily agent is the headline gap to scope: a scheduled daily job
+  that (a) reads current cash (USD+NIS) and holdings, (b) detects market-sentiment
+  shifts at the per-stock level, (c) emits proposals — deploy-cash plans, new
+  opportunities, and hold/sell/buy calls. Connect it to the existing Deployment
+  Advisor (GET /api/portfolio/deploy-cash) and the alternatives sourcing rather
+  than building parallel logic. Free-cash AMOUNT (USD+NIS) must be a first-class,
+  always-available input across Portfolio + Proposals.
+- Earlier in this session the assistant framed the alternatives work as "no UI
+  needed, renders via /plan draft." Ariel pushed back: the surfaces have defined
+  jobs and the work must actually show up in them. So the open question is NOT
+  "did we change UI" but "does each tab do its job above, with cash awareness and
+  a daily proposals agent" — review and plan against that.
+
+********************************************************************************
+
 --------------------------------------------------------------------------------
-0. HOW TO WORK IN THIS REPO  (read before doing anything)
+PART 2 — HOW TO WORK IN THIS REPO  (read before doing anything)
 --------------------------------------------------------------------------------
 - Working dir: D:\Projects\financial-advisor  (= ARGOSY_HOME).
 - Python: .venv\Scripts\python.exe  (use it directly; uv sync / uv run also fine).
