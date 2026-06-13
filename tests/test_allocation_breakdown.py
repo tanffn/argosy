@@ -5,6 +5,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from argosy.services.allocation_breakdown import build_allocation_breakdown
+from argosy.services.target_allocation_doc import OTHER_SINGLES_LABEL
+
+
+def _re_pos(usd_k):
+    return SimpleNamespace(symbol="-", asset_type="Real estate", usd_value_k=usd_k,
+                           details="Real estate", location="Aborad", currency="USD")
 
 
 def _pos(symbol, asset_type, usd_k, details=""):
@@ -133,6 +139,49 @@ def test_breakdown_sgov_counts_in_cash_and_tbills():
     # SGOV ($105) + cash ($20) both land here.
     assert round(cash.current_value_k, 1) == 125.0
     assert "Short-duration IG bonds" not in by
+
+
+def test_targets_sum_to_100_including_unheld_plan_classes():
+    # Hold only 2 of the 4 plan classes; the unheld ones must still appear as
+    # 0%-current rows so the target column conserves to 100%.
+    snap = _snap([_pos("NVDA", "NVIDIA", 130.0), _pos("VOO", "Core Equity", 870.0)])
+    rows = build_allocation_breakdown(snap, _doc())
+    by = {r.label: r for r in rows}
+    assert by["Dividend-quality income"].current_pct == 0.0
+    assert by["Cash & T-bills (incl. ILS tranche)"].current_pct == 0.0
+    assert round(sum(r.target_pct or 0.0 for r in rows), 1) == 100.0
+
+
+def test_physical_real_estate_excluded_from_investable_breakdown():
+    snap = _snap([_pos("VOO", "Core Equity", 100.0), _re_pos(69.0)])
+    rows = build_allocation_breakdown(snap, _doc())
+    # The $69K physical property is gone; the book total is just VOO.
+    assert all(h.value_k != 69.0 for r in rows for h in r.holdings)
+    voo = next(r for r in rows if r.label == "US broad-market core")
+    assert voo.current_pct == 100.0
+
+
+def test_redeploy_singles_show_zero_target_not_none():
+    snap = _snap([_pos("SOFI", "Individual Stocks", 50.0),
+                  _pos("VOO", "Core Equity", 50.0)])
+    rows = build_allocation_breakdown(snap, _doc())
+    singles = next(r for r in rows if r.label == OTHER_SINGLES_LABEL)
+    assert singles.target_pct == 0.0
+
+
+def test_bare_equity_maps_to_core_not_orphan():
+    snap = _snap([_pos("BRK/B", "Equity", 90.0), _pos("VOO", "Core Equity", 10.0)])
+    rows = build_allocation_breakdown(snap, _doc())
+    by = {r.label: r for r in rows}
+    assert "Equity" not in by, "no orphan 'Equity' catch-all row"
+    assert "BRK/B" in {h.symbol for h in by["US broad-market core"].holdings}
+
+
+def test_exclude_nvda_renormalises_targets_to_100():
+    snap = _snap([_pos("NVDA", "NVIDIA", 600.0), _pos("VOO", "Core Equity", 400.0)])
+    rows = build_allocation_breakdown(snap, _doc(), exclude_nvda=True)
+    assert "Strategic single-stock (NVDA)" not in {r.label for r in rows}
+    assert round(sum(r.target_pct or 0.0 for r in rows), 0) == 100.0
 
 
 def test_breakdown_unmapped_category_surfaces_with_zero_target():

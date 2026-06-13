@@ -29,6 +29,10 @@ from argosy.services.target_allocation_doc import OTHER_SINGLES_LABEL
 _ASSET_TYPE_TO_LABEL: dict[str, str] = {
     "nvidia": "Strategic single-stock (NVDA)",
     "core equity": "US broad-market core",
+    # Bare "equity" (BRK/B, IUHC carry the generic word, not a tilt) → the
+    # US broad-market core bucket, rather than an orphan "Equity" row with no
+    # plan target.
+    "equity": "US broad-market core",
     "dividend": "Dividend-quality income",
     "growth": "US growth tilt (ex-NVDA)",
     "international": "International developed (ex-US)",
@@ -146,11 +150,28 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
     positions = list(getattr(snapshot, "positions", []) or [])
     if exclude_nvda:
         positions = [p for p in positions if not _is_nvda(p)]
+    # Physical real estate (the "Aborad" property aggregate) is illiquid net
+    # worth, not an investable allocation sleeve — it lives in the dedicated
+    # Real-estate panel and must NOT sit in "Real assets (REIT/TIPS)" next to
+    # tradeable REIT ETFs (Ariel: "it's not something I can easily trade/sell").
+    positions = [
+        p for p in positions
+        if (getattr(p, "asset_type", "") or "").strip().lower() != "real estate"
+    ]
     total = sum(float(getattr(p, "usd_value_k", 0.0) or 0.0) for p in positions)
     if total <= 0:
         return []
 
     targets = _doc_targets_by_label(doc)
+    # When NVDA is excluded, drop its plan class too and renormalise the
+    # remaining targets to 100% — otherwise current %s (over the ex-NVDA book)
+    # and target %s (incl. NVDA) aren't comparable, and NVDA's target would
+    # appear as a phantom 0%-current row.
+    if exclude_nvda and targets:
+        targets = {k: v for k, v in targets.items() if "NVDA" not in k}
+        tsum = sum(targets.values())
+        if tsum > 0:
+            targets = {k: round(v * 100.0 / tsum, 2) for k, v in targets.items()}
 
     # Resolve one asset_type per ticker (prefer non-blank): the export leaves
     # asset_type blank on some lots of a ticker held with a populated type
@@ -189,14 +210,34 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
             ),
             key=lambda h: -h.value_k,
         ))
+        # The "non-NVDA singles to redeploy" bucket has no plan class because
+        # the plan's intent is to wind it down — show target 0%, not blank.
+        tgt = targets.get(label)
+        if tgt is None and label == OTHER_SINGLES_LABEL:
+            tgt = 0.0
         rows.append(CategoryBreakdown(
             label=label,
             current_pct=round(100.0 * cat_value / total, 2),
-            target_pct=targets.get(label),  # None when the plan has no such class
+            target_pct=tgt,
             current_value_k=round(cat_value, 2),
             holdings=holdings,
         ))
-    rows.sort(key=lambda r: -r.current_pct)
+
+    # Surface EVERY plan-target class, including those with no current holding
+    # (e.g. US low-volatility equity, Short-duration IG bonds) as 0%-current
+    # rows — otherwise the target column silently omits them and doesn't sum to
+    # 100%, and the user can't see where they're under-allocated.
+    held_labels = {r.label for r in rows}
+    for label, tgt in targets.items():
+        if label not in held_labels:
+            rows.append(CategoryBreakdown(
+                label=label, current_pct=0.0, target_pct=tgt,
+                current_value_k=0.0, holdings=(),
+            ))
+
+    # Sort by current weight, then by target — so 0%-current plan classes are
+    # ordered by how much the plan wants there (not arbitrarily).
+    rows.sort(key=lambda r: (-r.current_pct, -(r.target_pct or 0.0)))
     return rows
 
 
