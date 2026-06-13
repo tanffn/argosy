@@ -353,6 +353,7 @@ _SECTOR_ORDER: tuple[str, ...] = (
     "Tech",
     "ETF/Index",
     "Value ETF",
+    "Dividend ETF",
     "Israeli ETF",
     "Conglomerate",
     "Financials",

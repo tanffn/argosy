@@ -51,12 +51,22 @@ def test_name_keyword_fallback_for_untickerable_row():
     assert ref.region == REGION_EUROPE
 
 
-def test_known_limitation_stoxx_symbol_collision_with_realty_income():
-    # The STOXX row's Symbol cell is the bogus "O", which IS a real ticker
-    # (Realty Income). The table wins for the resolved ticker, so this row is
-    # mis-attributed until its symbol is fixed upstream. Documented, not silent.
+def test_stoxx_o_collision_resolved_by_narrow_override():
+    # The STOXX row's Symbol cell is the bogus "O" (= Realty Income's ticker).
+    # A narrow, instrument-specific override classifies it as European equity
+    # rather than letting the table mis-attribute it to Realty Income.
     ref = lookup("O", "אי בי אי מחקה STOXX Europe 600")
-    assert ref is not None and ref.asset_class == "Real Estate"
+    assert ref is not None
+    assert ref.asset_class == "Equity"
+    assert ref.region == REGION_EUROPE
+    # The override is narrow: a genuine Realty Income row is unaffected.
+    realty = lookup("O", "(ריאלטי אינקם) O")
+    assert realty is not None and realty.asset_class == "Real Estate"
+
+
+def test_schd_is_dividend_sector():
+    ref = lookup("SCHD", "(שוואב ארה\"ב דיבידנד) SCHD")
+    assert ref is not None and ref.sector == "Dividend ETF"
 
 
 def test_unknown_ticker_returns_none():

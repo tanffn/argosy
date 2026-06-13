@@ -33,6 +33,7 @@ ASSET_OTHER = "Other"
 SECTOR_TECH = "Tech"
 SECTOR_ETF_INDEX = "ETF/Index"
 SECTOR_VALUE_ETF = "Value ETF"
+SECTOR_DIVIDEND_ETF = "Dividend ETF"
 SECTOR_ISRAELI_ETF = "Israeli ETF"
 SECTOR_CONGLOMERATE = "Conglomerate"
 SECTOR_FINANCIALS = "Financials"
@@ -83,12 +84,14 @@ _REFERENCE: dict[str, InstrumentRef] = {
     "QQQM": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
     "CNDX": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
     "SCHG": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "SCHD": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
+    # SCHD is a quality-dividend fund — a material style sleeve (~7% of the
+    # book); keep it distinct from plain index exposure (codex review).
+    "SCHD": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND_ETF, REGION_US),
     "SPMO": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
     "XZEW": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
     "VTV": InstrumentRef(ASSET_EQUITY, SECTOR_VALUE_ETF, REGION_US),
     # UCITS twins the canonical plan buys (non-US-situs, but track US).
-    "FUSA": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
+    "FUSA": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND_ETF, REGION_US),
     "EXUS": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_GLOBAL),
     "R1GR": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
     "SPMV": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
@@ -129,11 +132,26 @@ def _is_hebrew_ticker(symbol: str) -> bool:
     return any("֐" <= ch <= "׿" for ch in (symbol or ""))
 
 
+# Narrow, instrument-specific overrides for rows whose Symbol cell is a wrong
+# but VALID ticker (so the table would mis-attribute them). Keyed on a details
+# substring + the bad symbol. Deliberately NOT a general name-keyword-before-
+# table rule — generic words ("emerging") could then override real tickers
+# (codex review). Only the IBI STOXX Europe 600 tracker (Symbol cell "O", the
+# Realty Income ticker) qualifies today.
+_COLLISION_OVERRIDES: tuple[tuple[str, str, InstrumentRef], ...] = (
+    ("O", "stoxx europe", InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_EUROPE)),
+)
+
+
 def lookup(symbol: str, details: str = "") -> InstrumentRef | None:
     """Return the canonical reference for a resolved ticker, or ``None`` when
     the instrument isn't in the curated table and no name-keyword/Israeli
     fallback applies (caller then uses its raw-field heuristic)."""
     sym = (symbol or "").upper().strip()
+    hay_all = (details or "").lower()
+    for bad_sym, kw, ref in _COLLISION_OVERRIDES:
+        if sym == bad_sym and kw in hay_all:
+            return ref
     if sym in _REFERENCE:
         return _REFERENCE[sym]
     # TASE-listed (Hebrew ticker, no latin symbol) → Israeli equity.
