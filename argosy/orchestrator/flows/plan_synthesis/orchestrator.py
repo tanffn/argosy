@@ -852,8 +852,50 @@ def run_synthesis(
     # producing an un-anchored draft — the regression behind the draft-36 422.
     from argosy.services.target_allocation_doc import resolve_target_allocation_json
 
+    # Team-source the Alternatives sleeve (size + instruments are agent-derived,
+    # deterministically verified, estate-gated, then debated by an ETP-aware
+    # fleet + sized by the sleeve fund manager — 0% is a valid outcome). The
+    # decision threads into the canonical allocation. Best-effort + NEVER fatal:
+    # on any failure the plan is built with NO alternatives sleeve (0%), never a
+    # stale or unverified one.
+    _alternatives_sleeve = None
+    try:
+        from argosy.orchestrator.flows.plan_synthesis.alternatives_phase import (
+            run_alternatives_phase,
+        )
+
+        _alternatives_sleeve = run_alternatives_phase(
+            user_id=user_id,
+            macro_context={
+                "anchor_sigma": 0.18,
+                "regime": (
+                    "Israeli long-hold investor, heavily NVDA-concentrated (via RSUs) "
+                    "and actively deconcentrating; elevated US equity valuations; "
+                    "geopolitical risk elevated. Estate constraint: every instrument "
+                    "must be non-US-domiciled."
+                ),
+            },
+        )
+        log.info(
+            "plan_synthesis.alternatives_decision",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            decision=_alternatives_sleeve.decision,
+            target_pct=_alternatives_sleeve.target_pct,
+            instruments=len(_alternatives_sleeve.instruments),
+        )
+    except Exception as exc:  # noqa: BLE001 — alternatives phase never breaks synthesis
+        log.warning(
+            "plan_synthesis.alternatives_phase_failed",
+            user_id=user_id,
+            decision_run_id=decision_run_id,
+            error=str(exc),
+        )
+        _alternatives_sleeve = None
+
     _target_allocation_json = resolve_target_allocation_json(
-        session, user_id, decision_run_id, datetime.now(timezone.utc).date()
+        session, user_id, decision_run_id, datetime.now(timezone.utc).date(),
+        alternatives_sleeve=_alternatives_sleeve,
     )
 
     draft = PlanVersion(

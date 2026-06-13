@@ -224,6 +224,7 @@ def build_target_allocation_doc(
     today_composition: dict[str, float],
     quarters: int = 8,
     anchor_sigma: float | None = None,
+    alternatives_sleeve: "object | None" = None,
 ) -> TargetAllocationDoc:
     """Assemble the canonical doc from the deterministic ``allocation_plan`` engine.
 
@@ -245,7 +246,7 @@ def build_target_allocation_doc(
     )
 
     anchor = SIGMA_DIVERSIFIED if anchor_sigma is None else anchor_sigma
-    alloc = build_target_allocation(anchor_sigma=anchor)
+    alloc = build_target_allocation(anchor_sigma=anchor, alternatives_sleeve=alternatives_sleeve)
 
     classes = [
         AllocationClassDoc(
@@ -364,19 +365,23 @@ def _deconcentration_quarters(
 
 
 def build_plan_target_allocation_doc(
-    db: "Session", user_id: str, decision_run_id: int, today: date
+    db: "Session", user_id: str, decision_run_id: int, today: date,
+    *, alternatives_sleeve: "object | None" = None,
 ) -> TargetAllocationDoc | None:
     """The DB-aware entry T1.5/backfill call: derive today's composition then
     build the canonical doc, or ``None`` when the composition can't be derived.
 
     The deconcentration glide spans the optimizer-chosen sell-down horizon
-    (T4.2, :func:`_deconcentration_quarters`) instead of a fixed 2-year taper."""
+    (T4.2, :func:`_deconcentration_quarters`) instead of a fixed 2-year taper.
+    ``alternatives_sleeve`` is the team's verified sleeve decision (or None for no
+    sleeve), threaded into the engine."""
     comp = load_full_book_today_composition(db, user_id, decision_run_id)
     if comp is None:
         return None
     quarters = _deconcentration_quarters(db, user_id, today)
     return build_target_allocation_doc(
-        today=today, today_composition=comp, quarters=quarters
+        today=today, today_composition=comp, quarters=quarters,
+        alternatives_sleeve=alternatives_sleeve,
     )
 
 
@@ -406,7 +411,8 @@ def _strip_stale_alternatives(doc: "TargetAllocationDoc") -> None:
 
 
 def resolve_target_allocation_json(
-    db: "Session", user_id: str, decision_run_id: int, today: date
+    db: "Session", user_id: str, decision_run_id: int, today: date,
+    *, alternatives_sleeve: "object | None" = None,
 ) -> str | None:
     """Persistence-time resolver: the canonical doc JSON for a new draft, with a
     carry-forward fallback so a transient build failure never produces an
@@ -432,7 +438,9 @@ def resolve_target_allocation_json(
     synthesis is never broken by the allocation doc.
     """
     try:
-        doc = build_plan_target_allocation_doc(db, user_id, decision_run_id, today)
+        doc = build_plan_target_allocation_doc(
+            db, user_id, decision_run_id, today, alternatives_sleeve=alternatives_sleeve
+        )
         if doc is not None:
             return doc.model_dump_json()
         log.warning(

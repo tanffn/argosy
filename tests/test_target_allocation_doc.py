@@ -381,6 +381,45 @@ def test_carry_forward_strips_stale_alternatives_sleeve(monkeypatch) -> None:
     assert cash.target_pct == pytest.approx(23.0)
 
 
+def _approved_sleeve():
+    from argosy.services.alternatives_types import (
+        AlternativesSleeveDecision, VerificationEvidence, VerificationResult,
+        VerifiedAlternativesCandidate,
+    )
+    cand = VerifiedAlternativesCandidate(
+        symbol="SGLD", name="Invesco Physical Gold ETC", asset_class="precious_metals",
+        domicile="IE", isin="IE00B579F325", weight_within_sleeve_pct=100.0,
+        conviction="HIGH", thesis_md="gold",
+        verification=VerificationResult(
+            symbol="SGLD", verified=True, severity="GREEN", reason="ok",
+            evidence=VerificationEvidence(isin_checksum_ok=True, isin_prefix="IE",
+                                          domicile_coherent=True, registry_hit=True),
+            resolved_isin="IE00B579F325", resolved_domicile="IE"),
+    )
+    return AlternativesSleeveDecision(
+        target_pct=3.0, sleeve_sigma=0.16, instruments=[cand], decision="approve",
+        rationale_md="team-sourced gold sleeve",
+    )
+
+
+def test_doc_includes_team_sourced_alternatives_when_supplied() -> None:
+    doc = build_target_allocation_doc(
+        today=date(2026, 6, 12), today_composition=_TODAY_FULL_BOOK,
+        alternatives_sleeve=_approved_sleeve(),
+    )
+    alt = next((c for c in doc.classes if c.sigma_class == "alternatives"), None)
+    assert alt is not None
+    assert alt.target_pct == pytest.approx(3.0, abs=0.02)
+    assert any(i.symbol == "SGLD" for i in alt.instruments)
+
+
+def test_doc_has_no_alternatives_without_supplied_sleeve() -> None:
+    doc = build_target_allocation_doc(
+        today=date(2026, 6, 12), today_composition=_TODAY_FULL_BOOK
+    )
+    assert not any(c.sigma_class == "alternatives" for c in doc.classes)
+
+
 def test_carry_forward_without_alternatives_is_unchanged_except_provenance(monkeypatch) -> None:
     from argosy.services.target_allocation_doc import resolve_target_allocation_json
 
