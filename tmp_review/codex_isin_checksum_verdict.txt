@@ -1,0 +1,18 @@
+1. **High - malformed Unicode ISINs can score valid.**  
+   In [instrument_verification.py](D:/Projects/financial-advisor/argosy/services/instrument_verification.py:53), `upper()`, `isalpha()`, `isalnum()`, and `isdigit()` are Unicode-aware. ISO-style ISIN validation should be constrained to the 12-character `A-Z/0-9` shape; the letter conversion is explicitly capital-letter/ASCII based. Sources checked: ISO structure summary and check digit shape, plus ISIN.org’s ASCII-minus-55/Luhn description. ([committee.iso.org](https://committee.iso.org/files/live/sites/tc68/files/Robin%20Doyle/What%20is%20ISIN-Final.pdf)) ([isin.org](https://www.isin.org/isin-format/))
+
+   Concrete false positives:
+   - `IE00B579F32٥` where final char is Arabic-Indic digit five `U+0665`: implementation returns `True`. Hand check for ASCII payload `IE00B579F32`: expansion `181400115791532`, payload Luhn sum `45`, check digit `5`. Correct ASCII ISIN is `IE00B579F325`; the Unicode-digit variant is malformed.
+   - `IE00B579F3٢5` where body char is Arabic-Indic digit two `U+0662`: implementation returns `True` for the same numeric payload, but body is not ASCII alnum.
+   - `IEß000000005`: implementation returns `True`. `upper()` expands it to `IESS000000005` length `13`; expanded digits `18142828000000005`, full Luhn sum `40`. Original is not a valid 12-character ISIN.
+
+   Same root also makes some malformed inputs raise instead of returning `False`, e.g. `IE00B579F32²`.
+
+2. **None - Luhn parity/direction is correct for canonical ASCII inputs.**  
+   The loop over `reversed(digits)` doubles `i % 2 == 1`, so when validating the full expanded string including check digit, the check digit is not doubled and the rightmost payload digit is doubled. That matches Luhn/ISIN check-digit calculation from the right. Example: `IE00B579F32` expands to `181400115791532`; doubling from the right gives sum `45`, so check digit is `5`, and `IE00B579F325` passes while `IE00B579F320` fails. I found no ASCII `A-Z0-9` parity mis-score for allowed prefixes.
+
+3. **Low - `isin_country_prefix` accepts non-ASCII alphabetic prefixes.**  
+   In [instrument_verification.py](D:/Projects/financial-advisor/argosy/services/instrument_verification.py:40), `p.isalpha()` accepts Unicode letters. Example: `isin_country_prefix("ΙE00B579F325")` returns Greek-Iota `"ΙE"` instead of `None`. `isin_is_valid()` rejects it later via the allowlist, so this mostly affects callers/evidence that treat any non-`None` prefix as an ISO prefix.
+
+4. **Info/Scope - fixed prefix allowlist false-rejects legitimate ISO ISINs outside this book’s scope.**  
+   This is not a false-positive risk, but it means `isin_is_valid()` is not a general ISO 6166 validator. Example: Deutsche Börse lists Toyota Motor Corp as `JP3633400001`. ([live.deutsche-boerse.com](https://live.deutsche-boerse.com/equity/toyota-motor-corp)) Hand check: payload `JP363340000` expands to `1925363340000`, Luhn payload sum `49`, check digit `1`; implementation returns `False` only because `JP` is not in `_ISO_COUNTRY_PREFIXES`. If this is intentional scoping, split “ISO checksum/structure valid” from “prefix allowed for this book” to avoid semantic drift.

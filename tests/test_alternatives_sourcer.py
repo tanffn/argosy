@@ -15,7 +15,7 @@ from argosy.agents.alternatives_sourcer import (
     AlternativesSourcerAgent,
     AssetProposal,
 )
-from argosy.services.alternatives_sourcing import gate_proposal
+from argosy.services.alternatives_sourcing import verify_and_gate_proposal
 
 
 def _asset(symbol="IGLN", domicile="IE", weight=60.0, **kw) -> AssetProposal:
@@ -89,48 +89,62 @@ def test_build_prompt_includes_hard_constraints() -> None:
     assert "flag" in blob
 
 
-# --- gate -----------------------------------------------------------------
+# --- verify + gate --------------------------------------------------------
+# Verification is STRICTER than the estate gate: only registry-confirmed,
+# checksum-valid, non-US picks survive. A real-but-unverified non-US instrument
+# is rejected (the safe default), not just a US-situs one.
 
 
-def test_gate_rejects_us_domiciled_red() -> None:
+def test_verify_gate_rejects_us_domiciled() -> None:
     prop = _proposal(
         [
-            _asset("IGLN", "IE", 50.0),
+            _asset("IGLN", "IE", 50.0),  # registry-confirmed -> verified
             _asset("IBIT", "US", 50.0, asset_class="crypto", isin="US4642875235"),
         ]
     )
-    clean, violations = gate_proposal(prop)
-    # the US-domiciled pick is excluded from clean
-    clean_syms = {i.symbol for i in clean}
+    clean, violations = verify_and_gate_proposal(prop)
+    clean_syms = {c.symbol for c in clean}
     assert "IBIT" not in clean_syms
     assert "IGLN" in clean_syms
-    # and surfaces as a RED violation
-    reds = [v for v in violations if v.severity == "RED"]
-    assert any(v.symbol == "IBIT" for v in reds)
+    assert any("IBIT" in v for v in violations)
 
 
-def test_gate_passes_all_non_us_clean() -> None:
+def test_verify_gate_passes_registry_confirmed_picks() -> None:
     prop = _proposal(
         [
-            _asset("IGLN", "IE", 60.0),
-            _asset("IB1T", "CH", 40.0, asset_class="crypto", isin="XS2940466316"),
+            _asset("IGLN", "IE", 50.0, isin="IE00B4ND3602"),
+            _asset("SGLD", "IE", 50.0, isin="IE00B579F325"),
         ]
     )
-    clean, violations = gate_proposal(prop)
+    clean, violations = verify_and_gate_proposal(prop)
     assert violations == []
-    assert {i.symbol for i in clean} == {"IGLN", "IB1T"}
-    # domicile stamped through to the typed instrument
-    assert {i.domicile for i in clean} == {"IE", "CH"}
+    assert {c.symbol for c in clean} == {"IGLN", "SGLD"}
+    assert all(c.verification.verified for c in clean)
+    assert {c.domicile for c in clean} == {"IE"}
 
 
-def test_gate_yellow_for_unstamped_domicile() -> None:
-    # An unrecognised domicile string normalises to None -> YELLOW, excluded.
-    prop = _proposal([_asset("MYSTERY", "Atlantis", 100.0)])
-    clean, violations = gate_proposal(prop)
+def test_verify_gate_rejects_real_but_unverified_nonus() -> None:
+    # IB1T is a real Swiss BTC ETP but is NOT in the verified-facts registry,
+    # so it is UNVERIFIED -> rejected (cannot become a holding) even though it is
+    # non-US. This is the safe default that blocks hallucinated instruments.
+    prop = _proposal(
+        [_asset("IB1T", "CH", 100.0, asset_class="crypto", isin="XS2940466316")]
+    )
+    clean, violations = verify_and_gate_proposal(prop)
     assert clean == []
-    assert len(violations) == 1
-    assert violations[0].severity == "YELLOW"
-    assert violations[0].symbol == "MYSTERY"
+    assert any("IB1T" in v for v in violations)
+
+
+def test_verify_gate_rejects_hallucinated_isin() -> None:
+    prop = _proposal(
+        [
+            _asset("SGLD", "IE", 80.0, isin="IE00B579F325"),  # real -> verified
+            _asset("HALLUC", "JE", 20.0, asset_class="crypto", isin="JE00FAKE0000"),
+        ]
+    )
+    clean, violations = verify_and_gate_proposal(prop)
+    assert {c.symbol for c in clean} == {"SGLD"}
+    assert any("HALLUC" in v for v in violations)
 
 
 # --- agent wiring ---------------------------------------------------------

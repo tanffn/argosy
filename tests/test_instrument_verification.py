@@ -30,6 +30,18 @@ def test_structural_rejects():
     assert isin_is_valid("") is False
 
 
+def test_non_ascii_lookalike_isins_rejected():
+    # Codex finding: Unicode-aware isdigit()/isalpha()/upper() let lookalike chars
+    # score valid. A strict ASCII guard must reject them.
+    assert isin_is_valid("IE00B579F32٥") is False  # Arabic-Indic digit 5 (check pos)
+    assert isin_is_valid("IE00B579F3٢5") is False  # Arabic-Indic digit 2 in body
+    assert isin_is_valid("IEß000000005") is False  # German eszett (upper -> SS)
+
+
+def test_country_prefix_rejects_non_ascii():
+    assert isin_country_prefix("ΙE00B579F325") is None  # Greek capital Iota
+
+
 def test_country_prefix():
     assert isin_country_prefix("IE00B579F325") == "IE"
     assert isin_country_prefix("US67066G1040") == "US"

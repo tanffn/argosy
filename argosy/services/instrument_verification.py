@@ -34,8 +34,8 @@ _ALPHA = string.ascii_uppercase
 
 
 def isin_country_prefix(isin: str | None) -> str | None:
-    """The two-letter issuing-country prefix of a 12-char ISIN, else None."""
-    if not isin or len(isin) != 12:
+    """The two-letter issuing-country prefix of a 12-char ASCII ISIN, else None."""
+    if not isin or len(isin) != 12 or not isin.isascii():
         return None
     p = isin[:2].upper()
     return p if p.isalpha() else None
@@ -48,9 +48,14 @@ def isin_is_valid(isin: str | None) -> bool:
     Algorithm (ISO 6166): expand each letter to two digits (A=10 ... Z=35), then
     apply the Luhn mod-10 check over the resulting digit string.
     """
-    if not isin or len(isin) != 12:
+    # Strict ASCII: Python's isalpha()/isalnum()/isdigit()/upper() are Unicode-
+    # aware, so lookalike chars (Arabic-Indic digits, eszett) would otherwise
+    # score valid and could smuggle a fabricated identifier past the gate.
+    if not isin or len(isin) != 12 or not isin.isascii():
         return False
     s = isin.upper()
+    if len(s) != 12:  # defensive: ASCII upper() never changes length, but guard anyway
+        return False
     if not (s[:2].isalpha() and s[2:11].isalnum() and s[11].isdigit()):
         return False
     if s[:2] not in _ISO_COUNTRY_PREFIXES:

@@ -17,6 +17,7 @@ set and surfaced as a violation — we never silently accept a US-situs pick.
 from __future__ import annotations
 
 from argosy.agents.alternatives_sourcer import AlternativesProposal
+from argosy.services.alternatives_types import VerifiedAlternativesCandidate
 from argosy.logging import get_logger
 from argosy.services.target_allocation_doc import (
     AllocationClassDoc,
@@ -70,63 +71,97 @@ def _proposal_to_instrument(p) -> AllocationInstrument:
     )
 
 
-def gate_proposal(
+def verify_and_gate_proposal(
     proposal: AlternativesProposal,
-) -> tuple[list[AllocationInstrument], list[DomicileViolation]]:
-    """Gate an ``AlternativesProposal`` through the estate / domicile validator.
+) -> tuple[list[VerifiedAlternativesCandidate], list[str]]:
+    """Verify each proposed instrument deterministically, THEN estate-gate the
+    survivors. Returns ``(verified_candidates, violations)``.
 
-    Builds a minimal :class:`TargetAllocationDoc` containing a single
-    Alternatives class with the proposed instruments, runs
-    :func:`validate_instrument_domicile`, and returns
-    ``(clean_instruments, violations)`` where:
+    This supersedes the old claim-trusting gate. The pipeline is:
 
-    - ``clean_instruments`` are the instruments with NO violation (estate-safe,
-      domicile-stamped, non-US-situs) — admissible for the canonical sleeve;
-    - ``violations`` are the RED (US-domiciled / US-situs) and YELLOW
-      (unstamped domicile) flags. Any flagged instrument is EXCLUDED from
-      ``clean_instruments`` — we fail loud and never silently accept a US-situs
-      pick.
+    1. :func:`verify_instrument` — deterministic ISIN checksum + domicile
+       coherence + verified-facts registry. Only ``verified=True`` (GREEN) picks
+       survive; a hallucinated ISIN, a US-situs prefix/domicile, or an
+       unknown/unstamped instrument is rejected here and can never become a
+       holding. Registry facts override the agent's claim.
+    2. Estate gate (belt-and-suspenders) — the survivors are re-run through
+       :func:`validate_instrument_domicile`; any that the canonical estate
+       validator flags are dropped too. (GREEN already implies non-US, so this is
+       redundant by design — defence in depth.)
 
-    The sanctioned-US-situs set is left at its default (NVDA only); the
-    Alternatives sleeve has no business proposing NVDA, so any US-domiciled pick
-    here is unconditionally RED.
+    ``violations`` is a list of human-readable strings ``"<SYMBOL>: <SEVERITY> —
+    <reason>"`` for every rejected pick, for the audit trail. Surviving
+    candidates keep their proposed within-sleeve weights; re-normalising the
+    weights of the survivors is the decision/engine step's responsibility.
     """
-    instruments = [_proposal_to_instrument(p) for p in proposal.proposals]
-
-    doc = TargetAllocationDoc(
-        anchor_sigma=0.0,
-        blended_sigma=0.0,
-        nvda_cap_pct=0.0,
-        fi_pct=0.0,
-        provenance="alternatives_sourcer proposal (pre-gate)",
-        classes=[
-            AllocationClassDoc(
-                label=_ALTERNATIVES_CLASS_LABEL,
-                snapshot_category=_ALTERNATIVES_SNAPSHOT_CATEGORY,
-                sigma_class=_ALTERNATIVES_SIGMA_CLASS,
-                target_pct=proposal.sleeve_pct,
-                instruments=instruments,
-            )
-        ],
-        glide=[],
+    from argosy.services.instrument_verification import (
+        load_registry,
+        registry_lookup,
+        verify_instrument,
     )
 
-    violations = validate_instrument_domicile(doc, non_us_person=True)
-    flagged_symbols = {v.symbol.upper() for v in violations}
-    clean = [i for i in instruments if i.symbol.upper() not in flagged_symbols]
+    registry = load_registry()
+    clean: list[VerifiedAlternativesCandidate] = []
+    violations: list[str] = []
+
+    for p in proposal.proposals:
+        result = verify_instrument(
+            symbol=p.symbol, claimed_domicile=p.domicile, claimed_isin=p.isin
+        )
+        if not result.verified:
+            violations.append(f"{p.symbol}: {result.severity} — {result.reason}")
+            continue
+        # Registry is authoritative for a verified pick — use its stamped facts.
+        hit = registry_lookup(p.symbol, registry) or {}
+        clean.append(
+            VerifiedAlternativesCandidate(
+                symbol=p.symbol,
+                name=p.name,
+                asset_class=p.asset_class,
+                domicile=str(hit.get("domicile", p.domicile)),
+                isin=str(hit.get("isin", p.isin)),
+                weight_within_sleeve_pct=p.weight_within_sleeve_pct,
+                conviction=p.conviction,
+                thesis_md=p.thesis_md,
+                verification=result,
+            )
+        )
+
+    # Belt-and-suspenders: estate-gate the survivors through the canonical doc.
+    if clean:
+        doc = TargetAllocationDoc(
+            anchor_sigma=0.0,
+            blended_sigma=0.0,
+            nvda_cap_pct=0.0,
+            fi_pct=0.0,
+            provenance="alternatives_sourcer proposal (post-verify, pre-estate-gate)",
+            classes=[
+                AllocationClassDoc(
+                    label=_ALTERNATIVES_CLASS_LABEL,
+                    snapshot_category=_ALTERNATIVES_SNAPSHOT_CATEGORY,
+                    sigma_class=_ALTERNATIVES_SIGMA_CLASS,
+                    target_pct=proposal.sleeve_pct,
+                    instruments=[_proposal_to_instrument(c) for c in clean],
+                )
+            ],
+            glide=[],
+        )
+        estate_flags = validate_instrument_domicile(doc, non_us_person=True)
+        if estate_flags:
+            flagged = {v.symbol.upper() for v in estate_flags}
+            for v in estate_flags:
+                violations.append(f"{v.symbol}: {v.severity} (estate) — {v.reason}")
+            clean = [c for c in clean if c.symbol.upper() not in flagged]
 
     if violations:
         log.warning(
-            "alternatives_sourcing.gate_rejected",
-            total=len(instruments),
+            "alternatives_sourcing.verify_gate_rejected",
+            total=len(proposal.proposals),
             clean=len(clean),
-            violations=len(violations),
-            red=sum(1 for v in violations if v.severity == "RED"),
-            yellow=sum(1 for v in violations if v.severity == "YELLOW"),
-            symbols=sorted(flagged_symbols),
+            rejected=len(violations),
         )
 
     return clean, violations
 
 
-__all__ = ["gate_proposal"]
+__all__ = ["verify_and_gate_proposal"]
