@@ -13,10 +13,6 @@ from datetime import date
 import pytest
 
 from argosy.services.allocation_plan import (
-    ALTERNATIVES_BTC_FRAC,
-    ALTERNATIVES_GOLD_FRAC,
-    ALTERNATIVES_TARGET_PCT,
-    BTC_MAX_PCT,
     CASH_FRAC_OF_FI,
     NVDA_TARGET_PCT,
     build_redistribution_schedule,
@@ -25,7 +21,40 @@ from argosy.services.allocation_plan import (
     to_synth_targets,
     to_waypoint_targets,
 )
+from argosy.services.alternatives_types import (
+    AlternativesSleeveDecision,
+    VerificationEvidence,
+    VerificationResult,
+    VerifiedAlternativesCandidate,
+)
 from argosy.services.retirement.scenario_mc import SIGMA_DIVERSIFIED
+
+
+def _green_candidate(symbol, domicile, isin, weight, asset_class):
+    return VerifiedAlternativesCandidate(
+        symbol=symbol, name=f"{symbol} fund", asset_class=asset_class,
+        domicile=domicile, isin=isin, weight_within_sleeve_pct=weight,
+        conviction="HIGH", thesis_md="diversifier",
+        verification=VerificationResult(
+            symbol=symbol, verified=True, severity="GREEN", reason="ok",
+            evidence=VerificationEvidence(
+                isin_checksum_ok=True, isin_prefix=isin[:2], domicile_coherent=True,
+                registry_hit=True, source_url="https://issuer/factsheet",
+            ),
+            resolved_isin=isin, resolved_domicile=domicile,
+        ),
+    )
+
+
+def _sleeve_decision(target_pct=3.0, sigma=0.268):
+    return AlternativesSleeveDecision(
+        target_pct=target_pct, sleeve_sigma=sigma,
+        instruments=[
+            _green_candidate("SGLD", "IE", "IE00B579F325", 80.0, "precious_metals"),
+            _green_candidate("IGLN", "IE", "IE00B4ND3602", 20.0, "precious_metals"),
+        ],
+        decision="approve", rationale_md="team-sourced gold sleeve",
+    )
 from argosy.services.sigma_glidepath import (
     map_glidepath_class_to_sigma_class,
     sigma_from_composition,
@@ -217,61 +246,57 @@ class TestInstruments:
 
 
 class TestAlternativesSleeve:
-    """The fixed-policy Alternatives sleeve (gold/BTC): 3% of book at an 80/20
-    gold/BTC split, BTC hard-capped at 1% of book, estate-clean (Irish gold ETC
-    + Swiss bitcoin ETP), and FI rises to keep the blended sigma on the anchor."""
+    """The Alternatives sleeve is TEAM-SOURCED, not hardcoded. The engine consumes
+    a supplied AlternativesSleeveDecision (size + instruments + sourced sigma);
+    with no decision (or a 0% one) there is no alternatives class at all. FI stays
+    the sigma-solver and absorbs the sourced sleeve to hold the anchor."""
 
-    def test_alternatives_present_at_three_pct(self) -> None:
-        alloc = build_target_allocation()
+    def test_none_sleeve_has_no_alternatives_class(self) -> None:
+        alloc = build_target_allocation(alternatives_sleeve=None)
+        assert not any(c.sigma_class == "alternatives" for c in alloc.classes)
+
+    def test_none_sleeve_weights_sum_to_100(self) -> None:
+        alloc = build_target_allocation(alternatives_sleeve=None)
+        assert sum(c.target_pct for c in alloc.classes) == pytest.approx(100.0, abs=0.05)
+
+    def test_supplied_sleeve_present_at_target_pct(self) -> None:
+        alloc = build_target_allocation(alternatives_sleeve=_sleeve_decision(3.0))
         alt = next(c for c in alloc.classes if c.sigma_class == "alternatives")
-        assert alt.label == "Alternatives (gold/BTC)"
-        assert alt.target_pct == pytest.approx(ALTERNATIVES_TARGET_PCT, abs=0.01)
+        assert alt.target_pct == pytest.approx(3.0, abs=0.02)
 
-    def test_gold_and_btc_book_weights(self) -> None:
-        alloc = build_target_allocation()
-        alt = next(c for c in alloc.classes if c.sigma_class == "alternatives")
-        gold_of_book = alt.target_pct * ALTERNATIVES_GOLD_FRAC
-        btc_of_book = alt.target_pct * ALTERNATIVES_BTC_FRAC
-        assert gold_of_book == pytest.approx(2.4, abs=0.02)
-        assert btc_of_book == pytest.approx(0.6, abs=0.02)
-        # BTC under its hard cap of the book.
-        assert btc_of_book <= BTC_MAX_PCT + 1e-9
-
-    def test_sleeve_split_is_eighty_twenty(self) -> None:
-        alloc = build_target_allocation()
+    def test_supplied_sleeve_instruments_threaded(self) -> None:
+        alloc = build_target_allocation(alternatives_sleeve=_sleeve_decision(3.0))
         alt = next(c for c in alloc.classes if c.sigma_class == "alternatives")
         by_sym = {i.symbol: i.weight_within_class_pct for i in alt.instruments}
-        assert by_sym == {"IGLN": pytest.approx(80.0), "IB1T": pytest.approx(20.0)}
-        assert sum(by_sym.values()) == pytest.approx(100.0)
+        assert by_sym == {"SGLD": pytest.approx(80.0), "IGLN": pytest.approx(20.0)}
 
-    def test_blended_sigma_still_on_anchor_with_alternatives(self) -> None:
-        alloc = build_target_allocation()
-        # Adding a higher-sigma (0.268) sleeve must NOT push the book above the
-        # anchor — FI absorbs it. Self-consistency with age-47 is preserved.
+    def test_supplied_sleeve_holds_anchor(self) -> None:
+        alloc = build_target_allocation(alternatives_sleeve=_sleeve_decision(3.0, 0.268))
         assert alloc.blended_sigma <= SIGMA_DIVERSIFIED + 1e-6
 
-    def test_fi_rises_vs_no_alternatives_baseline(self) -> None:
-        # The fixed alts sleeve forces MORE FI than the no-alts book (BTC's 0.70
-        # sigma must be offset). Codex worked result: ~21.33% -> ~23.15%.
-        baseline = derive_fi_weight(alternatives_pct=0.0)
-        with_alts = derive_fi_weight(alternatives_pct=ALTERNATIVES_TARGET_PCT)
+    def test_fi_rises_with_supplied_sleeve(self) -> None:
+        baseline = derive_fi_weight(alternatives_pct=0.0, alternatives_sigma=0.0)
+        with_alts = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.268)
         assert with_alts > baseline
-        assert with_alts == pytest.approx(23.1, abs=0.3)
 
-    def test_alternatives_estate_clean_non_us(self) -> None:
-        alloc = build_target_allocation()
-        alt = next(c for c in alloc.classes if c.sigma_class == "alternatives")
-        dom = {i.symbol: i.domicile for i in alt.instruments}
-        assert dom == {"IGLN": "IE", "IB1T": "CH"}
-        # No US-domiciled instrument and no IBIT (US Delaware trust) anywhere.
+    def test_sourced_sigma_flows_into_solver(self) -> None:
+        # A gold-only sleeve (sourced sigma 0.16) must force LESS FI than an
+        # 80/20 gold/BTC sleeve (0.268) — the FI solver consumes the SOURCED
+        # sigma, not a fixed 0.268.
+        gold_only = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.16)
+        with_btc = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.268)
+        assert gold_only < with_btc
+
+    def test_supplied_sleeve_estate_clean_non_us(self) -> None:
+        alloc = build_target_allocation(alternatives_sleeve=_sleeve_decision(3.0))
         for c in alloc.classes:
             for i in c.instruments:
                 if i.symbol != "NVDA":
                     assert i.domicile != "US"
                 assert i.symbol != "IBIT"
 
-    def test_weights_still_sum_to_100_with_alternatives(self) -> None:
-        alloc = build_target_allocation()
+    def test_weights_sum_to_100_with_supplied_sleeve(self) -> None:
+        alloc = build_target_allocation(alternatives_sleeve=_sleeve_decision(3.0))
         assert sum(c.target_pct for c in alloc.classes) == pytest.approx(100.0, abs=0.05)
 
 
