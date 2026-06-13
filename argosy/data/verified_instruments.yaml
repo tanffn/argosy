@@ -28,6 +28,43 @@ IGLN:
   source_url: https://www.ishares.com/uk/individual/en/products/258441/ishares-physical-gold-etc-fund
   verified_on: 2026-06-13
 
-# BTC / commodity-basket entries are intentionally ABSENT until their ISIN +
-# domicile are confirmed against the issuer factsheet at build time. Absent =
-# unverified = cannot hold, which is the correct safe default.
+SGLN:
+  name: iShares Physical Gold ETC (USD line)
+  isin: IE00B4ND3602
+  domicile: IE
+  product_type: ETC
+  exchange: LSE
+  source_url: https://www.ishares.com/uk/individual/en/products/258441/ishares-physical-gold-etc-fund
+  verified_on: 2026-06-13
+
+BITC:
+  name: CoinShares Physical Bitcoin
+  isin: GB00BLD4ZL17
+  domicile: JE
+  product_type: ETP
+  exchange: LSE
+  source_url: https://coinshares.com/etp/physical-bitcoin/
+  verified_on: 2026-06-13
+
+IB1T:
+  name: iShares Bitcoin ETP
+  isin: XS2940466316
+  domicile: CH
+  product_type: ETP
+  exchange: SIX
+  source_url: https://www.ishares.com/ch/individual/en/products/337088/
+  verified_on: 2026-06-13
+
+ICOM:
+  name: iShares Diversified Commodity Swap UCITS ETF
+  isin: IE00BDFL4P12
+  domicile: IE
+  product_type: ETF
+  exchange: LSE
+  source_url: https://www.ishares.com/uk/individual/en/products/287254/ishares-diversified-commodity-swap-ucits-etf
+  verified_on: 2026-06-13
+
+# Further entries: confirm ISIN + domicile against the issuer factsheet / a
+# recognised registry before adding. (21Shares ABTC was deliberately NOT added:
+# its ISIN is ambiguous between two same-named products — never seed an uncertain
+# fact. Absent = unverified = cannot hold, the correct safe default.)

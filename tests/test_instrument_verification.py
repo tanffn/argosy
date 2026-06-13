@@ -181,6 +181,18 @@ def test_incomplete_registry_row_missing_verified_on_rejected():
     assert not r.verified
 
 
+def test_every_registry_entry_verifies_green():
+    # Integrity guard: every seeded instrument must pass full verification (real
+    # ISIN checksum, recognised non-US domicile, complete row). A seed that does
+    # not GREEN is a curation bug — catch it here, not in production.
+    reg = load_registry()
+    assert reg, "registry should not be empty"
+    for symbol in reg:
+        r = verify_instrument(symbol=symbol, claimed_domicile=None, claimed_isin=None)
+        assert r.verified and r.severity == "GREEN", f"{symbol} failed: {r.reason}"
+        assert r.resolved_domicile != "US"
+
+
 def test_resolved_domicile_always_in_canonical_set():
     # Whatever verifies GREEN must carry a domicile the downstream schema accepts.
     from argosy.services.instrument_verification import normalize_domicile
