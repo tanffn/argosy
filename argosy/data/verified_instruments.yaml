@@ -1,0 +1,33 @@
+# Verified-facts cache for the Alternatives sleeve.
+#
+# Each entry is a set of FACTS about a real instrument, confirmed against the
+# cited source_url on verified_on. This is NOT an allow-list: the agent team may
+# propose any instrument; only VERIFIED facts let a pick become a holding. An
+# instrument absent here is not forbidden -- it is UNVERIFIED, and the verifier
+# rejects unverified picks (they can never become a holding until confirmed).
+#
+# To add an entry: confirm the ISIN + domicile + product type against the issuer
+# factsheet / a recognised registry (justETF, Euronext, Morningstar) at the time
+# of adding. Never paste an ISIN from memory.
+
+SGLD:
+  name: Invesco Physical Gold ETC
+  isin: IE00B579F325
+  domicile: IE
+  product_type: ETC
+  exchange: LSE
+  source_url: https://www.invesco.com/uk/en/financial-products/etfs/invesco-physical-gold-etc.html
+  verified_on: 2026-06-13
+
+IGLN:
+  name: iShares Physical Gold ETC
+  isin: IE00B4ND3602
+  domicile: IE
+  product_type: ETC
+  exchange: LSE
+  source_url: https://www.ishares.com/uk/individual/en/products/258441/ishares-physical-gold-etc-fund
+  verified_on: 2026-06-13
+
+# BTC / commodity-basket entries are intentionally ABSENT until their ISIN +
+# domicile are confirmed against the issuer factsheet at build time. Absent =
+# unverified = cannot hold, which is the correct safe default.
