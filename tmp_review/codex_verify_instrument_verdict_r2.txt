@@ -1,0 +1,47 @@
+**Findings**
+
+1. **BLOCKER**: `XS` is accepted as a domicile in [instrument_verification.py](D:/Projects/financial-advisor/argosy/services/instrument_verification.py:32), so an unknown-domicile instrument can become GREEN.
+   Concrete break:
+   ```python
+   verify_instrument(
+       symbol="FAKEXS", claimed_domicile=None, claimed_isin=None,
+       registry={"FAKEXS": {"isin": "XS0000000009", "domicile": "XS", "source_url": "x"}}
+   )
+   # verified=True, severity="GREEN"
+   ```
+   Fix: remove `XS` from domicile values; allow it only as an ISIN prefix and require a real resolved domicile like `IE`, `CH`, `JE`, etc.
+
+2. **HIGH**: `isin_is_valid()` accepts any two ASCII letters as a country prefix, so fake-but-Luhn-valid ISINs can GREEN if they enter the registry. See [instrument_verification.py](D:/Projects/financial-advisor/argosy/services/instrument_verification.py:78) plus GREEN condition at line 178.
+   Concrete break:
+   ```python
+   verify_instrument(
+       symbol="HALLUC", claimed_domicile="US", claimed_isin="US67066G1040",
+       registry={"HALLUC": {"isin": "ZZ0000000008", "domicile": "IE", "source_url": "x"}}
+   )
+   # verified=True, severity="GREEN"
+   ```
+   Fix: validate the ISIN prefix against an allowlist of ISO 3166 alpha-2 issuer prefixes plus explicit special cases like `XS`.
+
+3. **HIGH**: Registry completeness is too weak: any truthy `source_url` is treated as authoritative, and `verified_on`, `exchange`, `name`, `product_type`, and tradeability are not required. A fake ticker can be mapped to a real ISIN and become GREEN.
+   Concrete break:
+   ```python
+   registry={"HALLUC": {"isin": "IE00B579F325", "domicile": "IE", "source_url": "x"}}
+   # HALLUC verifies GREEN even though the row does not prove HALLUC is real/tradeable.
+   ```
+   Fix: load registry rows into a strict typed model and require valid URL, verified date, exchange/ticker identity, and explicit `tradeable=True` or equivalent audited field before GREEN.
+
+4. **MEDIUM**: Genuine registry-confirmed rows using full country names are wrongly rejected because only US has name synonyms. `Ireland`, `Luxembourg`, `Jersey`, `Switzerland`, etc. normalize to `None` at [instrument_verification.py](D:/Projects/financial-advisor/argosy/services/instrument_verification.py:45).
+   Concrete break:
+   ```python
+   registry={"SGLD": {"isin": "IE00B579F325", "domicile": "Ireland", "source_url": "https://issuer"}}
+   # verified=False, severity="RED"
+   ```
+   Fix: either enforce ISO domicile codes in the registry loader with clear validation errors, or add explicit non-US country-name synonyms.
+
+5. **MEDIUM**: Domicile vocabularies diverge: verifier accepts `GB`, `FR`, `GG`, `NL`, `SE`, but the downstream estate adapter only accepts `US/IE/LU/UK/IL/DE/CH/JE` in [alternatives_sourcing.py](D:/Projects/financial-advisor/argosy/services/alternatives_sourcing.py:43), and `AllocationInstrument` has the same narrower literal set.
+   Concrete break: `verify_instrument()` returns GREEN for `{"isin": "GB0005405286", "domicile": "GB", "source_url": "x"}`, but the later adapter maps `GB` to `None` and the estate gate drops it.
+   Fix: define one shared canonical domicile enum/map and use it in verifier, alternatives adapter, and allocation schema.
+
+I did **not** find a pure proposal-only path where `claimed_domicile` or `claimed_isin` overrides a registry hit; registry facts win on hit. No-hit proposals with US prefix/domicile, invalid checksum, `None`, empty ISIN, lowercase ISIN, and US-prefix/non-US-claim do not return `verified=True`.
+
+I could not run pytest because `pytest` is not installed in this environment; I verified the concrete cases with direct Python calls.

@@ -24,30 +24,56 @@ import yaml
 
 _ALPHA = string.ascii_uppercase
 
-# Domicile normalization: a closed set of recognised non-US domiciles plus a
-# synonym map so a registry row spelled "United States" can never bypass the
-# exact-"US" check. Anything outside this map is treated as US/unknown and fails
-# closed (an unrecognised domicile is never trusted as estate-clean).
-_US_DOMICILE_SYNONYMS = frozenset({"US", "USA", "U.S.", "U.S.A.", "UNITED STATES"})
-_KNOWN_NON_US_DOMICILES = frozenset(
-    {"IE", "LU", "UK", "GB", "DE", "FR", "CH", "JE", "GG", "NL", "IL", "SE", "XS"}
+# Valid ISIN country prefixes = the official ISO 3166-1 alpha-2 set plus the
+# special international prefixes NNAs assign (XS Euroclear/Clearstream, EU, QS/QT
+# substitute codes). A prefix outside this set (e.g. the reserved "ZZ") fails the
+# structural check even if its Luhn digit happens to pass — closing the
+# "fabricated Luhn-valid ISIN" hole. This is PURE structure, not estate policy.
+_ISO_3166_ALPHA2 = frozenset(
+    "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ "
+    "BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR "
+    "CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR "
+    "GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU "
+    "ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ "
+    "LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ "
+    "MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF "
+    "PG PH PK PL PM PN PR PS PT PW PY QA RO RS RU RW SA SB SC SD SE SG SH SI SJ "
+    "SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT "
+    "TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW".split()
 )
+_ISIN_SPECIAL_PREFIXES = frozenset({"XS", "EU", "QS", "QT", "QW", "QY", "QZ"})
+_VALID_ISIN_PREFIXES = _ISO_3166_ALPHA2 | _ISIN_SPECIAL_PREFIXES
+
+# Domicile normalization: the canonical non-US domicile set is exactly the
+# AllocationInstrument.domicile Literal's non-US members, so anything that
+# verifies GREEN is representable downstream (no verifier↔schema vocab drift).
+# A synonym map catches country names + GB→UK so a hand-typed registry row is
+# forgiven; XS is deliberately ABSENT (it is an ISIN prefix, never a domicile).
+_CANONICAL_NON_US_DOMICILES = frozenset({"IE", "LU", "UK", "DE", "CH", "JE", "IL"})
+_DOMICILE_SYNONYMS: dict[str, str] = {
+    "US": "US", "USA": "US", "U.S.": "US", "U.S.A.": "US", "UNITED STATES": "US",
+    "UNITED STATES OF AMERICA": "US",
+    "IE": "IE", "IRELAND": "IE",
+    "LU": "LU", "LUXEMBOURG": "LU",
+    "UK": "UK", "GB": "UK", "GREAT BRITAIN": "UK", "UNITED KINGDOM": "UK",
+    "DE": "DE", "GERMANY": "DE",
+    "CH": "CH", "SWITZERLAND": "CH",
+    "JE": "JE", "JERSEY": "JE",
+    "IL": "IL", "ISRAEL": "IL",
+}
 
 
 def normalize_domicile(raw: str | None) -> str | None:
-    """Map a domicile string to a canonical code, or None if unrecognised.
+    """Map a domicile string (code or country name) to a canonical code, or None.
 
-    Returns ``"US"`` for any US synonym; a known non-US code (upper-cased) for a
-    recognised non-US domicile; ``None`` otherwise (unrecognised → fail closed).
+    Returns ``"US"`` for any US synonym; a canonical non-US code for a recognised
+    non-US domicile; ``None`` otherwise (unrecognised → fail closed). The non-US
+    codes returned are exactly those the downstream AllocationInstrument schema
+    accepts, so a GREEN verification is always representable as a holding.
     """
     if not raw:
         return None
-    d = raw.strip().upper()
-    if d in _US_DOMICILE_SYNONYMS:
-        return "US"
-    if d in _KNOWN_NON_US_DOMICILES:
-        return d
-    return None
+    return _DOMICILE_SYNONYMS.get(raw.strip().upper())
 
 
 def isin_country_prefix(isin: str | None) -> str | None:
@@ -76,6 +102,10 @@ def isin_is_valid(isin: str | None) -> bool:
     if len(s) != 12:  # defensive: ASCII upper() never changes length, but guard anyway
         return False
     if not (s[:2].isalpha() and s[2:11].isalnum() and s[11].isdigit()):
+        return False
+    # Prefix must be a real ISO 3166 alpha-2 code or an ISIN special prefix —
+    # rejects fabricated Luhn-valid identifiers with reserved prefixes (e.g. ZZ).
+    if s[:2] not in _VALID_ISIN_PREFIXES:
         return False
 
     # Expand letters -> digits.
@@ -166,7 +196,17 @@ def verify_instrument(
         # coherence: US ISIN prefix may only pair with a US domicile (which we
         # reject anyway); a non-US prefix is coherent with a non-US domicile.
         coherent = bool(prefix) and not (prefix == "US" and r_domicile != "US")
-        complete = bool(r_isin) and bool(r_domicile) and bool(r_source)
+        # A complete row must carry the full audit identity: a recognised
+        # domicile, an http(s) source, a verification date, and an exchange. A
+        # thin row (real ISIN mapped to an unproven ticker) must NOT verify.
+        complete = (
+            bool(r_isin)
+            and r_domicile is not None
+            and isinstance(r_source, str)
+            and r_source.lower().startswith(("http://", "https://"))
+            and bool(hit.get("verified_on"))
+            and bool(hit.get("exchange"))
+        )
         evidence = VerificationEvidence(
             isin_checksum_ok=checksum_ok,
             isin_prefix=prefix,

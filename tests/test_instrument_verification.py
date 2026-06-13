@@ -146,3 +146,44 @@ def test_isin_validity_independent_of_estate_policy():
     # A valid non-US ISO ISIN (Ericsson B, Sweden) is checksum-valid even though
     # its prefix is outside this book's typical set — checksum != estate policy.
     assert isin_is_valid("SE0000108656") is True
+
+
+def test_reserved_country_prefix_rejected():
+    # "ZZ" is reserved/user-assigned, not a real ISO 3166 country — even if the
+    # Luhn check digit happens to pass, it must not validate.
+    assert isin_is_valid("ZZ0000000008") is False
+
+
+def test_xs_is_valid_isin_prefix_but_not_a_domicile():
+    # XS (international/Euroclear) is a legitimate ISIN prefix...
+    assert isin_country_prefix("XS2940466316") == "XS"
+    # ...but never a valid DOMICILE: a registry row claiming domicile "XS" fails.
+    reg = {"FAKEXS": {"isin": "XS0000000009", "domicile": "XS", "source_url": "https://x",
+                      "verified_on": "2026-06-13", "exchange": "LSE"}}
+    r = verify_instrument(symbol="FAKEXS", claimed_domicile=None, claimed_isin=None,
+                          registry=reg)
+    assert not r.verified
+
+
+def test_country_name_synonym_accepted_in_registry():
+    reg = {"SGLD": {"isin": "IE00B579F325", "domicile": "Ireland",
+                    "source_url": "https://issuer", "verified_on": "2026-06-13",
+                    "exchange": "LSE"}}
+    r = verify_instrument(symbol="SGLD", claimed_domicile=None, claimed_isin=None,
+                          registry=reg)
+    assert r.verified and r.resolved_domicile == "IE"
+
+
+def test_incomplete_registry_row_missing_verified_on_rejected():
+    reg = {"SGLD": {"isin": "IE00B579F325", "domicile": "IE", "source_url": "https://x"}}
+    r = verify_instrument(symbol="SGLD", claimed_domicile=None, claimed_isin=None,
+                          registry=reg)
+    assert not r.verified
+
+
+def test_resolved_domicile_always_in_canonical_set():
+    # Whatever verifies GREEN must carry a domicile the downstream schema accepts.
+    from argosy.services.instrument_verification import normalize_domicile
+    assert normalize_domicile("GB") == "UK"
+    assert normalize_domicile("Switzerland") == "CH"
+    assert normalize_domicile("Atlantis") is None
