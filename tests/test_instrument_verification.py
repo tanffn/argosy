@@ -7,6 +7,7 @@ from argosy.services.instrument_verification import (
     isin_is_valid,
     load_registry,
     registry_lookup,
+    verify_instrument,
 )
 
 
@@ -52,3 +53,40 @@ def test_registry_lookup_is_case_insensitive():
 
 def test_registry_lookup_unknown_returns_none():
     assert registry_lookup("TOTALLY_MADE_UP", load_registry()) is None
+
+
+def test_known_clean_instrument_verifies_green():
+    r = verify_instrument(symbol="SGLD", claimed_domicile="IE", claimed_isin="IE00B579F325")
+    assert r.verified
+    assert r.severity == "GREEN"
+    assert r.evidence.registry_hit
+    assert r.evidence.isin_checksum_ok
+    assert r.evidence.domicile_coherent
+
+
+def test_us_prefix_isin_with_nonus_claim_is_red():
+    # Claims IE domicile but supplies a real US ISIN (NVDA) -> incoherent -> never hold.
+    r = verify_instrument(symbol="NOTREAL", claimed_domicile="IE", claimed_isin="US67066G1040")
+    assert not r.verified
+    assert r.severity == "RED"
+    assert not r.evidence.domicile_coherent
+
+
+def test_failed_checksum_is_red():
+    r = verify_instrument(symbol="BADISIN", claimed_domicile="IE", claimed_isin="IE00B579F320")
+    assert not r.verified
+    assert r.severity == "RED"
+    assert not r.evidence.isin_checksum_ok
+
+
+def test_unknown_unverifiable_instrument_is_yellow_not_held():
+    r = verify_instrument(symbol="MADEUP", claimed_domicile="IE", claimed_isin=None)
+    assert not r.verified
+    assert r.severity == "YELLOW"
+
+
+def test_us_domicile_claim_never_verifies():
+    # Even with a structurally valid US ISIN, a US-domiciled pick is never held.
+    r = verify_instrument(symbol="USFUND", claimed_domicile="US", claimed_isin="US67066G1040")
+    assert not r.verified
+    assert r.severity == "RED"

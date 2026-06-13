@@ -99,9 +99,80 @@ def registry_lookup(symbol: str, registry: dict[str, dict]) -> dict | None:
     return registry.get(symbol.upper())
 
 
+def verify_instrument(
+    *, symbol: str, claimed_domicile: str | None, claimed_isin: str | None
+):
+    """Verify one proposed instrument deterministically. Returns a
+    :class:`~argosy.services.alternatives_types.VerificationResult`.
+
+    Decision table (no trust in the agent's claims; nothing unverified is ever
+    ``verified=True``):
+
+    - GREEN (verified): registry-confirmed AND checksum-valid AND domicile-coherent
+      AND non-US domicile.
+    - RED (reject): a US ISIN prefix, a US domicile claim, or a structurally
+      invalid ISIN -- a fabricated/US-situs pick that must never become a holding.
+    - YELLOW (reject): unknown / unstamped -- not in the registry and not provably
+      bad; still cannot become a holding until its facts are confirmed.
+
+    The registry is authoritative when present: a hit's ISIN/domicile override the
+    agent's claim so a wrong claim about a known instrument cannot mislead.
+    """
+    from argosy.services.alternatives_types import (
+        VerificationEvidence,
+        VerificationResult,
+    )
+
+    registry = load_registry()
+    hit = registry_lookup(symbol, registry)
+    isin = (hit or {}).get("isin", claimed_isin)
+    domicile = (hit or {}).get("domicile", claimed_domicile)
+
+    checksum_ok = isin_is_valid(isin)
+    prefix = isin_country_prefix(isin)
+    is_us_domicile = (domicile or "").upper() == "US"
+    # Coherence: a US ISIN prefix contradicts any non-US domicile claim; otherwise
+    # the prefix must be a real (non-empty) country code.
+    coherent = bool(prefix) and not (prefix == "US" and not is_us_domicile)
+
+    evidence = VerificationEvidence(
+        isin_checksum_ok=checksum_ok,
+        isin_prefix=prefix,
+        domicile_coherent=coherent,
+        registry_hit=hit is not None,
+        tradeable=None,
+        source_url=(hit or {}).get("source_url"),
+    )
+
+    if hit is not None and checksum_ok and coherent and not is_us_domicile:
+        return VerificationResult(
+            symbol=symbol,
+            verified=True,
+            severity="GREEN",
+            reason="registry-confirmed; checksum + domicile coherence pass",
+            evidence=evidence,
+        )
+    if prefix == "US" or is_us_domicile or (isin and not checksum_ok):
+        return VerificationResult(
+            symbol=symbol,
+            verified=False,
+            severity="RED",
+            reason="US-situs (US prefix/domicile) or failed ISIN checksum",
+            evidence=evidence,
+        )
+    return VerificationResult(
+        symbol=symbol,
+        verified=False,
+        severity="YELLOW",
+        reason="unverified: not in registry / unstamped — cannot become a holding",
+        evidence=evidence,
+    )
+
+
 __all__ = [
     "isin_is_valid",
     "isin_country_prefix",
     "load_registry",
     "registry_lookup",
+    "verify_instrument",
 ]
