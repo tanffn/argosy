@@ -169,7 +169,13 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
     # and target %s (incl. NVDA) aren't comparable, and NVDA's target would
     # appear as a phantom 0%-current row.
     if exclude_nvda and targets:
-        targets = {k: v for k, v in targets.items() if "NVDA" not in k}
+        # Drop ONLY the NVDA strategic-stock class — match it precisely, not by
+        # an "NVDA" substring (which also matches "US growth tilt (ex-NVDA)"
+        # and would wrongly zero its target).
+        targets = {
+            k: v for k, v in targets.items()
+            if "strategic single-stock" not in k.lower()
+        }
         tsum = sum(targets.values())
         if tsum > 0:
             targets = {k: round(v * 100.0 / tsum, 2) for k, v in targets.items()}

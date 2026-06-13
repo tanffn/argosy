@@ -184,6 +184,39 @@ def test_exclude_nvda_renormalises_targets_to_100():
     assert round(sum(r.target_pct or 0.0 for r in rows), 0) == 100.0
 
 
+def test_exclude_nvda_does_not_zero_ex_nvda_labelled_classes():
+    # The renormalization must drop ONLY the NVDA strategic class — not any
+    # class whose label contains the "NVDA" substring (e.g. "US growth tilt
+    # (ex-NVDA)"), which would wrongly zero its target.
+    from datetime import date
+    from argosy.services.target_allocation_doc import (
+        TargetAllocationDoc, AllocationClassDoc, AllocationInstrument, GlideWaypoint,
+    )
+
+    def cls(label, sym, pct):
+        return AllocationClassDoc(label=label, snapshot_category=label,
+            sigma_class="x", target_pct=pct,
+            instruments=[AllocationInstrument(symbol=sym, role="primary",
+                weight_within_class_pct=100.0, domicile="IE")])
+
+    doc = TargetAllocationDoc(
+        schema_version=1, anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0,
+        fi_pct=20.0, provenance="t",
+        classes=[cls("Strategic single-stock (NVDA)", "NVDA", 20.0),
+                 cls("US growth tilt (ex-NVDA)", "QQQM", 16.0),
+                 cls("US broad-market core", "CSPX", 64.0)],
+        glide=[GlideWaypoint(quarter=0, date=date(2026, 1, 1),
+               composition_pct_by_class={})],
+    )
+    snap = _snap([_pos("NVDA", "NVIDIA", 600.0), _pos("QQQM", "Growth", 200.0),
+                  _pos("CSPX", "Core Equity", 200.0)])
+    rows = build_allocation_breakdown(snap, doc, exclude_nvda=True)
+    by = {r.label: r for r in rows}
+    assert "Strategic single-stock (NVDA)" not in by
+    assert (by["US growth tilt (ex-NVDA)"].target_pct or 0) > 0  # NOT zeroed
+    assert round(sum(r.target_pct or 0.0 for r in rows), 0) == 100.0
+
+
 def test_breakdown_unmapped_category_surfaces_with_zero_target():
     snap = _snap([_pos("NVDA", "NVIDIA", 500.0),
                   _pos("WEIRD", "Crypto-thing", 500.0)])
