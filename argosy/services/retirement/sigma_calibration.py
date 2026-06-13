@@ -58,6 +58,48 @@ _SIGMA_BY_CLASS: dict[str, float] = {
 _CONCENTRATED_TICKERS = {"NVDA", "TSLA", "META", "GOOG", "GOOGL", "AAPL", "MSFT"}
 
 
+# Per-asset-class annualized sigma for instruments WITHIN the Alternatives
+# sleeve. Sourced from the methodology review (physical-gold ETC σ≈0.16, bitcoin
+# σ≈0.70). The linear engine takes no covariance credit. Unmapped classes fall
+# back to a conservative 0.30 so a novel exposure never silently reads as 0.
+_ALTERNATIVES_CLASS_SIGMA: dict[str, float] = {
+    "precious_metals": 0.16,
+    "gold": 0.16,
+    "commodities": 0.20,
+    "real_assets": 0.15,
+    "macro_hedge": 0.20,
+    "crypto": 0.70,
+    "bitcoin": 0.70,
+}
+_ALTERNATIVES_DEFAULT_SIGMA = 0.30
+
+
+def compute_alternatives_sigma(weighted_classes: list[tuple[str, float]]) -> float:
+    """Blend the Alternatives sleeve's sigma from its instruments' asset classes.
+
+    ``weighted_classes`` is ``[(asset_class, weight), ...]`` where weight is the
+    instrument's share of the sleeve (fractions summing to ~1 OR percentages
+    summing to ~100 — the weights are normalised by their own sum). Returns the
+    weight-normalised linear blend of per-class sigmas; an empty sleeve is 0.0.
+
+    This replaces the fixed ``_SIGMA_BY_CLASS["alternatives"]`` constant for
+    team-sourced sleeves: the sigma the FI solver consumes reflects what the team
+    actually sourced (e.g. gold-only ⇒ 0.16, not the 80/20 0.268 assumption).
+    """
+    if not weighted_classes:
+        return 0.0
+    total_w = sum(w for _, w in weighted_classes)
+    if total_w <= 0:
+        return 0.0
+    blended = 0.0
+    for asset_class, weight in weighted_classes:
+        cls_sigma = _ALTERNATIVES_CLASS_SIGMA.get(
+            (asset_class or "").strip().lower(), _ALTERNATIVES_DEFAULT_SIGMA
+        )
+        blended += (weight / total_w) * cls_sigma
+    return blended
+
+
 @dataclass(frozen=True)
 class SigmaCalibration:
     sigma_annual: ValueWithRationale
