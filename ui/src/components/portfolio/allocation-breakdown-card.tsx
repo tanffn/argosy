@@ -27,13 +27,16 @@ export function AllocationBreakdownCard({ userId = "ariel" }: { userId?: string 
   const [data, setData] = useState<AllocationBreakdownDTO | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  // NVDA (~61% of the book) flattens every other class to a sliver, so the
+  // diversified core is unreadable. Default to excluding it; toggle to include.
+  const [excludeNvda, setExcludeNvda] = useState(true);
 
   useEffect(() => {
     api
-      .portfolioAllocationBreakdown(userId)
+      .portfolioAllocationBreakdown(userId, excludeNvda)
       .then(setData)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
-  }, [userId]);
+  }, [userId, excludeNvda]);
 
   if (error) {
     return (
@@ -52,10 +55,22 @@ export function AllocationBreakdownCard({ userId = "ariel" }: { userId?: string 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Current allocation vs plan target</CardTitle>
+        <div className="flex items-start justify-between gap-3">
+          <CardTitle>Current allocation vs plan target</CardTitle>
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground whitespace-nowrap cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={excludeNvda}
+              onChange={(e) => setExcludeNvda(e.target.checked)}
+              className="accent-primary"
+            />
+            Exclude NVDA
+          </label>
+        </div>
         <CardDescription>
           Your live holdings by asset class vs the canonical plan target. Click a
-          class to see its symbols. Total {fmtK(data.total_value_k)}.
+          class to see its symbols. Total {fmtK(data.total_value_k)}
+          {excludeNvda ? " (NVDA excluded)" : ""}.
         </CardDescription>
       </CardHeader>
       <CardContent>

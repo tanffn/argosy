@@ -647,7 +647,10 @@ function CompositionDonutCard({
         </div>
       ) : (
         <div className="flex flex-col sm:flex-row gap-3 items-center">
-          <ResponsiveContainer width="100%" height={180} minWidth={140}>
+          {/* Fixed-basis chart so the legend beside it keeps real width —
+             otherwise the chart's width:100% squeezed the labels to nothing. */}
+          <div className="w-full sm:w-[160px] sm:shrink-0">
+          <ResponsiveContainer width="100%" height={160}>
             <PieChart>
               <Pie
                 data={slices}
@@ -685,6 +688,7 @@ function CompositionDonutCard({
               />
             </PieChart>
           </ResponsiveContainer>
+          </div>
           <div className="flex-1 flex flex-col gap-1 text-xs min-w-0">
             {slices.map((sl) => (
               <div

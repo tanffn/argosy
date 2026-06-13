@@ -1890,9 +1890,11 @@ export const api = {
     ),
   portfolioAllocationBreakdown: (
     userId: string = "ariel",
+    excludeNvda: boolean = false,
   ): Promise<AllocationBreakdownDTO> =>
     getJSON<AllocationBreakdownDTO>(
-      `/api/portfolio/allocation-breakdown?user_id=${encodeURIComponent(userId)}`,
+      `/api/portfolio/allocation-breakdown?user_id=${encodeURIComponent(userId)}` +
+        (excludeNvda ? "&exclude_nvda=true" : ""),
     ),
   portfolioTrendRadar: (limit: number = 15): Promise<TrendRadarDTO> =>
     getJSON<TrendRadarDTO>(`/api/portfolio/trend-radar?limit=${limit}`),
