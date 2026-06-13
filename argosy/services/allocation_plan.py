@@ -572,8 +572,12 @@ def build_target_allocation(
     classes.append(AllocationClass(**{**_FI_CASH.__dict__, "target_pct": cash_pct}))
     classes.append(AllocationClass(**{**_FI_BONDS.__dict__, "target_pct": bonds_pct}))
 
+    # Report blended sigma on the SAME unrounded weights the FI solver certified
+    # against the anchor — computing it from the 2dp-rounded class target_pcts
+    # instead lets per-class rounding accumulate and read fractionally OVER the
+    # anchor (e.g. 0.1801 > 0.18), contradicting "FI is derived TO the anchor".
     blended = _blended_sigma_for(
-        {c.label: c.target_pct for c in classes},
+        weights,
         alt_label=_ALTERNATIVES_LABEL if alternatives_pct > 0 else None,
         alt_sigma=alternatives_sigma if alternatives_pct > 0 else None,
     )
