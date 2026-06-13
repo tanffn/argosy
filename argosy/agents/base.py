@@ -205,6 +205,12 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # projection. Downstream consequence is large (FI-date sensitivity
     # + cashflow + concentration cap all read from the output).
     "equity_comp_analyst": "claude-opus-4-7",
+    # Alternatives sourcer (feat/alternatives-asset-class) — sources the
+    # Alternatives sleeve's instruments so they are agent-derived +
+    # estate-gated, not hardcoded. Opus per binding preference "accuracy
+    # over LLM cost": sourcing estate-safe (non-US-situs) instruments is a
+    # high-consequence money path; the picks feed the domicile gate.
+    "alternatives_sourcer": "claude-opus-4-7",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -286,6 +292,12 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     # split, NVDA price path, and per-scenario FI-date sensitivity in
     # one structured pass.
     "equity_comp_analyst":     "high",
+    # Alternatives sourcer — high. Sourcing estate-safe instruments needs
+    # the model to weigh the diversification logic, the within-class choice
+    # (gold/silver, BTC/ETH), the non-US-domicile hard constraint, and the
+    # sleeve sizing in one structured pass. Downstream picks feed the
+    # domicile gate, so accuracy matters more than speed.
+    "alternatives_sourcer":    "high",
     # Single-ticker analysts + helpers — moderate (data formatting + light reasoning)
     "concentration":        "medium",
     "fx":                   "medium",
@@ -427,6 +439,11 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     # + advisor_intake_questions. 32K leaves ample room for adaptive
     # thinking (effort=high) under the cap.
     "equity_comp_analyst": 32000,
+    # Alternatives sourcer — output is a small sleeve: sleeve_pct +
+    # rationale_md + a handful of AssetProposals (each with thesis_md +
+    # cites). 16K is generous headroom and keeps adaptive thinking
+    # (effort=high) comfortably under the cap.
+    "alternatives_sourcer": 16000,
     # Conversational / categorical roles — no thinking, fallback-sized.
     "intake": 16000,
     "household_categorizer": 16000,
@@ -502,6 +519,12 @@ DEFAULT_CITATIONS_BY_ROLE: dict[str, bool] = {
     # Citations API path on the api_key backend if document blocks are
     # ever attached.
     "equity_comp_analyst": True,
+    # Alternatives sourcer — citations ON. Each instrument must cite a
+    # source for its domicile/estate-safety claim
+    # (domain_knowledge/tax/us/estate_tax_nonresidents.md + issuer
+    # factsheet / ISIN). require_citations on the agent enforces a
+    # non-empty top-level cited_sources at the gate.
+    "alternatives_sourcer": True,
 }
 
 # Anthropic pricing (USD per 1M tokens) for cost tracking.
