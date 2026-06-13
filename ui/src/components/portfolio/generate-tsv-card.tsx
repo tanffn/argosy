@@ -3,13 +3,16 @@
 import { useCallback, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { api, type GenerateTsvResponse } from "@/lib/api";
 
 interface Props {
   userId: string;
   onGenerated?: (resp: GenerateTsvResponse) => void;
+  /** Render without the outer Card chrome, for composing inside a shared
+   *  "Update portfolio data" panel alongside the upload tile. */
+  embedded?: boolean;
 }
 
 /**
@@ -26,7 +29,7 @@ interface Props {
  * generate is the "compose latest state into a fresh TSV" flow. Both
  * write to the scan root with the canonical filename.
  */
-export function GenerateTsvCard({ userId, onGenerated }: Props) {
+export function GenerateTsvCard({ userId, onGenerated, embedded = false }: Props) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<GenerateTsvResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,19 +49,8 @@ export function GenerateTsvCard({ userId, onGenerated }: Props) {
     }
   }, [userId, onGenerated]);
 
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <CardTitle className="text-base font-mono">
-            Generate latest TSV from Argosy state
-          </CardTitle>
-          <span className="text-[11px] text-muted-foreground">
-            positions carried forward &middot; cash refreshed from Leumi statements
-          </span>
-        </div>
-      </CardHeader>
-      <CardContent>
+  const body = (
+    <>
         <p className="text-sm text-muted-foreground mb-3">
           Composes a fresh{" "}
           <code className="font-mono">Family Finances Status</code> TSV
@@ -126,7 +118,33 @@ export function GenerateTsvCard({ userId, onGenerated }: Props) {
             ) : null}
           </div>
         ) : null}
-      </CardContent>
+    </>
+  );
+
+  const heading = (
+    <div className="flex items-center justify-between gap-2 flex-wrap">
+      <span className="text-base font-mono font-medium">
+        Generate latest TSV from Argosy state
+      </span>
+      <span className="text-[11px] text-muted-foreground">
+        positions carried forward &middot; cash refreshed from Leumi statements
+      </span>
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <section className="space-y-3">
+        {heading}
+        {body}
+      </section>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>{heading}</CardHeader>
+      <CardContent>{body}</CardContent>
     </Card>
   );
 }

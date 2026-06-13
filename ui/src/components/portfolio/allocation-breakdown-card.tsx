@@ -50,7 +50,27 @@ export function AllocationBreakdownCard({ userId = "ariel" }: { userId?: string 
       </Card>
     );
   }
-  if (!data || data.rows.length === 0) return null;
+  if (!data) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Current allocation vs plan target</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-col gap-2" aria-busy="true">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div
+                key={i}
+                className="h-6 rounded bg-secondary/40 animate-pulse"
+              />
+            ))}
+            <span className="text-[11px] text-muted-foreground mt-1">Loading…</span>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+  if (data.rows.length === 0) return null;
 
   return (
     <Card>

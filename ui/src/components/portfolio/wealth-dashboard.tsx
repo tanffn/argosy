@@ -73,7 +73,7 @@ export function WealthDashboard({ userId }: WealthDashboardProps) {
   }, [userId]);
 
   if (loading) {
-    return <p className="text-sm text-muted-foreground">Loading wealth dashboard…</p>;
+    return <WealthDashboardSkeleton />;
   }
   if (error) {
     return <p className="text-sm text-error font-mono">{error}</p>;
@@ -115,6 +115,46 @@ export function WealthDashboard({ userId }: WealthDashboardProps) {
           slices={data.sector_composition}
           palette={SECTOR_PALETTE}
         />
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Loading skeleton — mirrors the dashboard layout so the page doesn't jump
+// when data lands. Each block is a pulsing placeholder labeled "Loading".
+// ---------------------------------------------------------------------------
+
+function SkeletonBlock({ className = "" }: { className?: string }) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-border/50 bg-secondary/30 animate-pulse",
+        "flex items-center justify-center text-[11px] text-muted-foreground",
+        className,
+      )}
+    >
+      Loading…
+    </div>
+  );
+}
+
+function WealthDashboardSkeleton() {
+  return (
+    <section className="flex flex-col gap-4" aria-busy="true" aria-label="Loading wealth dashboard">
+      <SkeletonBlock className="h-32" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <SkeletonBlock key={i} className="h-28" />
+        ))}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <SkeletonBlock className="h-40" />
+        <SkeletonBlock className="h-40" />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <SkeletonBlock className="h-48" />
+        <SkeletonBlock className="h-48" />
       </div>
     </section>
   );

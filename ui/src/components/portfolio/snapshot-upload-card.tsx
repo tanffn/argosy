@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useRef, useState } from "react";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import {
   api,
@@ -13,6 +13,9 @@ import {
 interface Props {
   userId: string;
   onUploadComplete?: (resp: PortfolioUploadSnapshotResponse) => void;
+  /** Render without the outer Card chrome, for composing inside a shared
+   *  "Update portfolio data" panel alongside the generate tile. */
+  embedded?: boolean;
 }
 
 /**
@@ -27,7 +30,7 @@ interface Props {
  *     via DB lookup with a +/-15d match window; pairs can resolve in
  *     either order (XLS first or Osh first).
  */
-export function PortfolioSnapshotUploadCard({ userId, onUploadComplete }: Props) {
+export function PortfolioSnapshotUploadCard({ userId, onUploadComplete, embedded = false }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -57,19 +60,8 @@ export function PortfolioSnapshotUploadCard({ userId, onUploadComplete }: Props)
     [userId, onUploadComplete],
   );
 
-  return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <CardTitle className="text-base font-mono">
-            Upload monthly portfolio snapshot
-          </CardTitle>
-          <span className="text-[11px] text-muted-foreground">
-            Leumi &middot; Schwab &middot; Aborad &middot; combined TSV
-          </span>
-        </div>
-      </CardHeader>
-      <CardContent>
+  const body = (
+    <>
         <div
           role="button"
           tabIndex={0}
@@ -134,7 +126,33 @@ export function PortfolioSnapshotUploadCard({ userId, onUploadComplete }: Props)
         ) : null}
 
         {result ? <UploadResultRow result={result} /> : null}
-      </CardContent>
+    </>
+  );
+
+  const heading = (
+    <div className="flex items-center justify-between gap-2 flex-wrap">
+      <span className="text-base font-mono font-medium">
+        Upload monthly portfolio snapshot
+      </span>
+      <span className="text-[11px] text-muted-foreground">
+        Leumi &middot; Schwab &middot; Aborad &middot; combined TSV
+      </span>
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <section className="space-y-3">
+        {heading}
+        {body}
+      </section>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader>{heading}</CardHeader>
+      <CardContent>{body}</CardContent>
     </Card>
   );
 }

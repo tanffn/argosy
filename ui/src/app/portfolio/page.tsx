@@ -46,11 +46,19 @@ interface AccountGroup {
   total_usd_k: number;
 }
 
+// The NVDA RSU row's location is bare "schwab" while the other Schwab
+// holdings are "schwab 876" — same account, so group them together.
+function normalizeLocation(loc: string): string {
+  const l = (loc || "").trim();
+  if (l.toLowerCase() === "schwab") return "schwab 876";
+  return l || "(unknown)";
+}
+
 function groupByAccount(snap: PortfolioSnapshotDTO | null): AccountGroup[] {
   if (!snap) return [];
   const map = new Map<string, AccountGroup>();
   for (const p of snap.positions) {
-    const key = p.location || "(unknown)";
+    const key = normalizeLocation(p.location);
     const g = map.get(key) ?? { location: key, positions: [], total_usd_k: 0 };
     g.positions.push(p);
     g.total_usd_k += p.usd_value_k ?? 0;
@@ -142,26 +150,42 @@ export default function PortfolioPage() {
          current state. Sits above the upload tile so the user's
          first instinct is "generate" rather than "upload". The
          upload tile remains the input flow for fresh Leumi XLS. */}
-      <GenerateTsvCard
-        userId={USER_ID}
-        onGenerated={() => {
-          api
-            .portfolioSnapshot(USER_ID)
-            .then((data) => setSnap(data))
-            .catch((e: unknown) => setError(String(e)));
-        }}
-      />
-
-      <PortfolioSnapshotUploadCard
-        userId={USER_ID}
-        onUploadComplete={() => {
-          // Re-fetch the snapshot so the page reflects the just-uploaded data.
-          api
-            .portfolioSnapshot(USER_ID)
-            .then((data) => setSnap(data))
-            .catch((e: unknown) => setError(String(e)));
-        }}
-      />
+      {/* One "Update portfolio data" panel: generate a fresh snapshot from
+         Argosy state, or upload a monthly bank statement. Both refresh the
+         page's snapshot on completion. */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Update portfolio data</CardTitle>
+          <CardDescription>
+            Generate a fresh snapshot from current Argosy state, or upload a
+            monthly Leumi/Schwab statement.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <GenerateTsvCard
+            embedded
+            userId={USER_ID}
+            onGenerated={() => {
+              api
+                .portfolioSnapshot(USER_ID)
+                .then((data) => setSnap(data))
+                .catch((e: unknown) => setError(String(e)));
+            }}
+          />
+          <div className="border-t border-border/60" />
+          <PortfolioSnapshotUploadCard
+            embedded
+            userId={USER_ID}
+            onUploadComplete={() => {
+              // Re-fetch the snapshot so the page reflects the just-uploaded data.
+              api
+                .portfolioSnapshot(USER_ID)
+                .then((data) => setSnap(data))
+                .catch((e: unknown) => setError(String(e)));
+            }}
+          />
+        </CardContent>
+      </Card>
 
       {/* Unallocated-cash proposal (2026-05-29). Self-tuning trigger
          based on the plan-target cash row -- fires when current cash
