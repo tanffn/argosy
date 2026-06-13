@@ -32,7 +32,7 @@ def test_tase_ticker_is_israel():
     ref = lookup('מחקה ת"א-200', 'ATF מחקה ת"א-200')
     assert ref is not None
     assert ref.region == REGION_ISRAEL
-    assert ref.sector == "Israeli ETF"
+    assert ref.sector == "Israeli"
 
 
 def test_us_holding_with_hebrew_description_is_us_not_israel():
@@ -66,7 +66,7 @@ def test_stoxx_o_collision_resolved_by_narrow_override():
 
 def test_schd_is_dividend_sector():
     ref = lookup("SCHD", "(שוואב ארה\"ב דיבידנד) SCHD")
-    assert ref is not None and ref.sector == "Dividend ETF"
+    assert ref is not None and ref.sector == "Dividend"
 
 
 def test_unknown_ticker_returns_none():
@@ -97,3 +97,40 @@ def test_estate_safe_ucits_and_israeli_are_safe():
 def test_estate_safe_unknown_is_none():
     from argosy.services.instrument_reference import estate_safe_for
     assert estate_safe_for("ZZZUNKNOWN", "mystery") is None
+
+
+# --- 2-level Type taxonomy: structure × exposure (the carry-over redesign) ---
+
+def test_structure_stock_vs_etf_vs_reit():
+    assert lookup("NVDA", "RSU").structure == "Stock"
+    assert lookup("VOO", "").structure == "ETF"
+    assert lookup("O", "(ריאלטי אינקם) O").structure == "REIT"
+
+
+def test_type_label_is_structure_dot_exposure():
+    from argosy.services.instrument_reference import type_label
+    assert type_label("NVDA", "RSU") == "Stock · Tech"
+    assert type_label("VOO", "") == "ETF · Broad Index"
+    assert type_label("O", "(ריאלטי אינקם) O") == "REIT · Real Estate"
+    # Un-curated row falls back to the caller's raw asset_type, never blank.
+    assert type_label("ZZZ", "mystery", fallback="Growth") == "Growth"
+
+
+def test_codex_corrections_megacap_gics_sectors():
+    # Mega-caps are NOT all "Tech" (codex GICS review).
+    assert lookup("GOOG", "x").sector == "Communication Services"
+    assert lookup("META", "x").sector == "Communication Services"
+    assert lookup("AMZN", "x").sector == "Consumer Discretionary"
+    assert lookup("TSLA", "x").sector == "Consumer Discretionary"
+    assert lookup("NVDA", "x").sector == "Tech"
+
+
+def test_codex_corrections_factor_and_treasury():
+    # SPMO is momentum, not growth; IBTA is 1-3yr Treasury bonds (Fixed Income,
+    # not cash); DPYA is the property-yield ETF sibling of IWDP, not dividend.
+    assert lookup("SPMO", "x").sector == "Momentum"
+    assert lookup("SPMV", "x").sector == "Low Volatility"
+    ibta = lookup("IBTA", "x")
+    assert ibta.asset_class == "Fixed Income" and ibta.sector == "Treasury 1-3yr"
+    dpya = lookup("DPYA", "x")
+    assert dpya.asset_class == "Real Estate" and dpya.estate_safe is True

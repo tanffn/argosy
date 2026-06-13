@@ -244,100 +244,16 @@ class WealthDashboard:
 
 
 # ---------------------------------------------------------------------------
-# Composition taxonomy — STATIC ticker → sector map.
+# Composition taxonomy.
 #
-# This is a hand-curated taxonomy for the user's known holdings. It is
-# intentionally narrow: unknown tickers fall into "Other". When the
-# portfolio gains a new symbol that warrants its own bucket, add it
-# here. The asset-class side is driven by ``PortfolioPosition.asset_type``
-# (set during TSV ingest) with this map as a fallback for the cases
-# where ``asset_type`` is blank.
+# The per-instrument classification authority is ``instrument_reference`` (keyed
+# off the resolved ticker → asset_class / sector / region / structure). The
+# donut builder (``_compositions``) reads it directly; the helpers below are
+# ONLY the fallback for instruments the reference doesn't know (then keyword
+# heuristics on the raw ``asset_type``, else "Other"). There is deliberately NO
+# duplicate per-ticker map here — a second table drifts from the reference and
+# was the root of the per-surface Type inconsistency (see SDD §20.4).
 # ---------------------------------------------------------------------------
-
-#: Per-ticker sector classification. Israeli ETFs are NOT keyed here — they
-#: get the "Israeli ETF" bucket via a name-pattern check (Hebrew-character
-#: detection) which is more robust to label variations than enumerating
-#: every Hebrew-named instrument.
-_TICKER_TO_SECTOR: dict[str, str] = {
-    # Mega-cap tech (incl. AI/cloud/consumer-internet large-caps).
-    "NVDA": "Tech",
-    "AMD": "Tech",
-    "GOOG": "Tech",
-    "GOOGL": "Tech",
-    "AMZN": "Tech",
-    "META": "Tech",
-    "TSLA": "Tech",
-    # Broad-market / index ETFs.
-    "VOO": "ETF/Index",
-    "VTI": "ETF/Index",
-    "QQQM": "ETF/Index",
-    "SCHG": "ETF/Index",
-    "SPMO": "ETF/Index",
-    "SCHD": "ETF/Index",
-    "FWRA": "ETF/Index",
-    "MSCI WORLD": "ETF/Index",
-    "CSPX": "ETF/Index",
-    "ACWD": "ETF/Index",
-    "CNDX": "ETF/Index",
-    "XZEW": "ETF/Index",
-    # UCITS twins the domicile-aware canonical plan buys (non-US-situs).
-    "FUSA": "ETF/Index",
-    "EXUS": "ETF/Index",
-    "R1GR": "ETF/Index",
-    "SPMV": "ETF/Index",
-    "DPYA": "ETF/Index",
-    # Value ETF (kept separate per spec).
-    "VTV": "Value ETF",
-    # Cash equivalents / T-bills.
-    "SGOV": "Cash/T-Bill",
-    "IB01": "Cash/T-Bill",
-    "IBTA": "Cash/T-Bill",
-    # Healthcare / REIT (lumped into Other per spec).
-    "BMY": "Other",
-    "O": "Other",
-    # Conglomerate.
-    "BRK.B": "Conglomerate",
-    # Crypto.
-    "IBIT": "Crypto",
-}
-
-#: Per-ticker asset-class fallback used when a position's ``asset_type``
-#: field is missing/blank. The primary signal is ``asset_type``; this map
-#: only kicks in when that field is absent.
-_TICKER_TO_ASSET_CLASS_FALLBACK: dict[str, str] = {
-    "NVDA": "Equity",
-    "AMD": "Equity",
-    "GOOG": "Equity",
-    "GOOGL": "Equity",
-    "AMZN": "Equity",
-    "META": "Equity",
-    "TSLA": "Equity",
-    "VOO": "Equity",
-    "VTI": "Equity",
-    "QQQM": "Equity",
-    "SCHG": "Equity",
-    "SPMO": "Equity",
-    "SCHD": "Equity",
-    "FWRA": "Equity",
-    "CSPX": "Equity",
-    "ACWD": "Equity",
-    "CNDX": "Equity",
-    "XZEW": "Equity",
-    # UCITS twins the domicile-aware canonical plan buys (non-US-situs).
-    "FUSA": "Equity",
-    "EXUS": "Equity",
-    "R1GR": "Equity",
-    "SPMV": "Equity",
-    "DPYA": "Equity",
-    "VTV": "Equity",
-    "BMY": "Equity",
-    "O": "Equity",
-    "BRK.B": "Equity",
-    "SGOV": "Cash",
-    "IB01": "Cash",
-    "IBTA": "Cash",
-    "IBIT": "Alternatives",
-}
 
 #: Canonical asset-class buckets. Used for deterministic ordering in the
 #: composition list and for clamping unknown classifications to "Other".
@@ -350,17 +266,27 @@ _ASSET_CLASS_ORDER: tuple[str, ...] = (
     "Other",
 )
 
+# Display order for the level-2 EXPOSURE / STYLE donut (the attribute is named
+# ``sector`` on InstrumentRef for historical reasons; it is a mixed category —
+# GICS sector for stocks, style for funds). Must list every value the reference
+# can emit; unknown values sort last (the _finalise fallback).
 _SECTOR_ORDER: tuple[str, ...] = (
     "Tech",
-    "ETF/Index",
-    "Value ETF",
-    "Dividend ETF",
-    "Israeli ETF",
-    "Conglomerate",
+    "Communication Services",
+    "Consumer Discretionary",
     "Financials",
     "Healthcare",
+    "Conglomerate",
+    "Broad Index",
+    "Growth",
+    "Value",
+    "Dividend",
+    "Momentum",
+    "Low Volatility",
+    "Israeli",
     "Real Estate",
-    "Cash/T-Bill",
+    "T-Bill",
+    "Treasury 1-3yr",
     "Crypto",
     "Other",
 )
@@ -410,12 +336,9 @@ def _classify_asset_class(asset_type: str, symbol: str) -> str:
             # Real Estate as its own bucket — clearer than lumping into
             # Alternatives or Other.
             return "Real Estate"
-        # Fall through to fallback map / Other for unknown asset_type
-        # strings (defensive: don't silently mis-classify).
-
-    # asset_type missing → per-ticker fallback map.
-    if sym in _TICKER_TO_ASSET_CLASS_FALLBACK:
-        return _TICKER_TO_ASSET_CLASS_FALLBACK[sym]
+        # Fall through to "Other" for unknown asset_type strings (defensive:
+        # don't silently mis-classify). Known tickers never reach here — the
+        # caller consults instrument_reference first.
 
     return "Other"
 
@@ -440,22 +363,15 @@ def _is_israeli_etf(symbol: str, details: str) -> bool:
 
 
 def _classify_sector(symbol: str, details: str) -> str:
-    """Map a position's ``symbol`` (+ details fallback) to one of the
-    canonical sector buckets.
+    """Fallback level-2 (exposure/style) bucket for an instrument the
+    reference doesn't know. The reference is the authority (consulted first by
+    the caller); this only fires for genuinely unknown tickers.
 
-    Rules (in order):
-      1. Israeli ETF (Hebrew characters in symbol/details) → "Israeli ETF".
-      2. Static per-ticker map lookup → that bucket.
-      3. Otherwise → "Other".
-
-    The static map is intentionally narrow: it covers the user's known
-    holdings. New tickers warrant a per-PR taxonomy update.
+      1. Israeli (Hebrew characters in symbol) → "Israeli".
+      2. Otherwise → "Other" (and the fail-loud guard flags it for curation).
     """
     if _is_israeli_etf(symbol, details):
-        return "Israeli ETF"
-    sym = (symbol or "").upper().strip()
-    if sym in _TICKER_TO_SECTOR:
-        return _TICKER_TO_SECTOR[sym]
+        return "Israeli"
     return "Other"
 
 

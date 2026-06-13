@@ -250,12 +250,16 @@ export interface PortfolioPosition {
   location: string;
   currency: string;
   asset_type: string;
+  /** Canonical "structure · exposure" Type label from the §20.4 reference. */
+  type_label: string;
   details: string;
   symbol: string;
   shares: number | null;
   current_price: number | null;
   usd_value_k: number | null;
   estate_safe: boolean | null;
+  /** False = not in the instrument reference (Type/estate-safety un-curated). */
+  classified: boolean;
 }
 
 export interface PortfolioAllocation {
@@ -274,6 +278,8 @@ export interface PortfolioSnapshotDTO {
   allocations: PortfolioAllocation[];
   source_path: string | null;
   parse_warnings: string[];
+  /** Held symbols not in the instrument reference (fail-loud: need curation). */
+  classification_warnings: string[];
 }
 
 // Tri-state response from POST /api/portfolio/upload-snapshot. The

@@ -116,7 +116,7 @@ export function WealthDashboard({ userId, excludeNvda = false }: WealthDashboard
           palette={ASSET_CLASS_PALETTE}
         />
         <CompositionDonutCard
-          eyebrow="Sector"
+          eyebrow="Exposure & style"
           slices={data.sector_composition}
           palette={SECTOR_PALETTE}
         />

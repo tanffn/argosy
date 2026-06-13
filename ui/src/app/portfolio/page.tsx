@@ -145,7 +145,7 @@ export default function PortfolioPage() {
     const dir = sortDir === "asc" ? 1 : -1;
     const key = (p: PortfolioPosition): string | number => {
       if (sortKey === "symbol") return (p.symbol || p.details || "").toLowerCase();
-      if (sortKey === "type") return (p.asset_type || "").toLowerCase();
+      if (sortKey === "type") return (p.type_label || p.asset_type || "").toLowerCase();
       if (sortKey === "value") return p.usd_value_k ?? -Infinity;
       const v = thesisByTicker[(p.symbol || "").toUpperCase()]?.verdict;
       return v ? (VERDICT_ORDER[v] ?? 98) : 99;
@@ -191,6 +191,23 @@ export default function PortfolioPage() {
               <li key={i}>{w}</li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* Fail-loud: held symbols missing from the §20.4 instrument reference.
+          Their Type / sector / ESTATE-SAFETY are un-curated — a US-domiciled
+          holding would otherwise be silently estate-unflagged. Surfaced loudly
+          so the team classifies it rather than the system mis-typing it. */}
+      {snap?.classification_warnings && snap.classification_warnings.length > 0 && (
+        <div className="rounded-md border border-amber-400/40 bg-amber-400/10 p-3">
+          <p className="text-sm font-medium text-amber-300">
+            ⚠ {snap.classification_warnings.length} holding
+            {snap.classification_warnings.length > 1 ? "s are" : " is"} not in the
+            instrument reference — Type & estate-safety un-curated:
+          </p>
+          <p className="mt-1 text-xs font-mono text-amber-200/90">
+            {snap.classification_warnings.join(", ")}
+          </p>
         </div>
       )}
 
@@ -348,9 +365,18 @@ export default function PortfolioPage() {
                       className="border-b border-border/40"
                     >
                       <td className="py-1.5">{symbolLabel}</td>
-                      <td className="py-1.5 text-muted-foreground">{p.asset_type}</td>
+                      <td className="py-1.5 text-muted-foreground">
+                        {p.type_label || p.asset_type}
+                      </td>
                       <td className="py-1.5">
-                        {p.estate_safe === null ? (
+                        {p.classified === false ? (
+                          <span
+                            className="text-[10px] text-amber-400"
+                            title="Not in the instrument reference — Type & estate-safety are un-curated. The team needs to classify this holding."
+                          >
+                            ⚠ unclassified
+                          </span>
+                        ) : p.estate_safe === null ? (
                           <span className="text-muted-foreground/50">—</span>
                         ) : p.estate_safe ? (
                           <span

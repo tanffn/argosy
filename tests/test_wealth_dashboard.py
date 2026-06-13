@@ -808,7 +808,7 @@ class TestCompositionBreakdowns:
         all_holdings: list[str] = []
         for sl in dash.sector_composition:
             all_holdings.extend(sl.holdings)
-        # Seeded tickers (NVDA→Tech, SGOV→Cash/T-Bill, VOO→ETF/Index, Cash labels)
+        # Seeded tickers (NVDA→Tech, SGOV→T-Bill, VOO→Broad Index, Cash labels)
         assert "NVDA" in all_holdings
         assert "SGOV" in all_holdings
         assert "VOO" in all_holdings
@@ -816,12 +816,12 @@ class TestCompositionBreakdowns:
         tech = next((sl for sl in dash.sector_composition if sl.name == "Tech"), None)
         assert tech is not None
         assert "NVDA" in tech.holdings
-        # SGOV → Cash/T-Bill bucket.
-        cash_tbill = next(
-            (sl for sl in dash.sector_composition if sl.name == "Cash/T-Bill"), None,
+        # SGOV → T-Bill bucket (§20.4 reference: structure ETF, exposure T-Bill).
+        tbill = next(
+            (sl for sl in dash.sector_composition if sl.name == "T-Bill"), None,
         )
-        assert cash_tbill is not None
-        assert "SGOV" in cash_tbill.holdings
+        assert tbill is not None
+        assert "SGOV" in tbill.holdings
 
     def test_asset_class_falls_back_to_per_ticker_map_when_field_missing(
         self, client_with_db,
@@ -936,7 +936,7 @@ class TestCompositionBreakdowns:
             )
             dash = compute_wealth_dashboard(s, user_id="ariel")
         sector_names = {sl.name for sl in dash.sector_composition}
-        assert "Israeli ETF" in sector_names
+        assert "Israeli" in sector_names
         # Asset-class still says Equity (Core Equity keyword match).
         ac_names = {sl.name for sl in dash.asset_class_composition}
         assert "Equity" in ac_names
@@ -951,16 +951,21 @@ class TestSectorClassifierIsraeliDetection:
     (every Leumi-held US name) as Israeli."""
 
     def test_us_stock_with_hebrew_description_is_not_israeli(self):
+        # The §20.4 reference is the authority: AMD/VOO carry a Hebrew
+        # parenthetical name but a latin ticker → their real exposure, never
+        # Israeli. (The wealth_dashboard fallback only sees Hebrew TICKERS.)
+        from argosy.services.instrument_reference import lookup
         from argosy.services.wealth_dashboard import _classify_sector
-        # AMD bought via Leumi: latin ticker, Hebrew parenthetical name.
-        assert _classify_sector("AMD", "(אדוונסד מיקרו דיווייסז) AMD") == "Tech"
-        # Broad US ETF via Leumi.
-        assert _classify_sector("VOO", "(ואנגארד S&P 500) VOO") == "ETF/Index"
+        assert lookup("AMD", "(אדוונסד מיקרו דיווייסז) AMD").sector == "Tech"
+        assert lookup("VOO", "(ואנגארד S&P 500) VOO").sector == "Broad Index"
+        # The fallback classifier (reference miss) never tags a latin ticker
+        # Israeli off a Hebrew description.
+        assert _classify_sector("AMD", "(אדוונסד מיקרו דיווייסז) AMD") != "Israeli"
 
     def test_tase_listed_instrument_is_israeli(self):
         from argosy.services.wealth_dashboard import _classify_sector
         # TA-200 tracker: Hebrew ticker, no latin symbol → genuinely Israeli.
-        assert _classify_sector('מחקה ת"א-200', 'ATF מחקה ת"א-200') == "Israeli ETF"
+        assert _classify_sector('מחקה ת"א-200', 'ATF מחקה ת"א-200') == "Israeli"
 
 
 # ===========================================================================

@@ -28,18 +28,45 @@ ASSET_ALTERNATIVES = "Alternatives"
 ASSET_REAL_ESTATE = "Real Estate"
 ASSET_OTHER = "Other"
 
-# Sector — extends the prior wealth_dashboard taxonomy with Financials /
-# Healthcare so the big "Other" bucket resolves to something meaningful.
+# Instrument STRUCTURE — the wrapper, orthogonal to sector/exposure. A single
+# stock and a broad-index ETF are both "Equity" asset class but differ in what
+# they ARE. This is the level-1 of the per-account "Type" column; sector is
+# level-2. Not captured by asset_class (which is Equity/FI/Cash/Alt/RE).
+STRUCT_STOCK = "Stock"
+STRUCT_ETF = "ETF"
+STRUCT_REIT = "REIT"
+STRUCT_BOND = "Bond"
+STRUCT_CASH = "Cash"
+
+# Level-2 EXPOSURE / STYLE category (``sector`` for historical reasons — the
+# attribute name is kept to avoid churning ~70 call sites + the API DTO, but it
+# is genuinely a mixed "category" axis: a GICS sector for single stocks, a
+# style for funds, a sub-asset for T-bills/crypto). The "ETF" suffix is NOT
+# baked in here anymore (``structure`` carries the wrapper), so a value sleeve
+# is "Value", not "Value ETF". The user-facing donut is labelled "Exposure &
+# style", not "Sector", because Growth / Momentum / T-Bill aren't sectors
+# (codex review).
+#
+# GICS sectors for single stocks (mega-caps are NOT all "Tech": Alphabet/Meta
+# are Communication Services, Amazon/Tesla are Consumer Discretionary).
 SECTOR_TECH = "Tech"
-SECTOR_ETF_INDEX = "ETF/Index"
-SECTOR_VALUE_ETF = "Value ETF"
-SECTOR_DIVIDEND_ETF = "Dividend ETF"
-SECTOR_ISRAELI_ETF = "Israeli ETF"
-SECTOR_CONGLOMERATE = "Conglomerate"
+SECTOR_COMM_SERVICES = "Communication Services"
+SECTOR_CONSUMER_DISC = "Consumer Discretionary"
 SECTOR_FINANCIALS = "Financials"
 SECTOR_HEALTHCARE = "Healthcare"
+SECTOR_CONGLOMERATE = "Conglomerate"
 SECTOR_REAL_ESTATE = "Real Estate"
-SECTOR_CASH_TBILL = "Cash/T-Bill"
+# Fund styles / factor tilts.
+SECTOR_BROAD_INDEX = "Broad Index"
+SECTOR_GROWTH = "Growth"
+SECTOR_VALUE = "Value"
+SECTOR_DIVIDEND = "Dividend"
+SECTOR_MOMENTUM = "Momentum"
+SECTOR_LOW_VOL = "Low Volatility"
+SECTOR_ISRAELI = "Israeli"
+# Sub-asset categories.
+SECTOR_TBILL = "T-Bill"
+SECTOR_TREASURY = "Treasury 1-3yr"
 SECTOR_CRYPTO = "Crypto"
 SECTOR_OTHER = "Other"
 
@@ -57,6 +84,10 @@ class InstrumentRef:
     asset_class: str
     sector: str
     region: str
+    # Instrument structure (the wrapper): Stock / ETF / REIT / Bond / Cash.
+    # Level-1 of the per-account "Type" column; ``sector`` is level-2. Defaults
+    # to ETF (most of the book is funds); single names set it to Stock.
+    structure: str = STRUCT_ETF
     # Estate-safe = NOT US-situs for a non-US person (no US estate-tax tail).
     # UCITS (Irish/London) + Israeli-domiciled are safe; US-domiciled
     # securities are exposed. Defaults safe; the US-situs set below flips the
@@ -69,55 +100,61 @@ class InstrumentRef:
 # Every instrument currently in the book. Comment = plain-language identity so
 # an adversarial reviewer can reconcile each row.
 _REFERENCE: dict[str, InstrumentRef] = {
-    # US mega-cap tech / AI.
-    "NVDA": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US),
-    "AMD": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US),
-    "GOOG": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US),
-    "GOOGL": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US),
-    "AMZN": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US),
-    "META": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US),
-    "TSLA": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US),
+    # US mega-cap single stocks — GICS sectors (NOT all "Tech": codex review).
+    "NVDA": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
+    "AMD": InstrumentRef(ASSET_EQUITY, SECTOR_TECH, REGION_US, STRUCT_STOCK),
+    "GOOG": InstrumentRef(ASSET_EQUITY, SECTOR_COMM_SERVICES, REGION_US, STRUCT_STOCK),
+    "GOOGL": InstrumentRef(ASSET_EQUITY, SECTOR_COMM_SERVICES, REGION_US, STRUCT_STOCK),
+    "META": InstrumentRef(ASSET_EQUITY, SECTOR_COMM_SERVICES, REGION_US, STRUCT_STOCK),
+    "AMZN": InstrumentRef(ASSET_EQUITY, SECTOR_CONSUMER_DISC, REGION_US, STRUCT_STOCK),
+    "TSLA": InstrumentRef(ASSET_EQUITY, SECTOR_CONSUMER_DISC, REGION_US, STRUCT_STOCK),
     # US single names — financials / healthcare / conglomerate.
-    "SOFI": InstrumentRef(ASSET_EQUITY, SECTOR_FINANCIALS, REGION_US),
-    "RKT": InstrumentRef(ASSET_EQUITY, SECTOR_FINANCIALS, REGION_US),
-    "BRK/B": InstrumentRef(ASSET_EQUITY, SECTOR_CONGLOMERATE, REGION_US),
-    "BRK.B": InstrumentRef(ASSET_EQUITY, SECTOR_CONGLOMERATE, REGION_US),
-    "BMY": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US),
-    # US broad-market / factor ETFs (US- and UCITS-domiciled both track US).
-    "VOO": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "VTI": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "CSPX": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "QQQM": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "CNDX": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "SCHG": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    # SCHD is a quality-dividend fund — a material style sleeve (~7% of the
-    # book); keep it distinct from plain index exposure (codex review).
-    "SCHD": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND_ETF, REGION_US),
-    "SPMO": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "XZEW": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "VTV": InstrumentRef(ASSET_EQUITY, SECTOR_VALUE_ETF, REGION_US),
-    # UCITS twins the canonical plan buys (non-US-situs, but track US).
-    "FUSA": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND_ETF, REGION_US),
-    "EXUS": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_GLOBAL),
-    "R1GR": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "SPMV": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    "DPYA": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_US),
-    # Global / developed-world equity ETFs.
-    "FWRA": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_GLOBAL),
-    "ACWD": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_GLOBAL),
-    "MSCI WORLD": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_GLOBAL),
+    "SOFI": InstrumentRef(ASSET_EQUITY, SECTOR_FINANCIALS, REGION_US, STRUCT_STOCK),
+    "RKT": InstrumentRef(ASSET_EQUITY, SECTOR_FINANCIALS, REGION_US, STRUCT_STOCK),
+    "BRK/B": InstrumentRef(ASSET_EQUITY, SECTOR_CONGLOMERATE, REGION_US, STRUCT_STOCK),
+    "BRK.B": InstrumentRef(ASSET_EQUITY, SECTOR_CONGLOMERATE, REGION_US, STRUCT_STOCK),
+    "BMY": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US, STRUCT_STOCK),
+    # US broad-market index ETFs (US- and UCITS-domiciled both track the S&P).
+    "VOO": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_US),
+    "VTI": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_US),
+    "CSPX": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_US),
+    "XZEW": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_US),  # equal-weight S&P 500
+    # US growth-tilt ETFs (Nasdaq-100 / large-cap growth) — kept distinct from
+    # plain broad index so the Type + donut reconcile with the plan's "US
+    # growth tilt" class.
+    "QQQM": InstrumentRef(ASSET_EQUITY, SECTOR_GROWTH, REGION_US),
+    "CNDX": InstrumentRef(ASSET_EQUITY, SECTOR_GROWTH, REGION_US),
+    "SCHG": InstrumentRef(ASSET_EQUITY, SECTOR_GROWTH, REGION_US),
+    "R1GR": InstrumentRef(ASSET_EQUITY, SECTOR_GROWTH, REGION_US),  # Russell 1000 Growth
+    # Factor sleeves — momentum / minimum-volatility are NOT "growth" (codex).
+    "SPMO": InstrumentRef(ASSET_EQUITY, SECTOR_MOMENTUM, REGION_US),  # S&P 500 Momentum
+    "SPMV": InstrumentRef(ASSET_EQUITY, SECTOR_LOW_VOL, REGION_US),   # S&P 500 Min-Vol UCITS
+    # Dividend / value style sleeves.
+    "SCHD": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND, REGION_US),
+    "FUSA": InstrumentRef(ASSET_EQUITY, SECTOR_DIVIDEND, REGION_US),
+    "VTV": InstrumentRef(ASSET_EQUITY, SECTOR_VALUE, REGION_US),
+    # Global / developed-world broad-index ETFs.
+    "EXUS": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL),
+    "FWRA": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL),
+    "ACWD": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL),
+    "MSCI WORLD": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL),
     # Emerging markets.
-    "EIMI": InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_EM),
+    "EIMI": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_EM),
     # Sector ETFs.
     "IUHC": InstrumentRef(ASSET_EQUITY, SECTOR_HEALTHCARE, REGION_US),
-    # Real estate (genuine REIT / property ETFs).
-    "O": InstrumentRef(ASSET_REAL_ESTATE, SECTOR_REAL_ESTATE, REGION_US),
+    # Real estate (genuine REIT single name + listed-property ETFs). DPYA is
+    # the EUR share class of the iShares Dev-Markets Property Yield ETF (sibling
+    # of IWDP), NOT a dividend-equity fund (codex review).
+    "O": InstrumentRef(ASSET_REAL_ESTATE, SECTOR_REAL_ESTATE, REGION_US, STRUCT_REIT),
     "IWDP": InstrumentRef(ASSET_REAL_ESTATE, SECTOR_REAL_ESTATE, REGION_GLOBAL),
-    # Cash equivalents / T-bills.
-    "SGOV": InstrumentRef(ASSET_CASH, SECTOR_CASH_TBILL, REGION_US),
-    "IB01": InstrumentRef(ASSET_CASH, SECTOR_CASH_TBILL, REGION_US),
-    "IBTA": InstrumentRef(ASSET_CASH, SECTOR_CASH_TBILL, REGION_US),
-    # Crypto.
+    "DPYA": InstrumentRef(ASSET_REAL_ESTATE, SECTOR_REAL_ESTATE, REGION_GLOBAL),
+    # Cash equivalents — SGOV/IB01 are 0-3m / 0-1y T-bill ETFs treated as cash;
+    # IBTA is 1-3yr Treasury BONDS = Fixed Income, not cash (codex review). The
+    # wrapper stays ETF; the asset class is what differs.
+    "SGOV": InstrumentRef(ASSET_CASH, SECTOR_TBILL, REGION_US),
+    "IB01": InstrumentRef(ASSET_CASH, SECTOR_TBILL, REGION_US),
+    "IBTA": InstrumentRef(ASSET_FIXED_INCOME, SECTOR_TREASURY, REGION_US),
+    # Crypto (spot-BTC ETF wrapper, Alternatives asset class).
     "IBIT": InstrumentRef(ASSET_ALTERNATIVES, SECTOR_CRYPTO, REGION_US),
 }
 
@@ -125,9 +162,9 @@ _REFERENCE: dict[str, InstrumentRef] = {
 # IBI STOXX Europe 600 tracker whose Symbol cell is the bogus "O"). Matched
 # against the lower-cased details string. First hit wins.
 _NAME_KEYWORD_FALLBACK: tuple[tuple[str, InstrumentRef], ...] = (
-    ("stoxx europe", InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_EUROPE)),
-    ("msci world", InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_GLOBAL)),
-    ("emerging", InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_EM)),
+    ("stoxx europe", InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_EUROPE)),
+    ("msci world", InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL)),
+    ("emerging", InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_EM)),
 )
 
 
@@ -161,7 +198,7 @@ def _is_hebrew_ticker(symbol: str) -> bool:
 # (codex review). Only the IBI STOXX Europe 600 tracker (Symbol cell "O", the
 # Realty Income ticker) qualifies today.
 _COLLISION_OVERRIDES: tuple[tuple[str, str, InstrumentRef], ...] = (
-    ("O", "stoxx europe", InstrumentRef(ASSET_EQUITY, SECTOR_ETF_INDEX, REGION_EUROPE)),
+    ("O", "stoxx europe", InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_EUROPE)),
 )
 
 
@@ -178,7 +215,7 @@ def lookup(symbol: str, details: str = "") -> InstrumentRef | None:
         return _REFERENCE[sym]
     # TASE-listed (Hebrew ticker, no latin symbol) → Israeli equity.
     if _is_hebrew_ticker(symbol):
-        return InstrumentRef(ASSET_EQUITY, SECTOR_ISRAELI_ETF, REGION_ISRAEL)
+        return InstrumentRef(ASSET_EQUITY, SECTOR_ISRAELI, REGION_ISRAEL)
     # No resolvable ticker — fall back to a name keyword in details.
     hay = (details or "").lower()
     for kw, ref in _NAME_KEYWORD_FALLBACK:
@@ -196,6 +233,25 @@ def estate_safe_for(symbol: str, details: str = "") -> bool | None:
     return ref.estate_safe if ref is not None else None
 
 
-__all__ = ["InstrumentRef", "lookup", "estate_safe_for", "REGION_US",
-           "REGION_ISRAEL", "REGION_EUROPE", "REGION_EM", "REGION_GLOBAL",
-           "REGION_OTHER"]
+def type_label(symbol: str, details: str = "", fallback: str = "") -> str:
+    """The canonical per-account "Type" label: ``"<structure> · <sector>"``
+    (e.g. ``"Stock · Tech"``, ``"ETF · Broad Index"``, ``"REIT · Real Estate"``).
+
+    This is the single authority for the Type column, the sector donut, and any
+    other "what is this instrument" surface — derived from the reference, never
+    from the unreliable source ``asset_type`` free-text. A Cash-class instrument
+    collapses to just its structure (no redundant ``"Cash · T-Bill"``-style
+    doubling for a money-market row). When the instrument isn't in the reference
+    (physical cash, an untyped row), returns ``fallback`` (the caller's raw
+    ``asset_type``) so the column is never blank."""
+    ref = lookup(symbol, details)
+    if ref is None:
+        return (fallback or "").strip()
+    if ref.asset_class == ASSET_CASH and ref.structure == STRUCT_CASH:
+        return ref.structure
+    return f"{ref.structure} · {ref.sector}"
+
+
+__all__ = ["InstrumentRef", "lookup", "estate_safe_for", "type_label",
+           "REGION_US", "REGION_ISRAEL", "REGION_EUROPE", "REGION_EM",
+           "REGION_GLOBAL", "REGION_OTHER"]

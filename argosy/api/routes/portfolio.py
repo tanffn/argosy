@@ -45,13 +45,15 @@ _log = get_logger(__name__)
 class PositionDTO(BaseModel):
     location: str
     currency: str
-    asset_type: str
+    asset_type: str            # raw/normalized source Type (drives is-cash / is-real-estate logic)
+    type_label: str = ""       # canonical "structure · exposure" from the §20.4 reference (display)
     details: str
     symbol: str
     shares: float | None
     current_price: float | None
     usd_value_k: float | None
     estate_safe: bool | None = None  # True=non-US-situs, False=US-situs, None=n/a (cash)
+    classified: bool = True    # False = not in the instrument reference (fail-loud: needs curation)
 
 
 class AllocationDTO(BaseModel):
@@ -70,6 +72,11 @@ class PortfolioSnapshotDTO(BaseModel):
     allocations: list[AllocationDTO]
     source_path: str | None
     parse_warnings: list[str]
+    # Fail-loud: held symbols with a real ticker that the §20.4 instrument
+    # reference doesn't know — so their Type / sector / ESTATE-SAFETY are
+    # un-curated (a US-domiciled holding would otherwise be silently
+    # estate-unflagged). The UI surfaces these for the team to classify.
+    classification_warnings: list[str] = []
 
 
 _PORTFOLIO_TSV_HEADER_MARKER = "Bank account / funds allocation"
@@ -127,6 +134,7 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
             eff_type[sym] = at
 
     positions: list[PositionDTO] = []
+    classification_warnings: list[str] = []
     for p in snap.positions:
         sym = (p.symbol or "").strip().upper()
         asset_type = (p.asset_type or "").strip() or eff_type.get(sym, "")
@@ -144,18 +152,39 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
             None if is_cash
             else instrument_reference.estate_safe_for(p.symbol or "", p.details or "")
         )
+        # Canonical "structure · exposure" Type label (the reference is the
+        # authority; falls back to the raw asset_type for un-curated rows).
+        type_label = instrument_reference.type_label(
+            p.symbol or "", p.details or "", fallback=asset_type
+        )
+        # Fail-loud: a holding with a real latin ticker that the reference
+        # doesn't know is un-curated — its estate-safety is unknown (a silent
+        # US-situs gap). Physical cash / real-estate rows (no real ticker) are
+        # expected to be absent from the reference and are NOT flagged.
+        has_ticker = bool(sym) and sym != "-"
+        classified = ref is not None or not has_ticker
+        if not classified:
+            classification_warnings.append(sym)
         positions.append(
             PositionDTO(
                 location=p.location,
                 currency=p.currency,
                 asset_type=asset_type,
+                type_label=type_label,
                 details=p.details,
                 symbol=p.symbol,
                 shares=p.shares,
                 current_price=p.current_price,
                 usd_value_k=p.usd_value_k,
                 estate_safe=estate_safe,
+                classified=classified,
             )
+        )
+    if classification_warnings:
+        _log.warning(
+            "portfolio: %d held symbol(s) not in the instrument reference — "
+            "Type/sector/estate-safety un-curated: %s",
+            len(classification_warnings), ", ".join(sorted(set(classification_warnings))),
         )
     allocations: list[AllocationDTO] = []
     for a in snap.allocations:
@@ -176,6 +205,7 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
         allocations=allocations,
         source_path=snap.source_path,
         parse_warnings=snap.parse_warnings,
+        classification_warnings=classification_warnings,
     )
 
 
