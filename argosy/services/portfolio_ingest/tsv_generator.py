@@ -364,6 +364,8 @@ def _refresh_cash_rows_in_position_block(
     the latest closing balance. Carry every other row verbatim."""
     out: list[str] = []
     in_position_block = False
+    usd_seen = False         # did the prior TSV already carry a Leumi USD cash row?
+    nis_row_idx: int | None = None  # index in `out` of the Leumi NIS cash row
     section_terminators = (
         "real estate details", "current allocation",
         "nvda sales history", "pensions",
@@ -398,13 +400,28 @@ def _refresh_cash_rows_in_position_block(
                 cells[9] = f"{leumi_nis_cash:.2f}"
                 cells[10] = f"{usd_k:.2f}"
                 out.append("\t".join(cells))
+                nis_row_idx = len(out) - 1
                 continue
-            if currency == "USD" and leumi_usd_cash is not None:
-                cells[9] = f"{leumi_usd_cash:.2f}"
-                cells[10] = f"{leumi_usd_cash / 1000.0:.2f}"
-                out.append("\t".join(cells))
-                continue
+            if currency == "USD":
+                usd_seen = True
+                if leumi_usd_cash is not None:
+                    cells[9] = f"{leumi_usd_cash:.2f}"
+                    cells[10] = f"{leumi_usd_cash / 1000.0:.2f}"
+                    out.append("\t".join(cells))
+                    continue
         out.append(ln)
+    # Insert a Leumi USD cash row when the prior TSV lacked one but we have a
+    # balance — otherwise a missing row would permanently understate USD cash
+    # even though leumi_usd data exists (codex review).
+    if not usd_seen and leumi_usd_cash is not None:
+        usd_row = "\t".join([
+            "", "Leumi", "USD", "Cash", "", "", "", "", "",
+            f"{leumi_usd_cash:.2f}", f"{leumi_usd_cash / 1000.0:.2f}", "", "",
+        ])
+        if nis_row_idx is not None:
+            out.insert(nis_row_idx + 1, usd_row)
+        else:
+            out.append(usd_row)
     return out
 
 

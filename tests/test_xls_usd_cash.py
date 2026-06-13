@@ -73,6 +73,18 @@ class TestUsdCashRow:
         cells = [r.split("\t") for r in rows]
         assert not [c for c in cells if c[1] == "Leumi" and c[2] == "USD" and c[3] == "Cash"]
 
+    def test_no_ticker_does_not_inherit_one_char_prior_symbol(self):
+        # A prior "O" (Realty Income) row must NOT substring-match a no-ticker
+        # tracker name and re-stamp "O" onto it (the STOXX bug).
+        from argosy.ingest.tsv import PortfolioPosition
+        prior = PortfolioSnapshot(source_path="x", positions=[
+            PortfolioPosition(location="Leumi", symbol="O", asset_type="REIT",
+                              details="(ריאלטי אינקם) O"),
+        ])
+        xls = _xls([_pos("999", "אי בי אי מחקה STOXX Europe 600", None, 12500, 6810.0)])
+        sym, _cur, _typ = _build_prior_mappings(prior, xls)
+        assert sym["999"] == "STOXX Europe 600"
+
     def test_stoxx_position_symbol_is_name_not_O(self):
         rows = _rows_for([_pos("1100284", "אי בי אי מחקה STOXX Europe 600", None, 12500, 6810.05)],
                          usd_closing=None)

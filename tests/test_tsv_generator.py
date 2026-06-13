@@ -368,3 +368,30 @@ class TestGeneratorEdgeCases:
         assert "12000.00" in body
         # NIS cash retained from prior (10000).
         assert "10000" in body
+
+
+def test_refresh_inserts_missing_leumi_usd_cash_row():
+    """generate-tsv must INSERT a Leumi USD cash row when the prior TSV lacked
+    one but a USD balance exists — not just refresh existing rows (codex)."""
+    from argosy.services.portfolio_ingest.tsv_generator import (
+        _refresh_cash_rows_in_position_block,
+    )
+    prior = [
+        "Bank account / funds allocation",
+        "\tLeumi\tNIS\tCash\t\t\t\t\t\t58944.86\t20.04\t\t",
+        "\tLeumi\tUSD\tEquity\tVOO\tVOO\t20\t678\t572\t13564\t13.56\t\t",
+        "Current allocation:",
+    ]
+    out = _refresh_cash_rows_in_position_block(
+        prior_lines=prior, leumi_nis_cash=58944.86,
+        leumi_usd_cash=264997.33, fx_usd_nis=2.94161,
+    )
+    usd_cash = [
+        ln for ln in out
+        if ln.split("\t")[1:4] == ["Leumi", "USD", "Cash"]
+    ]
+    assert len(usd_cash) == 1, "a Leumi USD cash row was inserted"
+    assert usd_cash[0].split("\t")[9] == "264997.33"
+    # Inserted right after the NIS cash row (not at the very end).
+    assert out[1].split("\t")[1:4] == ["Leumi", "NIS", "Cash"]
+    assert out[2].split("\t")[1:4] == ["Leumi", "USD", "Cash"]

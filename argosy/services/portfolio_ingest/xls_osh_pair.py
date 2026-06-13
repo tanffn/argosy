@@ -233,6 +233,19 @@ def handle_xls_upload(
         _get_usd_closing_balance(db, statement_id=usd_stmt.id)
         if usd_stmt is not None else None
     )
+    usd_warnings: list[str] = []
+    if usd_stmt is None:
+        usd_warnings.append(
+            "No Leumi USD (פמ\"ח) statement within "
+            f"{MATCH_WINDOW_DAYS}d of {xls.snapshot_date}; the snapshot has NO "
+            "Leumi USD cash row — upload the Leumi USD statement via /expenses "
+            "to capture the USD balance (it can hold material idle cash)."
+        )
+    elif usd_closing is None:
+        usd_warnings.append(
+            f"Leumi USD statement #{usd_stmt.id} found but its closing "
+            "balance could not be extracted; Leumi USD cash row omitted."
+        )
 
     tsv_text, synth_warnings = _synthesize_in_memory(
         xls=xls,
@@ -240,6 +253,7 @@ def handle_xls_upload(
         snapshot_root=snapshot_root,
         usd_closing=usd_closing,
     )
+    synth_warnings = synth_warnings + usd_warnings
     target_name = _canonical_tsv_filename(
         xls.snapshot_date,
     )
@@ -532,6 +546,8 @@ def _find_matching_usd(
                 ExpenseStatement.period_end >= lo,
                 ExpenseStatement.period_end <= hi,
                 ExpenseStatement.parser_name == _LEUMI_USD_PARSER_NAME,
+                ExpenseSource.kind == "bank",
+                ExpenseSource.issuer == "leumi",
             )
         )
         .scalars()
@@ -968,10 +984,14 @@ def _build_prior_mappings(
                 if pp.symbol.strip() == xp.ticker.strip():
                     matched = pp
                     break
-        # Strategy 2: name substring match.
+        # Strategy 2: name substring match. Require the prior symbol to be at
+        # least 2 chars — a 1-char symbol like "O" (Realty Income) spuriously
+        # substring-matches almost any name and would re-stamp it onto a
+        # no-ticker tracker (the STOXX-as-"O" bug). Codex review.
         if matched is None:
             for pp in prior_leumi:
-                if pp.symbol and pp.symbol.strip() in (xp.name_he or ""):
+                ps = (pp.symbol or "").strip()
+                if len(ps) >= 2 and ps in (xp.name_he or ""):
                     matched = pp
                     break
         if matched is not None:
