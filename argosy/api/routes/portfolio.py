@@ -1204,6 +1204,7 @@ class AllocationBreakdownDTO(BaseModel):
 @router.get("/allocation-breakdown", response_model=AllocationBreakdownDTO)
 def get_allocation_breakdown(
     user_id: str = Query("ariel"),
+    exclude_nvda: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> AllocationBreakdownDTO:
     """LIVE current allocation (from the snapshot holdings, grouped by class)
@@ -1220,7 +1221,7 @@ def get_allocation_breakdown(
     snap = row_to_snapshot(row)
     pv = get_current_plan(db, user_id)
     doc = load_plan_target_allocation(pv) if pv is not None else None
-    rows = build_allocation_breakdown(snap, doc)
+    rows = build_allocation_breakdown(snap, doc, exclude_nvda=exclude_nvda)
     note = ("Current = your live holdings grouped by asset class; target = the "
             "canonical plan's class targets. Click a class to see its symbols. "
             + ("" if doc is not None

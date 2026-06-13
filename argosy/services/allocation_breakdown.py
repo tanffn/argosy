@@ -68,10 +68,22 @@ def _doc_targets_by_label(doc) -> dict[str, float]:
     return {c.label: c.target_pct for c in getattr(doc, "classes", [])}
 
 
-def build_allocation_breakdown(snapshot, doc) -> list[CategoryBreakdown]:
+def _is_nvda(p) -> bool:
+    sym = (getattr(p, "symbol", "") or "").strip().upper()
+    at = (getattr(p, "asset_type", "") or "").strip().lower()
+    return sym == "NVDA" or "nvidia" in at
+
+
+def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> list[CategoryBreakdown]:
     """Group live holdings into plan classes; pair current % with the canonical
-    class target %; attach the per-symbol drill-down. Sorted by current weight."""
+    class target %; attach the per-symbol drill-down. Sorted by current weight.
+
+    ``exclude_nvda`` drops the NVDA RSU concentration and renormalises the
+    percentages over the ex-NVDA book — NVDA at ~61% otherwise flattens every
+    other class to a sliver, so the diversified core is unreadable."""
     positions = list(getattr(snapshot, "positions", []) or [])
+    if exclude_nvda:
+        positions = [p for p in positions if not _is_nvda(p)]
     total = sum(float(getattr(p, "usd_value_k", 0.0) or 0.0) for p in positions)
     if total <= 0:
         return []

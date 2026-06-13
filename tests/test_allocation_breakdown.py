@@ -64,6 +64,24 @@ def test_breakdown_live_current_vs_target_with_holdings():
     assert round(sum(r.current_pct for r in rows), 1) == 100.0
 
 
+def test_breakdown_exclude_nvda_renormalizes_to_ex_nvda_book():
+    snap = _snap([
+        _pos("NVDA", "NVIDIA", 600.0),
+        _pos("VOO", "Core Equity", 100.0),
+        _pos("CSPX", "Core Equity", 100.0),
+        _pos("SCHD", "Dividend", 100.0),
+        _pos("-", "Cash", 100.0),
+    ])  # total 1000k, ex-NVDA 400k
+    rows = build_allocation_breakdown(snap, _doc(), exclude_nvda=True)
+    by = {r.label: r for r in rows}
+    # NVDA gone entirely.
+    assert "Strategic single-stock (NVDA)" not in by
+    # Core Equity now 200/400 = 50% of the ex-NVDA book (was 20%).
+    assert round(by["US broad-market core"].current_pct, 1) == 50.0
+    # Conservation holds over the ex-NVDA book.
+    assert round(sum(r.current_pct for r in rows), 1) == 100.0
+
+
 def test_breakdown_unmapped_category_surfaces_with_zero_target():
     snap = _snap([_pos("NVDA", "NVIDIA", 500.0),
                   _pos("WEIRD", "Crypto-thing", 500.0)])
