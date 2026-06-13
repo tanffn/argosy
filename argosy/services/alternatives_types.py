@@ -35,6 +35,10 @@ class VerificationResult(BaseModel):
     severity: Literal["GREEN", "YELLOW", "RED"]
     reason: str
     evidence: VerificationEvidence
+    # Authoritative facts resolved during verification (from the registry when a
+    # pick verifies). Callers MUST bind holdings to these, never to agent claims.
+    resolved_isin: str | None = None
+    resolved_domicile: str | None = None
 
 
 class VerifiedAlternativesCandidate(BaseModel):

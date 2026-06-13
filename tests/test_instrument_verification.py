@@ -102,3 +102,47 @@ def test_us_domicile_claim_never_verifies():
     r = verify_instrument(symbol="USFUND", claimed_domicile="US", claimed_isin="US67066G1040")
     assert not r.verified
     assert r.severity == "RED"
+
+
+# --- codex BLOCKER/HIGH fixes ---------------------------------------------
+
+
+def test_partial_registry_row_never_verifies():
+    # A malformed/empty registry row must NOT let agent claims slip through.
+    bad_registry = {"FAKE": {}}
+    r = verify_instrument(
+        symbol="FAKE", claimed_domicile="IE", claimed_isin="IE00B579F325",
+        registry=bad_registry,
+    )
+    assert not r.verified
+
+
+def test_registry_us_domicile_synonym_rejected():
+    # "United States" in a registry row must be caught, not just exact "US".
+    reg = {"USFAKE": {"isin": "IE00B579F325", "domicile": "United States",
+                      "source_url": "x", "verified_on": "2026-06-13"}}
+    r = verify_instrument(
+        symbol="USFAKE", claimed_domicile="IE", claimed_isin="IE00B579F325",
+        registry=reg,
+    )
+    assert not r.verified
+
+
+def test_contradictory_claim_uses_registry_facts_not_claim():
+    # A known instrument with a forged US claim still verifies via registry facts,
+    # and the RESULT exposes the authoritative registry ISIN/domicile.
+    r = verify_instrument(symbol="SGLD", claimed_domicile="US", claimed_isin="US4642875235")
+    assert r.verified and r.severity == "GREEN"
+    assert r.resolved_isin == "IE00B579F325"
+    assert r.resolved_domicile == "IE"
+
+
+def test_symbol_is_stripped():
+    r = verify_instrument(symbol=" sgld ", claimed_domicile="IE", claimed_isin="IE00B579F325")
+    assert r.verified
+
+
+def test_isin_validity_independent_of_estate_policy():
+    # A valid non-US ISO ISIN (Ericsson B, Sweden) is checksum-valid even though
+    # its prefix is outside this book's typical set — checksum != estate policy.
+    assert isin_is_valid("SE0000108656") is True

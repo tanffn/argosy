@@ -94,13 +94,8 @@ def verify_and_gate_proposal(
     candidates keep their proposed within-sleeve weights; re-normalising the
     weights of the survivors is the decision/engine step's responsibility.
     """
-    from argosy.services.instrument_verification import (
-        load_registry,
-        registry_lookup,
-        verify_instrument,
-    )
+    from argosy.services.instrument_verification import verify_instrument
 
-    registry = load_registry()
     clean: list[VerifiedAlternativesCandidate] = []
     violations: list[str] = []
 
@@ -111,15 +106,15 @@ def verify_and_gate_proposal(
         if not result.verified:
             violations.append(f"{p.symbol}: {result.severity} — {result.reason}")
             continue
-        # Registry is authoritative for a verified pick — use its stamped facts.
-        hit = registry_lookup(p.symbol, registry) or {}
+        # Bind the candidate to the AUTHORITATIVE facts the verifier resolved
+        # (from the registry), never to the agent's claimed domicile/ISIN.
         clean.append(
             VerifiedAlternativesCandidate(
                 symbol=p.symbol,
                 name=p.name,
                 asset_class=p.asset_class,
-                domicile=str(hit.get("domicile", p.domicile)),
-                isin=str(hit.get("isin", p.isin)),
+                domicile=str(result.resolved_domicile or p.domicile),
+                isin=str(result.resolved_isin or p.isin),
                 weight_within_sleeve_pct=p.weight_within_sleeve_pct,
                 conviction=p.conviction,
                 thesis_md=p.thesis_md,
