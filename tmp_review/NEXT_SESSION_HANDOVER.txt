@@ -1,221 +1,156 @@
 ================================================================================
-ARGOSY — NEW SESSION HANDOVER  (plain text)
-Branch: feat/alternatives-asset-class   |   Off main @ 9941834   |   NOT merged
+ARGOSY — NEXT SESSION HANDOVER   (Proposals tab — surface 4)
+Branch: feat/alternatives-asset-class   |   off main @ 9941834   |   NOT merged
 ================================================================================
 
 ********************************************************************************
-PART 1 — DISCUSSION & REVIEW POINTS FOR NEXT SESSION  (READ FIRST — the agenda)
+PART 1 — THE AGENDA: build the PROPOSALS surface (the daily proactive agent)
 ********************************************************************************
 
-This is the user's (Ariel's) framing of what each surface is FOR. Treat it as the
-authoritative product model and review the codebase against it. Where the build
-does not yet match this, that is the work — discuss with Ariel, don't assume.
+The four-surface product model (now in SDD §11.0 — read it):
+  1. PLAN       — strategic planning / forecasts / Monte Carlo (generates THE PLAN).
+  2. RETIREMENT — tracking + expected date (OWNS the FI projection; §19).
+  3. PORTFOLIO  — current vs target + free cash USD&NIS + what-we-own.  ← DONE this session.
+  4. PROPOSALS  — actions to take.  ← THIS SESSION'S BUILD.
 
-THE FOUR SURFACES — each has ONE clear job:
+PROPOSALS' one job: surface (a) how to DEPLOY free cash and (b) NEW buy
+opportunities and hold/sell/buy calls — DRIVEN BY A DAILY AGENT that reacts to
+BOTH a free-cash change AND per-stock market-sentiment changes. Broad/long ETFs
+rarely move; INDIVIDUAL STOCKS might — so the daily "do we need to act?" check
+must reason at the per-holding / per-candidate level, not just on cash deltas.
 
-1. PLAN tab = HIGH-LEVEL STRATEGIC PLANNING.
-   "How can we retire, given what we know right now?" — forecasts, analysis,
-   Monte Carlo, the strategic frame. This is where THE PLAN is generated across
-   horizons (policy, target, transition, glide, theses). Forward-looking.
+The pieces EXIST but are NOT assembled into one daily agent (from a prior survey):
+  - argosy/agents/state_observer.py + orchestrator/loops/state_observer.py
+      runs daily ~17:00 IDT, writes MonitorFlag rows (emergent anomaly flagger).
+  - argosy/agents/action_proposer.py + services/action_proposer_runner.py
+      turns a trigger (flag / snapshot / inferred-event) into 0-3 ActionProposal
+      rows. NEVER executes. BUT nothing auto-fires it daily off the flags.
+  - argosy/agents/sentiment_analyst.py — per-ticker bullish/neutral/bearish.
+      EXISTS but standalone: no scheduled run, no data feed wired. (The
+      per-stock sentiment signal is the genuinely-new dependency to source.)
+  - GET /api/portfolio/deploy-cash (services/deployment_advisor.py) — tiered,
+      estate-aware plan to deploy idle cash toward the plan target. Ready.
+  - orchestrator/loops/watchlist.py — daily; emits a WS event; doesn't drive proposals.
+  - UI: ui/src/app/proposals/page.tsx — ActionProposalCard + DeployCashCard +
+      Windfall/TrendRadar/SpeculativeMonitor/Discovery cards already render.
+  - Routes: /api/proposals/actions* (action proposals) + /api/proposals (orders).
 
-2. RETIREMENT tab = TRACKING PLAN EXECUTION.
-   "Are we on track?" — measures actual progress against the plan the Plan tab
-   produced; must show the expected retirement date. NOT a second planner.
+THE BUILD = one daily orchestration loop ("do we need to act?") that:
+  (a) reads current cash (USD+NIS — now first-class, see PART 2) + holdings,
+  (b) detects per-holding market-sentiment shifts (wire the sentiment analyst +
+      its data feed — the new piece; broad ETFs skip, individual names reasoned),
+  (c) ties today's state_observer flags → action_proposer (currently un-wired),
+  (d) emits proposals: deploy-cash plans (reuse deploy-cash), new buys, hold/sell/buy.
+Connect to the EXISTING Deployment Advisor + alternatives sourcing rather than
+building parallel logic. SCOPE the daily agent's cadence / "what counts as act"
+with Ariel before building (front-load the judgment calls, then sprint).
 
-3. PORTFOLIO tab = CURRENT vs WHERE WE SHOULD BE.
-   Current allocation against the plan's target, INCLUDING FREE CASH in BOTH
-   USD and NIS (the system must know how much cash there is and where it sits),
-   "where is our money", and a high-level review of WHAT WE ALREADY OWN
-   (hold / sell / buy on existing holdings).
+--------------------------------------------------------------------------------
+TWO CARRY-OVER FIXES FROM THE PORTFOLIO SESSION (do the FIRST one FIRST):
+--------------------------------------------------------------------------------
+1. (DO FIRST) Design a COHERENT "Type" taxonomy for ALL symbols — BRK/B is just
+   the example. Today the per-account "Type" column is one messy single field
+   (Growth / Core Equity / Individual Stocks / ETF/Index / REIT / Dividend /
+   Defensive / NVIDIA / Real estate) carried from the hand-maintained TSV, and
+   it's inconsistent: BRK/B shows "Equity" in the Leumi panel but maps to "US
+   broad-market core" in the allocation card. It does NOT make sense uniformly
+   across symbols.
+   Ariel's steer: the original TSV had a TWO-LEVEL scheme — a Type + a
+   sub-category (e.g. "ETF" + "Tech"). Don't just patch BRK/B — design the right
+   coherent classification for every holding and apply it consistently across
+   the per-account table AND the allocation/donut views. "You are smarter, work
+   on it" — figure out the correct scheme.
+   Raw material you already have: the instrument reference
+   (argosy/services/instrument_reference.py) carries asset_class + SECTOR +
+   region + estate_safe per ticker — a structured classification is already
+   there. Likely direction: surface a 2-level Type, e.g. structure (Stock / ETF
+   / REIT / Cash / Bond) × sector|style (Tech / Financials / Dividend / Growth /
+   Value / Index / Healthcare …), derived from the reference, NOT from the
+   free-text source asset_type. Decide whether "structure" needs a new reference
+   field (Stock vs ETF isn't captured today) and make the per-account Type, the
+   sector donut, and the allocation labels all reconcile to it.
+   Files: argosy/services/instrument_reference.py (the authority — maybe add a
+   `structure`/`instrument_type` field), argosy/api/routes/portfolio.py::
+   _snapshot_to_dto (per-account Type display),
+   argosy/services/allocation_breakdown.py::_label_for + the donut classifiers
+   in argosy/services/wealth_dashboard.py. Consult codex on the taxonomy.
 
-4. PROPOSALS tab = ACTIONS TO TAKE.
-   - Surface NEW buy opportunities (new stocks worth buying).
-   - How to DEPLOY the free cash (it must know the cash balance, USD + NIS).
-   - DRIVEN BY A DAILY AGENT (this is a hard requirement): an agent runs every
-     day to decide whether changes are needed. Triggered NOT only by a free-cash
-     change but also by a MARKET-SENTIMENT change. Broad/long ETFs probably won't
-     change much; INDIVIDUAL STOCKS might — so the daily check must reason at the
-     per-holding / per-candidate level, not just on cash deltas.
-
-REVIEW POINTS / IMPLICATIONS to work through next session:
-- The Alternatives sleeve built this branch is NOT a standalone feature — it is
-  part of THE PLAN's target allocation. It is sourced during plan synthesis, so it
-  belongs on the PLAN tab (as part of the strategic target) and on PORTFOLIO
-  (current vs that target). "Where do I see it" = those surfaces once a synthesis
-  runs — verify each actually renders it, including the free-cash context.
-- The PROPOSALS daily agent is the headline gap to scope: a scheduled daily job
-  that (a) reads current cash (USD+NIS) and holdings, (b) detects market-sentiment
-  shifts at the per-stock level, (c) emits proposals — deploy-cash plans, new
-  opportunities, and hold/sell/buy calls. Connect it to the existing Deployment
-  Advisor (GET /api/portfolio/deploy-cash) and the alternatives sourcing rather
-  than building parallel logic. Free-cash AMOUNT (USD+NIS) must be a first-class,
-  always-available input across Portfolio + Proposals.
-- Earlier in this session the assistant framed the alternatives work as "no UI
-  needed, renders via /plan draft." Ariel pushed back: the surfaces have defined
-  jobs and the work must actually show up in them. So the open question is NOT
-  "did we change UI" but "does each tab do its job above, with cash awareness and
-  a daily proposals agent" — review and plan against that.
+2. MOVE the "Unallocated cash — proposed allocation" card OFF Portfolio and ONTO
+   Proposals — it's an ACTION (deploy cash), which is surface 4's job, not
+   Portfolio's. Component: ui/src/components/portfolio/unallocated-cash-card.tsx
+   (rendered today in ui/src/app/portfolio/page.tsx via <UnallocatedCashCard>);
+   backend GET /api/portfolio/unallocated-cash-proposal
+   (services/unallocated_cash_detector.py). Re-home it under /proposals.
 
 ********************************************************************************
+PART 2 — WHAT SHIPPED THIS SESSION (Portfolio data-correctness overhaul) — do NOT redo
+********************************************************************************
+
+Surface 3 (PORTFOLIO) was made correct end-to-end. ~20 commits. Highlights
+(all live + tested; SDD §11.0/§11.1/§11.7/§20.4 describe the as-built state):
+
+DATA CORRECTNESS (root-caused to bad source columns + a derived-artifact audit):
+  - Recovered ~$265K Leumi USD cash that was MISSING from the snapshot (the big
+    one — it's your NVDA-sale proceeds; cash is now USD+NIS first-class).
+  - Symbol "O" collapse fixed (it was 3 instruments: Realty Income, STOXX
+    Europe 600, EIMI) — derive ticker from Details; STOXX/EIMI relabeled.
+  - Leumi auto-refreshes from the RAW bank XLS (positions + BOTH cash
+    currencies); a RECONCILIATION GATE (argosy/services/portfolio_ingest/
+    reconcile.py) diffs the snapshot vs the raw XLS and fails loud.
+  - asset_type normalized at persist (services/portfolio_snapshot_store.py) so
+    the STORED data is canonical (STOXX/EIMI=ETF/Index, IWDP=Real Estate; genuine
+    tilts preserved). No more per-surface patching.
+
+CLASSIFICATION (argosy/services/instrument_reference.py — the authority):
+  - Curated ticker → (asset_class, sector, region, estate_safe). Israeli detected
+    by TICKER not Hebrew description. estate_safe_for() → US-situs vs UCITS/Israeli
+    (NVDA flagged exposed = the sanctioned exception; QQQM exposed vs CNDX safe).
+
+PORTFOLIO UI:
+  - Donut row is asset-class · sector · REGION (new); page-level exclude-NVDA
+    toggle drives donuts + allocation together (default on).
+  - Allocation-vs-target conserves to 100% (all plan classes shown, 0% for
+    redeploy/unheld); per-holding ACCOUNT tag ([Leumi]/[schwab 876]) + ESTATE
+    marker; cash labeled NIS/USD; SGOV in Cash & T-bills.
+  - Real-estate 4-property net-worth panel (~$899K, codex-verified math), kept
+    OUT of the investable allocation. Net worth = investable + full RE equity
+    ($4.86M). Cash runway excludes real estate. FI card removed (Retirement owns it).
+  - Per-account tables: merged Generate+Upload panel, loading skeletons, sortable
+    headers, Schwab RSU grouped under "schwab 876", Estate column.
+
+KEY LESSON (now an auto-memory, feedback_reconcile_against_raw_source): validate
+ingested data against the RAW external source (bank exports), never derived
+artifacts — internal consistency (sums conserving) is NOT correctness. A snapshot
+missing a whole $265K cash row still summed to 100%. Audit line-by-line + a
+plausibility smell-test BEFORE claiming a data surface correct. Scope codex at
+the DATA-vs-SOURCE layer, not just code.
 
 --------------------------------------------------------------------------------
-PART 2 — HOW TO WORK IN THIS REPO  (read before doing anything)
+HOW TO WORK (binding — see CLAUDE.md + auto-memory MEMORY.md)
 --------------------------------------------------------------------------------
-- Working dir: D:\Projects\financial-advisor  (= ARGOSY_HOME).
-- Python: .venv\Scripts\python.exe  (use it directly; uv sync / uv run also fine).
-- Shell is PowerShell. "&&" does NOT chain commands — use ";" or the Bash tool.
-- Tests:   .venv\Scripts\python.exe -m pytest -m "not llm_eval" <path> -q -p no:cacheprovider
-- Full suite is ~87 min; run touched-file tests during work, full suite at the end.
-- Backend run: uvicorn argosy.api.main:create_app --factory --host 127.0.0.1 --port 8000
-- UI: cd ui ; npm run dev  (port 1337).
+- Accuracy over LLM cost; agents default Opus. Correct path, not fastest.
+- ASK Ariel only for goal-changing calls (box a headline question + STOP for "go").
+  For uncertain money-math/methodology consult CODEX (tools\codex-tandem), not Ariel.
+  DON'T ask trivial questions — do the correct solution autonomously.
+- Nothing hardcoded / every number auditable to RAW data + self-validated.
+- The team sources instruments; all non-US-domiciled (NVDA the one sanctioned US-situs).
+- UI is a pure projection of the canonical plan; docs describe CURRENT state only.
+- Commit each logical block (+ Co-Authored-By trailer). Don't report USD cost figures.
+- Agents run on the bundled claude_code CLI (no API key). Use codex-tandem for
+  risky money-math/parsers/decision-flows; review with codex (it found real bugs
+  this session — QQQM, the USD-cash edge cases).
 
-BINDING USER PREFERENCES (do not violate — these are the whole point):
-- ACCURACY OVER LLM COST. Prefer thorough/correct over cheap. Agents default Opus.
-- ASK only for GOAL-CHANGING judgment calls. For uncertain money-math/methodology,
-  consult CODEX (the tandem kit), NOT the user. Don't ask trivial questions.
-- For a goal-changing/headline question: write a prominent **** boxed message and
-  STOP for an explicit "go". Don't fire the question tool immediately.
-- NOTHING HARDCODED / no magic numbers — every number Argosy-derived + auditable.
-- The team SOURCES instruments; never ask the user to pick tickers/size/tilts.
-- All instruments must be NON-US-domiciled (estate tail); NVDA is the one sanctioned
-  US-situs sleeve.
-- The UI is a PURE PROJECTION of the one canonical plan. No per-chart sources.
-- Use the codex-tandem kit for risky work (money math, parsers, decision flows).
-  Kit: tools\codex-tandem\scripts\engine_codex.py (gitignored). Pattern: write a
-  tmp_review\codex_*.py that calls run_codex(...) and writes a *_verdict.txt.
-  NOTE: late in the last session the kit started returning EMPTY verdicts (LEN 0)
-  — a tool/quota issue, not a code signal. If that recurs, verify the math
-  yourself with a deterministic script and say so.
-- Docs describe CURRENT state only — no history/handover sections in SDD or design
-  docs. Continuity lives in git + tmp_review handovers like this file.
-- Commit each logical block. Commit msgs end with the Co-Authored-By trailer.
-  Do NOT report USD cost figures to the user.
-- Agents run on the bundled claude_code CLI (no API key). Never claim work is
-  "blocked on ANTHROPIC_API_KEY".
+ENV / COMMANDS (Windows / PowerShell; "&&" doesn't chain — use ";" or Bash tool):
+  Python:   .venv\Scripts\python.exe
+  Tests:    .venv\Scripts\python.exe -m pytest -m "not llm_eval" <path> -q -p no:cacheprovider
+  Backend:  set ARGOSY_EXPENSE_SAMPLES_ROOT="D:/Google Drive/Family/Finances/Portfolio/Resources" ;
+            uvicorn argosy.api.main:create_app --factory --host 127.0.0.1 --port 8000
+            (NO --reload — restart it to pick up Python changes; UI dev hot-reloads)
+  UI:       cd ui ; npm run lint ; npx tsc --noEmit ; npm run dev   (port 1337)
+  DB:       db/argosy.db  (latest portfolio snapshot is the re-ingested, reconciled one)
 
---------------------------------------------------------------------------------
-1. WHAT TO READ FIRST  (in order)
---------------------------------------------------------------------------------
-1. CLAUDE.md (repo root) — the fresh-agent router.
-2. ~/.claude/.../memory/MEMORY.md — binding preferences (Claude Code only).
-3. tmp_review/ALTERNATIVES_SOURCING_HANDOVER.md — the detailed feature handover
-   (file-by-file state of the alternatives work).
-4. docs/superpowers/plans/2026-06-13-alternatives-fleet-sourcing.md — the
-   implementation plan (the spec this branch executed).
-5. tmp_review/codex_alternatives_e2e_verdict.txt — the design verdict that drove
-   the build (8 findings + 10-step sequence). All findings addressed.
-6. git log --oneline 9941834..HEAD — the 18 commits on this branch.
-
---------------------------------------------------------------------------------
-2. WHAT THIS BRANCH DID  (the Alternatives sleeve, end to end)
---------------------------------------------------------------------------------
-GOAL: the agent TEAM sources + verifies + sizes the Alternatives sleeve
-(gold / bitcoin / commodities — the small diversifier next to NVDA). Nothing
-hardcoded; 0% is a valid team answer; every instrument deterministically verified
-(real ISIN, real non-US domicile, tradeable) before it can ever become a holding.
-
-Pipeline (all built + unit-tested, ~130 tests green):
-  source (AlternativesSourcerAgent)
-   -> deterministic verify (instrument_verification.py: ISO-6166 checksum,
-      ISO-3166 prefix, domicile coherence, verified-facts registry; fail-closed)
-   -> estate gate
-   -> ETP-aware fleet debate (3 reviewer lenses + sleeve fund-manager)
-   -> AlternativesSleeveDecision (target_pct may be 0)
-   -> threaded into the canonical plan (build_target_allocation) as a DRAFT.
-
-KEY FILES:
-  argosy/services/alternatives_types.py          - typed decision/verification models
-  argosy/services/instrument_verification.py     - the deterministic verifier + registry loader
-  argosy/data/verified_instruments.yaml          - verified-FACTS registry (cache, NOT an allow-list)
-  argosy/services/alternatives_sourcing.py       - verify_and_gate_proposal()
-  argosy/agents/alternatives_sourcer.py          - the sourcer agent
-  argosy/agents/alternatives_reviewers.py        - 3 reviewers + AlternativesFundManagerAgent
-  argosy/orchestrator/flows/plan_synthesis/alternatives_phase.py - run_alternatives_phase()
-  argosy/services/allocation_plan.py             - HARDCODE REMOVED; consumes a supplied sleeve
-  argosy/services/retirement/sigma_calibration.py- compute_alternatives_sigma()
-  argosy/services/target_allocation_doc.py       - threading + no-stale-carry-forward
-  argosy/orchestrator/flows/plan_synthesis/orchestrator.py - phase wired into run_synthesis
-
-DOCTRINE NOTE on the registry: it verifies FACTS about whatever the team proposes;
-it is NOT an allow-list constraining the universe. An instrument absent from it is
-UNVERIFIED (rejected), not forbidden. Currently seeded (all confirmed against
-issuer factsheets / justETF / Euronext): SGLD, IGLN, SGLN (gold, IE), BITC (JE),
-IB1T (CH), ICOM (commodity, IE). 21Shares ABTC was deliberately skipped (ambiguous
-ISIN — never seed an uncertain fact).
-
---------------------------------------------------------------------------------
-3. STATE AT HANDOFF  (what works, what doesn't)
---------------------------------------------------------------------------------
-WORKS / DONE:
-- Full pipeline built + unit-tested. Hardcoded IGLN/IB1T/3% sleeve REMOVED.
-- Verification proven live: it rejected unverified picks and returned a safe 0%.
-- All codex BLOCKERs fixed (verification fail-closed; ASCII-strict ISIN; ISO-3166
-  prefix gate; canonical domicile vocab; strict registry completeness).
-- Engine anchor-math self-verified across a (size, sigma) grid; blended-sigma now
-  reported on the FI-solver's unrounded basis.
-- Full suite: 4141 passed, 11 failed — ALL 11 are pre-existing/unrelated
-  (9 = cross-suite log-capture pollution, pass in isolation; 2 =
-  test_plan_numeric_resolver FX time-bomb: fixture seeds a BoI rate at 2026-06-02
-  and "today" is now >10 days later, outside the resolver's walk-back window —
-  NOT this branch's code). Worth a separate fix (relative-date the fixture).
-
-PROVEN LIVE END-TO-END (final run of the session):
-- The full team flow completed live and produced a REAL approved sleeve:
-  decision=approve, target_pct=3.0%, sleeve_sigma=0.16 (the SOURCED gold sigma,
-  not the old fixed 0.268), 1 verified instrument SGLD (Invesco Physical Gold ETC,
-  IE, GREEN). Unverified picks (CBTC, CMOD — not seeded) were correctly rejected.
-  The FM wrote genuine rationale (gold vs silver, physical-ETC vs futures/miners,
-  SGLD vs PHAU/SGLN) and flagged the Israeli tax treatment as needing domain
-  confirmation. Re-run anytime via run_alternatives_phase_live.py.
-- TWO citation-gate bugs were found + fixed via live runs (commits 1a1bc69 FM,
-  and the reviewer fix): BaseAgent.require_citations defaults True; the FM and the
-  reviewers have no need to cite external docs, so they now opt out
-  (require_citations=False). Lesson: agents whose output model lacks/needn't a
-  populated cited_sources MUST set require_citations=False or they fail every run.
-- NOTE the sourcer's picks VARY run-to-run; only seeded instruments verify, so a
-  run that picks all-off-registry still returns 0% (the Option-B limitation;
-  Option A is the fix).
-
-NOT DONE (open items — none blocking, none promoted):
-- NOTHING is promoted to role="current". Promotion is ALWAYS the user's act.
-- NO UI changes were made (intentional — the sleeve renders via the existing /plan
-  allocation surface). To SEE it: restart backend on this branch + run a synthesis;
-  the draft's /plan shows an "Alternatives" class with its instruments + rationale.
-  The verification + debate detail is NOT surfaced anywhere (lives in logs + the
-  class rationale). The user asked about this — a small "how the team verified +
-  debated the sleeve" panel is an open, unbuilt idea (ASK before building UI).
-- Amendment path (plan_amendment/workers.py) rebuilds with 0% alternatives (safe
-  default); it does NOT preserve a previously-sourced sleeve. Decide: preserve vs
-  re-source on amend.
-- DOCTRINE-COMPLETE follow-up ("Option A"): live instrument verification — agent
-  discovers issuer-factsheet/ISIN-registry URLs, a deterministic checker confirms
-  domicile/ISIN/tradeability at RUN TIME, so the team can propose ANYTHING real and
-  it auto-verifies (instead of only the seeded set). This was agreed as the next
-  sprint. Today's seeding ("Option B") was the interim.
-- DB persistence of the sleeve decision as agent_reports/decision_phases (codex #8)
-  — currently the rationale+violations persist inside target_allocation_json only.
-- sigma_glidepath still maps the alternatives label to the fixed class sigma 0.268
-  for the redistribution glide series (the FI solver uses the SOURCED sigma; the
-  glide series doesn't). Minor.
-
---------------------------------------------------------------------------------
-4. SUGGESTED NEXT STEPS
---------------------------------------------------------------------------------
-1. Read the in-flight live-run output; confirm a real sleeve formed. If the sourcer
-   still picks off-registry symbols, either seed those (verify first!) or build
-   Option A.
-2. Decide with the user: build Option A (live verification) now? Build the UI panel
-   to surface verification+debate? Restart backend + run a synthesis to view the
-   draft in /plan?
-3. Pre-merge: run the full suite once; confirm only the known pre-existing fails
-   remain. The branch has no remote/off-machine backup.
-
-VERIFY COMMANDS:
-  Touched tests:   .venv\Scripts\python.exe -m pytest tests\test_instrument_verification.py
-    tests\test_alternatives_types.py tests\test_alternatives_sourcer.py
-    tests\test_alternatives_reviewers.py tests\test_alternatives_phase.py
-    tests\test_allocation_plan.py tests\test_sigma_calibration.py
-    tests\test_target_allocation_doc.py -q -p no:cacheprovider
-  Live team run:   $env:PYTHONIOENCODING="utf-8";
-    .venv\Scripts\python.exe tmp_review\run_alternatives_phase_live.py
+FIRST STEP next session: (1) fix the BRK/B Type consistency; (2) move the
+unallocated-cash card to Proposals; THEN scope the daily proactive Proposals
+agent with Ariel (cadence, sentiment data feed, what counts as "act today")
+before building — front-load the judgment calls, then sprint.
 ================================================================================
