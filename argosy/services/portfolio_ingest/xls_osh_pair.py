@@ -225,10 +225,20 @@ def handle_xls_upload(
     # with another upload, we don't leave an orphan TSV on disk.
     # Codex zigzag (a)#6 (2026-05-29): filesystem-write-before-commit
     # could leave disk/DB divergence on commit failure.
+    # Leumi USD cash (פמ"ח) — paired the same way as the Osh, so the
+    # synthesized snapshot carries BOTH currencies (the USD account often
+    # holds material balances, e.g. NVDA-sale proceeds awaiting deployment).
+    usd_stmt = _find_matching_usd(db, user_id=user_id, snapshot_date=xls.snapshot_date)
+    usd_closing = (
+        _get_usd_closing_balance(db, statement_id=usd_stmt.id)
+        if usd_stmt is not None else None
+    )
+
     tsv_text, synth_warnings = _synthesize_in_memory(
         xls=xls,
         osh_closing_nis=osh_closing_nis,
         snapshot_root=snapshot_root,
+        usd_closing=usd_closing,
     )
     target_name = _canonical_tsv_filename(
         xls.snapshot_date,
@@ -360,10 +370,16 @@ def try_resolve_pending_on_osh_arrival(
         return None
 
     xls = _deserialize_xls(part.payload_json)
+    usd_stmt = _find_matching_usd(db, user_id=osh.user_id, snapshot_date=part.snapshot_date)
+    usd_closing = (
+        _get_usd_closing_balance(db, statement_id=usd_stmt.id)
+        if usd_stmt is not None else None
+    )
     tsv_text, synth_warnings = _synthesize_in_memory(
         xls=xls,
         osh_closing_nis=osh_closing_nis,
         snapshot_root=snapshot_root,
+        usd_closing=usd_closing,
     )
     target_name = _canonical_tsv_filename(part.snapshot_date)
     target_path = snapshot_root / target_name
@@ -495,6 +511,89 @@ def _get_osh_closing_balance_nis(
         return None
 
 
+_LEUMI_USD_PARSER_NAME = "leumi_usd"
+
+
+def _find_matching_usd(
+    db: Session, *, user_id: str, snapshot_date: date,
+) -> ExpenseStatement | None:
+    """Return the Leumi USD (פמ"ח) statement whose period_end is closest to
+    snapshot_date within MATCH_WINDOW_DAYS — the analogue of
+    `_find_matching_osh` for the USD current account, so the synthesized
+    snapshot carries the Leumi USD cash balance (not just NIS)."""
+    lo = snapshot_date - timedelta(days=MATCH_WINDOW_DAYS)
+    hi = snapshot_date + timedelta(days=MATCH_WINDOW_DAYS)
+    candidates = (
+        db.execute(
+            select(ExpenseStatement)
+            .join(ExpenseSource, ExpenseSource.id == ExpenseStatement.source_id)
+            .where(
+                ExpenseStatement.user_id == user_id,
+                ExpenseStatement.period_end >= lo,
+                ExpenseStatement.period_end <= hi,
+                ExpenseStatement.parser_name == _LEUMI_USD_PARSER_NAME,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda s: (abs((s.period_end - snapshot_date).days), -s.id),
+    )
+
+
+def _get_usd_closing_balance(db: Session, *, statement_id: int) -> float | None:
+    """Closing running balance (USD) for a Leumi USD statement — the balance
+    after the chronologically last transaction (same-day ties → higher id)."""
+    last_txn = (
+        db.execute(
+            select(ExpenseTransaction)
+            .where(ExpenseTransaction.statement_id == statement_id)
+            .order_by(
+                desc(ExpenseTransaction.occurred_on),
+                desc(ExpenseTransaction.id),
+            )
+            .limit(1)
+        )
+        .scalar_one_or_none()
+    )
+    if last_txn is None:
+        return None
+    raw_json = last_txn.raw_row_json or "{}"
+    try:
+        raw = json.loads(raw_json) if isinstance(raw_json, str) else (raw_json or {})
+    except json.JSONDecodeError:
+        return None
+    bal = raw.get("balance_usd") if isinstance(raw, dict) else None
+    if bal is None:
+        return None
+    try:
+        return float(str(bal).replace(",", "").strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+def _display_symbol_from_name(name_he: str) -> str | None:
+    """Derive a readable symbol for a TASE-listed tracker with no Latin
+    ticker. The Leumi name is '<issuer> מחקה <index>'
+    (e.g. 'אי בי אי מחקה STOXX Europe 600'); the index portion after the
+    tracking verb 'מחקה' is the meaningful label ('STOXX Europe 600').
+    Returns None when there's no such portion (caller falls back to the
+    security_id) — this is what stops a no-ticker holding from inheriting a
+    stale/wrong symbol cell (e.g. the pasted 'O')."""
+    if not name_he:
+        return None
+    marker = "מחקה"
+    if marker in name_he:
+        tail = name_he.split(marker)[-1].strip()
+        if tail:
+            return tail
+    return None
+
+
 def _stale_old_pending(
     db: Session, *, user_id: str, fresh_snapshot_date: date,
 ) -> None:
@@ -527,6 +626,7 @@ def _synthesize_in_memory(
     xls: LeumiPortfolioSnapshot,
     osh_closing_nis: float,
     snapshot_root: Path,
+    usd_closing: float | None = None,
 ) -> tuple[str, list[str]]:
     """Synthesize the new TSV content as a string (no disk write yet).
 
@@ -564,6 +664,7 @@ def _synthesize_in_memory(
             symbol_map=symbol_map,
             currency_map=currency_map,
             type_map=type_map,
+            usd_closing=usd_closing,
         )
         return tsv_text, warnings
 
@@ -573,6 +674,7 @@ def _synthesize_in_memory(
         prior_snapshot=prior_snapshot,
         xls=xls,
         osh_closing_nis=osh_closing_nis,
+        usd_closing=usd_closing,
     )
     return tsv_text, warnings + splice_warnings
 
@@ -649,6 +751,7 @@ def _splice_xls_into_tsv(
     prior_snapshot: PortfolioSnapshot,
     xls: LeumiPortfolioSnapshot,
     osh_closing_nis: float,
+    usd_closing: float | None = None,
 ) -> tuple[str, list[str]]:
     """Produce the new TSV by replacing the prior TSV's Leumi rows with
     XLS-derived rows (positions + cash from Osh) and recomputing the
@@ -701,6 +804,7 @@ def _splice_xls_into_tsv(
             symbol_map=symbol_map,
             currency_map=currency_map,
             type_map=type_map,
+            usd_closing=usd_closing,
         ), warnings
 
     # Split the prior position-block lines:
@@ -719,6 +823,7 @@ def _splice_xls_into_tsv(
         symbol_map=symbol_map,
         currency_map=currency_map,
         type_map=type_map,
+        usd_closing=usd_closing,
     )
 
     # Reassemble: prior header rows + non-Leumi position lines (header + Schwab + Sum)
@@ -874,10 +979,23 @@ def _build_prior_mappings(
             curr_map[xp.security_id] = matched.currency or "USD"
             type_map[xp.security_id] = matched.asset_type or "Equity"
         else:
-            sym_map[xp.security_id] = xp.ticker or xp.security_id
+            # No prior match: prefer the XLS Latin ticker, else a name-derived
+            # label for TASE trackers (so STOXX Europe 600 doesn't fall back to
+            # a bare security_id or inherit a wrong cell), else the security_id.
+            sym_map[xp.security_id] = (
+                xp.ticker or _display_symbol_from_name(xp.name_he) or xp.security_id
+            )
             curr_map[xp.security_id] = "USD"  # default
             type_map[xp.security_id] = "Equity"  # default for new positions
     return sym_map, curr_map, type_map
+
+
+def _leumi_usd_cash_row(usd_closing: float) -> str:
+    """A Leumi USD cash row. Local value == USD value (no FX); (K) USD is /1000."""
+    return "\t".join([
+        "", "Leumi", "USD", "Cash", "", "", "", "", "",
+        f"{usd_closing:.2f}", f"{usd_closing / 1000.0:.2f}", "", "",
+    ])
 
 
 def _xls_to_tsv_rows(
@@ -888,12 +1006,13 @@ def _xls_to_tsv_rows(
     symbol_map: dict[str, str],
     currency_map: dict[str, str],
     type_map: dict[str, str],
+    usd_closing: float | None = None,
 ) -> list[str]:
-    """Synthesize TSV rows for the new Leumi block: cash row first, then
-    one row per XLS position.
+    """Synthesize TSV rows for the new Leumi block: NIS cash row, optional
+    USD cash row, then one row per XLS position.
     """
     out: list[str] = []
-    # Cash row (always NIS for Leumi Osh).
+    # Cash row (NIS, from the Leumi Osh statement).
     cash_usd_k = (osh_closing_nis / max(fx_usd_nis, 0.01)) / 1000.0
     cash_cells = [
         "",                                                  # 0 Review
@@ -911,6 +1030,10 @@ def _xls_to_tsv_rows(
         "",                                                  # 12 % Yearly
     ]
     out.append("\t".join(cash_cells))
+    # USD cash row (from the Leumi USD statement) — without this the large
+    # Leumi USD balance (e.g. NVDA-sale proceeds) is silently dropped.
+    if usd_closing is not None:
+        out.append(_leumi_usd_cash_row(usd_closing))
 
     for p in xls.positions:
         symbol = symbol_map.get(p.security_id, p.ticker or p.security_id)
@@ -1149,6 +1272,7 @@ def _full_rewrite_from_snapshot(
     symbol_map: dict[str, str],
     currency_map: dict[str, str],
     type_map: dict[str, str],
+    usd_closing: float | None = None,
 ) -> str:
     """Fallback path when prior TSV layout can't be located by markers.
     Produces a minimal but valid TSV from the parsed prior snapshot +
@@ -1177,6 +1301,9 @@ def _full_rewrite_from_snapshot(
         "", "Leumi", "NIS", "Cash", "", "", "", "", "",
         f"{osh_closing_nis:.2f}", f"{cash_usd_k:.2f}", "", "",
     ])
+    usd_cash_k = (usd_closing / 1000.0) if usd_closing is not None else 0.0
+    if usd_closing is not None:
+        rows.append(_leumi_usd_cash_row(usd_closing).split("\t"))
     for p in xls.positions:
         symbol = symbol_map.get(p.security_id, p.ticker or p.security_id)
         currency = currency_map.get(p.security_id, "USD")
@@ -1217,7 +1344,7 @@ def _full_rewrite_from_snapshot(
         ])
         new_total = sum(
             (p.holding_value_usd / 1000.0) for p in xls.positions
-        ) + cash_usd_k + sum(
+        ) + cash_usd_k + usd_cash_k + sum(
             (p.usd_value_k or 0.0) for p in prior_snapshot.positions
             if not (p.location or "").lower().startswith("leumi")
         )
