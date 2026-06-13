@@ -87,11 +87,12 @@ def test_fund_manager_opts_out_of_citation_gate():
     assert AlternativesFundManagerAgent(user_id="ariel").require_citations is False
 
 
-def test_reviewers_require_citations():
-    # Reviewers carry cited_sources and should cite their structure/liquidity/tax
-    # claims — the gate stays on for them.
+def test_reviewers_opt_out_of_citation_gate():
+    # Reviewers give qualitative judgement over already-cited verified candidates
+    # and legitimately reason without quoting a document; a non-empty cited_sources
+    # hard gate made them fail live. cited_sources stays optional, not gated.
     for cls in REVIEWERS:
-        assert cls(user_id="ariel").require_citations is True
+        assert cls(user_id="ariel").require_citations is False
 
 
 def test_fund_manager_prompt_allows_zero_percent():

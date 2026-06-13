@@ -89,6 +89,13 @@ def _candidate_digest(verified_candidates: list) -> str:
 
 class _AltReviewerBase(BaseAgent[AltReviewReport]):
     output_model = AltReviewReport
+    # Reviewers give qualitative wrapper/structure/macro/liquidity JUDGEMENT over
+    # the (already-cited) verified candidates — they legitimately reason without
+    # quoting an external document, so a non-empty cited_sources can't be a hard
+    # gate (it made macro/diversification + risk/liquidity reviewers fail live).
+    # cited_sources stays an optional field they fill when they do have a source;
+    # the audit rigor lives on the PLAN's derived numbers, not a reviewer stance.
+    require_citations = False
     _LENS = ""  # subclass fills
     _FOCUS = ""  # subclass fills
 
