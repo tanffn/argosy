@@ -147,11 +147,11 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
         ref = instrument_reference.lookup(p.symbol or "", p.details or "")
         if ref is not None and ref.asset_class != _classify_asset_class(asset_type, sym):
             asset_type = ref.sector
-        is_cash = asset_type.lower() in ("cash", "money market")
-        estate_safe = (
-            None if is_cash
-            else instrument_reference.estate_safe_for(p.symbol or "", p.details or "")
-        )
+        # Estate-safety is REFERENCE-driven for every curated security — so a
+        # US-situs cash-like ETF (e.g. SGOV) stays flagged exposed even though
+        # its display Type reads cash-ish. Only genuine physical cash (no ticker
+        # → no ref) resolves to None / "—" (codex review).
+        estate_safe = instrument_reference.estate_safe_for(p.symbol or "", p.details or "")
         # Canonical "structure · exposure" Type label (the reference is the
         # authority; falls back to the raw asset_type for un-curated rows).
         type_label = instrument_reference.type_label(

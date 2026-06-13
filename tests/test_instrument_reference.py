@@ -73,6 +73,15 @@ def test_unknown_ticker_returns_none():
     assert lookup("ZZZUNKNOWN", "Some Stock") is None
 
 
+def test_name_keyword_fallback_does_not_apply_to_real_unknown_ticker():
+    # A real-but-uncurated US-domiciled ETF whose name contains a fallback
+    # keyword ("emerging") must NOT borrow the safe EM ref — it returns None so
+    # the fail-loud guard flags it (else VWO would be silently estate-safe).
+    assert lookup("VWO", "Vanguard FTSE Emerging Markets ETF") is None
+    # The fallback still applies when there is NO symbol at all.
+    assert lookup("", "iShares Core MSCI Emerging Markets") is not None
+
+
 def test_estate_safe_us_domiciled_is_exposed():
     from argosy.services.instrument_reference import estate_safe_for
     assert estate_safe_for("NVDA", "RSU") is False           # US-situs (sanctioned but exposed)

@@ -216,11 +216,16 @@ def lookup(symbol: str, details: str = "") -> InstrumentRef | None:
     # TASE-listed (Hebrew ticker, no latin symbol) → Israeli equity.
     if _is_hebrew_ticker(symbol):
         return InstrumentRef(ASSET_EQUITY, SECTOR_ISRAELI, REGION_ISRAEL)
-    # No resolvable ticker — fall back to a name keyword in details.
-    hay = (details or "").lower()
-    for kw, ref in _NAME_KEYWORD_FALLBACK:
-        if kw in hay:
-            return ref
+    # No resolvable latin ticker (EMPTY Symbol cell) — fall back to a name
+    # keyword in details. Gated on an empty symbol: an unknown-but-REAL ticker
+    # must return None so the fail-loud guard flags it for curation, rather than
+    # a generic keyword ("emerging") silently mislabelling a US-domiciled fund
+    # (e.g. VWO) as estate-safe EM equity (codex review).
+    if not sym:
+        hay = (details or "").lower()
+        for kw, ref in _NAME_KEYWORD_FALLBACK:
+            if kw in hay:
+                return ref
     return None
 
 
