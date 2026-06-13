@@ -154,6 +154,7 @@ class WealthDashboardDTO(BaseModel):
     estate_exposure: EstateExposureBlockDTO
     asset_class_composition: list[CompositionSliceDTO]
     sector_composition: list[CompositionSliceDTO]
+    region_composition: list[CompositionSliceDTO]
     assumptions: AssumptionsDTO
 
 

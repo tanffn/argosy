@@ -1060,3 +1060,18 @@ def test_cash_runway_excludes_real_estate():
     blk = _cash_runway(snapshot=snap, burn_nis=10000.0, fx_usd_nis=3.0)
     # Only the $10K cash counts (×1000×3 = 30,000 NIS), not the $69K property.
     assert round(blk.cash_nis) == 30000
+
+
+def test_classify_region_buckets():
+    from argosy.services.wealth_dashboard import _classify_region
+    from argosy.services.instrument_reference import lookup
+    L = lambda s, d="": lookup(s, d)  # noqa: E731
+    assert _classify_region("AMD", "", "Individual Stocks", "USD", L("AMD")) == "US"
+    assert _classify_region("EIMI", "(ISHR CORE EM IMI) EIMI LN", "REIT", "USD",
+                            L("EIMI", "(ISHR CORE EM IMI) EIMI LN")) == "Emerging Markets"
+    assert _classify_region("STOXX Europe 600", "אי בי אי מחקה STOXX Europe 600",
+                            "REIT", "USD",
+                            L("STOXX Europe 600", "אי בי אי מחקה STOXX Europe 600")) == "Europe"
+    # Cash mapped by currency.
+    assert _classify_region("", "Cash", "Cash", "NIS", None) == "Israel"
+    assert _classify_region("", "Cash", "Cash", "USD", None) == "US"

@@ -4544,6 +4544,7 @@ export interface WealthDashboardDTO {
   estate_exposure: WealthEstateExposureBlock;
   asset_class_composition: WealthCompositionSlice[];
   sector_composition: WealthCompositionSlice[];
+  region_composition: WealthCompositionSlice[];
   assumptions: WealthAssumptions;
 }
 

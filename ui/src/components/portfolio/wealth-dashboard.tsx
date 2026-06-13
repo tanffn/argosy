@@ -108,8 +108,8 @@ export function WealthDashboard({ userId, excludeNvda = false }: WealthDashboard
         <EstateExposureCard block={data.estate_exposure} />
       </div>
 
-      {/* Row 4: 2-column composition donuts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Row 4: composition donuts — asset class, sector, region */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <CompositionDonutCard
           eyebrow="Asset class"
           slices={data.asset_class_composition}
@@ -119,6 +119,11 @@ export function WealthDashboard({ userId, excludeNvda = false }: WealthDashboard
           eyebrow="Sector"
           slices={data.sector_composition}
           palette={SECTOR_PALETTE}
+        />
+        <CompositionDonutCard
+          eyebrow="Region"
+          slices={data.region_composition}
+          palette={REGION_PALETTE}
         />
       </div>
     </section>
@@ -730,6 +735,15 @@ const SECTOR_PALETTE: Record<string, string> = {
   Conglomerate: "var(--color-success)",
   "Cash/T-Bill": "var(--color-success)",
   Crypto: "var(--color-error)",
+  Other: "var(--color-muted-foreground)",
+};
+
+const REGION_PALETTE: Record<string, string> = {
+  US: "var(--color-primary)",
+  Global: "var(--color-info)",
+  Israel: "var(--color-warning)",
+  Europe: "var(--color-accent)",
+  "Emerging Markets": "var(--color-success)",
   Other: "var(--color-muted-foreground)",
 };
 

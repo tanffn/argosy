@@ -239,6 +239,7 @@ class WealthDashboard:
     estate_exposure: EstateExposureBlock
     asset_class_composition: list[CompositionSlice]
     sector_composition: list[CompositionSlice]
+    region_composition: list[CompositionSlice]
     assumptions: Assumptions
 
 
@@ -364,6 +365,17 @@ _SECTOR_ORDER: tuple[str, ...] = (
     "Other",
 )
 
+#: Geographic-exposure buckets for the region donut. Matches the
+#: instrument-reference region vocabulary; cash is mapped by its currency.
+_REGION_ORDER: tuple[str, ...] = (
+    "US",
+    "Global",
+    "Israel",
+    "Europe",
+    "Emerging Markets",
+    "Other",
+)
+
 
 def _classify_asset_class(asset_type: str, symbol: str) -> str:
     """Map a position's ``asset_type`` (+ symbol fallback) to one of the
@@ -444,6 +456,22 @@ def _classify_sector(symbol: str, details: str) -> str:
     sym = (symbol or "").upper().strip()
     if sym in _TICKER_TO_SECTOR:
         return _TICKER_TO_SECTOR[sym]
+    return "Other"
+
+
+def _classify_region(
+    symbol: str, details: str, asset_type: str, currency: str, ref,
+) -> str:
+    """Geographic-exposure bucket. Cash is mapped by currency (USD→US,
+    NIS→Israel, EUR→Europe) so the donut answers 'where is our money'
+    including the cash tranches; everything else uses the instrument
+    reference's region (US/Global/Israel/Europe/Emerging Markets)."""
+    if (asset_type or "").lower() in ("cash", "money market"):
+        return {"USD": "US", "NIS": "Israel", "EUR": "Europe"}.get(
+            (currency or "").upper(), "Other"
+        )
+    if ref is not None:
+        return ref.region
     return "Other"
 
 
@@ -1197,15 +1225,16 @@ def _compositions(
     naturally via the classifiers.
     """
     if snapshot is None:
-        return [], []
+        return [], [], []
     try:
         positions = json.loads(snapshot.positions_json or "[]")
     except json.JSONDecodeError:
-        return [], []
+        return [], [], []
 
     # Accumulate by bucket: name -> (total NIS, set of holding labels).
     asset_buckets: dict[str, dict[str, Any]] = {}
     sector_buckets: dict[str, dict[str, Any]] = {}
+    region_buckets: dict[str, dict[str, Any]] = {}
 
     for p in positions:
         if not isinstance(p, dict):
@@ -1252,6 +1281,9 @@ def _compositions(
         else:
             ac = _classify_asset_class(asset_type, symbol)
             sec = _classify_sector(symbol, details)
+        reg = _classify_region(
+            symbol, details, asset_type, (p.get("currency") or ""), ref,
+        )
 
         ab = asset_buckets.setdefault(ac, {"value": 0.0, "holdings": set()})
         ab["value"] += v_nis
@@ -1260,6 +1292,10 @@ def _compositions(
         sb = sector_buckets.setdefault(sec, {"value": 0.0, "holdings": set()})
         sb["value"] += v_nis
         sb["holdings"].add(label)
+
+        rb = region_buckets.setdefault(reg, {"value": 0.0, "holdings": set()})
+        rb["value"] += v_nis
+        rb["holdings"].add(label)
 
     def _finalise(
         buckets: dict[str, dict[str, Any]], order: tuple[str, ...],
@@ -1292,6 +1328,7 @@ def _compositions(
     return (
         _finalise(asset_buckets, _ASSET_CLASS_ORDER),
         _finalise(sector_buckets, _SECTOR_ORDER),
+        _finalise(region_buckets, _REGION_ORDER),
     )
 
 
@@ -1386,7 +1423,7 @@ def compute_wealth_dashboard(
         user_ctx=user_ctx, snapshot=snapshot, fx_usd_nis=fx_usd_nis,
     )
     estate_exposure = _estate_exposure(snapshot=snapshot, fx_usd_nis=fx_usd_nis)
-    asset_class_composition, sector_composition = _compositions(
+    asset_class_composition, sector_composition, region_composition = _compositions(
         snapshot=snapshot, fx_usd_nis=fx_usd_nis, exclude_nvda=exclude_nvda,
     )
 
@@ -1421,6 +1458,7 @@ def compute_wealth_dashboard(
         estate_exposure=estate_exposure,
         asset_class_composition=asset_class_composition,
         sector_composition=sector_composition,
+        region_composition=region_composition,
         assumptions=assumptions,
     )
 
