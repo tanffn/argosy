@@ -85,6 +85,16 @@ _LABEL_TO_SIGMA_CLASS: tuple[tuple[str, str], ...] = (
     ("us equity", "us_equity"),
     ("us-equity", "us_equity"),
     ("equity", "us_equity"),
+    # Alternatives (gold/BTC) sleeve — σ≈0.268 at the 80/20 split. These MUST
+    # precede the generic ``("alternative", "us_equity")`` fallback below:
+    # the canonical sleeve label is "Alternatives (gold/BTC)", which contains
+    # the "alternative" substring, so without these the whole sleeve would be
+    # mis-classified as 0.18 diversified equity — silently understating the
+    # BTC tail and breaking the FI sigma-solver's anchor.
+    ("gold", "alternatives"),
+    ("bitcoin", "alternatives"),
+    ("btc", "alternatives"),
+    ("alternatives", "alternatives"),
     ("alternative", "us_equity"),
 )
 

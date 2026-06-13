@@ -40,7 +40,13 @@ class AllocationInstrument(BaseModel):
     # don't rebuild US-situs estate exposure for a non-US-person. "IE"/"LU"/etc
     # UCITS shares are NOT US-situs; "US" shares ARE. ``None`` = not yet stamped
     # (the validator treats unknown as a warning, never silently OK).
-    domicile: Literal["US", "IE", "LU", "UK", "IL", "DE", "unknown"] | None = None
+    # "CH" (Switzerland, e.g. the iShares Bitcoin ETP IB1T) and "JE" (Jersey,
+    # e.g. CoinShares physical ETPs) are non-US and therefore non-US-situs — the
+    # alternatives sleeve uses them. is_us_situs stays ``domicile == "US"`` so
+    # they pass the estate guardrail cleanly; only "US" shares are flagged RED.
+    domicile: (
+        Literal["US", "IE", "LU", "UK", "IL", "DE", "CH", "JE", "unknown"] | None
+    ) = None
 
     @property
     def is_us_situs(self) -> bool:

@@ -13,10 +13,15 @@ from datetime import date
 import pytest
 
 from argosy.services.allocation_plan import (
+    ALTERNATIVES_BTC_FRAC,
+    ALTERNATIVES_GOLD_FRAC,
+    ALTERNATIVES_TARGET_PCT,
+    BTC_MAX_PCT,
     CASH_FRAC_OF_FI,
     NVDA_TARGET_PCT,
     build_redistribution_schedule,
     build_target_allocation,
+    derive_fi_weight,
     to_synth_targets,
     to_waypoint_targets,
 )
@@ -209,6 +214,65 @@ class TestInstruments:
         for c in alloc.classes:
             for i in c.instruments:
                 assert i.rationale, f"{c.label}/{i.symbol} instrument lacks a sourced rationale"
+
+
+class TestAlternativesSleeve:
+    """The fixed-policy Alternatives sleeve (gold/BTC): 3% of book at an 80/20
+    gold/BTC split, BTC hard-capped at 1% of book, estate-clean (Irish gold ETC
+    + Swiss bitcoin ETP), and FI rises to keep the blended sigma on the anchor."""
+
+    def test_alternatives_present_at_three_pct(self) -> None:
+        alloc = build_target_allocation()
+        alt = next(c for c in alloc.classes if c.sigma_class == "alternatives")
+        assert alt.label == "Alternatives (gold/BTC)"
+        assert alt.target_pct == pytest.approx(ALTERNATIVES_TARGET_PCT, abs=0.01)
+
+    def test_gold_and_btc_book_weights(self) -> None:
+        alloc = build_target_allocation()
+        alt = next(c for c in alloc.classes if c.sigma_class == "alternatives")
+        gold_of_book = alt.target_pct * ALTERNATIVES_GOLD_FRAC
+        btc_of_book = alt.target_pct * ALTERNATIVES_BTC_FRAC
+        assert gold_of_book == pytest.approx(2.4, abs=0.02)
+        assert btc_of_book == pytest.approx(0.6, abs=0.02)
+        # BTC under its hard cap of the book.
+        assert btc_of_book <= BTC_MAX_PCT + 1e-9
+
+    def test_sleeve_split_is_eighty_twenty(self) -> None:
+        alloc = build_target_allocation()
+        alt = next(c for c in alloc.classes if c.sigma_class == "alternatives")
+        by_sym = {i.symbol: i.weight_within_class_pct for i in alt.instruments}
+        assert by_sym == {"IGLN": pytest.approx(80.0), "IB1T": pytest.approx(20.0)}
+        assert sum(by_sym.values()) == pytest.approx(100.0)
+
+    def test_blended_sigma_still_on_anchor_with_alternatives(self) -> None:
+        alloc = build_target_allocation()
+        # Adding a higher-sigma (0.268) sleeve must NOT push the book above the
+        # anchor — FI absorbs it. Self-consistency with age-47 is preserved.
+        assert alloc.blended_sigma <= SIGMA_DIVERSIFIED + 1e-6
+
+    def test_fi_rises_vs_no_alternatives_baseline(self) -> None:
+        # The fixed alts sleeve forces MORE FI than the no-alts book (BTC's 0.70
+        # sigma must be offset). Codex worked result: ~21.33% -> ~23.15%.
+        baseline = derive_fi_weight(alternatives_pct=0.0)
+        with_alts = derive_fi_weight(alternatives_pct=ALTERNATIVES_TARGET_PCT)
+        assert with_alts > baseline
+        assert with_alts == pytest.approx(23.1, abs=0.3)
+
+    def test_alternatives_estate_clean_non_us(self) -> None:
+        alloc = build_target_allocation()
+        alt = next(c for c in alloc.classes if c.sigma_class == "alternatives")
+        dom = {i.symbol: i.domicile for i in alt.instruments}
+        assert dom == {"IGLN": "IE", "IB1T": "CH"}
+        # No US-domiciled instrument and no IBIT (US Delaware trust) anywhere.
+        for c in alloc.classes:
+            for i in c.instruments:
+                if i.symbol != "NVDA":
+                    assert i.domicile != "US"
+                assert i.symbol != "IBIT"
+
+    def test_weights_still_sum_to_100_with_alternatives(self) -> None:
+        alloc = build_target_allocation()
+        assert sum(c.target_pct for c in alloc.classes) == pytest.approx(100.0, abs=0.05)
 
 
 class TestToSynthTargets:

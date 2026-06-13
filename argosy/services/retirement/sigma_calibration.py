@@ -45,6 +45,10 @@ _SIGMA_BY_CLASS: dict[str, float] = {
     "bonds": 0.06,                 # investment-grade bonds (SGOV, BND)
     "cash": 0.02,                  # cash / HYSA / MMF
     "real_estate": 0.15,           # REITs / real estate funds
+    "alternatives": 0.268,         # gold/BTC sleeve, blended 0.8*0.16 + 0.2*0.70
+                                   # (physical-gold ETC σ≈0.16, bitcoin σ≈0.70 at the
+                                   # 80/20 canonical split). Linear engine, no
+                                   # covariance credit — see allocation_plan.
     "other": 0.20,                 # unknown class — assume diversified equity
 }
 
@@ -69,6 +73,12 @@ def _classify_position(p: dict) -> str:
 
     if "cash" in asset_type:
         return "cash"
+    # Alternatives sleeve (physical-gold ETCs + non-US bitcoin ETPs). Tagged
+    # before the bonds/ETF heuristics so a gold ETC isn't mis-read as an equity
+    # ETF. Estate-clean instruments only (Irish gold, Swiss bitcoin) — IBIT is
+    # listed for sigma classification only; it is NOT a sanctioned holding.
+    if symbol in ("IGLN", "SGLN", "SGLD", "IB1T", "ABTC", "BITC", "IBIT"):
+        return "alternatives"
     if "real estate" in asset_type or "real estate" in details:
         return "real_estate"
     if "treasury" in details or symbol in (

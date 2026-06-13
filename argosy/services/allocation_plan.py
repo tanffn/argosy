@@ -64,6 +64,23 @@ assert NVDA_TARGET_PCT <= DEFAULT_NVDA_CAP_PCT * 100.0 + 1e-9
 # dominate the sleeve's job; a parameter, not a law.
 CASH_FRAC_OF_FI = 0.70
 
+# --- Alternatives sleeve (fixed policy weight; gold + bitcoin). --------------
+# A small, capped diversifier/optionality hedge held as a FIXED policy weight —
+# NOT a solver variable and NOT one of the renormalised six equity sleeves. FI
+# remains the sigma-solver; adding a higher-sigma alternatives sleeve simply
+# forces FI up to keep the blended sigma on the anchor. Estate-clean: physical
+# Irish gold (IGLN, domicile IE) + non-US bitcoin (IB1T, domicile CH) — neither
+# is US-situs, so no new US-situs exposure is introduced (only NVDA is sanctioned).
+# BTC is capped HARD at BTC_MAX_PCT of the book so a rally cannot silently grow a
+# second concentrated-risk sleeve next to NVDA.
+ALTERNATIVES_TARGET_PCT = 3.0
+ALTERNATIVES_MAX_PCT = 4.0
+ALTERNATIVES_GOLD_FRAC = 0.80
+ALTERNATIVES_BTC_FRAC = 0.20
+BTC_MAX_PCT = 1.0
+# Sanity: the default split must keep BTC under its hard book cap.
+assert ALTERNATIVES_TARGET_PCT * ALTERNATIVES_BTC_FRAC <= BTC_MAX_PCT + 1e-9
+
 
 # --- Agreed equity/alts sleeves (the panel's mix, NVDA + FI handled above). --
 # ``ratio`` is the panel's agreed RELATIVE weight among the non-NVDA, non-FI
@@ -286,6 +303,55 @@ _NVDA_SLEEVE = _PanelSleeve(
     ),
 )
 
+_ALTERNATIVES_SLEEVE = _PanelSleeve(
+    label="Alternatives (gold/BTC)",
+    ratio=0.0,  # fixed policy weight, not part of the renormalised ratios
+    instruments=(
+        AllocationInstrument(
+            symbol="IGLN", role="primary",
+            weight_within_class_pct=ALTERNATIVES_GOLD_FRAC * 100.0, domicile="IE",
+            rationale=(
+                "Physical gold via the Irish-domiciled iShares Physical Gold ETC IGLN "
+                "(ISIN IE00B4ND3602, ~0.12% TER), NOT a US-domiciled gold ETF. A physical "
+                "ETC is an exchange-traded commodity/debt security (not a US-situs equity), "
+                "Ireland-domiciled, so it adds the real-asset/crisis hedge without rebuilding "
+                "US estate exposure for a non-US-person. Cite estate_tax_nonresidents.md."
+            ),
+        ),
+        AllocationInstrument(
+            symbol="IB1T", role="primary",
+            weight_within_class_pct=ALTERNATIVES_BTC_FRAC * 100.0, domicile="CH",
+            rationale=(
+                "Bitcoin via the Swiss-domiciled iShares Bitcoin ETP IB1T (ISIN "
+                "XS2940466316), a physically-backed non-US ETP, NOT the US-domiciled IBIT "
+                "(a Delaware statutory trust → US-situs). Held small and HARD-capped at "
+                f"{BTC_MAX_PCT:.0f}% of the book so a rally cannot grow a second "
+                "concentrated-risk sleeve next to NVDA. Non-US-situs for a non-US-person; "
+                "cite estate_tax_nonresidents.md."
+            ),
+        ),
+    ),
+    sigma_class="alternatives",
+    snapshot_category="Alternative",
+    agreement="contested",
+    rationale=(
+        f"Small fixed-policy diversifier/optionality sleeve at {ALTERNATIVES_TARGET_PCT:.0f}% "
+        f"of the book ({ALTERNATIVES_GOLD_FRAC*100:.0f}% gold / {ALTERNATIVES_BTC_FRAC*100:.0f}% "
+        f"bitcoin = {ALTERNATIVES_TARGET_PCT*ALTERNATIVES_GOLD_FRAC:.1f}% gold + "
+        f"{ALTERNATIVES_TARGET_PCT*ALTERNATIVES_BTC_FRAC:.1f}% BTC). Gold is a real-asset / "
+        "crisis hedge uncorrelated with the equity book; a small BTC allocation adds convex "
+        f"optionality, hard-capped at {BTC_MAX_PCT:.0f}% of the book. Held as a FIXED policy "
+        "weight (not a solver variable, capped at "
+        f"{ALTERNATIVES_MAX_PCT:.0f}%); FI remains the engine-derived variable and absorbs the "
+        "sleeve's ~0.268 blended sigma to keep the portfolio on the steady-state anchor."
+    ),
+    dissent=(
+        "Alts are not a transparency-valuing long-hold investor's natural sleeve; kept small "
+        "(3%, 4% cap) and gold-dominant so the hedge/optionality is real without burning much "
+        "equity exposure or adding a second concentrated tail. BTC sigma band 0.60-0.80 (0.70 used)."
+    ),
+)
+
 
 # --- Output model ------------------------------------------------------------
 @dataclass(frozen=True)
@@ -319,15 +385,23 @@ def _blended_sigma_for(weights: dict[str, float]) -> float:
     return sigma_from_composition(weights)
 
 
-def _renormalise(*, nvda_pct: float, fi_pct: float) -> dict[str, float]:
-    """Hold NVDA + FI fixed; distribute the rest among the six equity/alts
-    sleeves at their agreed ratios; split FI into cash + short-IG bonds."""
-    other_total = 100.0 - nvda_pct - fi_pct
+def _renormalise(
+    *, nvda_pct: float, fi_pct: float, alternatives_pct: float = ALTERNATIVES_TARGET_PCT
+) -> dict[str, float]:
+    """Hold NVDA + FI + Alternatives fixed; distribute the rest among the six
+    equity sleeves at their agreed ratios; split FI into cash + short-IG bonds.
+
+    Alternatives is a fixed policy weight subtracted off the book BEFORE the six
+    equity sleeves are sized (it displaces the non-NVDA risky sleeves pro rata),
+    so raising it shrinks equity and — via its higher sigma — indirectly forces
+    more FI to hold the anchor."""
+    other_total = 100.0 - nvda_pct - fi_pct - alternatives_pct
     ratio_sum = sum(s.ratio for s in _EQUITY_SLEEVES)
     weights: dict[str, float] = {
         s.label: s.ratio / ratio_sum * other_total for s in _EQUITY_SLEEVES
     }
     weights[_NVDA_SLEEVE.label] = nvda_pct
+    weights[_ALTERNATIVES_SLEEVE.label] = alternatives_pct
     weights["Cash & T-bills (incl. ILS tranche)"] = fi_pct * CASH_FRAC_OF_FI
     weights["Short-duration IG bonds"] = fi_pct * (1.0 - CASH_FRAC_OF_FI)
     return weights
@@ -337,6 +411,7 @@ def derive_fi_weight(
     *,
     anchor_sigma: float = SIGMA_DIVERSIFIED,
     nvda_pct: float = NVDA_TARGET_PCT,
+    alternatives_pct: float = ALTERNATIVES_TARGET_PCT,
     fi_step: float = 0.01,
     fi_lo: float = 8.0,
     fi_hi: float = 35.0,
@@ -344,10 +419,14 @@ def derive_fi_weight(
     """Minimum FI weight (in ``fi_step`` increments) at which the allocation's
     engine-blended sigma sits at/under the steady-state anchor — the sigma the
     optimizer used to certify the earliest-safe age. Self-consistency, not a
-    chosen constant."""
+    chosen constant. The fixed Alternatives sleeve is held at ``alternatives_pct``
+    and its higher sigma is what FI must offset."""
     fi = fi_lo
     while fi <= fi_hi:
-        if _blended_sigma_for(_renormalise(nvda_pct=nvda_pct, fi_pct=fi)) <= anchor_sigma + 1e-9:
+        weights = _renormalise(
+            nvda_pct=nvda_pct, fi_pct=fi, alternatives_pct=alternatives_pct
+        )
+        if _blended_sigma_for(weights) <= anchor_sigma + 1e-9:
             return round(fi, 2)
         fi += fi_step
     return round(fi_hi, 2)
@@ -416,13 +495,19 @@ def build_target_allocation(
     *,
     anchor_sigma: float = SIGMA_DIVERSIFIED,
     nvda_pct: float = NVDA_TARGET_PCT,
+    alternatives_pct: float = ALTERNATIVES_TARGET_PCT,
     fi_step: float = 0.01,
     deployable_nis: float | None = None,
 ) -> TargetAllocation:
     """Assemble the canonical target allocation with the FI weight derived to
     the steady-state sigma anchor. Pure: no DB, no clock."""
-    fi_pct = derive_fi_weight(anchor_sigma=anchor_sigma, nvda_pct=nvda_pct, fi_step=fi_step)
-    weights = _renormalise(nvda_pct=nvda_pct, fi_pct=fi_pct)
+    fi_pct = derive_fi_weight(
+        anchor_sigma=anchor_sigma, nvda_pct=nvda_pct,
+        alternatives_pct=alternatives_pct, fi_step=fi_step,
+    )
+    weights = _renormalise(
+        nvda_pct=nvda_pct, fi_pct=fi_pct, alternatives_pct=alternatives_pct
+    )
 
     classes: list[AllocationClass] = []
     for s in _EQUITY_SLEEVES:
@@ -438,6 +523,18 @@ def build_target_allocation(
                 instruments=s.instruments,
             )
         )
+    classes.append(
+        AllocationClass(
+            label=_ALTERNATIVES_SLEEVE.label,
+            target_pct=round(weights[_ALTERNATIVES_SLEEVE.label], 2),
+            sigma_class=_ALTERNATIVES_SLEEVE.sigma_class,
+            snapshot_category=_ALTERNATIVES_SLEEVE.snapshot_category,
+            agreement=_ALTERNATIVES_SLEEVE.agreement,
+            rationale=_ALTERNATIVES_SLEEVE.rationale,
+            dissent=_ALTERNATIVES_SLEEVE.dissent,
+            instruments=_ALTERNATIVES_SLEEVE.instruments,
+        )
+    )
     classes.append(
         AllocationClass(
             label=_NVDA_SLEEVE.label,
@@ -458,13 +555,14 @@ def build_target_allocation(
     blended = _blended_sigma_for({c.label: c.target_pct for c in classes})
     overall = (
         f"Reconciled target for the deployable book at the end of the 2-year "
-        f"deconcentration. Total equity ~{100 - fi_pct - 1:.0f}% (return engine + "
-        f"income/quality core + international + a min-vol damper), NVDA {nvda_pct:.0f}% "
-        f"just under the 13% cap, FI/cash {fi_pct:.1f}% DERIVED to the {anchor_sigma} "
-        f"steady-state sigma anchor (blended sigma {blended:.4f}), and a ~1% real-asset "
-        f"toehold. FI is derived rather than asserted because the panel's contested 16% "
-        f"estimate blends above the anchor and would push the earliest-safe age to 48; "
-        f"sized to the anchor it holds at 47."
+        f"deconcentration. Total equity ~{100 - fi_pct - alternatives_pct:.0f}% (return "
+        f"engine + income/quality core + international + a min-vol damper), NVDA "
+        f"{nvda_pct:.0f}% just under the 13% cap, a {alternatives_pct:.0f}% fixed "
+        f"Alternatives sleeve (gold/BTC) for hedge/optionality, FI/cash {fi_pct:.1f}% "
+        f"DERIVED to the {anchor_sigma} steady-state sigma anchor (blended sigma "
+        f"{blended:.4f}), and a ~1% real-asset toehold. FI is derived rather than asserted "
+        f"because the panel's contested 16% estimate blends above the anchor and would push "
+        f"the earliest-safe age to 48; sized to the anchor it holds at 47."
     )
     residual = (
         "FI sizing — derived to the 0.18 anchor (NVDA fixed, 70/30 cash/short-IG). "
@@ -622,6 +720,11 @@ __all__ = [
     "TargetAllocation",
     "NVDA_TARGET_PCT",
     "CASH_FRAC_OF_FI",
+    "ALTERNATIVES_TARGET_PCT",
+    "ALTERNATIVES_MAX_PCT",
+    "ALTERNATIVES_GOLD_FRAC",
+    "ALTERNATIVES_BTC_FRAC",
+    "BTC_MAX_PCT",
     "build_target_allocation",
     "derive_fi_weight",
     "to_synth_targets",

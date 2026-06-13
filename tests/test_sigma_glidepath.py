@@ -29,6 +29,15 @@ class TestMapGlidepathClassToSigmaClass:
             ("Emerging Markets", "emerging_equity"),
             ("REIT", "real_estate"),
             ("real estate", "real_estate"),
+            # Alternatives (gold/BTC) — its own ~0.268 class. The canonical
+            # sleeve label contains "alternative", so these needles MUST win
+            # before the generic "alternative"->us_equity fallback.
+            ("Alternatives (gold/BTC)", "alternatives"),
+            ("Gold ETC", "alternatives"),
+            ("Bitcoin ETP", "alternatives"),
+            ("BTC sleeve", "alternatives"),
+            # A bare "alternative" with no gold/btc cue still falls back to equity.
+            ("misc alternative", "us_equity"),
             ("", "us_equity"),
             ("totally-unknown-label", "us_equity"),
         ],
@@ -64,6 +73,13 @@ class TestMapGlidepathClassExclusionAndLowVol:
     )
     def test_exclusion_and_low_vol_routing(self, label: str, expected: str) -> None:
         assert map_glidepath_class_to_sigma_class(label) == expected
+
+    def test_alternatives_sleeve_blended_sigma(self) -> None:
+        # The Alternatives (gold/BTC) sleeve models at its blended 0.268 sigma
+        # (0.8*0.16 + 0.2*0.70), NOT the generic 0.18 the "alternative" fallback
+        # would have given — that would silently understate the BTC tail.
+        s = sigma_from_composition({"Alternatives (gold/BTC)": 100.0})
+        assert s == pytest.approx(0.268, abs=0.001)
 
     def test_low_vol_equity_sigma_between_bonds_and_us_equity(self) -> None:
         # The phantom-bond bug modeled a low-vol equity sleeve at 0.06 —
