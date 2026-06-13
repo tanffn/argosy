@@ -1,0 +1,166 @@
+================================================================================
+ARGOSY — NEW SESSION HANDOVER  (plain text)
+Branch: feat/alternatives-asset-class   |   Off main @ 9941834   |   NOT merged
+================================================================================
+
+--------------------------------------------------------------------------------
+0. HOW TO WORK IN THIS REPO  (read before doing anything)
+--------------------------------------------------------------------------------
+- Working dir: D:\Projects\financial-advisor  (= ARGOSY_HOME).
+- Python: .venv\Scripts\python.exe  (use it directly; uv sync / uv run also fine).
+- Shell is PowerShell. "&&" does NOT chain commands — use ";" or the Bash tool.
+- Tests:   .venv\Scripts\python.exe -m pytest -m "not llm_eval" <path> -q -p no:cacheprovider
+- Full suite is ~87 min; run touched-file tests during work, full suite at the end.
+- Backend run: uvicorn argosy.api.main:create_app --factory --host 127.0.0.1 --port 8000
+- UI: cd ui ; npm run dev  (port 1337).
+
+BINDING USER PREFERENCES (do not violate — these are the whole point):
+- ACCURACY OVER LLM COST. Prefer thorough/correct over cheap. Agents default Opus.
+- ASK only for GOAL-CHANGING judgment calls. For uncertain money-math/methodology,
+  consult CODEX (the tandem kit), NOT the user. Don't ask trivial questions.
+- For a goal-changing/headline question: write a prominent **** boxed message and
+  STOP for an explicit "go". Don't fire the question tool immediately.
+- NOTHING HARDCODED / no magic numbers — every number Argosy-derived + auditable.
+- The team SOURCES instruments; never ask the user to pick tickers/size/tilts.
+- All instruments must be NON-US-domiciled (estate tail); NVDA is the one sanctioned
+  US-situs sleeve.
+- The UI is a PURE PROJECTION of the one canonical plan. No per-chart sources.
+- Use the codex-tandem kit for risky work (money math, parsers, decision flows).
+  Kit: tools\codex-tandem\scripts\engine_codex.py (gitignored). Pattern: write a
+  tmp_review\codex_*.py that calls run_codex(...) and writes a *_verdict.txt.
+  NOTE: late in the last session the kit started returning EMPTY verdicts (LEN 0)
+  — a tool/quota issue, not a code signal. If that recurs, verify the math
+  yourself with a deterministic script and say so.
+- Docs describe CURRENT state only — no history/handover sections in SDD or design
+  docs. Continuity lives in git + tmp_review handovers like this file.
+- Commit each logical block. Commit msgs end with the Co-Authored-By trailer.
+  Do NOT report USD cost figures to the user.
+- Agents run on the bundled claude_code CLI (no API key). Never claim work is
+  "blocked on ANTHROPIC_API_KEY".
+
+--------------------------------------------------------------------------------
+1. WHAT TO READ FIRST  (in order)
+--------------------------------------------------------------------------------
+1. CLAUDE.md (repo root) — the fresh-agent router.
+2. ~/.claude/.../memory/MEMORY.md — binding preferences (Claude Code only).
+3. tmp_review/ALTERNATIVES_SOURCING_HANDOVER.md — the detailed feature handover
+   (file-by-file state of the alternatives work).
+4. docs/superpowers/plans/2026-06-13-alternatives-fleet-sourcing.md — the
+   implementation plan (the spec this branch executed).
+5. tmp_review/codex_alternatives_e2e_verdict.txt — the design verdict that drove
+   the build (8 findings + 10-step sequence). All findings addressed.
+6. git log --oneline 9941834..HEAD — the 18 commits on this branch.
+
+--------------------------------------------------------------------------------
+2. WHAT THIS BRANCH DID  (the Alternatives sleeve, end to end)
+--------------------------------------------------------------------------------
+GOAL: the agent TEAM sources + verifies + sizes the Alternatives sleeve
+(gold / bitcoin / commodities — the small diversifier next to NVDA). Nothing
+hardcoded; 0% is a valid team answer; every instrument deterministically verified
+(real ISIN, real non-US domicile, tradeable) before it can ever become a holding.
+
+Pipeline (all built + unit-tested, ~130 tests green):
+  source (AlternativesSourcerAgent)
+   -> deterministic verify (instrument_verification.py: ISO-6166 checksum,
+      ISO-3166 prefix, domicile coherence, verified-facts registry; fail-closed)
+   -> estate gate
+   -> ETP-aware fleet debate (3 reviewer lenses + sleeve fund-manager)
+   -> AlternativesSleeveDecision (target_pct may be 0)
+   -> threaded into the canonical plan (build_target_allocation) as a DRAFT.
+
+KEY FILES:
+  argosy/services/alternatives_types.py          - typed decision/verification models
+  argosy/services/instrument_verification.py     - the deterministic verifier + registry loader
+  argosy/data/verified_instruments.yaml          - verified-FACTS registry (cache, NOT an allow-list)
+  argosy/services/alternatives_sourcing.py       - verify_and_gate_proposal()
+  argosy/agents/alternatives_sourcer.py          - the sourcer agent
+  argosy/agents/alternatives_reviewers.py        - 3 reviewers + AlternativesFundManagerAgent
+  argosy/orchestrator/flows/plan_synthesis/alternatives_phase.py - run_alternatives_phase()
+  argosy/services/allocation_plan.py             - HARDCODE REMOVED; consumes a supplied sleeve
+  argosy/services/retirement/sigma_calibration.py- compute_alternatives_sigma()
+  argosy/services/target_allocation_doc.py       - threading + no-stale-carry-forward
+  argosy/orchestrator/flows/plan_synthesis/orchestrator.py - phase wired into run_synthesis
+
+DOCTRINE NOTE on the registry: it verifies FACTS about whatever the team proposes;
+it is NOT an allow-list constraining the universe. An instrument absent from it is
+UNVERIFIED (rejected), not forbidden. Currently seeded (all confirmed against
+issuer factsheets / justETF / Euronext): SGLD, IGLN, SGLN (gold, IE), BITC (JE),
+IB1T (CH), ICOM (commodity, IE). 21Shares ABTC was deliberately skipped (ambiguous
+ISIN — never seed an uncertain fact).
+
+--------------------------------------------------------------------------------
+3. STATE AT HANDOFF  (what works, what doesn't)
+--------------------------------------------------------------------------------
+WORKS / DONE:
+- Full pipeline built + unit-tested. Hardcoded IGLN/IB1T/3% sleeve REMOVED.
+- Verification proven live: it rejected unverified picks and returned a safe 0%.
+- All codex BLOCKERs fixed (verification fail-closed; ASCII-strict ISIN; ISO-3166
+  prefix gate; canonical domicile vocab; strict registry completeness).
+- Engine anchor-math self-verified across a (size, sigma) grid; blended-sigma now
+  reported on the FI-solver's unrounded basis.
+- Full suite: 4141 passed, 11 failed — ALL 11 are pre-existing/unrelated
+  (9 = cross-suite log-capture pollution, pass in isolation; 2 =
+  test_plan_numeric_resolver FX time-bomb: fixture seeds a BoI rate at 2026-06-02
+  and "today" is now >10 days later, outside the resolver's walk-back window —
+  NOT this branch's code). Worth a separate fix (relative-date the fixture).
+
+PROVEN LIVE END-TO-END (final run of the session):
+- The full team flow completed live and produced a REAL approved sleeve:
+  decision=approve, target_pct=3.0%, sleeve_sigma=0.16 (the SOURCED gold sigma,
+  not the old fixed 0.268), 1 verified instrument SGLD (Invesco Physical Gold ETC,
+  IE, GREEN). Unverified picks (CBTC, CMOD — not seeded) were correctly rejected.
+  The FM wrote genuine rationale (gold vs silver, physical-ETC vs futures/miners,
+  SGLD vs PHAU/SGLN) and flagged the Israeli tax treatment as needing domain
+  confirmation. Re-run anytime via run_alternatives_phase_live.py.
+- TWO citation-gate bugs were found + fixed via live runs (commits 1a1bc69 FM,
+  and the reviewer fix): BaseAgent.require_citations defaults True; the FM and the
+  reviewers have no need to cite external docs, so they now opt out
+  (require_citations=False). Lesson: agents whose output model lacks/needn't a
+  populated cited_sources MUST set require_citations=False or they fail every run.
+- NOTE the sourcer's picks VARY run-to-run; only seeded instruments verify, so a
+  run that picks all-off-registry still returns 0% (the Option-B limitation;
+  Option A is the fix).
+
+NOT DONE (open items — none blocking, none promoted):
+- NOTHING is promoted to role="current". Promotion is ALWAYS the user's act.
+- NO UI changes were made (intentional — the sleeve renders via the existing /plan
+  allocation surface). To SEE it: restart backend on this branch + run a synthesis;
+  the draft's /plan shows an "Alternatives" class with its instruments + rationale.
+  The verification + debate detail is NOT surfaced anywhere (lives in logs + the
+  class rationale). The user asked about this — a small "how the team verified +
+  debated the sleeve" panel is an open, unbuilt idea (ASK before building UI).
+- Amendment path (plan_amendment/workers.py) rebuilds with 0% alternatives (safe
+  default); it does NOT preserve a previously-sourced sleeve. Decide: preserve vs
+  re-source on amend.
+- DOCTRINE-COMPLETE follow-up ("Option A"): live instrument verification — agent
+  discovers issuer-factsheet/ISIN-registry URLs, a deterministic checker confirms
+  domicile/ISIN/tradeability at RUN TIME, so the team can propose ANYTHING real and
+  it auto-verifies (instead of only the seeded set). This was agreed as the next
+  sprint. Today's seeding ("Option B") was the interim.
+- DB persistence of the sleeve decision as agent_reports/decision_phases (codex #8)
+  — currently the rationale+violations persist inside target_allocation_json only.
+- sigma_glidepath still maps the alternatives label to the fixed class sigma 0.268
+  for the redistribution glide series (the FI solver uses the SOURCED sigma; the
+  glide series doesn't). Minor.
+
+--------------------------------------------------------------------------------
+4. SUGGESTED NEXT STEPS
+--------------------------------------------------------------------------------
+1. Read the in-flight live-run output; confirm a real sleeve formed. If the sourcer
+   still picks off-registry symbols, either seed those (verify first!) or build
+   Option A.
+2. Decide with the user: build Option A (live verification) now? Build the UI panel
+   to surface verification+debate? Restart backend + run a synthesis to view the
+   draft in /plan?
+3. Pre-merge: run the full suite once; confirm only the known pre-existing fails
+   remain. The branch has no remote/off-machine backup.
+
+VERIFY COMMANDS:
+  Touched tests:   .venv\Scripts\python.exe -m pytest tests\test_instrument_verification.py
+    tests\test_alternatives_types.py tests\test_alternatives_sourcer.py
+    tests\test_alternatives_reviewers.py tests\test_alternatives_phase.py
+    tests\test_allocation_plan.py tests\test_sigma_calibration.py
+    tests\test_target_allocation_doc.py -q -p no:cacheprovider
+  Live team run:   $env:PYTHONIOENCODING="utf-8";
+    .venv\Scripts\python.exe tmp_review\run_alternatives_phase_live.py
+================================================================================
