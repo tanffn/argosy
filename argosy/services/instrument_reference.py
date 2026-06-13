@@ -138,6 +138,10 @@ _REFERENCE: dict[str, InstrumentRef] = {
     "FWRA": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL),
     "ACWD": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL),
     "MSCI WORLD": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_GLOBAL),
+    # Europe — the IBI STOXX Europe 600 tracker's resolved "symbol" is the
+    # name itself (no clean latin ticker), so it must be an explicit table row;
+    # the name-keyword fallback only fires for symbol-less rows now (codex).
+    "STOXX EUROPE 600": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_EUROPE),
     # Emerging markets.
     "EIMI": InstrumentRef(ASSET_EQUITY, SECTOR_BROAD_INDEX, REGION_EM),
     # Sector ETFs.
