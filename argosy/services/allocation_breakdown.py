@@ -52,6 +52,7 @@ class HoldingRow:
     value_k: float
     pct: float            # % of the full book
     account: str = ""     # holding location (e.g. "Leumi", "schwab 876")
+    estate_safe: bool | None = None  # True=non-US-situs, False=US-situs, None=unknown
 
 
 @dataclass(frozen=True)
@@ -205,15 +206,19 @@ def build_allocation_breakdown(snapshot, doc, *, exclude_nvda: bool = False) -> 
                     value_k=round(float(getattr(p, "usd_value_k", 0.0) or 0.0), 2),
                     pct=round(100.0 * float(getattr(p, "usd_value_k", 0.0) or 0.0) / total, 2),
                     account=_holding_account(p),
+                    estate_safe=(
+                        None if _is_cash(p) else instrument_reference.estate_safe_for(
+                            getattr(p, "symbol", ""), getattr(p, "details", ""))
+                    ),
                 )
                 for p in ps
             ),
             key=lambda h: -h.value_k,
         ))
-        # The "non-NVDA singles to redeploy" bucket has no plan class because
-        # the plan's intent is to wind it down — show target 0%, not blank.
+        # No blank targets: a held category the plan has no target for means
+        # the plan wants 0% there (redeploy) — show 0.0%, never "—".
         tgt = targets.get(label)
-        if tgt is None and label == OTHER_SINGLES_LABEL:
+        if tgt is None:
             tgt = 0.0
         rows.append(CategoryBreakdown(
             label=label,

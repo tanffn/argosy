@@ -305,6 +305,7 @@ export default function PortfolioPage() {
                   >
                     Type{sortKey === "type" ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
                   </th>
+                  <th className="py-2">Estate</th>
                   <th className="py-2 text-right">Shares</th>
                   <th className="py-2 text-right">Price</th>
                   <th
@@ -336,6 +337,25 @@ export default function PortfolioPage() {
                     >
                       <td className="py-1.5">{symbolLabel}</td>
                       <td className="py-1.5 text-muted-foreground">{p.asset_type}</td>
+                      <td className="py-1.5">
+                        {p.estate_safe === null ? (
+                          <span className="text-muted-foreground/50">—</span>
+                        ) : p.estate_safe ? (
+                          <span
+                            className="text-[10px] text-emerald-400/80"
+                            title="Estate-safe — non-US-situs (UCITS / Israeli domicile)"
+                          >
+                            ✓ safe
+                          </span>
+                        ) : (
+                          <span
+                            className="text-[10px] text-amber-400"
+                            title="US-situs — exposed to US estate tax (40% above $60k) for a non-US person"
+                          >
+                            ⚠ US-situs
+                          </span>
+                        )}
+                      </td>
                       <td className="py-1.5 text-right">
                         {p.shares !== null ? p.shares.toLocaleString() : "—"}
                       </td>

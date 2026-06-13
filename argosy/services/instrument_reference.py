@@ -16,7 +16,7 @@ never provider-dependent. Add a row when a new instrument enters the book.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _replace
 
 # --- Canonical vocabularies -------------------------------------------------
 
@@ -57,6 +57,12 @@ class InstrumentRef:
     asset_class: str
     sector: str
     region: str
+    # Estate-safe = NOT US-situs for a non-US person (no US estate-tax tail).
+    # UCITS (Irish/London) + Israeli-domiciled are safe; US-domiciled
+    # securities are exposed. Defaults safe; the US-situs set below flips the
+    # US-domiciled table entries to False. NVDA is US-situs (exposed) — the one
+    # sanctioned exception, but still flagged exposed so the tail is visible.
+    estate_safe: bool = True
 
 
 # --- Curated reference table (keyed by resolved ticker, upper-cased) --------
@@ -125,6 +131,22 @@ _NAME_KEYWORD_FALLBACK: tuple[tuple[str, InstrumentRef], ...] = (
 )
 
 
+# US-domiciled (US-situs) tickers in the book — estate-exposed for a non-US
+# person. Everything else in the table is UCITS (Irish/London) or Israeli =
+# estate-safe. NVDA is here too: it IS US-situs (the sanctioned exception).
+_US_SITUS_TICKERS: frozenset[str] = frozenset({
+    "NVDA", "AMD", "GOOG", "GOOGL", "AMZN", "META", "TSLA", "SOFI", "RKT",
+    "BRK/B", "BRK.B", "BMY", "VOO", "VTI", "SCHD", "SCHG", "SPMO", "VTV",
+    "SGOV", "O", "IBIT",
+})
+
+# Flip the US-domiciled entries to estate-exposed (the table defaults safe).
+_REFERENCE = {
+    k: (_replace(v, estate_safe=False) if k in _US_SITUS_TICKERS else v)
+    for k, v in _REFERENCE.items()
+}
+
+
 def _is_hebrew_ticker(symbol: str) -> bool:
     """A genuinely TASE-listed instrument has a Hebrew/non-latin ticker
     (e.g. ``מחקה ת"א-200``). A Hebrew *description* is not evidence — see
@@ -165,5 +187,15 @@ def lookup(symbol: str, details: str = "") -> InstrumentRef | None:
     return None
 
 
-__all__ = ["InstrumentRef", "lookup", "REGION_US", "REGION_ISRAEL",
-           "REGION_EUROPE", "REGION_EM", "REGION_GLOBAL", "REGION_OTHER"]
+def estate_safe_for(symbol: str, details: str = "") -> bool | None:
+    """True = estate-safe (non-US-situs), False = US-situs exposed, None =
+    unknown (instrument not in the reference). Travels with the resolved
+    instrument, so the STOXX-as-"O" collision resolves to the (safe) IBI
+    tracker, not Realty Income."""
+    ref = lookup(symbol, details)
+    return ref.estate_safe if ref is not None else None
+
+
+__all__ = ["InstrumentRef", "lookup", "estate_safe_for", "REGION_US",
+           "REGION_ISRAEL", "REGION_EUROPE", "REGION_EM", "REGION_GLOBAL",
+           "REGION_OTHER"]

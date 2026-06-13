@@ -255,6 +255,7 @@ export interface PortfolioPosition {
   shares: number | null;
   current_price: number | null;
   usd_value_k: number | null;
+  estate_safe: boolean | null;
 }
 
 export interface PortfolioAllocation {
@@ -363,6 +364,7 @@ export interface HoldingRowDTO {
   value_k: number;
   pct: number;
   account: string;
+  estate_safe: boolean | null;
 }
 
 export interface CategoryBreakdownDTO {

@@ -71,3 +71,27 @@ def test_schd_is_dividend_sector():
 
 def test_unknown_ticker_returns_none():
     assert lookup("ZZZUNKNOWN", "Some Stock") is None
+
+
+def test_estate_safe_us_domiciled_is_exposed():
+    from argosy.services.instrument_reference import estate_safe_for
+    assert estate_safe_for("NVDA", "RSU") is False           # US-situs (sanctioned but exposed)
+    assert estate_safe_for("AMD", "(...) AMD") is False
+    assert estate_safe_for("VOO", "(...) VOO") is False       # US-domiciled ETF
+    assert estate_safe_for("SGOV", "(...) SGOV") is False
+    assert estate_safe_for("O", "(ריאלטי אינקם) O") is False  # US REIT
+
+
+def test_estate_safe_ucits_and_israeli_are_safe():
+    from argosy.services.instrument_reference import estate_safe_for
+    assert estate_safe_for("CSPX", "(ISHR CORE S&P500) CSPX LN") is True   # UCITS
+    assert estate_safe_for("IUHC", "(ISH S&P HLTH CR) IUHC LN") is True    # UCITS
+    assert estate_safe_for("EIMI", "(ISHR CORE EM IMI) EIMI LN") is True   # UCITS
+    assert estate_safe_for('מחקה ת"א-200', 'ATF מחקה ת"א-200') is True     # Israeli
+    # The STOXX-as-"O" collision resolves to the (safe) IBI tracker, not Realty.
+    assert estate_safe_for("O", "אי בי אי מחקה STOXX Europe 600") is True
+
+
+def test_estate_safe_unknown_is_none():
+    from argosy.services.instrument_reference import estate_safe_for
+    assert estate_safe_for("ZZZUNKNOWN", "mystery") is None

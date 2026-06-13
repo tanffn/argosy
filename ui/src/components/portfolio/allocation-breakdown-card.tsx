@@ -16,6 +16,28 @@ function fmtK(k: number): string {
   return `$${k.toFixed(0)}K`;
 }
 
+/** Estate-tail marker: non-US-situs holdings are estate-safe; US-domiciled
+ *  ones carry the US estate-tax tail for a non-US person (NVDA is the one
+ *  sanctioned exception, still flagged so the exposure is visible). */
+function EstateBadge({ safe }: { safe: boolean | null }) {
+  if (safe === null) return null;
+  return safe ? (
+    <span
+      className="ml-1.5 text-[10px] text-emerald-400/80"
+      title="Estate-safe — non-US-situs (UCITS / Israeli domicile)"
+    >
+      ✓ safe
+    </span>
+  ) : (
+    <span
+      className="ml-1.5 text-[10px] text-amber-400"
+      title="US-situs — exposed to US estate tax (40% above $60k) for a non-US person"
+    >
+      ⚠ US-situs
+    </span>
+  );
+}
+
 /**
  * /portfolio: LIVE current allocation (your actual holdings, grouped by asset
  * class) vs the canonical plan's class targets, with a per-symbol drill-down.
@@ -147,6 +169,7 @@ export function AllocationBreakdownCard({ userId = "ariel" }: { userId?: string 
                               [{h.account}]
                             </span>
                           ) : null}
+                          <EstateBadge safe={h.estate_safe} />
                         </span>
                         <span className="tabular-nums">
                           {fmtK(h.value_k)} · {h.pct.toFixed(1)}%

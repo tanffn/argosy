@@ -51,6 +51,7 @@ class PositionDTO(BaseModel):
     shares: float | None
     current_price: float | None
     usd_value_k: float | None
+    estate_safe: bool | None = None  # True=non-US-situs, False=US-situs, None=n/a (cash)
 
 
 class AllocationDTO(BaseModel):
@@ -111,18 +112,39 @@ def _find_latest_tsv() -> Path | None:
 
 def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
     """Translate a parsed/hydrated PortfolioSnapshot to the route DTO."""
+    from argosy.services import instrument_reference
+
+    # Resolve one asset_type per ticker (prefer non-blank): the hand-maintained
+    # Schwab rows sometimes leave Type blank on a lot of a ticker that's typed
+    # elsewhere (the $3K Schwab SCHG vs the Leumi SCHG "Growth"). Fill the blank
+    # from the sibling lot so the per-account table doesn't show an empty Type.
+    eff_type: dict[str, str] = {}
+    for p in snap.positions:
+        sym = (p.symbol or "").strip().upper()
+        at = (p.asset_type or "").strip()
+        if sym and at and sym not in eff_type:
+            eff_type[sym] = at
+
     positions: list[PositionDTO] = []
     for p in snap.positions:
+        sym = (p.symbol or "").strip().upper()
+        asset_type = (p.asset_type or "").strip() or eff_type.get(sym, "")
+        is_cash = asset_type.lower() in ("cash", "money market")
+        estate_safe = (
+            None if is_cash
+            else instrument_reference.estate_safe_for(p.symbol or "", p.details or "")
+        )
         positions.append(
             PositionDTO(
                 location=p.location,
                 currency=p.currency,
-                asset_type=p.asset_type,
+                asset_type=asset_type,
                 details=p.details,
                 symbol=p.symbol,
                 shares=p.shares,
                 current_price=p.current_price,
                 usd_value_k=p.usd_value_k,
+                estate_safe=estate_safe,
             )
         )
     allocations: list[AllocationDTO] = []
@@ -1186,6 +1208,7 @@ class HoldingRowDTO(BaseModel):
     value_k: float
     pct: float
     account: str = ""
+    estate_safe: bool | None = None
 
 
 class CategoryBreakdownDTO(BaseModel):
@@ -1232,7 +1255,8 @@ def get_allocation_breakdown(
             label=r.label, current_pct=r.current_pct, target_pct=r.target_pct,
             current_value_k=r.current_value_k,
             holdings=[HoldingRowDTO(symbol=h.symbol, name=h.name,
-                      value_k=h.value_k, pct=h.pct, account=h.account)
+                      value_k=h.value_k, pct=h.pct, account=h.account,
+                      estate_safe=h.estate_safe)
                       for h in r.holdings],
         ) for r in rows],
         total_value_k=round(sum(r.current_value_k for r in rows), 2),
