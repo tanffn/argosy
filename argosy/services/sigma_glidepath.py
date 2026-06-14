@@ -26,6 +26,7 @@ no portfolio rows yet.
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -141,20 +142,90 @@ def map_glidepath_class_to_sigma_class(class_name: str) -> str:
     return "us_equity"
 
 
-def sigma_from_composition(composition_pct_by_class: dict[str, float]) -> float:
-    """Compute a holdings-weighted sigma from a glidepath composition dict."""
-    total = sum(max(0.0, v) for v in composition_pct_by_class.values())
+# --- Cross-class correlation model (covariance-aware portfolio sigma) --------
+# Portfolio sigma is σ_p = sqrt(wᵀ Σ w) with Σ_ij = ρ_ij·σ_i·σ_j. The plain
+# weighted-average blend (Σ wᵢσᵢ) is the ρ=1 special case — perfect correlation,
+# the conservative UPPER bound. Real strategic asset classes are not perfectly
+# correlated, so the linear blend over-states portfolio volatility; used as the
+# fixed-income SIZING rule it over-reserves the defensive sleeve. These tiers are
+# documented long-run strategic correlations an adversarial reviewer can
+# reconcile (sources: US/non-US equity correlations have risen to ~0.8; stock-
+# bond correlation is regime-dependent and modeled at a mildly-positive +0.10
+# rather than claiming a negative-correlation hedge):
+#   equity↔equity 0.80 | NVDA↔equity 0.65 | equity↔alternatives 0.25
+#   equity↔FI 0.10 | alternatives↔FI 0.10 | bonds↔cash 0.40 | same class 1.00
+# An UNKNOWN class pair falls back to ρ=1.0 (the conservative linear bound), never
+# a silent mid value, so a novel exposure cannot understate risk; the allocation
+# layer additionally gates that every class it uses is explicitly modeled.
+_EQUITY_CORR_CLASSES = frozenset(
+    {"us_equity", "low_vol_equity", "intl_equity", "emerging_equity", "real_estate"}
+)
+_FI_CORR_CLASSES = frozenset({"bonds", "cash"})
+KNOWN_CORR_CLASSES = (
+    _EQUITY_CORR_CLASSES | _FI_CORR_CLASSES | {"concentrated_equity", "alternatives"}
+)
+
+
+def class_correlation(a: str, b: str) -> float:
+    """Pairwise long-run correlation between two sigma-classes (tier table above).
+    Unknown classes default to ρ=1.0 — the conservative (linear) bound."""
+    if a == b:
+        return 1.0
+    pair = {a, b}
+    if "concentrated_equity" in pair:
+        other = (pair - {"concentrated_equity"}).pop()
+        if other in _EQUITY_CORR_CLASSES:
+            return 0.65
+        if other == "alternatives":
+            return 0.20
+        if other in _FI_CORR_CLASSES:
+            return 0.10
+        return 1.0
+    if "alternatives" in pair:
+        other = (pair - {"alternatives"}).pop()
+        if other in _EQUITY_CORR_CLASSES:
+            return 0.25
+        if other in _FI_CORR_CLASSES:
+            return 0.10
+        return 1.0
+    if a in _EQUITY_CORR_CLASSES and b in _EQUITY_CORR_CLASSES:
+        return 0.80
+    if pair == {"bonds", "cash"}:
+        return 0.40
+    if (a in _EQUITY_CORR_CLASSES and b in _FI_CORR_CLASSES) or (
+        b in _EQUITY_CORR_CLASSES and a in _FI_CORR_CLASSES
+    ):
+        return 0.10
+    return 1.0
+
+
+def covariance_sigma(items: list[tuple[str, float, float]]) -> float:
+    """Covariance-aware portfolio sigma σ_p = sqrt(wᵀ Σ w) for ``items`` =
+    (sigma_class, weight, sigma). Weights need not sum to 1 (normalised here); a
+    single positive class returns its own sigma (ρ=1 with itself); an empty book
+    returns the diversified default."""
+    total = sum(max(0.0, w) for _, w, _ in items)
     if total <= 0:
         return DEFAULT_SIGMA_FLAT
-    sigma = 0.0
+    norm = [(cls, w / total, s) for cls, w, s in items if w > 0]
+    var = 0.0
+    for ci, wi, si in norm:
+        for cj, wj, sj in norm:
+            var += wi * wj * si * sj * class_correlation(ci, cj)
+    return round(math.sqrt(max(0.0, var)), 4)
+
+
+def sigma_from_composition(composition_pct_by_class: dict[str, float]) -> float:
+    """Covariance-aware holdings-weighted sigma from a glidepath composition dict.
+    The plain weighted average it replaced assumed ρ=1 (no diversification credit)
+    and over-stated portfolio volatility for a diversified book."""
+    items: list[tuple[str, float, float]] = []
     for cls_name, pct in composition_pct_by_class.items():
         if pct <= 0:
             continue
-        weight = pct / total
         sigma_class = map_glidepath_class_to_sigma_class(cls_name)
-        cls_sigma = _SIGMA_BY_CLASS.get(sigma_class, 0.20)
-        sigma += weight * cls_sigma
-    return round(sigma, 4)
+        items.append((sigma_class, pct, _SIGMA_BY_CLASS.get(sigma_class, 0.20)))
+    return covariance_sigma(items)
 
 
 def interpolate_sigma_series(

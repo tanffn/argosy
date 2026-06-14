@@ -15,6 +15,10 @@ import pytest
 from argosy.services.allocation_plan import (
     CASH_FRAC_OF_FI,
     NVDA_TARGET_PCT,
+    _ALTERNATIVES_LABEL,
+    _blended_sigma_for,
+    _renormalise,
+    anchor_sigma_for_phase,
     build_redistribution_schedule,
     build_target_allocation,
     derive_fi_weight,
@@ -64,31 +68,54 @@ from argosy.services.sigma_glidepath import (
 class TestDeriveFiWeight:
     def test_blended_sigma_sits_on_the_plan_anchor(self) -> None:
         alloc = build_target_allocation()
-        # The whole point of deriving FI: the allocation blends to the plan's
-        # steady-state anchor (so age-47 stays self-consistent), not above it.
+        # The whole point of deriving FI: the allocation's COVARIANCE-blended
+        # sigma sits at/under the steady-state anchor, not above it.
         assert alloc.blended_sigma <= SIGMA_DIVERSIFIED + 1e-6
 
-    def test_fi_is_minimal_one_step_less_breaches_anchor(self) -> None:
-        alloc = build_target_allocation(fi_step=0.5)
-        # FI is the MINIMUM that clears the anchor — half a point less must
-        # breach it (otherwise we're over-building conservatism).
-        ratios = {c.label: c.target_pct for c in alloc.classes}
-        fi_pct = alloc.fi_pct
-        lighter = dict(ratios)
-        # shift 0.5pp from cash back into the largest equity sleeve
-        biggest = max(
-            (c for c in alloc.classes if c.sigma_class == "us_equity"),
-            key=lambda c: c.target_pct,
-        ).label
-        cash_label = next(c.label for c in alloc.classes if c.sigma_class == "cash")
-        lighter[cash_label] -= 0.5
-        lighter[biggest] += 0.5
-        assert sigma_from_composition(lighter) > SIGMA_DIVERSIFIED
-        assert fi_pct > 16.0  # strictly more than the panel's contested estimate
+    def test_accumulation_fi_is_the_policy_floor(self) -> None:
+        # Under the covariance blend the diversified book's true sigma is well
+        # below 0.18, so the anchor would size FI to ~7% — the 8% liquidity
+        # policy floor binds in the accumulation phase.
+        alloc = build_target_allocation()  # default = accumulation anchor
+        assert alloc.fi_pct == pytest.approx(8.0, abs=0.01)
 
-    def test_panel_sixteen_pct_would_breach_the_anchor(self) -> None:
-        # Documents the finding: the panel's headline 16% FI blends ABOVE the
-        # anchor in the real engine — i.e. it is NOT consistent with age 47.
+    def test_fi_is_minimal_one_step_less_breaches_a_binding_anchor(self) -> None:
+        # At accumulation the 8% floor binds; to test the solver's minimality use
+        # a near-retirement phase whose lower anchor binds ABOVE the floor.
+        anch = anchor_sigma_for_phase(1.0)
+        fi = derive_fi_weight(anchor_sigma=anch, fi_step=0.001)
+        assert fi > 8.0  # the anchor binds here, not the floor
+        at = _renormalise(nvda_pct=NVDA_TARGET_PCT, fi_pct=fi)
+        lighter = _renormalise(nvda_pct=NVDA_TARGET_PCT, fi_pct=fi - 0.05)
+        assert sigma_from_composition(at) <= anch + 1e-9
+        assert sigma_from_composition(lighter) > anch
+
+    def test_rounded_fi_return_actually_clears_the_anchor(self) -> None:
+        # Regression: rounding the raw solver value to 2dp must not land back
+        # UNDER the anchor (the fi_step<0.01 rounding-down bug). The RETURNED FI,
+        # recomputed, must clear — for both the plain book and an alternatives one.
+        anch = 0.165
+        fi = derive_fi_weight(anchor_sigma=anch, fi_lo=2.0, fi_step=0.001)
+        assert sigma_from_composition(_renormalise(nvda_pct=NVDA_TARGET_PCT, fi_pct=fi)) <= anch + 1e-9
+        fi_alt = derive_fi_weight(
+            anchor_sigma=SIGMA_DIVERSIFIED, alternatives_pct=3.0,
+            alternatives_sigma=0.16, fi_lo=2.0, fi_step=0.001,
+        )
+        w = _renormalise(nvda_pct=NVDA_TARGET_PCT, fi_pct=fi_alt, alternatives_pct=3.0)
+        assert _blended_sigma_for(w, alt_label=_ALTERNATIVES_LABEL, alt_sigma=0.16) <= SIGMA_DIVERSIFIED + 1e-9
+
+    def test_fi_monotonically_non_increasing_in_anchor(self) -> None:
+        # Codex guardrail: a HIGHER risk tolerance (anchor) must never require
+        # MORE fixed income. Sweep anchors and assert FI is non-increasing.
+        anchors = [0.15, 0.155, 0.16, 0.165, 0.17, 0.18, 0.20]
+        fis = [derive_fi_weight(anchor_sigma=a, fi_lo=2.0, fi_step=0.01) for a in anchors]
+        for a, b in zip(fis, fis[1:]):
+            assert b <= a + 1e-9, fis
+
+    def test_sixteen_pct_fi_now_over_reserves(self) -> None:
+        # Under the covariance blend the panel's headline 16% FI mix blends BELOW
+        # the anchor (over-reserved) — the opposite of the linear-blend reading.
+        # The derived accumulation FI is the ~8% floor instead.
         comp = {
             "US broad-market core": 28.0,
             "Dividend-quality income": 19.0,
@@ -100,7 +127,17 @@ class TestDeriveFiWeight:
             "Cash & T-bills (incl. ILS tranche)": 16.0 * CASH_FRAC_OF_FI,
             "Short-duration IG bonds": 16.0 * (1.0 - CASH_FRAC_OF_FI),
         }
-        assert sigma_from_composition(comp) > SIGMA_DIVERSIFIED
+        assert sigma_from_composition(comp) < SIGMA_DIVERSIFIED
+
+    def test_phase_anchor_glides_fi_up_toward_retirement(self) -> None:
+        # Accumulation ~8%, gliding to ~15% as retirement nears, ~20%+ in drawdown.
+        accum = build_target_allocation(years_to_retirement=5.0).fi_pct
+        near = build_target_allocation(years_to_retirement=0.5).fi_pct
+        drawdown = build_target_allocation(years_to_retirement=0.0).fi_pct
+        assert accum == pytest.approx(8.0, abs=0.01)
+        assert 12.0 <= near <= 16.0
+        assert drawdown >= 18.0
+        assert accum < near < drawdown
 
 
 class TestBuildTargetAllocation:
@@ -113,9 +150,18 @@ class TestBuildTargetAllocation:
         nvda = next(c for c in alloc.classes if "NVDA" in c.label and c.sigma_class == "concentrated_equity")
         assert nvda.target_pct == pytest.approx(NVDA_TARGET_PCT)
 
-    def test_fi_derived_above_panel_estimate(self) -> None:
-        alloc = build_target_allocation()
-        assert 18.0 <= alloc.fi_pct <= 24.0  # derived band; not the panel's 16
+    def test_fi_in_accumulation_phase_band(self) -> None:
+        alloc = build_target_allocation()  # accumulation (no withdrawals)
+        assert 8.0 <= alloc.fi_pct <= 10.0  # phase-aware accumulation band
+
+    def test_every_class_is_explicitly_correlation_modeled(self) -> None:
+        # Codex guardrail: no class the allocation uses may fall through to the
+        # conservative ρ=1 fallback by accident — each must be explicitly modeled.
+        from argosy.services.sigma_glidepath import KNOWN_CORR_CLASSES
+
+        alloc = build_target_allocation(alternatives_sleeve=_sleeve_decision(3.0))
+        for c in alloc.classes:
+            assert c.sigma_class in KNOWN_CORR_CLASSES, c.sigma_class
 
     def test_every_label_maps_to_its_intended_sigma_class(self) -> None:
         # Auditability gate: no label may silently mis-map (the ex-NVDA /
@@ -274,17 +320,21 @@ class TestAlternativesSleeve:
         alloc = build_target_allocation(alternatives_sleeve=_sleeve_decision(3.0, 0.268))
         assert alloc.blended_sigma <= SIGMA_DIVERSIFIED + 1e-6
 
-    def test_fi_rises_with_supplied_sleeve(self) -> None:
-        baseline = derive_fi_weight(alternatives_pct=0.0, alternatives_sigma=0.0)
-        with_alts = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.268)
-        assert with_alts > baseline
+    def test_low_corr_diversifier_does_not_raise_required_fi(self) -> None:
+        # Under the covariance blend a low-correlation diversifier (alts ρ≈0.25
+        # to equity) that DISPLACES higher-correlation equity does NOT force more
+        # FI — it can lower it. (The linear blend wrongly forced more FI for any
+        # sleeve σ above cash.) fi_lo=2 so the 8% policy floor doesn't mask it.
+        base = derive_fi_weight(alternatives_pct=0.0, alternatives_sigma=0.0, fi_lo=2.0, fi_step=0.001)
+        with_alts = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.16, fi_lo=2.0, fi_step=0.001)
+        assert with_alts <= base + 1e-9
 
     def test_sourced_sigma_flows_into_solver(self) -> None:
-        # A gold-only sleeve (sourced sigma 0.16) must force LESS FI than an
-        # 80/20 gold/BTC sleeve (0.268) — the FI solver consumes the SOURCED
-        # sigma, not a fixed 0.268.
-        gold_only = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.16)
-        with_btc = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.268)
+        # The FI solver consumes the SOURCED sleeve sigma: a higher-σ sleeve
+        # (80/20 gold/BTC, 0.268) requires strictly more FI than a gold-only one
+        # (0.16). fi_lo=2 so the floor doesn't flatten both onto 8%.
+        gold_only = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.16, fi_lo=2.0, fi_step=0.001)
+        with_btc = derive_fi_weight(alternatives_pct=3.0, alternatives_sigma=0.268, fi_lo=2.0, fi_step=0.001)
         assert gold_only < with_btc
 
     def test_supplied_sleeve_estate_clean_non_us(self) -> None:

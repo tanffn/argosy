@@ -18,25 +18,24 @@ a magic constant:
     just below the hard cap so post-transformation drift doesn't immediately
     breach the do-not-re-concentrate ceiling.
 
-  * **Fixed-income / cash** weight is DERIVED, not asserted. The panel's
-    reconciled estimate (16%) was contested (8/13/24/29 across lenses) and, with
-    the corrected sigma-classes, actually blends ABOVE the plan's steady-state
-    anchor ``SIGMA_DIVERSIFIED`` (=0.18) — i.e. it is NOT self-consistent with
-    the age-47 headline the deconcentration optimizer certifies at exactly that
-    sigma. We therefore size FI as the MINIMUM weight (NVDA held fixed, the six
-    other sleeves kept at their agreed ratios, FI split cash/short-IG bonds by
-    ``CASH_FRAC_OF_FI``) at which the allocation's engine-blended sigma sits on
-    the 0.18 anchor. That restores self-consistency: at the derived FI the
-    typical-regime Monte-Carlo earliest-safe drawdown age is 47 with a solvency
-    margin (P@95 ~= 91%), versus the panel-16 mix which slips to age 48
-    (P@95 ~= 89.5%).
+  * **Fixed-income / cash** weight is DERIVED, not asserted. FI is sized as the
+    MINIMUM weight (NVDA held fixed, the six other sleeves kept at their agreed
+    ratios, FI split cash/short-IG bonds by ``CASH_FRAC_OF_FI``) at which the
+    allocation's COVARIANCE-blended sigma (``sigma_glidepath.covariance_sigma``)
+    sits on the phase-aware anchor. The anchor is risk-tolerance POLICY: in the
+    accumulation phase (salary covers expenses, no withdrawals → no sequence risk)
+    it is ``SIGMA_DIVERSIFIED`` (0.18, the same σ the retirement Monte-Carlo
+    assumes as its post-deconcentration floor), which the covariance blend sizes
+    to ~8% FI; as retirement nears the anchor glides down (``anchor_sigma_for_phase``)
+    so FI rebuilds toward ~15% pre-retirement and ~20% in drawdown.
 
-Model caveats carried in the rationale (NOT silently swallowed): the engine
-blends class sigmas LINEARLY (no diversification/correlation credit), so the
-0.18 target is conservative-leaning vs a covariance model; and the MC holds
-mu_real constant regardless of the FI weight, so it sees FI's volatility benefit
-but not its return drag. Both are documented so an adversarial reviewer can
-reconcile the derived weight.
+The portfolio sigma is the covariance blend σ_p = sqrt(wᵀ Σ w), NOT a linear
+weighted average: the linear blend assumes ρ=1 (no diversification credit) and
+over-states a diversified book's volatility, so as the FI SIZER it produced a
+knife-edge over-reserved defensive sleeve. The correlation tiers live (and are
+documented) in ``sigma_glidepath``. Remaining model caveat carried in the
+rationale: the MC holds mu_real constant regardless of the FI weight, so it sees
+FI's volatility benefit but not its return drag.
 """
 from __future__ import annotations
 
@@ -55,6 +54,7 @@ from argosy.services.retirement.scenario_mc import (
 )
 from argosy.services.retirement.sigma_calibration import _SIGMA_BY_CLASS
 from argosy.services.sigma_glidepath import (
+    covariance_sigma,
     map_glidepath_class_to_sigma_class,
     sigma_from_composition,
 )
@@ -342,28 +342,23 @@ def _blended_sigma_for(
     alt_label: str | None = None,
     alt_sigma: float | None = None,
 ) -> float:
-    """Holdings-weighted blended sigma. When an Alternatives sleeve is present its
+    """Covariance-aware blended sigma. When an Alternatives sleeve is present its
     sigma is the SOURCED ``alt_sigma`` (pinned by label), not the fixed class
     constant — so a gold-only sleeve blends at 0.16 and an 80/20 gold/BTC sleeve
-    at 0.268, exactly as the team sourced it."""
+    at 0.268, exactly as the team sourced it — while its CORRELATION to the rest of
+    the book uses the ``alternatives`` tier."""
     if alt_label is None or alt_sigma is None:
         return sigma_from_composition(weights)
-    total = sum(max(0.0, v) for v in weights.values())
-    if total <= 0:
-        return sigma_from_composition(weights)
-    sigma = 0.0
+    items: list[tuple[str, float, float]] = []
     for label, pct in weights.items():
         if pct <= 0:
             continue
-        weight = pct / total
         if label == alt_label:
-            cls_sigma = alt_sigma
+            items.append((_ALTERNATIVES_SIGMA_CLASS, pct, alt_sigma))
         else:
-            cls_sigma = _SIGMA_BY_CLASS.get(
-                map_glidepath_class_to_sigma_class(label), 0.20
-            )
-        sigma += weight * cls_sigma
-    return round(sigma, 4)
+            cls = map_glidepath_class_to_sigma_class(label)
+            items.append((cls, pct, _SIGMA_BY_CLASS.get(cls, 0.20)))
+    return covariance_sigma(items)
 
 
 def _renormalise(
@@ -389,6 +384,37 @@ def _renormalise(
     return weights
 
 
+# --- Phase-aware risk anchor -------------------------------------------------
+# The covariance blend is a FIXED risk MODEL; the anchor is the risk-tolerance
+# POLICY, and it is phase-aware. In ACCUMULATION (salary covers expenses, no
+# withdrawals → no sequence risk) the book may run at the steady-state diversified
+# anchor (``SIGMA_DIVERSIFIED`` 0.18 — the same σ the retirement MC assumes as its
+# post-deconcentration floor), which the covariance blend sizes to ~8% FI. As
+# ACTUAL retirement nears, sequence risk demands a LOWER portfolio σ (a larger
+# defensive sleeve): the anchor glides DOWN, lifting FI toward ~15% in the final
+# years and ~20% once the portfolio is being drawn. The anchor is derived from
+# years-to-retirement; no per-phase FI percentage is hardcoded.
+ACCUMULATION_ANCHOR = SIGMA_DIVERSIFIED  # 0.18 → ~8% FI under the covariance blend
+PRESERVATION_ANCHOR = 0.165              # ~15% FI, reached as retirement arrives
+DRAWDOWN_ANCHOR = 0.155                  # ~20% FI once the portfolio funds spending
+PRESERVATION_GLIDE_YEARS = 3.0           # FI rebuild window ahead of retirement
+
+
+def anchor_sigma_for_phase(years_to_retirement: float | None) -> float:
+    """Phase-aware σ anchor the FI solver targets, derived from years-to-actual-
+    retirement. ``None`` or beyond the rebuild window → the accumulation anchor;
+    inside the window it glides linearly to the preservation anchor; at/after
+    retirement → the drawdown anchor. A LOWER anchor forces MORE fixed income."""
+    if years_to_retirement is None or years_to_retirement >= PRESERVATION_GLIDE_YEARS:
+        return ACCUMULATION_ANCHOR
+    if years_to_retirement <= 0.0:
+        return DRAWDOWN_ANCHOR
+    frac = years_to_retirement / PRESERVATION_GLIDE_YEARS  # 1→accumulation, 0→preservation
+    return round(
+        PRESERVATION_ANCHOR + (ACCUMULATION_ANCHOR - PRESERVATION_ANCHOR) * frac, 4
+    )
+
+
 def derive_fi_weight(
     *,
     anchor_sigma: float = SIGMA_DIVERSIFIED,
@@ -407,15 +433,25 @@ def derive_fi_weight(
     offset (a higher sourced sigma forces more FI)."""
     alt_label = _ALTERNATIVES_LABEL if alternatives_pct > 0 else None
     alt_sigma = alternatives_sigma if alternatives_pct > 0 else None
+
+    def clears(weight: float) -> bool:
+        weights = _renormalise(
+            nvda_pct=nvda_pct, fi_pct=weight, alternatives_pct=alternatives_pct
+        )
+        return _blended_sigma_for(
+            weights, alt_label=alt_label, alt_sigma=alt_sigma
+        ) <= (anchor_sigma + 1e-9)
+
     fi = fi_lo
     while fi <= fi_hi:
-        weights = _renormalise(
-            nvda_pct=nvda_pct, fi_pct=fi, alternatives_pct=alternatives_pct
-        )
-        if _blended_sigma_for(weights, alt_label=alt_label, alt_sigma=alt_sigma) <= (
-            anchor_sigma + 1e-9
-        ):
-            return round(fi, 2)
+        if clears(fi):
+            # Revalidate the 2dp-ROUNDED return: rounding the raw solver value down
+            # (possible when fi_step < 0.01) could land just under the anchor again,
+            # so bump by 0.01 until the value we actually return clears.
+            candidate = round(fi, 2)
+            while candidate <= fi_hi and not clears(candidate):
+                candidate = round(candidate + 0.01, 2)
+            return candidate
         fi += fi_step
     return round(fi_hi, 2)
 
@@ -434,9 +470,10 @@ _FI_CASH = AllocationClass(
         "from interest, not forced equity sales, in a strong-shekel or down year."
     ),
     dissent=(
-        "FI was the panel's most-contested class (8/13/24/29). The reconciled 16% "
-        "blends ABOVE the 0.18 anchor (P@95 at age 47 ~= 89.5% → age slips to 48); "
-        "the weight is DERIVED up to the anchor instead so age 47 stays consistent."
+        "FI was the panel's most-contested class (8/13/24/29). It is DERIVED, not "
+        "asserted: the minimum weight at which the book's covariance-blended sigma "
+        "sits on the phase-aware anchor. In accumulation (salary = safety net) that "
+        "is ~8%; the sleeve rebuilds toward ~15% as retirement nears."
     ),
     instruments=(
         AllocationInstrument(
@@ -497,17 +534,25 @@ def build_target_allocation(
     anchor_sigma: float = SIGMA_DIVERSIFIED,
     nvda_pct: float = NVDA_TARGET_PCT,
     alternatives_sleeve: AlternativesSleeveDecision | None = None,
+    years_to_retirement: float | None = None,
     fi_step: float = 0.01,
     deployable_nis: float | None = None,
 ) -> TargetAllocation:
     """Assemble the canonical target allocation with the FI weight derived to the
-    steady-state sigma anchor. Pure: no DB, no clock.
+    steady-state sigma anchor via the covariance-aware blend. Pure: no DB, no clock.
+
+    ``years_to_retirement`` selects the phase-aware anchor (see
+    ``anchor_sigma_for_phase``): when supplied it OVERRIDES ``anchor_sigma`` so the
+    defensive sleeve rebuilds as retirement nears. When omitted the book is sized
+    at the explicit ``anchor_sigma`` (default = the accumulation anchor).
 
     ``alternatives_sleeve`` is the TEAM's verified, sized decision. When ``None``
     (or a 0% decision) there is NO alternatives class and the book is the
     six-equity + NVDA + FI baseline. When supplied, its ``target_pct`` is held as
     a fixed policy weight (subtracted before equity renorm) and its SOURCED
     ``sleeve_sigma`` flows into the FI solver."""
+    if years_to_retirement is not None:
+        anchor_sigma = anchor_sigma_for_phase(years_to_retirement)
     alternatives_pct = (
         alternatives_sleeve.target_pct
         if (alternatives_sleeve and alternatives_sleeve.target_pct > 0)
@@ -591,16 +636,18 @@ def build_target_allocation(
         f"deconcentration. Total equity ~{100 - fi_pct - alternatives_pct:.0f}% (return "
         f"engine + income/quality core + international + a min-vol damper), NVDA "
         f"{nvda_pct:.0f}% just under the 13% cap, {alts_clause}FI/cash {fi_pct:.1f}% "
-        f"DERIVED to the {anchor_sigma} steady-state sigma anchor (blended sigma "
-        f"{blended:.4f}). FI is derived rather than asserted "
-        f"because the panel's contested 16% estimate blends above the anchor and would push "
-        f"the earliest-safe age to 48; sized to the anchor it holds at 47."
+        f"DERIVED as the minimum weight at which the COVARIANCE-blended sigma "
+        f"{blended:.4f} sits on the {anchor_sigma} anchor. The anchor is phase-aware: "
+        f"in accumulation (salary covers expenses, no withdrawals) it is the 0.18 "
+        f"diversified steady-state, sized to a low single-digit FI; it glides down "
+        f"to rebuild FI toward ~15% as actual retirement nears."
     )
     residual = (
-        "FI sizing — derived to the 0.18 anchor (NVDA fixed, 70/30 cash/short-IG). "
-        "Caveats: the engine blends class sigmas linearly (no correlation credit → "
-        "conservative-leaning) and holds mu_real constant regardless of FI (sees the "
-        "volatility benefit, not the return drag). | Strategic-NVDA 10-13 band, Ariel "
+        "FI sizing — derived to the phase anchor via the covariance blend (NVDA fixed, "
+        "70/30 cash/short-IG). Caveats: correlation tiers are documented strategic "
+        "long-run estimates (an adversarial reviewer can reconcile them in sigma_glidepath), "
+        "and the MC holds mu_real constant regardless of FI (sees the volatility benefit, "
+        "not the return drag). | Strategic-NVDA 10-13 band, Ariel "
         "chose 12. | FX hedge not fully neutralised at portfolio level — even with "
         "International 12 + the ILS cash tranche, most of the book stays USD-correlated. "
         "| Implementation: deploy NEW NVDA-proceeds cash into the target classes; do NOT "

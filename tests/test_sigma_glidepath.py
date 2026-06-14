@@ -5,7 +5,10 @@ import pytest
 
 from argosy.services.sigma_glidepath import (
     DEFAULT_SIGMA_FLAT,
+    KNOWN_CORR_CLASSES,
     SigmaCurve,
+    class_correlation,
+    covariance_sigma,
     interpolate_sigma_series,
     map_glidepath_class_to_sigma_class,
     sigma_from_composition,
@@ -91,16 +94,17 @@ class TestMapGlidepathClassExclusionAndLowVol:
 
 class TestSigmaFromComposition:
     def test_today_nvda_heavy_higher_than_planned(self) -> None:
-        # NVDA 65% + Growth 20% + Cash 15% → 0.3315
+        # Covariance blend (ρ<1): NVDA 65% + Growth 20% + Cash 15% → 0.3174
+        # (NVDA at 65% dominates, so the correlation credit is small here).
         today = sigma_from_composition(
             {"individual stocks": 65.0, "growth": 20.0, "cash": 15.0}
         )
-        # NVDA 15%, Growth 60%, Defensive 25% → 0.1905
+        # NVDA 15%, Growth 60%, Defensive 25% → 0.1626 (diversified → larger credit)
         planned = sigma_from_composition(
             {"nvda": 15.0, "growth": 60.0, "defensive": 25.0}
         )
-        assert today == pytest.approx(0.3315, abs=0.001)
-        assert planned == pytest.approx(0.1905, abs=0.001)
+        assert today == pytest.approx(0.3174, abs=0.001)
+        assert planned == pytest.approx(0.1626, abs=0.001)
         assert planned < today
 
     def test_empty_composition_defaults_to_diversified(self) -> None:
@@ -109,6 +113,47 @@ class TestSigmaFromComposition:
     def test_renormalizes_off_total(self) -> None:
         # Sum = 50; renormalize → all-NVDA → 0.45
         assert sigma_from_composition({"nvda": 50.0}) == pytest.approx(0.45)
+
+
+class TestCovarianceModel:
+    """The blend is covariance-aware: σ_p = sqrt(wᵀΣw). These gate the
+    correlation matrix (codex methodology review guardrails)."""
+
+    def test_correlation_matrix_is_psd(self) -> None:
+        # A correlation matrix that isn't positive-semidefinite can produce a
+        # negative variance (imaginary sigma). Assert every eigenvalue >= 0.
+        import numpy as np
+
+        classes = sorted(KNOWN_CORR_CLASSES)
+        m = np.array(
+            [[class_correlation(a, b) for b in classes] for a in classes]
+        )
+        assert np.allclose(m, m.T)  # symmetric
+        eigs = np.linalg.eigvalsh(m)
+        assert eigs.min() >= -1e-9, f"correlation matrix not PSD: min eig {eigs.min()}"
+
+    def test_covariance_is_at_or_below_linear_upper_bound(self) -> None:
+        # ρ<=1 everywhere ⇒ the covariance blend never EXCEEDS the linear (ρ=1)
+        # weighted average for the same book.
+        items = [
+            ("concentrated_equity", 12.0, 0.45),
+            ("us_equity", 50.0, 0.18),
+            ("intl_equity", 13.0, 0.20),
+            ("bonds", 10.0, 0.06),
+            ("cash", 15.0, 0.02),
+        ]
+        total = sum(w for _, w, _ in items)
+        linear = sum((w / total) * s for _, w, s in items)
+        assert covariance_sigma(items) <= linear + 1e-9
+
+    def test_single_class_returns_its_own_sigma(self) -> None:
+        assert covariance_sigma([("us_equity", 30.0, 0.18)]) == pytest.approx(0.18)
+
+    def test_unknown_pair_falls_back_to_conservative_unit_correlation(self) -> None:
+        # Codex guardrail: an unmodeled class must NOT silently take a mid ρ; it
+        # falls back to ρ=1.0 (the conservative linear bound).
+        assert class_correlation("totally_unknown", "us_equity") == 1.0
+        assert class_correlation("us_equity", "bonds") == 0.10  # a modeled pair
 
 
 class TestInterpolateSigmaSeries:
