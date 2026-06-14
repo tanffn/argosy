@@ -77,14 +77,20 @@ def default_individual_holdings(session: Session, user_id: str) -> list[dict[str
     each with its book weight and the plan's stated thesis/role for the name."""
     from argosy.services import instrument_reference as iref
     from argosy.services.allocation_engine import tradeable_holdings
-    from argosy.services.allocation_glidepath import _latest_portfolio_snapshot
+    from argosy.services.portfolio_snapshot_store import (
+        get_latest_snapshot_row,
+        row_to_snapshot,
+    )
     from argosy.services.target_allocation_doc import load_plan_target_allocation
     from argosy.state.queries import get_current_plan
 
-    snap = _latest_portfolio_snapshot(session, user_id)
-    if snap is None:
+    row = get_latest_snapshot_row(session, user_id)
+    if row is None:
         return []
-    holdings, _cash = tradeable_holdings(snap)
+    # The snapshot ROW stores positions as JSON; tradeable_holdings reads a
+    # ``.positions`` relationship, so convert the row first (the same path the
+    # deploy route uses) — reading the row directly yields an empty book.
+    holdings, _cash = tradeable_holdings(row_to_snapshot(row))
     total = sum(v for v in holdings.values() if v > 0) or 1.0
 
     # Plan thesis per symbol: NVDA carries the strategic-single-stock rationale;
@@ -119,8 +125,9 @@ def default_individual_holdings(session: Session, user_id: str) -> list[dict[str
 
 
 def _price_summary(bars: list) -> dict[str, Any]:
-    """Reduce a year of OHLCV bars to {last, 1m/3m return, off-52w-high}."""
-    closes = [c for c in (getattr(b, "close", None) for b in bars) if c]
+    """Reduce a year of EOD bars (dicts keyed 'Close') to {last, 1m/3m return,
+    off-52w-high}."""
+    closes = [c for c in (b.get("Close") for b in bars if isinstance(b, dict)) if c]
     if not closes:
         return {}
     last = closes[-1]
@@ -158,9 +165,9 @@ def default_gather_feeds(holding: dict[str, Any], *, now: datetime) -> dict[str,
         except Exception as exc:  # noqa: BLE001 — feed outage is non-fatal
             log.warning("thesis_monitor.feed.news_failed", ticker=ticker, error=str(exc))
         try:
-            from argosy.adapters.data.yfinance_adapter import YfinanceAdapter
-            bars = await YfinanceAdapter().get_ohlcv(ticker, price_start, end) or []
-            bundle["price"] = _price_summary(bars)
+            from argosy.adapters.data.yfinance_adapter import YFinanceAdapter
+            eod = await YFinanceAdapter().get_eod_prices([ticker], price_start, end) or {}
+            bundle["price"] = _price_summary(eod.get(ticker, []))
         except Exception as exc:  # noqa: BLE001
             log.warning("thesis_monitor.feed.price_failed", ticker=ticker, error=str(exc))
         try:

@@ -5,7 +5,18 @@ from __future__ import annotations
 import pytest
 
 from argosy.agents.thesis_monitor import HoldingThesisAssessment, ThesisMonitorReport
-from argosy.orchestrator.loops.thesis_monitor import ThesisMonitorLoop
+from argosy.orchestrator.loops.thesis_monitor import ThesisMonitorLoop, _price_summary
+
+
+def test_price_summary_reduces_eod_bars() -> None:
+    # Bars are dicts keyed 'Close' (the YFinanceAdapter.get_eod_prices shape).
+    bars = [{"Close": float(c)} for c in range(100, 100 + 80)]  # 80 rising days
+    s = _price_summary(bars)
+    assert s["last"] == 179.0
+    assert s["ret_1m_pct"] == pytest.approx(100.0 * (179 / 158 - 1), abs=0.1)  # 21d back
+    assert s["off_52w_high_pct"] == 0.0  # last == max (monotone rising)
+    assert _price_summary([]) == {}
+    assert _price_summary([{"no_close": 1}]) == {}
 
 
 class _FakeSession:
