@@ -268,6 +268,49 @@ def test_derived_composition_drives_a_two_sided_glide() -> None:
 
 
 # --------------------------------------------------------------------------
+# Fix A: a composition failure must never cost us the FRESH target — only the
+# glide q0 anchor is borrowed from the prior plan. (The concentration analyst's
+# output can fail validation, blocking today's composition; the deterministic
+# end-state target must NOT be sacrificed to a stale carried-forward allocation.)
+# --------------------------------------------------------------------------
+
+def test_doc_build_emits_fresh_target_with_borrowed_anchor_on_comp_failure(monkeypatch) -> None:
+    import argosy.services.target_allocation_doc as tad
+    import argosy.state.queries as queries
+    from argosy.services.allocation_plan import build_target_allocation
+
+    # Prior plan: a (deliberately stale) target but a valid glide q0 anchor.
+    prior_doc = build_target_allocation_doc(
+        today=date(2026, 6, 12), today_composition=_TODAY_FULL_BOOK
+    )
+    prior = _PriorPlan(prior_doc.model_dump_json(), pid=36)
+
+    monkeypatch.setattr(tad, "load_full_book_today_composition", lambda *_a, **_k: None)
+    monkeypatch.setattr(queries, "get_current_plan", lambda *_a, **_k: prior)
+    monkeypatch.setattr(tad, "_deconcentration_quarters", lambda *_a, **_k: 8)
+
+    doc = tad.build_plan_target_allocation_doc(None, "ariel", 99, date(2026, 6, 14))
+    assert doc is not None
+    fresh = build_target_allocation()
+    # FRESH end-state target (current engine: phase-aware FI, an EM sleeve), NOT
+    # the prior doc's target carried forward wholesale.
+    assert doc.fi_pct == pytest.approx(fresh.fi_pct, abs=0.01)
+    assert any(c.label == "Emerging-markets equity" for c in doc.classes)
+    # The glide q0 is borrowed from the prior plan (the anchor) and still sums ~100.
+    assert sum(doc.glide[0].composition_pct_by_class.values()) == pytest.approx(100.0, abs=0.5)
+    assert "glide q0 anchored on the prior plan" in doc.provenance
+
+
+def test_doc_build_returns_none_when_no_anchor_at_all(monkeypatch) -> None:
+    import argosy.services.target_allocation_doc as tad
+    import argosy.state.queries as queries
+
+    monkeypatch.setattr(tad, "load_full_book_today_composition", lambda *_a, **_k: None)
+    monkeypatch.setattr(queries, "get_current_plan", lambda *_a, **_k: None)
+    assert tad.build_plan_target_allocation_doc(None, "ariel", 99, date(2026, 6, 14)) is None
+
+
+# --------------------------------------------------------------------------
 # resolve_target_allocation_json — persistence-time carry-forward fallback.
 # A transient build failure must NOT silently persist NULL (the draft-36
 # 422 regression): it carries forward the prior CURRENT plan's canonical doc.

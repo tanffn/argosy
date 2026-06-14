@@ -364,25 +364,63 @@ def _deconcentration_quarters(
     return default_quarters
 
 
+def _prior_glide_q0(db: "Session", user_id: str) -> dict[str, float] | None:
+    """The prior CURRENT plan's last-good glide q0 (today's full-book composition,
+    summing to ~100), or ``None``. Used as a fallback ANCHOR only — never as a
+    fallback TARGET."""
+    from argosy.state.queries import get_current_plan
+
+    prior = get_current_plan(db, user_id)
+    if prior is None:
+        return None
+    doc = load_plan_target_allocation(prior)
+    if doc is None or not doc.glide:
+        return None
+    q0 = dict(doc.glide[0].composition_pct_by_class)
+    return q0 or None
+
+
 def build_plan_target_allocation_doc(
     db: "Session", user_id: str, decision_run_id: int, today: date,
     *, alternatives_sleeve: "object | None" = None,
 ) -> TargetAllocationDoc | None:
     """The DB-aware entry T1.5/backfill call: derive today's composition then
-    build the canonical doc, or ``None`` when the composition can't be derived.
+    build the canonical doc, or ``None`` when no anchor at all can be derived.
+
+    The END-STATE target is DETERMINISTIC (``build_target_allocation`` reads no
+    DB and no LLM output), so it must never go stale. Only today's composition —
+    the glide's q0 ANCHOR — needs the snapshot + concentration report. When those
+    are transiently unavailable (e.g. the concentration analyst's output failed
+    validation this run, so ``concentration.nvda_current_pct`` won't resolve), we
+    DO NOT abandon the fresh target and let the caller carry forward a stale one:
+    we borrow the prior CURRENT plan's last-good glide q0 as the anchor and still
+    emit the FRESH target with a slightly-stale transition start (provenance
+    stamped). Only when there is no prior anchor either do we return ``None``.
 
     The deconcentration glide spans the optimizer-chosen sell-down horizon
     (T4.2, :func:`_deconcentration_quarters`) instead of a fixed 2-year taper.
     ``alternatives_sleeve`` is the team's verified sleeve decision (or None for no
     sleeve), threaded into the engine."""
     comp = load_full_book_today_composition(db, user_id, decision_run_id)
+    stale_anchor = False
     if comp is None:
-        return None
+        comp = _prior_glide_q0(db, user_id)
+        if comp is None:
+            return None
+        stale_anchor = True
     quarters = _deconcentration_quarters(db, user_id, today)
-    return build_target_allocation_doc(
+    doc = build_target_allocation_doc(
         today=today, today_composition=comp, quarters=quarters,
         alternatives_sleeve=alternatives_sleeve,
     )
+    if stale_anchor:
+        # The TARGET is this-run-fresh; only the glide's q0 start is borrowed.
+        doc.provenance = (
+            f"{doc.provenance} | glide q0 anchored on the prior plan "
+            f"(this run's snapshot/concentration composition was unavailable; "
+            f"the end-state target is freshly derived)"
+        )
+    return doc
 
 
 def _strip_stale_alternatives(doc: "TargetAllocationDoc") -> None:
