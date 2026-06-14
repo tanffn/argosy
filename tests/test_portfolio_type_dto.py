@@ -23,6 +23,7 @@ def test_curated_cashlike_etf_keeps_estate_flag_even_with_cash_source_type():
     assert pos.estate_safe is False           # exposed — NOT suppressed to None
     assert pos.classified is True
     assert pos.type_label == "ETF · T-Bill"
+    assert pos.name == "iShares 0-3 Month Treasury Bond ETF"  # description line
     assert dto.classification_warnings == []
 
 

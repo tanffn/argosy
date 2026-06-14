@@ -242,6 +242,62 @@ def estate_safe_for(symbol: str, details: str = "") -> bool | None:
     return ref.estate_safe if ref is not None else None
 
 
+# Plain-English instrument names — the human-readable "description line" under
+# the cryptic ticker on the per-account table. NOT estate-critical (kept as a
+# separate map so it never bloats the estate-bearing reference rows). Add a name
+# when a holding enters the book; a missing name simply renders no second line.
+_INSTRUMENT_NAMES: dict[str, str] = {
+    "NVDA": "NVIDIA",
+    "AMD": "Advanced Micro Devices",
+    "GOOG": "Alphabet (Class C)",
+    "GOOGL": "Alphabet (Class A)",
+    "AMZN": "Amazon",
+    "META": "Meta Platforms",
+    "TSLA": "Tesla",
+    "SOFI": "SoFi Technologies",
+    "RKT": "Rocket Companies",
+    "BRK/B": "Berkshire Hathaway",
+    "BRK.B": "Berkshire Hathaway",
+    "BMY": "Bristol-Myers Squibb",
+    "VOO": "Vanguard S&P 500 ETF",
+    "VTI": "Vanguard Total US Market ETF",
+    "CSPX": "iShares Core S&P 500 (UCITS)",
+    "SPMV": "iShares S&P 500 Min-Volatility (UCITS)",
+    "XZEW": "Xtrackers S&P 500 Equal-Weight ESG",
+    "QQQM": "Invesco Nasdaq-100 ETF",
+    "CNDX": "iShares Nasdaq-100 (UCITS)",
+    "SCHG": "Schwab US Large-Cap Growth",
+    "SPMO": "Invesco S&P 500 Momentum",
+    "R1GR": "Russell 1000 Growth (UCITS)",
+    "SCHD": "Schwab US Dividend Equity",
+    "FUSA": "Fidelity US Quality Income (UCITS)",
+    "DPYA": "iShares Dev Markets Property Yield (UCITS)",
+    "VTV": "Vanguard Value ETF",
+    "EXUS": "World ex-US equity (UCITS)",
+    "FWRA": "Invesco FTSE All-World (UCITS)",
+    "ACWD": "SPDR MSCI ACWI (UCITS)",
+    "MSCI WORLD": "MSCI World tracker",
+    "STOXX EUROPE 600": "IBI STOXX Europe 600 tracker",
+    "EIMI": "iShares Core MSCI EM IMI (UCITS)",
+    "IUHC": "iShares S&P 500 Health Care (UCITS)",
+    "O": "Realty Income",
+    "IWDP": "iShares Dev Markets Property Yield (UCITS)",
+    "SGOV": "iShares 0-3 Month Treasury Bond ETF",
+    "IB01": "iShares Treasury Bond 0-1yr (UCITS)",
+    "IBTA": "iShares Treasury Bond 1-3yr (UCITS)",
+    "IBIT": "iShares Bitcoin Trust",
+}
+
+
+def name_for(symbol: str, details: str = "") -> str:
+    """Plain-English name for the cryptic ticker (the per-account description
+    line), or "" when uncurated. TASE Hebrew-ticker holdings have no latin
+    ticker → name keyed off the Hebrew detection in lookup() isn't attempted;
+    they show their (Hebrew) details verbatim already."""
+    sym = (symbol or "").upper().strip()
+    return _INSTRUMENT_NAMES.get(sym, "")
+
+
 def type_label(symbol: str, details: str = "", fallback: str = "") -> str:
     """The canonical per-account "Type" label: ``"<structure> · <sector>"``
     (e.g. ``"Stock · Tech"``, ``"ETF · Broad Index"``, ``"REIT · Real Estate"``).
@@ -262,5 +318,5 @@ def type_label(symbol: str, details: str = "", fallback: str = "") -> str:
 
 
 __all__ = ["InstrumentRef", "lookup", "estate_safe_for", "type_label",
-           "REGION_US", "REGION_ISRAEL", "REGION_EUROPE", "REGION_EM",
-           "REGION_GLOBAL", "REGION_OTHER"]
+           "name_for", "REGION_US", "REGION_ISRAEL", "REGION_EUROPE",
+           "REGION_EM", "REGION_GLOBAL", "REGION_OTHER"]

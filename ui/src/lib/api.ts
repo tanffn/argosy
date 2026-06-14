@@ -252,6 +252,8 @@ export interface PortfolioPosition {
   asset_type: string;
   /** Canonical "structure · exposure" Type label from the §20.4 reference. */
   type_label: string;
+  /** Plain-English instrument name (the description line under the ticker). */
+  name: string;
   details: string;
   symbol: string;
   shares: number | null;

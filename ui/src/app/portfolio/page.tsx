@@ -364,7 +364,14 @@ export default function PortfolioPage() {
                       key={`${p.location}-${p.symbol || p.details}-${i}`}
                       className="border-b border-border/40"
                     >
-                      <td className="py-1.5">{symbolLabel}</td>
+                      <td className="py-1.5">
+                        <div>{symbolLabel}</div>
+                        {!isCash && p.name && (
+                          <div className="text-[11px] text-muted-foreground/70 font-normal">
+                            {p.name}
+                          </div>
+                        )}
+                      </td>
                       <td className="py-1.5 text-muted-foreground">
                         {p.type_label || p.asset_type}
                       </td>

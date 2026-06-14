@@ -125,6 +125,15 @@ def test_type_label_is_structure_dot_exposure():
     assert type_label("ZZZ", "mystery", fallback="Growth") == "Growth"
 
 
+def test_name_for_plain_english_description_line():
+    from argosy.services.instrument_reference import name_for
+    assert name_for("BRK/B") == "Berkshire Hathaway"
+    assert name_for("META") == "Meta Platforms"
+    assert name_for("SOFI") == "SoFi Technologies"
+    assert name_for("VOO") == "Vanguard S&P 500 ETF"
+    assert name_for("ZZZUNKNOWN") == ""   # uncurated → no second line
+
+
 def test_codex_corrections_megacap_gics_sectors():
     # Mega-caps are NOT all "Tech" (codex GICS review).
     assert lookup("GOOG", "x").sector == "Communication Services"

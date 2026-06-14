@@ -47,6 +47,7 @@ class PositionDTO(BaseModel):
     currency: str
     asset_type: str            # raw/normalized source Type (drives is-cash / is-real-estate logic)
     type_label: str = ""       # canonical "structure · exposure" from the §20.4 reference (display)
+    name: str = ""             # plain-English instrument name (the cryptic-ticker description line)
     details: str
     symbol: str
     shares: float | None
@@ -157,6 +158,7 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
         type_label = instrument_reference.type_label(
             p.symbol or "", p.details or "", fallback=asset_type
         )
+        name = instrument_reference.name_for(p.symbol or "", p.details or "")
         # Fail-loud: a holding with a real latin ticker that the reference
         # doesn't know is un-curated — its estate-safety is unknown (a silent
         # US-situs gap). Physical cash / real-estate rows (no real ticker) are
@@ -171,6 +173,7 @@ def _snapshot_to_dto(snap) -> PortfolioSnapshotDTO:
                 currency=p.currency,
                 asset_type=asset_type,
                 type_label=type_label,
+                name=name,
                 details=p.details,
                 symbol=p.symbol,
                 shares=p.shares,
