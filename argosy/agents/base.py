@@ -188,6 +188,10 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # structured action suggestions. NO auto-execution — the agent
     # RECORDS only; user reviews via /proposals. No Haiku fallback.
     "action_proposer": "claude-opus-4-7",
+    # Per-holding thesis monitor (LLM money path). Opus per binding preference
+    # "accuracy over LLM cost"; high bar, RECORDS only (escalations flow through
+    # the monitor-flag → action_proposer pipeline). No Haiku fallback.
+    "thesis_monitor": "claude-opus-4-7",
     # Long-form Discord alpha-report analyst — replaces the regex
     # extract_alpha_call_from_text for posts > 500 chars / > 5 newlines.
     # Opus per binding preference "accuracy over LLM cost" — the agent
@@ -287,6 +291,7 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     # load-bearing). High thinking effort lets the LLM weigh dedup +
     # related_history + plan context before emitting.
     "action_proposer":         "high",
+    "thesis_monitor":          "high",
     # Alpha-report analyst — long-form Discord posts (Meet Kevin
     # Morning Brief style). High thinking lets the LLM weigh tone,
     # per-ticker conviction, structural picks, cautions, and index
@@ -441,6 +446,7 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     # the thinking ceiling — Anthropic's adaptive thinking picks its
     # own internal budget under this cap.
     "action_proposer": 8000,
+    "thesis_monitor": 16000,
     # Alpha-report analyst — output is a structured analysis with up to
     # ~20 ticker_signals + ~10 structural_picks + summary + cautions +
     # index_targets. 12K is a generous ceiling for typical reports

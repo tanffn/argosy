@@ -480,6 +480,28 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # ThesisMonitorLoop — per-holding thesis monitor. 09:00 IDT daily
+        # (after the US close), source_kind='monitor'. Escalations flow through
+        # the same monitor-flag → action_proposer pipeline as the state observer.
+        try:
+            from argosy.orchestrator.loops.thesis_monitor import (  # noqa: PLC0415
+                ThesisMonitorLoop,
+                thesis_monitor_metadata,
+            )
+
+            thesis_loop = ThesisMonitorLoop(enabled=True, user_id="ariel")
+            scheduler.register_loop(thesis_loop)
+            registry.register(
+                job=thesis_loop,
+                metadata=thesis_monitor_metadata(),
+            )
+            log.info("scheduler.thesis_monitor_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.thesis_monitor_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Sprint C commit #4 — PredictionsEvaluatorLoop. Gated on
         # ``cadences.predictions_evaluator.enabled`` (default True).
         # 03:30 IDT daily alongside job_runs_retention — both run
