@@ -36,6 +36,11 @@ from argosy.services.wealth_dashboard import _latest_snapshot
 _SIGMA_BY_CLASS: dict[str, float] = {
     "concentrated_equity": 0.45,  # single-stock heavy (NVDA, TSLA, etc.)
     "us_equity": 0.18,             # diversified US (S&P 500)
+    "us_growth_equity": 0.21,      # large-cap growth tilt (R1GR/IWF-like): higher
+                                   # beta (~1.15) + mega-cap concentration than the
+                                   # cap-weighted market, so modeled ABOVE plain
+                                   # us_equity (0.18) — folding it at 0.18 understated
+                                   # the growth sleeve's risk.
     "low_vol_equity": 0.13,        # min-vol / quality-defensive equity (USMV-like):
                                    # ~0.11-0.13 realized vs ~0.15-0.18 for the cap-
                                    # weighted market — a real equity sleeve, NOT the

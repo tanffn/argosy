@@ -19,7 +19,7 @@ a magic constant:
     breach the do-not-re-concentrate ceiling.
 
   * **Fixed-income / cash** weight is DERIVED, not asserted. FI is sized as the
-    MINIMUM weight (NVDA held fixed, the six other sleeves kept at their agreed
+    MINIMUM weight (NVDA held fixed, the other equity sleeves kept at their agreed
     ratios, FI split cash/short-IG bonds by ``CASH_FRAC_OF_FI``) at which the
     allocation's COVARIANCE-blended sigma (``sigma_glidepath.covariance_sigma``)
     sits on the phase-aware anchor. The anchor is risk-tolerance POLICY: in the
@@ -79,7 +79,7 @@ CASH_FRAC_OF_FI = 0.70
 # the fund manager) and supplied to the engine as an AlternativesSleeveDecision.
 # There is no fixed % and no fixed instrument list here: a 0% sleeve (no
 # decision) is a valid outcome and produces NO alternatives class. The engine
-# holds the supplied sleeve as a fixed policy weight subtracted before the six
+# holds the supplied sleeve as a fixed policy weight subtracted before the
 # equity sleeves are renormalised; FI remains the sigma-solver and absorbs the
 # sleeve's SOURCED sigma to keep the blended sigma on the anchor.
 _ALTERNATIVES_LABEL = "Alternatives"
@@ -93,7 +93,7 @@ _ALTERNATIVES_SNAPSHOT_CATEGORY = "Alternative"
 @dataclass(frozen=True)
 class _PanelSleeve:
     label: str            # engine-safe label (maps 1:1 onto a sigma-class)
-    ratio: float          # agreed relative weight among the 6 equity/alts sleeves
+    ratio: float          # agreed relative weight among the equity/alts sleeves
     sigma_class: str
     snapshot_category: str  # portfolio-snapshot category for today's anchor
     agreement: str
@@ -105,7 +105,7 @@ class _PanelSleeve:
 _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     _PanelSleeve(
         label="US broad-market core",
-        ratio=28.0,
+        ratio=31.0,
         instruments=(
             AllocationInstrument(
                 symbol="CSPX", role="primary", weight_within_class_pct=100.0, domicile="IE",
@@ -133,7 +133,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     ),
     _PanelSleeve(
         label="Dividend-quality income",
-        ratio=19.0,
+        ratio=11.0,
         instruments=(
             AllocationInstrument(
                 symbol="FUSA", role="primary", weight_within_class_pct=100.0, domicile="IE",
@@ -153,6 +153,9 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         snapshot_category="Dividend",
         agreement="moderate",
         rationale=(
+            "Trimmed to ~11% (from a ~17-18% over-weight) to fund the higher growth "
+            "tilt for the accumulation-phase wealth-maximization mandate, while "
+            "retaining the quality/profitability drawdown cushion. "
             "US quality-factor sleeve (the quality/profitability tilt that historically "
             "cushions drawdowns) implemented via the ACCUMULATING UCITS FUSA — "
             "deliberately accumulating, NOT distributing: for an Israeli holder a "
@@ -172,7 +175,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     ),
     _PanelSleeve(
         label="International developed (ex-US)",
-        ratio=12.0,
+        ratio=11.0,
         instruments=(
             AllocationInstrument(
                 symbol="EXUS", role="primary", weight_within_class_pct=100.0, domicile="IE",
@@ -190,9 +193,10 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         agreement="moderate",
         rationale=(
             "Lifted hard from ~2% — the book's biggest diversification gap. Held at "
-            "12 because ex-US developed equity hedges USD-CONCENTRATION but NOT the "
-            "named shekel-appreciation risk (it is EUR/JPY/GBP, not NIS), and the "
-            "engine models its sigma (0.20) above US equity (0.18)."
+            "~11 (with emerging markets split into its own sleeve) because ex-US "
+            "developed equity hedges USD-CONCENTRATION but NOT the named shekel-"
+            "appreciation risk (it is EUR/JPY/GBP, not NIS), and the engine models "
+            "its sigma (0.20) above US equity (0.18)."
         ),
         dissent=(
             "Direction (lift from ~2%) is the strongest cross-lens agreement; "
@@ -201,31 +205,72 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
         ),
     ),
     _PanelSleeve(
+        label="Emerging-markets equity",
+        ratio=4.0,
+        instruments=(
+            AllocationInstrument(
+                symbol="EIMI", role="primary", weight_within_class_pct=100.0, domicile="IE",
+                rationale=(
+                    "Emerging-markets equity via the Irish UCITS EIMI (iShares Core MSCI "
+                    "EM IMI, Acc, ~0.18% TER), NOT a US-domiciled EM ETF (VWO/IEMG). "
+                    "Broad EM-IMI (large/mid/small) for the growth + diversification "
+                    "breadth the developed-only book was missing; the household already "
+                    "holds EIMI. UCITS domicile keeps it off the US-situs estate base; "
+                    "cite estate_tax_nonresidents.md."
+                ),
+            ),
+        ),
+        sigma_class="emerging_equity",
+        snapshot_category="International",  # EM is bucketed under International today
+        agreement="moderate",
+        rationale=(
+            "Re-added as an explicit ~4% sleeve (the original plan carried EM; the "
+            "prior Argosy target dropped it). EM adds growth and breadth uncorrelated "
+            "enough to earn a place under the covariance blend, at a higher modeled "
+            "sigma (0.25) the FI solver accounts for. Sized small — it is higher-vol "
+            "and adds some USD/global-cycle beta, not an ILS hedge."
+        ),
+        dissent=(
+            "Magnitude 3-5 contested; EM's higher sigma and governance/FX tail argue "
+            "for a modest sleeve rather than a full market-cap EM weight."
+        ),
+    ),
+    _PanelSleeve(
         label="US growth tilt (ex-NVDA)",
-        ratio=6.0,
+        ratio=13.0,
         instruments=(
             AllocationInstrument(
                 symbol="R1GR", role="primary", weight_within_class_pct=100.0, domicile="IE",
                 rationale=(
                     "US large-cap growth via the Irish UCITS R1GR (iShares Russell 1000 "
                     "Growth, Acc, ~0.18% TER), NOT US-domiciled SCHG. Closest UCITS growth "
-                    "twin; note it is NOT ex-NVDA (the index still holds NVDA), a small "
-                    "overlap accepted given the sleeve's 6% size. UCITS domicile avoids "
-                    "US-situs estate exposure; cite estate_tax_nonresidents.md."
+                    "twin; note it is NOT literally ex-NVDA — the Russell 1000 Growth index "
+                    "still holds NVDA (~14% of the fund), so at this ~13% sleeve weight it "
+                    "adds ~1.8% INDIRECT NVDA on top of the direct 12% strategic position. "
+                    "That index look-through (plus NVDA inside CSPX/FUSA) means economic "
+                    "NVDA exceeds the 12% DIRECT ceiling — surfaced as an open item, since "
+                    "no UCITS true-ex-NVDA growth ETF exists. UCITS domicile avoids US-situs "
+                    "estate exposure; cite estate_tax_nonresidents.md."
                 ),
             ),
         ),
-        sigma_class="us_equity",
+        sigma_class="us_growth_equity",
         snapshot_category="Growth",
         agreement="moderate",
         rationale=(
-            "Lean SCHG-style sleeve preserving compounding upside, kept small "
-            "because NVDA already supplies concentrated high-beta tech exposure at "
-            "the 12% cap; stacking correlated tech beta re-adds the factor risk the "
-            "deconcentration is meant to shed. Label deliberately avoids the "
-            "'nvda' substring trap so it maps to us_equity, not the 0.45 single-stock."
+            "Raised to ~13% (from a ~6% sliver) as the core of the accumulation-phase "
+            "wealth-maximization mandate: a salaried, no-withdrawal, 5+yr investor is "
+            "under-served by a token growth weight. SCHG-style compounding upside via "
+            "UCITS R1GR. Still bounded below NVDA-stacking territory — NVDA already "
+            "supplies concentrated high-beta tech at the 12% cap, so growth is held "
+            "below the point where correlated tech beta re-adds the factor risk the "
+            "deconcentration sheds. Label deliberately avoids the 'nvda' substring "
+            "trap so it maps to us_growth_equity (0.21), not the 0.45 single-stock."
         ),
-        dissent="Magnitude 4-9; latent split on whether it is redundant with US-core.",
+        dissent=(
+            "Magnitude raised per the rebuild verdict (growth was under-weight for the "
+            "prime directive); upper bound is the NVDA-correlated-beta ceiling."
+        ),
     ),
     _PanelSleeve(
         label="US low-volatility equity",
@@ -255,7 +300,7 @@ _EQUITY_SLEEVES: tuple[_PanelSleeve, ...] = (
     ),
     _PanelSleeve(
         label="Real assets (REIT/TIPS)",
-        ratio=1.0,
+        ratio=2.0,
         instruments=(
             AllocationInstrument(
                 symbol="DPYA", role="primary", weight_within_class_pct=100.0, domicile="IE",
@@ -364,11 +409,11 @@ def _blended_sigma_for(
 def _renormalise(
     *, nvda_pct: float, fi_pct: float, alternatives_pct: float = 0.0
 ) -> dict[str, float]:
-    """Hold NVDA + FI + Alternatives fixed; distribute the rest among the six
+    """Hold NVDA + FI + Alternatives fixed; distribute the rest among the
     equity sleeves at their agreed ratios; split FI into cash + short-IG bonds.
 
     The team-sourced Alternatives weight is subtracted off the book BEFORE the
-    six equity sleeves are sized (it displaces the non-NVDA risky sleeves pro
+    equity sleeves are sized (it displaces the non-NVDA risky sleeves pro
     rata), so a larger sleeve shrinks equity and — via its sigma — indirectly
     forces more FI to hold the anchor. ``alternatives_pct=0`` adds no class."""
     other_total = 100.0 - nvda_pct - fi_pct - alternatives_pct
@@ -548,7 +593,7 @@ def build_target_allocation(
 
     ``alternatives_sleeve`` is the TEAM's verified, sized decision. When ``None``
     (or a 0% decision) there is NO alternatives class and the book is the
-    six-equity + NVDA + FI baseline. When supplied, its ``target_pct`` is held as
+    equity-panel + NVDA + FI baseline. When supplied, its ``target_pct`` is held as
     a fixed policy weight (subtracted before equity renorm) and its SOURCED
     ``sleeve_sigma`` flows into the FI solver."""
     if years_to_retirement is not None:

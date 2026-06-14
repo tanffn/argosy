@@ -22,7 +22,7 @@ class TestMapGlidepathClassToSigmaClass:
             ("NVDA", "concentrated_equity"),
             ("nvidia rsu band", "concentrated_equity"),
             ("Individual Stocks", "concentrated_equity"),
-            ("Growth", "us_equity"),
+            ("Growth", "us_growth_equity"),
             ("Core Equity", "us_equity"),
             ("Dividend", "us_equity"),
             ("Defensive", "bonds"),
@@ -59,10 +59,12 @@ class TestMapGlidepathClassExclusionAndLowVol:
         "label,expected",
         [
             # Caveat 1 — the ex-/non-NVDA trap. An EXCLUSION of the ticker
-            # must NOT classify the sleeve as concentrated single-stock.
-            ("Growth-ex-NVDA", "us_equity"),
-            ("US growth tilt (ex-NVDA)", "us_equity"),
-            ("US-growth (non-NVDA)", "us_equity"),
+            # must NOT classify the sleeve as concentrated single-stock. The
+            # growth-tilt labels resolve to us_growth_equity (0.21), the diversified
+            # exclusion to plain us_equity — neither to the 0.45 single-stock.
+            ("Growth-ex-NVDA", "us_growth_equity"),
+            ("US growth tilt (ex-NVDA)", "us_growth_equity"),
+            ("US-growth (non-NVDA)", "us_growth_equity"),
             ("Diversified equity excluding NVDA", "us_equity"),
             # The genuine single-stock class STILL maps to concentrated.
             ("Strategic single-stock (NVDA)", "concentrated_equity"),
@@ -94,17 +96,17 @@ class TestMapGlidepathClassExclusionAndLowVol:
 
 class TestSigmaFromComposition:
     def test_today_nvda_heavy_higher_than_planned(self) -> None:
-        # Covariance blend (ρ<1): NVDA 65% + Growth 20% + Cash 15% → 0.3174
-        # (NVDA at 65% dominates, so the correlation credit is small here).
+        # Covariance blend (ρ<1), growth modeled at us_growth_equity 0.21:
+        # NVDA 65% + Growth 20% + Cash 15% → 0.3217 (NVDA dominates → small credit).
         today = sigma_from_composition(
             {"individual stocks": 65.0, "growth": 20.0, "cash": 15.0}
         )
-        # NVDA 15%, Growth 60%, Defensive 25% → 0.1626 (diversified → larger credit)
+        # NVDA 15%, Growth 60%, Defensive 25% → 0.1797 (diversified → larger credit)
         planned = sigma_from_composition(
             {"nvda": 15.0, "growth": 60.0, "defensive": 25.0}
         )
-        assert today == pytest.approx(0.3174, abs=0.001)
-        assert planned == pytest.approx(0.1626, abs=0.001)
+        assert today == pytest.approx(0.3217, abs=0.001)
+        assert planned == pytest.approx(0.1797, abs=0.001)
         assert planned < today
 
     def test_empty_composition_defaults_to_diversified(self) -> None:
