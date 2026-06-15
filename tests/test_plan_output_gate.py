@@ -863,6 +863,85 @@ class TestAggregateCrossSurfaceCoherence:
         assert verdict.for_check(GateCheck.CROSS_SURFACE_COHERENCE) == []
 
 
+class TestAggregateFiShockWiring:
+    """Cover the GATE-LEVEL FI-shock wiring through gate_plan_output:
+    `_derive_shock_inputs` reading the four resolver keys (net_worth,
+    fi_target as perpetuity base, fi_total_capital as total, nvda_current_pct
+    as a FRACTION 0-1) and computing nvda_value = net_worth × fraction.
+
+    The leaf functions are unit-tested elsewhere; this exercises the full
+    resolver-derived path so a key-name typo, a perpetuity/total swap, or a
+    fraction-vs-percent ÷100 regression in `_derive_shock_inputs` is caught.
+    """
+
+    @staticmethod
+    def _resolved_2026_06_15():
+        """A real ResolvedPlanNumbers seeded with the 2026-06-15 reality
+        numbers so a −30% NVDA shock breaks the perpetuity base.
+
+        net_worth × nvda_fraction = 11_954_153 × 0.5694 ≈ 6_806_895 NVDA value;
+        a 30% shock removes ~2.04M → shocked NW ≈ 9.91M < 10.39M perpetuity
+        base → perpetuity_reached False, so the unqualified claim must flag.
+        """
+        from argosy.services.plan_numeric_resolver import (
+            ResolvedPlanNumbers,
+            ResolvedValue,
+        )
+
+        def _rv(key: str, value: float, unit: str) -> ResolvedValue:
+            return ResolvedValue(
+                key=key,
+                value=value,
+                unit=unit,
+                status="resolved",
+                source_locator=f"test:{key}",
+                confidence="HIGH",
+            )
+
+        return ResolvedPlanNumbers(values={
+            "portfolio.net_worth_nis": _rv(
+                "portfolio.net_worth_nis", 11_954_153.0, "nis"
+            ),
+            "retirement.fi_target_nis": _rv(
+                "retirement.fi_target_nis", 10_386_133.0, "nis"
+            ),
+            "retirement.fi_total_capital_nis": _rv(
+                "retirement.fi_total_capital_nis", 11_836_133.0, "nis"
+            ),
+            "concentration.nvda_current_pct": _rv(
+                "concentration.nvda_current_pct", 0.5694, "pct"
+            ),
+        })
+
+    def test_gate_fi_shock_fires_when_reached_claim_breaks_under_shock(self):
+        resolved = self._resolved_2026_06_15()
+        horizon_text = {"long": "Capital sufficiency reached at the current mark."}
+        verdict = gate_plan_output(horizon_text, resolved=resolved)
+        viols = verdict.for_check(GateCheck.FI_SHOCK_SUFFICIENCY)
+        assert viols, (
+            "an UNQUALIFIED 'sufficiency reached' claim that the −30% NVDA "
+            "shock breaks must yield a FI_SHOCK_SUFFICIENCY violation through "
+            "gate_plan_output — if empty, the resolver-derived shock inputs "
+            "were not produced (check fired? skipped?). "
+            f"Summary: {verdict.summary()}"
+        )
+
+    def test_gate_fi_shock_silent_when_claim_is_qualified(self):
+        resolved = self._resolved_2026_06_15()
+        # Same breaking shock, but the SAME sentence carries the NVDA-tail
+        # qualifier — the gate-level path must respect the qualifier.
+        horizon_text = {
+            "long": (
+                "Capital sufficiency is reached at the full NVDA mark, but a "
+                "30% NVDA drawdown breaks the perpetuity base."
+            )
+        }
+        verdict = gate_plan_output(horizon_text, resolved=resolved)
+        assert verdict.for_check(GateCheck.FI_SHOCK_SUFFICIENCY) == [], (
+            "a properly qualified claim must NOT fire FI_SHOCK_SUFFICIENCY"
+        )
+
+
 class TestAggregateInputFreshness:
 
     def test_gate_flags_stale_snapshot(self):
