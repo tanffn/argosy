@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
-from argosy.quality.coherence_gate import check_cross_surface_coherence
+from argosy.quality.coherence_gate import (
+    check_cross_surface_coherence,
+    check_fi_sufficiency_under_shock,
+)
 from argosy.quality.gate_types import GateCheck
 
 
@@ -27,3 +30,39 @@ def test_coherence_flags_sign_flip_on_fi_margin():
     art = _art({"fi_margin_signed_nis": [("capital_sufficiency", 118020.0), ("body", -118020.0)]})
     viol = check_cross_surface_coherence(art)
     assert len(viol) == 1 and "fi_margin_signed_nis" in viol[0].detail
+
+
+# --- Task 4: FI sufficiency under NVDA shock ----------------------------------
+
+# −30% NVDA shock drops NW below the perpetuity base (the 2026-06-15 reality).
+_SHOCK_BREAKS = {
+    "base": {"net_worth_nis": 11_954_153, "perpetuity_reached": True, "total_reached": True},
+    "shock_0.30": {"net_worth_nis": 9_911_041, "perpetuity_reached": False, "total_reached": False},
+    "shock_0.50": {"net_worth_nis": 8_550_633, "perpetuity_reached": False, "total_reached": False},
+}
+# A book where the −30% shock still clears the perpetuity base.
+_SHOCK_SURVIVES = {
+    "base": {"net_worth_nis": 20_000_000, "perpetuity_reached": True, "total_reached": True},
+    "shock_0.30": {"net_worth_nis": 17_957_960, "perpetuity_reached": True, "total_reached": True},
+}
+
+
+def test_fi_shock_flags_unqualified_reached_claim_broken_by_tail():
+    text = "Full capital sufficiency = perpetuity + reserve — capital sufficiency reached."
+    viol = check_fi_sufficiency_under_shock(shock_result=_SHOCK_BREAKS, plan_text=text)
+    assert len(viol) == 1
+    assert viol[0].check is GateCheck.FI_SHOCK_SUFFICIENCY
+    assert "perpetuity" in viol[0].detail
+
+
+def test_fi_shock_passes_when_claim_is_qualified():
+    text = (
+        "Capital sufficiency reached, but only at the full NVDA mark: a −30% NVDA "
+        "shock drops net worth below the perpetuity base."
+    )
+    assert check_fi_sufficiency_under_shock(shock_result=_SHOCK_BREAKS, plan_text=text) == []
+
+
+def test_fi_shock_passes_when_shock_survives():
+    text = "Capital sufficiency reached — perpetuity and full target both clear."
+    assert check_fi_sufficiency_under_shock(shock_result=_SHOCK_SURVIVES, plan_text=text) == []

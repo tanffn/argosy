@@ -47,6 +47,13 @@ class GateCheck(str, Enum):
     # no per-surface agent owns. Deterministic — coherence is a property of the
     # whole, not eyeballed by an LLM reviewer.
     CROSS_SURFACE_COHERENCE = "cross_surface_coherence"
+    # Task 4 — the compositional sufficiency check. A plan that asserts "FI
+    # reached" / "capital sufficiency reached" must be robust to its OWN stated
+    # NVDA concentration tail: if marking NVDA down by the plan's tail shock
+    # (−30%) drops net worth below the perpetuity base, the unqualified
+    # "reached" claim is false. Composes the synthesizer's sufficiency claim
+    # with the risk officer's concentration tail — no single agent owns it.
+    FI_SHOCK_SUFFICIENCY = "fi_shock_sufficiency"
 
 
 @dataclass(frozen=True)
