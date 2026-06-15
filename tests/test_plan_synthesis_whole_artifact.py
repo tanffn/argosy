@@ -39,6 +39,7 @@ from argosy.orchestrator.flows.plan_synthesis.whole_artifact_reader import (
 )
 from argosy.state.models import (
     AgentReport as AgentReportRow,
+    DecisionPhase,
     DecisionRun,
     PlanVersion,
     User,
@@ -322,3 +323,36 @@ def test_whole_artifact_reader_block_marks_not_auto_promotable(synth_db, monkeyp
         )
     ).scalars().all()
     assert len(rows) >= 1
+
+    # CROSS-SURFACE CONSISTENCY: the forensic/replay verdict row
+    # ('plan_synthesis.verdict' decision_phases row) must NOT contradict
+    # the gate field. FM approved + reader BLOCK => the audit row must
+    # report the run as NOT approved, matching
+    # decision_run.fund_manager_decision == 'rejected'. Without the fix
+    # the row is built from the stale local `approved=True`, lying about
+    # the run's outcome on the very surface meant to replay it.
+    session.expire_all()
+    verdict_row = session.execute(
+        select(DecisionPhase).where(
+            DecisionPhase.decision_run_id == result.decision_run_id,
+            DecisionPhase.kind == "plan_synthesis.verdict",
+        )
+    ).scalars().first()
+    assert verdict_row is not None, (
+        "expected a 'plan_synthesis.verdict' decision_phases row"
+    )
+    verdict_payload = json.loads(verdict_row.verdict_json)
+    assert verdict_payload["approved"] is False, (
+        "the plan_synthesis.verdict audit row must be consistent with the "
+        "gate: a reader BLOCK that flips fund_manager_decision to 'rejected' "
+        "must record approved=False, not the stale FM-approved local; got "
+        f"approved={verdict_payload['approved']!r}"
+    )
+    # The reasons should explain WHY it is rejected (the reader BLOCK).
+    assert any(
+        "reader" in r.lower() and "block" in r.lower()
+        for r in verdict_payload.get("reasons", [])
+    ), (
+        "the verdict row's reasons must cite the whole-artifact reader BLOCK; "
+        f"got {verdict_payload.get('reasons')!r}"
+    )

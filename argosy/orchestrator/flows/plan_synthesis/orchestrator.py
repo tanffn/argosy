@@ -1268,13 +1268,34 @@ def run_synthesis(
         prior_fm_phase_id: int | None = fm_row[1] if fm_row is not None else None
         fm_ids: list[int] = [fm_report_id] if fm_report_id is not None else []
 
+        # Cross-surface consistency: derive the audit row's approved /
+        # reasons from ``decision_run.fund_manager_decision`` — the SINGLE
+        # source of truth the promotion gate consults — NOT from the stale
+        # local ``approved`` (set off the FM result at line ~1011). A
+        # whole-artifact reader BLOCK can have flipped that field to
+        # "rejected" AFTER the FM approved; the forensic/replay row must
+        # tell the same story as the gate (output-trust doctrine), never
+        # record approved=True while the gate says rejected.
+        gate_decision = decision_run.fund_manager_decision
+        gate_approved = gate_decision == "approved"
+        _reader_blocked = (
+            _reader_verdict is not None
+            and _reader_verdict.overall_assessment == "BLOCK"
+        )
+        _reasons = [
+            f"synthesis completed; draft_id={draft.id}",
+            f"fund_manager verdict: {'approved' if approved else 'rejected'}",
+            f"phase_4 risk verdict text length: {len(risk_verdict)}",
+        ]
+        if not gate_approved and approved and _reader_blocked:
+            # FM approved but the reader tightened the gate — say why.
+            _reasons.append(
+                "whole-artifact reader BLOCK: "
+                f"{len(_reader_verdict.findings)} coherence finding(s)"
+            )
         verdict = FundManagerPlanRevisionDecision(
-            approved=approved,
-            reasons=[
-                f"synthesis completed; draft_id={draft.id}",
-                f"fund_manager verdict: {'approved' if approved else 'rejected'}",
-                f"phase_4 risk verdict text length: {len(risk_verdict)}",
-            ],
+            approved=gate_approved,
+            reasons=_reasons,
             cited_sources=["docs/design/SDD.md#§6.11"],
         )
         asyncio.run(record_negotiation_phase(
