@@ -147,11 +147,24 @@ function formatDuration(start: string, end: string | null): string {
   return `${m}m ${(s - m * 60).toFixed(0)}s`;
 }
 
+/**
+ * The route id is usually a bare decision_run_id ("99"), but deep-links from the
+ * cascade / audit surfaces use the audit token ("plan-synth-99"). Accept both by
+ * taking the trailing integer; returns NaN when there is no parseable id (so the
+ * page shows a clear error instead of firing /api/decisions/NaN/replay → 422).
+ */
+function parseDecisionRunId(raw: string): number {
+  const direct = Number(raw);
+  if (Number.isInteger(direct)) return direct;
+  const m = raw.match(/(\d+)\s*$/);
+  return m ? Number(m[1]) : NaN;
+}
+
 export default function DecisionReplayPage(props: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(props.params);
-  const decisionRunId = Number(id);
+  const decisionRunId = parseDecisionRunId(id);
   const [data, setData] = useState<ReplayResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -163,6 +176,11 @@ export default function DecisionReplayPage(props: {
 
   useEffect(() => {
     let cancelled = false;
+    if (!Number.isFinite(decisionRunId)) {
+      setError(`Invalid decision id "${id}" — expected a run id or a token like "plan-synth-99".`);
+      setLoading(false);
+      return;
+    }
     (async () => {
       try {
         setLoading(true);
@@ -177,10 +195,11 @@ export default function DecisionReplayPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [decisionRunId]);
+  }, [decisionRunId, id]);
 
   useEffect(() => {
     let cancelled = false;
+    if (!Number.isFinite(decisionRunId)) return;
     (async () => {
       try {
         const r = await api.getAgentTree(decisionRunId, USER_ID);
