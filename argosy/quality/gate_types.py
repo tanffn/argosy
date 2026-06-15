@@ -40,6 +40,13 @@ class GateCheck(str, Enum):
     # IPS allocation is a mechanical 100% partition; do not leave it to an LLM
     # reviewer to eyeball.
     IPS_ALLOCATION_SUM = "ips_allocation_sum"
+    # S22 — the same concept (net worth, NVDA weight, FI margin, estate) must
+    # carry the SAME value across every surface the user reads (body, dashboard,
+    # appendices), or carry explicitly distinct labels. Catches the cross-surface
+    # contradiction class (FI reached-vs-not; body 62.5% vs dashboard 56.9%) that
+    # no per-surface agent owns. Deterministic — coherence is a property of the
+    # whole, not eyeballed by an LLM reviewer.
+    CROSS_SURFACE_COHERENCE = "cross_surface_coherence"
 
 
 @dataclass(frozen=True)
