@@ -621,7 +621,8 @@ def _resolve_fx_usd_nis(
 
 
 def _net_worth(
-    *, snapshot: PortfolioSnapshotRow | None, fx_usd_nis: float
+    *, snapshot: PortfolioSnapshotRow | None, fx_usd_nis: float,
+    session: Session | None = None, user_id: str | None = None,
 ) -> tuple[float | None, float | None]:
     """True net worth = investable holdings + real-estate NET EQUITY.
 
@@ -629,6 +630,12 @@ def _net_worth(
     real-estate stub. Real net worth replaces that with the full per-property
     net equity (Home − Loan, FX-converted) — the same figure the Real-estate
     panel shows — so net worth and the panel agree.
+
+    When ``session``/``user_id`` are supplied, the canonical payment ledger
+    (``real_estate_ledger``) drives the per-property remaining, EXACTLY as the
+    Real-estate panel does — otherwise headline net worth would stay understated
+    by the paid-down amount while the panel shows the new equity (the cross-
+    surface inconsistency this whole change exists to kill).
     """
     if snapshot is None:
         return None, None
@@ -662,10 +669,28 @@ def _net_worth(
         re_rows = json.loads(snapshot.real_estate_json or "[]")
         re_objs = [SimpleNamespace(**r) for r in re_rows if isinstance(r, dict)]
         if re_objs:
+            loan_override: dict[str, float] = {}
+            if session is not None and user_id is not None:
+                from argosy.services.real_estate_ledger import load_property_ledgers
+                price_by_prop = {
+                    getattr(o, "location", None): getattr(o, "value_local", None)
+                    for o in re_objs
+                    if (getattr(o, "role", "") or "").strip().lower() == "home"
+                    and getattr(o, "location", None)
+                    and getattr(o, "value_local", None) is not None
+                }
+                ledgers = load_property_ledgers(
+                    session, user_id=user_id, total_price_by_property=price_by_prop
+                )
+                loan_override = {
+                    k: lg.remaining_local for k, lg in ledgers.items()
+                    if lg.remaining_local is not None
+                }
             eq = compute_real_estate_equity(
                 re_objs,
                 fx_usd_nis=getattr(snapshot, "fx_usd_nis", None) or fx_usd_nis,
                 fx_usd_eur=getattr(snapshot, "fx_usd_eur", None),
+                loan_override=loan_override,
             )
             re_net_k = eq.total_net_usd_k
     except (json.JSONDecodeError, TypeError, ValueError):
@@ -687,7 +712,9 @@ def _retirement(
     current_age: int,
     current_age_inferred: bool,
 ) -> RetirementBlock:
-    nw_nis, nw_usd = _net_worth(snapshot=snapshot, fx_usd_nis=fx_usd_nis)
+    nw_nis, nw_usd = _net_worth(
+        snapshot=snapshot, fx_usd_nis=fx_usd_nis, session=session, user_id=user_id
+    )
     burn = None
     income = None
     missing: list[str] = []

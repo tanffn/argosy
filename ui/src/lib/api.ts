@@ -390,6 +390,15 @@ export interface AllocationBreakdownDTO {
   note: string;
 }
 
+export interface RealEstatePaymentDTO {
+  payment_date: string | null;
+  invoice_no: string | null;
+  amount_net_local: number;
+  vat_local: number;
+  kind: string;
+  description: string;
+}
+
 export interface PropertyEquityDTO {
   name: string;
   currency: string;
@@ -398,6 +407,10 @@ export interface PropertyEquityDTO {
   net_local: number | null;
   net_usd_k: number | null;
   warnings: string[];
+  // Present only when the property has a payment ledger.
+  paid_to_date_local?: number | null;
+  vat_paid_local?: number | null;
+  payments?: RealEstatePaymentDTO[] | null;
 }
 
 export interface RealEstateEquityDTO {

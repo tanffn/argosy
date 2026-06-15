@@ -491,6 +491,43 @@ class PortfolioSnapshotRow(Base):
     )
 
 
+class RealEstatePayment(Base):
+    """Canonical ledger of payments made toward a property purchase.
+
+    The portfolio snapshot (from the Family-Finances TSV) carries a per-property
+    Home (contract price) and Loan (remaining-to-pay) row, but the Loan is a
+    static figure that drifts and is overwritten on every re-import. This table
+    is the durable source of truth for what's been PAID: each row is one payment
+    (an invoice / advance / installment), and the remaining balance is COMPUTED
+    as ``contract price − Σ(net payments)`` so it survives TSV re-imports and is
+    auditable to the source documents.
+
+    ``amount_net_local`` is the equity-building (ex-VAT) amount in the property
+    currency; ``vat_local`` is tax paid alongside it (a sunk cost, not equity).
+    ``property_key`` matches the snapshot ``location`` (e.g. "Pipera"). An
+    aggregate ``kind='opening'`` row captures payments made before the ledger
+    existed so the computed paid-to-date is complete. ``source_file_id`` links to
+    the uploaded invoice in ``user_files`` for the audit trail.
+    """
+
+    __tablename__ = "real_estate_payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    property_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    payment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    invoice_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    amount_net_local: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    vat_local: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="EUR")
+    kind: Mapped[str] = mapped_column(String(24), nullable=False, default="installment")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_file_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+
 class CadenceState(Base):
     """Per-loop scheduler bookkeeping (Phase 2).
 

@@ -57,12 +57,20 @@ def compute_real_estate_equity(
     *,
     fx_usd_nis: float | None,
     fx_usd_eur: float | None,
+    loan_override: dict[str, float] | None = None,
 ) -> RealEstateEquity:
     """Pair Home/Loan rows by (property name, currency) and compute net equity.
 
     ``real_estate`` is a list of objects with ``.location`` (property name),
     ``.currency``, ``.role`` ('Home'|'Loan'), ``.value_local`` (from c7).
+
+    ``loan_override`` maps property name → remaining-to-pay that SUPERSEDES the
+    snapshot Loan row. This is how the canonical payment ledger
+    (``real_estate_ledger``) drives the displayed balance: the snapshot Loan is a
+    static, re-import-clobbered figure, so when a property has a payment ledger we
+    pass its computed remaining here and ignore the stale snapshot row.
     """
+    loan_override = loan_override or {}
     # Group rows by (name, currency).
     by_key: dict[tuple[str, str], dict[str, float | None]] = {}
     order: list[tuple[str, str]] = []
@@ -84,12 +92,15 @@ def compute_real_estate_equity(
     for name, ccy in order:
         pair = by_key[(name, ccy)]
         home = pair["home"]
-        loan = pair["loan"]
+        ledger_remaining = loan_override.get(name)
+        loan = ledger_remaining if ledger_remaining is not None else pair["loan"]
         warns: list[str] = []
         if home is None:
             warns.append("missing Home row")
         if loan is None:
             warns.append("missing Loan row (assumed unencumbered)")
+        elif ledger_remaining is not None:
+            warns.append("remaining-to-pay from payment ledger (not the snapshot)")
         rate = _rate_for(ccy, fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur)
         if rate is None or rate == 0:
             warns.append(f"no FX rate for {ccy or '(blank)'}; cannot convert to USD")

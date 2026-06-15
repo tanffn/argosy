@@ -1309,6 +1309,15 @@ def get_allocation_breakdown(
 
 # --- Real-estate net equity (net worth, separate from the investable book) --
 
+class RealEstatePaymentDTO(BaseModel):
+    payment_date: str | None
+    invoice_no: str | None
+    amount_net_local: float
+    vat_local: float
+    kind: str
+    description: str
+
+
 class PropertyEquityDTO(BaseModel):
     name: str
     currency: str
@@ -1317,6 +1326,12 @@ class PropertyEquityDTO(BaseModel):
     net_local: float | None
     net_usd_k: float | None
     warnings: list[str]
+    # Present only when the property has a payment ledger: how much has been paid
+    # toward the contract price (net of VAT) + the per-payment audit trail. The
+    # remaining (loan_local) is then computed as home_local − paid_to_date_local.
+    paid_to_date_local: float | None = None
+    vat_paid_local: float | None = None
+    payments: list[RealEstatePaymentDTO] | None = None
 
 
 class RealEstateEquityDTO(BaseModel):
@@ -1334,24 +1349,83 @@ def get_real_estate(
     snapshot's "Real estate details". Net WORTH context — deliberately separate
     from the investable allocation (a primary residence isn't investable)."""
     from argosy.services.real_estate_equity import compute_real_estate_equity
+    from argosy.services.real_estate_ledger import load_property_ledgers
 
     row = get_latest_snapshot_row(db, user_id)
     if row is None:
         return RealEstateEquityDTO(properties=[], total_net_usd_k=0.0,
                                    note="No portfolio snapshot found.")
     snap = row_to_snapshot(row)
+
+    # Canonical payment ledger: where a property has recorded payments, the
+    # remaining-to-pay is COMPUTED (price − Σ net payments) and supersedes the
+    # static snapshot Loan row, so it survives TSV re-imports and traces to the
+    # source invoices. Contract price = the snapshot Home.
+    price_by_prop = {
+        r.location: r.value_local
+        for r in snap.real_estate
+        if (getattr(r, "role", "") or "").strip().lower() == "home"
+        and getattr(r, "value_local", None) is not None
+    }
+    ccy_by_prop = {
+        r.location: (getattr(r, "currency", "") or "").strip().upper()
+        for r in snap.real_estate
+        if (getattr(r, "role", "") or "").strip().lower() == "home"
+    }
+    ledgers = load_property_ledgers(
+        db, user_id=user_id, total_price_by_property=price_by_prop,
+        currency_by_property=ccy_by_prop,
+    )
+    # Build the override, but fail loud rather than silently misapply: skip a
+    # ledger whose currency disagrees with the snapshot Home (would apply a
+    # wrong local-currency remaining), and collect per-property ledger warnings.
+    loan_override: dict[str, float] = {}
+    ledger_warnings: dict[str, list[str]] = {}
+    for key, lg in ledgers.items():
+        snap_ccy = ccy_by_prop.get(key)
+        if snap_ccy and (lg.currency or "").upper() != snap_ccy:
+            ledger_warnings.setdefault(key, []).append(
+                f"ledger ignored: currency {lg.currency} ≠ snapshot {snap_ccy}")
+            continue
+        if lg.remaining_local is None:
+            ledger_warnings.setdefault(key, []).append(
+                "ledger ignored: no contract price (missing Home row)")
+            continue
+        if lg.overpaid_local > 0:
+            ledger_warnings.setdefault(key, []).append(
+                f"payments exceed contract price by {lg.overpaid_local:.0f} — check for double-count")
+        loan_override[key] = lg.remaining_local
     eq = compute_real_estate_equity(
         snap.real_estate, fx_usd_nis=snap.fx_usd_nis, fx_usd_eur=snap.fx_usd_eur,
+        loan_override=loan_override,
     )
-    return RealEstateEquityDTO(
-        properties=[PropertyEquityDTO(
+    props: list[PropertyEquityDTO] = []
+    for p in eq.properties:
+        lg = ledgers.get(p.name)
+        payments = None
+        paid = vat_paid = None
+        if lg is not None and lg.has_entries:
+            paid = lg.paid_net_local
+            vat_paid = lg.vat_paid_local
+            payments = [RealEstatePaymentDTO(
+                payment_date=e.payment_date.isoformat() if e.payment_date else None,
+                invoice_no=e.invoice_no, amount_net_local=e.amount_net_local,
+                vat_local=e.vat_local, kind=e.kind, description=e.description,
+            ) for e in lg.entries]
+        props.append(PropertyEquityDTO(
             name=p.name, currency=p.currency, home_local=p.home_local,
             loan_local=p.loan_local, net_local=p.net_local,
-            net_usd_k=p.net_usd_k, warnings=list(p.warnings),
-        ) for p in eq.properties],
+            net_usd_k=p.net_usd_k,
+            warnings=list(p.warnings) + ledger_warnings.get(p.name, []),
+            paid_to_date_local=paid, vat_paid_local=vat_paid, payments=payments,
+        ))
+    return RealEstateEquityDTO(
+        properties=props,
         total_net_usd_k=eq.total_net_usd_k,
         note=("Net equity = current value − outstanding loan, converted to USD. "
-              "Net-worth context; not part of the investable allocation target."),
+              "Where payments are tracked, the remaining-to-pay is computed from "
+              "the payment ledger (survives re-imports). Net-worth context; not "
+              "part of the investable allocation target."),
     )
 
 
