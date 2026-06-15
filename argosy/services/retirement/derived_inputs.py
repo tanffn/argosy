@@ -337,6 +337,40 @@ def compute_derived_inputs(session, *, user_id: str, today: date | None = None) 
     put("nvda_cap_pct", fld_from_rv("concentration.nvda_cap_pct", "pct"))
     put("nvda_current_pct", fld_from_rv("concentration.nvda_current_pct", "pct"))
 
+    # Economic NVDA look-through — the TRUE single-name exposure: the 12% DIRECT
+    # ceiling PLUS the NVDA the diversifying UCITS equity sleeves themselves hold
+    # (R1GR/CSPX/FUSA are ~8-14% NVDA). Surfaced alongside the direct figure so
+    # the plan doesn't understate concentration. Derived from live fund holdings
+    # (yfinance, cached); best-effort → pending on failure, never fabricated. The
+    # source string carries the per-sleeve audit trail. Stored as a FRACTION so
+    # the "pct" formatter renders it correctly.
+    nvda_econ_src = "nvda_lookthrough.compute_nvda_lookthrough"
+    try:
+        from argosy.services.nvda_lookthrough import compute_nvda_lookthrough
+        lt = compute_nvda_lookthrough(session, user_id=user_id, today=today)
+    except Exception as exc:  # noqa: BLE001 — best-effort; pending on failure
+        log.warning("derived_inputs.nvda_lookthrough_failed", error=str(exc))
+        lt = None
+    if lt is not None:
+        parts = [
+            f"{c.symbol} {c.nvda_contribution_pct:.2f}"
+            for c in lt.contributions if c.nvda_contribution_pct
+        ]
+        unresolved = (
+            f"; UNRESOLVED: {', '.join(lt.unresolved_symbols)}"
+            if lt.unresolved_symbols else ""
+        )
+        nvda_econ_src = (
+            f"economic NVDA = {lt.direct_pct:.1f}% direct + {lt.indirect_pct:.2f}% "
+            f"sleeve pass-through ({' + '.join(parts)}); yfinance fund "
+            f"top_holdings as_of {lt.as_of}{unresolved}"
+        )
+        conf = "HIGH" if lt.fully_resolved else "MEDIUM"
+        put("nvda_economic_pct", DerivedField(
+            round(lt.economic_pct / 100.0, 6), "pct", nvda_econ_src, conf))
+    else:
+        put("nvda_economic_pct", DerivedField.pending("pct", nvda_econ_src))
+
     return out
 
 

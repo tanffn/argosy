@@ -874,6 +874,9 @@ export interface DerivedInputsResponse {
   expected_real_return_pct: DerivedInputField;
   nvda_cap_pct: DerivedInputField;
   nvda_current_pct: DerivedInputField;
+  nvda_economic_pct: DerivedInputField;
+  mc_central_spend_nis: DerivedInputField;
+  mc_stress_spend_nis: DerivedInputField;
 }
 
 // ----------------------------------------------------------------------

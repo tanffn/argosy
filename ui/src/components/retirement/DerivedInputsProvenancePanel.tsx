@@ -34,8 +34,11 @@ const LABELS: Record<string, string> = {
   fire_bridge_requirement_nis: "FIRE bridge (49→60)",
   required_real_yield_pct: "Required real yield",
   expected_real_return_pct: "Expected real return",
-  nvda_cap_pct: "NVDA cap",
+  nvda_cap_pct: "NVDA cap (direct)",
   nvda_current_pct: "NVDA current",
+  nvda_economic_pct: "NVDA economic (look-through)",
+  mc_central_spend_nis: "MC central spend (solvency)",
+  mc_stress_spend_nis: "MC stress spend",
 };
 
 const CONF_TONE: Record<string, string> = {
