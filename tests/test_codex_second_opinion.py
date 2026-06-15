@@ -696,3 +696,86 @@ def test_codex_agent_report_cost_estimated_when_attr_missing(
     # Legacy convention: total parks under tokens_out when no split.
     assert row.tokens_out == 50_000
     assert row.tokens_in == 0
+
+
+# ---------------------------------------------------------------------------
+# Idempotency lookup must work from inside a running event loop (Bug:
+# "asyncio.run() cannot be called from a running event loop")
+# ---------------------------------------------------------------------------
+
+
+def test_idempotency_lookup_works_inside_running_loop(monkeypatch):
+    """``_load_existing_codex_opinion`` is invoked from the async
+    ``run_codex_second_opinion``, i.e. with a loop already running.
+
+    Regression guard: it previously called ``asyncio.run(_read())``
+    internally, which raises "asyncio.run() cannot be called from a
+    running event loop". The except swallowed it and returned None, so
+    idempotency NEVER worked (codex was always re-dispatched).
+
+    The helper is now ``async def`` and awaits the read directly. We stub
+    ``db.get_session`` so no real DB is needed, then await the helper from
+    within a running loop and assert it returns the persisted opinion
+    cleanly (no RuntimeError).
+    """
+    import contextlib
+
+    import argosy.orchestrator.flows.plan_synthesis.codex_second_opinion as cso
+    from argosy.state import db as db_mod
+
+    persisted = _valid_codex_json()
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return persisted
+
+    class _FakeSession:
+        async def execute(self, *_a, **_kw):
+            return _FakeResult()
+
+    @contextlib.asynccontextmanager
+    async def _fake_get_session(user_id=None):
+        yield _FakeSession()
+
+    monkeypatch.setattr(db_mod, "get_session", _fake_get_session)
+
+    async def _run():
+        # We are inside a running loop here — the old code would raise
+        # RuntimeError; the fix awaits the read directly.
+        return await cso._load_existing_codex_opinion(
+            decision_audit_token="plan-synth-102", user_id="ariel",
+        )
+
+    parsed = asyncio.run(_run())
+
+    assert isinstance(parsed, CodexSecondOpinion)
+    assert parsed.overall_assessment == "APPROVE_WITH_CONDITIONS"
+
+
+def test_idempotency_lookup_returns_none_on_no_row(monkeypatch):
+    """No persisted row → return None cleanly (synthesis re-dispatches)."""
+    import contextlib
+
+    import argosy.orchestrator.flows.plan_synthesis.codex_second_opinion as cso
+    from argosy.state import db as db_mod
+
+    class _FakeResult:
+        def scalar_one_or_none(self):
+            return None
+
+    class _FakeSession:
+        async def execute(self, *_a, **_kw):
+            return _FakeResult()
+
+    @contextlib.asynccontextmanager
+    async def _fake_get_session(user_id=None):
+        yield _FakeSession()
+
+    monkeypatch.setattr(db_mod, "get_session", _fake_get_session)
+
+    async def _run():
+        return await cso._load_existing_codex_opinion(
+            decision_audit_token="plan-synth-999", user_id="ariel",
+        )
+
+    assert asyncio.run(_run()) is None

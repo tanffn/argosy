@@ -459,7 +459,7 @@ def _parse_codex_verdict(text: str) -> CodexSecondOpinion:
 # ----------------------------------------------------------------------
 
 
-def _load_existing_codex_opinion(
+async def _load_existing_codex_opinion(
     *, decision_audit_token: str, user_id: str,
 ) -> CodexSecondOpinion | None:
     """Return a previously-persisted codex opinion for this decision_id.
@@ -468,28 +468,29 @@ def _load_existing_codex_opinion(
     re-dispatch codex (~$0.50 wasted + 1-3 min latency). Returns None on
     no row, parse failure, or any unexpected error (synthesis falls back
     to a fresh codex dispatch in that case, which is safe).
+
+    Async because the only caller (``run_codex_second_opinion``) already
+    runs inside a live asyncio loop; the DB read is awaited directly so we
+    never nest ``asyncio.run`` (which raises "cannot be called from a
+    running event loop" and silently disables idempotency).
     """
     try:
         from sqlalchemy import select
         from argosy.state import db as db_mod
         from argosy.state.models import AgentReport as AgentReportORM
 
-        # Sync-bridged read via a fresh session (mirror of the pattern in
-        # other plan_synthesis helpers). Best-effort — any failure here
-        # just means we re-dispatch codex.
-        async def _read() -> str | None:
-            async with db_mod.get_session() as session:
-                row = await session.execute(
-                    select(AgentReportORM.response_text)
-                    .where(AgentReportORM.user_id == user_id)
-                    .where(AgentReportORM.decision_id == decision_audit_token)
-                    .where(AgentReportORM.agent_role == "codex_second_opinion")
-                    .order_by(AgentReportORM.id.desc())
-                    .limit(1)
-                )
-                return row.scalar_one_or_none()
-
-        text = asyncio.run(_read())
+        # Best-effort read via a fresh session — any failure here just
+        # means we re-dispatch codex.
+        async with db_mod.get_session() as session:
+            row = await session.execute(
+                select(AgentReportORM.response_text)
+                .where(AgentReportORM.user_id == user_id)
+                .where(AgentReportORM.decision_id == decision_audit_token)
+                .where(AgentReportORM.agent_role == "codex_second_opinion")
+                .order_by(AgentReportORM.id.desc())
+                .limit(1)
+            )
+            text = row.scalar_one_or_none()
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "codex_second_opinion.idempotency_lookup_failed",
@@ -576,7 +577,7 @@ async def run_codex_second_opinion(
     # ------------------------------------------------------------------
     # Idempotency — if a row already exists, return it without dispatch.
     # ------------------------------------------------------------------
-    existing = _load_existing_codex_opinion(
+    existing = await _load_existing_codex_opinion(
         decision_audit_token=decision_audit_token, user_id=user_id,
     )
     if existing is not None:
@@ -639,7 +640,11 @@ async def run_codex_second_opinion(
                 prompt=prompt,
                 agent_name=f"codex_second_opinion_run_{decision_run_id}",
                 role="codex_second_opinion",
-                timeout_s=300,
+                # 480s headroom: a first review observed at 233s, and the
+                # post-reconcile re-review can approach/exceed 300s under
+                # self-load — a 300s cap fail-closed a slow-but-valid
+                # review. True hangs still time out (just later).
+                timeout_s=480,
             ),
         )
     except Exception as exc:  # noqa: BLE001 — fail-soft on any dispatch error
