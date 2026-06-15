@@ -121,6 +121,16 @@ from argosy.orchestrator.flows.plan_synthesis.codex_second_opinion import (
     run_codex_second_opinion,
 )
 
+# Whole-artifact adversarial reader — the holistic final pre-promotion stage.
+# Exposed on the package namespace so the orchestrator resolves it via
+# ``_pkg.run_whole_artifact_review`` (and tests can monkeypatch the
+# dispatcher without touching the submodule), mirroring the codex export.
+from argosy.orchestrator.flows.plan_synthesis.whole_artifact_reader import (
+    CoherenceFinding,
+    WholeArtifactVerdict,
+    run_whole_artifact_review,
+)
+
 # Input-assembly helpers (monkeypatched in tests).
 from argosy.orchestrator.flows.plan_synthesis.inputs import (
     _assemble_portfolio_summary,
@@ -180,6 +190,10 @@ __all__ = [
     "CodexFinding",
     "CodexSecondOpinion",
     "run_codex_second_opinion",
+    # Whole-artifact adversarial reader — final pre-promotion stage
+    "CoherenceFinding",
+    "WholeArtifactVerdict",
+    "run_whole_artifact_review",
     # Input helpers (monkeypatched in tests)
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",

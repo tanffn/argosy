@@ -1011,6 +1011,102 @@ def run_synthesis(
     decision_run.fund_manager_decision = "approved" if approved else "rejected"
     session.commit()
 
+    # ------------------------------------------------------------------
+    # FINAL STAGE — whole-artifact adversarial reader (Task 7).
+    #
+    # Runs AFTER the draft PlanVersion + DecisionRun are committed so
+    # ``assemble_plan_artifact`` reads the JUST-PERSISTED draft's full_text
+    # (it resolves get_pending_draft / get_current_plan off the DB). The
+    # reader owns COHERENCE OF THE WHOLE (contradictions / fragile-headline
+    # / staleness / regressions); the codex Phase-4.5 gate owns the math.
+    #
+    # Gating + fail-soft: ``run_whole_artifact_review`` short-circuits to
+    # (None, None) under the codex kill switches AND under pytest (so every
+    # existing synthesis test is unchanged unless it monkeypatches the
+    # dispatcher). The dispatch is additionally wrapped here so any
+    # assemble / dispatch error degrades to a no-op rather than aborting a
+    # synthesis whose draft is already safely persisted.
+    #
+    # Promotion coupling: a reader BLOCK marks the draft NOT-auto-promotable
+    # through the SAME field the fund_manager uses —
+    # ``decision_run.fund_manager_decision = "rejected"`` — which
+    # ``api/routes/plan.py::post_draft_accept`` consults to raise its 422
+    # promotion gate. The user remains the final gate (promotion still
+    # possible via ?override_fm_rejection=true, audit-logged). No parallel
+    # promotion mechanism is introduced. A reader BLOCK never UN-rejects an
+    # FM rejection (it can only tighten the gate, never loosen it).
+    try:
+        _prior_plan_text = ""
+        if prior_current is not None:
+            _prior_plan_text = "\n\n".join(filter(None, [
+                prior_current.horizon_long_md,
+                prior_current.horizon_medium_md,
+                prior_current.horizon_short_md,
+            ]))
+
+        _assembled_text = ""
+        try:
+            from argosy.services.assembled_artifact import assemble_plan_artifact
+
+            _assembled = assemble_plan_artifact(session, user_id=user_id)
+            _assembled_text = _assembled.full_text or ""
+        except Exception as exc:  # noqa: BLE001 — empty artifact → reader BLOCKs
+            log.warning(
+                "whole_artifact_reader.assemble_failed",
+                user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+            )
+
+        # Fresh external-context packet: at minimum today's ISO date so the
+        # reader can flag stale "as of" content. No market context threads
+        # through this caller today (empty is handled by the reader).
+        _external_context = (
+            f"Today's date (ISO): {datetime.now(timezone.utc).date().isoformat()}"
+        )
+
+        _reader_verdict, _reader_row = _asyncio.run(
+            _pkg.run_whole_artifact_review(
+                assembled_artifact=_assembled_text,
+                external_context=_external_context,
+                prior_plan_text=_prior_plan_text,
+                decision_run_id=decision_run_id,
+                user_id=user_id,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-soft; draft already persisted
+        log.warning(
+            "whole_artifact_reader.run_failed",
+            user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+        )
+        _reader_verdict, _reader_row = None, None
+
+    # Persist the reader row through the same phase-recorder pipeline as
+    # every other phase (phase_n=55 — the holistic stage after codex's 4.5
+    # and the FM's phase 5). Mirror codex's guard: only record a real row.
+    if _reader_row is not None:
+        _pkg._record_phase_completion(
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase_n=55,  # 5.5 — holistic reader, after FM
+            started_at=datetime.now(timezone.utc),
+            phase_output=(
+                _reader_verdict.model_dump_json() if _reader_verdict else ""
+            ),
+            agent_report_rows=[_reader_row],
+        )
+
+    # A reader BLOCK tightens the promotion gate via the FM's own field.
+    if (
+        _reader_verdict is not None
+        and _reader_verdict.overall_assessment == "BLOCK"
+        and decision_run.fund_manager_decision != "rejected"
+    ):
+        decision_run.fund_manager_decision = "rejected"
+        session.commit()
+        log.warning(
+            "whole_artifact_reader.block_marks_not_promotable",
+            user_id=user_id, decision_run_id=decision_run_id,
+            findings=len(_reader_verdict.findings),
+        )
+
     # W1.C-v4: ingest the agent_reports forensic trail now that the
     # orchestrator's session has finished its own writes and the writer
     # lock is clean (the session just committed PlanVersion + DecisionRun
