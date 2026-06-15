@@ -595,8 +595,14 @@ def run_synthesis(
             positions = json.loads(snap.positions_json or "[]")
             fx = snap.fx_usd_nis
             lines = [
-                f"FX USD/NIS = {fx}   (holdings snapshot id={snap.id}; "
-                f"usd_value_k is THOUSANDS of USD)",
+                f"Snapshot stored FX USD/NIS = {fx} (snapshot id={snap.id}; "
+                f"usd_value_k is THOUSANDS of USD).",
+                "FX CONVENTION: net worth and all USD→NIS translation use the "
+                "Bank of Israel CURRENT daily representative USD/NIS rate "
+                "(stated as 'USD/NIS' in the PIPELINE-CLAIMED HEADLINE NUMBERS "
+                "block), which may differ slightly from this snapshot's stored "
+                "rate. Reproduce net worth at the BOI current rate; only flag "
+                "net_worth DIVERGES if it disagrees AT THAT RATE.",
                 "symbol | broker_location | currency | asset_type | "
                 "usd_value_k | details",
             ]
