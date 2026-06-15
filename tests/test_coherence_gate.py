@@ -37,7 +37,7 @@ def test_coherence_flags_sign_flip_on_fi_margin():
 # −30% NVDA shock drops NW below the perpetuity base (the 2026-06-15 reality).
 _SHOCK_BREAKS = {
     "base": {"net_worth_nis": 11_954_153, "perpetuity_reached": True, "total_reached": True},
-    "shock_0.30": {"net_worth_nis": 9_911_041, "perpetuity_reached": False, "total_reached": False},
+    "shock_0.30": {"net_worth_nis": 9_912_041, "perpetuity_reached": False, "total_reached": False},
     "shock_0.50": {"net_worth_nis": 8_550_633, "perpetuity_reached": False, "total_reached": False},
 }
 # A book where the −30% shock still clears the perpetuity base.
@@ -66,3 +66,34 @@ def test_fi_shock_passes_when_claim_is_qualified():
 def test_fi_shock_passes_when_shock_survives():
     text = "Capital sufficiency reached — perpetuity and full target both clear."
     assert check_fi_sufficiency_under_shock(shock_result=_SHOCK_SURVIVES, plan_text=text) == []
+
+
+def test_shock_gate_fires_despite_unrelated_nvda_section():
+    """An incidental NVDA/drawdown mention in a *different* sentence must NOT
+    suppress the violation (the old document-global qualifier match did)."""
+    text = (
+        "Capital sufficiency reached. Separately, NVDA had a strong drawdown "
+        "last quarter but recovered."
+    )
+    viol = check_fi_sufficiency_under_shock(shock_result=_SHOCK_BREAKS, plan_text=text)
+    assert len(viol) == 1
+    assert viol[0].check is GateCheck.FI_SHOCK_SUFFICIENCY
+
+
+def test_shock_gate_catches_financially_independent_phrasing():
+    text = "You have reached financial independence at the current mark."
+    viol = check_fi_sufficiency_under_shock(shock_result=_SHOCK_BREAKS, plan_text=text)
+    assert len(viol) == 1
+
+
+def test_shock_gate_does_not_flag_negated_claim():
+    text = "Capital sufficiency is not yet reached."
+    assert check_fi_sufficiency_under_shock(shock_result=_SHOCK_BREAKS, plan_text=text) == []
+
+
+def test_shock_gate_does_not_flag_same_sentence_qualifier():
+    text = (
+        "Capital sufficiency is reached at the full NVDA mark, but a 30% NVDA "
+        "drawdown breaks the perpetuity base."
+    )
+    assert check_fi_sufficiency_under_shock(shock_result=_SHOCK_BREAKS, plan_text=text) == []
