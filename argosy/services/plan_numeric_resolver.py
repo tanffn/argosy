@@ -132,6 +132,7 @@ _KEY_UNITS: dict[str, str] = {
     "concentration.nvda_current_pct": "pct",
     "retirement.liquidity_reserve_nis": "nis",
     "retirement.fi_total_capital_nis": "nis",
+    "retirement.fi_margin_signed_nis": "nis",
 }
 
 
@@ -628,6 +629,11 @@ def resolve_plan_numbers(
     _apply_nvda_current_weight(session, user_id, values)
     _apply_fx_boi(session, values)
 
+    # ONE signed FI sufficiency margin (net_worth − FI-total-capital). Computed
+    # once here so every surface cites the SAME signed number — the
+    # reached/not-reached sign can never diverge across surfaces again.
+    _apply_fi_margin(values)
+
     # Canonical dual-track retirement ages — DISPLAY surfaces only (see the
     # docstring re: re-entrancy + MC cost). Gated so the re-entrant NVDA-haircut
     # hop and the non-display callers never trigger the heavy canonical MC.
@@ -1005,6 +1011,42 @@ def _apply_nvda_current_weight(
         log.warning("plan_numeric_resolver.nvda_current_weight_failed err=%s", exc)
 
 
+def _apply_fi_margin(values: dict[str, ResolvedValue]) -> None:
+    """Single signed FI sufficiency margin = net_worth − FI-total-capital.
+
+    Positive => the total capital target is (marginally) reached. Every surface
+    that states 'FI reached / not reached' MUST cite this ONE value, so the
+    reached/not-reached sign can never diverge across surfaces (the
+    'reached vs −118,020 not-reached' contradiction was two surfaces computing
+    the margin independently with opposite sign conventions). Pending (never a
+    guess) when either input is unresolved.
+    """
+    key = "retirement.fi_margin_signed_nis"
+    loc = "portfolio.net_worth_nis − retirement.fi_total_capital_nis"
+    nw = values.get("portfolio.net_worth_nis")
+    tot = values.get("retirement.fi_total_capital_nis")
+    if (
+        nw is None
+        or tot is None
+        or nw.status != "resolved"
+        or tot.status != "resolved"
+        or nw.value is None
+        or tot.value is None
+    ):
+        values[key] = ResolvedValue.pending(key, "nis", loc)
+        return
+    values[key] = ResolvedValue(
+        key=key,
+        value=float(nw.value) - float(tot.value),
+        unit="nis",
+        status="resolved",
+        source_locator=loc,
+        agent_report_id=None,
+        confidence="HIGH",
+        formula="net_worth_nis − fi_total_capital_nis (signed; >0 => total target reached)",
+    )
+
+
 def _apply_fi_methodology(
     session: "Session", user_id: str, values: dict[str, ResolvedValue]
 ) -> None:
@@ -1138,6 +1180,7 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("portfolio.net_worth_nis", "Net worth"),
     ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
     ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
+    ("retirement.fi_margin_signed_nis", "FI sufficiency margin (net worth − total target; >0 => reached)"),
     ("retirement.liquidity_reserve_nis", "Liquidity reserve (finite liabilities, held separately)"),
     ("retirement.fire_bridge_nis", "FIRE bridge (retirement→60 liquid drawdown, permanent-equivalent)"),
     ("concentration.us_situs_estate_exposure_nis", "US-situs estate exposure (IRS NRA — all US-domiciled securities, every broker)"),

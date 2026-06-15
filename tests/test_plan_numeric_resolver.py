@@ -289,6 +289,24 @@ def test_fully_seeded_resolves_every_key(session):
     assert cur.value == pytest.approx(0.6708)
 
 
+def test_fi_margin_signed_is_single_sourced(session):
+    """The FI sufficiency margin must be ONE signed value (net_worth − FI-total)
+    so every surface cites the same number with the same sign. The
+    'reached vs −118,020 not-reached' contradiction was two surfaces computing
+    the margin independently with opposite sign conventions."""
+    _seed_all(session)
+    res = resolve_plan_numbers(
+        session, user_id="ariel", decision_run_id=DRUN, include_canonical_ages=False
+    )
+    nw = res.get("portfolio.net_worth_nis")
+    tot = res.get("retirement.fi_total_capital_nis")
+    margin = res.get("retirement.fi_margin_signed_nis")
+    assert margin is not None and margin.status == "resolved"
+    # margin = net_worth − fi_total; positive => total target reached.
+    assert abs(float(margin.value) - (float(nw.value) - float(tot.value))) < 1.0
+    assert "net_worth" in margin.formula and "fi_total" in margin.formula
+
+
 def test_equity_scenario_disagreement_downgrades_confidence(session):
     _seed_snapshot(session)
     _seed_report(
