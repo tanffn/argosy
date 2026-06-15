@@ -92,11 +92,41 @@ class CodexAgreement(BaseModel):
     novel_concerns_argosy_missed: list[str] = Field(default_factory=list)
 
 
+class HeadlineNumberAudit(BaseModel):
+    """One independently re-derived headline number vs the pipeline's claim.
+
+    The reviewer MUST populate one row per load-bearing headline figure it can
+    recompute from the raw holdings (net worth, US-situs estate, NVDA weight,
+    FI target). This forces the reviewer to SHOW its independent math rather
+    than rubber-stamp the manifest — ``status="DIVERGES"`` or ``"UNVERIFIABLE"``
+    forces an overall BLOCK.
+    """
+
+    metric: str = Field(description="e.g. us_situs_estate_nis, nvda_weight_pct")
+    independent_value: float | None = Field(
+        default=None,
+        description="The reviewer's OWN figure, re-derived from raw holdings.",
+    )
+    claimed_value: float | None = Field(
+        default=None, description="The pipeline's claimed figure for this metric."
+    )
+    formula: str = Field(default="", description="How the independent value was derived.")
+    raw_rows_used: list[str] = Field(
+        default_factory=list, description="Raw-holding rows the derivation used."
+    )
+    status: Literal["MATCH", "DIVERGES", "UNVERIFIABLE"] = "UNVERIFIABLE"
+
+
 class CodexSecondOpinion(BaseModel):
     """The full structured codex second-opinion verdict."""
 
     overall_assessment: Literal["APPROVE", "APPROVE_WITH_CONDITIONS", "BLOCK"]
     findings: list[CodexFinding] = Field(default_factory=list)
+    headline_number_audit: list[HeadlineNumberAudit] = Field(
+        default_factory=list,
+        description="Independent re-derivation of each recomputable headline "
+        "number. Any DIVERGES/UNVERIFIABLE row forces overall_assessment=BLOCK.",
+    )
     agreement_with_argosy: CodexAgreement = Field(default_factory=CodexAgreement)
     user_directive_respected: bool | None = None
 
@@ -132,12 +162,34 @@ before or after the JSON block):
       "cited_synthesizer_paragraphs": ["<excerpt 1>", "<excerpt 2>"]
     }}
   ],
+  "headline_number_audit": [
+    {{
+      "metric": "<e.g. us_situs_estate_nis | net_worth_nis | nvda_weight_pct | fi_target_nis>",
+      "independent_value": <YOUR figure, re-derived from the raw holdings>,
+      "claimed_value": <the pipeline's claimed figure>,
+      "formula": "<how you derived independent_value>",
+      "raw_rows_used": ["<raw holding rows you summed>"],
+      "status": "MATCH" | "DIVERGES" | "UNVERIFIABLE"
+    }}
+  ],
   "agreement_with_argosy": {{
     "agrees_with_risk_verdict": true | false | "partial",
     "novel_concerns_argosy_missed": ["<list>"]
   }},
   "user_directive_respected": true | false
 }}
+
+You MUST emit one ``headline_number_audit`` row for EVERY recomputable headline \
+number (net worth, US-situs estate, NVDA weight, FI target). ``MATCH`` only when \
+your independent value is within tolerance of the claim — tolerance = \
+max(₪5,000, 0.25% of the figure). ``DIVERGES`` when it is outside tolerance. \
+``UNVERIFIABLE`` when the raw holdings do not contain enough to re-derive it \
+(e.g. pensions, real-estate equity, or spend not present in the holdings). \
+ANY row with ``DIVERGES`` or ``UNVERIFIABLE`` for a load-bearing figure forces \
+``overall_assessment="BLOCK"`` and a matching BLOCKER finding. This \
+headline-number audit OVERRIDES ``agreement_with_argosy`` and the user \
+directive: a mathematical divergence is a BLOCKER even if the analysts, risk \
+officers, synthesizer, or user directive appear to accept the number.
 
 Respect the user_directive in the same way the fund manager is told to: \
 the user's AGREED stances are NOT to be re-raised; their DISAGREED \
@@ -146,17 +198,40 @@ response, not the original concern; DEFERRED items are open for fresh \
 evaluation. Set ``user_directive_respected=false`` ONLY if the \
 synthesizer has clearly ignored or violated a load-bearing user stance.
 
-HEADLINE-NUMBER + METHODOLOGY AUDIT (your most important job — this plan \
-drives a REAL retirement decision, so be adversarial about the math):
+HEADLINE-NUMBER AUDIT BY INDEPENDENT RE-DERIVATION (your most important job \
+— this plan drives a REAL retirement decision, so be adversarial about the \
+math). The cardinal rule: DO NOT trust the pipeline's numbers because they \
+are internally consistent. A multi-agent pipeline can agree with itself on a \
+WRONG number — every surface inherits the same upstream error. Your value is \
+that you re-derive from the RAW INPUTS with your OWN logic, blind to how the \
+pipeline computed anything.
 
-  1. The DERIVED HEADLINE NUMBERS block below is the deterministic single \
-     source of truth (every value traced to an analyst field or a reviewed \
-     methodology). Check EVERY headline figure the synthesizer states (FI \
-     target, spend basis, required yield, retirement age, net worth, savings, \
-     NVDA cap/weight) against it. A headline number that does NOT match the \
-     derived value, OR that is carried forward from a stale/prior draft (e.g. \
-     a ₪21M FI target sized off a retired ₪500k spend floor), is a BLOCKER — \
-     it must be a fabrication finding, citing the offending paragraph.
+  0. RE-DERIVE FIRST, READ THE MANIFEST SECOND. Before you even look at the \
+     PIPELINE-CLAIMED HEADLINE NUMBERS block, use the RAW PORTFOLIO HOLDINGS \
+     block (and the analyst spend/budget figures) to INDEPENDENTLY compute, \
+     from scratch and showing your work:
+       (a) Net worth — sum the holdings (USD positions × FX + NIS-native), \
+           and state explicitly what you included/excluded (real estate? \
+           pensions?).
+       (b) US-situs estate exposure — classify EACH holding by INSTRUMENT \
+           DOMICILE, NOT by which broker holds it: a US-domiciled security \
+           (NVDA, SCHD, VOO, AMD, QQQM, …) is US-situs whether held at a US \
+           broker or an Israeli one; Irish/London UCITS funds, Israeli \
+           trackers, and cash are NOT US-situs. Sum the US-situs USD × FX.
+       (c) NVDA concentration — compute NVDA ÷ (a denominator you NAME \
+           explicitly: tradeable book? net worth incl. real estate?). If the \
+           plan quotes a different NVDA % elsewhere, that is a denominator \
+           inconsistency to flag.
+       (d) FI target — permanent-equivalent spend ÷ the perpetual real SWR.
+  1. ONLY NOW compare your independent figures to the PIPELINE-CLAIMED \
+     HEADLINE NUMBERS block. Treat that block as a CLAIM to reproduce, NOT as \
+     truth. ANY claimed headline number you cannot reproduce from the raw \
+     inputs, or that diverges from your independent derivation by more than a \
+     rounding tolerance, is a BLOCKER — say whether it is a DERIVATION error \
+     (the pipeline computed it wrong from the data) or a FABRICATION (the \
+     prose states a number the pipeline never derived). Cite the raw rows and \
+     show both figures. The same NVDA weight or estate figure appearing \
+     consistently across the plan is NOT evidence it is correct.
   2. Critique the FI METHODOLOGY itself, not just the arithmetic. Is the \
      spend basis the permanent-equivalent spend (incl. amortized life events \
      — car cadence, healthcare ramp, home upgrades), or just the current \
@@ -166,10 +241,26 @@ drives a REAL retirement decision, so be adversarial about the math):
      inconsistent methodology is at least an AMBER, a BLOCKER if it would \
      materially mis-state the FI date.
   3. Flag any headline claim that cites NO source, or whose prose contradicts \
-     the derived numbers (e.g. \"comfortably past FI\" when the derived target \
-     exceeds current net worth).
-  If all headline numbers trace to the manifest and the methodology is \
-  defensible, say so explicitly in agreement_with_argosy.
+     your re-derivation (e.g. \"comfortably past FI\" / \"capital sufficiency \
+     reached\" on a razor-thin margin that is itself dominated by one volatile \
+     concentrated position held at full value).
+  Only if EVERY claimed headline number reproduces from the raw inputs within \
+  tolerance AND the methodology is defensible may you say the math is sound — \
+  and say so explicitly in agreement_with_argosy, naming the figures you \
+  reproduced.
+
+=== RAW PORTFOLIO HOLDINGS (your raw inputs — re-derive from THESE FIRST) ===
+{raw_holdings_block}
+
+>>> STOP. Before reading anything below, do your headline_number_audit from \
+the RAW HOLDINGS above: independently compute net worth, US-situs estate \
+exposure (by instrument domicile), and NVDA weight. Write down your figures. \
+The blocks below (the pipeline's claimed numbers and the synthesizer's prose) \
+contain the SAME headline numbers — they will anchor you to the pipeline's \
+answer if you read them before deriving your own. Derive first; compare second.
+
+=== PIPELINE-CLAIMED HEADLINE NUMBERS (a CLAIM to reproduce — NOT truth) ===
+{derived_numbers_block}
 
 === SYNTHESIZER DRAFT (Phase 3 output) ===
 {synth_draft_json}
@@ -186,9 +277,6 @@ drives a REAL retirement decision, so be adversarial about the math):
 === USER DIRECTIVE ===
 {user_directive_block}
 
-=== DERIVED HEADLINE NUMBERS (deterministic single source of truth) ===
-{derived_numbers_block}
-
 Produce the JSON now. No prose, no markdown fences — just the JSON object.
 """
 
@@ -201,14 +289,17 @@ def _build_prompt(
     risk_verdict_text: str,
     user_directive: str,
     derived_numbers_block: str = "",
+    raw_holdings_block: str = "",
 ) -> str:
     """Render the full codex prompt with all evidence blocks inlined.
 
     The user_directive block is either the verbatim directive or a
     sentinel string when none was passed — so the model never gets a
     bare placeholder it has to ignore. ``derived_numbers_block`` is the
-    deterministic resolver manifest codex audits the headline numbers
-    against; a sentinel is used when it could not be built.
+    pipeline's CLAIMED headline numbers — codex re-derives the
+    recomputable ones from ``raw_holdings_block`` and flags divergence,
+    rather than treating the manifest as truth. A sentinel is used for
+    either block when it could not be built.
     """
     user_directive_block = (
         user_directive.strip() if user_directive and user_directive.strip()
@@ -217,8 +308,14 @@ def _build_prompt(
     numbers_block = (
         derived_numbers_block.strip()
         if derived_numbers_block and derived_numbers_block.strip()
-        else "(derived-numbers manifest unavailable on this run — audit the "
-        "math against the analyst reports directly)"
+        else "(pipeline-claimed numbers unavailable on this run — re-derive the "
+        "math from the raw holdings + analyst reports directly)"
+    )
+    holdings_block = (
+        raw_holdings_block.strip()
+        if raw_holdings_block and raw_holdings_block.strip()
+        else "(raw holdings unavailable on this run — re-derive what you can "
+        "from the analyst reports and flag the figures you could not verify)"
     )
     return _PROMPT_TEMPLATE.format(
         synth_draft_json=synth_draft_json,
@@ -227,6 +324,7 @@ def _build_prompt(
         risk_verdict_text=risk_verdict_text,
         user_directive_block=user_directive_block,
         derived_numbers_block=numbers_block,
+        raw_holdings_block=holdings_block,
     )
 
 
@@ -234,6 +332,41 @@ def _build_prompt(
 # Parsing — strict → lenient → synthetic "unparseable" fallback so the
 # FM still sees SOMETHING from codex even when the model emits prose.
 # ----------------------------------------------------------------------
+
+
+def _enforce_headline_audit(opinion: CodexSecondOpinion) -> CodexSecondOpinion:
+    """Structural backstop for the headline-number audit.
+
+    The prompt tells codex that any ``DIVERGES`` headline-audit row must force
+    ``overall_assessment="BLOCK"``. Don't rely on the model obeying — enforce
+    it in code. If a load-bearing figure the reviewer independently re-derived
+    diverges from the pipeline's claim, the verdict is BLOCK regardless of what
+    the model wrote, and a BLOCKER finding is synthesized if one is missing.
+    This is what makes the blind re-derivation a real gate, not a prompt wish.
+    """
+    diverged = [a for a in opinion.headline_number_audit if a.status == "DIVERGES"]
+    if not diverged:
+        return opinion
+    opinion.overall_assessment = "BLOCK"
+    has_blocker = any(f.severity == "BLOCKER" for f in opinion.findings)
+    if not has_blocker:
+        metrics = ", ".join(
+            f"{a.metric}: independent {a.independent_value} vs claimed "
+            f"{a.claimed_value}" for a in diverged
+        )
+        opinion.findings.insert(0, CodexFinding(
+            severity="BLOCKER",
+            topic="headline_number_divergence",
+            detail=(
+                "Independent re-derivation from the raw holdings diverged from "
+                f"the pipeline's claimed headline number(s): {metrics}. A "
+                "headline figure that cannot be reproduced from the raw data is "
+                "a derivation error or fabrication — blocking promotion."
+            ),
+            suggested_fix="Re-derive the diverging figure from raw holdings and "
+                          "fix the upstream computation before promotion.",
+        ))
+    return opinion
 
 
 def _parse_codex_verdict(text: str) -> CodexSecondOpinion:
@@ -244,6 +377,9 @@ def _parse_codex_verdict(text: str) -> CodexSecondOpinion:
       2. Lenient: locate the first ``{`` and try ``JSONDecoder.raw_decode``.
       3. Synthetic "unparseable" opinion so callers still get a typed
          object (with a YELLOW finding flagging the parse failure).
+
+    A successful parse is passed through ``_enforce_headline_audit`` so a
+    divergent re-derivation forces BLOCK even if the model didn't.
     """
     if text:
         # Strip a fenced ```json block if the model added one despite
@@ -258,7 +394,9 @@ def _parse_codex_verdict(text: str) -> CodexSecondOpinion:
             cleaned = "\n".join(lines).strip()
 
         try:
-            return CodexSecondOpinion.model_validate_json(cleaned)
+            return _enforce_headline_audit(
+                CodexSecondOpinion.model_validate_json(cleaned)
+            )
         except Exception:
             pass
 
@@ -268,7 +406,9 @@ def _parse_codex_verdict(text: str) -> CodexSecondOpinion:
             try:
                 decoder = json.JSONDecoder(strict=False)
                 obj, _ = decoder.raw_decode(cleaned[first_brace:])
-                return CodexSecondOpinion.model_validate(obj)
+                return _enforce_headline_audit(
+                    CodexSecondOpinion.model_validate(obj)
+                )
             except Exception:
                 pass
 
@@ -380,6 +520,7 @@ async def run_codex_second_opinion(
     decision_run_id: int,
     user_id: str,
     derived_numbers_block: str = "",
+    raw_holdings_block: str = "",
 ) -> tuple[CodexSecondOpinion | None, AgentReport | None]:
     """Dispatch codex as an independent second opinion. Fail-soft.
 
@@ -456,6 +597,7 @@ async def run_codex_second_opinion(
         risk_verdict_text=risk_verdict_text,
         user_directive=user_directive,
         derived_numbers_block=derived_numbers_block,
+        raw_holdings_block=raw_holdings_block,
     )
 
     # ------------------------------------------------------------------

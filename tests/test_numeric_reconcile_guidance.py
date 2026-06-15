@@ -67,7 +67,9 @@ def test_build_prompt_includes_derived_numbers_block():
         derived_numbers_block="FI target: ₪10,386,133",
     )
     assert "₪10,386,133" in p
-    assert "DERIVED HEADLINE NUMBERS" in p
+    # The manifest is now framed as the pipeline's CLAIM to reproduce, not the
+    # "single source of truth" — see codex_second_opinion blind-re-derivation.
+    assert "PIPELINE-CLAIMED HEADLINE NUMBERS" in p
 
 
 def test_build_prompt_sentinel_when_no_block():
@@ -75,4 +77,4 @@ def test_build_prompt_sentinel_when_no_block():
         synth_draft_json="{}", analyst_reports_text="", debate_outcomes_text="",
         risk_verdict_text="", user_directive="",
     )
-    assert "manifest unavailable" in p
+    assert "pipeline-claimed numbers unavailable" in p

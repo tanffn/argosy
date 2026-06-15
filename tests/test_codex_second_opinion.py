@@ -17,6 +17,7 @@ must NEVER abort because the zigzag review failed.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 import pytest
@@ -392,6 +393,8 @@ def test_build_prompt_inlines_all_evidence_blocks():
         debate_outcomes_text="DEBATES",
         risk_verdict_text="RISK_TEXT",
         user_directive="GUIDANCE",
+        derived_numbers_block="CLAIMED_NUMBERS",
+        raw_holdings_block="RAW_HOLDINGS_TABLE",
     )
     assert "=== SYNTHESIZER DRAFT (Phase 3 output) ===" in prompt
     assert '{"draft": "json here"}' in prompt
@@ -405,6 +408,78 @@ def test_build_prompt_inlines_all_evidence_blocks():
     assert "GUIDANCE" in prompt
     # The independence instruction must survive prompt formatting.
     assert "INDEPENDENT second-opinion" in prompt
+    # Raw holdings must be inlined so codex can re-derive from raw inputs.
+    assert "RAW PORTFOLIO HOLDINGS" in prompt
+    assert "RAW_HOLDINGS_TABLE" in prompt
+    assert "CLAIMED_NUMBERS" in prompt
+
+
+def test_diverging_headline_audit_forces_block():
+    """Structural backstop: if codex's independent re-derivation DIVERGES from
+    the pipeline's claim, the verdict is forced to BLOCK with a synthesized
+    BLOCKER finding — even if the model itself wrote APPROVE. This is what
+    makes blind re-derivation a real gate rather than a prompt suggestion."""
+    from argosy.orchestrator.flows.plan_synthesis.codex_second_opinion import (
+        _parse_codex_verdict,
+    )
+    raw = json.dumps({
+        "overall_assessment": "APPROVE",  # model tried to approve …
+        "findings": [],
+        "headline_number_audit": [
+            {"metric": "us_situs_estate_nis", "independent_value": 9439421,
+             "claimed_value": 6898075, "formula": "sum US-domiciled × fx",
+             "raw_rows_used": ["SCHD", "NVDA"], "status": "DIVERGES"},
+        ],
+    })
+    op = _parse_codex_verdict(raw)
+    assert op.overall_assessment == "BLOCK"  # … but divergence overrides it
+    assert any(f.severity == "BLOCKER" for f in op.findings)
+
+
+def test_matching_headline_audit_does_not_force_block():
+    """A MATCH row must not perturb an APPROVE verdict."""
+    from argosy.orchestrator.flows.plan_synthesis.codex_second_opinion import (
+        _parse_codex_verdict,
+    )
+    raw = json.dumps({
+        "overall_assessment": "APPROVE",
+        "findings": [],
+        "headline_number_audit": [
+            {"metric": "net_worth_nis", "independent_value": 11954153,
+             "claimed_value": 11954153, "status": "MATCH"},
+        ],
+    })
+    op = _parse_codex_verdict(raw)
+    assert op.overall_assessment == "APPROVE"
+
+
+def test_build_prompt_frames_manifest_as_claim_not_truth():
+    """The adversarial contract: the reviewer must INDEPENDENTLY re-derive the
+    recomputable headline numbers from the raw holdings and treat the
+    pipeline's manifest as a CLAIM to reproduce — never as ground truth it
+    merely checks the prose against. A regression to 'single source of truth'
+    framing would turn the reviewer back into a ratifier of a shared (possibly
+    wrong) number — the exact failure that shipped a ₪2.5M-understated estate
+    figure past 30 agents."""
+    prompt = _build_prompt(
+        synth_draft_json="{}",
+        analyst_reports_text="A",
+        debate_outcomes_text="D",
+        risk_verdict_text="R",
+        user_directive="",
+        derived_numbers_block="NUMS",
+        raw_holdings_block="HOLDINGS",
+    )
+    # Normalize the line-continuation whitespace artifacts before matching
+    # multi-word phrases.
+    flat = " ".join(prompt.split())
+    # Manifest is explicitly a claim to reproduce, NOT truth.
+    assert "NOT truth" in flat
+    assert "single source of truth" not in flat
+    # The instruction to classify US-situs by instrument domicile, not broker.
+    assert "INSTRUMENT DOMICILE, NOT by which broker" in flat
+    # Re-derive first, read the manifest second.
+    assert "RE-DERIVE FIRST" in flat
 
 
 def test_build_prompt_handles_empty_user_directive():

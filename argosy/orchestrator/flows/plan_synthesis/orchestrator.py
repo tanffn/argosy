@@ -574,6 +574,47 @@ def run_synthesis(
 
     _numbers_block = _build_numbers_block()
 
+    # RAW holdings — the codex reviewer re-derives net worth / US-situs estate
+    # / NVDA weight from THESE (its own logic, blind to how the pipeline
+    # computed them) and flags any pipeline-claimed number it cannot reproduce.
+    # This is the adversarial contract: independent re-derivation from raw
+    # inputs, not consistency-checking the prose against a shared manifest.
+    def _build_raw_holdings_block() -> str:
+        try:
+            from argosy.state.models import PortfolioSnapshotRow
+            from sqlalchemy import select as _select
+
+            snap = session.execute(
+                _select(PortfolioSnapshotRow)
+                .where(PortfolioSnapshotRow.user_id == user_id)
+                .order_by(PortfolioSnapshotRow.id.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+            if snap is None:
+                return ""
+            positions = json.loads(snap.positions_json or "[]")
+            fx = snap.fx_usd_nis
+            lines = [
+                f"FX USD/NIS = {fx}   (holdings snapshot id={snap.id}; "
+                f"usd_value_k is THOUSANDS of USD)",
+                "symbol | broker_location | currency | asset_type | "
+                "usd_value_k | details",
+            ]
+            for p in positions:
+                if not isinstance(p, dict):
+                    continue
+                lines.append(
+                    f"{(p.get('symbol') or '-')} | {p.get('location') or '-'} | "
+                    f"{p.get('currency') or '-'} | {p.get('asset_type') or '-'} | "
+                    f"{p.get('usd_value_k')} | {(p.get('details') or '')[:60]}"
+                )
+            return "\n".join(lines)
+        except Exception as exc:  # noqa: BLE001 — reviewer degrades gracefully
+            log.warning("plan_synthesis.codex_holdings_block_failed", error=str(exc))
+            return ""
+
+    _holdings_block = _build_raw_holdings_block()
+
     def _run_codex(draft):
         return _asyncio.run(
             _pkg.run_codex_second_opinion(
@@ -585,6 +626,7 @@ def run_synthesis(
                 decision_run_id=decision_run_id,
                 user_id=user_id,
                 derived_numbers_block=_numbers_block,
+                raw_holdings_block=_holdings_block,
             )
         )
 
