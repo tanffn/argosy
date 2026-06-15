@@ -1056,6 +1056,41 @@ ALL brokers (§20.4), and the current NVDA weight is `NVDA ÷ tradeable securiti
 book` (the same `wealth_dashboard.nvda_concentration_pct` the dashboard uses).
 LLM agents own judgments (e.g. the NVDA *cap*), never mechanical facts.
 
+**The finished plan is reviewed as a whole, not only in pieces.** The
+synthesis flow's final stage reads the *assembled artifact the user sees* — the
+plan body across all three horizons + the wealth-dashboard block + appendices,
+concatenated by `assemble_plan_artifact` — and checks it along two axes that
+per-phase, per-number review cannot see: **coherence** (the whole document
+agrees with itself) and **currency** (it matches reality now). These join
+**consistency** (one value everywhere) and **correctness** (re-derivable from
+raw inputs), which the resolver and blind reviewer already enforce. Coherence
+and currency are properties of the WHOLE artifact, so they are checked on the
+assembled document rather than left to per-number gates or an LLM eyeball.
+
+The deterministic layer runs three checks over the assembled bytes. A
+cross-surface coherence check (`coherence_gate.check_cross_surface_coherence`)
+fails when the same named concept (net worth, NVDA weight, US-situs estate, FI
+margin) carries divergent values or a flipped sign across surfaces. An
+FI-sufficiency-under-shock check (`fi_shock`) fails an unqualified "capital
+sufficiency reached" claim when a −30% NVDA mark-down drops net worth below the
+perpetuity base, composing the sufficiency claim with the concentration tail.
+An input-freshness check (`freshness_gate`) flags a snapshot or cached analyst
+output that is stale relative to today. A single signed FI margin
+(`retirement.fi_margin_signed_nis` = net worth − total FI capital) is
+resolver-derived so every surface cites one reached / not-reached value.
+
+The holistic layer adds a whole-artifact adversarial reader
+(`whole_artifact_reader.py`, gated on `ARGOSY_CODEX_REVIEW_ENABLED`) that reads
+the assembled document blind to the synthesis logic. It is fed the artifact, a
+fresh-external-context packet (today's date plus any market / event context),
+and the prior plan to diff, and it reports contradictions, headline claims that
+its own other sections undercut, staleness, and regressions. It is fail-closed:
+an unparseable or timed-out reader yields BLOCK, never a soft pass. Its job is
+the coherence of the whole; the math re-derivation belongs to the codex gate. A
+reader BLOCK marks the draft not auto-promotable through the same
+`decision_run.fund_manager_decision` field the fund-manager verdict uses — the
+user remains the final gate, with an explicit, audit-logged override.
+
 **Idempotency.** Re-running synthesis when an unaccepted draft already
 exists demotes the prior draft to `role='superseded'` and writes a
 fresh draft. Single user, single in-flight draft.
