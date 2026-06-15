@@ -184,27 +184,33 @@ def test_codex_lenient_parse_with_prose_prefix():
 
 
 def test_codex_falls_back_on_malformed_json():
-    """When neither strict nor lenient parsing recovers, the helper
-    returns a synthetic CodexSecondOpinion with a YELLOW finding
-    flagging the parse failure. The FM still sees a typed codex row.
+    """When neither strict nor lenient parsing recovers, the helper FAILS
+    CLOSED: a math gate that could not actually verify the numbers must NOT
+    soft-pass. The synthetic verdict is BLOCK + a BLOCKER finding (the FM
+    still sees a typed codex row for the audit trail).
     """
     garbage = "I'm just going to refuse to follow your JSON instructions today!"
     parsed = _parse_codex_verdict(garbage)
     assert isinstance(parsed, CodexSecondOpinion)
-    # Synthetic: ALWAYS APPROVE_WITH_CONDITIONS + one YELLOW finding.
-    assert parsed.overall_assessment == "APPROVE_WITH_CONDITIONS"
+    # Fail-closed: unparseable reviewer output BLOCKS, never soft-approves.
+    assert parsed.overall_assessment == "BLOCK"
     assert len(parsed.findings) == 1
-    assert parsed.findings[0].severity == "YELLOW"
-    assert parsed.findings[0].topic == "codex_review_unparseable"
+    assert parsed.findings[0].severity == "BLOCKER"
+    assert parsed.findings[0].topic == "codex_review_unavailable"
     # The raw excerpt must be embedded for forensic review.
     assert "refuse to follow" in parsed.findings[0].detail
 
 
 def test_codex_falls_back_on_empty_text():
-    """Empty text also triggers the synthetic fallback (not a crash)."""
+    """Empty text (timeout / dispatch failure) FAILS CLOSED to BLOCK — the
+    independent re-derivation did not run, so the plan is not waved through.
+    This is the run-101 timeout hole: a 562s timeout returned empty text and
+    previously soft-passed to APPROVE_WITH_CONDITIONS."""
     parsed = _parse_codex_verdict("")
     assert isinstance(parsed, CodexSecondOpinion)
-    assert parsed.findings[0].topic == "codex_review_unparseable"
+    assert parsed.overall_assessment == "BLOCK"
+    assert parsed.findings[0].topic == "codex_review_unavailable"
+    assert "did not run" in parsed.findings[0].detail
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +269,9 @@ def test_codex_fails_soft_when_unreachable(monkeypatch, tmp_path):
 def test_codex_returns_unparseable_opinion_on_garbage_output(
     monkeypatch, tmp_path,
 ):
-    """A successful subprocess that emits non-JSON should produce the
-    synthetic "unparseable" opinion (not None, not a crash) so the FM
-    still has a codex row to consult.
+    """A successful subprocess that emits non-JSON produces the synthetic
+    fail-closed verdict (BLOCK, not None, not a crash) so the FM still has a
+    codex row to consult — but one that does NOT soft-pass an unverified plan.
     """
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
@@ -302,7 +308,8 @@ def test_codex_returns_unparseable_opinion_on_garbage_output(
         sys.modules.pop("engine_codex", None)
 
     assert isinstance(parsed, CodexSecondOpinion)
-    assert parsed.findings[0].topic == "codex_review_unparseable"
+    assert parsed.overall_assessment == "BLOCK"  # fail-closed, not soft-pass
+    assert parsed.findings[0].topic == "codex_review_unavailable"
     assert row is not None
     assert row.agent_role == "codex_second_opinion"
     assert row.user_id == "ariel"

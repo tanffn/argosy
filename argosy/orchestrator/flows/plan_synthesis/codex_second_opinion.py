@@ -412,25 +412,41 @@ def _parse_codex_verdict(text: str) -> CodexSecondOpinion:
             except Exception:
                 pass
 
-    # Synthetic "unparseable" opinion — preserves the codex review row
-    # in the audit trail even when the model didn't return clean JSON.
+    # Synthetic fallback — preserves the codex review row in the audit trail
+    # even when the model didn't return clean JSON (or timed out → empty text).
+    # FAIL CLOSED: this is a MATH gate, so a reviewer that did not actually
+    # run / re-derive must NOT yield a passing verdict. A timeout or unparseable
+    # output is a BLOCK, not a soft APPROVE_WITH_CONDITIONS — otherwise a
+    # non-verdict silently waves the plan through (exactly what a timed-out
+    # reviewer did on run 101). See feedback: fail loud on critical-agent failure.
     excerpt = (text or "")[:400]
+    timed_out = not (text or "").strip()
     log.warning(
         "codex_second_opinion.unparseable",
         raw_excerpt=excerpt,
+        timed_out=timed_out,
+    )
+    reason = (
+        "Codex returned NO output (timeout / dispatch failure) — the "
+        "independent headline-number re-derivation did not run."
+        if timed_out else
+        "Codex returned non-JSON output and the lenient parse fallback "
+        f"couldn't recover a verdict. Raw excerpt (first 400 chars): {excerpt}"
     )
     return CodexSecondOpinion(
-        overall_assessment="APPROVE_WITH_CONDITIONS",
+        overall_assessment="BLOCK",
         findings=[CodexFinding(
-            severity="YELLOW",
-            topic="codex_review_unparseable",
+            severity="BLOCKER",
+            topic="codex_review_unavailable",
             detail=(
-                "Codex returned non-JSON output and the lenient parse "
-                "fallback couldn't recover a verdict. Raw excerpt "
-                f"(first 400 chars): {excerpt}"
+                f"{reason} The independent math gate could not verify the "
+                "headline numbers, so the plan is fail-closed (BLOCK) rather "
+                "than soft-passed. Re-run the reviewer (often a transient "
+                "timeout under load) or escalate for manual numeric review."
             ),
-            suggested_fix="Manual review required — see agent_reports row "
-                          "for full raw text.",
+            suggested_fix="Re-dispatch codex with no competing load; if it "
+                          "still fails, manually re-derive net worth / estate / "
+                          "NVDA weight / FI target from the raw holdings.",
             cited_synthesizer_paragraphs=[],
         )],
         agreement_with_argosy=CodexAgreement(),
