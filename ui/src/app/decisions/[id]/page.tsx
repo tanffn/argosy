@@ -58,6 +58,7 @@ const PHASE_LABELS: Record<CostPhaseKey, string> = {
   phase_4: "Phase 4 risk",
   phase_4_5_codex: "Phase 4.5 codex",
   phase_5: "Phase 5 FM",
+  phase_5_5_reader: "Phase 5.5 whole-artifact reader",
 };
 
 function fmtUsd(n: number): string {

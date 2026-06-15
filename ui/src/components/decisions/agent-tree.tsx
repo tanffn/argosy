@@ -15,6 +15,7 @@ import type {
   AgentNodeStatus,
   CodexFinding,
   CodexFindingSeverity,
+  CoherenceFinding,
 } from "@/lib/api";
 
 import { AdapterLeaf } from "./adapter-leaf";
@@ -80,10 +81,15 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
   // "children" for the disclosure caret even though the codex node has
   // no AgentNode children.
   const isCodex = node.agent_role === "codex_second_opinion";
+  // whole_artifact_reader is the holistic final-stage coherence pass — a
+  // cross-engine leaf like codex, but its findings have a different shape
+  // (CoherenceFinding). Its findings act as disclosure "children" too.
+  const isWholeArtifactReader = node.agent_role === "whole_artifact_reader";
   const hasChildren =
     node.children.length > 0 ||
     node.adapters.length > 0 ||
-    (isCodex && node.codex_findings.length > 0);
+    (isCodex && node.codex_findings.length > 0) ||
+    (isWholeArtifactReader && node.coherence_findings.length > 0);
   return (
     <div className="border-l border-border ml-2">
       <button
@@ -124,6 +130,17 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
             title="Cross-engine second opinion via OpenAI gpt-5 (codex-tandem kit)"
           >
             gpt-5
+          </span>
+        )}
+        {isWholeArtifactReader && (
+          // Badge to flag this node as the holistic whole-artifact
+          // coherence reader (reads the assembled plan AS A WHOLE), not
+          // one of Argosy's per-section analysts.
+          <span
+            className="text-[9px] px-1.5 py-0.5 rounded-full bg-accent text-accent-foreground font-bold uppercase tracking-wider"
+            title="Whole-artifact adversarial reader — holistic coherence pass over the assembled plan"
+          >
+            whole-artifact
           </span>
         )}
         {node.side && (
@@ -186,6 +203,13 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
                 finding={f}
               />
             ))}
+          {isWholeArtifactReader &&
+            node.coherence_findings.map((f, i) => (
+              <CoherenceFindingRow
+                key={`coherence-finding-${i}-${f.severity}-${f.kind}`}
+                finding={f}
+              />
+            ))}
           {node.adapters.map((a, i) => (
             <AdapterLeaf
               key={`${a.adapter_name}-${a.target ?? "_"}-${i}`}
@@ -234,6 +258,47 @@ function CodexFindingRow({ finding }: { finding: CodexFinding }) {
           <div className="pt-0.5 whitespace-pre-wrap">
             {finding.suggested_fix}
           </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// One parsed CoherenceFinding rendered as an expandable sub-row under the
+// whole_artifact_reader node. Severity icon left, kind + detail right,
+// the verbatim conflicting surfaces in a collapsible <details>. Mirrors
+// CodexFindingRow's styling; the finding shape differs (kind +
+// surfaces_cited instead of topic + suggested_fix).
+function CoherenceFindingRow({ finding }: { finding: CoherenceFinding }) {
+  const color = CODEX_SEVERITY_COLOR[finding.severity];
+  return (
+    <div className="border-l border-border ml-2 px-2 py-1 text-[11px]">
+      <div className="flex items-center gap-2">
+        <ShieldAlert
+          className={`h-3 w-3 shrink-0 ${color}`}
+          aria-hidden
+          suppressHydrationWarning
+        />
+        <span className={`font-semibold ${color}`}>{finding.severity}</span>
+        <span className="font-mono">{finding.kind}</span>
+      </div>
+      {finding.detail && (
+        <div className="pl-5 pt-0.5 text-muted-foreground whitespace-pre-wrap">
+          {finding.detail}
+        </div>
+      )}
+      {finding.surfaces_cited.length > 0 && (
+        <details className="pl-5 pt-0.5">
+          <summary className="cursor-pointer text-muted-foreground">
+            surfaces cited ({finding.surfaces_cited.length})
+          </summary>
+          <ul className="pt-0.5 list-disc pl-4">
+            {finding.surfaces_cited.map((s, i) => (
+              <li key={`surface-${i}`} className="whitespace-pre-wrap">
+                {s}
+              </li>
+            ))}
+          </ul>
         </details>
       )}
     </div>

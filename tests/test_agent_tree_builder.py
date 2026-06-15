@@ -262,6 +262,7 @@ def test_build_agent_tree_happy_path_with_adapters(inmem_session) -> None:
         "risk_facilitator",
         "plan_critique",
         "codex_second_opinion",
+        "whole_artifact_reader",
     ]
 
     # Three researcher_facilitator subtrees under the synth.
@@ -319,9 +320,10 @@ def test_build_agent_tree_happy_path_with_adapters(inmem_session) -> None:
     # identities. Topology = FM (1) + synth (1) + risk_fac (1) + 3 risk
     # officers (3) + 3 researcher_facilitators (3) + 3 bulls (3) + 3 bears
     # (3) + 10 analyst leaves (10, shared) + codex_second_opinion (1,
-    # skipped since not seeded) = 26 unique. Two of those 26 are
+    # skipped since not seeded) + whole_artifact_reader (1, skipped since
+    # not seeded) = 27 unique. Two of those 27 are
     # degraded/ok (synth + plan_synthesizer's None confidence) — both
-    # count as "ok" in the summary; codex's "skipped" counts as
+    # count as "ok" in the summary; codex's + reader's "skipped" count as
     # "agents_skipped" (split out from "agents_failed" so the user-facing
     # banner doesn't conflate didn't-run with errored-out).
     summary = tree.status_summary
@@ -329,16 +331,17 @@ def test_build_agent_tree_happy_path_with_adapters(inmem_session) -> None:
         summary["agents_ok"]
         + summary["agents_failed"]
         + summary["agents_skipped"]
-        == 26
+        == 27
     )
     # Skipped nodes in this seed: only one bull + one bear + one
     # researcher_facilitator row are inserted, but the builder expects
     # three facilitator subtrees (long/medium/short). So 2 facilitators +
     # 2 bulls + 2 bears render as "skipped", plus codex_second_opinion
-    # (no codex row seeded) = 7 unique skipped nodes. None of these
+    # (no codex row seeded) + whole_artifact_reader (no reader row seeded)
+    # = 8 unique skipped nodes. None of these
     # should bleed into "agents_failed" — that's the whole point of
     # splitting skipped vs failed.
-    assert summary["agents_skipped"] == 7
+    assert summary["agents_skipped"] == 8
     # No agent_reports row in this seed has a confidence that maps to
     # "failed", so the failed count is exactly 0.
     assert summary["agents_failed"] == 0
@@ -549,15 +552,16 @@ def test_build_agent_tree_dag_dedup_is_correct(inmem_session) -> None:
     assert counts[id(plan_critique)] == 8
 
     # ...but the deduped summary count includes plan_critique just once.
-    # Unique node identities = 26 (see happy path test) — 25 plus the
-    # codex_second_opinion node (skipped since the seed doesn't include
-    # a codex agent_reports row). "skipped" is now tracked separately
-    # from "failed", so the total is ok + failed + skipped.
+    # Unique node identities = 27 (see happy path test) — 25 plus the
+    # codex_second_opinion node + whole_artifact_reader node (both skipped
+    # since the seed doesn't include their agent_reports rows). "skipped"
+    # is now tracked separately from "failed", so the total is
+    # ok + failed + skipped.
     assert (
         tree.status_summary["agents_ok"]
         + tree.status_summary["agents_failed"]
         + tree.status_summary["agents_skipped"]
-        == 26
+        == 27
     )
 
 
@@ -636,6 +640,7 @@ def test_codex_second_opinion_node_present_when_row_exists(
         "risk_facilitator",
         "plan_critique",
         "codex_second_opinion",
+        "whole_artifact_reader",
     ]
     codex = tree.root.children[3]
     assert codex.status == "ok"
@@ -940,3 +945,184 @@ def test_cost_breakdown_empty_when_no_reports(inmem_session) -> None:
     assert cb.agent_count == 0
     assert cb.top_3_agents == []
     assert all(v == 0.0 for v in cb.by_phase.values())
+
+
+# ---------------------------------------------------------------------------
+# Whole-artifact reader (phase 5.5) — mirrors the codex_second_opinion wiring.
+# ---------------------------------------------------------------------------
+
+
+def _seed_reader_row(
+    sess,
+    *,
+    decision_run_id: int,
+    user_id: str = "ariel",
+    response_text: str | None = None,
+    cost_usd: float = 0.0,
+    with_phase: bool = False,
+) -> AgentReport:
+    """Append a whole_artifact_reader agent_reports row to an existing run.
+
+    When ``with_phase`` is set, a ``synthesis.phase_55`` DecisionPhase is
+    created (mirroring the orchestrator's ``phase_n=55`` recorder) and the
+    row is back-linked via ``phase_id`` so the kind-based cost mapping path
+    is exercised; otherwise the row has no ``phase_id`` and the role-based
+    fallback path is exercised.
+    """
+    decision_id_str = f"plan-synth-{decision_run_id}"
+    if response_text is None:
+        response_text = json.dumps({
+            "overall_assessment": "BLOCK",
+            "findings": [
+                {
+                    "kind": "contradiction",
+                    "severity": "BLOCKER",
+                    "detail": "Policy says FI 8-10% but the target shows 21%.",
+                    "surfaces_cited": [
+                        "Policy: FI 8-10%",
+                        "Target: FI 21%",
+                    ],
+                },
+                {
+                    "kind": "stale",
+                    "severity": "AMBER",
+                    "detail": "Retirement date references a prior plan year.",
+                    "surfaces_cited": [],
+                },
+            ],
+        })
+    phase_id = None
+    if with_phase:
+        now = datetime.now(timezone.utc)
+        ph = DecisionPhase(
+            decision_run_id=decision_run_id,
+            user_id=user_id,
+            seq=99,
+            kind="synthesis.phase_55",
+            started_at=now,
+            finished_at=now,
+            participants_json="[]",
+            phase_output_json=json.dumps({"phase": 55}),
+        )
+        sess.add(ph)
+        sess.commit()
+        sess.refresh(ph)
+        phase_id = ph.id
+    ar = AgentReport(
+        user_id=user_id,
+        agent_role="whole_artifact_reader",
+        decision_id=decision_id_str,
+        response_text=response_text,
+        confidence=None,
+        model="gpt-5-codex",
+        tokens_in=0,
+        tokens_out=2222,
+        cost_usd=cost_usd,
+        phase_id=phase_id,
+    )
+    sess.add(ar)
+    sess.commit()
+    sess.refresh(ar)
+    return ar
+
+
+def test_phase_55_kind_maps_to_reader_cost_key(inmem_session) -> None:
+    """A row stamped with the reader phase (``synthesis.phase_55``, written
+    by the orchestrator's ``phase_n=55`` recorder) lands in the
+    ``phase_5_5_reader`` cost bucket — mirroring codex's
+    ``synthesis.phase_45`` -> ``phase_4_5_codex`` mapping."""
+    from argosy.services.agent_tree_builder import _phase_kind_to_cost_key
+
+    assert _phase_kind_to_cost_key("synthesis.phase_55") == "phase_5_5_reader"
+
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_reader_row(
+        inmem_session, decision_run_id=rid, cost_usd=0.30, with_phase=True
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    cb = tree.cost_breakdown
+    assert "phase_5_5_reader" in cb.by_phase
+    assert cb.by_phase["phase_5_5_reader"] == pytest.approx(0.30)
+
+
+def test_whole_artifact_reader_role_fallback_to_reader_phase(
+    inmem_session,
+) -> None:
+    """A reader row with no ``phase_id`` (legacy / fail-soft recorder path)
+    still lands in ``phase_5_5_reader`` via the role-based fallback."""
+    from argosy.services.agent_tree_builder import _ROLE_TO_PHASE_FALLBACK
+
+    assert (
+        _ROLE_TO_PHASE_FALLBACK["whole_artifact_reader"] == "phase_5_5_reader"
+    )
+
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_reader_row(
+        inmem_session, decision_run_id=rid, cost_usd=0.20, with_phase=False
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    cb = tree.cost_breakdown
+    assert cb.by_phase["phase_5_5_reader"] == pytest.approx(0.20)
+
+
+def test_reader_cost_phase_key_present_in_vocabulary() -> None:
+    """The reader phase is part of the fixed cost-phase vocabulary so the
+    UI renders a deterministic table slot (after phase_5)."""
+    assert "phase_5_5_reader" in COST_PHASE_KEYS
+    assert COST_PHASE_KEYS.index("phase_5_5_reader") > COST_PHASE_KEYS.index(
+        "phase_5"
+    )
+
+
+def test_whole_artifact_reader_node_present_when_row_exists(
+    inmem_session,
+) -> None:
+    """When a whole_artifact_reader row exists, the FM-rooted tree carries a
+    reader node whose parsed overall_assessment + coherence findings are
+    surfaced for the UI to render (mirrors codex_second_opinion)."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_reader_row(inmem_session, decision_run_id=rid)
+
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+
+    fm_children_roles = [c.agent_role for c in tree.root.children]
+    assert "whole_artifact_reader" in fm_children_roles
+    reader = next(
+        c for c in tree.root.children
+        if c.agent_role == "whole_artifact_reader"
+    )
+    assert reader.status == "ok"
+    # BLOCK -> LOW confidence band.
+    assert reader.confidence == "LOW"
+    assert reader.agent_report_id is not None
+    assert len(reader.coherence_findings) == 2
+    severities = [f.severity for f in reader.coherence_findings]
+    assert severities == ["BLOCKER", "AMBER"]
+    kinds = [f.kind for f in reader.coherence_findings]
+    assert "contradiction" in kinds
+    # surfaces_cited carried through.
+    assert reader.coherence_findings[0].surfaces_cited == [
+        "Policy: FI 8-10%",
+        "Target: FI 21%",
+    ]
+    assert "BLOCK" in reader.response_excerpt
+    # Leaf node — no children/adapters of its own.
+    assert reader.children == []
+    assert reader.adapters == []
+
+
+def test_whole_artifact_reader_node_skipped_when_no_row(
+    inmem_session,
+) -> None:
+    """A synth run with no reader row still renders the reader slot with a
+    ``skipped`` status and a directed failure_reason."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+
+    reader = next(
+        c for c in tree.root.children
+        if c.agent_role == "whole_artifact_reader"
+    )
+    assert reader.status == "skipped"
+    assert reader.agent_report_id is None
+    assert reader.coherence_findings == []

@@ -179,6 +179,21 @@ def test_get_draft_synthesis_health_present_when_decision_run_id(app_with_draft)
             confidence="MEDIUM", model="claude-opus-4-7",
             tokens_in=10, tokens_out=20, cost_usd=0.001,
         ))
+        # whole_artifact_reader row — the FM-rooted tree builder hangs a
+        # reader node under FM (see agent_tree_builder._build_reader_node).
+        # Without a row, the node renders as ``skipped``. The test seeds it
+        # so the stronger "every agent ran" assertion holds: agents_failed
+        # == 0 AND agents_skipped == 0.
+        sess.add(AgentReport(
+            user_id="ariel", agent_role="whole_artifact_reader",
+            decision_id=decision_id_str,
+            response_text=json.dumps({
+                "overall_assessment": "APPROVE",
+                "findings": [],
+            }),
+            confidence="MEDIUM", model="claude-opus-4-7",
+            tokens_in=10, tokens_out=20, cost_usd=0.001,
+        ))
 
         # Phase 1 row with two adapter outcomes (one ok, one http_error).
         phase_output = {

@@ -123,6 +123,25 @@ class CodexFindingNode:
 
 
 @dataclass
+class CoherenceFindingNode:
+    """One whole-artifact-reader coherence finding rendered as a sub-row
+    under the ``whole_artifact_reader`` node.
+
+    Mirrors ``argosy.orchestrator.flows.plan_synthesis.whole_artifact_reader
+    .CoherenceFinding`` but lives here as a plain dataclass so
+    ``dataclasses.asdict`` can walk the whole tree without dragging pydantic
+    into the route serializer. Populated only for the
+    ``whole_artifact_reader`` node — every other AgentNode keeps an empty
+    list (see ``AgentNode.coherence_findings``).
+    """
+
+    kind: str       # "contradiction" / "cross_surface" / "fragile_claim" / "stale" / "other"
+    severity: str   # "BLOCKER" / "AMBER" / "YELLOW"
+    detail: str
+    surfaces_cited: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AgentNode:
     agent_role: str  # e.g. "fund_manager"
     agent_report_id: int | None
@@ -143,6 +162,13 @@ class AgentNode:
     # in the UI. Empty list for every other node so the field is always
     # present (consistent JSON shape).
     codex_findings: list[CodexFindingNode] = field(default_factory=list)
+    # Populated only for the whole_artifact_reader node — the parsed
+    # WholeArtifactVerdict.findings list rendered as expandable sub-rows
+    # in the UI. Empty list for every other node so the field is always
+    # present (consistent JSON shape).
+    coherence_findings: list[CoherenceFindingNode] = field(
+        default_factory=list
+    )
     # Adaptive-thinking telemetry — actual thinking_tokens used by the
     # model on this agent call. ``None`` when the agent didn't run (the
     # node is skipped) or when the row predates adaptive-thinking
@@ -190,6 +216,7 @@ COST_PHASE_KEYS: tuple[str, ...] = (
     "phase_4",
     "phase_4_5_codex",
     "phase_5",
+    "phase_5_5_reader",
 )
 
 # Role -> phase fallback used when an agent_reports row has no phase_id
@@ -221,6 +248,8 @@ _ROLE_TO_PHASE_FALLBACK: dict[str, str] = {
     "codex_second_opinion": "phase_4_5_codex",
     # Phase 5 FM
     "fund_manager": "phase_5",
+    # Phase 5.5 whole-artifact reader half-step (holistic coherence pass)
+    "whole_artifact_reader": "phase_5_5_reader",
 }
 
 
@@ -494,9 +523,17 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
     codex_row = pop_one("codex_second_opinion")
     codex_node = _build_codex_node(codex_row)
 
+    # Phase 5.5: whole_artifact_reader — the holistic coherence pass that
+    # runs AFTER the FM, reading the assembled artifact as a whole. Rendered
+    # as a sibling under FM alongside codex; if no reader row exists (runs
+    # predating the reader, or it was disabled via the env-var kill switch)
+    # the node renders as "skipped" with a directed failure_reason.
+    reader_row = pop_one("whole_artifact_reader")
+    reader_node = _build_reader_node(reader_row)
+
     # Phase 5: Fund Manager — root of the DAG. Reads synth + risk
     # facilitator + (separately) the plan_critique analyst + codex's
-    # second-opinion verdict.
+    # second-opinion verdict + the whole-artifact reader's coherence verdict.
     fm_node = _to_node(
         pop_one("fund_manager"),
         role="fund_manager",
@@ -505,6 +542,7 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
             risk_facilitator_node,
             analyst_nodes["plan_critique"],
             codex_node,
+            reader_node,
         ],
     )
 
@@ -717,6 +755,126 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
     )
 
 
+# Mapping from WholeArtifactVerdict.overall_assessment to a confidence-band
+# string the UI already styles — mirrors the codex pill so the reader node
+# looks at-home next to it.
+_READER_ASSESSMENT_TO_CONFIDENCE: dict[str, str] = {
+    "APPROVE": "HIGH",
+    "APPROVE_WITH_CONDITIONS": "MEDIUM",
+    "BLOCK": "LOW",
+}
+
+
+def _build_reader_node(r: AgentReport | None) -> AgentNode:
+    """Render the whole_artifact_reader row as an AgentNode under FM.
+
+    Mirrors ``_build_codex_node`` exactly in structure — three states:
+      * No row: ``skipped`` with a directed failure_reason.
+      * Row present + parseable WholeArtifactVerdict: confidence band from
+        ``overall_assessment``; coherence findings attached to
+        ``coherence_findings``; a one-line excerpt summarising the verdict.
+      * Row present but unparseable JSON: ``degraded`` with the raw text.
+
+    No exception escapes this helper — the FM-rooted tree must render even
+    when the reader emits garbage.
+    """
+    if r is None:
+        return AgentNode(
+            agent_role="whole_artifact_reader",
+            agent_report_id=None,
+            status="skipped",
+            confidence=None,
+            model=None,
+            tokens_in=None,
+            tokens_out=None,
+            cost_usd=None,
+            side=None,
+            perspective=None,
+            response_excerpt="",
+            failure_reason="whole-artifact reader not run for this synthesis",
+            children=[],
+            adapters=[],
+            coherence_findings=[],
+            thinking_tokens=None,
+        )
+
+    raw_text = r.response_text or ""
+    parsed = _parse_codex_response_text(raw_text)
+    if parsed is None:
+        return AgentNode(
+            agent_role="whole_artifact_reader",
+            agent_report_id=r.id,
+            status="degraded",
+            confidence=r.confidence,
+            model=r.model,
+            tokens_in=r.tokens_in,
+            tokens_out=r.tokens_out,
+            cost_usd=(
+                float(r.cost_usd) if r.cost_usd is not None else None
+            ),
+            side=None,
+            perspective=None,
+            response_excerpt=raw_text[:500],
+            failure_reason=(
+                "reader verdict JSON unparseable — raw response preserved"
+            ),
+            children=[],
+            adapters=[],
+            coherence_findings=[],
+            thinking_tokens=_safe_thinking_tokens(r),
+        )
+
+    overall = str(parsed.get("overall_assessment") or "")
+    confidence = _READER_ASSESSMENT_TO_CONFIDENCE.get(overall)
+    findings_raw = parsed.get("findings") or []
+    findings: list[CoherenceFindingNode] = []
+    if isinstance(findings_raw, list):
+        for f in findings_raw:
+            if not isinstance(f, dict):
+                continue
+            surfaces = f.get("surfaces_cited") or []
+            if not isinstance(surfaces, list):
+                surfaces = []
+            findings.append(
+                CoherenceFindingNode(
+                    kind=str(f.get("kind") or ""),
+                    severity=str(f.get("severity") or ""),
+                    detail=str(f.get("detail") or ""),
+                    surfaces_cited=[str(s) for s in surfaces],
+                )
+            )
+    excerpt_parts: list[str] = []
+    if overall:
+        excerpt_parts.append(overall)
+    excerpt_parts.append(f"{len(findings)} findings")
+    if findings:
+        kinds_preview = ", ".join(
+            f.kind for f in findings[:3] if f.kind
+        )
+        if kinds_preview:
+            excerpt_parts.append(f"kinds: {kinds_preview}")
+    excerpt = " · ".join(excerpt_parts)[:500]
+
+    return AgentNode(
+        agent_role="whole_artifact_reader",
+        agent_report_id=r.id,
+        status="ok",
+        confidence=confidence,
+        model=r.model,
+        tokens_in=r.tokens_in,
+        tokens_out=r.tokens_out,
+        cost_usd=float(r.cost_usd) if r.cost_usd is not None else None,
+        side=None,
+        perspective=None,
+        response_excerpt=excerpt,
+        failure_reason=None,
+        children=[],
+        adapters=[],
+        coherence_findings=findings,
+        thinking_tokens=_safe_thinking_tokens(r),
+    )
+
+
 def _parse_codex_response_text(text: str) -> dict | None:
     """Strict-then-lenient JSON parse of a codex_second_opinion row.
 
@@ -832,12 +990,15 @@ def _phase_kind_to_cost_key(kind: str | None) -> str | None:
     — a metadata-only row that doesn't host agent_reports, and the legacy
     monolithic ``plan_synthesis`` kind). The codex half-step uses
     ``phase_n=45`` -> ``synthesis.phase_45`` so we map that to
-    ``phase_4_5_codex`` explicitly.
+    ``phase_4_5_codex`` explicitly; the whole-artifact reader uses
+    ``phase_n=55`` -> ``synthesis.phase_55`` -> ``phase_5_5_reader``.
     """
     if not kind:
         return None
     if kind == "synthesis.phase_45":
         return "phase_4_5_codex"
+    if kind == "synthesis.phase_55":
+        return "phase_5_5_reader"
     m = re.match(r"^synthesis\.phase_(\d+)$", kind)
     if not m:
         return None

@@ -1281,6 +1281,25 @@ export interface CodexFinding {
   suggested_fix: string;
 }
 
+// One coherence finding emitted by the whole_artifact_reader (the holistic
+// final-stage adversarial reader). Populated by the backend only on the
+// `whole_artifact_reader` node; every other AgentNode keeps
+// `coherence_findings` as an empty array.
+// Mirrors `argosy.services.agent_tree_builder.CoherenceFindingNode`.
+export type CoherenceFindingKind =
+  | "contradiction"
+  | "cross_surface"
+  | "fragile_claim"
+  | "stale"
+  | "other";
+
+export interface CoherenceFinding {
+  kind: CoherenceFindingKind | string;
+  severity: CodexFindingSeverity;
+  detail: string;
+  surfaces_cited: string[];
+}
+
 export interface AgentNode {
   agent_role: string;
   agent_report_id: number | null;
@@ -1301,6 +1320,11 @@ export interface AgentNode {
   // Empty array on every other node so consumers can iterate without a
   // presence check.
   codex_findings: CodexFinding[];
+  // Populated only on the `whole_artifact_reader` node — the structured
+  // coherence findings parsed from `WholeArtifactVerdict.findings` by the
+  // backend. Empty array on every other node so consumers can iterate
+  // without a presence check.
+  coherence_findings: CoherenceFinding[];
   // Adaptive-thinking telemetry — actual `thinking_tokens` used by the
   // model on this agent call. `null` when the agent didn't run or when
   // the row predates adaptive-thinking telemetry. The UI hides the
@@ -1338,7 +1362,8 @@ export type CostPhaseKey =
   | "phase_3"
   | "phase_4"
   | "phase_4_5_codex"
-  | "phase_5";
+  | "phase_5"
+  | "phase_5_5_reader";
 
 export interface CostPerPhaseRow {
   phase: CostPhaseKey;

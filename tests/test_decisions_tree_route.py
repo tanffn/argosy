@@ -172,6 +172,7 @@ def test_agent_tree_returns_fm_at_root_for_synthesis_run(
         "risk_facilitator",
         "plan_critique",
         "codex_second_opinion",
+        "whole_artifact_reader",
     ]
 
     # Status summary should be present and have integer counts.
@@ -294,9 +295,10 @@ def test_agent_tree_response_includes_cost_breakdown(
     assert cb["agent_count"] == 4  # fund_manager + plan_synth + risk_fac + news
     # Each seeded role costs 0.001 -> total is 0.004.
     assert cb["total_usd"] == pytest.approx(0.004)
-    # All six phase keys present even though only a subset were exercised.
+    # All phase keys present even though only a subset were exercised.
     assert set(cb["by_phase"].keys()) == {
-        "phase_1", "phase_2", "phase_3", "phase_4", "phase_4_5_codex", "phase_5",
+        "phase_1", "phase_2", "phase_3", "phase_4", "phase_4_5_codex",
+        "phase_5", "phase_5_5_reader",
     }
     # by_phase reflects role fallback mapping.
     assert cb["by_phase"]["phase_1"] == pytest.approx(0.001)  # news
@@ -310,7 +312,7 @@ def test_agent_tree_response_includes_cost_breakdown(
     # cost_per_phase_table is a list of {phase, cost, agent_count}.
     table = cb["cost_per_phase_table"]
     assert isinstance(table, list)
-    assert len(table) == 6
+    assert len(table) == 7
     for row in table:
         assert {"phase", "cost", "agent_count"} <= set(row.keys())
 
