@@ -625,6 +625,7 @@ def resolve_plan_numbers(
     # ------------------------------------------------------------------
     _apply_fi_methodology(session, user_id, values)
     _apply_us_situs_estate(session, user_id, values)
+    _apply_nvda_current_weight(session, user_id, values)
     _apply_fx_boi(session, values)
 
     # Canonical dual-track retirement ages — DISPLAY surfaces only (see the
@@ -949,6 +950,59 @@ def _apply_us_situs_estate(
     except Exception as exc:  # noqa: BLE001 — defensive; leave pending
         log.warning("plan_numeric_resolver.us_situs_failed err=%s", exc)
         values[key] = ResolvedValue.pending(key, "nis", loc)
+
+
+def _apply_nvda_current_weight(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Override ``concentration.nvda_current_pct`` with a DETERMINISTIC,
+    snapshot-derived value (stored as a fraction 0–1, matching the unit
+    convention).
+
+    The current NVDA weight is a mechanical fact, not a judgment — yet it was
+    sourced from the LLM concentration analyst's ``current_nvda_pct`` and went
+    "[derivation pending]" whenever that agent's output failed validation. That
+    fragility is one leg of the "NVDA weight reported three ways" defect. Here
+    we compute it deterministically as NVDA ÷ tradeable securities book — the
+    SAME canonical definition the wealth dashboard uses (one number across
+    surfaces) — so it is never pending and always auditable. The analyst still
+    owns the cap (a genuine judgment); only the current weight is overridden.
+    """
+    key = "concentration.nvda_current_pct"
+    loc = "wealth_dashboard.nvda_concentration_pct(snapshot positions)"
+    try:
+        from argosy.services.wealth_dashboard import nvda_concentration_pct
+
+        snap = session.execute(
+            select(PortfolioSnapshotRow)
+            .where(PortfolioSnapshotRow.user_id == user_id)
+            .order_by(PortfolioSnapshotRow.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if snap is None:
+            return  # leave whatever the role resolver set (likely pending)
+        try:
+            positions = json.loads(snap.positions_json or "[]")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return
+        pct = nvda_concentration_pct(positions)
+        if pct is None:
+            return
+        values[key] = ResolvedValue(
+            key=key,
+            value=pct / 100.0,  # stored as a fraction (0–1), unit "pct"
+            unit="pct",
+            status="resolved",
+            source_locator=f"{loc} (snapshot id={snap.id})",
+            agent_report_id=None,
+            confidence="HIGH",
+            formula=(
+                "NVDA usd_value_k ÷ tradeable securities book (excl. cash + "
+                "physical real estate), snapshot-derived — % of tradeable book"
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — defensive; leave prior value
+        log.warning("plan_numeric_resolver.nvda_current_weight_failed err=%s", exc)
 
 
 def _apply_fi_methodology(

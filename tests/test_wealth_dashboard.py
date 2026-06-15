@@ -532,8 +532,11 @@ class TestConcentration:
             _seed_plan_with_nvda_target(s, nvda_target_pct=45.0)
             dash = compute_wealth_dashboard(s, user_id="ariel")
         c = dash.concentration
-        # NVDA = 200k / 1000k = 20%
-        assert c.current_pct == pytest.approx(20.0)
+        # Canonical denominator = tradeable securities book (excl. cash + RE):
+        # NVDA 200 + SGOV 200 + VOO 60 = 460. NVDA = 200 / 460 = 43.48%.
+        # (NOT 200/1000 of the cash-inclusive total — that was the old
+        # divergent dashboard-only denominator.)
+        assert c.current_pct == pytest.approx(200.0 / 460.0 * 100.0)
         assert c.target_pct == 45.0
         assert c.target_source is not None and "horizon_medium" in c.target_source
 

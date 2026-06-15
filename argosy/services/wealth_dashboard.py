@@ -861,6 +861,58 @@ def _cash_runway(
     )
 
 
+def tradeable_securities_usd_k(positions: list[dict]) -> float:
+    """Canonical denominator for single-name concentration: the tradeable
+    SECURITIES book in USD-thousands.
+
+    Concentration is measured against the investable securities you could
+    actually rebalance — NOT cash and NOT physical real estate (you can't
+    diversify NVDA risk by owning a house). A position counts when it is a
+    real instrument (has a ticker symbol) and is not cash. UCITS, Israeli
+    trackers, US single names, and REIT *securities* (which carry a symbol)
+    all count; cash rows and physical-real-estate rows (symbol "-"/empty) do
+    not. This is the single definition the dashboard AND the plan resolver
+    use, so the NVDA weight is one number, not three.
+    """
+    total = 0.0
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        asset_type = (p.get("asset_type") or "").lower()
+        symbol = (p.get("symbol") or "").strip()
+        if "cash" in asset_type:
+            continue
+        if not symbol or symbol in {"-", "—"}:
+            continue
+        try:
+            total += float(p.get("usd_value_k") or 0.0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def nvda_concentration_pct(
+    positions: list[dict], symbol: str = "NVDA"
+) -> float | None:
+    """Single-name weight = symbol value ÷ tradeable securities book × 100.
+
+    Deterministic and snapshot-derived (no LLM judgment). Returns None when
+    the tradeable book is empty. This is THE canonical current concentration
+    figure cited by every surface.
+    """
+    book = tradeable_securities_usd_k(positions)
+    if book <= 0:
+        return None
+    sym_k = 0.0
+    for p in positions:
+        if isinstance(p, dict) and (p.get("symbol") or "").upper() == symbol.upper():
+            try:
+                sym_k += float(p.get("usd_value_k") or 0.0)
+            except (TypeError, ValueError):
+                continue
+    return sym_k / book * 100.0
+
+
 def _concentration(
     *,
     snapshot: PortfolioSnapshotRow | None,
@@ -877,19 +929,14 @@ def _concentration(
     else:
         try:
             positions = json.loads(snapshot.positions_json or "[]")
-            totals = json.loads(snapshot.totals_json or "{}")
         except json.JSONDecodeError:
             positions = []
-            totals = {}
-        total_usd_k = totals.get("total_usd_value_k") or 0.0
-        sym_usd_k = 0.0
-        for p in positions:
-            if isinstance(p, dict) and (p.get("symbol") or "").upper() == symbol:
-                sym_usd_k += float(p.get("usd_value_k") or 0.0)
-        if total_usd_k > 0:
-            current_pct = (sym_usd_k / float(total_usd_k)) * 100.0
-        else:
-            missing.append("snapshot has no total_usd_value_k")
+        # Canonical denominator: the tradeable securities book (excl. cash and
+        # physical real estate), the same definition the plan resolver uses —
+        # one NVDA weight across surfaces, not three.
+        current_pct = nvda_concentration_pct(positions, symbol=symbol)
+        if current_pct is None:
+            missing.append("snapshot has no tradeable securities to weigh against")
 
     target_pct: float | None = None
     target_source: str | None = None
