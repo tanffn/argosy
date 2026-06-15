@@ -3283,11 +3283,88 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
                         pv.id, exc,
                     )
 
+        # #11 — wire the whole-artifact + freshness inputs so the dormant
+        # coherence / FI-shock / input-freshness checks RUN in production.
+        # Each is built belt-and-suspenders fail-soft: the gate must NEVER
+        # crash promotion, so any builder failure logs + falls back to None
+        # (the gate tolerates None for every one of these — the corresponding
+        # check simply skips). The resulting violations flow through the SAME
+        # verdict-handling path as every other check (no new branching, no
+        # separate hard-block) — see the /accept handler's blocking_checks.
+        from datetime import date as _date
+
+        artifact = None
+        try:
+            from argosy.services.assembled_artifact import assemble_plan_artifact
+
+            artifact = assemble_plan_artifact(db, user_id=pv.user_id) if db is not None else None
+        except Exception:  # noqa: BLE001 — never break accept on assembly failure
+            import logging
+            logging.getLogger(__name__).warning(
+                "assemble_plan_artifact_failed pv=%s", getattr(pv, "id", "?"),
+            )
+            artifact = None
+
+        # "today" — match the rest of the services layer (date.today()).
+        today = _date.today()
+
+        # Latest portfolio-snapshot capture date for this user.
+        snapshot_date = None
+        try:
+            if db is not None:
+                from sqlalchemy import select
+                from argosy.state.models import PortfolioSnapshotRow
+
+                snapshot_date = db.execute(
+                    select(PortfolioSnapshotRow.snapshot_date)
+                    .where(PortfolioSnapshotRow.user_id == pv.user_id)
+                    .order_by(PortfolioSnapshotRow.imported_at.desc())
+                    .limit(1)
+                ).scalar_one_or_none()
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "snapshot_date_lookup_failed pv=%s", getattr(pv, "id", "?"),
+            )
+            snapshot_date = None
+
+        # Cached analyst-report capture dates for this run: {agent_role: date}.
+        # AgentReport.decision_id is str(decision_run_id) (see decisions/flow.py),
+        # created_at is tz-aware → take the latest per role and reduce to a date.
+        analyst_report_dates = None
+        try:
+            if db is not None and pv.decision_run_id is not None:
+                from sqlalchemy import select
+                from argosy.state.models import AgentReport
+
+                rows = db.execute(
+                    select(AgentReport.agent_role, AgentReport.created_at)
+                    .where(AgentReport.decision_id == str(pv.decision_run_id))
+                ).all()
+                latest: dict[str, _date] = {}
+                for role, created_at in rows:
+                    if created_at is None:
+                        continue
+                    d = created_at.date()
+                    if role not in latest or d > latest[role]:
+                        latest[role] = d
+                analyst_report_dates = latest or None
+        except Exception:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning(
+                "analyst_report_dates_lookup_failed pv=%s", getattr(pv, "id", "?"),
+            )
+            analyst_report_dates = None
+
         verdict = gate_plan_output(
             horizon_text=horizon_text,
             synth=synth,
             distillate=None,  # Phase 4 will wire the typed distillate
             resolved=resolved,
+            artifact=artifact,
+            today=today,
+            snapshot_date=snapshot_date,
+            analyst_report_dates=analyst_report_dates,
         )
 
         # S18 — instrument-domicile check on the STRUCTURED doc. The frozen
