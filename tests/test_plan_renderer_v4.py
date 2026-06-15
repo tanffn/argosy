@@ -406,12 +406,12 @@ def test_section_evidence_appendix_empty_when_no_sections():
     assert render_section_evidence_appendix(output) == ""
 
 
-def test_assumption_ledger_appendix_renders_15_rows():
-    """v1 ledger emits the 15 canonical assumption rows."""
+def test_assumption_ledger_appendix_renders_16_rows():
+    """v1 ledger emits the 16 canonical assumption rows."""
     md = render_assumption_ledger_appendix()
     assert "## Appendix — Assumption ledger" in md
-    # All 15 rows referenced by ID.
-    for i in range(1, 16):
+    # All 16 rows referenced by ID.
+    for i in range(1, 17):
         assert f"| A{i} " in md, f"row A{i} missing from ledger"
     # Methodology-consistent values surface (the stale FI thresholds —
     # 2.4% return, 20% cap, 6.82M/14.21M/25.83M — were reconciled to the
@@ -420,6 +420,13 @@ def test_assumption_ledger_appendix_renders_15_rows():
     assert "3.0% real" in md       # A2 perpetual SWR (FI sizing)
     assert "13% of portfolio" in md  # A10 NVDA cap
     assert "₪341k/yr" in md         # A13 Phase-2 stress (now labelled as such)
+    # A16 — the MC solvency spend basis + its bridge to the perpetuity basis,
+    # so the dual-track retirement age (which runs on the MC-central number) no
+    # longer reads as inconsistent with the headline permanent-equivalent spend.
+    assert "| A16 " in md
+    assert "solvency" in md.lower()
+    # The bridge must be spelled out (perpetuity minus the flat allowances).
+    assert "phase" in md.lower()  # "modeled as time-varying phases"
     # The stale conflicting FI thresholds must be gone.
     for stale in ("6.82M", "14.21M", "25.83M", "1.32%", "2.4% real"):
         assert stale not in md, f"stale ledger value {stale!r} still present"

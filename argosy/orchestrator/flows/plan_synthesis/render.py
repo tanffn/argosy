@@ -522,6 +522,27 @@ _ASSUMPTION_LEDGER_V1: list[dict[str, str]] = [
         "year": "2043-2050", "confidence": "MEDIUM",
         "affects": "Sequence-risk insulation around weddings + car + home",
     },
+    {
+        # Value overridden from the resolver ``spend.mc_central_nis`` in
+        # _ledger_rows_with_manifest (the SAME basis the ruin hero / scenario
+        # grid / dual-track age bind to). Hardcoded fallback only when the
+        # manifest is absent. The bridge to A2 is the point of this row: the
+        # retirement-age MC legitimately runs on a LOWER number than the
+        # headline perpetuity spend, and without this row the two read as a
+        # contradiction.
+        "id": "A16", "name": "MC solvency spend basis (drives the retirement age)",
+        "value": "₪281,584/yr", "source": "retirement_plan.resolve_canonical_basis (codex-verified)",
+        "year": "2026", "confidence": "HIGH",
+        "affects": (
+            "Earliest-safe + capital-preservation ages (the dual-track Monte "
+            "Carlo). = permanent-equivalent spend ₪311,584 (A2) MINUS the ₪30k "
+            "flat allowances (₪15k late-life healthcare ramp + ₪15k home "
+            "upgrade), which the MC models as time-varying expense phases "
+            "rather than a flat perpetual line — NOT a separate spend "
+            "assumption. Discretionary home upgrades are added back in the "
+            "stress basis (₪296,584)."
+        ),
+    },
 ]
 
 
@@ -555,6 +576,8 @@ def _ledger_rows_with_manifest(resolved) -> list[dict[str, str]]:
     cap = _rv("concentration.nvda_cap_pct")
     savings = _rv("savings.annual_net_nis")
     t12 = _rv("spend.annual_t12_nis")
+    mc_central = _rv("spend.mc_central_nis")
+    mc_stress = _rv("spend.mc_stress_nis")
     fx_spot = _rv("fx.usd_nis")
     fx_lo = _rv("fx.usd_nis_band_low")
     fx_hi = _rv("fx.usd_nis_band_high")
@@ -565,8 +588,29 @@ def _ledger_rows_with_manifest(resolved) -> list[dict[str, str]]:
         by_id["A2"]["value"] = f"{swr*100:.1f}% real"
         by_id["A2"]["affects"] = (
             f"FI perpetuity {_nis(perp)} = permanent-equivalent spend "
-            f"{_nis(spend)} / {swr*100:.1f}%"
+            f"{_nis(spend)} / {swr*100:.1f}%  (the dual-track retirement-age MC "
+            f"runs on the LOWER solvency basis — see A16 for the bridge)"
         )
+    # A16 — MC solvency spend basis (the dual-track age basis). Overridden from
+    # the resolver so the doc can never drift from the canonical MC basis; the
+    # bridge formula is rebuilt against the resolved perpetuity spend (A2) so
+    # the "minus flat allowances" arithmetic stays self-consistent.
+    if mc_central is not None and "A16" in by_id:
+        by_id["A16"]["value"] = f"{_nis(mc_central)}/yr"
+        if spend is not None:
+            gap = float(spend) - float(mc_central)
+            stress_clause = (
+                f" Discretionary home upgrades are added back in the stress "
+                f"basis ({_nis(mc_stress)})." if mc_stress is not None else ""
+            )
+            by_id["A16"]["affects"] = (
+                "Earliest-safe + capital-preservation ages (the dual-track "
+                f"Monte Carlo). = permanent-equivalent spend {_nis(spend)} (A2) "
+                f"MINUS the {_nis(gap)} flat allowances (late-life healthcare "
+                "ramp + home upgrade), which the MC models as time-varying "
+                "expense phases rather than a flat perpetual line — NOT a "
+                f"separate spend assumption.{stress_clause}"
+            )
     if total is not None and perp is not None and reserve is not None and "A3" in by_id:
         by_id["A3"]["value"] = _nis(total)
         by_id["A3"]["affects"] = (
@@ -593,7 +637,7 @@ def _ledger_rows_with_manifest(resolved) -> list[dict[str, str]]:
 def render_assumption_ledger_appendix(resolved=None) -> str:
     """Render the v1 ``Appendix — Assumption ledger`` table.
 
-    Hard-coded 15-row table sourced from
+    Hard-coded 16-row table sourced from
     ``tmp_review/plan_document_v4_spec.md`` §2/§3 (real return, inflation,
     FX, tax retention, NVDA cap formula inputs, T12 spend, MC threshold,
     lump-spike liquidity bucket). Each row exposes:
@@ -1463,8 +1507,12 @@ def render_plan_appendices(
     if session is not None and decision_run_id is not None:
         try:
             from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+            # include_canonical_ages so the manifest carries spend.mc_central_nis
+            # (A16's derived value); this is a top-level doc build, not the
+            # re-entrant NVDA-haircut hop the gate guards against.
             _resolved = resolve_plan_numbers(
                 session, user_id=user_id, decision_run_id=decision_run_id,
+                include_canonical_ages=True,
             )
         except Exception:  # noqa: BLE001 — ledger falls back to static values
             _resolved = None

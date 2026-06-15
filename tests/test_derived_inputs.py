@@ -120,6 +120,19 @@ def test_fire_bridge_is_present_and_uses_permanent_spend_basis(session):
     assert "permanent_annual_spend_nis" in fld["source"]
 
 
+def test_mc_spend_basis_fields_present_with_source(session):
+    """The MC solvency spend basis (central + stress) must be surfaced as
+    DerivedFields so /retirement can show the SAME number the dual-track age
+    runs on (the bridge to the headline permanent-equivalent spend). With no
+    plan run the resolver can't supply them → pending, never fabricated, but
+    the field + source locator must exist."""
+    d = compute_derived_inputs(session, user_id="ariel", today=date(2026, 6, 4))
+    for k in ("mc_central_spend_nis", "mc_stress_spend_nis"):
+        assert k in d, f"{k} missing"
+        assert d[k]["source"], f"{k} has no source locator"
+        assert d[k]["status"] in ("resolved", "pending")
+
+
 def test_every_field_carries_source(session):
     d = compute_derived_inputs(session, user_id="ariel", today=date(2026, 6, 4))
     for k, v in d.items():

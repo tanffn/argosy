@@ -282,6 +282,33 @@ def compute_derived_inputs(session, *, user_id: str, today: date | None = None) 
     put("fi_total_capital_nis", fld_from_rv("retirement.fi_total_capital_nis", "nis"))
     put("liquidity_reserve_nis", fld_from_rv("retirement.liquidity_reserve_nis", "nis"))
 
+    # MC solvency spend basis — the SAME number the dual-track retirement age
+    # runs on. Surfaced alongside the permanent-equivalent monthly_need so the
+    # two don't read as inconsistent: MC-central = permanent-equivalent spend
+    # MINUS the flat healthcare-ramp + home-upgrade allowances (which the MC
+    # models as time-varying expense phases instead). Stress adds home back.
+    # See the plan-doc assumption ledger A16 for the full bridge.
+    #
+    # Pulled DIRECTLY from resolve_canonical_basis (the same source the dual-
+    # track age above binds to), NOT the resolver manifest: the manifest's
+    # spend.mc_central_nis is gated behind include_canonical_ages (off on the
+    # display path to avoid a second heavy MC), so it would always be pending
+    # here. Best-effort — any failure falls back to pending, never fabricated.
+    mc_src = "retirement_plan.resolve_canonical_basis.spend_central_nis"
+    mc_stress_src = "retirement_plan.resolve_canonical_basis.spend_stress_nis"
+    try:
+        from argosy.services.retirement.retirement_plan import resolve_canonical_basis
+        _basis = resolve_canonical_basis(session=session, user_id=user_id)
+        _c = _f(getattr(_basis, "spend_central_nis", None))
+        _st = _f(getattr(_basis, "spend_stress_nis", None))
+    except Exception as exc:  # noqa: BLE001 — best-effort; pending on failure
+        log.warning("derived_inputs.mc_spend_basis_failed", error=str(exc))
+        _c = _st = None
+    put("mc_central_spend_nis", DerivedField(_c, "nis", mc_src, "HIGH")
+        if _c else DerivedField.pending("nis", mc_src))
+    put("mc_stress_spend_nis", DerivedField(_st, "nis", mc_stress_src, "HIGH")
+        if _st else DerivedField.pending("nis", mc_stress_src))
+
     # FIRE bridge: from retirement to the first pension unlock (age 60), spend
     # is funded entirely from liquid assets. Requirement = bridge years ×
     # permanent-equivalent annual spend — NOT the lower T12 burn the plan doc
