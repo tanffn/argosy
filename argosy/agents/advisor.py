@@ -150,14 +150,34 @@ class AdvisorAgent(IntakeAgent):
                 "the user'."
             )
 
+        # Stage frame. During active intake (no current plan) the numbered-stage
+        # interview frame drives the gap-filling flow. Once the user HAS a
+        # current plan, intake is complete — the route masquerades that as
+        # "stage_11", which made the model narrate intake-stage progress
+        # ("closing stage 11", "nothing outstanding for stage 11") in ordinary
+        # chat. In ongoing mode we drop the numbered frame and forbid that
+        # narration outright.
+        if has_current_plan:
+            stage_frame = (
+                "Intake is COMPLETE — you are in ongoing-advisor mode (the user "
+                "already has a current plan). Do NOT narrate the intake "
+                "workflow: never mention stage numbers, and never say \"closing "
+                "stage\", \"stage complete\", \"nothing outstanding for stage\", "
+                "or \"intake complete\". Just address the user's actual request.\n\n"
+            )
+        else:
+            stage_frame = (
+                f"Current stage: {current_stage} ({stage_index} of {len(INTAKE_STAGES)}).\n"
+                f"Stage purpose: {stage_purpose}\n\n"
+            )
+
         system = (
             "You are the advisor agent on the Argosy fleet — a persistent "
             "financial-context companion. Each turn round-trips through the "
             "model and takes ~10 seconds, so be efficient. Conversational, "
             "calm, professional. Prioritize critical info first (tax "
             "residency, family, income, assets, savings rate).\n\n"
-            f"Current stage: {current_stage} ({stage_index} of {len(INTAKE_STAGES)}).\n"
-            f"Stage purpose: {stage_purpose}\n\n"
+            f"{stage_frame}"
             f"{mode_addendum}\n\n"
             "BATCHING RULE — when in gap_driven mode, ask 2-4 RELATED "
             "sub-questions per turn whenever the fields naturally cluster:\n"
@@ -267,6 +287,30 @@ class AdvisorAgent(IntakeAgent):
                 "\"do a full synthesis\" to escalate to large; they cannot easily reverse a\n"
                 "hasty small Delta.\n"
             )
+
+        # Persistence honesty — the advisor's ONLY durable write is the
+        # `context_updates` it emits (which update the user's profile). It
+        # cannot edit the Portfolio snapshot or other surfaces. Claiming a
+        # change is "logged/done" when the user-visible number never moved
+        # (the snapshot reads a different source than the profile) is a trust
+        # violation. Make the model own exactly what it did and didn't persist.
+        system = system + (
+            "\n\nPERSISTENCE HONESTY\n\n"
+            "Your only durable write is the `context_updates` you emit this "
+            "turn — they update the user's PROFILE. You CANNOT directly edit the "
+            "Portfolio snapshot, the plan, or any other surface. So:\n"
+            "  - Never tell the user something is \"logged\", \"updated\", "
+            "\"saved\", \"reclassified\", \"recorded\", or \"done\" unless you "
+            "actually emitted it as a context_update on THIS turn.\n"
+            "  - If a profile update will not immediately appear on a surface "
+            "that reads a different source (e.g. the Portfolio real-estate / "
+            "holdings panels read the imported snapshot, not the profile), say "
+            "so plainly — \"I've noted this in your profile; the Portfolio page "
+            "won't reflect it until the snapshot is rebuilt\" — rather than "
+            "implying the change is already visible.\n"
+            "  - Describe recommendations and reclassifications as proposals, "
+            "not as completed system changes, unless they are.\n"
+        )
 
         if answered_fields is None:
             answered_block = "  (route did not compute — derive from YAML below as best you can)"

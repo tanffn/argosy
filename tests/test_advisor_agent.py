@@ -225,6 +225,67 @@ def test_advisor_prompt_includes_amendment_classification_block() -> None:
     assert "large" in sys_lower
 
 
+def test_advisor_suppresses_intake_stage_narration_when_plan_exists() -> None:
+    """Ongoing-advisor mode (has_current_plan=True): the prompt must NOT carry
+    the numbered intake-stage frame (the route masquerades a completed intake as
+    'stage_11'), and must explicitly tell the model not to narrate stage
+    progress — the 'closing stage 11' leak the user hit."""
+    agent = AdvisorAgent(user_id="ariel")
+    sys, _ = agent.build_prompt(
+        current_stage="stage_11",  # the route's complete→stage_11 masquerade
+        accumulated_context="",
+        last_user_message="log a Pipera payment",
+        history_excerpt="",
+        answered_fields=[],
+        missing_fields=[],
+        mode="user_driven",
+        has_current_plan=True,
+    )
+    assert "Current stage: stage_11" not in sys
+    assert "11 of 11" not in sys
+    low = sys.lower()
+    assert "ongoing-advisor mode" in low
+    assert "closing stage" in low  # instructed NOT to say it
+
+
+def test_advisor_prompt_keeps_stage_frame_during_active_intake() -> None:
+    """During active intake (no current plan) the numbered-stage frame is
+    preserved — that flow is unchanged."""
+    agent = AdvisorAgent(user_id="ariel")
+    sys, _ = agent.build_prompt(
+        current_stage="stage_3",
+        accumulated_context="",
+        last_user_message="hello",
+        history_excerpt="",
+        answered_fields=[],
+        missing_fields=["identity.tax_residency"],
+        mode="gap_driven",
+        has_current_plan=False,
+    )
+    assert "Current stage: stage_3" in sys
+
+
+def test_advisor_prompt_has_persistence_honesty_block() -> None:
+    """The prompt must instruct the advisor to claim 'logged/updated/done' ONLY
+    for what it persists via context_updates, and to flag when a profile update
+    won't be visible on a surface that reads a different source — the trust gap
+    where it said 'reclassified' while the Portfolio panel still showed the old
+    value."""
+    agent = AdvisorAgent(user_id="ariel")
+    sys, _ = agent.build_prompt(
+        current_stage="stage_11",
+        accumulated_context="",
+        last_user_message="update my Pipera balance",
+        history_excerpt="",
+        answered_fields=[],
+        missing_fields=[],
+        mode="user_driven",
+        has_current_plan=True,
+    )
+    assert "PERSISTENCE HONESTY" in sys
+    assert "context_updates" in sys
+
+
 def test_advisor_prompt_omits_amendment_block_without_current_plan() -> None:
     """If the user has no current plan, the amendment block is omitted —
     no point asking the model to classify amendments to a plan that
