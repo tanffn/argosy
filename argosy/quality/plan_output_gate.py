@@ -18,6 +18,8 @@ violation.
 """
 from __future__ import annotations
 
+import logging
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from argosy.quality.canonical_sections import (
@@ -25,6 +27,11 @@ from argosy.quality.canonical_sections import (
     DISTILLATE_FIELD_TO_SECTION_ID,
     MVP_COVERAGE_THRESHOLD,
 )
+from argosy.quality.coherence_gate import (
+    check_cross_surface_coherence,
+    check_fi_sufficiency_under_shock,
+)
+from argosy.quality.freshness_gate import check_input_freshness
 from argosy.quality.gate_types import GateCheck, GateVerdict, GateViolation
 from argosy.quality.numeric_source_gate import check_headline_numeric_source
 from argosy.quality.regex_patterns import (
@@ -40,7 +47,11 @@ if TYPE_CHECKING:
         HorizonSection,
         PlanSynthesisOutput,
     )
+    from argosy.services.assembled_artifact import AssembledArtifact
     from argosy.services.plan_numeric_resolver import ResolvedPlanNumbers
+
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +582,10 @@ def gate_plan_output(
     *,
     coverage_threshold: int = MVP_COVERAGE_THRESHOLD,
     resolved: "ResolvedPlanNumbers | None" = None,
+    artifact: "AssembledArtifact | None" = None,
+    today: "date | None" = None,
+    snapshot_date: "date | None" = None,
+    analyst_report_dates: "dict[str, date] | None" = None,
 ) -> GateVerdict:
     """Run all gate checks and return an aggregate verdict.
 
@@ -589,6 +604,15 @@ def gate_plan_output(
             If None, check 6 is skipped here — the caller is responsible
             for fail-closed handling in enforce mode (see
             `plan._run_plan_output_gate`).
+        artifact: the assembled whole-artifact (every user-facing surface +
+            a per-surface headline map). Required for the cross-surface
+            coherence check (and the extraction-error fail-loud). Skipped
+            when None.
+        today: the run date the plan is produced for. Required for the
+            input-freshness check; the check is skipped entirely when None.
+        snapshot_date: the portfolio-snapshot capture date (for freshness).
+        analyst_report_dates: ``{report_name: capture_date}`` for cached
+            analyst outputs the run relies on (for freshness).
 
     Returns:
         GateVerdict with violations grouped by check.
@@ -615,4 +639,92 @@ def gate_plan_output(
     if resolved is not None:
         verdict.extend(check_headline_numeric_source(horizon_text, resolved))
 
+    # S22 — cross-surface coherence + extraction-error fail-loud. Runs only
+    # when the assembled whole-artifact is supplied.
+    if artifact is not None:
+        verdict.extend(check_cross_surface_coherence(artifact))
+        # Fail-loud: a per-surface headline extraction that COLLAPSED must
+        # surface as a violation, not pass vacuously (a collapsed surface
+        # contributes no concept and would otherwise skip the coherence check
+        # silently — the exact false-negative this gate prevents).
+        for surface, err in (getattr(artifact, "extraction_errors", None) or {}).items():
+            verdict.add(
+                GateViolation(
+                    check=GateCheck.CROSS_SURFACE_COHERENCE,
+                    detail=(
+                        f"surface `{surface}` headline-extraction FAILED ({err}) "
+                        "— a collapsed surface cannot be coherence-checked and "
+                        "must not pass vacuously"
+                    ),
+                    locator=surface,
+                )
+            )
+
+    # Task 4 — FI-sufficiency-under-NVDA-shock. Composes the synth's
+    # sufficiency claim with the NVDA concentration tail. Runs only when the
+    # resolver supplies all four shock inputs as RESOLVED values; any missing
+    # input skips the check (a gate must never crash the synthesis).
+    if resolved is not None:
+        try:
+            shock_inputs = _derive_shock_inputs(resolved)
+            if shock_inputs is not None:
+                from argosy.services.retirement.fi_shock import (
+                    fi_sufficiency_under_shock,
+                )
+
+                shock_result = fi_sufficiency_under_shock(**shock_inputs)
+                plan_text = "\n\n".join(t for t in horizon_text.values() if t)
+                verdict.extend(
+                    check_fi_sufficiency_under_shock(
+                        shock_result=shock_result, plan_text=plan_text
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 — a gate must not crash synthesis
+            log.warning("gate_plan_output.fi_shock_skipped err=%s", exc)
+
+    # Task 5 — input freshness (currency). Skipped entirely when `today` is
+    # absent (without a run date there is no age to compute).
+    if today is not None and (snapshot_date is not None or analyst_report_dates):
+        verdict.extend(
+            check_input_freshness(
+                today=today,
+                snapshot_date=snapshot_date,
+                analyst_report_dates=analyst_report_dates or {},
+            )
+        )
+
     return verdict
+
+
+def _derive_shock_inputs(resolved: "ResolvedPlanNumbers") -> dict | None:
+    """Derive the four ``fi_sufficiency_under_shock`` inputs from the resolver.
+
+    Returns a kwargs dict (``net_worth_nis``, ``nvda_value_nis``,
+    ``perpetuity_base_nis``, ``fi_total_nis``) when every required value is
+    RESOLVED, else None (the check is then skipped — never crashes).
+
+    Units:
+      - ``portfolio.net_worth_nis`` / ``retirement.fi_target_nis`` (the
+        perpetuity base) / ``retirement.fi_total_capital_nis`` are NIS.
+      - ``concentration.nvda_current_pct`` is a FRACTION (0–1), so NVDA market
+        value = net_worth × fraction directly (no ÷100).
+    """
+
+    def _resolved(key: str) -> float | None:
+        rv = resolved.get(key)
+        if rv is None or rv.status != "resolved" or rv.value is None:
+            return None
+        return float(rv.value)
+
+    net_worth = _resolved("portfolio.net_worth_nis")
+    perpetuity_base = _resolved("retirement.fi_target_nis")
+    fi_total = _resolved("retirement.fi_total_capital_nis")
+    nvda_frac = _resolved("concentration.nvda_current_pct")
+    if None in (net_worth, perpetuity_base, fi_total, nvda_frac):
+        return None
+    return {
+        "net_worth_nis": net_worth,
+        "nvda_value_nis": net_worth * nvda_frac,  # fraction → no ÷100
+        "perpetuity_base_nis": perpetuity_base,
+        "fi_total_nis": fi_total,
+    }

@@ -804,3 +804,81 @@ def test_ips_sum_skips_when_no_pct_targets():
         SimpleNamespace(label="FI age", value=46.0, unit="years"),
     ])
     assert check_ips_allocation_sum(synth) == []
+
+
+# ---------------------------------------------------------------------------
+# Task 8 — aggregate coherence + shock + freshness into gate_plan_output.
+# These wire the deterministic Phase-1 checks into the central aggregator,
+# following its skip-when-absent pattern.
+# ---------------------------------------------------------------------------
+from datetime import date  # noqa: E402
+
+
+def _artifact(surface_values: dict, extraction_errors: dict | None = None) -> Any:
+    """Minimal AssembledArtifact-shaped stub for the aggregator."""
+    return SimpleNamespace(
+        full_text="",
+        surface_values=surface_values,
+        extraction_errors=extraction_errors or {},
+    )
+
+
+class TestAggregateCrossSurfaceCoherence:
+
+    def test_gate_flags_divergent_surface_artifact(self):
+        art = _artifact(
+            surface_values={
+                "nvda_weight_pct": [("body", 62.5), ("dashboard", 56.9)],
+            },
+            extraction_errors={},
+        )
+        verdict = gate_plan_output({}, artifact=art)
+        viols = verdict.for_check(GateCheck.CROSS_SURFACE_COHERENCE)
+        assert viols, "divergent surfaces must yield a cross-surface violation"
+        assert any("nvda_weight_pct" in v.detail for v in viols)
+
+    def test_gate_flags_extraction_error_failloud(self):
+        # A collapsed surface (extraction error) must NOT pass vacuously.
+        art = _artifact(
+            surface_values={},
+            extraction_errors={"dashboard": "boom"},
+        )
+        verdict = gate_plan_output({}, artifact=art)
+        viols = verdict.for_check(GateCheck.CROSS_SURFACE_COHERENCE)
+        assert viols, "an extraction error must surface as a violation, not a silent pass"
+        assert any("dashboard" in v.detail and "boom" in v.detail for v in viols)
+
+    def test_gate_skips_coherence_when_no_artifact(self):
+        verdict = gate_plan_output({})
+        assert verdict.for_check(GateCheck.CROSS_SURFACE_COHERENCE) == []
+
+    def test_gate_coherence_clean_when_surfaces_agree(self):
+        art = _artifact(
+            surface_values={
+                "net_worth_nis": [("body", 11_950_000.0), ("dashboard", 11_950_000.0)],
+            },
+            extraction_errors={},
+        )
+        verdict = gate_plan_output({}, artifact=art)
+        assert verdict.for_check(GateCheck.CROSS_SURFACE_COHERENCE) == []
+
+
+class TestAggregateInputFreshness:
+
+    def test_gate_flags_stale_snapshot(self):
+        verdict = gate_plan_output(
+            {}, today=date(2026, 6, 15), snapshot_date=date(2026, 6, 12),
+        )
+        assert verdict.for_check(GateCheck.INPUT_FRESHNESS), (
+            "a 3-day-old snapshot (>2-day window) must flag input_freshness"
+        )
+
+    def test_gate_skips_freshness_when_no_today(self):
+        verdict = gate_plan_output({}, snapshot_date=date(2026, 6, 12))
+        assert verdict.for_check(GateCheck.INPUT_FRESHNESS) == []
+
+    def test_gate_fresh_snapshot_clean(self):
+        verdict = gate_plan_output(
+            {}, today=date(2026, 6, 15), snapshot_date=date(2026, 6, 14),
+        )
+        assert verdict.for_check(GateCheck.INPUT_FRESHNESS) == []
