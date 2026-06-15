@@ -422,6 +422,33 @@ _RESOLVERS: dict[str, tuple[tuple[str, ...], Callable[[dict, int | None], list[R
 # ---------------------------------------------------------------------------
 
 
+def _current_boi_usd_nis(
+    session: "Session", snapshot_fx: float
+) -> tuple[float | None, str]:
+    """The ONE USD/NIS mark for marking USD→NIS across the whole book.
+
+    Returns ``(rate, source_label)``. Prefers the CURRENT BOI USD/NIS via the
+    cache-only walkback; falls back to the snapshot's stored ``fx_usd_nis``
+    ONLY when BOI is uncached. Both net worth and US-situs estate call this so
+    there is a single FX convention (prevents the stale-snapshot-vs-current-BOI
+    divergence that understated the estate tail). Returns ``(None, ...)`` when
+    neither a BOI rate nor a positive snapshot fx is available.
+    """
+    from datetime import date
+
+    snap_fx = snapshot_fx if snapshot_fx and snapshot_fx > 0 else 0.0
+    try:
+        from argosy.services.fx import cache as _fxcache
+        rate = float(_fxcache.find_walkback(session, date.today(), "USD", max_days=10))
+        if rate > 0:
+            return rate, "BOI current USD/NIS"
+    except Exception:  # noqa: BLE001 — uncached / unavailable → snapshot fallback
+        pass
+    if snap_fx > 0:
+        return snap_fx, "snapshot fx (BOI uncached)"
+    return None, "no FX available"
+
+
 def _resolve_net_worth(
     session: "Session", user_id: str
 ) -> ResolvedValue:
@@ -436,8 +463,6 @@ def _resolve_net_worth(
     only if BOI is uncached. Holdings remain as-of the snapshot date (provisional
     until refreshed). Pending when no snapshot/value exists — never fabricated.
     """
-    from datetime import date
-
     key = "portfolio.net_worth_nis"
     try:
         snap = session.execute(
@@ -454,14 +479,7 @@ def _resolve_net_worth(
 
     snap_fx = _to_float(snap.fx_usd_nis) or 0.0
     # Current BOI rate (cache-only walkback); fall back to the snapshot fx.
-    fx = None
-    fx_src = "snapshot fx (BOI uncached)"
-    try:
-        from argosy.services.fx import cache as _fxcache
-        fx = float(_fxcache.find_walkback(session, date.today(), "USD", max_days=10))
-        fx_src = "BOI current USD/NIS"
-    except Exception:  # noqa: BLE001
-        fx = snap_fx if snap_fx > 0 else None
+    fx, fx_src = _current_boi_usd_nis(session, snap_fx)
     if not fx or fx <= 0:
         return ResolvedValue.pending(key, "nis", "no FX available")
 
@@ -916,7 +934,10 @@ def _apply_us_situs_estate(
     missing or empty.
     """
     key = "concentration.us_situs_estate_exposure_nis"
-    loc = "safety_gates._us_situs_assets_usd(snapshot positions) × fx_usd_nis"
+    loc = (
+        "safety_gates._us_situs_assets_usd(snapshot positions) × current BOI "
+        "USD/NIS (snapshot fx fallback)"
+    )
     try:
         from argosy.services.retirement.safety_gates import _us_situs_assets_usd
 
@@ -934,7 +955,10 @@ def _apply_us_situs_estate(
         except (json.JSONDecodeError, ValueError, TypeError):
             positions = []
         usd = _us_situs_assets_usd(positions)
-        fx = _to_float(snap.fx_usd_nis)
+        # Mark to the SAME current-BOI-FX basis net worth uses (snapshot fx is
+        # the fallback only when BOI is uncached) — one FX convention per book.
+        snap_fx = _to_float(snap.fx_usd_nis) or 0.0
+        fx, fx_src = _current_boi_usd_nis(session, snap_fx)
         if not usd or not fx or usd <= 0 or fx <= 0:
             values[key] = ResolvedValue.pending(key, "nis", loc)
             return
@@ -943,14 +967,14 @@ def _apply_us_situs_estate(
             value=usd * fx,
             unit="nis",
             status="resolved",
-            source_locator=f"{loc} (snapshot id={snap.id})",
+            source_locator=f"{loc} = {fx_src} {fx:.3f} (snapshot id={snap.id})",
             agent_report_id=None,
             confidence="HIGH",
             formula=(
                 "Σ US-domiciled securities across ALL brokers (by instrument "
                 "domicile: NVDA + US ETFs + US single names at Schwab and the "
                 "Israeli broker; UCITS / Israeli / cash excluded) per IRS NRA "
-                "estate-tax rules, × fx"
+                "estate-tax rules, × current BOI USD/NIS (snapshot fx fallback)"
             ),
         )
     except Exception as exc:  # noqa: BLE001 — defensive; leave pending

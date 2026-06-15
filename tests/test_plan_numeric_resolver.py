@@ -659,3 +659,63 @@ def test_net_worth_marks_to_boi_current_fx(session):
     assert nw.status == "resolved"
     assert abs(float(nw.value) - 3_094_000) < 2_000, f"got {nw.value}"
     assert "2.80" in nw.source_locator or "boi" in nw.source_locator.lower() or "current" in nw.source_locator.lower()
+
+
+def test_us_situs_estate_marks_to_current_boi_fx(session):
+    """US-situs estate exposure must mark USD→NIS at the SAME current-BOI-FX
+    basis net worth uses — NOT the stale stored snapshot fx. Codex re-derivation
+    (run 102) found a ₪75k understatement because estate used the snapshot fx
+    (2.94) while net worth used current BOI (2.965): two FX conventions for the
+    same book. Seeds a stale snapshot fx AND a current BOI rate that DIFFERS.
+    """
+    from datetime import date as _date
+    from decimal import Decimal
+    import json as _json
+    from argosy.state.models import FxRate, PortfolioSnapshotRow
+
+    session.add(PortfolioSnapshotRow(
+        user_id="ariel", imported_at=datetime(2026, 6, 1),
+        snapshot_date=_date(2026, 6, 1), fx_usd_nis=2.94,  # STALE stored fx
+        totals_json=_json.dumps({"total_usd_value_k": 1000.0}),
+        # NVDA is US-domiciled → counted as US-situs by the IRS-NRA classifier.
+        positions_json=_json.dumps([
+            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
+        ]),
+    ))
+    # Current BOI rate (dated today so the walkback finds it regardless of
+    # when the suite runs) DIFFERS from the snapshot fx.
+    session.add(FxRate(date=_date.today(), currency="USD", rate=Decimal("3.10"), source="boi"))
+    session.flush()
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    est = res.get("concentration.us_situs_estate_exposure_nis")
+    assert est is not None and est.status == "resolved"
+    usd = 1000.0 * 1000.0  # $1,000,000 US-situs
+    # Must be marked at CURRENT BOI (3.10), NOT the stale snapshot fx (2.94).
+    assert abs(float(est.value) - usd * 3.10) < 5_000, (
+        f"estate must use current BOI 3.10 (₪{usd*3.10:,.0f}), "
+        f"not snapshot 2.94 (₪{usd*2.94:,.0f}); got {est.value}"
+    )
+    assert abs(float(est.value) - usd * 2.94) > 100_000, "must NOT be snapshot fx"
+
+
+def test_us_situs_estate_falls_back_to_snapshot_fx_when_boi_cold(session):
+    """When NO BOI rate is cached, estate falls back to the snapshot fx and
+    does not crash (mirrors net worth's fallback)."""
+    import json as _json
+    from datetime import date as _date
+    from argosy.state.models import PortfolioSnapshotRow
+
+    session.add(PortfolioSnapshotRow(
+        user_id="ariel", imported_at=datetime(2026, 6, 1),
+        snapshot_date=_date(2026, 6, 1), fx_usd_nis=2.94,
+        totals_json=_json.dumps({"total_usd_value_k": 1000.0}),
+        positions_json=_json.dumps([
+            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
+        ]),
+    ))
+    session.flush()  # NO FxRate seeded → BOI cache cold.
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    est = res.get("concentration.us_situs_estate_exposure_nis")
+    assert est is not None and est.status == "resolved"
+    # Falls back to snapshot fx 2.94.
+    assert abs(float(est.value) - 1000.0 * 1000.0 * 2.94) < 5_000, f"got {est.value}"
