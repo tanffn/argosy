@@ -49,13 +49,19 @@ CONCEPT_FI_MARGIN = "fi_margin_signed_nis"
 class AssembledArtifact:
     """Every user-facing surface, concatenated, plus a per-surface headline map.
 
-    ``full_text``     : exact concatenation of every surface the user reads.
-    ``surface_values``: concept name -> [(surface_name, value)] for every
-                        surface that states a value for that concept.
+    ``full_text``       : exact concatenation of every surface the user reads.
+    ``surface_values``  : concept name -> [(surface_name, value)] for every
+                          surface that states a value for that concept.
+    ``extraction_errors``: surface name ("body"/"dashboard") -> error string for
+                          any per-surface headline extraction that COLLAPSED.
+                          Recorded (not swallowed) so a downstream coherence
+                          gate sees the surface failed instead of mistaking the
+                          resulting absent concept for "not applicable".
     """
 
     full_text: str
     surface_values: dict[str, list[tuple[str, float]]] = field(default_factory=dict)
+    extraction_errors: dict[str, str] = field(default_factory=dict)
 
 
 def _append(
@@ -81,6 +87,22 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
     appendices baked into the long-horizon markdown) via the real export render
     path, plus the deterministic resolver (the body's single source of truth)
     and the typed ``WealthDashboard`` dataclass (the dashboard's own numbers).
+
+    Fail-loud asymmetry: ``build_plan_export_markdown`` (``full_text``) is
+    intentionally NOT wrapped — if the export itself can't render there is no
+    artifact at all, which is a HARD fail and must raise loudly. By contrast a
+    per-surface HEADLINE extraction failure (body resolver / dashboard compute)
+    does not crash assembly; it is recorded in ``extraction_errors`` and logged
+    at error level. That keeps the surface's collapse VISIBLE to downstream
+    coherence gates (a swallowed failure -> concept absent -> the gate skips the
+    concept and passes vacuously, the exact false-negative this plan prevents)
+    instead of letting it masquerade as "not applicable".
+
+    Note: ``fi_margin_signed_nis`` is currently BODY-ONLY — no dashboard
+    ``RetirementBlock`` margin field exists — so the deterministic cross-surface
+    gate will not diverge-check it until a second surface contributes it. The
+    prose-level sign-flip check is the whole-artifact reader's job (Task 6), not
+    this deterministic gate.
     """
     from argosy.services.plan_export import build_plan_export_markdown
     from argosy.services.wealth_dashboard import compute_wealth_dashboard
@@ -96,6 +118,7 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
     full_text = build_plan_export_markdown(session, user_id=user_id)
 
     surface_values: dict[str, list[tuple[str, float]]] = {}
+    extraction_errors: dict[str, str] = {}
 
     # ----- Body / plan surface: the deterministic resolver manifest ---------
     # The resolver is the SINGLE SOURCE OF TRUTH the plan body binds to, so its
@@ -111,8 +134,12 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
             resolved = resolve_plan_numbers(
                 session, user_id=user_id, decision_run_id=decision_run_id,
             )
-        except Exception as exc:  # noqa: BLE001 — body values just stay absent
-            log.warning("assembled_artifact.resolver_failed err=%s", exc)
+        except Exception as exc:  # noqa: BLE001 — recorded, never silently absent
+            # A body-surface collapse must be VISIBLE to downstream gates, not
+            # degraded to ABSENT. Broad except keeps assembly robust, but the
+            # failure is now logged at error level + recorded on the artifact.
+            log.error("assembled_artifact.resolver_failed err=%s", exc)
+            extraction_errors["body"] = repr(exc)
             resolved = None
 
         if resolved is not None:
@@ -121,14 +148,22 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
     # ----- Dashboard surface: the typed WealthDashboard dataclass -----------
     try:
         dash = compute_wealth_dashboard(session, user_id=user_id)
-    except Exception as exc:  # noqa: BLE001 — dashboard values just stay absent
-        log.warning("assembled_artifact.dashboard_failed err=%s", exc)
+    except Exception as exc:  # noqa: BLE001 — recorded, never silently absent
+        # A dashboard-surface collapse must be VISIBLE to downstream gates, not
+        # degraded to ABSENT. Broad except keeps assembly robust, but the
+        # failure is now logged at error level + recorded on the artifact.
+        log.error("assembled_artifact.dashboard_failed err=%s", exc)
+        extraction_errors["dashboard"] = repr(exc)
         dash = None
 
     if dash is not None:
         _add_dashboard_values(dash, surface_values)
 
-    return AssembledArtifact(full_text=full_text, surface_values=surface_values)
+    return AssembledArtifact(
+        full_text=full_text,
+        surface_values=surface_values,
+        extraction_errors=extraction_errors,
+    )
 
 
 def _add_body_values(resolved, bag: dict[str, list[tuple[str, float]]]) -> None:

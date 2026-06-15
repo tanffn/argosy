@@ -208,3 +208,30 @@ def test_surface_values_are_floats_keyed_by_concept(session):
         for surface, value in pairs:
             assert isinstance(surface, str)
             assert isinstance(value, float)
+
+
+def test_extraction_failure_is_recorded_not_swallowed(session, monkeypatch):
+    """A per-surface extraction collapse must be VISIBLE on the artifact, not
+    silently degraded to ABSENT (which would let the downstream coherence gate
+    pass vacuously). The dashboard extraction is patched to raise; the call must
+    still return an artifact (assembly never crashes the synthesis flow), the
+    failure must be recorded in ``extraction_errors["dashboard"]``, and the
+    export ``full_text`` must be unaffected."""
+    _seed_full_plan(session)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("dashboard compute exploded")
+
+    # Patch where assembled_artifact looks it up (it imports inside the fn).
+    monkeypatch.setattr(
+        "argosy.services.wealth_dashboard.compute_wealth_dashboard", _boom
+    )
+
+    art = assemble_plan_artifact(session, user_id="ariel")
+
+    assert isinstance(art, AssembledArtifact)
+    assert "dashboard" in art.extraction_errors
+    assert isinstance(art.extraction_errors["dashboard"], str)
+    assert art.extraction_errors["dashboard"]  # non-empty
+    # The export render path is independent and must still produce full_text.
+    assert "## Wealth Dashboard" in art.full_text
