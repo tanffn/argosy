@@ -32,6 +32,14 @@ class GateCheck(str, Enum):
     # stale-carry-forward fabrication the fund manager rejected (RSI 73.4
     # carried six versions while the live payload read 56.05).
     TECHNICAL_CITATION = "technical_citation"
+    # S21 — the IPS/medium-horizon allocatable sleeve targets (unit
+    # pct_of_portfolio) MUST sum to ~100%. Catches both the implicit-core
+    # under-allocation (sleeves sum to 51%, FM-rejected draft 38) and the
+    # redundant-descriptor over-allocation (a phase/floor roll-up emitted as a
+    # pct_of_portfolio target double-counts → 108%, FM-missed draft 39). The
+    # IPS allocation is a mechanical 100% partition; do not leave it to an LLM
+    # reviewer to eyeball.
+    IPS_ALLOCATION_SUM = "ips_allocation_sum"
 
 
 @dataclass(frozen=True)

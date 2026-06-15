@@ -509,6 +509,61 @@ def check_distillate_section_binding(
 # Top-level: gate_plan_output
 # ---------------------------------------------------------------------------
 
+IPS_SUM_TOLERANCE_PCT = 1.0  # allow ±1pp for rounding across ~11 sleeves
+
+
+def check_ips_allocation_sum(synth: PlanSynthesisOutput) -> list[GateViolation]:
+    """The IPS (medium-horizon) allocatable sleeve targets must sum to ~100%.
+
+    The investment-policy allocation is a mechanical 100% partition of the
+    portfolio across sleeves (each a ``pct_of_portfolio`` target). Two failure
+    modes this catches deterministically — instead of leaving it to an LLM
+    reviewer to eyeball:
+      - UNDER-allocation: an implicit/undeclared core sleeve (sleeves sum to
+        ~51% — the FM-rejected draft 38).
+      - OVER-allocation: a phase/floor POLICY descriptor emitted as a
+        ``pct_of_portfolio`` target double-counts its component sleeves (e.g. a
+        "defensive floor" line on top of the cash + bonds sleeves → ~108% —
+        the FM-MISSED draft 39).
+
+    Policy descriptors (the phase-aware defensive glide: "~8% floor now → ~15%
+    at retirement onset") are POLICY, not allocatable sleeves — they must not
+    carry the ``pct_of_portfolio`` unit in the IPS horizon (put them in themes /
+    a note / a different unit). Any such descriptor here pushes the sum off 100
+    and trips this gate, which is the intended behavior.
+
+    Scoped to the medium horizon: it carries the full IPS allocation. The long
+    horizon legitimately states a single forward policy point (e.g. "15% at
+    retirement onset") and the short horizon carries none, so neither is a
+    100% partition and neither is summed here.
+    """
+    medium = getattr(synth, "medium", None)
+    targets = list(getattr(medium, "targets", []) or [])
+    sleeve_pcts = [
+        (t, float(t.value))
+        for t in targets
+        if getattr(t, "unit", None) == "pct_of_portfolio"
+        and isinstance(getattr(t, "value", None), (int, float))
+    ]
+    if not sleeve_pcts:
+        return []  # nothing to validate (no allocation declared this horizon)
+    total = round(sum(v for _, v in sleeve_pcts), 2)
+    if abs(total - 100.0) <= IPS_SUM_TOLERANCE_PCT:
+        return []
+    listing = "; ".join(f"{getattr(t, 'label', '?')}={v}" for t, v in sleeve_pcts)
+    direction = "OVER-allocated (double-count / redundant descriptor)" if total > 100 else \
+        "UNDER-allocated (implicit/undeclared sleeve)"
+    return [GateViolation(
+        check=GateCheck.IPS_ALLOCATION_SUM,
+        detail=(
+            f"IPS medium-horizon pct_of_portfolio sleeve targets sum to "
+            f"{total}% (must be 100±{IPS_SUM_TOLERANCE_PCT}) — {direction}. "
+            f"Sleeves: {listing}"
+        ),
+        locator="horizon=medium",
+    )]
+
+
 def gate_plan_output(
     horizon_text: dict[str, str],
     synth: PlanSynthesisOutput | None = None,
@@ -550,6 +605,7 @@ def gate_plan_output(
         verdict.extend(check_section_coverage(synth, threshold=coverage_threshold))
         verdict.extend(check_evidence_per_section(synth))
         verdict.extend(check_distillate_section_binding(synth, distillate))
+        verdict.extend(check_ips_allocation_sum(synth))
 
     # Check 6 — headline numeric source (#24). Only runs when the resolver
     # manifest is supplied. Fail-closed for a *missing* manifest in enforce

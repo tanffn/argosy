@@ -735,3 +735,72 @@ def test_canonical_section_ids_count_is_18():
 
 def test_mvp_threshold_is_12():
     assert MVP_COVERAGE_THRESHOLD == 12
+
+
+# ---------------------------------------------------------------------------
+# IPS allocation sum (S21) — the medium-horizon sleeves must sum to ~100%.
+# Reproduces the FM-rejected draft 38 (under, 51%) and FM-MISSED draft 39
+# (over, 108% from a redundant "defensive floor" descriptor target).
+# ---------------------------------------------------------------------------
+from argosy.quality import check_ips_allocation_sum  # noqa: E402
+
+
+def _synth_with_medium_targets(targets: list[Any]) -> Any:
+    # SimpleNamespace tree — the check only reads synth.medium.targets[].unit/
+    # value/label (matches this file's other synth fixtures).
+    return SimpleNamespace(medium=SimpleNamespace(targets=targets))
+
+
+def _pct(label: str, value: float) -> Any:
+    return SimpleNamespace(label=label, value=value, unit="pct_of_portfolio")
+
+
+# The 11 real allocatable sleeves that sum to exactly 100.0 (draft 39's set).
+_CLEAN_SLEEVES = [
+    _pct("US broad-market core (CSPX)", 28.5),
+    _pct("Dividend-quality (FUSA)", 11.2),
+    _pct("International developed ex-US (EXUS)", 11.2),
+    _pct("EM (EIMI)", 4.1),
+    _pct("Growth ex-NVDA (R1GR)", 13.2),
+    _pct("US low-volatility (SPMV)", 6.1),
+    _pct("Real assets (DPYA)", 2.0),
+    _pct("Gold (SGLN)", 3.0),
+    _pct("Cash & T-bills", 6.1),
+    _pct("Short-duration IG bonds", 2.6),
+    _pct("NVDA IPS sleeve", 12.0),
+]
+
+
+def test_ips_sum_passes_at_100():
+    synth = _synth_with_medium_targets(list(_CLEAN_SLEEVES))
+    assert check_ips_allocation_sum(synth) == []
+
+
+def test_ips_sum_flags_over_allocation_from_redundant_descriptor():
+    """Draft 39's bug: a 'defensive floor 8.0' descriptor on top of the cash
+    + bonds sleeves makes the list sum to 108%."""
+    synth = _synth_with_medium_targets(
+        [_pct("Defensive sleeve accumulation-phase floor", 8.0)] + list(_CLEAN_SLEEVES)
+    )
+    viol = check_ips_allocation_sum(synth)
+    assert len(viol) == 1
+    assert viol[0].check is GateCheck.IPS_ALLOCATION_SUM
+    assert "108" in viol[0].detail and "OVER" in viol[0].detail
+
+
+def test_ips_sum_flags_under_allocation_implicit_core():
+    """Draft 38's bug: only the 6 changed sleeves declared (~51%)."""
+    synth = _synth_with_medium_targets([
+        _pct("NVDA", 12.0), _pct("Defensive", 8.0), _pct("Growth", 13.0),
+        _pct("Dividend", 11.0), _pct("EM", 4.0), _pct("Gold", 3.0),
+    ])
+    viol = check_ips_allocation_sum(synth)
+    assert len(viol) == 1
+    assert "UNDER" in viol[0].detail
+
+
+def test_ips_sum_skips_when_no_pct_targets():
+    synth = _synth_with_medium_targets([
+        SimpleNamespace(label="FI age", value=46.0, unit="years"),
+    ])
+    assert check_ips_allocation_sum(synth) == []
