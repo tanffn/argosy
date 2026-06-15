@@ -67,7 +67,9 @@ log = get_logger(__name__)
 class CoherenceFinding(BaseModel):
     """One whole-document coherence finding."""
 
-    kind: Literal["contradiction", "cross_surface", "fragile_claim", "stale", "other"]
+    kind: Literal[
+        "contradiction", "cross_surface", "fragile_claim", "stale", "regression", "other"
+    ]
     severity: Literal["BLOCKER", "AMBER", "YELLOW"]
     detail: str
     surfaces_cited: list[str] = Field(
@@ -130,7 +132,7 @@ fences:
   "overall_assessment": "APPROVE" | "APPROVE_WITH_CONDITIONS" | "BLOCK",
   "findings": [
     {{
-      "kind": "contradiction" | "cross_surface" | "fragile_claim" | "stale" | "other",
+      "kind": "contradiction" | "cross_surface" | "fragile_claim" | "stale" | "regression" | "other",
       "severity": "BLOCKER" | "AMBER" | "YELLOW",
       "detail": "<explanation in your own words>",
       "surfaces_cited": ["<verbatim excerpt 1>", "<verbatim excerpt 2>"]
@@ -189,19 +191,80 @@ def _build_prompt(
 # ----------------------------------------------------------------------
 
 
+_ALLOWED_ASSESSMENTS = {"APPROVE", "APPROVE_WITH_CONDITIONS", "BLOCK"}
+_ALLOWED_KINDS = {
+    "contradiction", "cross_surface", "fragile_claim", "stale", "regression", "other",
+}
+_ALLOWED_SEVERITIES = {"BLOCKER", "AMBER", "YELLOW"}
+
+
+def _coerce_verdict_dict(obj: dict) -> dict:
+    """Defensively coerce a recovered verdict dict into a schema-valid shape.
+
+    A structurally-valid JSON verdict must NOT be discarded wholesale just
+    because one finding carries an out-of-enum ``kind`` or ``severity``. This
+    salvages such a verdict by coercing unknown enum values to safe defaults,
+    preserving ``overall_assessment`` and ALL findings. Only a genuinely
+    unrecoverable (non-dict / no-JSON) input falls through to the synthetic
+    fail-closed BLOCK in ``_parse_verdict``.
+
+    Coercion rules:
+      - ``overall_assessment`` not in the allowed set → "BLOCK" (fail-closed on
+        the load-bearing field — a missing/invalid assessment must not pass);
+      - per finding: unknown ``kind`` → "other"; unknown ``severity`` → "AMBER"
+        (defensive — surface it rather than drop it); ``detail`` coerced to str;
+        ``surfaces_cited`` coerced to a list.
+    """
+    assessment = obj.get("overall_assessment")
+    if assessment not in _ALLOWED_ASSESSMENTS:
+        assessment = "BLOCK"
+
+    coerced_findings: list[dict] = []
+    raw_findings = obj.get("findings")
+    if isinstance(raw_findings, list):
+        for f in raw_findings:
+            if not isinstance(f, dict):
+                continue
+            kind = f.get("kind")
+            if kind not in _ALLOWED_KINDS:
+                kind = "other"
+            severity = f.get("severity")
+            if severity not in _ALLOWED_SEVERITIES:
+                severity = "AMBER"
+            detail = f.get("detail")
+            detail = detail if isinstance(detail, str) else str(detail) if detail is not None else ""
+            surfaces = f.get("surfaces_cited")
+            if not isinstance(surfaces, list):
+                surfaces = []
+            coerced_findings.append({
+                "kind": kind,
+                "severity": severity,
+                "detail": detail,
+                "surfaces_cited": surfaces,
+            })
+
+    return {"overall_assessment": assessment, "findings": coerced_findings}
+
+
 def _parse_verdict(text: str) -> WholeArtifactVerdict:
     """Parse the reader's raw text into a ``WholeArtifactVerdict``.
 
     Strategy:
       1. Strict ``model_validate_json`` (after stripping ```json fences).
-      2. Lenient: locate the first ``{`` and try ``JSONDecoder.raw_decode``.
-      3. **Fail closed** — a synthetic BLOCK verdict with one BLOCKER
-         ``other`` finding explaining the timeout / unparseable output.
+      2. Lenient: locate the first ``{`` and try ``JSONDecoder.raw_decode`` to
+         recover a dict. Any recovered dict is SALVAGED via
+         ``_coerce_verdict_dict`` (unknown enum values coerced, all findings
+         preserved) — a single out-of-enum ``kind``/``severity`` must NOT
+         discard a structurally-valid verdict.
+      3. **Fail closed** — only if NO JSON object can be recovered at all: a
+         synthetic BLOCK verdict with one BLOCKER ``other`` finding explaining
+         the timeout / unparseable output.
 
     The fail-closed default is the S21 lesson: a reviewer that did not
     actually run (timeout / dispatch failure → empty text) or whose output
     can't be recovered must NOT silently wave the plan through. A non-verdict
-    is a BLOCK, not a soft APPROVE.
+    is a BLOCK, not a soft APPROVE. But a recoverable verdict with one odd
+    enum value is real signal and must be preserved, not thrown away.
     """
     if text:
         cleaned = text.strip()
@@ -220,13 +283,31 @@ def _parse_verdict(text: str) -> WholeArtifactVerdict:
         except Exception:
             pass
 
-        # Lenient: find the first { and raw_decode from there.
-        first_brace = cleaned.find("{")
-        if first_brace >= 0:
+        # Recover a dict — first via strict json.loads, then via lenient
+        # raw_decode from the first ``{``. Any recovered dict is salvaged
+        # (out-of-enum values coerced) rather than discarded.
+        recovered: dict | None = None
+        try:
+            loaded = json.loads(cleaned)
+            if isinstance(loaded, dict):
+                recovered = loaded
+        except Exception:
+            pass
+        if recovered is None:
+            first_brace = cleaned.find("{")
+            if first_brace >= 0:
+                try:
+                    decoder = json.JSONDecoder(strict=False)
+                    obj, _ = decoder.raw_decode(cleaned[first_brace:])
+                    if isinstance(obj, dict):
+                        recovered = obj
+                except Exception:
+                    pass
+        if recovered is not None:
             try:
-                decoder = json.JSONDecoder(strict=False)
-                obj, _ = decoder.raw_decode(cleaned[first_brace:])
-                return WholeArtifactVerdict.model_validate(obj)
+                return WholeArtifactVerdict.model_validate(
+                    _coerce_verdict_dict(recovered)
+                )
             except Exception:
                 pass
 
@@ -434,6 +515,7 @@ __all__ = [
     "CoherenceFinding",
     "WholeArtifactVerdict",
     "_build_prompt",
+    "_coerce_verdict_dict",
     "_parse_verdict",
     "run_whole_artifact_review",
 ]

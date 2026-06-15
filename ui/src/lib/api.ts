@@ -1291,6 +1291,7 @@ export type CoherenceFindingKind =
   | "cross_surface"
   | "fragile_claim"
   | "stale"
+  | "regression"
   | "other";
 
 export interface CoherenceFinding {
