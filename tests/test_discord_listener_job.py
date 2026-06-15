@@ -170,6 +170,77 @@ async def test_run_raises_keeps_exit_intent_unset() -> None:
     assert job.connection_status() == "stopped"
 
 
+class _FakeClose(Exception):
+    """Stand-in for websockets.ConnectionClosedError carrying a close code."""
+
+    def __init__(self, code: int, *, via_attr: bool = True) -> None:
+        super().__init__(f"received {code} (private use) Authentication failed.")
+        if via_attr:
+            self.code = code
+
+
+@pytest.mark.asyncio
+async def test_run_terminal_4004_clean_exit_no_restart() -> None:
+    """A 4004 (auth failed) close is NON-recoverable: run() must NOT re-raise
+    (which would crash→restart→reconnect-storm and get the token blocked). It
+    stops cleanly with exit_intent='clean' so the supervisor does not restart."""
+    creds = _make_creds()
+    sf = _make_session_factory()
+
+    async def fake_listener(session_factory, *, creds, on_connected=None, **_):
+        raise _FakeClose(4004)
+
+    job = DiscordListenerJob(creds, sf, listener_fn=fake_listener)
+    await job.run()  # must NOT raise
+
+    assert job.exit_intent == "clean"
+    assert job.connection_status() == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_run_terminal_4004_detected_from_message_text() -> None:
+    """Detection also works when the code is only in the message string."""
+    creds = _make_creds()
+    sf = _make_session_factory()
+
+    async def fake_listener(session_factory, *, creds, on_connected=None, **_):
+        raise _FakeClose(4004, via_attr=False)
+
+    job = DiscordListenerJob(creds, sf, listener_fn=fake_listener)
+    await job.run()
+    assert job.exit_intent == "clean"
+
+
+@pytest.mark.asyncio
+async def test_run_transient_close_still_raises_for_restart() -> None:
+    """A transient/unknown disconnect (not in the terminal set) MUST still
+    propagate so the supervisor restarts with backoff."""
+    creds = _make_creds()
+    sf = _make_session_factory()
+
+    async def fake_listener(session_factory, *, creds, on_connected=None, **_):
+        raise _FakeClose(1006)  # abnormal closure — transient
+
+    job = DiscordListenerJob(creds, sf, listener_fn=fake_listener)
+    with pytest.raises(_FakeClose):
+        await job.run()
+    assert job.exit_intent == "unset"  # supervisor coerces to 'crashed' → restart
+
+
+def test_terminal_close_code_extraction() -> None:
+    from argosy.services.jobs.discord_listener_job import _terminal_close_code
+
+    assert _terminal_close_code(_FakeClose(4004)) == 4004
+    assert _terminal_close_code(_FakeClose(4013)) == 4013
+    assert _terminal_close_code(_FakeClose(4004, via_attr=False)) == 4004  # regex path
+    assert _terminal_close_code(_FakeClose(1006)) is None  # transient
+    assert _terminal_close_code(RuntimeError("boom")) is None
+    # frame-shaped (websockets newer): exc.rcvd.code
+    exc = RuntimeError("x")
+    exc.rcvd = type("F", (), {"code": 4004})()
+    assert _terminal_close_code(exc) == 4004
+
+
 @pytest.mark.asyncio
 async def test_run_does_not_clobber_operator_stop_intent() -> None:
     """Codex review IMPORTANT #1: if the supervisor's cancel path stamped

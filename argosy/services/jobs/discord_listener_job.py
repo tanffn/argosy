@@ -79,6 +79,41 @@ from argosy.services.jobs.registry import JobMetadata
 
 _log = get_logger("argosy.jobs.discord_listener")
 
+# Discord gateway close codes that reconnecting CANNOT fix — auth/config
+# failures. Retrying just hammers the gateway, and a tight reconnect storm is
+# exactly what gets a token rate-limited / blocked. Treat these like missing
+# creds: stop cleanly, NO supervisor restart, leave the job visible in the admin
+# UI until the operator refreshes credentials.
+#   4004 auth failed | 4010 invalid shard | 4011 sharding required
+#   4012 invalid API version | 4013 invalid intent(s) | 4014 disallowed intent(s)
+_TERMINAL_DISCORD_CLOSE_CODES = frozenset({4004, 4010, 4011, 4012, 4013, 4014})
+
+
+def _terminal_close_code(exc: BaseException) -> int | None:
+    """Return the non-recoverable Discord close code behind a websocket
+    disconnect (across websockets-library exception shapes), or None when the
+    failure is transient and a reconnect is warranted."""
+    candidates: list[object] = [getattr(exc, "code", None)]
+    for frame_attr in ("rcvd", "sent"):
+        frame = getattr(exc, frame_attr, None)
+        if frame is not None:
+            candidates.append(getattr(frame, "code", None))
+    for c in candidates:
+        try:
+            ci = int(c)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if ci in _TERMINAL_DISCORD_CLOSE_CODES:
+            return ci
+    # Last resort: the code is reliably embedded in the message text, e.g.
+    # "received 4004 (private use) Authentication failed".
+    import re
+
+    m = re.search(r"\b(4004|401[0-4])\b", str(exc))
+    if m and int(m.group(1)) in _TERMINAL_DISCORD_CLOSE_CODES:
+        return int(m.group(1))
+    return None
+
 
 def discord_listener_metadata() -> JobMetadata:
     """Construct the :class:`JobMetadata` row for the registry.
@@ -219,6 +254,24 @@ class DiscordListenerJob(LongRunningJob):
             # operator intent wins over the voluntary-clean default.
             if self._exit_intent != "operator_stop":
                 self._exit_intent = "clean"
+        except Exception as exc:  # noqa: BLE001 — terminal-auth triage before re-raise
+            # A non-recoverable gateway close (4004 auth / 401x config) must NOT
+            # become a supervisor crash→restart: the reconnect storm is what
+            # blocks the token. Stop cleanly (no restart), like missing creds.
+            # CancelledError is BaseException, so operator-stop still propagates.
+            code = _terminal_close_code(exc)
+            if code is None:
+                raise  # transient → let the supervisor restart with backoff
+            _log.error(
+                "discord_listener.run.terminal_close",
+                close_code=code,
+                note=(
+                    "Discord gateway closed with a non-recoverable code; stopping "
+                    "the listener WITHOUT auto-restart until credentials are "
+                    "refreshed (tight reconnects can get the token blocked)."
+                ),
+            )
+            self._exit_intent = "clean"
         finally:
             # Always return to 'stopped' on exit (clean, operator_stop,
             # or crashed). The supervisor reads exit_intent (set above
