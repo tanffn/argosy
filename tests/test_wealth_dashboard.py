@@ -652,8 +652,14 @@ class TestRsuIncome:
 
 class TestEstateExposure:
     def test_us_situs_above_exemption(self, client_with_db):
-        # Schwab holdings in seed: NVDA 200k + cash 50k + SGOV 200k = 450k USD.
-        # Above the $60k NRA exemption: 390k -> 40% = 156k USD potential liability.
+        # US-situs is classified by instrument DOMICILE, not broker location:
+        #   NVDA 200k (US, Schwab)  + SGOV 200k (US, Schwab)
+        #   + VOO 60k (US-domiciled, held at the ISRAELI broker — counts!)
+        #   = 460k USD US-situs.
+        # Excluded: Schwab USD cash 50k + Leumi NIS cash 20k (portfolio-interest
+        # exemption — cash is never US-situs). The Leumi VOO used to be silently
+        # dropped (broker-location heuristic) and the Schwab cash wrongly added;
+        # the domicile classifier fixes both.
         SF = client_with_db.app.state.session_factory
         with SF() as s:
             _seed_user(s)
@@ -661,13 +667,13 @@ class TestEstateExposure:
             _seed_snapshot(s, fx_usd_nis=3.0)
             dash = compute_wealth_dashboard(s, user_id="ariel")
         e = dash.estate_exposure
-        assert e.us_situs_usd == pytest.approx(450_000.0)
-        assert e.us_situs_nis == pytest.approx(450_000.0 * 3.0)
+        assert e.us_situs_usd == pytest.approx(460_000.0)
+        assert e.us_situs_nis == pytest.approx(460_000.0 * 3.0)
         assert e.above_exemption_usd == pytest.approx(
-            450_000.0 - US_NRA_ESTATE_EXEMPTION_USD
+            460_000.0 - US_NRA_ESTATE_EXEMPTION_USD
         )
         assert e.potential_liability_usd == pytest.approx(
-            (450_000.0 - US_NRA_ESTATE_EXEMPTION_USD) * US_NRA_ESTATE_RATE
+            (460_000.0 - US_NRA_ESTATE_EXEMPTION_USD) * US_NRA_ESTATE_RATE
         )
         assert e.potential_liability_nis == pytest.approx(
             e.potential_liability_usd * 3.0

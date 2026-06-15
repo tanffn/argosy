@@ -1080,11 +1080,12 @@ def _estate_exposure(
 ) -> EstateExposureBlock:
     """Estimate US-situs holdings exposure relative to the NRA exemption.
 
-    Heuristic: positions with ``location`` containing "schwab" are
-    treated as US-domiciled (Schwab US brokerage). This omits the
-    edge case of US-domiciled ETFs held in Israeli brokerage accounts
-    which would also count as US-situs but are harder to detect; we
-    surface that limitation in ``missing_reasons``.
+    Single canonical source: delegates to
+    ``safety_gates._us_situs_assets_usd``, which classifies each position by
+    instrument DOMICILE (``instrument_reference.estate_safe_for``) rather than
+    broker location — so US-domiciled securities held at an Israeli broker are
+    counted, and this dashboard block agrees with the plan's estate headline
+    to the shekel (no per-surface divergence).
     """
     if snapshot is None:
         return EstateExposureBlock(
@@ -1099,13 +1100,11 @@ def _estate_exposure(
         positions = json.loads(snapshot.positions_json or "[]")
     except json.JSONDecodeError:
         positions = []
-    us_usd = 0.0
-    for p in positions:
-        if not isinstance(p, dict):
-            continue
-        loc = (p.get("location") or "").lower()
-        if "schwab" in loc:
-            us_usd += float(p.get("usd_value_k") or 0.0) * 1000.0
+    # Lazy import: safety_gates imports helpers from this module, so importing
+    # it at module scope would create a cycle.
+    from argosy.services.retirement.safety_gates import _us_situs_assets_usd
+
+    us_usd = _us_situs_assets_usd(positions)
     us_nis = us_usd * fx_usd_nis
     above = max(us_usd - US_NRA_ESTATE_EXEMPTION_USD, 0.0)
     liability_usd = above * US_NRA_ESTATE_RATE
@@ -1117,10 +1116,7 @@ def _estate_exposure(
         above_exemption_usd=above,
         potential_liability_usd=liability_usd,
         potential_liability_nis=liability_nis,
-        missing_reasons=[
-            "US-situs estimated from Schwab-location holdings only; "
-            "US-domiciled ETFs in Israeli brokerage may also count",
-        ],
+        missing_reasons=[],
     )
 
 

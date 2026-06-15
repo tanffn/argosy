@@ -22,6 +22,7 @@ Plan: `docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md`
 § Wave 2.
 """
 import json
+import logging
 from dataclasses import dataclass
 from typing import Literal
 
@@ -36,6 +37,8 @@ from argosy.services.wealth_dashboard import (
     _load_user_context_yaml,
 )
 
+
+log = logging.getLogger(__name__)
 
 GateId = Literal["nra_estate", "emergency_liquidity", "conflict_scenario"]
 GateStatus = Literal["PASS", "WARN", "FAIL"]
@@ -54,36 +57,61 @@ class GateVerdict:
 def _us_situs_assets_usd(positions: list[dict]) -> float:
     """Sum US-situs assets per IRS NRA estate-tax rules.
 
-    Heuristic classification (covers Ariel's portfolio shape; refine
-    per-position via intake if needed):
-      - Schwab-domiciled US stocks (NVDA + other US-domiciled equity)
-      - Schwab-domiciled US ETFs (VOO, SGOV, etc. — US-domiciled funds
-        of US stocks/bonds)
-    NOT US-situs (excluded):
-      - Cash in any account (US banks included; per portfolio-interest exemption)
-      - UCITS-domiciled ETFs (Ireland/Luxembourg-domiciled funds)
-      - Israeli/non-US-bank holdings of any kind
+    US-situs is a property of the INSTRUMENT'S DOMICILE, not the broker it
+    happens to sit at: a US-domiciled security (NVDA, SCHD, VOO, AMD, …) is
+    US-situs whether held at Schwab or at an Israeli broker. Classification
+    is therefore delegated to the canonical per-instrument domicile table
+    (``instrument_reference.estate_safe_for``), the SAME source the portfolio
+    route, allocation breakdown, and deployment advisor already use — not a
+    ``location == "schwab"`` heuristic (which silently dropped the entire
+    Leumi-held US book and understated the exposure the UCITS-first policy
+    exists to shrink).
+
+    Counted as US-situs:
+      - Any US-domiciled security at ANY broker (classifier returns False),
+      - Any uncurated, non-cash security (classifier returns None) — counted
+        conservatively and logged, so a new holding fails loud for curation
+        rather than silently dropping out of the estate tail.
+    Excluded:
+      - Cash in any account (portfolio-interest exemption),
+      - UCITS / non-US-domiciled funds and Israeli instruments
+        (classifier returns True),
+      - Physical real estate and other rows with no instrument symbol.
 
     Returns total USD value of US-situs holdings.
     """
+    from argosy.services.instrument_reference import estate_safe_for
+
     total = 0.0
     for p in positions:
-        currency = (p.get("currency") or "").upper()
         asset_type = (p.get("asset_type") or "").lower()
-        location = (p.get("location") or "").lower()
-        details = (p.get("details") or "").lower()
-        # Cash never US-situs
+        details = (p.get("details") or "")
+        symbol = (p.get("symbol") or "").strip()
+        # Cash never US-situs (portfolio-interest exemption).
         if "cash" in asset_type:
             continue
-        # UCITS not US-situs
-        if "ucits" in details or "ucits" in asset_type:
+        # Explicit UCITS marker in the raw fields — estate-safe even when the
+        # ticker is not yet curated (keeps uncurated UCITS like VWRA out).
+        if "ucits" in details.lower() or "ucits" in asset_type:
             continue
-        # Non-Schwab + non-US accounts: skip
-        if not location.startswith("schwab"):
+        estate_safe = estate_safe_for(symbol, details)
+        if estate_safe is True:
+            # Classifier: non-US-situs (UCITS / Israeli / non-US domicile).
             continue
-        if currency != "USD":
-            continue
-        # USD asset at Schwab that's not cash — US-situs by heuristic
+        if estate_safe is None:
+            # Unknown instrument. Rows with no real symbol (physical real
+            # estate, residual cash-like) are not securities → skip. A real
+            # but uncurated ticker is counted conservatively and flagged.
+            if not symbol or symbol in {"-", "—"}:
+                continue
+            log.warning(
+                "us_situs.uncurated_instrument_counted symbol=%s details=%s "
+                "(estate_safe_for returned None; counted as US-situs "
+                "conservatively — add to instrument_reference for an "
+                "authoritative domicile classification)",
+                symbol, details[:80],
+            )
+        # estate_safe is False (US-domiciled) or None-with-symbol (conservative).
         v_k = p.get("usd_value_k") or 0.0
         try:
             total += float(v_k) * 1000.0
@@ -126,9 +154,10 @@ def compute_nra_estate_gate(*, user_id: str, session: Session) -> GateVerdict:
             positions = []
         value = _us_situs_assets_usd(positions)
         situs_note = (
-            f"Sum of Schwab-held USD non-cash positions classified as US-situs "
-            f"per IRS NRA estate-tax rules (NVDA + US-domiciled ETFs). UCITS "
-            f"and cash excluded."
+            "Sum of all US-domiciled securities across every broker, "
+            "classified by instrument domicile (IRS NRA estate-tax rules) — "
+            "NVDA plus US-domiciled ETFs and single names at Schwab AND at the "
+            "Israeli broker. UCITS / Israeli instruments and cash excluded."
         )
 
     if value > fail_threshold:

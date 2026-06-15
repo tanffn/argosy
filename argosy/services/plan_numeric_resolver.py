@@ -899,11 +899,14 @@ def _apply_us_situs_estate(
     session: "Session", user_id: str, values: dict[str, ResolvedValue]
 ) -> None:
     """Derive US-situs estate exposure from the snapshot positions via the
-    canonical IRS-NRA classifier (safety_gates._us_situs_assets_usd: Schwab USD
-    non-cash US-domiciled holdings — NVDA + US ETFs; UCITS + cash excluded),
-    converted to NIS. The synth previously AUTHORED this number (FM caught a
-    ~$926k understatement); feeding the derived value kills the fabrication.
-    Pending (never guessed) when the snapshot is missing or empty.
+    canonical IRS-NRA classifier (safety_gates._us_situs_assets_usd), which
+    classifies each position by instrument DOMICILE
+    (instrument_reference.estate_safe_for) — every US-domiciled security at any
+    broker (NVDA + US ETFs + US single names, at Schwab AND the Israeli broker);
+    UCITS / Israeli instruments and cash excluded — converted to NIS. The synth
+    previously AUTHORED this number (FM caught a fabrication); feeding the
+    derived value kills it. Pending (never guessed) when the snapshot is
+    missing or empty.
     """
     key = "concentration.us_situs_estate_exposure_nis"
     loc = "safety_gates._us_situs_assets_usd(snapshot positions) × fx_usd_nis"
@@ -937,8 +940,10 @@ def _apply_us_situs_estate(
             agent_report_id=None,
             confidence="HIGH",
             formula=(
-                "Σ Schwab USD non-cash US-domiciled positions (NVDA + US ETFs; "
-                "UCITS + cash excluded) per IRS NRA estate-tax rules, × fx"
+                "Σ US-domiciled securities across ALL brokers (by instrument "
+                "domicile: NVDA + US ETFs + US single names at Schwab and the "
+                "Israeli broker; UCITS / Israeli / cash excluded) per IRS NRA "
+                "estate-tax rules, × fx"
             ),
         )
     except Exception as exc:  # noqa: BLE001 — defensive; leave pending
@@ -1081,7 +1086,7 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
     ("retirement.liquidity_reserve_nis", "Liquidity reserve (finite liabilities, held separately)"),
     ("retirement.fire_bridge_nis", "FIRE bridge (retirement→60 liquid drawdown, permanent-equivalent)"),
-    ("concentration.us_situs_estate_exposure_nis", "US-situs estate exposure (IRS NRA — NVDA + US ETFs)"),
+    ("concentration.us_situs_estate_exposure_nis", "US-situs estate exposure (IRS NRA — all US-domiciled securities, every broker)"),
     ("spend.fi_basis_nis", "FI spend basis (permanent-equivalent, real)"),
     ("retirement.required_real_yield_pct", "Required real yield (perpetual safe-withdrawal rate)"),
     ("retirement.return_assumption_pct", "Expected real return (trajectory only)"),

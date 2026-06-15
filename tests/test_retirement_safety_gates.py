@@ -178,6 +178,48 @@ class TestNraEstateGate:
             verdict = compute_nra_estate_gate(user_id="ariel", session=s)
         assert verdict.status == "PASS"
 
+    def test_us_domiciled_etf_at_israeli_broker_is_counted(self, client_with_db):
+        """REGRESSION: US-situs must be classified by instrument DOMICILE, not
+        broker location. A US-domiciled ETF (SCHD) held at an Israeli broker
+        (Leumi) is exactly as US-situs-exposed as one held at Schwab. The old
+        ``location.startswith("schwab")`` heuristic silently dropped the entire
+        Leumi-held US book — understating Ariel's real exposure by ~₪2.5M and
+        defeating the very UCITS-first policy the estate gate exists to drive.
+
+        Domicile-clean instruments held at the SAME Leumi account (CSPX, an
+        Irish UCITS) and cash must still be excluded — proving we switched the
+        axis from broker to domicile, not merely flipped the broker filter."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(s, positions=[
+                # US-domiciled ETF at an Israeli broker — MUST count.
+                {
+                    "location": "Leumi", "currency": "USD",
+                    "asset_type": "Dividend",
+                    "details": "(שוואב ארה\"ב דיבידנד) SCHD",
+                    "symbol": "SCHD", "usd_value_k": 252.0,
+                },
+                # Irish UCITS at the same Israeli broker — MUST NOT count.
+                {
+                    "location": "Leumi", "currency": "USD",
+                    "asset_type": "Core Equity",
+                    "details": "(ISHR CORE S&P500) CSPX LN",
+                    "symbol": "CSPX", "usd_value_k": 120.0,
+                },
+                # Foreign-currency cash at the Israeli broker — never US-situs.
+                {
+                    "location": "Leumi", "currency": "USD",
+                    "asset_type": "Cash", "details": "", "symbol": "",
+                    "usd_value_k": 265.0,
+                },
+            ])
+            verdict = compute_nra_estate_gate(user_id="ariel", session=s)
+        # Only the US-domiciled SCHD ($252K) is US-situs; UCITS + cash excluded.
+        assert verdict.value.value == pytest.approx(252_000.0)
+        assert verdict.status == "FAIL"  # $252K > $200K plan-block threshold
+
 
 class TestLiquidityGate:
     def test_pass_when_buffer_above_12_months(self, client_with_db):
