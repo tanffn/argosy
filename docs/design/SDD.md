@@ -1028,7 +1028,33 @@ per-trade `decision_flow` of §3 / §10):
  plan-level verdicts + facilitator merge
 5. Fund manager integrity check (~1 min) — green-lights as `role='draft'`
 
+Between phases 4 and 5 a **codex (gpt-5) second-opinion reviewer** runs as an
+independent gate (`codex_second_opinion.py`, gated on `ARGOSY_CODEX_REVIEW_ENABLED`).
+
 Total wall-clock ~12-15 minutes from trigger to draft-ready.
+
+**The reviewer re-derives; it does not ratify.** The adversarial contract is
+that an independent reviewer must reproduce the load-bearing headline numbers
+from the RAW INPUTS with its own logic — blind to how the pipeline computed
+them — and only then compare. The codex reviewer is therefore given the raw
+portfolio holdings FIRST and instructed to independently compute net worth,
+US-situs estate exposure (by instrument domicile), NVDA weight, and the FI
+target before it reads the pipeline's figures, which are framed as a *claim to
+reproduce, not a source of truth*. It emits a structured `headline_number_audit`
+(independent value vs claimed value, formula, raw rows, MATCH/DIVERGES/
+UNVERIFIABLE) within a numeric tolerance; any `DIVERGES` row forces
+`overall_assessment="BLOCK"` (enforced in code, not left to the model). This is
+the guard against the multi-agent failure mode where every reviewer "agrees"
+because they all validate the prose against one shared — possibly wrong —
+manifest (correlated failure, not redundancy).
+
+**Mechanical headline numbers are derived deterministically, not by an LLM.**
+The numbers a reviewer would recompute from raw data are resolver-derived from
+the snapshot, single-sourced across surfaces (`plan_numeric_resolver`): US-situs
+estate exposure is classified by instrument domicile (`estate_safe_for`) across
+ALL brokers (§20.4), and the current NVDA weight is `NVDA ÷ tradeable securities
+book` (the same `wealth_dashboard.nvda_concentration_pct` the dashboard uses).
+LLM agents own judgments (e.g. the NVDA *cap*), never mechanical facts.
 
 **Idempotency.** Re-running synthesis when an unaccepted draft already
 exists demotes the prior draft to `role='superseded'` and writes a
