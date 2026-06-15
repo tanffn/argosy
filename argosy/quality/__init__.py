@@ -21,6 +21,7 @@ from argosy.quality.gate_types import (
     GateViolation,
 )
 from argosy.quality.coherence_gate import check_cross_surface_coherence
+from argosy.quality.freshness_gate import check_input_freshness
 from argosy.quality.numeric_source_gate import check_headline_numeric_source
 from argosy.quality.plan_output_gate import (
     check_distillate_section_binding,
@@ -41,6 +42,7 @@ __all__ = [
     "check_evidence_per_section",
     "check_headline_numeric_source",
     "check_history_leak",
+    "check_input_freshness",
     "check_ips_allocation_sum",
     "check_jargon_leak",
     "check_section_coverage",

@@ -54,6 +54,15 @@ class GateCheck(str, Enum):
     # "reached" claim is false. Composes the synthesizer's sufficiency claim
     # with the risk officer's concentration tail — no single agent owns it.
     FI_SHOCK_SUFFICIENCY = "fi_shock_sufficiency"
+    # Task 5 — the currency check. The system trusts its own stored state as
+    # ground truth (macro reads a stale regime; the snapshot is the pre-sale
+    # book), so a defect that lives in WHEN an input was captured slips every
+    # value-level check. This compares each stored input's date to `today`: a
+    # snapshot or cached analyst output older than its freshness window — or
+    # with no date at all — is a currency defect that can poison every
+    # downstream number. Deterministic; the freshness of an input is not
+    # something an LLM reviewer can eyeball.
+    INPUT_FRESHNESS = "input_freshness"
 
 
 @dataclass(frozen=True)
