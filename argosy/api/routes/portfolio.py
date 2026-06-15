@@ -1332,6 +1332,11 @@ class PropertyEquityDTO(BaseModel):
     paid_to_date_local: float | None = None
     vat_paid_local: float | None = None
     payments: list[RealEstatePaymentDTO] | None = None
+    # Present only when the property has a durable override (impairment/write-off).
+    status: str | None = None                     # bust | sold | impaired
+    recovery_expected_local: float | None = None  # contingent — NOT in net worth
+    recovery_confidence: str | None = None
+    note: str | None = None
 
 
 class RealEstateEquityDTO(BaseModel):
@@ -1349,7 +1354,10 @@ def get_real_estate(
     snapshot's "Real estate details". Net WORTH context — deliberately separate
     from the investable allocation (a primary residence isn't investable)."""
     from argosy.services.real_estate_equity import compute_real_estate_equity
-    from argosy.services.real_estate_ledger import load_property_ledgers
+    from argosy.services.real_estate_ledger import (
+        load_property_ledgers,
+        load_real_estate_overrides,
+    )
 
     row = get_latest_snapshot_row(db, user_id)
     if row is None:
@@ -1395,9 +1403,23 @@ def get_real_estate(
             ledger_warnings.setdefault(key, []).append(
                 f"payments exceed contract price by {lg.overpaid_local:.0f} — check for double-count")
         loan_override[key] = lg.remaining_local
+
+    # Durable per-property overrides (impairment / write-off, e.g. a developer-
+    # bankruptcy property worth 0 whose mortgage was never drawn). These
+    # supersede BOTH the snapshot Home (value) and Loan, and carry a contingent
+    # recovery that is deliberately NOT added to net worth.
+    overrides = load_real_estate_overrides(db, user_id=user_id)
+    value_override = {
+        k: o.current_value_local for k, o in overrides.items()
+        if o.current_value_local is not None
+    }
+    for k, o in overrides.items():
+        if o.loan_local is not None:
+            loan_override[k] = o.loan_local
+
     eq = compute_real_estate_equity(
         snap.real_estate, fx_usd_nis=snap.fx_usd_nis, fx_usd_eur=snap.fx_usd_eur,
-        loan_override=loan_override,
+        loan_override=loan_override, value_override=value_override,
     )
     props: list[PropertyEquityDTO] = []
     for p in eq.properties:
@@ -1412,12 +1434,17 @@ def get_real_estate(
                 invoice_no=e.invoice_no, amount_net_local=e.amount_net_local,
                 vat_local=e.vat_local, kind=e.kind, description=e.description,
             ) for e in lg.entries]
+        ovr = overrides.get(p.name)
         props.append(PropertyEquityDTO(
             name=p.name, currency=p.currency, home_local=p.home_local,
             loan_local=p.loan_local, net_local=p.net_local,
             net_usd_k=p.net_usd_k,
             warnings=list(p.warnings) + ledger_warnings.get(p.name, []),
             paid_to_date_local=paid, vat_paid_local=vat_paid, payments=payments,
+            status=ovr.status if ovr else None,
+            recovery_expected_local=ovr.recovery_expected_local if ovr else None,
+            recovery_confidence=ovr.recovery_confidence if ovr else None,
+            note=ovr.note if ovr else None,
         ))
     return RealEstateEquityDTO(
         properties=props,

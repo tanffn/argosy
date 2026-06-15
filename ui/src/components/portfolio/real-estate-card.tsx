@@ -66,16 +66,23 @@ export function RealEstateCard({ userId = "ariel" }: { userId?: string }) {
           <tbody>
             {data.properties.map((p) => {
               const hasLedger = !!(p.payments && p.payments.length > 0);
+              const hasNote = !!(p.status || p.note);
+              const hasDetail = hasLedger || hasNote;
               const isOpen = expanded === p.name;
               return (
                 <Fragment key={`${p.name}-${p.currency}`}>
                   <tr
-                    className={`border-b border-border/40 ${hasLedger ? "cursor-pointer hover:bg-muted/30" : ""}`}
-                    onClick={hasLedger ? () => setExpanded(isOpen ? null : p.name) : undefined}
+                    className={`border-b border-border/40 ${hasDetail ? "cursor-pointer hover:bg-muted/30" : ""}`}
+                    onClick={hasDetail ? () => setExpanded(isOpen ? null : p.name) : undefined}
                   >
                     <td className="py-1.5">
-                      {hasLedger && <span className="mr-1 text-muted-foreground">{isOpen ? "▾" : "▸"}</span>}
+                      {hasDetail && <span className="mr-1 text-muted-foreground">{isOpen ? "▾" : "▸"}</span>}
                       {p.name}
+                      {p.status && (
+                        <span className="ml-1.5 rounded bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase text-rose-400">
+                          {p.status}
+                        </span>
+                      )}
                       {p.warnings.length > 0 && (
                         <span
                           className="ml-1.5 text-amber-400 text-xs"
@@ -96,9 +103,21 @@ export function RealEstateCard({ userId = "ariel" }: { userId?: string }) {
                     </td>
                     <td className="py-1.5 text-right">{fmtUsdK(p.net_usd_k)}</td>
                   </tr>
-                  {hasLedger && isOpen && (
+                  {hasDetail && isOpen && (
                     <tr className="border-b border-border/40 bg-muted/20">
                       <td colSpan={5} className="py-2 px-3 text-xs">
+                        {hasNote && (
+                          <div className="mb-2 text-muted-foreground">
+                            {p.note}
+                            {p.recovery_expected_local != null && (
+                              <span className="ml-1 text-foreground">
+                                {" "}Expected recovery ≈ {fmtLocal(p.recovery_expected_local, p.currency)}
+                                {p.recovery_confidence ? ` (${p.recovery_confidence} confidence)` : ""} — contingent, not in net worth.
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {hasLedger && (
                         <div className="mb-1 text-muted-foreground">
                           Paid {fmtLocal(p.paid_to_date_local ?? null, p.currency)} of{" "}
                           {fmtLocal(p.home_local, p.currency)}
@@ -106,6 +125,8 @@ export function RealEstateCard({ userId = "ariel" }: { userId?: string }) {
                             ? ` · VAT ${fmtLocal(p.vat_paid_local, p.currency)} (sunk, not equity)`
                             : ""}
                         </div>
+                        )}
+                        {hasLedger && (
                         <table className="w-full">
                           <tbody>
                             {p.payments!.map((pay, i) => (
@@ -120,6 +141,7 @@ export function RealEstateCard({ userId = "ariel" }: { userId?: string }) {
                             ))}
                           </tbody>
                         </table>
+                        )}
                       </td>
                     </tr>
                   )}

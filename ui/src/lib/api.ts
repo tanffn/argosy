@@ -411,6 +411,11 @@ export interface PropertyEquityDTO {
   paid_to_date_local?: number | null;
   vat_paid_local?: number | null;
   payments?: RealEstatePaymentDTO[] | null;
+  // Present only when the property has a durable override (impairment/write-off).
+  status?: string | null; // bust | sold | impaired
+  recovery_expected_local?: number | null; // contingent — not in net worth
+  recovery_confidence?: string | null;
+  note?: string | null;
 }
 
 export interface RealEstateEquityDTO {

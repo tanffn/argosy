@@ -58,6 +58,7 @@ def compute_real_estate_equity(
     fx_usd_nis: float | None,
     fx_usd_eur: float | None,
     loan_override: dict[str, float] | None = None,
+    value_override: dict[str, float] | None = None,
 ) -> RealEstateEquity:
     """Pair Home/Loan rows by (property name, currency) and compute net equity.
 
@@ -69,8 +70,15 @@ def compute_real_estate_equity(
     (``real_estate_ledger``) drives the displayed balance: the snapshot Loan is a
     static, re-import-clobbered figure, so when a property has a payment ledger we
     pass its computed remaining here and ignore the stale snapshot row.
+
+    ``value_override`` maps property name → current value that SUPERSEDES the
+    snapshot Home row — for impairments / write-offs the TSV doesn't capture
+    (e.g. a developer-bankruptcy property whose value is $0 and whose mortgage
+    was never drawn). Sourced from the durable ``real_estate_overrides`` profile
+    block so it survives TSV re-imports.
     """
     loan_override = loan_override or {}
+    value_override = value_override or {}
     # Group rows by (name, currency).
     by_key: dict[tuple[str, str], dict[str, float | None]] = {}
     order: list[tuple[str, str]] = []
@@ -91,15 +99,20 @@ def compute_real_estate_equity(
     total = 0.0
     for name, ccy in order:
         pair = by_key[(name, ccy)]
-        home = pair["home"]
+        value_ovr = value_override.get(name)
+        home = value_ovr if value_ovr is not None else pair["home"]
         ledger_remaining = loan_override.get(name)
         loan = ledger_remaining if ledger_remaining is not None else pair["loan"]
         warns: list[str] = []
         if home is None:
             warns.append("missing Home row")
+        if value_ovr is not None:
+            warns.append("value overridden (impairment/write-off — not the snapshot)")
         if loan is None:
             warns.append("missing Loan row (assumed unencumbered)")
-        elif ledger_remaining is not None:
+        elif ledger_remaining is not None and value_ovr is None:
+            # A write-off (value_ovr) already explains the zeroed loan; only flag
+            # the ledger source for genuine in-progress purchases.
             warns.append("remaining-to-pay from payment ledger (not the snapshot)")
         rate = _rate_for(ccy, fx_usd_nis=fx_usd_nis, fx_usd_eur=fx_usd_eur)
         if rate is None or rate == 0:

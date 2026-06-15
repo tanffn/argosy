@@ -142,9 +142,78 @@ def load_property_ledgers(
     return out
 
 
+@dataclass(frozen=True)
+class PropertyOverride:
+    """A durable per-property correction the TSV snapshot can't express — an
+    impairment / write-off (e.g. a developer-bankruptcy property worth $0 whose
+    mortgage was never drawn) plus an optional contingent recovery. Stored in the
+    profile's ``real_estate_overrides`` block (NOT the snapshot), so it survives
+    TSV re-imports.
+
+    ``current_value_local`` overrides the snapshot Home; ``loan_local`` overrides
+    the Loan. ``recovery_expected_local`` is a CONTINGENT future inflow that is
+    deliberately NOT added to net worth (low-confidence; booked only when
+    realized) — it rides along as a note.
+    """
+
+    property_key: str
+    status: str                              # active | bust | sold | impaired
+    current_value_local: float | None
+    loan_local: float | None
+    recovery_expected_local: float | None
+    recovery_confidence: str
+    note: str
+
+
+def load_real_estate_overrides(session, *, user_id: str) -> dict[str, PropertyOverride]:
+    """Read the profile's ``real_estate_overrides`` block (identity_yaml) into a
+    map keyed by property name. Empty when none are set."""
+    from sqlalchemy import select
+
+    from argosy.state.models import UserContext
+
+    ctx = session.execute(
+        select(UserContext).where(UserContext.user_id == user_id)
+    ).scalar_one_or_none()
+    raw = getattr(ctx, "identity_yaml", None) if ctx else None
+    if not raw:
+        return {}
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(raw) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    block = data.get("real_estate_overrides") if isinstance(data, dict) else None
+    if not isinstance(block, dict):
+        return {}
+
+    def _f(v: object) -> float | None:
+        try:
+            return None if v is None or isinstance(v, bool) else float(v)
+        except (TypeError, ValueError):
+            return None
+
+    out: dict[str, PropertyOverride] = {}
+    for key, ovr in block.items():
+        if not isinstance(ovr, dict):
+            continue
+        out[str(key)] = PropertyOverride(
+            property_key=str(key),
+            status=str(ovr.get("status") or "impaired"),
+            current_value_local=_f(ovr.get("current_value_local")),
+            loan_local=_f(ovr.get("loan_local")),
+            recovery_expected_local=_f(ovr.get("recovery_expected_local")),
+            recovery_confidence=str(ovr.get("recovery_confidence") or "LOW"),
+            note=str(ovr.get("note") or ""),
+        )
+    return out
+
+
 __all__ = [
     "LedgerEntry",
     "PropertyLedger",
+    "PropertyOverride",
     "compute_property_ledger",
     "load_property_ledgers",
+    "load_real_estate_overrides",
 ]

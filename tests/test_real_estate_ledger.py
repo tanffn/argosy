@@ -110,6 +110,26 @@ def test_loan_override_supersedes_snapshot_loan():
     assert any("payment ledger" in w for w in p.warnings)
 
 
+def test_value_override_writes_off_a_bust_property():
+    """A developer-bankruptcy write-off: value_override zeroes the snapshot Home
+    and loan_override zeroes the never-drawn mortgage → net equity 0, instead of
+    the phantom positive equity the stale snapshot would show."""
+    rows = [
+        _Row("Atlanta", "USD", "Home", 318000.0),  # stale snapshot value
+        _Row("Atlanta", "USD", "Loan", 219475.0),  # mortgage never drawn
+    ]
+    eq = compute_real_estate_equity(
+        rows, fx_usd_nis=3.0, fx_usd_eur=0.85,
+        value_override={"Atlanta": 0.0}, loan_override={"Atlanta": 0.0},
+    )
+    p = eq.properties[0]
+    assert p.home_local == 0.0
+    assert p.loan_local == 0.0
+    assert p.net_local == 0.0           # was a phantom 318000-219475 = 98525
+    assert eq.total_net_usd_k == 0.0
+    assert any("write-off" in w for w in p.warnings)
+
+
 def test_no_override_uses_snapshot_loan():
     """Properties without a ledger keep the snapshot Loan (unchanged behavior)."""
     rows = [

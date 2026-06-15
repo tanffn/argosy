@@ -670,8 +670,12 @@ def _net_worth(
         re_objs = [SimpleNamespace(**r) for r in re_rows if isinstance(r, dict)]
         if re_objs:
             loan_override: dict[str, float] = {}
+            value_override: dict[str, float] = {}
             if session is not None and user_id is not None:
-                from argosy.services.real_estate_ledger import load_property_ledgers
+                from argosy.services.real_estate_ledger import (
+                    load_property_ledgers,
+                    load_real_estate_overrides,
+                )
                 price_by_prop = {
                     getattr(o, "location", None): getattr(o, "value_local", None)
                     for o in re_objs
@@ -686,11 +690,22 @@ def _net_worth(
                     k: lg.remaining_local for k, lg in ledgers.items()
                     if lg.remaining_local is not None
                 }
+                # Impairment / write-off overrides (e.g. a bust property worth 0
+                # whose mortgage was never drawn) — apply to BOTH value and loan
+                # so headline net worth matches the panel (no phantom equity).
+                overrides = load_real_estate_overrides(session, user_id=user_id)
+                value_override = {
+                    k: o.current_value_local for k, o in overrides.items()
+                    if o.current_value_local is not None
+                }
+                for k, o in overrides.items():
+                    if o.loan_local is not None:
+                        loan_override[k] = o.loan_local
             eq = compute_real_estate_equity(
                 re_objs,
                 fx_usd_nis=getattr(snapshot, "fx_usd_nis", None) or fx_usd_nis,
                 fx_usd_eur=getattr(snapshot, "fx_usd_eur", None),
-                loan_override=loan_override,
+                loan_override=loan_override, value_override=value_override,
             )
             re_net_k = eq.total_net_usd_k
     except (json.JSONDecodeError, TypeError, ValueError):
