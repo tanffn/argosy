@@ -3157,6 +3157,21 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
     import json as _json
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
+    # Build the canonical instrument-level TargetAllocationDoc FIRST — BEFORE any
+    # horizon/appendix render — so allocation sites render FROM the canonical doc
+    # (codex v2 #6: today's order rendered markdown first then resolved the doc
+    # after, which let IPS prose and the canonical allocation diverge). The
+    # produced JSON is unchanged; only the ordering moves. Best-effort + never
+    # fatal. T1.5 — persist so every surface projects ONE plan.
+    from argosy.services.target_allocation_doc import (
+        resolve_target_allocation_json,
+    )
+
+    _target_allocation_json = resolve_target_allocation_json(
+        session, user_id, decision_run_id, datetime.now(timezone.utc).date(),
+        alternatives_sleeve=alternatives_sleeve,
+    )
+
     # v4 block B1 — assemble the three plan-doc appendices ONCE (sections are
     # global, not per-horizon) and append to the LONG horizon only (the
     # strategic frame anchors the evidence + assumption ledger).
@@ -3208,17 +3223,6 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
     _long_md = _pkg._strip_history_leak(_pkg._strip_jargon(_long_md))
     _medium_md = _pkg._strip_history_leak(_pkg._strip_jargon(_medium_md))
     _short_md = _pkg._strip_history_leak(_pkg._strip_jargon(_short_md))
-
-    # T1.5 — persist the canonical instrument-level TargetAllocationDoc so every
-    # surface projects ONE plan. Best-effort + never fatal.
-    from argosy.services.target_allocation_doc import (
-        resolve_target_allocation_json,
-    )
-
-    _target_allocation_json = resolve_target_allocation_json(
-        session, user_id, decision_run_id, datetime.now(timezone.utc).date(),
-        alternatives_sleeve=alternatives_sleeve,
-    )
 
     return {
         "horizon_long_md": _long_md,
