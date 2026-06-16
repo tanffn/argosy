@@ -1105,24 +1105,56 @@ def run_synthesis(
                 round=_reader_round,
             )
             # Surgical pre-pass (default OFF — set ARGOSY_SURGICAL_CORRECTION=1 to
-            # enable). Corrects renderable findings at their canonical fact +
-            # render sites; structural ones fall through to the full re-synth
-            # below. This is NOT a demotion of full re-synth (spec: it stays the
-            # fallback + the whole-artifact reader stays the net, until the
-            # invariant graph covers all run-106 classes — [8]-[10] deferred).
-            # This slice records the phase so /decisions/[id] shows the pre-pass
-            # ran; it does NOT yet replace the persisted bodies (gated activation).
+            # enable). Fix RENDERABLE reader findings at their cited segment via a
+            # cheap prose edit (seconds), persist in place, and re-read. If that
+            # clears the BLOCK (or only structural/infra findings remain), SKIP
+            # the ~45-min full re-synth this round. Only genuinely structural
+            # findings fall through to full re-synth below — which is NOT demoted,
+            # it remains the fallback + the whole-artifact reader stays the net.
             if _os.environ.get("ARGOSY_SURGICAL_CORRECTION", "0") == "1":
                 try:
+                    from argosy.orchestrator.flows.plan_synthesis.surgical_reconcile import (
+                        surgically_correct_draft,
+                    )
+                    from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+                    _surg_started = datetime.now(timezone.utc)
+                    _drun_int = _decision_run_int(decision_run_id)
+                    _surg_resolved = (
+                        resolve_plan_numbers(session, user_id=user_id, decision_run_id=_drun_int)
+                        if _drun_int is not None else None
+                    )
+                    _surg = surgically_correct_draft(
+                        bodies={
+                            "long": draft.horizon_long_md or "",
+                            "medium": draft.horizon_medium_md or "",
+                            "short": draft.horizon_short_md or "",
+                        },
+                        reader_verdict=_reader_verdict, resolved=_surg_resolved,
+                    )
                     _pkg._record_phase_completion(
                         user_id=user_id, decision_run_id=decision_run_id,
-                        phase_n=54, started_at=datetime.now(timezone.utc),
-                        phase_output="surgical_prepass: enabled (experimental)",
+                        phase_n=54, started_at=_surg_started,
+                        phase_output=(
+                            f"surgical: {len(_surg.edits)} edits, "
+                            f"{len(_surg.addressed)} addressed, "
+                            f"{len(_surg.unaddressed)} fallback"
+                        ),
                         agent_report_rows=[],
                     )
-                except Exception as exc:  # noqa: BLE001 — surfacing only; never abort
+                    if _surg.edits:
+                        draft.horizon_long_md = _surg.corrected_bodies["long"]
+                        draft.horizon_medium_md = _surg.corrected_bodies["medium"]
+                        draft.horizon_short_md = _surg.corrected_bodies["short"]
+                        session.commit()
+                        _reader_verdict, _reader_row = _assemble_and_read()
+                        if getattr(_reader_verdict, "overall_assessment", "") != "BLOCK":
+                            continue  # surgical edits cleared the block — skip re-synth
+                        if not _reader_coherence_reconcile_guidance(_reader_verdict):
+                            break  # only structural/infra findings remain — re-synth won't help
+                except Exception as exc:  # noqa: BLE001 — best-effort; never abort
                     log.warning(
-                        "plan_synthesis.surgical_prepass_phase_failed",
+                        "plan_synthesis.surgical_reconcile_failed",
                         user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
                     )
             try:
