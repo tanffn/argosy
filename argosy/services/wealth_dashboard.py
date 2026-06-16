@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -987,18 +988,31 @@ def _concentration(
             horizon = json.loads(plan.horizon_medium_json)
         except json.JSONDecodeError:
             horizon = {}
+        sym = symbol.upper()
         for t in horizon.get("targets", []) if isinstance(horizon, dict) else []:
             if not isinstance(t, dict):
                 continue
             label = (t.get("label") or "").upper()
             unit = (t.get("unit") or "").lower()
-            if symbol in label and unit in ("pct_of_portfolio", "pct_of_net_worth"):
-                try:
-                    target_pct = float(t.get("value"))
-                    target_source = f"plan #{plan.id} horizon_medium"
-                    break
-                except (TypeError, ValueError):
-                    continue
+            if unit not in ("pct_of_portfolio", "pct_of_net_worth"):
+                continue
+            # PRECISE match: a bare ``sym in label`` substring test also matches
+            # an "ex-<sym>" sleeve (e.g. "US growth tilt (ex-NVDA)" contains the
+            # substring "NVDA" inside "EX-NVDA"), and the first-match break would
+            # then leak the ex-NVDA sleeve's weight as NVDA's target. Exclude any
+            # ex-<sym> label, and require ``sym`` to appear as a whole token
+            # (word-boundary) so only the pure NVDA sleeve can be selected.
+            normalized = label.replace("-", " ").replace("(", " ").replace(")", " ")
+            if f"EX {sym}" in normalized or f"EX {sym.replace('NVDA', 'NVIDIA')}" in normalized:
+                continue
+            if not re.search(rf"\b{re.escape(sym)}\b", label):
+                continue
+            try:
+                target_pct = float(t.get("value"))
+                target_source = f"plan #{plan.id} horizon_medium"
+                break
+            except (TypeError, ValueError):
+                continue
     if target_pct is None:
         missing.append(f"{symbol} target_pct: no matching horizon_medium target")
 

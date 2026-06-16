@@ -552,6 +552,47 @@ class TestConcentration:
         assert c.target_pct is None
         assert c.missing_reasons
 
+    def test_target_picks_pure_nvda_sleeve_not_ex_nvda(self, client_with_db):
+        """Regression (live run 102): the target lookup did a substring
+        ``"NVDA" in label`` match, so a "US growth tilt (ex-NVDA)" sleeve —
+        which CONTAINS the substring "NVDA" inside "EX-NVDA" — was matched
+        FIRST and its 13.2% leaked into the dashboard instead of the pure
+        NVDA sleeve's 12%. The match must select the pure NVDA sleeve."""
+        SF = client_with_db.app.state.session_factory
+        with SF() as s:
+            _seed_user(s)
+            _seed_user_context(s)
+            _seed_snapshot(s, total_usd_value_k=1000.0)
+            # ex-NVDA sleeve listed FIRST so a buggy first-substring-match
+            # would wrongly grab 13.2.
+            targets = {
+                "targets": [
+                    {
+                        "label": "US growth tilt (ex-NVDA)",
+                        "value": 13.2,
+                        "unit": "pct_of_portfolio",
+                    },
+                    {
+                        "label": "Strategic single-stock (NVDA)",
+                        "value": 12.0,
+                        "unit": "pct_of_portfolio",
+                    },
+                ]
+            }
+            pv = PlanVersion(
+                user_id="ariel",
+                version_label="seed-draft",
+                source_path="",
+                raw_markdown="",
+                role="draft",
+                horizon_medium_json=json.dumps(targets),
+            )
+            s.add(pv)
+            s.commit()
+            dash = compute_wealth_dashboard(s, user_id="ariel")
+        c = dash.concentration
+        assert c.target_pct == pytest.approx(12.0)
+
 
 class TestSavingsRate:
     def test_basic(self, client_with_db):
