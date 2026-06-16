@@ -31,8 +31,15 @@ def test_prose_editor_returns_original_on_editor_failure():
     assert out == original
 
 
-def test_prose_editor_default_is_failsafe_noop():
-    # the default (unwired) dispatch must not crash — fail-safe returns original
+def test_prose_editor_default_agent_path_is_failsafe(monkeypatch):
+    # the default (agent-backed) path must fail-safe to the original snippet when
+    # the LLM dispatch errors (e.g. no backend) — never raise, never blank.
+    import argosy.agents.prose_editor as pe
+
+    def boom_run_sync(self, **kw):
+        raise RuntimeError("no backend")
+
+    monkeypatch.setattr(pe.ProseEditorAgent, "run_sync", boom_run_sync)
     original = "Cap is 13%."
     out = correct_prose_site(
         fact_id="allocation.nvda_cap_pct", canonical_value=18.0,

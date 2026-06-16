@@ -1,49 +1,80 @@
-"""Cheap single-fact prose corrector for ``llm_prose`` render sites.
+"""Cheap single-snippet prose corrector for the surgical-fix loop.
 
-A deterministic re-render cannot fix authored free text (HorizonSection.rationale
-/ posture, Action.detail/rationale). This editor is handed ONLY the fact, its
-canonical value, and the offending snippet, and returns a MINIMAL corrected
-snippet — the smallest edit that makes the prose state the canonical value. It
-does not see (or get to rewrite) the rest of the plan.
+A deterministic re-render fixes number facts; it cannot fix authored free-text
+CONTRADICTIONS (the FI-sufficiency claim, a liquidity-runway divergence, a
+stale-date phrasing). This editor is handed ONLY the offending snippet + the
+reader's description of the defect + the authoritative/canonical context, and
+returns the MINIMALLY corrected snippet — the smallest edit that removes the
+contradiction. It never rewrites the whole plan (that is full re-synth); it
+edits one cited segment, which is what makes the fix converge instead of
+reshuffle.
 
-``editor`` is injectable: tests pass a stub. The default dispatch is NOT yet
-wired to a live backend — live surgical prose-editing is gated on completing the
-run-106 invariant coverage graph (the whole surgical pre-pass defaults OFF; see
-the Slice-3 plan). Until then the default raises, and the fail-safe below returns
-the original text unchanged so nothing breaks. When activating, replace
-``_default_editor`` with a thin BaseAgent text dispatch (see argosy/agents/base.py
-``_call_via_claude_code_inner``).
+``correct_prose_site`` takes an injectable ``editor`` (tests pass a stub). The
+default dispatch is a real cheap BaseAgent call (Sonnet, structured output).
+Fail-safe: any editor error returns the original snippet unchanged (the
+re-verify pass + whole-artifact reader remain the backstop).
 """
 from __future__ import annotations
 
 import logging
 from typing import Callable
 
+from pydantic import BaseModel, Field
+
+from argosy.agents.base import BaseAgent
+
 log = logging.getLogger(__name__)
 
-_PROMPT = """You are correcting ONE factual value in a snippet of an existing financial plan.
+_PROMPT_SYSTEM = (
+    "You are a precise copy-editor on a financial-advisory team. You are given "
+    "ONE snippet of an existing plan that an adversarial reviewer flagged as "
+    "wrong, stale, or self-contradictory, plus the reviewer's reason and the "
+    "AUTHORITATIVE canonical facts. Your job: return the SAME snippet with the "
+    "SMALLEST possible edit that makes it factually correct and removes the "
+    "contradiction.\n\n"
+    "Rules:\n"
+    "- Keep the wording, structure, and length as close to the original as "
+    "possible — change only what is needed.\n"
+    "- Do NOT delete or hide a load-bearing claim to dodge the problem. If a "
+    "headline claim (e.g. 'capital sufficiency reached') is fragile, QUALIFY it "
+    "honestly with the stated caveat, do not silently drop it.\n"
+    "- Use ONLY the canonical facts provided; never invent numbers.\n"
+    "- Return ONLY the corrected snippet text — no commentary, no preamble."
+)
 
-Canonical fact: {fact_id}
-Correct value: {value}
 
-Offending snippet (it states a WRONG or stale value for this fact):
-\"\"\"{snippet}\"\"\"
+class CorrectedSnippet(BaseModel):
+    """The minimally-corrected snippet."""
 
-Return ONLY the corrected snippet — the SAME wording, with just the value fixed
-to the canonical value above. Do not add commentary, caveats, or new sentences.
-"""
-
-
-def _default_editor(prompt: str) -> str:
-    """Live dispatch is intentionally not wired in this slice (gated on full
-    run-106 invariant coverage). The fail-safe in ``correct_prose_site`` catches
-    this and returns the original text — so an accidental live call is a no-op,
-    never a crash or a silent wrong edit."""
-    raise NotImplementedError(
-        "prose_editor default dispatch is not wired — inject an `editor` "
-        "callable, or wire a BaseAgent text dispatch before enabling live "
-        "surgical prose correction (ARGOSY_SURGICAL_CORRECTION)."
+    corrected_text: str = Field(
+        description="The corrected snippet — same wording, smallest edit that "
+        "fixes the flagged defect. No commentary.",
     )
+
+
+class ProseEditorAgent(BaseAgent[CorrectedSnippet]):
+    """Cheap, single-snippet structured corrector (Sonnet by default — slim
+    scope, no extended thinking). No citations required."""
+
+    agent_role = "prose_editor"
+    output_model = CorrectedSnippet
+
+    def build_prompt(
+        self,
+        *,
+        fact_id: str,
+        canonical_value: object,
+        offending_text: str,
+        defect_reason: str = "",
+    ) -> tuple[str, str]:
+        user = (
+            f"Canonical fact: {fact_id}\n"
+            f"Correct/authoritative value or context: {canonical_value}\n"
+            f"Reviewer's reason this snippet is wrong: {defect_reason or '(unspecified)'}\n\n"
+            f"Offending snippet:\n\"\"\"{offending_text}\"\"\"\n\n"
+            "Return ONLY the corrected snippet."
+        )
+        return _PROMPT_SYSTEM, user
 
 
 def correct_prose_site(
@@ -51,15 +82,30 @@ def correct_prose_site(
     fact_id: str,
     canonical_value: object,
     offending_text: str,
+    defect_reason: str = "",
     editor: Callable[[str], str] | None = None,
 ) -> str:
-    """Return a minimal corrected snippet for an llm_prose site. Fail-safe:
-    returns ``offending_text`` unchanged on any editor error."""
-    editor = editor or _default_editor
-    prompt = _PROMPT.format(fact_id=fact_id, value=canonical_value, snippet=offending_text)
+    """Return a minimal corrected snippet for an llm_prose site. With the default
+    editor, dispatches ProseEditorAgent directly (structured). When an ``editor``
+    callable is injected (tests / custom dispatch), it is handed a formatted
+    prompt string and must return the corrected text. Fail-safe: returns
+    ``offending_text`` unchanged on any error."""
     try:
-        out = (editor(prompt) or "").strip()
-        return out or offending_text
+        if editor is None:
+            agent = ProseEditorAgent(user_id="ariel")
+            report = agent.run_sync(
+                fact_id=fact_id, canonical_value=canonical_value,
+                offending_text=offending_text, defect_reason=defect_reason,
+            )
+            out = getattr(report, "output", None)
+            corrected = (getattr(out, "corrected_text", "") or "").strip() if out else ""
+            return corrected or offending_text
+        prompt = (
+            f"fact={fact_id} value={canonical_value} reason={defect_reason}\n"
+            f"snippet: {offending_text}"
+        )
+        corrected = (editor(prompt) or "").strip()
+        return corrected or offending_text
     except Exception as exc:  # noqa: BLE001 — fail-safe; re-verify is the backstop
         log.warning("prose_editor.failed fact=%s err=%s", fact_id, exc)
         return offending_text
