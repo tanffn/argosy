@@ -66,6 +66,35 @@ def test_apply_corrections_no_ops_when_text_absent():
     assert apply_text_corrections(artifact, patches, []) == "unrelated text"
 
 
+def test_rerender_does_not_corrupt_embedded_numbers():
+    # number-boundary safety: '13' must not corrupt '131'/'2013'/'13.5' (code-review)
+    led = FactLedger()
+    led.add(RenderedFactSite(
+        fact_id="x", surface_id="body", field_path="p", byte_span=(0, 0),
+        rendered_text="cap 13% (was 2013 plan, 131 bps, 13.5 vol)",
+        normalized_value=13.0, site_kind=SiteKind.TEMPLATE, hash="h",
+    ))
+    patches = rerender_deterministic_sites("x", 18.0, led)
+    new = patches[0].new_text
+    assert "cap 18%" in new            # the standalone value IS replaced
+    assert "2013" in new and "131" in new and "13.5" in new  # embedded ones are NOT
+
+
+def test_apply_corrections_does_not_bleed_into_longer_numbers():
+    # a short rendered_text must not replace inside a longer adjacent number
+    led = FactLedger()
+    led.add(RenderedFactSite(
+        fact_id="g", surface_id="body", field_path="p", byte_span=(0, 0),
+        rendered_text="5%", normalized_value=5.0,
+        site_kind=SiteKind.TEMPLATE, hash="h",
+    ))
+    patches = rerender_deterministic_sites("g", 8.0, led)  # '5%' -> '8%'
+    # '50%' must be untouched; only the standalone '5%' first occurrence flips
+    out = apply_text_corrections("Gold 50% then cash 5% sleeve", patches, [])
+    assert "Gold 50%" in out
+    assert "cash 8% sleeve" in out
+
+
 def test_attributable_finding_routes_surgical():
     finding = {"kind": "cross_surface", "severity": "AMBER",
                "surfaces_cited": ["NVDA cap 13% vs 18"]}

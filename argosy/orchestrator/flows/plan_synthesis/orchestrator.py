@@ -3198,17 +3198,22 @@ def _surgical_reconcile_prepass(
     structural: list = []
 
     for finding in findings or []:
-        if route_finding(finding, ledger) == "structural":
-            structural.append(finding)
-            continue
-        for loc in attribute_finding(finding, ledger):
-            fid = loc.fact_id
-            if fid is None or fid not in canonical_values:
+        # Per-finding isolation: a malformed finding shape must never abort the
+        # synthesis (the prepass is best-effort; full re-synth is the fallback).
+        try:
+            if route_finding(finding, ledger) == "structural":
+                structural.append(finding)
                 continue
-            patches = rerender_deterministic_sites(fid, canonical_values[fid], ledger)
-            corrected = apply_text_corrections(corrected, patches, prose_edits=[])
-            if fid not in corrected_fact_ids:
-                corrected_fact_ids.append(fid)
+            for loc in attribute_finding(finding, ledger):
+                fid = loc.fact_id
+                if fid is None or fid not in canonical_values:
+                    continue
+                patches = rerender_deterministic_sites(fid, canonical_values[fid], ledger)
+                corrected = apply_text_corrections(corrected, patches, prose_edits=[])
+                if fid not in corrected_fact_ids:
+                    corrected_fact_ids.append(fid)
+        except Exception:  # noqa: BLE001 — best-effort; route to structural fallback
+            structural.append(finding)
 
     return _SurgicalPrepassResult(
         corrected_text=corrected,

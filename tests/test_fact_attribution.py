@@ -31,6 +31,16 @@ def test_finding_attributes_to_fact_via_ledger_text_match():
     assert any(loc.fact_id == "allocation.nvda_cap_pct" for loc in locs)
 
 
+def test_value_substring_does_not_falsely_attribute():
+    # '13.0' must not attribute via a bare substring inside a longer number like
+    # '1130' or '13.05' (code-review 2026-06-16 — number-boundary-safe value match)
+    finding = {"kind": "cross_surface", "severity": "AMBER",
+               "surfaces_cited": ["bps moved to 1130 and 13.05 handle"]}
+    locs = attribute_finding(finding, _ledger())
+    # no standalone 13.0 in the excerpt -> fail-safe structural, not a false hit
+    assert len(locs) == 1 and locs[0].fact_id is None and locs[0].scope == "structural"
+
+
 def test_unattributable_finding_is_failsafe_structural():
     finding = {"kind": "other", "severity": "YELLOW",
                "detail": "coverage status", "surfaces_cited": ["sections not baselined"]}

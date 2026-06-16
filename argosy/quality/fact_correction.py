@@ -11,6 +11,7 @@ Pure functions except ``reverify_corrected`` which calls the deterministic gate.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -33,12 +34,22 @@ def _fmt(v: Any) -> str:
 
 def _retext(old_text: str, old_value: Any, new_value: Any) -> str:
     """Replace the old value token in a site's rendered_text with the new one,
-    tolerating int/float formatting ('13' / '13.0')."""
+    tolerating int/float formatting ('13' / '13.0').
+
+    NUMBER-BOUNDARY-SAFE: the token is only replaced when it is a STANDALONE
+    number — not a digit run inside a larger number. Without this, '13'→'18'
+    would corrupt '131'→'181', '2013'→'2018', '13.5'→'18.5' (codex/code-review
+    2026-06-16). Longest tokens are tried first so '13.0' is matched before the
+    bare '13' sub-token. Boundaries forbid an adjacent digit or dot on either
+    side, so a value embedded in a longer number is left untouched."""
     new_s = _fmt(new_value)
     out = old_text
-    for token in {_fmt(old_value), str(old_value)}:
-        if token and token in out:
-            out = out.replace(token, new_s)
+    tokens = sorted({_fmt(old_value), str(old_value)}, key=len, reverse=True)
+    for token in tokens:
+        if not token:
+            continue
+        pattern = r"(?<![\d.])" + re.escape(token) + r"(?![\d.])"
+        out = re.sub(pattern, new_s, out)
     return out
 
 
@@ -67,14 +78,24 @@ def apply_text_corrections(
     Text-replacement based (the render sites are raw markdown segments, not
     offset-addressable structured fields — see the render.py prose sites). A
     patch/edit whose source text is absent is skipped (idempotent, never raises).
+
+    Each deterministic patch replaces only the FIRST occurrence of its site's
+    rendered_text and only when that occurrence is not embedded in a longer
+    number (no adjacent digit), so a short rendered_text (e.g. 'Gold 5%') cannot
+    bleed into an unrelated number or another site's text (code-review
+    2026-06-16). Prose edits replace the first occurrence of the exact offending
+    snippet (which is long + specific by construction).
     """
     out = artifact_text or ""
     for p in patches:
-        if p.site.rendered_text and p.site.rendered_text in out:
-            out = out.replace(p.site.rendered_text, p.new_text)
+        rt = p.site.rendered_text
+        if not rt:
+            continue
+        pattern = r"(?<!\d)" + re.escape(rt) + r"(?!\d)"
+        out = re.sub(pattern, lambda _m, _n=p.new_text: _n, out, count=1)
     for old, new in prose_edits or []:
         if old and old in out:
-            out = out.replace(old, new)
+            out = out.replace(old, new, 1)
     return out
 
 
