@@ -409,7 +409,7 @@ def build_plan_export_markdown(
         conc = dash.concentration
         estate = dash.estate_exposure
 
-        nw_line = f"- Net worth: {_fmt_nis(ret.net_worth_nis)}"
+        nw_line = f"- Total net worth (incl. real estate): {_fmt_nis(ret.net_worth_nis)}"
         if ret.net_worth_usd is not None:
             nw_line += f" ({_fmt_usd(ret.net_worth_usd)})"
         push(nw_line)

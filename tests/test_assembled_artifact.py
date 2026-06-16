@@ -178,10 +178,15 @@ def test_assemble_includes_every_user_facing_surface(session):
     # depends on, keyed by the short concept names.
     assert "net_worth_nis" in art.surface_values
     assert len(art.surface_values["net_worth_nis"]) >= 1
-    # Net worth is stated by BOTH the body (resolver) and the dashboard.
-    nw_surfaces = {s for s, _ in art.surface_values["net_worth_nis"]}
-    assert "body" in nw_surfaces
-    assert "dashboard" in nw_surfaces
+    # The body (resolver) states the LIQUID/investable net worth under
+    # net_worth_nis; the dashboard states the TOTAL (incl. real estate) under a
+    # DISTINCT concept key. They are different concepts and must not collide.
+    liquid_surfaces = {s for s, _ in art.surface_values["net_worth_nis"]}
+    assert "body" in liquid_surfaces
+    assert "dashboard" not in liquid_surfaces
+    assert "net_worth_total_nis" in art.surface_values
+    total_surfaces = {s for s, _ in art.surface_values["net_worth_total_nis"]}
+    assert "dashboard" in total_surfaces
 
     # NVDA weight present on both surfaces, in percent-POINTS (not fraction).
     assert "nvda_weight_pct" in art.surface_values
@@ -197,6 +202,52 @@ def test_assemble_includes_every_user_facing_surface(session):
 
     # The single signed FI margin concept key exists (Task 1's resolver key).
     assert "fi_margin_signed_nis" in art.surface_values
+
+
+def test_liquid_and_total_net_worth_land_under_distinct_keys():
+    """The body resolver's LIQUID net worth and the dashboard's TOTAL (incl. real
+    estate) net worth are DIFFERENT concepts and must be recorded under distinct
+    concept keys, so a divergent total-vs-liquid value never collides under one
+    key (the false 11.95M-vs-14.15M contradiction the coherence gate caught)."""
+    from types import SimpleNamespace
+
+    from argosy.quality.coherence_gate import check_cross_surface_coherence
+    from argosy.services.assembled_artifact import (
+        CONCEPT_NET_WORTH,
+        CONCEPT_NET_WORTH_TOTAL,
+        _add_body_values,
+        _add_dashboard_values,
+    )
+
+    # Resolver body figure: liquid/investable net worth ≈ 11.95M.
+    resolved = {
+        "portfolio.net_worth_nis": SimpleNamespace(
+            status="resolved", value=11_950_000.0
+        ),
+    }
+    resolved_obj = SimpleNamespace(get=lambda k: resolved.get(k))
+
+    # Dashboard figure: total net worth incl. real estate ≈ 14.15M.
+    dash = SimpleNamespace(
+        retirement=SimpleNamespace(net_worth_nis=14_150_000.0),
+        concentration=None,
+        estate_exposure=None,
+    )
+
+    bag: dict[str, list[tuple[str, float]]] = {}
+    _add_body_values(resolved_obj, bag)
+    _add_dashboard_values(dash, bag)
+
+    # Distinct keys — the resolver liquid figure stays under net_worth_nis, the
+    # dashboard total under net_worth_total_nis.
+    assert dict(bag[CONCEPT_NET_WORTH]) == {"body": 11_950_000.0}
+    assert dict(bag[CONCEPT_NET_WORTH_TOTAL]) == {"dashboard": 14_150_000.0}
+    assert "dashboard" not in dict(bag[CONCEPT_NET_WORTH])
+
+    # And the deterministic coherence gate no longer false-flags: each concept
+    # has only one contributing surface, so no contradiction is raised.
+    art = SimpleNamespace(surface_values=bag)
+    assert check_cross_surface_coherence(art) == []
 
 
 def test_surface_values_are_floats_keyed_by_concept(session):

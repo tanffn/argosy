@@ -32,6 +32,27 @@ def test_coherence_flags_sign_flip_on_fi_margin():
     assert len(viol) == 1 and "fi_margin_signed_nis" in viol[0].detail
 
 
+def test_coherence_does_not_flag_total_vs_liquid_net_worth_under_distinct_keys():
+    """Total net worth (incl. real estate, dashboard) and liquid/investable net
+    worth (body resolver) are DIFFERENT concepts. Recorded under distinct keys,
+    the gate must NOT flag them as a contradiction (the false 11.95M-vs-14.15M
+    BLOCKER on run 102) — each key has a single contributing surface."""
+    art = _art({
+        "net_worth_nis": [("body", 11_950_000.0)],
+        "net_worth_total_nis": [("dashboard", 14_150_000.0)],
+    })
+    assert check_cross_surface_coherence(art) == []
+
+
+def test_coherence_would_flag_total_vs_liquid_if_collapsed_to_one_key():
+    """Guards the fix: had both bases been mapped to the SAME concept key, the
+    gate WOULD have flagged the ~2.2M real-estate gap — which is exactly the
+    false contradiction the distinct-key split eliminates."""
+    art = _art({"net_worth_nis": [("body", 11_950_000.0), ("dashboard", 14_150_000.0)]})
+    viol = check_cross_surface_coherence(art)
+    assert len(viol) == 1 and "net_worth_nis" in viol[0].detail
+
+
 # --- Task 4: FI sufficiency under NVDA shock ----------------------------------
 
 # −30% NVDA shock drops NW below the perpetuity base (the 2026-06-15 reality).

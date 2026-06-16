@@ -1201,7 +1201,7 @@ def _apply_fi_methodology(
 # allowed to state. Pending keys still render (as [derivation pending]) so the
 # model knows the figure exists but has no approved value.
 _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
-    ("portfolio.net_worth_nis", "Net worth"),
+    ("portfolio.net_worth_nis", "Liquid net worth (investable; ex-Israel-real-estate)"),
     ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
     ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
     ("retirement.fi_margin_signed_nis", "FI sufficiency margin (net worth − total target; >0 => reached)"),

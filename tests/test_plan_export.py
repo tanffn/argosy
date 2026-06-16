@@ -367,8 +367,11 @@ def test_export_includes_wealth_dashboard_numbers(client_with_db):
     r = client_with_db.get("/api/plan/export?user_id=ariel")
     assert r.status_code == 200, r.text
     body = r.text
-    # Net worth — total_usd_k is 3800 -> 3.80M USD, * 3.10 = 11.78M NIS
-    assert "Net worth:" in body
+    # Net worth — total_usd_k is 3800 -> 3.80M USD, * 3.10 = 11.78M NIS.
+    # The dashboard figure is the TOTAL basis (incl. real estate); its label
+    # must say so explicitly so it never reads as the same concept as the body's
+    # liquid/investable net worth (the 11.95M-vs-14.15M coherence defect).
+    assert "Total net worth (incl. real estate):" in body
     assert "M NIS" in body
     assert "$3" in body  # $3.80M USD
     # Monthly numbers from the household_budget agent_report.

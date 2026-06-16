@@ -1367,7 +1367,7 @@ def render_number_derivations_appendix(
     if resolved is not None:
         rows: list[tuple[str, str]] = []
         for key, label in (
-            ("portfolio.net_worth_nis", "Net worth"),
+            ("portfolio.net_worth_nis", "Liquid net worth (investable; ex-Israel-real-estate)"),
             ("savings.annual_net_nis", "Annual net savings"),
             ("concentration.nvda_cap_pct", "NVDA concentration cap"),
             ("concentration.nvda_current_pct", "NVDA current weight"),

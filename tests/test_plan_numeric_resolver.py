@@ -719,3 +719,33 @@ def test_us_situs_estate_falls_back_to_snapshot_fx_when_boi_cold(session):
     assert est is not None and est.status == "resolved"
     # Falls back to snapshot fx 2.94.
     assert abs(float(est.value) - 1000.0 * 1000.0 * 2.94) < 5_000, f"got {est.value}"
+
+
+def test_net_worth_synth_label_states_liquid_basis():
+    """The resolver's portfolio.net_worth_nis is the LIQUID/investable basis
+    (USD assets x BOI FX + NIS-native cash, EXCLUDING Israel real-estate
+    equity). Its display label must state that basis truthfully so it never
+    reads as the same concept as the dashboard's TOTAL net worth (the
+    11.95M-vs-14.15M coherence defect)."""
+    from argosy.services.plan_numeric_resolver import _SYNTH_DISPLAY
+
+    labels = dict(_SYNTH_DISPLAY)
+    nw_label = labels["portfolio.net_worth_nis"]
+    assert nw_label != "Net worth", "bare 'Net worth' is ambiguous vs the total basis"
+    low = nw_label.lower()
+    assert "liquid" in low or "investable" in low
+    assert "real-estate" in low or "real estate" in low
+
+
+def test_net_worth_synth_render_carries_liquid_label():
+    """render_numbers_for_synth surfaces the liquid-basis label, not a bare
+    'Net worth', for portfolio.net_worth_nis."""
+    resolved = ResolvedPlanNumbers(values={
+        "portfolio.net_worth_nis": ResolvedValue(
+            key="portfolio.net_worth_nis", value=11_950_000.0, unit="nis",
+            status="resolved", source_locator="USD assets x ... + NIS-native",
+            agent_report_id=None, confidence="HIGH", formula="...",
+        ),
+    })
+    out = render_numbers_for_synth(resolved)
+    assert "Liquid net worth" in out

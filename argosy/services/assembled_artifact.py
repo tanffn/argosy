@@ -39,7 +39,17 @@ log = logging.getLogger(__name__)
 
 # Short, downstream-stable concept keys. A coherence gate depends on these
 # EXACT strings — do not rename without updating the gate.
+# Two DISTINCT net-worth bases — NOT the same concept:
+#   * net_worth_nis       : liquid/investable net worth (resolver body figure;
+#                           USD assets × BOI FX + NIS-native cash, EXCLUDING the
+#                           Israel real-estate equity).
+#   * net_worth_total_nis : total net worth INCLUDING all real estate (the Wealth
+#                           Dashboard figure; liquid + Israel real-estate equity).
+# They differ by the real-estate equity and must be cross-checked under separate
+# keys, so the deterministic coherence gate never flags total-vs-liquid as a
+# contradiction (both numbers are correct; they measure different things).
 CONCEPT_NET_WORTH = "net_worth_nis"
+CONCEPT_NET_WORTH_TOTAL = "net_worth_total_nis"
 CONCEPT_NVDA_WEIGHT = "nvda_weight_pct"
 CONCEPT_US_SITUS_ESTATE = "us_situs_estate_nis"
 CONCEPT_FI_MARGIN = "fi_margin_signed_nis"
@@ -201,7 +211,15 @@ def _add_dashboard_values(dash, bag: dict[str, list[tuple[str, float]]]) -> None
     """Map WealthDashboard dataclass fields -> short concept keys."""
     ret = getattr(dash, "retirement", None)
     if ret is not None:
-        _append(bag, CONCEPT_NET_WORTH, "dashboard", getattr(ret, "net_worth_nis", None))
+        # The dashboard's net worth is the TOTAL basis (liquid + Israel
+        # real-estate equity), a DIFFERENT concept from the resolver's
+        # liquid/investable net_worth_nis. Map it to the distinct total key so
+        # the coherence gate compares like-for-like (no false total-vs-liquid
+        # contradiction).
+        _append(
+            bag, CONCEPT_NET_WORTH_TOTAL, "dashboard",
+            getattr(ret, "net_worth_nis", None),
+        )
 
     conc = getattr(dash, "concentration", None)
     if conc is not None:
@@ -224,6 +242,7 @@ __all__ = [
     "AssembledArtifact",
     "assemble_plan_artifact",
     "CONCEPT_NET_WORTH",
+    "CONCEPT_NET_WORTH_TOTAL",
     "CONCEPT_NVDA_WEIGHT",
     "CONCEPT_US_SITUS_ESTATE",
     "CONCEPT_FI_MARGIN",
