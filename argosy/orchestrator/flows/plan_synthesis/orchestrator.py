@@ -851,94 +851,12 @@ def run_synthesis(
             user_id=user_id,
         )
 
-    # v4 block B1 — assemble the three plan-doc appendices ONCE here
-    # (sections are global, not per-horizon) and append to
-    # ``horizon_long_md`` only. Long is chosen because the strategic
-    # frame anchors the section-by-section evidence + assumption ledger;
-    # duplicating across medium/short would be wrong (sections + ledger
-    # are not horizon-scoped). Schema-change suggestion documented in
-    # ``render_plan_appendices``: a dedicated ``plan_versions.plan_doc_md``
-    # column would be cleaner long-term but is deferred for v1.
-    _long_horizon_md = _pkg._horizon_md_user(output.long)
-    _appendices = _pkg.render_plan_appendices(
-        output,
-        session=session,
-        decision_run_id=decision_run_id,
-    )
-    if _appendices:
-        _long_horizon_md = _long_horizon_md.rstrip() + "\n\n" + _appendices
+    # The user-facing + audit horizon bodies (appendices on long, headline
+    # scrub, jargon/history strip) and the canonical target-allocation are
+    # assembled below via _assemble_draft_bodies — the SINGLE renderer shared
+    # with the reader-reconcile re-persist so both paths produce an identical
+    # draft shape.
 
-    _medium_horizon_md = _pkg._horizon_md_user(output.medium)
-    _short_horizon_md = _pkg._horizon_md_user(output.short)
-
-    # #24 PRIMARY gate (codex-recommended): scrub the user-facing markdown
-    # against the deterministic resolver manifest BEFORE persist. Any headline
-    # ₪/percent/age number that traces to no resolved value is replaced with
-    # `[derivation pending]` — fail-closed, so a synth-fabricated/stale figure
-    # (e.g. a carried-forward ₪21M) never reaches the draft body. The /accept
-    # checker remains the backstop. Best-effort: a resolver failure logs and
-    # leaves the markdown unscrubbed (the /accept gate still guards promotion).
-    _scrub_log: list[str] = []
-    try:
-        from argosy.quality.numeric_source_gate import (
-            scrub_headline_numeric_source,
-        )
-        from argosy.services.plan_numeric_resolver import resolve_plan_numbers
-
-        _drun_int = _decision_run_int(decision_run_id)
-        if _drun_int is not None:
-            # The scrub is surgical to large NIS FI-capital amounts and never
-            # mutates ages, so it does NOT need the canonical ages (keeps it off
-            # the heavy MC path).
-            _manifest = resolve_plan_numbers(
-                session, user_id=user_id, decision_run_id=_drun_int
-            )
-            _scrubbed, _scrub_log = scrub_headline_numeric_source(
-                {
-                    "long": _long_horizon_md,
-                    "medium": _medium_horizon_md,
-                    "short": _short_horizon_md,
-                },
-                _manifest,
-            )
-            _long_horizon_md = _scrubbed["long"]
-            _medium_horizon_md = _scrubbed["medium"]
-            _short_horizon_md = _scrubbed["short"]
-            if _scrub_log:
-                log.warning(
-                    "plan_synthesis.headline_numbers_scrubbed",
-                    user_id=user_id,
-                    decision_run_id=decision_run_id,
-                    count=len(_scrub_log),
-                    tokens=_scrub_log[:20],
-                )
-    except Exception as exc:  # noqa: BLE001 — scrub is defense-in-depth
-        log.warning(
-            "plan_synthesis.headline_scrub_failed",
-            user_id=user_id, error=str(exc),
-        )
-
-    # De-jargon the user-facing body (the assumption-ledger / section-evidence /
-    # receipts appendix occasionally names internal agent classes + "fleet" /
-    # "synthesizer", which the jargon_leak gate forbids in the user surface).
-    # The audit variants are rendered separately and keep the raw names.
-    _long_horizon_md = _pkg._strip_jargon(_long_horizon_md)
-    _medium_horizon_md = _pkg._strip_jargon(_medium_horizon_md)
-    _short_horizon_md = _pkg._strip_jargon(_short_horizon_md)
-    # History-leak strip over the FULL assembled body (incl. the appendix, which
-    # is appended after _horizon_md_user already ran its own strip) — catches a
-    # revision verb like "supersedes" that leaks via the assumption ledger.
-    _long_horizon_md = _pkg._strip_history_leak(_long_horizon_md)
-    _medium_horizon_md = _pkg._strip_history_leak(_medium_horizon_md)
-    _short_horizon_md = _pkg._strip_history_leak(_short_horizon_md)
-
-    # T1.5 — persist the canonical instrument-level TargetAllocationDoc so every
-    # surface projects ONE plan AND the numeric-source gate has the canonical
-    # NVDA cap to trace. Best-effort + never fatal, but NOT silently-NULL: a
-    # transient build failure (concentration report / snapshot not yet visible in
-    # this transaction) carries forward the prior CURRENT plan's doc rather than
-    # producing an un-anchored draft — the regression behind the draft-36 422.
-    from argosy.services.target_allocation_doc import resolve_target_allocation_json
 
     # Team-source the Alternatives sleeve (size + instruments are agent-derived,
     # deterministically verified, estate-gated, then debated by an ETP-aware
@@ -981,9 +899,11 @@ def run_synthesis(
         )
         _alternatives_sleeve = None
 
-    _target_allocation_json = resolve_target_allocation_json(
-        session, user_id, decision_run_id, datetime.now(timezone.utc).date(),
-        alternatives_sleeve=_alternatives_sleeve,
+    # Assemble every user-facing + audit body field from the synth output via
+    # the SINGLE shared renderer (also used by the reader-reconcile re-persist).
+    _bodies = _assemble_draft_bodies(
+        session, output=output, user_id=user_id,
+        decision_run_id=decision_run_id, alternatives_sleeve=_alternatives_sleeve,
     )
 
     draft = PlanVersion(
@@ -1008,20 +928,18 @@ def run_synthesis(
         # ``horizon_long_md`` additionally carries the v4 appendix block
         # (assumption ledger + section-by-section evidence + fleet
         # receipts) assembled just above.
-        horizon_long_md=_long_horizon_md,
-        horizon_medium_md=_medium_horizon_md,
-        horizon_short_md=_short_horizon_md,
-        horizon_long_md_audit=_pkg._horizon_md_audit(output.long),
-        horizon_medium_md_audit=_pkg._horizon_md_audit(output.medium),
-        horizon_short_md_audit=_pkg._horizon_md_audit(output.short),
+        horizon_long_md=_bodies["horizon_long_md"],
+        horizon_medium_md=_bodies["horizon_medium_md"],
+        horizon_short_md=_bodies["horizon_short_md"],
+        horizon_long_md_audit=_bodies["horizon_long_md_audit"],
+        horizon_medium_md_audit=_bodies["horizon_medium_md_audit"],
+        horizon_short_md_audit=_bodies["horizon_short_md_audit"],
         synthesis_inputs_json=inputs.model_dump_json(),
-        target_allocation_json=_target_allocation_json,
+        target_allocation_json=_bodies["target_allocation_json"],
         # Persist the structured sections so the plan-output gate can
         # evaluate section_coverage + evidence_per_section against the REAL
         # sections at promote-time (they were previously dropped on the floor).
-        sections_json=json.dumps(
-            [s.model_dump(mode="json") for s in output.sections]
-        ),
+        sections_json=_bodies["sections_json"],
     )
     session.add(draft)
     session.commit()
@@ -1075,7 +993,10 @@ def run_synthesis(
     # possible via ?override_fm_rejection=true, audit-logged). No parallel
     # promotion mechanism is introduced. A reader BLOCK never UN-rejects an
     # FM rejection (it can only tighten the gate, never loosen it).
-    try:
+    def _assemble_and_read():
+        """Assemble the just-persisted draft into its full artifact and run the
+        whole-artifact reader against it. Returns ``(verdict, row)``; the inner
+        assemble degrades to an empty artifact (→ reader BLOCKs) on failure."""
         _prior_plan_text = ""
         if prior_current is not None:
             _prior_plan_text = "\n\n".join(filter(None, [
@@ -1103,7 +1024,7 @@ def run_synthesis(
             f"Today's date (ISO): {datetime.now(timezone.utc).date().isoformat()}"
         )
 
-        _reader_verdict, _reader_row = _asyncio.run(
+        return _asyncio.run(
             _pkg.run_whole_artifact_review(
                 assembled_artifact=_assembled_text,
                 external_context=_external_context,
@@ -1112,6 +1033,9 @@ def run_synthesis(
                 user_id=user_id,
             )
         )
+
+    try:
+        _reader_verdict, _reader_row = _assemble_and_read()
     except Exception as exc:  # noqa: BLE001 — fail-soft; draft already persisted
         log.warning(
             "whole_artifact_reader.run_failed",
@@ -1119,21 +1043,142 @@ def run_synthesis(
         )
         _reader_verdict, _reader_row = None, None
 
-    # Persist the reader row through the same phase-recorder pipeline as
-    # every other phase (phase_n=55 — the holistic stage after codex's 4.5
-    # and the FM's phase 5). Mirror codex's guard: only record a real row.
+    # COHERENCE RECONCILE LOOP — give the reader the SAME feedback the codex
+    # numeric zigzag has (the helper at ``_codex_numeric_reconcile_guidance`` +
+    # the forcing loop near phase 4.5). When the reader BLOCKS on a FIXABLE
+    # coherence hole (contradiction / cross-surface / stale date / fragile
+    # claim), fold the finding into synthesizer guidance, RE-RUN synthesis,
+    # RE-PERSIST the draft via the shared ``_assemble_draft_bodies`` renderer,
+    # and RE-READ — so the hole comes back RESOLVED without a human editing
+    # prose. Bounded to ONE round (like codex) + fail-closed: if it still BLOCKS
+    # after the bound the draft stays not-auto-promotable (the gate below fires).
+    # Disabled under ARGOSY_READER_RECONCILE=0; never fires when the reader was
+    # skipped (verdict None — pytest / kill switch).
+    _reader_reconcile_marker: dict | None = None
+    _READER_RECONCILE_MAX_ROUNDS = 1
+    if (
+        _os.environ.get("ARGOSY_READER_RECONCILE", "1") == "1"
+        and _reader_verdict is not None
+    ):
+        _reader_objection_topic = _reader_first_objection_topic(_reader_verdict)
+        _reader_round = 0
+        while (
+            _reader_round < _READER_RECONCILE_MAX_ROUNDS
+            and getattr(_reader_verdict, "overall_assessment", "") == "BLOCK"
+        ):
+            _reader_guidance = _reader_coherence_reconcile_guidance(_reader_verdict)
+            if not _reader_guidance:
+                break  # infra-failure BLOCK / no fixable finding — re-synth can't help
+            _reader_round += 1
+            log.warning(
+                "plan_synthesis.reader_reconcile_triggered",
+                user_id=user_id, decision_run_id=decision_run_id,
+                round=_reader_round,
+            )
+            try:
+                _augmented = (guidance + "\n\n" + _reader_guidance).strip()
+                _recon_started = datetime.now(timezone.utc)
+                _recon_result = _pkg._run_phase_3_synthesizer(
+                    session=session, user_id=user_id,
+                    baseline=baseline, prior_current=prior_current,
+                    analyst_reports_text=analyst_reports_text,
+                    debate_outcomes_text=debate_outcomes_text,
+                    portfolio_summary=portfolio_summary,
+                    fills_summary=fills_summary,
+                    decision_run_id=decision_audit_token,
+                    speculation_cap_pct=cap.max_pct_of_net_worth,
+                    speculation_cap_concurrent=cap.max_concurrent_positions,
+                    guidance=_augmented,
+                )
+                if (
+                    isinstance(_recon_result, tuple) and len(_recon_result) == 2
+                    and not isinstance(_recon_result, PlanSynthesisOutput)
+                ):
+                    output, _recon_reports = _recon_result
+                else:
+                    output, _recon_reports = _recon_result, []
+                output = _pkg._run_plan_language_rewriter(
+                    output=output, user_id=user_id, decision_run_id=decision_run_id,
+                )
+                output = _pkg._enforce_speculation_cap(
+                    output,
+                    max_pct_of_net_worth=cap.max_pct_of_net_worth,
+                    max_concurrent_positions=cap.max_concurrent_positions,
+                )
+                _pkg._record_phase_completion(
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    phase_n=3, started_at=_recon_started,
+                    phase_output=output.model_dump_json(),
+                    agent_report_rows=_recon_reports,
+                )
+                # Re-render the draft body from the reconciled output and UPDATE
+                # the persisted draft IN PLACE so ``assemble_plan_artifact``
+                # re-reads the corrected plan. The alternatives decision is
+                # REUSED (its agent fleet is not re-run for a prose reconcile).
+                _recon_bodies = _assemble_draft_bodies(
+                    session, output=output, user_id=user_id,
+                    decision_run_id=decision_run_id,
+                    alternatives_sleeve=_alternatives_sleeve,
+                )
+                draft.horizon_long_json = output.long.model_dump_json()
+                draft.horizon_medium_json = output.medium.model_dump_json()
+                draft.horizon_short_json = output.short.model_dump_json()
+                draft.horizon_long_md = _recon_bodies["horizon_long_md"]
+                draft.horizon_medium_md = _recon_bodies["horizon_medium_md"]
+                draft.horizon_short_md = _recon_bodies["horizon_short_md"]
+                draft.horizon_long_md_audit = _recon_bodies["horizon_long_md_audit"]
+                draft.horizon_medium_md_audit = _recon_bodies["horizon_medium_md_audit"]
+                draft.horizon_short_md_audit = _recon_bodies["horizon_short_md_audit"]
+                draft.target_allocation_json = _recon_bodies["target_allocation_json"]
+                draft.sections_json = _recon_bodies["sections_json"]
+                session.commit()
+                _reader_verdict, _reader_row = _assemble_and_read()
+            except Exception as exc:  # noqa: BLE001 — reconcile is best-effort
+                log.warning(
+                    "plan_synthesis.reader_reconcile_failed",
+                    user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+                )
+                break
+        if _reader_round > 0:
+            _reader_still_blocking = (
+                getattr(_reader_verdict, "overall_assessment", "") == "BLOCK"
+            )
+            _reader_reconcile_marker = {
+                "triggered": True,
+                "still_blocking": bool(_reader_still_blocking),
+                "objection_topic": _reader_objection_topic,
+            }
+            log.warning(
+                "plan_synthesis.reader_reconcile_done",
+                user_id=user_id, decision_run_id=decision_run_id,
+                still_blocking=_reader_still_blocking,
+            )
+
+    # Persist the FINAL reader row (phase_n=55 — the holistic stage after
+    # codex's 4.5 and the FM's phase 5), folding the reconcile marker into the
+    # phase output JSON so /decisions/[id] can show the reader zigzag. Mirror
+    # codex's guard: only record a real row.
     if _reader_row is not None:
+        _reader_phase_output = (
+            _reader_verdict.model_dump_json() if _reader_verdict else ""
+        )
+        if _reader_reconcile_marker is not None:
+            try:
+                import json as _json
+                _payload = _reader_verdict.model_dump() if _reader_verdict else {}
+                _payload["reader_reconcile"] = _reader_reconcile_marker
+                _reader_phase_output = _json.dumps(_payload)
+            except Exception:  # noqa: BLE001 — never lose the reader row
+                pass
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
-            phase_n=55,  # 5.5 — holistic reader, after FM
-            started_at=datetime.now(timezone.utc),
-            phase_output=(
-                _reader_verdict.model_dump_json() if _reader_verdict else ""
-            ),
+            phase_n=55, started_at=datetime.now(timezone.utc),
+            phase_output=_reader_phase_output,
             agent_report_rows=[_reader_row],
         )
 
-    # A reader BLOCK tightens the promotion gate via the FM's own field.
+    # A reader BLOCK (the FINAL verdict, after any reconcile) tightens the
+    # promotion gate via the FM's own field.
     if (
         _reader_verdict is not None
         and _reader_verdict.overall_assessment == "BLOCK"
@@ -2979,6 +3024,186 @@ def _codex_numeric_reconcile_guidance(codex_opinion) -> str | None:
             + "\n".join(hits)
         )
     return None
+
+
+# The whole-artifact reader's COHERENCE kinds — a finding of one of these kinds
+# (or an "other" finding that quotes conflicting surfaces) is a prose-level
+# coherence hole the synthesizer can actually CORRECT by re-running: reconcile
+# the two labels/values, fix the stale date, qualify the fragile claim. The
+# synthetic fail-closed BLOCK the reader emits on a timeout / unparseable /
+# empty-artifact run is kind="other" with NO surfaces_cited — re-running
+# synthesis cannot fix a reader that never produced a verdict, so it is
+# EXCLUDED (it would only burn a 15-min reconcile round).
+_READER_COHERENCE_KINDS = frozenset(
+    {"contradiction", "cross_surface", "fragile_claim", "stale", "regression"}
+)
+
+
+def _reader_finding_is_fixable(finding) -> bool:
+    """A reader finding the synthesizer can act on by re-running.
+
+    True for any coherence-kind finding, and for an ``other`` finding that
+    quotes conflicting surfaces (real signal). False for the reader's
+    synthetic infra-failure BLOCK (kind=``other`` with empty ``surfaces_cited``
+    — a timeout / dispatch failure / empty artifact), which re-synthesis cannot
+    repair.
+    """
+    kind = (getattr(finding, "kind", "") or "").lower()
+    if kind in _READER_COHERENCE_KINDS:
+        return True
+    surfaces = getattr(finding, "surfaces_cited", None) or []
+    return kind == "other" and len(surfaces) > 0
+
+
+def _reader_coherence_reconcile_guidance(reader_verdict) -> str | None:
+    """Return reconcile guidance when the reader BLOCKED on a FIXABLE coherence
+    hole, else None.
+
+    Mirrors ``_codex_numeric_reconcile_guidance`` for the whole-artifact reader.
+    Unlike codex (whose blockers span topics the synthesizer cannot fix, e.g.
+    tax-sequencing), the reader's ENTIRE remit is coherence of the assembled
+    prose — exactly what a re-synthesis addresses — so it fires on ANY hard
+    BLOCK carrying at least one fixable BLOCKER finding. The conflicting
+    surfaces are quoted verbatim so the synthesizer can reconcile them to one
+    value/label/claim. Only a hard BLOCK forces a round (AMBER/YELLOW are
+    advisory — the FM handles them); an infra-failure BLOCK is excluded (see
+    ``_reader_finding_is_fixable``).
+    """
+    if reader_verdict is None:
+        return None
+    if getattr(reader_verdict, "overall_assessment", "") != "BLOCK":
+        return None
+    findings = getattr(reader_verdict, "findings", None) or []
+    hits: list[str] = []
+    for f in findings:
+        if getattr(f, "severity", "") != "BLOCKER":
+            continue
+        if not _reader_finding_is_fixable(f):
+            continue
+        surfaces = getattr(f, "surfaces_cited", None) or []
+        quoted = "; ".join(f"{s!r}" for s in surfaces)
+        hits.append(
+            f"- [{getattr(f, 'kind', '')}] {getattr(f, 'detail', '')}"
+            + (f"  CONFLICTING SURFACES: {quoted}" if quoted else "")
+        )
+    if not hits:
+        return None
+    return (
+        "ADVERSARIAL COHERENCE REVIEW — a hostile reader of the WHOLE assembled "
+        "plan found contradictions / stale content / fragile headline claims "
+        "you MUST resolve in this revision. For each: make every surface state "
+        "the SAME concept with the SAME value AND the same (or an explicitly "
+        "distinguished) label; render any past-due date as 'overdue', never "
+        "'on-deck'/'0 days'; and qualify — do NOT delete or hide — any headline "
+        "claim the plan's own risk/concentration/FX sections undercut. "
+        "Coherence holes:\n"
+        + "\n".join(hits)
+    )
+
+
+def _reader_first_objection_topic(reader_verdict) -> str:
+    """Short label of the FIRST fixable coherence hole the reader blocked on.
+
+    Used purely for the visible ``reader_reconcile`` marker on /decisions/[id]
+    (mirrors ``_codex_first_numeric_topic``). Returns "" when none identified.
+    """
+    if reader_verdict is None:
+        return ""
+    for f in getattr(reader_verdict, "findings", None) or []:
+        if getattr(f, "severity", "") == "BLOCKER" and _reader_finding_is_fixable(f):
+            return (getattr(f, "kind", "") or "").strip()
+    return ""
+
+
+def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
+                           alternatives_sleeve):
+    """Render every user-facing + audit body field of the draft from a synth
+    ``output``.
+
+    The SINGLE source for both the initial persist AND the reader-reconcile
+    re-persist, so a reconciled draft is identical in shape to a normally-built
+    one (a divergence between the two paths would itself be a new defect class:
+    a reconciled body failing gates a normal body would not). Returns a dict of
+    ``PlanVersion`` body fields.
+    """
+    import json as _json
+    from argosy.orchestrator.flows import plan_synthesis as _pkg
+
+    # v4 block B1 — assemble the three plan-doc appendices ONCE (sections are
+    # global, not per-horizon) and append to the LONG horizon only (the
+    # strategic frame anchors the evidence + assumption ledger).
+    _long_md = _pkg._horizon_md_user(output.long)
+    _appendices = _pkg.render_plan_appendices(
+        output, session=session, decision_run_id=decision_run_id,
+    )
+    if _appendices:
+        _long_md = _long_md.rstrip() + "\n\n" + _appendices
+    _medium_md = _pkg._horizon_md_user(output.medium)
+    _short_md = _pkg._horizon_md_user(output.short)
+
+    # #24 PRIMARY gate — scrub headline numbers against the deterministic
+    # resolver manifest so a synth-fabricated/stale figure never reaches the
+    # body. Best-effort: a resolver failure leaves it unscrubbed (the /accept
+    # gate is the backstop).
+    try:
+        from argosy.quality.numeric_source_gate import (
+            scrub_headline_numeric_source,
+        )
+        from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+        _drun_int = _decision_run_int(decision_run_id)
+        if _drun_int is not None:
+            _manifest = resolve_plan_numbers(
+                session, user_id=user_id, decision_run_id=_drun_int
+            )
+            _scrubbed, _scrub_log = scrub_headline_numeric_source(
+                {"long": _long_md, "medium": _medium_md, "short": _short_md},
+                _manifest,
+            )
+            _long_md = _scrubbed["long"]
+            _medium_md = _scrubbed["medium"]
+            _short_md = _scrubbed["short"]
+            if _scrub_log:
+                log.warning(
+                    "plan_synthesis.headline_numbers_scrubbed",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                    count=len(_scrub_log), tokens=_scrub_log[:20],
+                )
+    except Exception as exc:  # noqa: BLE001 — scrub is defense-in-depth
+        log.warning(
+            "plan_synthesis.headline_scrub_failed",
+            user_id=user_id, error=str(exc),
+        )
+
+    # De-jargon then strip history leaks over the FULL assembled body (the
+    # appendix is included). Order: jargon → history, matching the prior inline.
+    _long_md = _pkg._strip_history_leak(_pkg._strip_jargon(_long_md))
+    _medium_md = _pkg._strip_history_leak(_pkg._strip_jargon(_medium_md))
+    _short_md = _pkg._strip_history_leak(_pkg._strip_jargon(_short_md))
+
+    # T1.5 — persist the canonical instrument-level TargetAllocationDoc so every
+    # surface projects ONE plan. Best-effort + never fatal.
+    from argosy.services.target_allocation_doc import (
+        resolve_target_allocation_json,
+    )
+
+    _target_allocation_json = resolve_target_allocation_json(
+        session, user_id, decision_run_id, datetime.now(timezone.utc).date(),
+        alternatives_sleeve=alternatives_sleeve,
+    )
+
+    return {
+        "horizon_long_md": _long_md,
+        "horizon_medium_md": _medium_md,
+        "horizon_short_md": _short_md,
+        "horizon_long_md_audit": _pkg._horizon_md_audit(output.long),
+        "horizon_medium_md_audit": _pkg._horizon_md_audit(output.medium),
+        "horizon_short_md_audit": _pkg._horizon_md_audit(output.short),
+        "target_allocation_json": _target_allocation_json,
+        "sections_json": _json.dumps(
+            [s.model_dump(mode="json") for s in output.sections]
+        ),
+    }
 
 
 def _decision_run_int(decision_run_id) -> int | None:
