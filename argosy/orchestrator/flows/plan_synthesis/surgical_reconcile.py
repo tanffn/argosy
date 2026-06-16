@@ -22,10 +22,33 @@ The caller re-verifies (deterministic gate + a fresh whole-artifact read) after.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 log = logging.getLogger(__name__)
+
+# A number token (figure / amount / percentage / age). Used to forbid an edit
+# from INTRODUCING a number absent in the original snippet — injecting figures
+# creates fresh cross-surface numeric contradictions (observed on draft 43).
+_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+# Phrases an edit must never introduce: revision-history leaks + internal tokens.
+_BANNED_RE = re.compile(
+    r"prior plan|previous plan|previous version|revision|\[domain_knowledge|agent_report:",
+    re.IGNORECASE,
+)
+
+
+def _edit_is_safe(before: str, after: str) -> bool:
+    """Reject an edit that introduces a NEW number or banned jargon. Keeps the
+    surgical pass net-safe regardless of editor behavior: a corrected snippet may
+    only use numbers already present in the original, and must not leak history
+    phrases / internal citation tokens."""
+    if _BANNED_RE.search(after):
+        return False
+    before_nums = {m.group(0).replace(",", "") for m in _NUM_RE.finditer(before)}
+    after_nums = {m.group(0).replace(",", "") for m in _NUM_RE.finditer(after)}
+    return after_nums.issubset(before_nums)
 
 # Coherence finding kinds the segment editor can act on (mirror the reconcile
 # loop's _READER_COHERENCE_KINDS). An 'other' finding with no cited surface is a
@@ -134,10 +157,15 @@ def surgically_correct_draft(
                         fact_id=f"reader.{kind}", canonical_value=context,
                         offending_text=ex, defect_reason=detail, editor=editor,
                     )
-                    if fixed and fixed != ex:
+                    if fixed and fixed != ex and _edit_is_safe(ex, fixed):
                         corrected[hz] = body.replace(ex, fixed, 1)
                         edits.append(SurgicalEdit(horizon=hz, before=ex, after=fixed, finding_kind=kind))
                         touched = True
+                    elif fixed and fixed != ex:
+                        log.warning(
+                            "surgical_reconcile.edit_rejected_unsafe kind=%s "
+                            "(introduced a new number or banned phrase)", kind,
+                        )
                     break  # excerpt found in this horizon — done with it
         (addressed if touched else unaddressed).append(finding)
 

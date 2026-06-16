@@ -33,13 +33,24 @@ _PROMPT_SYSTEM = (
     "SMALLEST possible edit that makes it factually correct and removes the "
     "contradiction.\n\n"
     "Rules:\n"
-    "- Keep the wording, structure, and length as close to the original as "
-    "possible — change only what is needed.\n"
+    "- Make the SMALLEST possible change — reword or add a short qualifying "
+    "clause; keep the original wording, structure, and length as close as "
+    "possible. Do not rewrite the whole sentence.\n"
     "- Do NOT delete or hide a load-bearing claim to dodge the problem. If a "
     "headline claim (e.g. 'capital sufficiency reached') is fragile, QUALIFY it "
-    "honestly with the stated caveat, do not silently drop it.\n"
-    "- Use ONLY the canonical facts provided; never invent numbers.\n"
-    "- Return ONLY the corrected snippet text — no commentary, no preamble."
+    "honestly in WORDS (e.g. 'reached only on a thin margin that a routine FX "
+    "move could erase'), do not silently drop it.\n"
+    "- CRITICAL: do NOT introduce any NEW number, figure, ticker, currency "
+    "amount, age, or percentage that is not ALREADY in the offending snippet. "
+    "Reconcile differences QUALITATIVELY (e.g. 'on a cash-only basis' vs 'on the "
+    "full investable basis'), never by inserting new figures — injecting numbers "
+    "creates fresh cross-surface contradictions.\n"
+    "- Write ONLY client-facing prose. Never mention 'the prior plan', a previous "
+    "version, revision history, or internal tokens like '[domain_knowledge/...]' "
+    "or 'agent_report:'. If the correct content requires data not present in the "
+    "snippet, make the MINIMAL honest qualifier and stop — do not fabricate it.\n"
+    "Put the corrected snippet — and nothing else (no commentary, no preamble) — "
+    "in the `corrected_text` field of your structured response."
 )
 
 
@@ -58,6 +69,9 @@ class ProseEditorAgent(BaseAgent[CorrectedSnippet]):
 
     agent_role = "prose_editor"
     output_model = CorrectedSnippet
+    # A one-snippet copy-edit grounded in the supplied canonical facts — no
+    # external sources to cite (BaseAgent defaults require_citations=True).
+    require_citations = False
 
     def build_prompt(
         self,
@@ -72,7 +86,7 @@ class ProseEditorAgent(BaseAgent[CorrectedSnippet]):
             f"Correct/authoritative value or context: {canonical_value}\n"
             f"Reviewer's reason this snippet is wrong: {defect_reason or '(unspecified)'}\n\n"
             f"Offending snippet:\n\"\"\"{offending_text}\"\"\"\n\n"
-            "Return ONLY the corrected snippet."
+            "Return the corrected snippet in the corrected_text field."
         )
         return _PROMPT_SYSTEM, user
 
