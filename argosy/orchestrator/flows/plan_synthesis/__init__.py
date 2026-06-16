@@ -121,6 +121,11 @@ from argosy.orchestrator.flows.plan_synthesis.codex_second_opinion import (
     run_codex_second_opinion,
 )
 
+# In-stage deterministic gate (shift-left Layer B) — runs the plan-output gate
+# suite on the just-persisted draft BEFORE the LLM reader. Exposed on the package
+# namespace so the orchestrator resolves it via ``_pkg.`` and tests can patch it.
+from argosy.quality.instage_gate import run_deterministic_gate_instage  # noqa: F401
+
 # Whole-artifact adversarial reader — the holistic final pre-promotion stage.
 # Exposed on the package namespace so the orchestrator resolves it via
 # ``_pkg.run_whole_artifact_review`` (and tests can monkeypatch the
@@ -194,6 +199,8 @@ __all__ = [
     "CoherenceFinding",
     "WholeArtifactVerdict",
     "run_whole_artifact_review",
+    # In-stage deterministic gate (shift-left Layer B)
+    "run_deterministic_gate_instage",
     # Input helpers (monkeypatched in tests)
     "_assemble_portfolio_summary",
     "_assemble_fills_summary",
