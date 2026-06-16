@@ -24,6 +24,7 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import NamedTuple, cast
 
@@ -1103,6 +1104,27 @@ def run_synthesis(
                 user_id=user_id, decision_run_id=decision_run_id,
                 round=_reader_round,
             )
+            # Surgical pre-pass (default OFF — set ARGOSY_SURGICAL_CORRECTION=1 to
+            # enable). Corrects renderable findings at their canonical fact +
+            # render sites; structural ones fall through to the full re-synth
+            # below. This is NOT a demotion of full re-synth (spec: it stays the
+            # fallback + the whole-artifact reader stays the net, until the
+            # invariant graph covers all run-106 classes — [8]-[10] deferred).
+            # This slice records the phase so /decisions/[id] shows the pre-pass
+            # ran; it does NOT yet replace the persisted bodies (gated activation).
+            if _os.environ.get("ARGOSY_SURGICAL_CORRECTION", "0") == "1":
+                try:
+                    _pkg._record_phase_completion(
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        phase_n=54, started_at=datetime.now(timezone.utc),
+                        phase_output="surgical_prepass: enabled (experimental)",
+                        agent_report_rows=[],
+                    )
+                except Exception as exc:  # noqa: BLE001 — surfacing only; never abort
+                    log.warning(
+                        "plan_synthesis.surgical_prepass_phase_failed",
+                        user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+                    )
             try:
                 _augmented = (guidance + "\n\n" + _reader_guidance).strip()
                 _recon_started = datetime.now(timezone.utc)
@@ -3141,6 +3163,58 @@ def _reader_first_objection_topic(reader_verdict) -> str:
         if getattr(f, "severity", "") == "BLOCKER" and _reader_finding_is_fixable(f):
             return (getattr(f, "kind", "") or "").strip()
     return ""
+
+
+@dataclass
+class _SurgicalPrepassResult:
+    """Outcome of the surgical reconcile pre-pass."""
+
+    corrected_text: str
+    corrected_fact_ids: list
+    structural_findings: list
+
+
+def _surgical_reconcile_prepass(
+    *, artifact_text, findings, ledger, canonical_values, gate_kwargs,
+):
+    """Fix renderable findings at their canonical fact + render sites BEFORE the
+    full-resynth fallback. Deterministic for template/structured sites; structural
+    / unattributable findings are returned for the caller to route to re-synth.
+
+    Pure (no LLM here — prose-editor calls are the caller's responsibility for
+    llm_prose sites). The whole-artifact reader + full re-synth remain downstream;
+    this NEVER demotes them (spec: demotion waits until the invariant graph covers
+    all run-106 classes — [8]-[10] still deferred).
+    """
+    from argosy.quality.fact_attribution import attribute_finding
+    from argosy.quality.fact_correction import (
+        apply_text_corrections,
+        rerender_deterministic_sites,
+        route_finding,
+    )
+
+    corrected = artifact_text or ""
+    corrected_fact_ids: list = []
+    structural: list = []
+
+    for finding in findings or []:
+        if route_finding(finding, ledger) == "structural":
+            structural.append(finding)
+            continue
+        for loc in attribute_finding(finding, ledger):
+            fid = loc.fact_id
+            if fid is None or fid not in canonical_values:
+                continue
+            patches = rerender_deterministic_sites(fid, canonical_values[fid], ledger)
+            corrected = apply_text_corrections(corrected, patches, prose_edits=[])
+            if fid not in corrected_fact_ids:
+                corrected_fact_ids.append(fid)
+
+    return _SurgicalPrepassResult(
+        corrected_text=corrected,
+        corrected_fact_ids=corrected_fact_ids,
+        structural_findings=structural,
+    )
 
 
 def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,

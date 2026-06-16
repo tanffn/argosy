@@ -108,6 +108,10 @@ from argosy.orchestrator.flows.plan_synthesis.orchestrator import (
     # site resolves through monkeypatches in tests.
     _schedule_fm_objection_translation_precompute,
     _precompute_fm_objection_translations,
+    # Slice 3 — surgical reconcile pre-pass (fixes renderable findings at their
+    # canonical fact + render sites before the full-resynth fallback). Default
+    # OFF in the loop; exposed for _pkg. resolution + test monkeypatching.
+    _surgical_reconcile_prepass,
 )
 
 # Argosy ZigZag — Phase 4.5 codex (gpt-5) second-opinion reviewer.
@@ -190,6 +194,7 @@ __all__ = [
     "_load_completed_phase_outputs",
     "_schedule_fm_objection_translation_precompute",
     "_precompute_fm_objection_translations",
+    "_surgical_reconcile_prepass",
     # Argosy ZigZag — Phase 4.5 codex second-opinion reviewer
     "CodexAgreement",
     "CodexFinding",
