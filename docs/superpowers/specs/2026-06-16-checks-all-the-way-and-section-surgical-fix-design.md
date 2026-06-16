@@ -1,150 +1,199 @@
-# Checks all the way + section-level surgical fix — design
+# Checks all the way + fact-level surgical fix — design
 
 **Date:** 2026-06-16
-**Status:** approved (design); implementation plan to follow
-**Owner area:** `argosy/orchestrator/flows/plan_synthesis/`, `argosy/quality/`
+**Status:** approved (design v2, fact-centric); implementation plan to follow
+**Owner area:** `argosy/orchestrator/flows/plan_synthesis/`, `argosy/quality/`,
+`argosy/services/plan_numeric_resolver.py`
+
+> v2 supersedes the section-centric v1 after an adversarial codex review
+> (`tmp_review/codex_design_review_verdict.txt`, verdict NEEDS-REWORK) showed a
+> plan *section* is the wrong unit: most real defects span sections, so editing
+> one section just moves the contradiction. The surgical unit is a **canonical
+> fact + all its render sites**.
 
 ## Problem
 
-Plan synthesis runs a long sequential pipeline (9 analysts → debates →
-synthesizer → risk → codex → fund-manager → whole-artifact reader → gate,
-~60–90 min) with **all the substantive checking bolted on at the very end**.
-Two consequences the user named directly:
+Plan synthesis is a ~60–90 min sequential pipeline (9 analysts → debates →
+synthesizer → risk → codex → fund-manager → whole-artifact reader → gate) with
+**all substantive checking bolted on at the very end**, and when a reviewer
+blocks, the current reconcile loop **re-runs the entire synthesizer** and
+re-reviews the whole document. Two consequences:
 
-1. **Surprises at the end.** A defect introduced by an analyst in minute 5 (a
-   stale date, an inverted FX, a fabricated number) is not caught until the
-   codex re-derivation / whole-artifact reader read the *finished* document
-   ~80 minutes later.
-2. **Big-bang correction.** When a reviewer blocks, the current reconcile loop
-   (both the codex zigzag and the reader loop shipped 2026-06-16) re-runs the
-   **entire synthesizer** — the most expensive Opus call — regenerating the
-   whole plan and re-reviewing the whole document. Fixing one mislabeled
-   paragraph re-does the whole project, and because the synthesizer is
-   stochastic the regen can fix one thing and break another (whack-a-mole).
+1. **Surprises at the end** — a defect introduced in minute 5 is not caught
+   until the end-stage reviewers read the finished document ~80 minutes later.
+2. **Big-bang, non-convergent correction** — fixing one mislabeled value re-does
+   the whole plan; because the synthesizer is stochastic the regen reshuffles
+   and re-introduces inconsistencies. Proven empirically: live run 106 (draft
+   42) triggered the reconcile loop (`reader_reconcile.triggered=True`) and
+   **still** ended `still_blocking=True` with 11 reader findings.
 
-A real advisory team does neither: each contributor's work is checked as it
-lands, and a reviewer who finds a contradiction routes it to the **owner of
-that specific segment**, who patches **only that segment**, which is then
-re-checked **in isolation**.
+A real advisory team finds the problem where it's made, fixes only the affected
+thing, and re-checks it — and a "thing" is a *fact* (the retirement age, the FX
+rate, the target weights), not a paragraph.
 
 ## Goal
 
-Make Argosy's synthesis behave like that team:
+- **Checks all the way through** — deterministic invariants run at honest
+  in-pipeline checkpoints so the end-stage review finds nothing new. The
+  measurable contract: any defect class an end reviewer keeps catching is a
+  missing in-stage invariant, tracked as a defect.
+- **Fix only the affected fact** — a finding is corrected at its **canonical
+  fact and every render site of that fact at once** (so the fix can't move the
+  contradiction), deterministically where the value is known and with a cheap
+  prose editor only where genuine wording is involved.
 
-- **Checks all the way through** — cheap validation at each stage, so the
-  end-stage review finds little. No surprises at the end.
-- **Fix only the affected segment** — a finding is corrected at the owning
-  plan **section**, deterministically where mechanical and with a cheap
-  single-section LLM editor where the issue is genuine prose; only that section
-  is re-verified. Full re-synthesis is reserved for *structural* problems.
+## Organizing principle: canonical facts, not sections
 
-## Organizing principle: every finding has an owner
+Every load-bearing value in the plan is a **canonical fact** with a stable
+`fact_id` and a single derived value, plus the set of **render sites** where it
+appears across surfaces. Examples drawn from the run-106 defects:
 
-Any check — deterministic gate or LLM reviewer — must produce a finding that
-resolves to a **`(section_id, horizon)`**: the segment that owns it.
+| fact_id | value | render sites (surfaces) |
+| --- | --- | --- |
+| `retirement.fi_status` | reached / not-reached (+qualifier) | headline, FI ledger, retirement page, prose |
+| `retirement.earliest_retirement_age` | e.g. 47 | headline, bridge-sleeve start, trajectory appendix, prose |
+| `retirement.bridge_start_age` | must == earliest_retirement_age | bridge sleeve sizing, prose |
+| `allocation.target_weights` | the TargetAllocationDoc weights | `target_allocation_json`, medium `targets`, IPS section text, medium rationale, dashboard |
+| `rsu.net_retention_pct` | e.g. 65% | RSU ledger, equity-comp evidence, A7/A8 prose |
+| `event.rsu_tax_2026_06_17` | amount + currency | action line, tax calendar |
+| `instrument.SGLN.wrapper_type` | physical-gold ETC (not UCITS) | instrument table, migration action text |
 
-- Deterministic gates already emit a structured `locator` (concept name, date
-  string, `nvda_cap`, offset). The `locator → section_id` map is the new piece.
-- The whole-artifact reader cites `surfaces_cited` (verbatim excerpts). Those
-  excerpts are located back to the section whose rendered text contains them.
+A fact is owned by its **derivation** (the resolver / a specific agent), not by
+a section. A finding attaches to one or more `fact_id`s — **multi-owner is
+allowed** (a cross-fact contradiction owns both facts).
 
-Attribution is **step zero** — without it you cannot "fix only the affected
-segment." A finding that cannot be attributed to a section falls back to the
-structural-escalation path (full re-synthesis), so attribution failure is
-fail-safe, never silently dropped.
+### Typed locator (replaces the optional `locator` string)
 
-## Phase 1 — Shift-left gating (ships first)
+```
+FindingLocation = {
+  check: GateCheck | invariant_id,
+  fact_id: str | None,            # the canonical fact, when known
+  surface_id: str,                # body|dashboard|appendix|target_allocation_json|fm_objection|prior_plan
+  field_path: str | None,         # json_path / section_id+offset / table cell
+  excerpt_hash: str | None,       # for reader surfaces_cited
+  scope: "current" | "prior",
+}
+```
+A finding carries `FindingLocation[]`. Attribution that cannot resolve a
+`fact_id` is **fail-safe**: it routes to full re-synthesis *and* is logged as an
+attribution gap (so missing facts are surfaced, never silently swallowed).
 
-Run the **cheap deterministic** checks where the content is produced, in
-addition to the existing end-stage and /accept passes.
+## Invariants (the checks), three kinds
 
-- **After the phase-1 analysts** — validate each analyst's key structured
-  outputs against the deterministic checks that apply to them: FX value in the
-  NIS-per-USD band and unit, no past-due dates rendered as pending, numbers
-  internally consistent (e.g. `marketCap/shares ≈ price`). A failing analyst's
-  issue is surfaced immediately (and in Phase 2, routed to a fix) rather than
-  flowing 80 minutes downstream.
-- **After the phase-3 synthesizer** — run the full deterministic doc-gate suite
-  (`stale-date`, `fx-unit`, `cap-derivation`, `numeric-source`,
-  `cross-surface-coherence`, `ips-allocation-sum`) on the freshly assembled
-  draft, **before** the expensive codex / reader / fund-manager stages.
-- **End-stage codex + reader stay** as the holistic safety net. By the time the
-  document reaches them the mechanical defect classes are already gone, so the
-  end review is *quiet*. This is the measurable "no surprises" contract: **if an
-  end-stage reviewer keeps finding a class an in-stage gate should have caught,
-  that gate is missing** — that gap is itself a tracked defect.
+1. **Single-fact** — the fact's value is well-formed: FX in NIS-per-USD band,
+   a date not past-due-but-rendered-pending, a number == the resolver value.
+   (The three gates already shipped 2026-06-16 are single-fact invariants.)
+2. **Cross-fact / relational** — relations between facts hold. These are the
+   NEW invariants the run-106 evidence requires, e.g. `bridge_start_age ==
+   earliest_retirement_age`; `fi_status` coherent with the FI age set;
+   `rsu.net_retention_pct` equal across ledger + equity-comp; FI "reached" is
+   FX-shock-robust (not just NVDA-shock-robust).
+3. **Render-site consistency** — every render site of a fact shows the SAME
+   value/label (cross-surface coherence, generalized to fact level). Includes
+   the IPS equality across `target_allocation_json` + medium targets + IPS prose
+   + rationale.
 
-Phase 1 alone removes most late surprises, which is why it ships first. It does
-not require the new section-editor or addressable-section machinery — it reuses
-the deterministic checks that already exist, invoked earlier.
+## Phase 1 — Shift-left invariants (ships first)
 
-## Phase 2 — Section-level surgical correction (ships second)
+Run the deterministic invariant suite at honest checkpoints, **layered**:
 
-For each finding attributed to a `(section_id, horizon)`:
+- **Layer A — after the analysts:** per-analyst *typed* input checks + input
+  freshness/completeness (an analyst's FX value, dates, internally-consistent
+  numbers). These are new analyst-output-shaped checks; the existing doc-level
+  gates cannot run here because they need the assembled artifact.
+- **Layer B — after the assembled draft is fully built** (after the language
+  rewriter, speculation-cap enforcement, appendix render, TargetAllocationDoc
+  resolution, and body assembly — NOT on raw phase-3 JSON, which is mutated
+  afterward): the full single-fact + cross-fact + render-site invariant suite.
+  This is the real shift-left point.
+- **Layer C — end:** codex re-derivation + whole-artifact reader stay as the
+  holistic net. They should be quiet.
 
-1. **Deterministic patch** when the fix is mechanical, keyed by `GateCheck`:
-   stale date → "overdue N days"; FX unit/inversion → corrected rendering;
-   fabricated/uncited number → resolver value or `[derivation pending]`; changed
-   cap → require the derivation citation. No LLM, instant, exact.
-2. **Section-editor agent** for genuine prose contradictions / fragile claims:
-   handed **only** the offending section's text + the finding + the canonical
-   value/label it must agree with, returns a **minimal corrected section**.
-   Cheap, bounded, single-section in/out.
-3. **Re-verify only that section** — run the relevant checks scoped to the
-   patched section, not the whole document.
-4. **Escalate to full re-synthesis only for *structural* findings** — when the
-   allocation/strategy itself is wrong, not when a label/date/unit/number is
-   off. This is where the existing full-resynth reconcile loop survives.
+Phase 1 surfaces every deterministic defect before the end reviewers; it does
+not yet auto-correct. It requires the fact registry + typed locators (below) but
+not the editor/patcher machinery.
 
-This **demotes the full-resynth reconcile loop shipped 2026-06-16** to the
-structural-escalation fallback: the expensive path becomes the exception, not
-the default response to every BLOCK.
+## Phase 2 — Fact-level surgical correction (ships second)
+
+For each finding attributed to `fact_id`(s):
+
+1. **Deterministic re-render** when the canonical value is known: set the fact's
+   value and **re-render every render site from the canonical source** in one
+   step (the IPS prose renders FROM `TargetAllocationDoc`; the retirement age
+   propagates to the bridge sleeve, ledger, appendix, prose). Fixing the fact
+   fixes all its sites at once — this is what prevents the contradiction from
+   moving.
+2. **Prose editor (cheap LLM)** only where wording must change and cannot be
+   re-rendered (a genuine narrative contradiction). Handed only the fact, its
+   canonical value, and the offending text.
+3. **Re-verify** the touched fact bundle **plus the full deterministic suite**
+   (the suite is global by design — FI-shock and coherence read artifact-wide),
+   then **keep the whole-artifact reader as the holistic net**. Section-scoped
+   re-review is explicitly rejected (it would miss cross-fact contradictions).
+4. **Full re-synthesis only for *structural* findings** — when a fact's
+   *derivation* is wrong (the strategy/number itself), not its rendering. The
+   existing full-resynth reconcile loop survives here, and is **not demoted**
+   until the fact-invariant graph demonstrably covers the run-106 classes.
+
+## Run-106 ground-truth coverage (the acceptance backbone)
+
+Each finding must be caught by a NAMED invariant before reader review — "the LLM
+reader might catch it" does NOT count as coverage. (Derived from codex's walk;
+`tmp_review/codex_design_review_verdict.txt`.)
+
+| # | finding | catching invariant | fix unit |
+| --- | --- | --- | --- |
+| 0 | FI sufficiency fragile under −10% FX | NEW `fi_status` FX-shock invariant | `retirement.fi_status` render sites |
+| 1 | FI crossed-today vs age 47 vs age 45 | NEW FI timeline/status cross-fact invariant | FI fact bundle |
+| 2 | retirement age 46 vs bridge 47→60 | NEW `bridge_start_age == earliest_retirement_age` | retirement-age fact bundle |
+| 3 | RSU retention 47% vs 65% | NEW RSU-retention consistency | `rsu.net_retention_pct` sites |
+| 4 | June-17 tax NIS vs USD | NEW event-amount currency invariant | `event.*` amount+unit sites |
+| 5 | IPS 100% vs ~106 | `check_ips_allocation_sum` rebuilt to render IPS from `TargetAllocationDoc` + equality across sites | `allocation.target_weights` sites |
+| 6 | stale FM objection 3,000 vs 5,600 | NEW stale-reviewer-text invariant | FM-objection surface |
+| 7 | SGLN not UCITS but in UCITS migration | NEW instrument-taxonomy invariant | `instrument.SGLN.wrapper_type` sites |
+| 8 | SOFI promoted while news adapter missing | NEW candidate evidence-readiness invariant | candidate evidence-state |
+| 9 | estate precondition vs SGOV at Schwab | NEW action-level estate-routing invariant | action + rationale |
+| 10 | coverage appendix confidence contradiction | NEW coverage-status invariant | renderer/status metadata |
+
+A run-106 regression fixture (full reader JSON persisted) asserts each row is
+caught by its named invariant.
 
 ## New components
 
-| Component | Responsibility | Depends on |
-| --- | --- | --- |
-| Finding attribution | `finding (locator / surfaces_cited) → (section_id, horizon)`; fail-safe to structural path | `GateViolation.locator`, `CoherenceFinding.surfaces_cited`, the rendered section map |
-| Addressable sections | render and splice the body per `section_id`+`horizon` so a fix targets one section | existing `Section` / `HorizonSection`; new per-section render/splice |
-| Deterministic section patchers | mechanical fixes keyed by `GateCheck` | the existing gate locators + the resolver manifest |
-| Section-editor agent | cheap single-section prose correction under a canonical constraint | the section text + the finding |
-| Scoped re-verification | run checks against just the patched section | the deterministic checks + reader (section-scoped) |
-| In-stage gate hooks | invoke the deterministic suite after analysts + after the synthesizer | the orchestrator phase boundaries |
+| Component | Responsibility |
+| --- | --- |
+| Fact registry | canonical `fact_id` → derived value + render-site descriptors; built from the resolver + TargetAllocationDoc (built *before* rendering) |
+| Typed locator + multi-owner findings | `FindingLocation[]`; replaces the optional `locator` string |
+| Attribution | finding (locator / `surfaces_cited` excerpt) → `fact_id`(s); fail-safe + logged on miss |
+| Single-fact / cross-fact / render-site invariants | the three invariant kinds; the run-106 table is the initial set |
+| Layered in-stage hooks | Layer A (post-analyst typed checks) + Layer B (post-assembly full suite) |
+| Deterministic re-renderer | set a fact value → re-render all its sites from canonical source |
+| Prose editor agent | cheap single-fact prose correction where re-render can't apply |
+| Scoped + global re-verify | touched fact bundle + full suite + whole-artifact reader retained |
+| Run-106 fixture | full reader JSON + per-finding coverage assertions |
 
 ## Testing
 
-- **Attribution** — unit tests mapping representative deterministic locators and
-  reader `surfaces_cited` excerpts to the correct `(section_id, horizon)`,
-  including the fail-safe (unattributable → structural path).
-- **Deterministic patchers** — per `GateCheck`, a flagged section in → a clean
-  section out → the same check passes on the output (red→green per patcher).
-- **Section-editor** — stubbed-LLM wire test: a contradicting section + finding →
-  corrected section spliced back → scoped re-verify passes; the rest of the
-  document is byte-unchanged (proves "only the affected segment").
-- **Shift-left hooks** — a synthesized draft carrying a planted stale date / bad
-  FX is caught at the post-synthesizer hook, before codex/reader run.
-- **No-surprise contract** — a regression test asserting that a class caught by
-  an in-stage gate does not also surface fresh at the end-stage reviewer.
-- **Isolation** — the section-editor / patchers run under pytest without real
-  agent calls (mirror the reconcile-loop test's isolation of
-  `run_alternatives_phase`).
+- **Attribution** — map representative locators and reader `surfaces_cited`
+  excerpts (incl. duplicate, prior-plan, appendix, FM-objection, non-section
+  surfaces) to the correct `fact_id`(s); unattributable → structural path + log.
+- **Invariants** — per invariant, red→green on a planted defect; the run-106
+  fixture asserts coverage of all 11 findings by named invariants.
+- **Deterministic re-render** — set a fact (e.g. retirement age 46→47) → every
+  render site updates → all relevant invariants pass; no other fact changes.
+- **Prose editor** — stubbed-LLM wire test (mirror the reconcile test's
+  isolation of `run_alternatives_phase`).
+- **Re-verify** — after a surgical patch the FULL suite + whole-artifact reader
+  still run; a planted cross-fact contradiction is NOT missed.
+- **Gate placement** — a defect in a rewriter/cap/appendix-rendered surface is
+  caught at Layer B (post-assembly), proving raw-phase-3 gating would miss it.
 
 ## Out of scope (this design)
 
-- Re-running the **owning analyst** (root-cause re-run) as the fix mechanism —
-  considered and deferred; section-level correction (symptom + canonical
-  constraint) is cheaper and sufficient for the observed finding classes. Revisit
-  if a finding class proves un-fixable at the section level.
-- The genuine ~1% FI-margin fragility under a −10% FX shock is **not** a wording
-  defect; the FI-shock gate force-qualifies the "reached" claim. Surgical
-  correction qualifies the claim honestly — it does not, and must not, hide the
-  fragility.
-- Changing the analyst fleet, the allocation methodology, or the speculation
-  routing.
-
-## Validation input
-
-The live synthesis run started 2026-06-16 (`overnight_synth_run5.py`, with the
-current reconcile loop) produces the concrete, current list of *which* segments
-the reviewers block on. That list is the empirical target set for the
-attribution + patcher work — harvest it before building Phase 2.
+- Re-running the owning analyst as the fix mechanism (root-cause) — deferred;
+  fact-level deterministic re-render + prose editor covers the observed classes.
+- Demoting the full-resynth reconcile loop or the whole-artifact reader — they
+  stay until the fact-invariant graph provably covers the run-106 classes.
+- Changing the analyst fleet, allocation methodology, or speculation routing.
+- The genuine ~1% FI-margin fragility is real, not a wording defect; the
+  `fi_status` invariant forces an honest qualifier — it must not hide it.
