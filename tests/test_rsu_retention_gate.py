@@ -38,6 +38,30 @@ def test_no_retention_mention() -> None:
     assert check_rsu_retention_consistency(plan_text=text) == []
 
 
+def test_bare_retain_verb_for_positions_not_flagged() -> None:
+    """"retain the position/sleeve at X%" is allocation prose, not net retention.
+
+    The only true retention figure here is the 65% net retention; the 13% NVDA
+    cap and 8% gold sleeve are ordinary "retain ... at X%" allocation prose and
+    must NOT be collected as retention values.
+    """
+    text = (
+        "RSU net retention is 65% after tax. We retain the NVDA position at a 13% "
+        "cap. Retain the gold sleeve at 8%."
+    )
+    assert check_rsu_retention_consistency(plan_text=text) == []
+
+
+def test_retained_pct_of_gains_not_flagged() -> None:
+    """"retained Y% of gains" is fund-performance prose, not equity-comp retention.
+
+    Only the 65% after-tax retention is an equity-comp figure; "the fund retained
+    40% of gains" must NOT be collected as a retention value.
+    """
+    text = "After-tax retention is 65%. The fund retained 40% of gains."
+    assert check_rsu_retention_consistency(plan_text=text) == []
+
+
 def test_rounding_tolerance_not_flagged() -> None:
     """64% vs 65% (within 1pp) is rounding, not a contradiction."""
     text = (

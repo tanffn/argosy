@@ -37,3 +37,16 @@ def test_clean_genuine_ucits_instrument_in_a_ucits_migration_action() -> None:
         "Action: migrate VWRA into the UCITS wrapper to consolidate the core."
     )
     assert check_instrument_taxonomy(plan_text=plan_text) == []
+
+
+def test_clean_mixed_clause_migrated_ticker_distinct_from_etc_ticker() -> None:
+    # Reviewer's false-positive case: one clause names BOTH a legitimate UCITS
+    # ticker being migrated (VWRA) AND a separate ETC that stays put (SGLN).
+    # The not-UCITS cue ("ETC") is adjacent to SGLN (which is NOT migrated), and
+    # the migration action's object is VWRA (which is never asserted non-UCITS).
+    # No single ticker is both not-UCITS AND a migration object → no violation.
+    plan_text = (
+        "Migrate VWRA into the UCITS wrapper; note the existing gold ETC SGLN "
+        "stays put."
+    )
+    assert check_instrument_taxonomy(plan_text=plan_text) == []

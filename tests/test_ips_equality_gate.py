@@ -109,3 +109,39 @@ def test_doc_without_classes_falls_back_gracefully():
     weird = SimpleNamespace(not_classes=[1, 2, 3])
     # Clean prose + unrecognizable doc → no check (2), and check (1) is clean.
     assert check_ips_equality(plan_text=_PLAN_100, target_allocation_doc=weird) == []
+
+
+# A non-map prose paragraph that merely MENTIONS "IPS" in running text and
+# happens to carry loose percentages (35 + 18 ≈ 53). The old bare-\bIPS\b anchor
+# scoped the "section" onto this prose and summed those numbers → spurious flag.
+_PROSE_IPS_MENTION = """\
+The IPS is reviewed quarterly. Equity returned 35% last year. Gold rose 18%.
+"""
+
+# An earlier in-prose "IPS" sentence BEFORE the real heading. The old anchor
+# matched the prose "IPS" and stopped at the first heading, capturing only the
+# narration and NEVER scanning the real instrument map below (a ~106% defect).
+_PLAN_PROSE_THEN_MAP_106 = """\
+Our IPS sets the policy. We revisit it each quarter.
+
+## IPS Instrument Map
+NVDA 13%
+Global equity 60%
+Gold 18%
+Bonds 15%
+"""  # 13+60+18+15 = 106
+
+
+def test_prose_ips_mention_no_map_is_clean():
+    """FALSE-POSITIVE guard: a prose paragraph mentioning 'IPS' with loose
+    percentages but NO instrument-map heading must NOT be scoped/summed → []."""
+    assert check_ips_equality(plan_text=_PROSE_IPS_MENTION) == []
+
+
+def test_prose_ips_mention_before_real_map_still_flags():
+    """FALSE-NEGATIVE catch: an earlier prose 'IPS' sentence must not shadow the
+    real '## IPS Instrument Map' section — its ~106% sum must still flag."""
+    violations = check_ips_equality(plan_text=_PLAN_PROSE_THEN_MAP_106)
+    assert violations, "expected the real instrument map's ~106% sum to flag"
+    assert all(v.check is GateCheck.IPS_EQUALITY for v in violations)
+    assert any("106" in v.detail for v in violations)

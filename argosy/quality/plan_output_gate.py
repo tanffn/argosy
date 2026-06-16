@@ -870,19 +870,17 @@ def _derive_fx_shock_inputs(resolved: "ResolvedPlanNumbers") -> dict | None:
     Returns a kwargs dict when every required value is RESOLVED, else None (the
     FX-shock check is then skipped — never crashes).
 
-    METHODOLOGY (pending codex review): the FX-sensitive base is the NIS value
-    of USD-denominated assets. The resolver does not yet expose a total USD
-    exposure, so this proxies it from ``concentration.us_situs_estate_exposure_nis``.
-    That proxy may UNDERSTATE true USD exposure (Irish-domiciled USD UCITS ETFs
-    are USD-exposed but not US-situs), which would understate the shock — the
-    unsafe direction for a fail-loud gate. Tracked: add a real USD-exposure fact
-    so this is not a proxy. Until then the check runs only when the proxy is
-    present and is conservatively interpreted as a lower bound.
+    METHODOLOGY (codex FX-shock review 2026-06-16): the FX-sensitive base is the
+    NIS value of USD-DENOMINATED assets, derived by the resolver as
+    ``portfolio.usd_exposure_nis`` (sum of USD-currency positions × BOI rate).
+    This deliberately replaces the earlier ``us_situs_estate_exposure_nis`` proxy,
+    which excluded USD cash + Irish USD UCITS and so UNDERSTATED FX exposure — the
+    unsafe (under-firing) direction for a fail-loud gate.
     """
     net_worth = _resolved_value(resolved, "portfolio.net_worth_nis")
     perpetuity_base = _resolved_value(resolved, "retirement.fi_target_nis")
     fi_total = _resolved_value(resolved, "retirement.fi_total_capital_nis")
-    usd_exposure = _resolved_value(resolved, "concentration.us_situs_estate_exposure_nis")
+    usd_exposure = _resolved_value(resolved, "portfolio.usd_exposure_nis")
     if None in (net_worth, perpetuity_base, fi_total, usd_exposure):
         return None
     return {

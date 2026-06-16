@@ -81,12 +81,20 @@ def check_fi_sufficiency_under_fx_shock(
     """Fail an unqualified "FI reached" claim that a −10% FX shock breaks.
 
     ``fx_shock_result`` mirrors the NVDA gate's shape: a dict keyed by an
-    FX-shock label (``"fx_shock_-0.10"``) → a dict with ``perpetuity_reached:
-    bool`` and ``net_worth_nis: float``.
+    FX-shock label (``"fx_shock_-0.10"``) → a dict with ``total_reached: bool``,
+    ``perpetuity_reached: bool`` and ``net_worth_nis: float``.
+
+    Threshold (codex FX-shock review 2026-06-16): an unqualified "capital
+    sufficiency / financially independent / FI reached" claim asserts FULL
+    sufficiency, which is the reserve-inclusive ``fi_total_nis`` target — so the
+    trigger is ``total_reached is False``, NOT just the narrower perpetuity base.
+    ``total_reached`` is the broader (fail-loud) trigger since the total target
+    is ≥ the perpetuity base.
 
     Contract:
-      - If the −10% FX row's ``perpetuity_reached`` is not ``False`` (True, or
-        absent) → ``[]`` (the surplus still clears the base; nothing to flag).
+      - If the −10% FX row's ``total_reached`` is not ``False`` (True, or absent)
+        → ``[]`` (the shocked book still clears the full FI total; nothing to
+        flag).
       - Otherwise, scan each sentence for a non-negated sufficiency assertion
         (``_REACHED_RE``) that lacks an FX/currency caveat
         (``_FX_SHOCK_QUALIFIER_RE``) in the SAME sentence → one violation.
@@ -100,8 +108,8 @@ def check_fi_sufficiency_under_fx_shock(
     violations: list[GateViolation] = []
     text = plan_text or ""
     fx_row = fx_shock_result.get(_FX_SHOCK_KEY) or {}
-    breaks_perpetuity = fx_row.get("perpetuity_reached") is False
-    if not breaks_perpetuity:
+    breaks_sufficiency = fx_row.get("total_reached") is False
+    if not breaks_sufficiency:
         return violations
 
     nw = fx_row.get("net_worth_nis")
@@ -123,10 +131,10 @@ def check_fi_sufficiency_under_fx_shock(
                 detail=(
                     "plan asserts capital/FI sufficiency 'reached' without an FX/"
                     f"currency qualifier in the same sentence ({sentence!r}), but a "
-                    f"−10% USD/NIS shock drops net worth to {nw} — below the perpetuity "
-                    "base. The 'reached' claim is true only at the current FX mark; "
-                    "qualify it with the currency shock or do not claim it "
-                    "unconditionally."
+                    f"−10% USD/NIS shock drops net worth to {nw} — below the FI total "
+                    "capital target (perpetuity + reserve). The 'reached' claim is true "
+                    "only at the current FX mark; qualify it with the currency shock or "
+                    "do not claim it unconditionally."
                 ),
                 locator="capital_sufficiency_fx",
             )

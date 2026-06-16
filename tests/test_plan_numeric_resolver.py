@@ -661,6 +661,46 @@ def test_net_worth_marks_to_boi_current_fx(session):
     assert "2.80" in nw.source_locator or "boi" in nw.source_locator.lower() or "current" in nw.source_locator.lower()
 
 
+def test_usd_exposure_sums_usd_positions_at_current_boi_fx(session):
+    """portfolio.usd_exposure_nis = NIS value of USD-denominated assets ONLY
+    (codex FX-shock review): USD positions × current BOI FX, EXCLUDING NIS-native
+    holdings. This is the FX-shock base; it must be larger than the US-situs
+    estate figure when there is USD exposure beyond US-situs securities, and it
+    must NOT include NIS-native cash."""
+    from datetime import date as _date
+    from decimal import Decimal
+    import json as _json
+    from argosy.state.models import FxRate, PortfolioSnapshotRow
+
+    session.add(PortfolioSnapshotRow(
+        user_id="ariel", imported_at=datetime(2026, 6, 1),
+        snapshot_date=_date(2026, 6, 1), fx_usd_nis=2.94,  # stale stored fx
+        totals_json=_json.dumps({"total_usd_value_k": 1300.0}),
+        positions_json=_json.dumps([
+            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
+            {"symbol": "VWRA", "currency": "USD", "usd_value_k": 300.0},  # Irish UCITS, USD-exposed
+            {"symbol": None, "currency": "NIS", "usd_value_k": 200.0},    # NIS-native — excluded
+        ]),
+    ))
+    session.add(FxRate(date=_date.today(), currency="USD", rate=Decimal("3.10"), source="boi"))
+    session.flush()
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    usd_exp = res.get("portfolio.usd_exposure_nis")
+    assert usd_exp is not None and usd_exp.status == "resolved"
+    # USD assets = (1000 + 300)k = $1.3M × 3.10 = ₪4,030,000; NIS-native excluded.
+    assert abs(float(usd_exp.value) - 1_300_000 * 3.10) < 5_000, f"got {usd_exp.value}"
+
+
+def test_usd_exposure_pending_when_no_snapshot(session):
+    from argosy.state.models import PortfolioSnapshotRow
+    session.query(PortfolioSnapshotRow).delete()
+    session.flush()
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    usd_exp = res.get("portfolio.usd_exposure_nis")
+    assert usd_exp is not None and usd_exp.status == "pending"
+    assert usd_exp.value is None
+
+
 def test_us_situs_estate_marks_to_current_boi_fx(session):
     """US-situs estate exposure must mark USD→NIS at the SAME current-BOI-FX
     basis net worth uses — NOT the stale stored snapshot fx. Codex re-derivation

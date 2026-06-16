@@ -119,6 +119,7 @@ class ResolvedPlanNumbers:
 
 _KEY_UNITS: dict[str, str] = {
     "portfolio.net_worth_nis": "nis",
+    "portfolio.usd_exposure_nis": "nis",
     "retirement.fi_target_nis": "nis",
     "retirement.fi_age": "age",
     "retirement.earliest_safe_age": "age",
@@ -525,6 +526,82 @@ def _resolve_net_worth(
     )
 
 
+def _resolve_usd_exposure(
+    session: "Session", user_id: str
+) -> ResolvedValue:
+    """NIS value of USD-DENOMINATED assets — the FX-sensitive base.
+
+    This is the gross USD exposure used by the FI-sufficiency-under-FX-shock gate
+    (codex FX-shock review 2026-06-16): a −10% USD/NIS move marks this sleeve
+    down, so the right base is *all* USD-denominated assets, NOT the US-situs
+    estate-exposure figure (which excludes USD cash + Irish USD UCITS and so
+    understates FX exposure — the unsafe direction for a fail-loud gate).
+
+    Mirrors :func:`_resolve_net_worth`'s snapshot + position read: sums
+    ``usd_value_k`` for positions whose ``currency == "USD"`` and converts at the
+    current BOI rate; falls back to ``total_usd_value_k`` (all USD-denominated)
+    when per-position currencies are absent. Pending — never fabricated — when no
+    snapshot / no USD figure exists.
+    """
+    key = "portfolio.usd_exposure_nis"
+    try:
+        snap = session.execute(
+            select(PortfolioSnapshotRow)
+            .where(PortfolioSnapshotRow.user_id == user_id)
+            .order_by(PortfolioSnapshotRow.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+    except Exception as exc:  # noqa: BLE001 — defensive
+        log.warning("plan_numeric_resolver.usd_exposure_snapshot_query_failed err=%s", exc)
+        snap = None
+    if snap is None:
+        return ResolvedValue.pending(key, "nis", "portfolio_snapshot (none)")
+
+    snap_fx = _to_float(snap.fx_usd_nis) or 0.0
+    fx, fx_src = _current_boi_usd_nis(session, snap_fx)
+    if not fx or fx <= 0:
+        return ResolvedValue.pending(key, "nis", "no FX available")
+
+    usd_assets_usd = 0.0
+    try:
+        positions = json.loads(snap.positions_json or "[]")
+    except (json.JSONDecodeError, ValueError, TypeError):
+        positions = []
+    saw_currency = False
+    for p in positions:
+        if (p.get("currency") or "").upper() == "USD":
+            saw_currency = True
+            usd_assets_usd += (_to_float(p.get("usd_value_k")) or 0.0) * 1000.0
+
+    holdings_as_of = getattr(snap, "snapshot_date", None)
+    as_of = holdings_as_of.isoformat() if holdings_as_of else f"snapshot id={snap.id}"
+    if saw_currency and usd_assets_usd > 0:
+        value = usd_assets_usd * fx
+        loc = (
+            f"USD-denominated assets ${usd_assets_usd/1e6:.2f}M × {fx_src} {fx:.3f}; "
+            f"holdings as of {as_of} (provisional)"
+        )
+        formula = "sum(positions where currency=USD).usd_value_k * 1000 * current BOI USD/NIS"
+    else:
+        # No per-position currencies → fall back to the snapshot's total USD book
+        # (all USD-denominated) × current FX.
+        try:
+            totals = json.loads(snap.totals_json or "{}")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            totals = {}
+        total_usd_k = _to_float(totals.get("total_usd_value_k"))
+        if not total_usd_k or total_usd_k <= 0:
+            return ResolvedValue.pending(key, "nis", "snapshot has no USD positions/totals")
+        value = total_usd_k * 1000.0 * fx
+        loc = f"total_usd_value_k ${total_usd_k/1e3:.2f}M × {fx_src} {fx:.3f}; holdings as of {as_of} (provisional)"
+        formula = "total_usd_value_k * 1000 * current BOI USD/NIS"
+
+    return ResolvedValue(
+        key=key, value=value, unit="nis", status="resolved",
+        source_locator=loc, agent_report_id=None, confidence="HIGH", formula=formula,
+    )
+
+
 def resolve_plan_numbers(
     session: "Session", *, user_id: str, decision_run_id: int,
     include_canonical_ages: bool = False,
@@ -557,6 +634,10 @@ def resolve_plan_numbers(
     # Snapshot-derived net worth.
     nw = _resolve_net_worth(session, user_id)
     values[nw.key] = nw
+
+    # Snapshot-derived USD exposure (the FX-shock base — codex FX review).
+    usd_exp = _resolve_usd_exposure(session, user_id)
+    values[usd_exp.key] = usd_exp
 
     decision_id = f"plan-synth-{decision_run_id}"
 

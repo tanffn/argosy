@@ -45,8 +45,8 @@ def _has(violations, check: GateCheck) -> bool:
 
 def test_finding_0_fi_fragile_under_fx_shock():
     fx_shock_result = {
-        "base": {"net_worth_nis": 11_950_000, "perpetuity_reached": True},
-        "fx_shock_-0.10": {"net_worth_nis": 9_900_000, "perpetuity_reached": False},
+        "base": {"net_worth_nis": 11_950_000, "perpetuity_reached": True, "total_reached": True},
+        "fx_shock_-0.10": {"net_worth_nis": 9_900_000, "perpetuity_reached": False, "total_reached": False},
     }
     plan_text = "Capital sufficiency reached. The plan is fully funded."
     assert _has(
@@ -103,7 +103,7 @@ def test_finding_4_event_currency_flip():
 
 def test_finding_5_ips_weights_overshoot_100():
     plan_text = (
-        "IPS instrument map:\n"
+        "## IPS Instrument Map\n"
         "NVDA 13%\nGlobal equity 60%\nGold 18%\nBonds 15%\n"
         "These sum to a 100% partition."
     )

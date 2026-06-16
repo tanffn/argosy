@@ -59,26 +59,62 @@ _MONTH_KEY = {
     "jul": "07", "aug": "08", "sep": "09", "oct": "10", "nov": "11", "dec": "12",
 }
 
-# A labeled event anchor — the recurring named money events. "RSU tax" /
-# "tax estimate" / "tax due" / "tax bill". Used alongside the date so a clause
-# can be bound to "the RSU tax" even when only one surface restates the date.
+# A labeled event anchor — the recurring named money events. We capture the
+# SPECIFIC qualifier in front of "tax" (e.g. "RSU", "US federal", "Israeli",
+# "estate") so two genuinely DIFFERENT taxes near the same date — e.g. an
+# Israeli "RSU tax" in NIS and the "US federal tax" on the same vest in USD —
+# anchor on DIFFERENT keys and don't collapse into a spurious flip. The optional
+# qualifier (up to ~3 words before "tax") is normalised into the key. A bare
+# "tax estimate"/"tax due" with no qualifier still anchors on a generic "tax".
 _LABEL_RE = re.compile(
-    r"rsu\s+tax|tax\s+estimate|estimated\s+tax|tax\s+(?:due|bill|liability|payment|withholding)",
+    r"\b((?:[a-z]+\s+){0,3})"            # up to 3 qualifier words ("US federal", "RSU")
+    r"tax\b"                              # the "tax" head
+    r"(?:\s+(?:estimate|due|bill|liability|payment|withholding))?",  # optional tax-kind
+    re.IGNORECASE,
+)
+# Stopwords that are NOT part of an event's identity — strip them from the
+# qualifier so "the June 17 RSU tax" and "RSU tax" share the SAME key while
+# "US federal tax" stays distinct from "RSU tax".
+_LABEL_STOPWORDS = {
+    "the", "a", "an", "this", "that", "your", "our", "his", "her", "their",
+    "same", "vest", "estimated", "estimate", "of", "on", "at", "is", "are",
+    "and", "or", "to", "for", "in", "current", "above", "below", "next",
+} | set(_MONTH_KEY)
+# Day-number tokens (e.g. "17" in "June 17 RSU tax") are dates, not identity.
+_DAY_NUM_RE = re.compile(r"^\d{1,2}$")
+
+# Currency attached to a money amount. NIS side: the ₪ symbol next to a number,
+# or NIS/ILS/shekel adjacent to a number. USD side: a $ in front of a number, or
+# USD/dollar(s) IMMEDIATELY adjacent to a number. We require the currency to be a
+# SYMBOL/word bound to an AMOUNT — the bare English word "dollar" (as in
+# "dollar-cost average") is NOT a USD amount, so it is deliberately not matched.
+_NIS_RE = re.compile(
+    r"₪\s*\d"                              # "₪180,000"
+    r"|\bNIS\s*\d|\d\s*NIS\b"             # "NIS 180,000" / "180,000 NIS"
+    r"|\bILS\s*\d|\d\s*ILS\b"             # "ILS ..." either side
+    r"|\d[\d,\.]*\s*shekel",              # "180,000 shekel"
+    re.IGNORECASE,
+)
+_USD_RE = re.compile(
+    r"\$\s*\d"                            # "$52,000"
+    r"|\bUSD\s*\d|\d\s*USD\b"             # "USD 52,000" / "52,000 USD"
+    r"|\d[\d,\.]*\s*dollar",              # "52,000 dollars" — number-bound, not "dollar-cost"
     re.IGNORECASE,
 )
 
-# Currency attached to a money amount. NIS side: the ₪ symbol, or the words
-# NIS / ILS / shekel(s). USD side: a bare $ in front of digits, or the words
-# USD / dollar(s). We only treat $ as a currency when it sits next to a number
-# so a stray "$" elsewhere is not mis-read.
-_NIS_RE = re.compile(r"₪\s*\d|\bNIS\b|\bILS\b|shekel", re.IGNORECASE)
-_USD_RE = re.compile(r"\$\s*\d|\bUSD\b|\bdollar", re.IGNORECASE)
+# An explicit FX-equivalence cue joining a NIS and a USD amount in ONE clause:
+# "₪180,000 (≈ $52,000 at the current rate)". When present, the two amounts are
+# the SAME money shown in two currencies, not a flip — so the clause is skipped.
+_EQUIV_CUE_RE = re.compile(
+    r"≈|~|\bequiv(?:alent)?\b|\bat the(?:\s+current)?\s+rate\b",
+    re.IGNORECASE,
+)
 
 
 def _anchor_keys(clause: str) -> set[str]:
     """The set of normalised event-anchor keys a clause refers to.
 
-    A date (ISO or month-day) and/or a labeled event ("rsu_tax"). Keys are
+    A date (ISO or month-day) and/or a labeled event ("label:tax:rsu"). Keys are
     normalised so "June 17", "Jun 17", "17 June" and a same-month ISO all
     collapse together; this is what binds two surfaces to the SAME event.
     """
@@ -97,8 +133,17 @@ def _anchor_keys(clause: str) -> set[str]:
         mm = _MONTH_KEY[mon[:3].lower()]
         keys.add(f"date:{mm}-{int(day):02d}")
 
-    if _LABEL_RE.search(clause):
-        keys.add("label:rsu_tax")
+    for m in _LABEL_RE.finditer(clause):
+        # Normalise the qualifier in front of "tax" into the event identity so
+        # "RSU tax" and "US federal tax" anchor on DIFFERENT keys; strip
+        # stopwords / dates so "the June 17 RSU tax" == "RSU tax".
+        qualifier = m.group(1) or ""
+        ident = [
+            w.lower()
+            for w in qualifier.split()
+            if w.lower() not in _LABEL_STOPWORDS and not _DAY_NUM_RE.match(w)
+        ]
+        keys.add("label:tax:" + "_".join(ident))
 
     return keys
 
@@ -127,6 +172,10 @@ def check_event_currency_consistency(*, plan_text: str) -> list[GateViolation]:
         has_usd = bool(_USD_RE.search(clause))
         if not (has_nis or has_usd):
             # No money amount in this clause — nothing to bind to an anchor.
+            continue
+        if has_nis and has_usd and _EQUIV_CUE_RE.search(clause):
+            # A NIS and a USD amount joined by an equivalence cue ("≈ $X at the
+            # current rate") is the SAME money in two currencies, not a flip.
             continue
         for key in _anchor_keys(clause):
             bucket = seen.setdefault(key, set())

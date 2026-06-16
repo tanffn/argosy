@@ -35,17 +35,44 @@ _SLEEVE_EQUALITY_TOLERANCE_PP = 1.0
 
 # Locate the IPS / instrument-map SECTION so we sum only its weights, not every
 # "<label> NN%" anywhere in the plan (a horizon table, a risk paragraph, …).
-# We accept the common headings: "Investment Policy Statement", "IPS", or an
-# explicit "instrument map". Match from the heading to the next markdown heading
-# ("## " / "# ") or end-of-text. DOTALL so the body spans newlines. If no such
-# section is found we scan the whole text (fail-loud: better to over-include and
-# flag than to silently skip the map).
-_IPS_SECTION_RE = re.compile(
-    r"(?:#+\s*)?"                                  # optional markdown heading hashes
-    r"(?:investment\s+policy\s+statement|\bIPS\b|instrument\s+map)"  # the heading cue
-    r".*?"                                         # the section body (lazy)
-    r"(?=\n#+\s|\Z)",                              # up to the next heading or EOT
-    re.IGNORECASE | re.DOTALL,
+#
+# CRITICAL: the cue must be a HEADING, never a bare in-prose "IPS". A bare-word
+# anchor both (a) FALSE-POSITIVES on running prose — "The IPS is reviewed
+# quarterly. Equity returned 35% …" gets scoped and its loose percentages summed —
+# and (b) FALSE-NEGATIVES — an earlier "Our IPS sets the policy." sentence wins
+# the match and stops at the first heading, so the REAL "## IPS Instrument Map"
+# table below is never scanned. So a candidate heading is ONLY:
+#   - a markdown ATX heading line ("# …", "## …") whose text carries the cue, or
+#   - a bold heading line ("**Investment Policy Statement**"), or
+#   - a heading line followed by a Setext underline ("===" / "---").
+# The cue itself is "investment policy statement", "instrument map", or "IPS" as a
+# standalone heading TOKEN (word-bounded), never embedded mid-sentence.
+_IPS_HEADING_CUE = (
+    r"(?:investment\s+policy\s+statement|instrument\s+map|\bIPS\b)"
+)
+# A heading LINE bearing the cue. ``^`` is line-anchored (re.MULTILINE). We accept
+# ATX (``#+``) or bold (``**…**``) heading markers; both make the cue a heading,
+# not prose. (Setext underlines are handled separately below.)
+_IPS_HEADING_LINE_RE = re.compile(
+    r"^[ \t]*"                                     # leading indent only
+    r"(?:#+[ \t]*|\*\*[ \t]*)"                     # ATX hashes OR opening bold
+    r"[^\n]*?"                                     # any heading-prefix text
+    + _IPS_HEADING_CUE +                            # the cue, word-bounded
+    r"[^\n]*$",                                     # rest of the heading line
+    re.IGNORECASE | re.MULTILINE,
+)
+# A Setext heading: a cue-bearing text line immediately UNDERLINED by ``===`` or
+# ``---``. Captured separately so the underline isn't mistaken for a body line.
+_IPS_SETEXT_HEADING_RE = re.compile(
+    r"^[ \t]*[^\n]*?" + _IPS_HEADING_CUE + r"[^\n]*\n"  # the cue text line
+    r"[ \t]*(?:=+|-+)[ \t]*$",                          # its === / --- underline
+    re.IGNORECASE | re.MULTILINE,
+)
+# The next heading boundary that ENDS a section body: an ATX heading line or a
+# Setext underline. Used to slice from a matched IPS heading to the following one.
+_NEXT_HEADING_RE = re.compile(
+    r"^[ \t]*(?:#+[ \t]|(?:=+|-+)[ \t]*$)",
+    re.MULTILINE,
 )
 
 # A single rendered sleeve weight: a label (words, allowing &, /, -, parens,
@@ -91,11 +118,12 @@ def _normalize_label(label: str) -> str:
     return re.sub(r"\s+", " ", label.strip()).casefold()
 
 
-def _extract_prose_sleeves(plan_text: str) -> list[tuple[str, float]]:
-    """Pull (label, pct) sleeve weights from the IPS/instrument-map prose section."""
-    text = plan_text or ""
-    section_match = _IPS_SECTION_RE.search(text)
-    section = section_match.group(0) if section_match else text
+def _sleeves_in(section: str) -> list[tuple[str, float]]:
+    """Extract clean (label, pct) sleeve weights from one section body.
+
+    Applies the sentence-fragment / stop-word / sentence-opener / word-count
+    guards so a narrative line ending in "… NN%" can't masquerade as a sleeve.
+    """
     out: list[tuple[str, float]] = []
     for m in _SLEEVE_WEIGHT_RE.finditer(section):
         label = m.group(1).strip()
@@ -110,6 +138,48 @@ def _extract_prose_sleeves(plan_text: str) -> list[tuple[str, float]]:
             continue
         out.append((label, float(m.group(2))))
     return out
+
+
+def _ips_section_bodies(text: str) -> list[str]:
+    """All IPS/instrument-map section bodies, each anchored on a HEADING line.
+
+    Every candidate starts at a heading bearing the cue (ATX, bold, or Setext) and
+    runs to the next heading boundary (or EOT). A bare in-prose "IPS" is NOT a
+    candidate, which kills both the false-positive (prose scoped + summed) and the
+    false-negative (prose anchor shadowing the real map below). Order preserved so
+    the caller can break ties deterministically.
+    """
+    starts: list[int] = []
+    for rx in (_IPS_HEADING_LINE_RE, _IPS_SETEXT_HEADING_RE):
+        for m in rx.finditer(text):
+            starts.append(m.start())
+    bodies: list[str] = []
+    for start in sorted(set(starts)):
+        # End the body at the next heading boundary strictly AFTER this heading's
+        # own first line, so we don't terminate on this heading itself.
+        first_nl = text.find("\n", start)
+        scan_from = first_nl + 1 if first_nl != -1 else len(text)
+        nxt = _NEXT_HEADING_RE.search(text, scan_from)
+        end = nxt.start() if nxt else len(text)
+        bodies.append(text[start:end])
+    return bodies
+
+
+def _extract_prose_sleeves(plan_text: str) -> list[tuple[str, float]]:
+    """Pull (label, pct) sleeve weights from the IPS/instrument-map prose section.
+
+    Scopes ONLY to heading-anchored IPS sections (never a bare in-prose "IPS").
+    When several IPS-cued headings exist, prefer the section with the MOST sleeve
+    lines — the densest one is the actual instrument map, not a one-line mention.
+    If NO heading-anchored IPS section exists, return [] (a prose paragraph that
+    merely mentions "IPS" is not an instrument map and must not be summed).
+    """
+    text = plan_text or ""
+    candidates = [(_sleeves_in(body)) for body in _ips_section_bodies(text)]
+    if not candidates:
+        return []
+    # Densest section wins (most sleeve lines); ties keep first (document order).
+    return max(candidates, key=len)
 
 
 def _doc_sleeve_weights(target_allocation_doc) -> dict[str, float] | None:
