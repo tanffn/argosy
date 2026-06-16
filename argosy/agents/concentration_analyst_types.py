@@ -276,7 +276,9 @@ class ConcentrationAnalystOutput(BaseModel):
             "102 24-month windows are checked per-lot. Show realized "
             "USD, gross NIS, net NIS after surtax-active 30% effective "
             "CGT (25% capital + 3% general + 2% capital surtax). "
-            "Confirm or contradict the medium.md's 3,000/yr cadence."
+            "Confirm or contradict the medium.md's stated sell-down "
+            "cadence — read the shares/yr from the plan, do not assume a "
+            "fixed figure."
         ),
     )
     advisor_intake_questions: list[str] = Field(

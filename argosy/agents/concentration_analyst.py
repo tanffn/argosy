@@ -360,7 +360,8 @@ All fields below are fractions 0.0–1.0 unless explicitly noted:
    Per-quarter NVDA sell sequence assuming Section 102 24-month
    windows are checked per-lot. Show realized USD, gross NIS, net NIS
    after surtax-active 30% effective CGT. Confirm or contradict the
-   current plan's 3,000/yr cadence framing.
+   current plan's stated sell-down cadence — READ the shares/yr figure
+   from the plan; do not assume a fixed number.
 
 5. CAP = MIN(sequence_cap, tail_loss_cap,
               risk_contribution_cap, tax_liquidity_cap):
@@ -419,7 +420,7 @@ WORKED EXAMPLE of the shape (numbers illustrative — derive your own):
     {
       "name": "tax_liquidity_cap",
       "value_pct": 0.35,
-      "derivation_md": "Section-102 24-mo windows allow ~3,000 sh/yr; net realisation after 30% effective CGT caps the achievable sell-down, binding only above ~35%.",
+      "derivation_md": "Section-102 24-mo windows allow ~<N> sh/yr (derive N from the per-lot schedule); net realisation after 30% effective CGT caps the achievable sell-down, binding only above ~35%.",
       "confidence": "LOW"
     }
   ],
