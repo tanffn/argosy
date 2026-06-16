@@ -588,7 +588,11 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
     # predating the reader, or it was disabled via the env-var kill switch)
     # the node renders as "skipped" with a directed failure_reason.
     reader_row = pop_one("whole_artifact_reader")
-    reader_node = _build_reader_node(reader_row)
+    reader_phase = next(
+        (p for p in phases if (p.kind or "") == "synthesis.phase_55"),
+        None,
+    )
+    reader_node = _build_reader_node(reader_row, reader_phase)
 
     # Phase 5: Fund Manager — root of the DAG. Reads synth + risk
     # facilitator + (separately) the plan_critique analyst + codex's
@@ -687,14 +691,19 @@ _CODEX_ASSESSMENT_TO_CONFIDENCE: dict[str, str] = {
 
 def _extract_reconcile_marker(
     phase: "DecisionPhase | None",
+    *,
+    key: str = "codex_reconcile",
 ) -> "CodexReconcileMarker | None":
-    """Decode the zigzag reconcile marker from the codex phase's output JSON.
+    """Decode a zigzag reconcile marker from a phase's output JSON.
 
-    The orchestrator merges a ``codex_reconcile`` block into the codex
-    (phase 4.5) row's ``phase_output_json`` when the numeric-reconcile
-    forcing loop fires. Returns ``None`` when no phase row, no JSON, the JSON
-    is malformed, or no marker is present (the common case — most runs don't
-    trigger a reconcile). Never raises — observability must survive garbage.
+    The orchestrator merges a reconcile block into the relevant phase row's
+    ``phase_output_json`` when the numeric/coherence-reconcile forcing loop
+    fires: ``codex_reconcile`` on the codex (phase 4.5) row, and
+    ``reader_reconcile`` on the whole-artifact-reader (phase 5.5) row. Both
+    share the same shape, so this decoder is parameterised by ``key``.
+    Returns ``None`` when no phase row, no JSON, the JSON is malformed, or no
+    marker is present (the common case — most runs don't trigger a
+    reconcile). Never raises — observability must survive garbage.
     """
     if phase is None or not phase.phase_output_json:
         return None
@@ -704,7 +713,7 @@ def _extract_reconcile_marker(
         return None
     if not isinstance(payload, dict):
         return None
-    marker = payload.get("codex_reconcile")
+    marker = payload.get(key)
     if not isinstance(marker, dict):
         return None
     if not marker.get("triggered"):
@@ -891,7 +900,10 @@ _READER_ASSESSMENT_TO_CONFIDENCE: dict[str, str] = {
 }
 
 
-def _build_reader_node(r: AgentReport | None) -> AgentNode:
+def _build_reader_node(
+    r: AgentReport | None,
+    reader_phase: "DecisionPhase | None" = None,
+) -> AgentNode:
     """Render the whole_artifact_reader row as an AgentNode under FM.
 
     Mirrors ``_build_codex_node`` exactly in structure — three states:
@@ -901,9 +913,16 @@ def _build_reader_node(r: AgentReport | None) -> AgentNode:
         ``coherence_findings``; a one-line excerpt summarising the verdict.
       * Row present but unparseable JSON: ``degraded`` with the raw text.
 
+    The phase-5.5 zigzag reconcile marker (``reader_reconcile``) is decoded
+    from ``reader_phase`` and attached to every returned node — mirroring
+    the codex node's ``codex_reconcile`` handling.
+
     No exception escapes this helper — the FM-rooted tree must render even
     when the reader emits garbage.
     """
+    reconcile = _extract_reconcile_marker(
+        reader_phase, key="reader_reconcile"
+    )
     if r is None:
         return AgentNode(
             agent_role="whole_artifact_reader",
@@ -921,6 +940,7 @@ def _build_reader_node(r: AgentReport | None) -> AgentNode:
             children=[],
             adapters=[],
             coherence_findings=[],
+            reconcile=reconcile,
             thinking_tokens=None,
         )
 
@@ -947,6 +967,7 @@ def _build_reader_node(r: AgentReport | None) -> AgentNode:
             children=[],
             adapters=[],
             coherence_findings=[],
+            reconcile=reconcile,
             thinking_tokens=_safe_thinking_tokens(r),
         )
 
@@ -997,6 +1018,7 @@ def _build_reader_node(r: AgentReport | None) -> AgentNode:
         children=[],
         adapters=[],
         coherence_findings=findings,
+        reconcile=reconcile,
         thinking_tokens=_safe_thinking_tokens(r),
     )
 

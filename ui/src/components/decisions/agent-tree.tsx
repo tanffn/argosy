@@ -95,7 +95,7 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
     node.adapters.length > 0 ||
     (isCodex && node.codex_findings.length > 0) ||
     (isCodex && headlineAudit.length > 0) ||
-    (isCodex && reconcile !== null) ||
+    ((isCodex || isWholeArtifactReader) && reconcile !== null) ||
     (isWholeArtifactReader && node.coherence_findings.length > 0);
   return (
     <div className="border-l border-border ml-2">
@@ -203,8 +203,11 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
               </pre>
             </details>
           )}
-          {isCodex && reconcile !== null && (
-            <ReconcileBanner marker={reconcile} />
+          {(isCodex || isWholeArtifactReader) && reconcile !== null && (
+            <ReconcileBanner
+              marker={reconcile}
+              label={isWholeArtifactReader ? "reader" : "codex"}
+            />
           )}
           {isCodex && headlineAudit.length > 0 && (
             <HeadlineAuditTable rows={headlineAudit} />
@@ -366,11 +369,18 @@ function HeadlineAuditTable({ rows }: { rows: HeadlineAuditRow[] }) {
   );
 }
 
-// The visible "zigzag" reconcile element: codex pushed back -> the
-// synthesizer was re-run to correct it -> {resolved | still blocking}.
-// Renders amber when resolved (the loop worked) and red when codex still
-// blocks after the correction round (the pushback was NOT resolved).
-function ReconcileBanner({ marker }: { marker: CodexReconcileMarker }) {
+// The visible "zigzag" reconcile element: the reviewer (codex at phase 4.5,
+// or the whole-artifact reader at phase 5.5) pushed back -> the synthesizer
+// was re-run to correct it -> {resolved | still blocking}. Renders amber when
+// resolved (the loop worked) and red when the reviewer still blocks after the
+// correction round (the pushback was NOT resolved).
+function ReconcileBanner({
+  marker,
+  label = "codex",
+}: {
+  marker: CodexReconcileMarker;
+  label?: string;
+}) {
   const color = marker.still_blocking ? "text-error" : "text-warning";
   const outcome = marker.still_blocking
     ? "still blocking after re-synthesis"
@@ -383,7 +393,7 @@ function ReconcileBanner({ marker }: { marker: CodexReconcileMarker }) {
           aria-hidden
           suppressHydrationWarning
         />
-        <span className={`font-semibold ${color}`}>codex reconcile (zigzag)</span>
+        <span className={`font-semibold ${color}`}>{label} reconcile (zigzag)</span>
         <span className="text-muted-foreground">
           pushed back &rarr; re-synthesized &rarr;{" "}
           <span className={color}>{outcome}</span>

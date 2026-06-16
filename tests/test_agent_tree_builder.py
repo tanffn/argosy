@@ -1284,3 +1284,117 @@ def test_whole_artifact_reader_node_skipped_when_no_row(
     assert reader.status == "skipped"
     assert reader.agent_report_id is None
     assert reader.coherence_findings == []
+
+
+def _seed_reader_phase(
+    sess,
+    *,
+    decision_run_id: int,
+    user_id: str = "ariel",
+    phase_output: dict | None = None,
+) -> DecisionPhase:
+    """Append a reader (phase 5.5) decision_phases row with the given output."""
+    now = datetime.now(timezone.utc)
+    phase = DecisionPhase(
+        decision_run_id=decision_run_id,
+        user_id=user_id,
+        seq=55,
+        kind="synthesis.phase_55",
+        started_at=now,
+        finished_at=now,
+        participants_json="[]",
+        phase_output_json=json.dumps(phase_output or {}),
+    )
+    sess.add(phase)
+    sess.commit()
+    sess.refresh(phase)
+    return phase
+
+
+def _reader_node(tree) -> AgentNode:
+    return next(
+        c for c in tree.root.children
+        if c.agent_role == "whole_artifact_reader"
+    )
+
+
+def test_reader_node_surfaces_reconcile_marker(inmem_session) -> None:
+    """When the reader phase row carries a reader_reconcile marker (the
+    phase-5.5 zigzag pushback -> re-synth -> re-review loop fired), the
+    builder must surface it on the reader node so the UI renders the
+    visible element — exactly mirroring the codex node."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_reader_row(inmem_session, decision_run_id=rid)
+    _seed_reader_phase(
+        inmem_session,
+        decision_run_id=rid,
+        phase_output={
+            "overall_assessment": "APPROVE_WITH_CONDITIONS",
+            "reader_reconcile": {
+                "triggered": True,
+                "still_blocking": False,
+                "objection_topic": "estate label",
+            },
+        },
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    reader = _reader_node(tree)
+    assert reader.reconcile is not None
+    assert reader.reconcile.triggered is True
+    assert reader.reconcile.still_blocking is False
+    assert reader.reconcile.objection_topic == "estate label"
+
+
+def test_reader_node_reconcile_still_blocking_round_trips(
+    inmem_session,
+) -> None:
+    """still_blocking=True (the correction round did NOT resolve the
+    reader's objection) round-trips onto the reader node."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_reader_row(inmem_session, decision_run_id=rid)
+    _seed_reader_phase(
+        inmem_session,
+        decision_run_id=rid,
+        phase_output={
+            "reader_reconcile": {
+                "triggered": True,
+                "still_blocking": True,
+                "objection_topic": "cross-surface contradiction",
+            },
+        },
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    reader = _reader_node(tree)
+    assert reader.reconcile is not None
+    assert reader.reconcile.still_blocking is True
+    assert reader.reconcile.objection_topic == "cross-surface contradiction"
+
+
+def test_reader_node_no_reconcile_marker_by_default(inmem_session) -> None:
+    """Most runs don't trigger a reader reconcile — the marker must be None
+    when no phase-55 row exists or it carries no reader_reconcile block."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_reader_row(inmem_session, decision_run_id=rid)
+    # No phase-55 row at all.
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    assert _reader_node(tree).reconcile is None
+
+    # Phase-55 row present but no reader_reconcile block.
+    _seed_reader_phase(
+        inmem_session, decision_run_id=rid,
+        phase_output={"overall_assessment": "APPROVE"},
+    )
+    tree2 = build_agent_tree(inmem_session, decision_run_id=rid)
+    assert _reader_node(tree2).reconcile is None
+
+
+def test_reader_node_reconcile_none_when_skipped(inmem_session) -> None:
+    """A skipped reader node (no reader row) still surfaces a phase-55
+    reconcile marker if the orchestrator recorded one (the reader could be
+    blocking even with a degraded/missing row)."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    # No reader row -> skipped branch; no phase -> reconcile None.
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    reader = _reader_node(tree)
+    assert reader.status == "skipped"
+    assert reader.reconcile is None
