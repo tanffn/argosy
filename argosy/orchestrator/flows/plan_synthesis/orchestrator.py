@@ -1084,7 +1084,13 @@ def run_synthesis(
     # Disabled under ARGOSY_READER_RECONCILE=0; never fires when the reader was
     # skipped (verdict None — pytest / kill switch).
     _reader_reconcile_marker: dict | None = None
-    _READER_RECONCILE_MAX_ROUNDS = 1
+    # Bound on reader-reconcile rounds. Default 1 (the expensive full-resynth
+    # path). Overnight/surgical runs raise it via env so cheap surgical rounds
+    # can iterate toward convergence.
+    try:
+        _READER_RECONCILE_MAX_ROUNDS = max(1, int(_os.environ.get("ARGOSY_READER_RECONCILE_MAX_ROUNDS", "1")))
+    except (TypeError, ValueError):
+        _READER_RECONCILE_MAX_ROUNDS = 1
     if (
         _os.environ.get("ARGOSY_READER_RECONCILE", "1") == "1"
         and _reader_verdict is not None
