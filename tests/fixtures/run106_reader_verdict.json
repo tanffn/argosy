@@ -1,0 +1,109 @@
+{
+  "overall_assessment": "BLOCK",
+  "findings": [
+    {
+      "kind": "fragile_claim",
+      "severity": "BLOCKER",
+      "detail": "The document makes an unqualified capital-sufficiency headline while its own FX section says the surplus is thin enough to vanish under routine currency movement. That is load-bearing for any retirement/FI decision.",
+      "surfaces_cited": [
+        "Net worth already covers the FULL total capital target (perpetuity base + reserve) — capital sufficiency reached.",
+        "Capital sufficiency framing: 'perpetuity base funded; total capital target on the line, not robust to FX moves'.",
+        "| −10% (shekel strengthens) | 2.668 | ₪10,787,642 | ₪-1,048,491 |"
+      ]
+    },
+    {
+      "kind": "contradiction",
+      "severity": "BLOCKER",
+      "detail": "The same FI-crossing concept is reported as already crossed today, as deterministic FI age 47, and as Typical-scenario FI age 45 with 2.0 years remaining. The reconciliation text does not fix the contradiction because 'crossed today' cannot cohere with '2.0 years to FI target' on the same target surface.",
+      "surfaces_cited": [
+        "| FI total capital (base + reserve) | 11.84M | today | `retirement.fi_total_capital_nis` |",
+        "| Derived FI age (deterministic, perpetuity basis) | age 47 | `retirement.fi_age` |",
+        "| Typical | 5.0% | 2.0 | 45 |"
+      ]
+    },
+    {
+      "kind": "regression",
+      "severity": "BLOCKER",
+      "detail": "The current plan still names age 46 as the headline retirement age, but the bridge sleeve is now sized from age 47 to 60. The prior plan sized the bridge from age 46 to 60. Dropping one year of bridge funding without reconciling it is a load-bearing regression.",
+      "surfaces_cited": [
+        "Retirement targeted on a typical-drawdown basis at age 46.0; capital-preservation what-if at 53.0.",
+        "Liquid drawdown from full-FI age 47 to first pension unlock at 60 = (60 − 47) × ₪311,584 permanent-equivalent = ₪4,050,592 minimum sleeve.",
+        "- **Bridge requirement** = (60 − 46) = 14 yrs × permanent-equivalent spend ₪311,584/yr = **₪4,362,176** — the liquid capital that must fund spend BEFORE the age-60 partial pension unlock. Sized on the permanent-equivalent basis, not the lower tracked T12 burn."
+      ]
+    },
+    {
+      "kind": "contradiction",
+      "severity": "AMBER",
+      "detail": "RSU net retention is internally inconsistent: the ledger says 47%, the equity-comp evidence says 65%, and the A7 description also references a stale A8 savings floor that does not match A8.",
+      "surfaces_cited": [
+        "| A7 | RSU net retention (after IL Section 102 + US) | 47% | tax_analyst + equity_comp_analyst | 2026 | MEDIUM-HIGH | Active-grant net stream; the ₪307,852/yr net savings floor (A8) |",
+        "| A8 | RSU net savings (conservative known-grants floor) | ₪283,694/yr net | equity_comp_analyst (known_grants_only) | 2026-2029 | MEDIUM-HIGH | Working-years savings; FI bridge (conservative floor, not optimistic steady-state) |",
+        "- *65% net retention applied to RSU vests* — default `65`. Calibrated to Feb-2026 payslip observation of 32.86% withholding."
+      ]
+    },
+    {
+      "kind": "contradiction",
+      "severity": "AMBER",
+      "detail": "The June 17 RSU tax estimate flips currency between shekels and dollars. That is not a harmless typo because it changes the magnitude by about a factor of the FX rate.",
+      "surfaces_cited": [
+        "**Posture.** 30-day execution: the June 17 RSU vest lands inside the window with roughly ₪78,386 of estimated tax; park the post-tax cash in SGOV (90-day cap).",
+        "- **Estimated 2026-06-17 RSU vest tax (USD)**: $78,385 — 729 sh × $215.05 = $156,771 fair market value; roughly 50% blended sell-to-cover."
+      ]
+    },
+    {
+      "kind": "contradiction",
+      "severity": "AMBER",
+      "detail": "The IPS claims to be a 100%-summing instrument map, but the plan itself later admits the named weights total about 106 before an unspecified residual absorption. That leaves executable target weights incoherent.",
+      "surfaces_cited": [
+        "100%-summing instrument map under the user-approved phase-aware rebuild: NVDA 13.0% cap (current 62.5%) + CSPX 28.5% + EXUS 11.2% + EIMI 4.0% + R1GR growth ex-NVDA 13.0% + FUSA dividend-quality 11.0% + SPMV 6.1% + DPYA 2.0% + SGLN 3.0% + fixed-income/defensive 8.0% accumulation (gliding to ~15% by 2031) + cash/T-bills 6.1%.",
+        "The IPS sums to 100% across an instrument-level grid (NVDA 13.0 + CSPX 28.5 + EXUS 11.2 + EIMI 4.0 + R1GR-growth 13.0 + FUSA-dividend 11.0 + SPMV 6.1 + DPYA 2.0 + SGLN 3.0 + fixed-income 8.0 + cash 6.1 = ~106 nominal pre-trim; the cash + low-vol + real-assets carve-outs absorb the residual to land on a 100%-summing instrument map)."
+      ]
+    },
+    {
+      "kind": "stale",
+      "severity": "AMBER",
+      "detail": "The pending FM objection is stale inside the current artifact: it says the medium target is still 3,000 sh/yr, while the medium target now says 5,600 sh/yr. A client sees an unresolved rejection for a supposedly fixed defect.",
+      "surfaces_cited": [
+        "- **NVDA RSU deconcentration cadence (annual share count)**: 5600 sh — ~1,400 sh/quarter accelerated cadence required to hit the cap inside ~2 years through Section-102-cleared lots; a 3,000 sh/yr framing is too slow.",
+        "three horizons do not cohere on NVDA deconcentration cadence. medium.targets.nvda_rsu_deconcentration_cadence is set at 3,000 sh/yr (rationale acknowledges 'the concentration analysis flags that the required pace is ~5,600 sh/yr'), while medium.actions detail says 'continue at ~1,400 sh/quarter cadence' (= 5,600/yr) and long.actions detail says 'cadence accelerates from ~3,000 sh/yr toward ~5,600 sh/yr ... the analyst's required pace is ~1,400 sh/quarter.'"
+      ]
+    },
+    {
+      "kind": "cross_surface",
+      "severity": "AMBER",
+      "detail": "The document correctly says SGLN is not UCITS, but then includes SGLN in an action explicitly described as migration into UCITS. That creates execution confusion around the instrument taxonomy.",
+      "surfaces_cited": [
+        "SGLN is an Irish-domiciled physical-gold ETC — estate-clean by domicile, NOT a UCITS fund (a single commodity cannot be UCITS).",
+        "- **Migrate the remaining US-domiciled non-NVDA holdings into UCITS over 24 months**: Roll SCHD (Leumi 7,750 sh), VOO, SCHG, and individual-name US-domiciled exposure into CSPX/FWRA/EXUS/EIMI/SGLN as tax-loss-harvest and tax-lot windows allow. — Shrinks the ₪9,514,477 US-situs tail without adding portfolio risk."
+      ]
+    },
+    {
+      "kind": "cross_surface",
+      "severity": "AMBER",
+      "detail": "The plan promotes SOFI as a speculative candidate while also saying the news adapter is missing for SOFI and the failed analyses need to be rerun. The position is small, but the evidence gate is undercut by the recommendation.",
+      "surfaces_cited": [
+        "- **Re-run the failed analyses (sentiment and news-adapter gaps)** [2026-06-20]: The sentiment analysis failed its required-citation check; the news adapter is missing for BRK/B, SCHD, SCHG, VOO, SOFI, RKT — rerun via the domain-refresh route. — The recovery path for failed analyses has an explicit escalation.",
+        "- **SOFI**: max $12,000 (= 0.10% NW) · Constructive technical setup (MACD crossed above signal, price > 50d MA, RSI 56.66) with reasonable PEG ~1.0 and 205% revenue growth; small probing entry only. · exit: Close < 50d MA on volume OR thesis broken by quarterly capital-ratio deterioration."
+      ]
+    },
+    {
+      "kind": "cross_surface",
+      "severity": "AMBER",
+      "detail": "Estate documents are described as a precondition for further US-situs build, but the short plan still routes fresh vest cash into SGOV at Schwab without stating an exception or limiting rationale against the estate precondition.",
+      "surfaces_cited": [
+        "Estate documentation (will, guardianship, POA, healthcare directive, living trust) is unexecuted and is a precondition for further US-situs build — cross-border counsel retainer is currently overdue.",
+        "- **Park the 2026-06-17 RSU vest cash in SGOV pending hybrid DCA deployment (90-day cap)** [2026-06-17]: Post-tax USD cash → SGOV inside Schwab; release in bi-monthly DCA tranches into CSPX/FWRA/EXUS/EIMI/SGLN. — Avoids cash drag and gives the FX analysis time to choose conversion windows."
+      ]
+    },
+    {
+      "kind": "other",
+      "severity": "YELLOW",
+      "detail": "The coverage appendix tells the reader the sections are rendered with evidence, then says major rendered sections are not yet baselined and should not carry weight. That is a confidence/status contradiction, though less directly decision-breaking than the numeric issues.",
+      "surfaces_cited": [
+        "Every section in the planner's structured output, rendered in full. 17 sections across the three horizons. Each section's evidence sub-tree (facts, citations, assumptions, missing data) lives in a collapsible block underneath.",
+        "**Sections not yet baselined** (need your input or a defensible default before they carry weight):",
+        "- `capital_sufficiency`"
+      ]
+    }
+  ]
+}
