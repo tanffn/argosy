@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
   MinusCircle,
+  RefreshCw,
   ShieldAlert,
 } from "lucide-react";
 
@@ -16,6 +17,8 @@ import type {
   CodexFinding,
   CodexFindingSeverity,
   CoherenceFinding,
+  CodexReconcileMarker,
+  HeadlineAuditRow,
 } from "@/lib/api";
 
 import { AdapterLeaf } from "./adapter-leaf";
@@ -85,10 +88,14 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
   // cross-engine leaf like codex, but its findings have a different shape
   // (CoherenceFinding). Its findings act as disclosure "children" too.
   const isWholeArtifactReader = node.agent_role === "whole_artifact_reader";
+  const headlineAudit = node.headline_audit ?? [];
+  const reconcile = node.reconcile ?? null;
   const hasChildren =
     node.children.length > 0 ||
     node.adapters.length > 0 ||
     (isCodex && node.codex_findings.length > 0) ||
+    (isCodex && headlineAudit.length > 0) ||
+    (isCodex && reconcile !== null) ||
     (isWholeArtifactReader && node.coherence_findings.length > 0);
   return (
     <div className="border-l border-border ml-2">
@@ -196,6 +203,12 @@ function AgentTreeNode({ node, depth }: { node: AgentNode; depth: number }) {
               </pre>
             </details>
           )}
+          {isCodex && reconcile !== null && (
+            <ReconcileBanner marker={reconcile} />
+          )}
+          {isCodex && headlineAudit.length > 0 && (
+            <HeadlineAuditTable rows={headlineAudit} />
+          )}
           {isCodex &&
             node.codex_findings.map((f, i) => (
               <CodexFindingRow
@@ -259,6 +272,127 @@ function CodexFindingRow({ finding }: { finding: CodexFinding }) {
             {finding.suggested_fix}
           </div>
         </details>
+      )}
+    </div>
+  );
+}
+
+// Audit-row status -> color. DIVERGES / UNVERIFIABLE are the visible
+// "codex re-derived a different number" signal and render in red (error);
+// MATCH is muted/ok green so the eye goes straight to the divergences.
+const AUDIT_STATUS_COLOR: Record<string, string> = {
+  MATCH: "text-success",
+  DIVERGES: "text-error",
+  UNVERIFIABLE: "text-error",
+};
+
+function fmtAuditValue(v: number | null): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  // Headline numbers can be large (net worth in NIS) or fractional
+  // (weight pct). Group thousands; keep it compact.
+  return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+// The codex re-derivation AUDIT — the concrete proof of the adversarial
+// pushback. Each row shows codex's independent figure next to the
+// pipeline's claim and the verdict; DIVERGES / UNVERIFIABLE render in red.
+function HeadlineAuditTable({ rows }: { rows: HeadlineAuditRow[] }) {
+  const diverging = rows.filter(
+    (r) => r.status === "DIVERGES" || r.status === "UNVERIFIABLE",
+  ).length;
+  return (
+    <div className="border-l border-border ml-2 px-2 py-1 text-[11px]">
+      <div className="flex items-center gap-2 pb-1">
+        <ShieldAlert
+          className={`h-3 w-3 shrink-0 ${diverging > 0 ? "text-error" : "text-success"}`}
+          aria-hidden
+          suppressHydrationWarning
+        />
+        <span className="font-semibold">
+          re-derivation audit ({rows.length} metric
+          {rows.length === 1 ? "" : "s"}
+          {diverging > 0 ? `, ${diverging} diverge/unverifiable` : ""})
+        </span>
+      </div>
+      <div className="pl-5 flex flex-col gap-1">
+        {rows.map((r, i) => {
+          const color = AUDIT_STATUS_COLOR[r.status] ?? "text-muted-foreground";
+          return (
+            <div
+              key={`audit-${i}-${r.metric}-${r.status}`}
+              className="flex flex-col"
+            >
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`font-semibold ${color}`}>{r.status}</span>
+                <span className="font-mono">{r.metric}</span>
+                <span className="text-muted-foreground">
+                  independent{" "}
+                  <span className="font-mono text-foreground">
+                    {fmtAuditValue(r.independent_value)}
+                  </span>{" "}
+                  vs claimed{" "}
+                  <span className="font-mono text-foreground">
+                    {fmtAuditValue(r.claimed_value)}
+                  </span>
+                </span>
+              </div>
+              {(r.formula || r.raw_rows_used.length > 0) && (
+                <details className="pl-4 pt-0.5">
+                  <summary className="cursor-pointer text-muted-foreground">
+                    derivation
+                  </summary>
+                  {r.formula && (
+                    <div className="pt-0.5 whitespace-pre-wrap">{r.formula}</div>
+                  )}
+                  {r.raw_rows_used.length > 0 && (
+                    <ul className="pt-0.5 list-disc pl-4">
+                      {r.raw_rows_used.map((row, j) => (
+                        <li
+                          key={`audit-${i}-row-${j}`}
+                          className="whitespace-pre-wrap"
+                        >
+                          {row}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </details>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// The visible "zigzag" reconcile element: codex pushed back -> the
+// synthesizer was re-run to correct it -> {resolved | still blocking}.
+// Renders amber when resolved (the loop worked) and red when codex still
+// blocks after the correction round (the pushback was NOT resolved).
+function ReconcileBanner({ marker }: { marker: CodexReconcileMarker }) {
+  const color = marker.still_blocking ? "text-error" : "text-warning";
+  const outcome = marker.still_blocking
+    ? "still blocking after re-synthesis"
+    : "resolved after re-synthesis";
+  return (
+    <div className="border-l-2 border-border ml-2 px-2 py-1 text-[11px] bg-secondary/30">
+      <div className="flex items-center gap-2 flex-wrap">
+        <RefreshCw
+          className={`h-3 w-3 shrink-0 ${color}`}
+          aria-hidden
+          suppressHydrationWarning
+        />
+        <span className={`font-semibold ${color}`}>codex reconcile (zigzag)</span>
+        <span className="text-muted-foreground">
+          pushed back &rarr; re-synthesized &rarr;{" "}
+          <span className={color}>{outcome}</span>
+        </span>
+      </div>
+      {marker.objection_topic && (
+        <div className="pl-5 pt-0.5 text-muted-foreground">
+          objection: <span className="font-mono">{marker.objection_topic}</span>
+        </div>
       )}
     </div>
   );

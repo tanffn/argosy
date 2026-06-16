@@ -1301,6 +1301,37 @@ export interface CoherenceFinding {
   surfaces_cited: string[];
 }
 
+// One row of the codex re-derivation audit. The codex reviewer
+// independently recomputes each load-bearing headline number from the raw
+// holdings (`independent_value`) and compares it to the pipeline's claim
+// (`claimed_value`). `status` is the verdict: MATCH (within tolerance),
+// DIVERGES (outside tolerance — a hard BLOCK), or UNVERIFIABLE (the raw
+// holdings can't re-derive it, e.g. pensions/real-estate). Populated only
+// on the `codex_second_opinion` node. Mirrors
+// `argosy.services.agent_tree_builder.HeadlineAuditNode`.
+export type HeadlineAuditStatus = "MATCH" | "DIVERGES" | "UNVERIFIABLE";
+
+export interface HeadlineAuditRow {
+  metric: string;
+  independent_value: number | null;
+  claimed_value: number | null;
+  formula: string;
+  raw_rows_used: string[];
+  status: HeadlineAuditStatus | string;
+}
+
+// The visible "zigzag" reconcile marker: codex BLOCKED on a numeric
+// finding, the synthesizer was re-run once with the objection folded in,
+// then codex re-reviewed. `still_blocking` is true when the correction
+// round did NOT resolve the pushback. Present only on the
+// `codex_second_opinion` node when a reconcile fired (null otherwise).
+// Mirrors `argosy.services.agent_tree_builder.CodexReconcileMarker`.
+export interface CodexReconcileMarker {
+  triggered: boolean;
+  still_blocking: boolean;
+  objection_topic: string;
+}
+
 export interface AgentNode {
   agent_role: string;
   agent_report_id: number | null;
@@ -1326,6 +1357,15 @@ export interface AgentNode {
   // backend. Empty array on every other node so consumers can iterate
   // without a presence check.
   coherence_findings: CoherenceFinding[];
+  // Populated only on the `codex_second_opinion` node — the codex
+  // re-derivation audit (independent vs claimed headline numbers). Empty
+  // array on every other node so consumers can iterate without a presence
+  // check. Optional for older payloads predating the audit field.
+  headline_audit?: HeadlineAuditRow[];
+  // Populated only on the `codex_second_opinion` node when a numeric
+  // reconcile (the zigzag pushback -> re-synthesize -> re-review loop)
+  // fired. Null/absent when no reconcile happened.
+  reconcile?: CodexReconcileMarker | null;
   // Adaptive-thinking telemetry — actual `thinking_tokens` used by the
   // model on this agent call. `null` when the agent didn't run or when
   // the row predates adaptive-thinking telemetry. The UI hides the

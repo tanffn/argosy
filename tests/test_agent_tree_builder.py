@@ -718,6 +718,164 @@ def test_codex_second_opinion_node_unparseable_falls_back_gracefully(
 
 
 # ---------------------------------------------------------------------------
+# Codex re-derivation audit (GAP 1) + zigzag reconcile marker (GAP 2).
+# ---------------------------------------------------------------------------
+
+
+def _seed_codex_phase(
+    sess,
+    *,
+    decision_run_id: int,
+    user_id: str = "ariel",
+    phase_output: dict | None = None,
+) -> DecisionPhase:
+    """Append a codex (phase 4.5) decision_phases row with the given output."""
+    now = datetime.now(timezone.utc)
+    phase = DecisionPhase(
+        decision_run_id=decision_run_id,
+        user_id=user_id,
+        seq=45,
+        kind="synthesis.phase_45",
+        started_at=now,
+        finished_at=now,
+        participants_json="[]",
+        phase_output_json=json.dumps(phase_output or {}),
+    )
+    sess.add(phase)
+    sess.commit()
+    sess.refresh(phase)
+    return phase
+
+
+def test_codex_node_carries_headline_audit_rows(inmem_session) -> None:
+    """The codex node must surface the parsed headline_number_audit rows —
+    the concrete adversarial-pushback proof. A DIVERGES row must be carried
+    verbatim (independent vs claimed) so the UI can render it in red."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_codex_row(
+        inmem_session,
+        decision_run_id=rid,
+        response_text=json.dumps({
+            "overall_assessment": "BLOCK",
+            "findings": [
+                {
+                    "severity": "BLOCKER",
+                    "topic": "headline_number_divergence",
+                    "detail": "Net worth re-derivation diverged.",
+                    "suggested_fix": "Reconcile against raw holdings.",
+                },
+            ],
+            "headline_number_audit": [
+                {
+                    "metric": "net_worth_nis",
+                    "independent_value": 9514477.0,
+                    "claimed_value": 9439421.0,
+                    "formula": "sum of all holding market values + cash",
+                    "raw_rows_used": ["NVDA x 1000", "cash NIS 265000"],
+                    "status": "DIVERGES",
+                },
+                {
+                    "metric": "nvda_weight_pct",
+                    "independent_value": 31.2,
+                    "claimed_value": 31.2,
+                    "formula": "nvda value / net worth",
+                    "raw_rows_used": ["NVDA x 1000"],
+                    "status": "MATCH",
+                },
+                {
+                    "metric": "fi_target_nis",
+                    "independent_value": None,
+                    "claimed_value": 8000000.0,
+                    "formula": "",
+                    "raw_rows_used": [],
+                    "status": "UNVERIFIABLE",
+                },
+            ],
+            "agreement_with_argosy": {
+                "agrees_with_risk_verdict": False,
+                "novel_concerns_argosy_missed": [],
+            },
+            "user_directive_respected": True,
+        }),
+    )
+
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    codex = tree.root.children[3]
+    assert codex.agent_role == "codex_second_opinion"
+    assert len(codex.headline_audit) == 3
+
+    by_metric = {a.metric: a for a in codex.headline_audit}
+    diverge = by_metric["net_worth_nis"]
+    assert diverge.status == "DIVERGES"
+    assert diverge.independent_value == 9514477.0
+    assert diverge.claimed_value == 9439421.0
+    assert "cash NIS 265000" in diverge.raw_rows_used
+
+    assert by_metric["nvda_weight_pct"].status == "MATCH"
+    # UNVERIFIABLE rows tolerate a null independent_value.
+    assert by_metric["fi_target_nis"].status == "UNVERIFIABLE"
+    assert by_metric["fi_target_nis"].independent_value is None
+
+    # The excerpt advertises the audit so the always-visible row is useful.
+    assert "audit:" in codex.response_excerpt
+    assert "2 diverge/unverifiable" in codex.response_excerpt
+
+
+def test_codex_node_no_audit_when_field_absent(inmem_session) -> None:
+    """A codex verdict without a headline_number_audit key leaves the
+    field as an empty list (consistent JSON shape, no crash)."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_codex_row(inmem_session, decision_run_id=rid)  # default has no audit
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    codex = tree.root.children[3]
+    assert codex.headline_audit == []
+
+
+def test_codex_node_surfaces_reconcile_marker(inmem_session) -> None:
+    """When the codex phase row carries a codex_reconcile marker (the
+    zigzag pushback -> re-synth -> re-review loop fired), the builder must
+    surface it on the codex node so the UI can render the visible element."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_codex_row(inmem_session, decision_run_id=rid)
+    _seed_codex_phase(
+        inmem_session,
+        decision_run_id=rid,
+        phase_output={
+            "overall_assessment": "APPROVE_WITH_CONDITIONS",
+            "codex_reconcile": {
+                "triggered": True,
+                "still_blocking": False,
+                "objection_topic": "headline_number_divergence",
+            },
+        },
+    )
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    codex = tree.root.children[3]
+    assert codex.reconcile is not None
+    assert codex.reconcile.triggered is True
+    assert codex.reconcile.still_blocking is False
+    assert codex.reconcile.objection_topic == "headline_number_divergence"
+
+
+def test_codex_node_no_reconcile_marker_by_default(inmem_session) -> None:
+    """Most runs don't trigger a reconcile — the marker must be None when
+    no codex phase row exists or it carries no codex_reconcile block."""
+    rid = _seed_synthesis_run(inmem_session, adapter_outcomes=None)
+    _seed_codex_row(inmem_session, decision_run_id=rid)
+    # No phase-45 row at all.
+    tree = build_agent_tree(inmem_session, decision_run_id=rid)
+    assert tree.root.children[3].reconcile is None
+
+    # Phase-45 row present but no codex_reconcile block.
+    _seed_codex_phase(
+        inmem_session, decision_run_id=rid,
+        phase_output={"overall_assessment": "APPROVE"},
+    )
+    tree2 = build_agent_tree(inmem_session, decision_run_id=rid)
+    assert tree2.root.children[3].reconcile is None
+
+
+# ---------------------------------------------------------------------------
 # Cost breakdown — per-run aggregation surfaced under the agent tree.
 # ---------------------------------------------------------------------------
 

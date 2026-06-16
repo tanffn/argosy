@@ -658,9 +658,17 @@ def run_synthesis(
     # under ARGOSY_NUMERIC_RECONCILE=0; never fires under pytest (codex is
     # skipped there, so codex_opinion is None).
     import os as _os
+    # Durable marker of the zigzag reconcile so /decisions/[id] can VISUALLY
+    # show that codex pushed back, the synthesizer was re-run to correct it,
+    # and whether the re-review still blocks. Stays None when no reconcile
+    # fired; merged into the codex phase's phase_output_json below so the
+    # agent-tree builder can surface it on the codex node. Fail-soft — never
+    # breaks synthesis.
+    _reconcile_marker: dict | None = None
     if _os.environ.get("ARGOSY_NUMERIC_RECONCILE", "1") == "1":
         _reconcile_guidance = _codex_numeric_reconcile_guidance(codex_opinion)
         if _reconcile_guidance:
+            _reconcile_objection_topic = _codex_first_numeric_topic(codex_opinion)
             log.warning(
                 "plan_synthesis.numeric_reconcile_triggered",
                 user_id=user_id, decision_run_id=decision_run_id,
@@ -710,14 +718,29 @@ def run_synthesis(
                 # latest for its role) + re-review.
                 _numbers_block = _build_numbers_block()
                 codex_opinion, codex_row = _run_codex(output)
+                _still_blocking = (
+                    getattr(codex_opinion, "overall_assessment", None) == "BLOCK"
+                )
+                _reconcile_marker = {
+                    "triggered": True,
+                    "still_blocking": bool(_still_blocking),
+                    "objection_topic": _reconcile_objection_topic,
+                }
                 log.warning(
                     "plan_synthesis.numeric_reconcile_done",
                     user_id=user_id, decision_run_id=decision_run_id,
-                    still_blocking=(
-                        getattr(codex_opinion, "overall_assessment", None) == "BLOCK"
-                    ),
+                    still_blocking=_still_blocking,
                 )
             except Exception as exc:  # noqa: BLE001 — reconcile is best-effort
+                # Record that a reconcile was ATTEMPTED even if the re-synth/
+                # re-review raised — the pushback still happened and should be
+                # visible. still_blocking stays unknown (conservatively True
+                # so the UI doesn't imply a clean resolution we can't prove).
+                _reconcile_marker = {
+                    "triggered": True,
+                    "still_blocking": True,
+                    "objection_topic": _reconcile_objection_topic,
+                }
                 log.warning(
                     "plan_synthesis.numeric_reconcile_failed",
                     user_id=user_id, decision_run_id=decision_run_id,
@@ -729,11 +752,28 @@ def run_synthesis(
     # tree. When codex was skipped (None) we don't record an empty
     # phase row — that would muddy the audit trail.
     if codex_row is not None:
+        # Build the phase output, folding in the zigzag reconcile marker
+        # (when one fired) so the agent-tree builder can surface it on the
+        # codex node. Fail-soft: a merge failure falls back to the bare
+        # opinion JSON so the audit trail is never lost.
+        _codex_phase_output: str = (
+            codex_opinion.model_dump_json() if codex_opinion else ""
+        )
+        if _reconcile_marker is not None:
+            try:
+                import json as _json
+                _payload = (
+                    codex_opinion.model_dump() if codex_opinion else {}
+                )
+                _payload["codex_reconcile"] = _reconcile_marker
+                _codex_phase_output = _json.dumps(_payload)
+            except Exception:  # noqa: BLE001 — never lose the codex row
+                pass
         _pkg._record_phase_completion(
             user_id=user_id, decision_run_id=decision_run_id,
             phase_n=45,  # 4.5 — half-step between risk and FM
             started_at=datetime.now(timezone.utc),
-            phase_output=codex_opinion.model_dump_json() if codex_opinion else "",
+            phase_output=_codex_phase_output,
             agent_report_rows=[codex_row],
         )
 
@@ -2870,6 +2910,23 @@ _NUMERIC_METHODOLOGY_TOPICS = (
     "swr", "withdrawal rate", "spend basis", "spend_basis", "net worth",
     "retirement age", "uncited", "contradict", "21m", "₪21", "derivation",
 )
+
+
+def _codex_first_numeric_topic(codex_opinion) -> str:
+    """Short label of the FIRST numeric/methodology objection codex blocked on.
+
+    Used purely for the visible reconcile marker on /decisions/[id] — gives
+    the user a one-glance "what did codex push back on" hint. Returns "" when
+    none can be identified (the marker still renders without a topic).
+    """
+    if codex_opinion is None:
+        return ""
+    for f in getattr(codex_opinion, "findings", None) or []:
+        topic = (getattr(f, "topic", "") or "").lower()
+        detail = (getattr(f, "detail", "") or "").lower()
+        if any(t in f"{topic} {detail}" for t in _NUMERIC_METHODOLOGY_TOPICS):
+            return getattr(f, "topic", "") or ""
+    return ""
 
 
 def _codex_numeric_reconcile_guidance(codex_opinion) -> str | None:

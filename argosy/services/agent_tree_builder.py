@@ -123,6 +123,48 @@ class CodexFindingNode:
 
 
 @dataclass
+class HeadlineAuditNode:
+    """One row of the codex re-derivation audit rendered under the codex node.
+
+    Mirrors ``argosy.orchestrator.flows.plan_synthesis.codex_second_opinion
+    .HeadlineNumberAudit`` but lives here as a plain dataclass so
+    ``dataclasses.asdict`` can walk the whole tree without dragging pydantic
+    into the route serializer. This is the concrete PROOF of the adversarial
+    pushback: the codex reviewer's OWN re-derivation (``independent_value``)
+    next to the pipeline's number (``claimed_value``) and the verdict
+    (``status``). DIVERGES / UNVERIFIABLE rows are the visible "they don't
+    agree" signal that the UI renders in red. Populated only for the
+    ``codex_second_opinion`` node; empty list elsewhere.
+    """
+
+    metric: str          # e.g. "us_situs_estate_nis", "nvda_weight_pct"
+    independent_value: float | None  # codex's own figure from raw holdings
+    claimed_value: float | None      # the pipeline's claimed figure
+    formula: str         # how independent_value was derived
+    raw_rows_used: list[str] = field(default_factory=list)
+    status: str = "UNVERIFIABLE"  # "MATCH" / "DIVERGES" / "UNVERIFIABLE"
+
+
+@dataclass
+class CodexReconcileMarker:
+    """The visible "zigzag" reconcile signal under the codex node.
+
+    Recorded by the orchestrator into the codex (phase 4.5) row's
+    ``phase_output_json`` when ``ARGOSY_NUMERIC_RECONCILE`` fires: codex
+    BLOCKED on a numeric/methodology finding, the synthesizer was re-run
+    once with the objection folded in, then codex re-reviewed. ``triggered``
+    is always True when this object is present. ``still_blocking`` is True
+    when codex STILL blocks after the correction round (the pushback wasn't
+    resolved). ``objection_topic`` is a short label of what codex pushed back
+    on. ``None`` on the codex node when no reconcile happened.
+    """
+
+    triggered: bool
+    still_blocking: bool
+    objection_topic: str = ""
+
+
+@dataclass
 class CoherenceFindingNode:
     """One whole-artifact-reader coherence finding rendered as a sub-row
     under the ``whole_artifact_reader`` node.
@@ -169,6 +211,19 @@ class AgentNode:
     coherence_findings: list[CoherenceFindingNode] = field(
         default_factory=list
     )
+    # Populated only for the codex_second_opinion node — the parsed
+    # headline_number_audit rows (codex's independent re-derivation vs the
+    # pipeline's claimed numbers). Empty list for every other node so the
+    # field is always present (consistent JSON shape). This is the concrete
+    # adversarial-pushback proof: "codex re-derived M, the pipeline claimed
+    # N, they DIVERGE".
+    headline_audit: list[HeadlineAuditNode] = field(default_factory=list)
+    # Populated only for the codex_second_opinion node when a numeric
+    # reconcile (the "zigzag" pushback -> re-synthesize -> re-review loop)
+    # fired for this run. None when no reconcile happened (the common case).
+    # Surfaces that codex pushed back, the synthesizer was re-run to correct
+    # it, and whether the re-review still blocks.
+    reconcile: CodexReconcileMarker | None = None
     # Adaptive-thinking telemetry — actual thinking_tokens used by the
     # model on this agent call. ``None`` when the agent didn't run (the
     # node is skipped) or when the row predates adaptive-thinking
@@ -521,7 +576,11 @@ def build_agent_tree(db: Session, decision_run_id: int) -> AgentTreeResponse:
     # var kill switch), the node renders as "skipped" with a directed
     # failure_reason.
     codex_row = pop_one("codex_second_opinion")
-    codex_node = _build_codex_node(codex_row)
+    codex_phase = next(
+        (p for p in phases if (p.kind or "") == "synthesis.phase_45"),
+        None,
+    )
+    codex_node = _build_codex_node(codex_row, codex_phase)
 
     # Phase 5.5: whole_artifact_reader — the holistic coherence pass that
     # runs AFTER the FM, reading the assembled artifact as a whole. Rendered
@@ -626,7 +685,41 @@ _CODEX_ASSESSMENT_TO_CONFIDENCE: dict[str, str] = {
 }
 
 
-def _build_codex_node(r: AgentReport | None) -> AgentNode:
+def _extract_reconcile_marker(
+    phase: "DecisionPhase | None",
+) -> "CodexReconcileMarker | None":
+    """Decode the zigzag reconcile marker from the codex phase's output JSON.
+
+    The orchestrator merges a ``codex_reconcile`` block into the codex
+    (phase 4.5) row's ``phase_output_json`` when the numeric-reconcile
+    forcing loop fires. Returns ``None`` when no phase row, no JSON, the JSON
+    is malformed, or no marker is present (the common case — most runs don't
+    trigger a reconcile). Never raises — observability must survive garbage.
+    """
+    if phase is None or not phase.phase_output_json:
+        return None
+    try:
+        payload = json.loads(phase.phase_output_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    marker = payload.get("codex_reconcile")
+    if not isinstance(marker, dict):
+        return None
+    if not marker.get("triggered"):
+        return None
+    return CodexReconcileMarker(
+        triggered=True,
+        still_blocking=bool(marker.get("still_blocking")),
+        objection_topic=str(marker.get("objection_topic") or ""),
+    )
+
+
+def _build_codex_node(
+    r: AgentReport | None,
+    codex_phase: "DecisionPhase | None" = None,
+) -> AgentNode:
     """Render the codex_second_opinion row as an AgentNode under FM.
 
     Strategy:
@@ -645,6 +738,7 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
     No exception escapes this helper — the FM-rooted tree must render
     even when codex emits garbage.
     """
+    reconcile = _extract_reconcile_marker(codex_phase)
     if r is None:
         return AgentNode(
             agent_role="codex_second_opinion",
@@ -662,6 +756,7 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
             children=[],
             adapters=[],
             codex_findings=[],
+            reconcile=reconcile,
             thinking_tokens=None,
         )
 
@@ -691,6 +786,7 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
             children=[],
             adapters=[],
             codex_findings=[],
+            reconcile=reconcile,
             thinking_tokens=_safe_thinking_tokens(r),
         )
 
@@ -713,6 +809,26 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
                     suggested_fix=str(f.get("suggested_fix") or ""),
                 )
             )
+    audit_raw = parsed.get("headline_number_audit") or []
+    headline_audit: list[HeadlineAuditNode] = []
+    if isinstance(audit_raw, list):
+        for a in audit_raw:
+            if not isinstance(a, dict):
+                continue
+            rows = a.get("raw_rows_used") or []
+            if not isinstance(rows, list):
+                rows = []
+            headline_audit.append(
+                HeadlineAuditNode(
+                    metric=str(a.get("metric") or ""),
+                    independent_value=_safe_float(a.get("independent_value")),
+                    claimed_value=_safe_float(a.get("claimed_value")),
+                    formula=str(a.get("formula") or ""),
+                    raw_rows_used=[str(x) for x in rows],
+                    status=str(a.get("status") or "UNVERIFIABLE"),
+                )
+            )
+
     agreement = parsed.get("agreement_with_argosy") or {}
     if not isinstance(agreement, dict):
         agreement = {}
@@ -723,6 +839,14 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
     if overall:
         excerpt_parts.append(overall)
     excerpt_parts.append(f"{len(findings)} findings")
+    diverging = [
+        a for a in headline_audit if a.status in ("DIVERGES", "UNVERIFIABLE")
+    ]
+    if headline_audit:
+        excerpt_parts.append(
+            f"audit: {len(headline_audit)} metrics, "
+            f"{len(diverging)} diverge/unverifiable"
+        )
     if agrees is not None:
         excerpt_parts.append(f"agrees_with_risk={agrees}")
     if novel_count:
@@ -751,6 +875,8 @@ def _build_codex_node(r: AgentReport | None) -> AgentNode:
         children=[],
         adapters=[],
         codex_findings=findings,
+        headline_audit=headline_audit,
+        reconcile=reconcile,
         thinking_tokens=_safe_thinking_tokens(r),
     )
 
@@ -912,6 +1038,21 @@ def _parse_codex_response_text(text: str) -> dict | None:
         except (TypeError, ValueError):
             pass
     return None
+
+
+def _safe_float(val: object) -> float | None:
+    """Coerce an audit-row numeric field to float, tolerating None / junk.
+
+    Codex emits ``independent_value`` / ``claimed_value`` as JSON numbers,
+    but a model can return ``null`` (UNVERIFIABLE rows) or a stray string.
+    Returns ``None`` rather than raising so the audit row still renders.
+    """
+    if val is None:
+        return None
+    try:
+        return float(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def _safe_thinking_tokens(r: AgentReport | None) -> int | None:
