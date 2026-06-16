@@ -60,6 +60,81 @@ _NEGATION_RE = re.compile(
 # Split into sentence-ish clauses on terminal punctuation / newlines.
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?\n]+")
 
+# Tolerance (in percentage points) below which a cap "change" is just rounding
+# and not a real policy move — not a magic financial number, a rounding band.
+_CAP_CHANGE_TOLERANCE_PP = 0.5
+# A derivation/justification cue: the cap was REASONED, not asserted. Broad,
+# auditable alternatives — any one present near the cap discussion is enough.
+_CAP_DERIVATION_CUE_RE = re.compile(
+    r"derived|risk-derived|deconcentration|glide|rationale|because|justif",
+    re.IGNORECASE,
+)
+# The cap attributed to the USER. Doctrine: the NVDA cap is Argosy-derived; the
+# user does NOT set it. A cap mention within ~40 chars of a user-set phrase is a
+# violation (the cap is being credited to the user, not to Argosy's analysis).
+_CAP_USER_SET_RE = re.compile(
+    r"(?:you set|your chosen|user-set|as you requested)[^.!?]{0,40}cap"
+    r"|cap[^.!?]{0,40}(?:you set|your chosen|user-set|as you requested)",
+    re.IGNORECASE,
+)
+
+
+def check_cap_cite_derivation(
+    *, current_cap_pct: float | None, prior_cap_pct: float | None, plan_text: str
+) -> list[GateViolation]:
+    """Fail a CHANGED NVDA cap that lacks a stated derived justification.
+
+    The NVDA concentration cap is ARGOSY-DERIVED — the user does not set it. So a
+    cap change vs the prior plan (run4: 13%→18%) must carry a derived rationale,
+    and must not be credited to the user.
+
+    Contract:
+      - ``prior_cap_pct`` or ``current_cap_pct`` is None → ``[]`` (nothing to
+        compare / no cap).
+      - ``abs(current - prior) <= 0.5`` pp → ``[]`` (unchanged within rounding).
+      - changed → require BOTH (i) a derivation cue (``derived`` /
+        ``deconcentration`` / ``glide`` / ``rationale`` / ``because`` /
+        ``justif``) AND (ii) no user-set attribution near "cap". Missing the cue
+        is a violation; user attribution is a violation.
+    """
+    if prior_cap_pct is None or current_cap_pct is None:
+        return []
+    if abs(current_cap_pct - prior_cap_pct) <= _CAP_CHANGE_TOLERANCE_PP:
+        return []
+
+    text = plan_text or ""
+    violations: list[GateViolation] = []
+
+    if _CAP_USER_SET_RE.search(text):
+        violations.append(
+            GateViolation(
+                check=GateCheck.CAP_DERIVATION,
+                detail=(
+                    f"NVDA cap changed {prior_cap_pct}%→{current_cap_pct}% and the plan "
+                    "attributes it to the USER ('you set' / 'your chosen' / 'user-set' / "
+                    "'as you requested'). The cap is ARGOSY-DERIVED — state the risk/"
+                    "deconcentration derivation, do not credit it to the user."
+                ),
+                locator="nvda_cap",
+            )
+        )
+
+    if not _CAP_DERIVATION_CUE_RE.search(text):
+        violations.append(
+            GateViolation(
+                check=GateCheck.CAP_DERIVATION,
+                detail=(
+                    f"NVDA cap changed {prior_cap_pct}%→{current_cap_pct}% but the plan "
+                    "states no derivation cue (no 'derived' / 'deconcentration' / "
+                    "'glide' / 'rationale' / 'because' / 'justif'). A cap change must "
+                    "carry its Argosy-derived justification."
+                ),
+                locator="nvda_cap",
+            )
+        )
+
+    return violations
+
 
 def check_fi_sufficiency_under_shock(*, shock_result: dict, plan_text: str) -> list[GateViolation]:
     """Fail an unqualified "FI reached" claim that the plan's own NVDA tail breaks.

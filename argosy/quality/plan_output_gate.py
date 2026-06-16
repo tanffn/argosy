@@ -28,10 +28,15 @@ from argosy.quality.canonical_sections import (
     MVP_COVERAGE_THRESHOLD,
 )
 from argosy.quality.coherence_gate import (
+    check_cap_cite_derivation,
     check_cross_surface_coherence,
     check_fi_sufficiency_under_shock,
 )
-from argosy.quality.freshness_gate import check_input_freshness
+from argosy.quality.freshness_gate import (
+    check_input_freshness,
+    check_output_date_staleness,
+)
+from argosy.quality.fx_gate import check_fx_unit_direction
 from argosy.quality.gate_types import GateCheck, GateVerdict, GateViolation
 from argosy.quality.numeric_source_gate import check_headline_numeric_source
 from argosy.quality.regex_patterns import (
@@ -586,6 +591,9 @@ def gate_plan_output(
     today: "date | None" = None,
     snapshot_date: "date | None" = None,
     analyst_report_dates: "dict[str, date] | None" = None,
+    fx_usd_nis: float | None = None,
+    current_nvda_cap_pct: float | None = None,
+    prior_nvda_cap_pct: float | None = None,
 ) -> GateVerdict:
     """Run all gate checks and return an aggregate verdict.
 
@@ -690,6 +698,33 @@ def gate_plan_output(
                 today=today,
                 snapshot_date=snapshot_date,
                 analyst_report_dates=analyst_report_dates or {},
+            )
+        )
+
+    # Stale-date output + cap-derivation: both read the joined horizon prose
+    # (same construction as the FI-shock wiring). Each runs only when its
+    # required input is present, so existing gate_plan_output tests are unchanged.
+    plan_text = "\n\n".join(t for t in horizon_text.values() if t)
+
+    # Stale-date output — needs `today` to know what is overdue.
+    if today is not None and plan_text:
+        verdict.extend(check_output_date_staleness(today=today, text=plan_text))
+
+    # FX unit/direction — runs if a resolved rate is supplied OR there is prose
+    # to scan for a mislabeled "USD/NIS" rate.
+    if fx_usd_nis is not None or plan_text:
+        verdict.extend(
+            check_fx_unit_direction(plan_text=plan_text, fx_usd_nis=fx_usd_nis)
+        )
+
+    # Cap-must-cite-derivation — needs BOTH the current and prior cap to detect a
+    # change; skipped when either is absent (the check itself returns [] then).
+    if current_nvda_cap_pct is not None and prior_nvda_cap_pct is not None:
+        verdict.extend(
+            check_cap_cite_derivation(
+                current_cap_pct=current_nvda_cap_pct,
+                prior_cap_pct=prior_nvda_cap_pct,
+                plan_text=plan_text,
             )
         )
 

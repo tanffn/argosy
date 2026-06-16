@@ -63,6 +63,25 @@ class GateCheck(str, Enum):
     # downstream number. Deterministic; the freshness of an input is not
     # something an LLM reviewer can eyeball.
     INPUT_FRESHNESS = "input_freshness"
+    # A user-facing action/gate date that is in the PAST (< today) rendered as
+    # if it were NOT overdue ("on-deck", "due today", "due in N days",
+    # "upcoming", "scheduled for", "0 days"). Run4 surfaced the 2026-06-10
+    # retainer as "on-deck" on one surface while it was already overdue. The
+    # staleness of a rendered date relative to `today` is mechanical; an LLM
+    # reviewer cannot reliably eyeball "is this date past today?".
+    OUTPUT_DATE_STALENESS = "output_date_staleness"
+    # The USD/NIS rate must be NIS-per-USD (~3.0). The recurring defect is the
+    # INVERTED rate (~0.33 USD-per-NIS) or a rate mislabeled as a percent
+    # ("USD/NIS 0.34%"). The 2.5–4.5 NIS/USD band is a PLAUSIBILITY guardrail
+    # (not a financial constant) that catches inversion, percent-misrender, and
+    # absurd values deterministically.
+    FX_UNIT_DIRECTION = "fx_unit_direction"
+    # The NVDA concentration cap is ARGOSY-DERIVED — the user does NOT set it.
+    # So a cap CHANGE vs the prior plan (run4: 13%→18%) must carry a STATED
+    # derived justification (risk/deconcentration/glide rationale), and must
+    # NOT be attributed to the user ("your chosen cap"). A change without a
+    # derivation cue — or one credited to the user — is a defect.
+    CAP_DERIVATION = "cap_derivation"
 
 
 @dataclass(frozen=True)
