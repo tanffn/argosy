@@ -65,6 +65,43 @@ from argosy.quality.gate_types import GateCheck as _GC
 from argosy.quality.instage_gate import run_deterministic_gate_instage as _run
 
 
+def test_default_path_calls_services_by_keyword_not_positional():
+    """Regression for the live run-107 bug: the real services
+    (assemble_plan_artifact(session, *, user_id);
+    resolve_plan_numbers(session, *, user_id, decision_run_id)) take user_id /
+    decision_run_id as KEYWORD-ONLY. Stubs here mirror that signature; a
+    positional call inside the helper would raise -> degrade to artifact=None and
+    SKIP the artifact-based invariants (silent). Keyword-only stubs prove the
+    helper passes by keyword (the artifact IS used -> the divergence is caught)."""
+    class _Art:
+        full_text = "x"
+        surface_values = {"net_worth_nis": [("body", 11_950_000.0), ("dashboard", 14_150_000.0)]}
+        extraction_errors: dict = {}
+
+    def _assemble(session, *, user_id):           # keyword-only, like the real fn
+        return _Art()
+
+    def _resolve(session, *, user_id, decision_run_id):  # keyword-only, like the real fn
+        return None
+
+    draft = SimpleNamespace(
+        id=7, user_id="u", decision_run_id=7,
+        horizon_long_md="x", horizon_medium_md="", horizon_short_md="",
+        target_allocation_json=None, sections_json="[]",
+    )
+    verdict = run_deterministic_gate_instage(
+        session=object(), user_id="u", draft=draft, decision_run_id=7,
+        today=date(2026, 6, 16),
+        assemble=_assemble, resolve=_resolve,
+        current_plan=lambda session, user_id: None,
+        snapshot_date=date(2026, 6, 16),
+    )
+    assert verdict.violations[GateCheck.CROSS_SURFACE_COHERENCE], (
+        "the helper must call assemble/resolve by KEYWORD so the live default "
+        "path (keyword-only services) runs the artifact-based invariants"
+    )
+
+
 def test_ips_style_divergence_caught_instage_not_left_to_reader():
     class _Art:
         full_text = "IPS"
@@ -78,9 +115,9 @@ def test_ips_style_divergence_caught_instage_not_left_to_reader():
     verdict = _run(
         session=object(), user_id="u", draft=draft, decision_run_id=9,
         today=_d(2026, 6, 16),
-        assemble=lambda s, u: _Art(),
-        resolve=lambda s, u, d: None,
-        current_plan=lambda s, u: None,
+        assemble=lambda session, user_id: _Art(),
+        resolve=lambda session, user_id, decision_run_id: None,
+        current_plan=lambda session, user_id: None,
         snapshot_date=_d(2026, 6, 16),
     )
     assert verdict.violations[_GC.CROSS_SURFACE_COHERENCE], (

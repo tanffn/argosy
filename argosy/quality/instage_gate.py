@@ -58,15 +58,22 @@ def run_deterministic_gate_instage(
 
     today = today or _date.today()
 
+    # NOTE: the real services take user_id / decision_run_id as KEYWORD-ONLY
+    # args (assemble_plan_artifact(session, *, user_id);
+    # resolve_plan_numbers(session, *, user_id, decision_run_id)). Call them by
+    # keyword so the live default path works — a positional call raises and would
+    # silently degrade the gate to artifact=None/resolved=None (skipping the
+    # cross-surface + resolver-based invariants). Test stubs use matching param
+    # names, so keyword passing is compatible with both.
     artifact = None
     try:
-        artifact = assemble(session, user_id)
+        artifact = assemble(session, user_id=user_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("instage_gate.assemble_failed user=%s err=%s", user_id, exc)
 
     resolved = None
     try:
-        resolved = resolve(session, user_id, decision_run_id)
+        resolved = resolve(session, user_id=user_id, decision_run_id=decision_run_id)
     except Exception as exc:  # noqa: BLE001
         log.warning("instage_gate.resolve_failed user=%s err=%s", user_id, exc)
 
