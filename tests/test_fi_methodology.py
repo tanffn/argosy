@@ -95,6 +95,98 @@ def test_spend_override(session):
     assert m.permanent_annual_spend_nis == pytest.approx(334_576)
 
 
+def test_component_ledger_decomposes_permanent_and_finite(session):
+    """The component ledger must be auditable: the permanent rows sum to the
+    permanent-equivalent spend and the finite rows sum to the reserve. A blind
+    reviewer reconciles the headline figures from these rows alone, so each row
+    carries an amount + a permanent/finite tag + a source."""
+    m = compute_fi_target(session, user_id="ariel")
+    assert m is not None
+    permanent = [c for c in m.components if c.kind == "permanent"]
+    finite = [c for c in m.components if c.kind == "finite"]
+    # Permanent rows reconcile to the permanent-equivalent spend.
+    assert sum(c.annual_nis for c in permanent) == pytest.approx(
+        m.permanent_annual_spend_nis
+    )
+    # Finite rows reconcile to the liquidity reserve.
+    assert sum(c.reserve_nis for c in finite) == pytest.approx(
+        m.finite_liability_reserve_nis
+    )
+    # Every component is tagged + sourced (auditable, not a magic number).
+    for c in m.components:
+        assert c.kind in ("permanent", "finite")
+        assert c.source
+
+
+def test_tracked_to_permanent_bridge_is_explicit_in_components(session):
+    """The tracked-spend → permanent-equivalent bridge must be VISIBLE in the
+    component ledger, not folded into a pre-netted 'ex-mortgage' row. A blind
+    reviewer that sees tracked spend ₪277,008 elsewhere must be able to
+    reconcile it to the ₪311,584 permanent-equivalent from the rows:
+    tracked baseline (+277,008) − mortgage runoff (−35,424) + life events."""
+    m = compute_fi_target(session, user_id="ariel")
+    permanent = [c for c in m.components if c.kind == "permanent"]
+    labels = [c.label.lower() for c in permanent]
+    # An explicit, additive tracked-baseline opening row at the FULL tracked
+    # figure (not the pre-netted ex-mortgage figure).
+    tracked_rows = [
+        c for c in permanent if c.annual_nis == pytest.approx(m.baseline_annual_nis)
+    ]
+    assert tracked_rows, (
+        "permanent ledger must open with the full tracked baseline "
+        f"(₪{m.baseline_annual_nis:,.0f}) as its own row"
+    )
+    # An explicit subtractive mortgage-runoff row (negative annual).
+    mortgage_rows = [
+        c for c in permanent if "mortgage" in c.label.lower() and c.annual_nis < 0
+    ]
+    assert mortgage_rows, "permanent ledger must show the mortgage runoff as a negative row"
+    # The bridge still reconciles to the headline permanent-equivalent spend.
+    assert sum(c.annual_nis for c in permanent) == pytest.approx(
+        m.permanent_annual_spend_nis
+    )
+
+
+def test_derivations_appendix_renders_auditable_breakdown(session):
+    """The plan's number-derivations appendix (which rides into the assembled
+    artifact a blind reviewer reads) must render the REAL SpendComponent ledger
+    so the headline FI figures are reconcilable line-by-line — the run-102
+    `fi_target` UNVERIFIABLE block. Asserts: (a) every component appears with
+    its amount + permanent/finite framing; (b) the permanent rows sum to the
+    permanent-equivalent spend; (c) the finite rows sum to the reserve; (d) the
+    tracked→permanent-equivalent bridge is present."""
+    from argosy.orchestrator.flows.plan_synthesis.render import (
+        render_number_derivations_appendix,
+    )
+
+    m = compute_fi_target(session, user_id="ariel")
+    md = render_number_derivations_appendix(session=session, user_id="ariel", resolved=None)
+
+    # (a) Every component label appears in the rendered ledger.
+    for c in m.components:
+        assert c.label in md, f"component {c.label!r} missing from the appendix"
+
+    # (d) The tracked → permanent-equivalent bridge is explicit: the full
+    # tracked T12, the subtractive mortgage runoff, and the headline totals.
+    assert f"{m.baseline_annual_nis:,.0f}" in md          # tracked T12 (277,008)
+    assert "bridge tracked T12" in md
+    assert "+277,008" in md                                # additive tracked row
+    assert "-35,424" in md                                 # subtractive mortgage runoff
+
+    # (b) The permanent subtotal reconciles to the methodology's permanent spend.
+    assert f"**{m.permanent_annual_spend_nis:,.0f}**" in md   # 311,584
+    # (c) The finite subtotal reconciles to the reserve.
+    assert f"**{m.finite_liability_reserve_nis:,.0f}**" in md  # 1,450,000
+
+    # The rendered subtotals MUST equal the methodology's computed figures.
+    assert sum(
+        c.annual_nis for c in m.components if c.kind == "permanent"
+    ) == pytest.approx(m.permanent_annual_spend_nis)
+    assert sum(
+        c.reserve_nis for c in m.components if c.kind == "finite"
+    ) == pytest.approx(m.finite_liability_reserve_nis)
+
+
 def test_no_baseline_returns_none(tmp_path):
     engine = sa.create_engine(f"sqlite:///{tmp_path / 'empty.db'}")
     Base.metadata.create_all(engine)

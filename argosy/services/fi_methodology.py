@@ -267,13 +267,28 @@ def compute_fi_target(
     il_mortgage_balance = il_mortgage_balance or 0.0
 
     # --- Permanent components. ----------------------------------------------
-    baseline_ex_mortgage = baseline - mortgage_annual
+    # The tracked→permanent-equivalent bridge is kept EXPLICIT in the ledger
+    # (two rows, not one pre-netted "ex-mortgage" row): the full tracked
+    # baseline as an additive opening row, then the mortgage runoff as a
+    # subtractive (negative ``annual_nis``) row. This lets a blind reviewer
+    # reconcile the permanent-equivalent spend from the SAME tracked-spend
+    # figure (₪277,008-class) stated elsewhere in the plan, rather than from a
+    # black-box "ex-mortgage" number it cannot tie back. The sum is unchanged:
+    # tracked − mortgage = baseline-ex-mortgage.
     components.append(FiComponent(
-        label="Tracked baseline living (ex-mortgage)",
+        label="Tracked baseline living (full T12)",
         kind="permanent",
-        annual_nis=baseline_ex_mortgage,
+        annual_nis=baseline,
         reserve_nis=0.0,
-        source=f"{baseline_src} minus identity_yaml.monthly_expenses_breakdown.mortgage_nis*12",
+        source=baseline_src,
+        confidence="HIGH",
+    ))
+    components.append(FiComponent(
+        label="Less: mortgage runoff (finite, not perpetual)",
+        kind="permanent",
+        annual_nis=-mortgage_annual,
+        reserve_nis=0.0,
+        source="identity_yaml.monthly_expenses_breakdown.mortgage_nis*12 (subtracted; the IL mortgage is finite, not a perpetual expense)",
         confidence="HIGH",
     ))
     car_amortized = CAR_REPLACEMENT_NIS / CAR_REPLACEMENT_EVERY_YEARS

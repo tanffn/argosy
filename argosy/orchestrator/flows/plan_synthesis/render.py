@@ -1249,8 +1249,10 @@ def render_number_derivations_appendix(
         lines.append("| (raw category breakdown not available in identity_yaml) |")
     lines.append("")
     lines.append(
-        f"**Step 2 — lift to permanent-equivalent: {_n(m.permanent_annual_spend_nis)}/yr** "
-        "(smooths amortized life-event phases into a perpetual-equivalent spend):"
+        f"**Step 2 — bridge tracked T12 → permanent-equivalent: {_n(m.permanent_annual_spend_nis)}/yr** "
+        f"(starts from the SAME tracked baseline {_n(m.baseline_annual_nis)} above, "
+        "subtracts the finite mortgage runoff, then adds the amortized life-event "
+        "phases — every row signed so the bridge reconciles line-by-line):"
     )
     lines.append("")
     lines.append("| Component | ₪/yr | source | confidence |")
