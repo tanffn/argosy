@@ -39,3 +39,40 @@ def fi_sufficiency_under_shock(
     for s in shocks:
         out[f"shock_{s:.2f}"] = row(net_worth_nis - s * nvda_value_nis)
     return out
+
+
+def fi_sufficiency_under_fx_shock(
+    *,
+    net_worth_nis: float,
+    usd_exposure_nis: float,
+    perpetuity_base_nis: float,
+    fi_total_nis: float,
+    fx_shock: float = 0.10,
+) -> dict:
+    """Recompute FI sufficiency after a ``fx_shock`` adverse USD/NIS move.
+
+    A non-US-person's plan can claim "FI reached" while that claim is fragile to
+    routine currency movement: a chunk of net worth is USD-denominated, so a
+    shekel strengthening (USD/NIS down ``fx_shock``) cuts the NIS value of that
+    sleeve and can drop net worth below the perpetuity base. This is the FX twin
+    of :func:`fi_sufficiency_under_shock` (which marks the NVDA tail): it marks
+    the USD sleeve down by ``fx_shock`` and re-checks sufficiency.
+
+    ``usd_exposure_nis`` is the NIS value of USD-denominated assets (the FX-
+    sensitive base). The shocked net worth is
+    ``net_worth_nis - fx_shock * usd_exposure_nis``. Returns a ``base`` row + a
+    ``fx_shock_-{fx_shock:.2f}`` row (negative sign = adverse move), each row
+    matching the NVDA-shock row shape. Pure arithmetic; no I/O.
+    """
+
+    def row(nw: float) -> dict:
+        return {
+            "net_worth_nis": round(nw, 2),
+            "perpetuity_reached": nw >= perpetuity_base_nis,
+            "total_reached": nw >= fi_total_nis,
+        }
+
+    return {
+        "base": row(net_worth_nis),
+        f"fx_shock_-{fx_shock:.2f}": row(net_worth_nis - fx_shock * usd_exposure_nis),
+    }

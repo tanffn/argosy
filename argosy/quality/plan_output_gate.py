@@ -37,6 +37,14 @@ from argosy.quality.freshness_gate import (
     check_output_date_staleness,
 )
 from argosy.quality.fx_gate import check_fx_unit_direction
+from argosy.quality.fi_timeline_gate import check_fi_timeline_coherence
+from argosy.quality.fi_fx_shock_gate import check_fi_sufficiency_under_fx_shock
+from argosy.quality.retirement_age_label_gate import check_retirement_age_labels
+from argosy.quality.rsu_retention_gate import check_rsu_retention_consistency
+from argosy.quality.event_currency_gate import check_event_currency_consistency
+from argosy.quality.ips_equality_gate import check_ips_equality
+from argosy.quality.instrument_taxonomy_gate import check_instrument_taxonomy
+from argosy.quality.stale_reviewer_text_gate import check_stale_reviewer_text
 from argosy.quality.gate_types import GateCheck, GateVerdict, GateViolation
 from argosy.quality.numeric_source_gate import check_headline_numeric_source
 from argosy.quality.regex_patterns import (
@@ -594,6 +602,8 @@ def gate_plan_output(
     fx_usd_nis: float | None = None,
     current_nvda_cap_pct: float | None = None,
     prior_nvda_cap_pct: float | None = None,
+    target_allocation_doc: "Any | None" = None,
+    fm_objection_text: str | None = None,
 ) -> GateVerdict:
     """Run all gate checks and return an aggregate verdict.
 
@@ -728,6 +738,63 @@ def gate_plan_output(
             )
         )
 
+    # ---- Run-106 net-new invariants -------------------------------------
+    # All read the joined horizon prose; each runs whenever there is prose to
+    # scan (or its extra structured input is present). They are deterministic
+    # and pure, mirroring the three gates already wired above.
+    if plan_text:
+        verdict.extend(check_fi_timeline_coherence(plan_text=plan_text))
+        verdict.extend(check_rsu_retention_consistency(plan_text=plan_text))
+        verdict.extend(check_event_currency_consistency(plan_text=plan_text))
+        verdict.extend(check_instrument_taxonomy(plan_text=plan_text))
+        # IPS equality: the prose self-sum runs on text alone; the prose-vs-
+        # canonical equality check additionally fires when the allocation doc
+        # is supplied.
+        verdict.extend(
+            check_ips_equality(plan_text=plan_text, target_allocation_doc=target_allocation_doc)
+        )
+        # Retirement-age labelling: prose-label coherence runs on text alone;
+        # the bridge-sizing-age check additionally fires when the resolver
+        # supplies the ages (NOT a forced-equality check — see the gate).
+        ages = _derive_retirement_ages(resolved) if resolved is not None else {}
+        verdict.extend(
+            check_retirement_age_labels(
+                plan_text=plan_text,
+                earliest_safe_age=ages.get("earliest_safe_age"),
+                fi_age=ages.get("fi_age"),
+                bridge_start_age=ages.get("bridge_start_age"),
+            )
+        )
+
+    # Stale reviewer (FM) objection text vs the current draft — runs only when a
+    # pending objection is supplied.
+    if fm_objection_text and plan_text:
+        verdict.extend(
+            check_stale_reviewer_text(plan_text=plan_text, objection_text=fm_objection_text)
+        )
+
+    # FI sufficiency under an adverse FX move — the currency twin of the NVDA
+    # shock. Runs only when the resolver supplies a USD-exposure figure (else
+    # skipped; never crashes synthesis). NOTE (methodology, pending codex
+    # review): USD exposure is proxied from the resolver's available figure;
+    # see _derive_fx_shock_inputs.
+    if resolved is not None:
+        try:
+            fx_inputs = _derive_fx_shock_inputs(resolved)
+            if fx_inputs is not None:
+                from argosy.services.retirement.fi_shock import (
+                    fi_sufficiency_under_fx_shock,
+                )
+
+                fx_shock_result = fi_sufficiency_under_fx_shock(**fx_inputs)
+                verdict.extend(
+                    check_fi_sufficiency_under_fx_shock(
+                        fx_shock_result=fx_shock_result, plan_text=plan_text
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 — a gate must not crash synthesis
+            log.warning("gate_plan_output.fx_shock_skipped err=%s", exc)
+
     return verdict
 
 
@@ -760,6 +827,67 @@ def _derive_shock_inputs(resolved: "ResolvedPlanNumbers") -> dict | None:
     return {
         "net_worth_nis": net_worth,
         "nvda_value_nis": net_worth * nvda_frac,  # fraction → no ÷100
+        "perpetuity_base_nis": perpetuity_base,
+        "fi_total_nis": fi_total,
+    }
+
+
+def _resolved_value(resolved: "ResolvedPlanNumbers", key: str) -> float | None:
+    """Return a RESOLVED numeric value for ``key`` or None (helper shared by the
+    run-106 derivations)."""
+    rv = resolved.get(key)
+    if rv is None or rv.status != "resolved" or rv.value is None:
+        return None
+    try:
+        return float(rv.value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _derive_retirement_ages(resolved: "ResolvedPlanNumbers") -> dict:
+    """Pull the headline + sizing retirement ages from the resolver.
+
+    Returns ``earliest_safe_age`` (headline) and ``fi_age`` (the FIRE-bridge
+    sizing age — deliberately distinct from the headline). ``bridge_start_age``
+    is intentionally absent: there is no canonical ``retirement.bridge_start_age``
+    fact today (the bridge value is derived from ``fi_age``), so the gate's
+    bridge-sizing check is skipped until that fact exists (Phase 2). Missing
+    values are simply absent from the dict (the gate tolerates None).
+    """
+    out: dict = {}
+    esa = _resolved_value(resolved, "retirement.earliest_safe_age")
+    fia = _resolved_value(resolved, "retirement.fi_age")
+    if esa is not None:
+        out["earliest_safe_age"] = esa
+    if fia is not None:
+        out["fi_age"] = fia
+    return out
+
+
+def _derive_fx_shock_inputs(resolved: "ResolvedPlanNumbers") -> dict | None:
+    """Derive the ``fi_sufficiency_under_fx_shock`` inputs from the resolver.
+
+    Returns a kwargs dict when every required value is RESOLVED, else None (the
+    FX-shock check is then skipped — never crashes).
+
+    METHODOLOGY (pending codex review): the FX-sensitive base is the NIS value
+    of USD-denominated assets. The resolver does not yet expose a total USD
+    exposure, so this proxies it from ``concentration.us_situs_estate_exposure_nis``.
+    That proxy may UNDERSTATE true USD exposure (Irish-domiciled USD UCITS ETFs
+    are USD-exposed but not US-situs), which would understate the shock — the
+    unsafe direction for a fail-loud gate. Tracked: add a real USD-exposure fact
+    so this is not a proxy. Until then the check runs only when the proxy is
+    present and is conservatively interpreted as a lower bound.
+    """
+    net_worth = _resolved_value(resolved, "portfolio.net_worth_nis")
+    perpetuity_base = _resolved_value(resolved, "retirement.fi_target_nis")
+    fi_total = _resolved_value(resolved, "retirement.fi_total_capital_nis")
+    usd_exposure = _resolved_value(resolved, "concentration.us_situs_estate_exposure_nis")
+    if None in (net_worth, perpetuity_base, fi_total, usd_exposure):
+        return None
+    return {
+        "net_worth_nis": net_worth,
+        "usd_exposure_nis": usd_exposure,
         "perpetuity_base_nis": perpetuity_base,
         "fi_total_nis": fi_total,
     }

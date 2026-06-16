@@ -82,6 +82,52 @@ class GateCheck(str, Enum):
     # NOT be attributed to the user ("your chosen cap"). A change without a
     # derivation cue — or one credited to the user — is a defect.
     CAP_DERIVATION = "cap_derivation"
+    # ---- Run-106 net-new invariants (the acceptance backbone) -------------
+    # Each catches one run-106 reader finding-class DETERMINISTICALLY, in-stage,
+    # before the LLM whole-artifact reader sees the draft. See
+    # docs/superpowers/specs/2026-06-16-checks-all-the-way-and-section-surgical-fix-design.md
+    # finding [1] — the FI-crossing concept must not be reported three
+    # incompatible ways at once (already crossed today vs deterministic FI age
+    # 47 vs Typical-scenario FI age 45 with 2.0 yrs remaining). Distinct FI ages
+    # are allowed ONLY when labeled by their definition; an unlabeled
+    # "crossed today" alongside a future FI age is a contradiction.
+    FI_TIMELINE_COHERENCE = "fi_timeline_coherence"
+    # finding [0] — an unqualified capital-sufficiency / FI-reached claim must
+    # be robust to a −10% FX (USD/NIS) move, not just the NVDA tail. The
+    # existing FI_SHOCK_SUFFICIENCY covers the NVDA shock; this extends the same
+    # idea to currency, the dimension the run-106 reader flagged as load-bearing.
+    FI_FX_SHOCK_SUFFICIENCY = "fi_fx_shock_sufficiency"
+    # finding [2] — the headline retirement age (earliest_safe_age) and the
+    # FIRE-bridge sizing age (fi_age) are DELIBERATELY distinct; they must each
+    # carry their defining label wherever they appear, and the bridge sleeve
+    # must be sized from the resolver's CHOSEN sizing age (not silently dropped
+    # a year vs the prior plan). NOT a forced-equality check.
+    RETIREMENT_AGE_LABEL = "retirement_age_label"
+    # finding [3] — RSU net-retention % must agree across the RSU ledger, the
+    # equity-comp evidence, and the prose (run-106: 47% vs 65%). A divergence is
+    # a contradiction that changes the after-tax cash the plan can deploy.
+    RSU_RETENTION_CONSISTENCY = "rsu_retention_consistency"
+    # finding [4] — a named money event (e.g. the June-17 RSU tax) must not flip
+    # currency between NIS and USD across surfaces; the magnitude changes by ~the
+    # FX rate, so it is not a harmless typo.
+    EVENT_CURRENCY_CONSISTENCY = "event_currency_consistency"
+    # finding [5] — the IPS instrument map claims to sum to 100% but the named
+    # weights total ~106 before an unspecified residual. The IPS weights must be
+    # EQUAL across target_allocation_json + medium targets + IPS prose +
+    # rationale, and the prose-stated weights must themselves sum to ~100%.
+    # (check_ips_allocation_sum only sums medium.targets today; this checks the
+    # rendered IPS prose against the canonical allocation doc.)
+    IPS_EQUALITY = "ips_equality"
+    # finding [7] — an instrument's wrapper TYPE must be consistent: the plan
+    # correctly says SGLN is not UCITS (physical-gold ETC), then includes SGLN
+    # in an action described as a migration INTO UCITS. A wrapper-type token in
+    # an instrument's description must not be contradicted by its action text.
+    INSTRUMENT_TAXONOMY = "instrument_taxonomy"
+    # finding [6] — a pending reviewer (FM) objection whose numbers contradict
+    # the current draft (run-106: objection says 3,000 sh/yr while the medium
+    # target now says 5,600 sh/yr) is STALE: the client sees an unresolved
+    # rejection for a value that has since changed. Flag the contradiction.
+    STALE_REVIEWER_TEXT = "stale_reviewer_text"
 
 
 @dataclass(frozen=True)
