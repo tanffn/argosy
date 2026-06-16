@@ -266,6 +266,73 @@ def test_codex_fails_soft_when_unreachable(monkeypatch, tmp_path):
     assert row is None
 
 
+def test_codex_hard_ceiling_times_out_a_hung_dispatch(monkeypatch, tmp_path):
+    """A codex subprocess that HANGS must not block synthesis forever.
+
+    ``run_codex``'s own ``timeout_s`` does not reliably kill a stuck
+    subprocess on Windows; the backstop is an ``asyncio.wait_for`` at the
+    call site keyed on ``_HARD_CEILING_S``. We monkeypatch the ceiling to a
+    tiny value (0.2s) and make the stubbed ``run_codex`` sleep far longer
+    (5s). The dispatch must fail-soft to ``(None, None)`` within ~1s — NOT
+    hang for the full 5s. Without the ``wait_for`` wrap this test hangs.
+    """
+    import time
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setenv("ARGOSY_CODEX_REVIEW_ENABLED", "1")
+    monkeypatch.setenv("ARGOSY_HOME", str(tmp_path))
+    from argosy.config import reload_settings
+    reload_settings()
+
+    import argosy.orchestrator.flows.plan_synthesis.codex_second_opinion as cso
+    monkeypatch.setattr(cso, "_HARD_CEILING_S", 0.2)
+
+    import sys
+    import types
+    fake_mod = types.ModuleType("engine_codex")
+
+    def _hanging_run_codex(**kw):
+        # Simulate a fully-stuck codex subprocess: blocks far past the
+        # (tiny, monkeypatched) ceiling. Runs in the executor thread; the
+        # orchestrator must STOP WAITING via wait_for rather than block here.
+        time.sleep(5.0)
+        return _StubCodexResult(verdict_text=_valid_codex_json(), tokens=1)
+
+    fake_mod.run_codex = _hanging_run_codex
+    sys.modules["engine_codex"] = fake_mod
+
+    async def _run():
+        # Time the AWAIT itself — this is what the orchestrator experiences.
+        # (Don't time ``asyncio.run`` teardown: per the wait_for caveat the
+        # orphaned executor thread keeps sleeping, and loop shutdown joins
+        # the default thread pool — but the real orchestrator loop is
+        # long-lived, so that join never blocks synthesis. The load-bearing
+        # property is that this AWAIT returns promptly.)
+        t0 = time.monotonic()
+        result = await cso.run_codex_second_opinion(
+            synth_draft_json='{}',
+            analyst_reports_text="reports",
+            debate_outcomes_text="debates",
+            risk_verdict_text="risk",
+            user_directive="",
+            decision_run_id=99,
+            user_id="ariel",
+        )
+        return result, time.monotonic() - t0
+
+    try:
+        (parsed, row), elapsed = asyncio.run(_run())
+    finally:
+        sys.modules.pop("engine_codex", None)
+
+    # Fail-soft: a hung dispatch returns (None, None), not a crash.
+    assert parsed is None
+    assert row is None
+    # And the await returns promptly (well under the 5s stub sleep) — the
+    # ceiling tripped rather than the orchestrator blocking on the stuck thread.
+    assert elapsed < 2.0, f"await blocked for {elapsed:.2f}s — ceiling did not trip"
+
+
 def test_codex_returns_unparseable_opinion_on_garbage_output(
     monkeypatch, tmp_path,
 ):

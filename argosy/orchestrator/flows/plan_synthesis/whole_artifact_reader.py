@@ -60,6 +60,26 @@ log = get_logger(__name__)
 
 
 # ----------------------------------------------------------------------
+# Hard dispatch ceiling. ``run_codex``'s own ``timeout_s`` does NOT
+# reliably hard-kill a fully-stuck codex subprocess on Windows (it relies
+# on the subprocess/CLI self-terminating); a hung codex left
+# ``await loop.run_in_executor(...)`` blocking synthesis for 6+ HOURS in a
+# live run. ``run_in_executor`` has no cancellation/timeout of its own, so
+# wrap the await in ``asyncio.wait_for`` as a BACKSTOP: ``timeout_s`` (300)
+# + a 60s grace margin so a slow-but-valid reader still completes, but a
+# true hang raises ``asyncio.TimeoutError`` and hits the existing
+# dispatch-failure path (→ (None, None), reader simply doesn't run and
+# synthesis proceeds). The grace margin is identical to the codex
+# second-opinion ceiling (60s) for consistency; 300 + 60 = 360.
+#
+# CAVEAT: ``wait_for`` cancels the AWAIT, but the underlying thread running
+# ``run_codex`` keeps going (you can't kill a thread). Acceptable — the
+# orphaned thread may linger but no longer blocks synthesis. We do NOT try
+# to kill the thread.
+_HARD_CEILING_S = 360  # 300s run_codex timeout_s + 60s grace
+
+
+# ----------------------------------------------------------------------
 # Output schema
 # ----------------------------------------------------------------------
 
@@ -437,16 +457,38 @@ async def run_whole_artifact_review(
 
     try:
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: run_codex(
-                node_dir=node_dir,
-                prompt=prompt,
-                agent_name=f"whole_artifact_reader_run_{decision_run_id}",
-                role="whole_artifact_reader",
-                timeout_s=300,
+        # Wrap the executor await in ``asyncio.wait_for`` so a hung codex
+        # subprocess (which run_codex's own timeout_s does not reliably
+        # kill — see _HARD_CEILING_S) can't block synthesis indefinitely.
+        # A timeout raises asyncio.TimeoutError, caught by the except below
+        # and handled exactly like any other dispatch failure: (None, None),
+        # so the reader simply doesn't run and synthesis proceeds.
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: run_codex(
+                    node_dir=node_dir,
+                    prompt=prompt,
+                    agent_name=f"whole_artifact_reader_run_{decision_run_id}",
+                    role="whole_artifact_reader",
+                    timeout_s=300,
+                ),
             ),
+            timeout=_HARD_CEILING_S,
         )
+    except asyncio.TimeoutError:
+        # Hard ceiling tripped — a stuck codex subprocess. The orphaned
+        # executor thread may linger but no longer blocks synthesis. This is
+        # a DISPATCH failure (the reader never produced output), so it takes
+        # the fail-soft (None, None) path — NOT the parse fail-closed-to-BLOCK
+        # path (that one fires only when codex DID return empty/garbage text).
+        log.warning(
+            "whole_artifact_reader.dispatch_failed",
+            decision_run_id=decision_run_id,
+            error=f"hard ceiling exceeded ({_HARD_CEILING_S}s) — codex hung",
+            timed_out=True,
+        )
+        return None, None
     except Exception as exc:  # noqa: BLE001 — fail-soft on any dispatch error
         log.warning(
             "whole_artifact_reader.dispatch_failed",
