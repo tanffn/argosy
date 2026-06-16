@@ -3356,6 +3356,46 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
             )
             analyst_report_dates = None
 
+        # FX rate (resolved, NIS-per-USD) for the FX unit/direction gate — the
+        # numeric-band check complements the prose "USD/NIS" scan.
+        fx_usd_nis = None
+        try:
+            _fx_rv = resolved.get("fx.usd_nis") if resolved is not None else None
+            if (
+                _fx_rv is not None
+                and getattr(_fx_rv, "status", None) == "resolved"
+                and getattr(_fx_rv, "value", None) is not None
+            ):
+                fx_usd_nis = float(_fx_rv.value)
+        except Exception:  # noqa: BLE001 — best-effort; gate skips when fx absent
+            fx_usd_nis = None
+
+        # NVDA cap (Argosy-derived) — current draft vs prior CURRENT plan, so a
+        # cap CHANGE that carries no stated derivation trips the cap-derivation
+        # gate. The cap lives on the canonical TargetAllocationDoc (nvda_cap_pct).
+        current_nvda_cap_pct = None
+        prior_nvda_cap_pct = None
+        try:
+            if pv.target_allocation_json:
+                current_nvda_cap_pct = json.loads(
+                    pv.target_allocation_json
+                ).get("nvda_cap_pct")
+            if db is not None:
+                from argosy.state.queries import get_current_plan
+
+                _prior = get_current_plan(db, pv.user_id)
+                if _prior is not None and getattr(
+                    _prior, "target_allocation_json", None
+                ):
+                    prior_nvda_cap_pct = json.loads(
+                        _prior.target_allocation_json
+                    ).get("nvda_cap_pct")
+        except Exception:  # noqa: BLE001 — best-effort; gate skips when caps absent
+            import logging
+            logging.getLogger(__name__).warning(
+                "nvda_cap_lookup_failed pv=%s", getattr(pv, "id", "?"),
+            )
+
         verdict = gate_plan_output(
             horizon_text=horizon_text,
             synth=synth,
@@ -3365,6 +3405,9 @@ def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
             today=today,
             snapshot_date=snapshot_date,
             analyst_report_dates=analyst_report_dates,
+            fx_usd_nis=fx_usd_nis,
+            current_nvda_cap_pct=current_nvda_cap_pct,
+            prior_nvda_cap_pct=prior_nvda_cap_pct,
         )
 
         # S18 — instrument-domicile check on the STRUCTURED doc. The frozen

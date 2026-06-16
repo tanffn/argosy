@@ -1067,7 +1067,7 @@ raw inputs), which the resolver and blind reviewer already enforce. Coherence
 and currency are properties of the WHOLE artifact, so they are checked on the
 assembled document rather than left to per-number gates or an LLM eyeball.
 
-The deterministic layer runs three checks over the assembled bytes. A
+The deterministic layer runs several checks over the assembled bytes. A
 cross-surface coherence check (`coherence_gate.check_cross_surface_coherence`)
 fails when the same named concept (net worth, NVDA weight, US-situs estate, FI
 margin) carries divergent values or a flipped sign across surfaces. An
@@ -1077,7 +1077,15 @@ perpetuity base, composing the sufficiency claim with the concentration tail.
 An input-freshness check (`freshness_gate`) flags a snapshot or cached analyst
 output that is stale relative to today. A single signed FI margin
 (`retirement.fi_margin_signed_nis` = net worth − total FI capital) is
-resolver-derived so every surface cites one reached / not-reached value.
+resolver-derived so every surface cites one reached / not-reached value. Three
+further deterministic gates kill recurring synthesizer defect-classes at their
+root: an output-date staleness check (`freshness_gate.check_output_date_staleness`)
+fails a past-due date rendered as "on-deck" / "0 days" / "due"; an FX
+unit/direction check (`fx_gate.check_fx_unit_direction`) fails a USD/NIS value
+that is inverted, percent-rendered, or outside the NIS-per-USD plausibility
+band; and a cap-derivation check (`coherence_gate.check_cap_cite_derivation`)
+fails an NVDA concentration-cap change vs the prior plan that carries no stated
+Argosy-derived justification (the cap is engine-derived, never user-set).
 
 The holistic layer adds a whole-artifact adversarial reader
 (`whole_artifact_reader.py`, gated on `ARGOSY_CODEX_REVIEW_ENABLED`) that reads
@@ -1090,6 +1098,20 @@ the coherence of the whole; the math re-derivation belongs to the codex gate. A
 reader BLOCK marks the draft not auto-promotable through the same
 `decision_run.fund_manager_decision` field the fund-manager verdict uses — the
 user remains the final gate, with an explicit, audit-logged override.
+
+**Coherence reconcile loop.** A reader BLOCK does not merely stop — it feeds
+back. When the reader blocks on a *fixable* coherence hole (a contradiction,
+cross-surface mismatch, stale date, or a fragile headline claim — anything but
+its own synthetic infra-failure BLOCK), the orchestrator folds the finding into
+synthesizer guidance (`_reader_coherence_reconcile_guidance`), re-runs phase-3
+synthesis, re-persists the draft body in place through the single shared
+renderer (`_assemble_draft_bodies`, used by both the initial persist and this
+re-persist so a reconciled draft is identical in shape to a normal one), and
+re-reads the corrected artifact — bounded to one round and fail-closed (a draft
+that still blocks stays not-auto-promotable). This mirrors the codex numeric
+reconcile zigzag; a `reader_reconcile` marker on the phase-5.5 row drives the
+visible reconcile banner on `/decisions/[id]`. The loop is gated on
+`ARGOSY_READER_RECONCILE` (default on).
 
 **Idempotency.** Re-running synthesis when an unaccepted draft already
 exists demotes the prior draft to `role='superseded'` and writes a
