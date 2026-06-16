@@ -993,6 +993,34 @@ def run_synthesis(
     # possible via ?override_fm_rejection=true, audit-logged). No parallel
     # promotion mechanism is introduced. A reader BLOCK never UN-rejects an
     # FM rejection (it can only tighten the gate, never loosen it).
+    # Layer B (shift-left): run the deterministic gate suite on the persisted
+    # draft BEFORE the expensive LLM reader, so a cheap deterministic defect is
+    # surfaced in-stage. Best-effort + never aborts synthesis; recorded as
+    # phase 5.3 so /decisions/[id] shows it ran before the reader.
+    try:
+        _instage_started = datetime.now(timezone.utc)
+        _instage_verdict = _pkg.run_deterministic_gate_instage(
+            session=session, user_id=user_id, draft=draft,
+            decision_run_id=decision_run_id,
+        )
+        _pkg._record_phase_completion(
+            user_id=user_id, decision_run_id=decision_run_id,
+            phase_n=53, started_at=_instage_started,
+            phase_output=_instage_verdict.summary(),
+            agent_report_rows=[],
+        )
+        if not _instage_verdict.passes:
+            log.warning(
+                "plan_synthesis.instage_gate_violations",
+                user_id=user_id, decision_run_id=decision_run_id,
+                summary=_instage_verdict.summary(),
+            )
+    except Exception as exc:  # noqa: BLE001 — surfacing only; never abort
+        log.warning(
+            "plan_synthesis.instage_gate_failed",
+            user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+        )
+
     def _assemble_and_read():
         """Assemble the just-persisted draft into its full artifact and run the
         whole-artifact reader against it. Returns ``(verdict, row)``; the inner
