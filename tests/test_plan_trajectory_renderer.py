@@ -140,6 +140,48 @@ def test_appendix_shows_derived_figures(session):
 # ---------------------------------------------------------------------------
 
 
+def test_appendix_labels_three_age_definitions_distinctly(session):
+    """Coherence guard (run-102 reader BLOCKER): the derived-FI age, the
+    Monte-Carlo earliest-safe age, and the per-scenario target age must each
+    render with a DISTINCT, self-describing qualifier so a client never reads
+    the three different numbers as a self-contradiction.
+    """
+    _seed_all(session)
+    md = render_trajectory_reconciliation_appendix(
+        session=session, user_id="ariel", decision_run_id=DRUN
+    )
+    # 1) Derived FI age must carry the deterministic / perpetuity qualifier.
+    assert "Derived FI age (deterministic, perpetuity basis)" in md
+    # 2) The reconciliation prose must qualify the Monte-Carlo earliest-safe
+    #    headline age distinctly, so it never reads as the same concept as the
+    #    deterministic FI age.
+    assert "earliest safe retirement age* (Monte-Carlo, 90% solvency" in md
+    # 3) The reconciliation prose must frame these as three DIFFERENT valid
+    #    definitions, not a contradiction, and name the per-scenario age.
+    assert "three DIFFERENT" in md
+    assert "per-scenario" in md
+    # The bare, unqualified "Derived FI age |" label must be gone.
+    assert "| Derived FI age | " not in md
+
+
+def test_appendix_cross_references_mc_earliest_safe_age_when_resolved(session):
+    """When the Monte-Carlo earliest-safe age IS resolved it gets its own,
+    distinctly-qualified row in the reconciliation table (cross-referencing
+    the deterministic FI age). When unresolved the row is omitted rather than
+    rendering a fabricated `[derivation pending]` age."""
+    _seed_all(session)
+    md = render_trajectory_reconciliation_appendix(
+        session=session, user_id="ariel", decision_run_id=DRUN
+    )
+    # The in-memory fixture cannot resolve the MC earliest-safe age (needs the
+    # retirement engine) → the cross-reference ROW must be ABSENT, never a
+    # fabricated pending age.
+    assert (
+        "| Earliest safe retirement age (Monte-Carlo, 90% solvency to 95, "
+        "typical-drawdown) | [derivation pending] |"
+    ) not in md
+
+
 def test_pending_fi_target_renders_derivation_pending(session):
     # FI target/spend/yield/return now come from the deterministic
     # fi_methodology, fed by the tracked baseline spend. To make the FI

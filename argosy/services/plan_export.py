@@ -459,7 +459,13 @@ def build_plan_export_markdown(
         push("")
 
         push("### Retirement projection")
-        push("| Scenario | Real return | Years to target | Target age |")
+        push(
+            "_FI age by scenario (deterministic crossing under each scenario's "
+            "return assumption) — not the headline retirement age; the "
+            "Typical-scenario row is the deterministic-trajectory point, "
+            "distinct from the Monte-Carlo earliest-safe headline age._"
+        )
+        push("| Scenario | Real return | Years to FI target | FI age (this scenario) |")
         push("|---|---|---|---|")
         for sc in ret.scenarios:
             y2t = sc.years_to_target

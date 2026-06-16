@@ -881,6 +881,7 @@ def render_trajectory_reconciliation_appendix(
     fi_total = resolved.get("retirement.fi_total_capital_nis")
     fi_reserve = resolved.get("retirement.liquidity_reserve_nis")
     fi_age = resolved.get("retirement.fi_age")
+    earliest_safe_age = resolved.get("retirement.earliest_safe_age")
     req_yield = resolved.get("retirement.required_real_yield_pct")
     ret_assumption = resolved.get("retirement.return_assumption_pct")
     fi_spend = resolved.get("spend.fi_basis_nis")
@@ -1122,8 +1123,23 @@ def render_trajectory_reconciliation_appendix(
         "|---|---|---|"
     )
     lines.append(
-        f"| Derived FI age | {fi_age_disp} | `retirement.fi_age` |"
+        f"| Derived FI age (deterministic, perpetuity basis) | {fi_age_disp} "
+        "| `retirement.fi_age` |"
     )
+    # Cross-reference the Monte-Carlo earliest-safe headline age in the SAME
+    # table so the deterministic FI age never reads as an orphaned, conflicting
+    # number. Only when resolved — it is a cross-reference, not a primary row;
+    # never fabricate a pending figure here.
+    if (
+        earliest_safe_age is not None
+        and earliest_safe_age.status == "resolved"
+        and earliest_safe_age.value is not None
+    ):
+        lines.append(
+            "| Earliest safe retirement age (Monte-Carlo, 90% solvency to 95, "
+            f"typical-drawdown) | age {earliest_safe_age.value:.0f} "
+            "| `retirement.earliest_safe_age` |"
+        )
     req_disp = (
         f"{req_yield.value * 100:.2f}%"
         if req_yield.status == "resolved" and req_yield.value is not None
@@ -1148,12 +1164,23 @@ def render_trajectory_reconciliation_appendix(
     )
     lines.append("")
     lines.append(
-        "**Honest reconciliation**: the FI age is the earliest age at "
-        "which the projected portfolio first reaches the derived FI "
-        "target under the resolver's return assumption. It already "
-        "encodes margin against return-rate uncertainty, sequence risk, "
-        "NVDA concentration, and life-event spend spikes via the spend "
-        "basis the withdrawal sequencer used — it is not a round "
+        "**Honest reconciliation — three DIFFERENT, each-valid age "
+        "definitions (not a contradiction):** "
+        "(1) the *derived FI age* (deterministic, perpetuity basis) is the "
+        "earliest age the projected portfolio first reaches the derived FI "
+        "target under the resolver's return assumption; "
+        "(2) the *earliest safe retirement age* (Monte-Carlo, 90% solvency "
+        "to 95, typical-drawdown) is THE headline retirement age — the "
+        "earliest you could stop working with the money lasting in ~9 of 10 "
+        "market paths; it is normally a year or two below the deterministic "
+        "FI age because it permits drawing principal down rather than living "
+        "off a perpetuity yield; "
+        "(3) the per-scenario *target age* in the retirement-projection grid "
+        "is the deterministic crossing age under EACH scenario's return "
+        "assumption (the Typical-scenario row, not a separate headline). "
+        "Each already encodes margin against return-rate uncertainty, "
+        "sequence risk, NVDA concentration, and life-event spend spikes via "
+        "the spend basis the withdrawal sequencer used — none is a round "
         "marketing number."
     )
     return "\n".join(lines).rstrip() + "\n"
