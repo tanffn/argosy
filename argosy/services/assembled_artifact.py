@@ -28,6 +28,7 @@ One responsibility: assemble + extract. Pure/deterministic over its inputs.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -90,6 +91,30 @@ def _append(
     bag.setdefault(concept, []).append((surface, v))
 
 
+# Internal generation-telemetry appendix headings the whole-artifact reader must
+# NOT review as client-plan content (they describe HOW the doc was made — which
+# agents ran, codex present/absent — not WHAT the plan is, and contradict the
+# final body). Stripped only from the reader artifact; the user export keeps them.
+_INTERNAL_METADATA_HEADINGS = (
+    "## Appendix — Fleet receipts",
+)
+
+
+def _strip_internal_metadata_sections(full_text: str) -> str:
+    """Remove internal generation-telemetry appendix sections (header → next
+    ``## `` heading or EOF) from the reader-facing artifact."""
+    out = full_text or ""
+    for heading in _INTERNAL_METADATA_HEADINGS:
+        # Match the heading line through to (but not including) the next level-2
+        # heading, or to end of document.
+        pattern = re.compile(
+            r"\n" + re.escape(heading) + r"\b.*?(?=\n## |\Z)",
+            re.DOTALL,
+        )
+        out = pattern.sub("", out)
+    return out
+
+
 def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifact:
     """Concatenate every surface the user reads + extract per-surface headlines.
 
@@ -133,6 +158,11 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
     full_text = build_plan_export_markdown(
         session, user_id=user_id, include_fm_objections=False
     )
+    # Strip pure generation-telemetry appendices the reader must not review as
+    # plan content (which agent ran / codex present-absent). Like the objection
+    # scratchpad, these are internal metadata that contradict the final body and
+    # produce spurious cross-surface findings. The user export keeps them.
+    full_text = _strip_internal_metadata_sections(full_text)
 
     surface_values: dict[str, list[tuple[str, float]]] = {}
     extraction_errors: dict[str, str] = {}
