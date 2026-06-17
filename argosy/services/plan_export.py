@@ -440,7 +440,12 @@ def build_plan_export_markdown(
             if runway.months_of_runway is not None
             else "—"
         )
-        push(f"- Cash runway: {runway_str}")
+        # Basis-explicit label: months_of_runway covers cash + SGOV (see
+        # wealth_dashboard), a BROADER basis than the body's cash-only emergency
+        # runway. Labeling the basis prevents a spurious cross-surface
+        # contradiction (dashboard ~53mo vs body cash-only ~9mo are different,
+        # both-valid baskets, not a conflict).
+        push(f"- Liquid runway (cash + SGOV): {runway_str}")
 
         gap = None
         if conc.current_pct is not None and conc.target_pct is not None:
