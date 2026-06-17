@@ -38,8 +38,9 @@ class CoherenceEdit(BaseModel):
         "plan, revision history, or internal tokens.",
     )
     fixes_finding: int = Field(
+        default=-1,
         description="Index of the reader finding this edit (with its siblings) "
-        "resolves.",
+        "resolves. Optional.",
     )
 
 
