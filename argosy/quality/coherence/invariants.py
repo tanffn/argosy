@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from argosy.quality.coherence.claim_markers import parse_markers
+
 
 @dataclass
 class VerifyResult:
@@ -56,6 +58,61 @@ class AllRegisteredSurfacesPresent:
             for s in self.surfaces
             if artifact.get(s) is None
         ]
+
+
+@dataclass(frozen=True)
+class RequiredFramingRole:
+    """A surface's typed claim marker must carry role_field == value."""
+    subject_type: str
+    surface: str
+    role_field: str
+    value: str
+
+    def check(self, artifact: dict[str, str]) -> list[str]:
+        text = artifact.get(self.surface)
+        if text is None:
+            return [f"{self.subject_type}: surface {self.surface} absent"]
+        claims = parse_markers(text).get(self.subject_type, {})
+        actual = claims.get(self.role_field)
+        if actual != self.value:
+            return [
+                f"{self.subject_type}: {self.surface} framing {self.role_field}="
+                f"{actual!r}, expected {self.value!r}"
+            ]
+        return []
+
+
+@dataclass(frozen=True)
+class ForbiddenClaim:
+    """A surface's PROSE must not contain a forbidden substring (mechanical guard
+    against a known-wrong claim, e.g. the retired 'retain as NVDA' policy)."""
+    subject_type: str
+    surface: str
+    pattern: str
+
+    def check(self, artifact: dict[str, str]) -> list[str]:
+        text = artifact.get(self.surface) or ""
+        if self.pattern in text:
+            return [f"{self.subject_type}: {self.surface} contains forbidden claim '{self.pattern}'"]
+        return []
+
+
+@dataclass(frozen=True)
+class SurfaceClaimEquals:
+    """A typed claim block on a surface holds the expected value for claim_key."""
+    subject_type: str
+    surface: str
+    claim_key: str
+    value: str
+
+    def check(self, artifact: dict[str, str]) -> list[str]:
+        claims = parse_markers(artifact.get(self.surface) or "").get(self.subject_type, {})
+        if claims.get(self.claim_key) != self.value:
+            return [
+                f"{self.subject_type}: {self.surface} claim {self.claim_key}="
+                f"{claims.get(self.claim_key)!r}, expected {self.value!r}"
+            ]
+        return []
 
 
 def verify_invariants(invariants: list[Invariant], artifact: dict[str, str]) -> VerifyResult:
