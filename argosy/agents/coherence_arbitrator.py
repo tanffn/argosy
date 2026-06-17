@@ -39,7 +39,10 @@ class CoherenceArbitratorAgent(BaseAgent[ArbitratorRuling]):
     def build_prompt(
         self, *, dispute_question: str, positions: list[dict],
         canonical_facts: str, prime_directive: str,
+        surfaces: list[str] | None = None,
     ) -> tuple[str, str]:
+        surfaces = surfaces or []
+        surfaces_line = ", ".join(surfaces) if surfaces else "(none registered)"
         system = (
             "You are the Argosy coherence ARBITRATOR. Issue a binding ruling for one "
             "disputed question. First classify the dispute's AUTHORITY AXIS: FACTUAL "
@@ -47,16 +50,24 @@ class CoherenceArbitratorAgent(BaseAgent[ArbitratorRuling]):
             "true) vs POLICY/framing (authority order: prime directive > user "
             "directives > panelist preference). Decide WHICH CLAIM BINDS and the exact "
             "INVARIANT every surface must satisfy. You do not design the best plan; you "
-            "resolve the contradiction. Emit per-surface instructions and a typed "
-            "coherence_invariant the deterministic verifier can check."
+            "resolve the contradiction.\n"
+            "For a POLICY/framing ruling, emit `coherence_invariant` entries of kind "
+            "`required_framing_role` (fields: subject_type, surface, role_field, value) "
+            "encoding the binding framing as typed key=value roles, and optionally "
+            "`forbidden_claim` (fields: subject_type, surface, pattern) for prose that "
+            "must NOT appear. Use ONLY these exact surface ids in every invariant's "
+            f"`surface` field: {surfaces_line}. Do NOT invent surface names. Keep `value` "
+            "tokens short and machine-comparable (e.g. an age number, or a short snake_case "
+            "label)."
         )
         pos = "\n".join(
             f"  - {p.get('role','?')}: {p.get('position','')} (basis={p.get('basis','')})"
             for p in positions
-        )
+        ) or "  (no panel positions; rule from the prime directive + canonical facts)"
         user = (
             f"PRIME DIRECTIVE:\n{prime_directive}\n\n"
             f"DISPUTED QUESTION:\n{dispute_question}\n\n"
+            f"VALID SURFACE IDS (use only these in invariants):\n{surfaces_line}\n\n"
             f"CANONICAL FACTS:\n{canonical_facts}\n\n"
             f"PANELIST POSITIONS:\n{pos}\n"
         )

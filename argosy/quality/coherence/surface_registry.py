@@ -53,6 +53,13 @@ SUBJECT_REGISTRY: dict[str, list[SurfaceSite]] = {
         SurfaceSite("tranche_execution_gate", "short_actions_json",
                     "$.actions[?label~='NVDA June tranche']", "json_field"),
     ],
+    # FI capital-sufficiency framing (total ₪11.84M vs liquid 'show both'). A framing
+    # dispute the live reader surfaces; conformed via a typed marker on the long body.
+    "fi_capital_sufficiency": [
+        SurfaceSite("fi_capital_sufficiency", "long_md", "capital_sufficiency", "markdown"),
+        SurfaceSite("fi_capital_sufficiency", "long_md", "net_worth", "markdown"),
+        SurfaceSite("fi_capital_sufficiency", "medium_md", "rationale", "markdown"),
+    ],
 }
 
 

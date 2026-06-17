@@ -24,7 +24,7 @@ class DeliberationResult:
 
 def deliberate_dispute(
     dispute: Dispute, *, panelist_positions: list[dict], facilitator, arbitrator,
-    canonical_facts: str, prime_directive: str,
+    canonical_facts: str, prime_directive: str, surfaces: list[str] | None = None,
 ) -> DeliberationResult:
     fac = facilitator.run_sync(
         dispute_question=dispute.question, positions=panelist_positions
@@ -37,6 +37,7 @@ def deliberate_dispute(
     ruling = arbitrator.run_sync(
         dispute_question=dispute.question, positions=panelist_positions,
         canonical_facts=canonical_facts, prime_directive=prime_directive,
+        surfaces=surfaces or [],
     ).output
     return DeliberationResult(
         resolved_by="arbitrator", ruling=ruling.ruling_statement,
@@ -142,6 +143,7 @@ from argosy.quality.coherence.resolver_route import RouteKind, route_dispute
 # Which owning roles argue each policy/framing subject on the panel.
 _PANEL_ROLES: dict[str, list[str]] = {
     "retirement_age_headline": ["withdrawal_sequencer", "fi_methodology"],
+    "fi_capital_sufficiency": ["fi_methodology", "net_worth"],
 }
 
 
@@ -211,9 +213,15 @@ def run_coherence_deliberation_pass(
             except Exception:  # noqa: BLE001 — one bad panelist must not sink the pass
                 continue
             positions.append({"role": role, "position": pos.position, "basis": pos.basis})
+        from argosy.quality.coherence.surface_registry import sites_for_subject
+        _surfaces = sorted({
+            s.surface_id for s in sites_for_subject(d.subject_type)
+            if s.conform_method == "markdown"
+        })
         result = deliberate_dispute(
             d, panelist_positions=positions, facilitator=facilitator, arbitrator=arbitrator,
             canonical_facts=canonical_facts, prime_directive=prime_directive,
+            surfaces=_surfaces,
         )
         work_bodies = ensure_framing_marker(work_bodies, d.subject_type, result.invariant)
         value_resolutions[d.subject_type] = {"patches": [], "invariant": result.invariant}
