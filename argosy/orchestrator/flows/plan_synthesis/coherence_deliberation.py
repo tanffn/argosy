@@ -105,3 +105,32 @@ def run_coherence_round(
         artifact[sid] = _json.dumps(payload, ensure_ascii=False)
     verres = verify_invariants(invariants, artifact)
     return CoherenceRoundResult(verres.ok, conform.bodies, conform.json_surfaces, verres)
+
+
+import re as _re
+
+from argosy.quality.coherence.claim_markers import render_marker, parse_markers
+
+
+def ensure_framing_marker(bodies: dict, subject_type: str, invariants: list[dict]) -> dict:
+    """Idempotently translate an arbitrator's ``required_framing_role`` invariants
+    into a typed claim marker embedded on each named markdown surface, so the
+    deterministic verifier can check the framing ruling mechanically (it reads the
+    marker, never the prose). A stale marker for the same subject is replaced; an
+    identical one is left untouched (idempotent). ``forbidden_claim`` invariants need
+    no patch — they are verify-only over the prose. Returns updated bodies."""
+    roles_by_surface: dict[str, dict[str, str]] = {}
+    for inv in invariants:
+        if inv.get("kind") == "required_framing_role" and inv.get("subject_type") == subject_type:
+            roles_by_surface.setdefault(inv.get("surface"), {})[inv["role_field"]] = inv["value"]
+    out = dict(bodies)
+    for surface, roles in roles_by_surface.items():
+        text = out.get(surface, "") or ""
+        if parse_markers(text).get(subject_type) == roles:
+            continue  # already carries exactly this framing — no-op
+        text = _re.sub(
+            r"<!--coh:" + _re.escape(subject_type) + r"\s+[^>]*?-->", "", text
+        ).rstrip()
+        marker = render_marker(subject_type, roles)
+        out[surface] = (text + "\n\n" + marker) if text else marker
+    return out
