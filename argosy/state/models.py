@@ -200,6 +200,34 @@ class PlanVersion(Base):
     )
 
 
+class CoherenceDecision(Base):
+    """A durable, machine-checkable coherence ruling. Versioned/supersedable:
+    a replacement supersedes the prior row (which is retained for audit)."""
+
+    __tablename__ = "coherence_decisions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    decision_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    dispute_key: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    subject_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    ruling: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    basis: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    resolved_by: Mapped[str] = mapped_column(String(16), nullable=False)
+    coherence_invariant_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    conformed_surfaces_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    superseded_by_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("coherence_decisions.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
 class PlanCritique(Base):
     """A plan-critique agent run output, stored as JSON in `critique_json`.
 
@@ -1222,6 +1250,7 @@ __all__ = [
     "User",
     "UserContext",
     "PlanVersion",
+    "CoherenceDecision",
     "PlanCritique",
     "AgentReport",
     "AgentReportBlob",
