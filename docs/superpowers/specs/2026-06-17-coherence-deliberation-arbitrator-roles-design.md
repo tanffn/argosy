@@ -294,10 +294,13 @@ nits do not block (decision-grade rule). Anything else BLOCKs.
   to the resolver/conformer; verifier passes; reader returns no BLOCKER; draft 45
   promoted. Focused regression (gate/surgical/run106 suites) green.
 
-## Build order (decomposed — too large for one plan, per codex)
+## Build order (single plan, built in dependency order)
 
-Each slice ships independently and fails closed. The deterministic substrate
-(slices 1–4) closes draft 45 **without** the LLM panel; the panel is slices 5–6.
+The full mechanism — including the LLM panel/arbitrator — is built before draft 45 is
+promoted (user decision). The slices below are the **dependency order within one
+implementation plan**, each fail-closed and independently testable; they are not
+separate plans. Draft 45 is promoted only after the *complete* mechanism (through
+slice 5) runs it end-to-end.
 
 1. **Minimal draft-45 closure — deterministic resolver + conformer + verifier.**
    Surface registry entries for the known draft-45 subjects only (vest policy, SGLN
@@ -318,11 +321,13 @@ Each slice ships independently and fails closed. The deterministic substrate
 6. **General invariant-DSL / dispute-type expansion** — broaden beyond draft-45
    subjects once the first e2e gate proves the model.
 
-**Acceptance of the first deliverable (slices 1–2, optionally 3):** draft 45 closes —
-vest/SGLN/date/value mismatches conformed deterministically across all surfaces, the
-retirement-age framing contract applied + verified, verifier green, reader no-BLOCKER,
-draft 45 promoted. The panel arrives later without re-work because rulings, invariants,
-and the registry are already the substrate it plugs into.
+**Final acceptance (after slice 5/6):** the complete mechanism runs draft 45
+end-to-end — vest/SGLN/date/value mismatches conformed deterministically across all
+surfaces; the retirement-age goal tension routed through the panel → arbitrator → a
+verified framing contract; ledger persisted; reader re-read via the appeal path
+returns no `new_dispute`/`ruling_divergence`/`ruling_defect`; verifier green; focused
+regression green; **draft 45 promoted.** (Slices 1–4 are individually testable on the
+draft-45 subjects en route, but promotion waits for the full mechanism.)
 
 ## What this is NOT (YAGNI)
 - No full panel for every contradiction — only goal/directive tensions.
