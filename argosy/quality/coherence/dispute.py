@@ -41,6 +41,14 @@ def dispute_key(d: Dispute) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
 
+# Subjects that are inherently goal/framing tensions — there is no single
+# canonical value to conform to, only a framing the panel/arbitrator settles.
+# A dispute on one of these routes to ARBITRATION regardless of the reader's
+# finding kind, so a framing tension the reader mislabeled as a value
+# ``contradiction`` does not get mis-routed to the (value) resolver.
+FRAMING_SUBJECTS = frozenset({"retirement_age_headline", "fi_capital_sufficiency"})
+
+
 # reader finding kind -> dispute conflict_type
 _KIND_TO_CONFLICT = {
     "contradiction": "value_mismatch",
@@ -61,6 +69,8 @@ def cluster_findings(findings: list[dict]) -> list[Dispute]:
     for f in findings:
         subject = (f.get("subject_type") or "").strip()
         conflict = _KIND_TO_CONFLICT.get(f.get("kind", "other"), "policy_tension")
+        if subject in FRAMING_SUBJECTS:
+            conflict = "policy_tension"  # framing subjects always arbitrate
         gk = (subject, conflict)
         g = grouped.setdefault(gk, {"surfaces": set(), "fields": set(), "options": set(),
                                     "questions": []})

@@ -24,3 +24,17 @@ def test_policy_tension_kind_maps_conflict_type():
 def test_untyped_finding_yields_block_dispute():
     disputes = cluster_findings([_f("", kind="contradiction")])
     assert disputes[0].subject_type == ""
+
+
+def test_framing_subjects_forced_to_policy_tension_regardless_of_kind():
+    """A goal/framing subject has no single canonical value to conform to, so a
+    framing dispute the reader mislabeled as a value ``contradiction`` must still
+    route to arbitration (policy_tension), never to the value resolver."""
+    for subject in ("retirement_age_headline", "fi_capital_sufficiency"):
+        disputes = cluster_findings([_f(subject, kind="contradiction")])
+        assert disputes[0].conflict_type == "policy_tension", subject
+
+
+def test_non_framing_subject_keeps_kind_derived_conflict_type():
+    disputes = cluster_findings([_f("rsu_vest_policy", kind="contradiction")])
+    assert disputes[0].conflict_type == "value_mismatch"

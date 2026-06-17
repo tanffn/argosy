@@ -140,6 +140,13 @@ from argosy.orchestrator.flows.plan_synthesis.whole_artifact_reader import (
     run_whole_artifact_review,
 )
 
+# Coherence-deliberation pass — the arbitrated reconcile path. Exposed on the
+# package namespace so the orchestrator resolves it via
+# ``_pkg.run_coherence_deliberation_pass`` and tests can monkeypatch it.
+from argosy.orchestrator.flows.plan_synthesis.coherence_deliberation import (
+    run_coherence_deliberation_pass,
+)
+
 # Input-assembly helpers (monkeypatched in tests).
 from argosy.orchestrator.flows.plan_synthesis.inputs import (
     _assemble_portfolio_summary,
@@ -204,6 +211,7 @@ __all__ = [
     "CoherenceFinding",
     "WholeArtifactVerdict",
     "run_whole_artifact_review",
+    "run_coherence_deliberation_pass",
     # In-stage deterministic gate (shift-left Layer B)
     "run_deterministic_gate_instage",
     # Input helpers (monkeypatched in tests)

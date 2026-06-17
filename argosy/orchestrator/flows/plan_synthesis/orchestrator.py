@@ -62,6 +62,15 @@ from argosy.state.queries import get_active_baseline, get_current_plan, get_pend
 log = get_logger(__name__)
 
 
+# Prime directive injected into the coherence arbitrator/panel when the
+# deliberation reconcile path settles a goal/framing tension (mirrors the
+# project prime directive in CLAUDE.md / auto-memory).
+_COHERENCE_PRIME_DIRECTIVE = (
+    "Maximize the family's financial position and secure the earliest safe "
+    "retirement; conservatism that costs retirement years is the anti-goal."
+)
+
+
 # T2.6b — orchestrator-level retry budget for bear_researcher.
 #
 # Belt-and-suspenders on top of BaseAgent's internal N=3 retry envelope
@@ -1022,10 +1031,14 @@ def run_synthesis(
             user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
         )
 
-    def _assemble_and_read():
+    def _assemble_and_read(settled_rulings=None):
         """Assemble the just-persisted draft into its full artifact and run the
         whole-artifact reader against it. Returns ``(verdict, row)``; the inner
-        assemble degrades to an empty artifact (→ reader BLOCKs) on failure."""
+        assemble degrades to an empty artifact (→ reader BLOCKs) on failure.
+
+        ``settled_rulings`` (the coherence-deliberation accumulating loop) are
+        injected so the reader does not re-litigate already-arbitrated questions
+        — it must still verify every surface against each ruling and may appeal."""
         _prior_plan_text = ""
         if prior_current is not None:
             _prior_plan_text = "\n\n".join(filter(None, [
@@ -1060,6 +1073,7 @@ def run_synthesis(
                 prior_plan_text=_prior_plan_text,
                 decision_run_id=decision_run_id,
                 user_id=user_id,
+                settled_rulings=settled_rulings,
             )
         )
 
@@ -1110,6 +1124,138 @@ def run_synthesis(
                 user_id=user_id, decision_run_id=decision_run_id,
                 round=_reader_round,
             )
+            # COHERENCE-DELIBERATION reconcile (default OFF — set
+            # ARGOSY_COHERENCE_DELIBERATION=1 to enable). Replaces the surgical
+            # closer + full re-synth for this round: cluster the reader's BLOCKER
+            # findings into structured disputes, route each (deterministic
+            # resolver for value mismatches; panel -> facilitator -> arbitrator
+            # for goal/framing tensions; untypeable = BLOCK), conform ALL
+            # surfaces atomically, deterministically verify, persist each ruling
+            # to the coherence ledger, and re-read with the accumulated rulings
+            # injected so a settled question is not re-litigated. Fail-closed: a
+            # non-ok pass (untypeable / unresolved / conform or verify failure)
+            # does NOT promote and does NOT fall back to the markdown closer (the
+            # known-unsound path) — the existing reader gate below keeps it
+            # BLOCKED. Every path here ends the iteration (continue/break) so the
+            # surgical + full-re-synth code below never runs while this is on.
+            if _os.environ.get("ARGOSY_COHERENCE_DELIBERATION", "0") == "1":
+                try:
+                    from argosy.quality.coherence import ledger as _coh_ledger
+                    from argosy.agents.coherence_panelist import CoherencePanelistAgent
+                    from argosy.agents.coherence_facilitator import CoherenceFacilitatorAgent
+                    from argosy.agents.coherence_arbitrator import CoherenceArbitratorAgent
+                    from argosy.orchestrator.flows.plan_synthesis.surgical_reconcile import (
+                        resolver_context,
+                    )
+                    from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+                    _delib_started = datetime.now(timezone.utc)
+                    _drun_int = _decision_run_int(decision_run_id)
+                    _delib_resolved = (
+                        resolve_plan_numbers(session, user_id=user_id, decision_run_id=_drun_int)
+                        if _drun_int is not None else None
+                    )
+                    _delib_canonical = (
+                        resolver_context(_delib_resolved) if _delib_resolved is not None else ""
+                    )
+
+                    # Build deliberation findings from the reader's BLOCKERs. The
+                    # reader classifies subject_type itself (the prompt taxonomy);
+                    # cluster_findings forces framing subjects to arbitration.
+                    _delib_findings = [
+                        {
+                            "subject_type": getattr(f, "subject_type", "") or "",
+                            "kind": getattr(f, "kind", "") or "other",
+                            "severity": "BLOCKER",
+                            "surfaces_cited": list(f.surfaces_cited or []),
+                            "field_path": getattr(f, "field_path", "") or "",
+                            "normalized_claim": getattr(f, "normalized_claim", "") or "",
+                            "detail": f.detail,
+                        }
+                        for f in _reader_verdict.findings
+                        if f.severity == "BLOCKER"
+                    ]
+                    _delib_bodies = {
+                        "long_md": draft.horizon_long_md or "",
+                        "medium_md": draft.horizon_medium_md or "",
+                        "short_md": draft.horizon_short_md or "",
+                    }
+                    _delib_json_surfaces: dict = {}
+                    if draft.horizon_short_json:
+                        try:
+                            _delib_json_surfaces["short_actions_json"] = json.loads(
+                                draft.horizon_short_json
+                            )
+                        except (TypeError, ValueError):
+                            pass
+
+                    _delib = _pkg.run_coherence_deliberation_pass(
+                        bodies=_delib_bodies, json_surfaces=_delib_json_surfaces,
+                        findings=_delib_findings, canonical_facts=_delib_canonical,
+                        prime_directive=_COHERENCE_PRIME_DIRECTIVE,
+                        make_panelist=lambda role: CoherencePanelistAgent(user_id=user_id),
+                        facilitator=CoherenceFacilitatorAgent(user_id=user_id),
+                        arbitrator=CoherenceArbitratorAgent(user_id=user_id),
+                        resolver_value_fn=None,
+                    )
+                    _pkg._record_phase_completion(
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        phase_n=56, started_at=_delib_started,
+                        phase_output=(
+                            f"coherence_deliberation: ok={_delib.ok} "
+                            f"rulings={len(_delib.rulings)} errors={_delib.errors}"
+                        ),
+                        agent_report_rows=[],
+                    )
+                    if not _delib.ok:
+                        # Fail-closed: do NOT promote, do NOT fall back to the
+                        # closer. The reader gate below keeps the draft BLOCKED.
+                        log.warning(
+                            "plan_synthesis.coherence_deliberation_blocked",
+                            user_id=user_id, decision_run_id=decision_run_id,
+                            round=_reader_round, errors=_delib.errors,
+                        )
+                        break
+                    # Conform succeeded — persist the conformed surfaces.
+                    draft.horizon_long_md = _delib.bodies.get("long_md", draft.horizon_long_md)
+                    draft.horizon_medium_md = _delib.bodies.get("medium_md", draft.horizon_medium_md)
+                    draft.horizon_short_md = _delib.bodies.get("short_md", draft.horizon_short_md)
+                    if "short_actions_json" in _delib.json_surfaces:
+                        draft.horizon_short_json = json.dumps(
+                            _delib.json_surfaces["short_actions_json"], ensure_ascii=False
+                        )
+                    session.commit()
+                    for _r in _delib.rulings:
+                        _coh_ledger.record_ruling(
+                            session, user_id=user_id, decision_run_id=_drun_int,
+                            dispute_key=_r["dispute_key"], subject_type=_r["subject_type"],
+                            question=_r["question"], ruling=_r["ruling"],
+                            rationale=_r["rationale"], basis=_r["basis"],
+                            resolved_by=_r["resolved_by"], invariants=_r["invariants"],
+                            conformed_surfaces=_r["conformed_surfaces"],
+                        )
+                    # Re-read with the accumulated rulings injected so a settled
+                    # question is not re-litigated (the bounded accumulating loop).
+                    _delib_rulings = [
+                        {"subject_type": rr.subject_type, "ruling": rr.ruling}
+                        for rr in _coh_ledger.load_active_rulings(session, user_id=user_id)
+                    ]
+                    _reader_verdict, _reader_row = _assemble_and_read(
+                        settled_rulings=_delib_rulings
+                    )
+                    if getattr(_reader_verdict, "overall_assessment", "") != "BLOCK":
+                        continue  # deliberation cleared the BLOCK — loop exits clean
+                    # Still BLOCKing — the next round (if any) re-reads with this
+                    # round's rulings already in the ledger. Bound is the while
+                    # condition; never fall through to the markdown closer.
+                    continue
+                except Exception as exc:  # noqa: BLE001 — fail-closed, never fall back
+                    log.warning(
+                        "plan_synthesis.coherence_deliberation_failed",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        error=str(exc),
+                    )
+                    break
             # Surgical pre-pass (default OFF — set ARGOSY_SURGICAL_CORRECTION=1 to
             # enable). Fix RENDERABLE reader findings at their cited segment via a
             # cheap prose edit (seconds), persist in place, and re-read. If that

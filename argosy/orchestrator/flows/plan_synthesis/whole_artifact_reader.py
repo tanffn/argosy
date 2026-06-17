@@ -55,8 +55,14 @@ from pydantic import BaseModel, Field
 
 from argosy.agents.base import AgentReport
 from argosy.logging import get_logger
+from argosy.quality.coherence.surface_registry import SUBJECT_REGISTRY
 
 log = get_logger(__name__)
+
+# The arbitrated-subject taxonomy the reader classifies each finding against,
+# sourced from the SAME registry the deliberation router uses so the prompt and
+# the router cannot drift. Sorted for a stable prompt hash.
+_SUBJECT_TAXONOMY_STR = ", ".join(sorted(SUBJECT_REGISTRY.keys()))
 
 
 # ----------------------------------------------------------------------
@@ -159,6 +165,11 @@ overall_assessment: BLOCK if ANY BLOCKER finding; APPROVE_WITH_CONDITIONS if \
 only AMBER/YELLOW findings; APPROVE only if the document is fully coherent, \
 current, and non-regressed.
 
+For EACH finding, set ``subject_type`` to the ONE taxonomy key below that best \
+names the arbitrated subject the finding is about, so a downstream deliberation \
+step can route it without re-classifying your prose. Use "" ONLY if no key \
+fits. Taxonomy: {subject_taxonomy}.
+
 Return ONLY the JSON object below — no prose before or after, no markdown \
 fences:
 
@@ -169,7 +180,8 @@ fences:
       "kind": "contradiction" | "cross_surface" | "fragile_claim" | "stale" | "regression" | "other",
       "severity": "BLOCKER" | "AMBER" | "YELLOW",
       "detail": "<explanation in your own words>",
-      "surfaces_cited": ["<verbatim excerpt 1>", "<verbatim excerpt 2>"]
+      "surfaces_cited": ["<verbatim excerpt 1>", "<verbatim excerpt 2>"],
+      "subject_type": "<one taxonomy key above, or \\"\\" if none fits>"
     }}
   ]
 }}
@@ -238,6 +250,7 @@ def _build_prompt(
         assembled_artifact=artifact_block,
         external_context=context_block,
         prior_plan=prior_block,
+        subject_taxonomy=_SUBJECT_TAXONOMY_STR,
     )
 
 
@@ -291,11 +304,17 @@ def _coerce_verdict_dict(obj: dict) -> dict:
             surfaces = f.get("surfaces_cited")
             if not isinstance(surfaces, list):
                 surfaces = []
+            # Preserve the structured routing fields the deliberation step reads
+            # (subject_type especially) — the lenient salvage path must NOT drop
+            # them, or a recovered verdict loses its arbitration routing.
             coerced_findings.append({
                 "kind": kind,
                 "severity": severity,
                 "detail": detail,
                 "surfaces_cited": surfaces,
+                "subject_type": f.get("subject_type") if isinstance(f.get("subject_type"), str) else "",
+                "field_path": f.get("field_path") if isinstance(f.get("field_path"), str) else "",
+                "normalized_claim": f.get("normalized_claim") if isinstance(f.get("normalized_claim"), str) else "",
             })
 
     return {"overall_assessment": assessment, "findings": coerced_findings}
