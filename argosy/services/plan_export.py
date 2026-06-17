@@ -316,6 +316,7 @@ def build_plan_export_markdown(
     user_id: str,
     today: date | None = None,
     window_days: int = 14,
+    include_fm_objections: bool = True,
 ) -> str:
     """Build the one-pager markdown export for ``user_id``.
 
@@ -323,6 +324,13 @@ def build_plan_export_markdown(
     is missing so the document is always cohesive end-to-end. Returns the
     full markdown body — the route layer wraps it in a ``Response`` with
     appropriate headers.
+
+    ``include_fm_objections``: the "Pending FM objections" block is INTERNAL
+    review metadata frozen at the fund-manager phase — it predates the
+    reconcile/surgical edits, so it can contradict the FINAL body. The
+    whole-artifact reader must review the PLAN, not this stale scratchpad, so
+    the assembled-artifact path passes ``False``; the user-facing export keeps
+    it (the objection-dialogue feature needs it).
     """
     today = today or date.today()
     today_iso = today.isoformat()
@@ -349,7 +357,9 @@ def build_plan_export_markdown(
         action_items_lines = _format_action_items(items)
 
     # ----- FM objections (only when plan is a draft) ----------------------
-    objections = _build_fm_objections(db, plan, user_id)
+    # Internal review metadata frozen at the FM phase — excluded from the
+    # reader-facing artifact (it predates the final body and can contradict it).
+    objections = _build_fm_objections(db, plan, user_id) if include_fm_objections else []
 
     # ----- Self-review counts ---------------------------------------------
     self_review = _latest_self_review(db, user_id)

@@ -125,7 +125,14 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
     # time (see render_plan_appendices), so they ride inside the long-horizon
     # block of that export — no separate append needed to reproduce what the
     # user sees.
-    full_text = build_plan_export_markdown(session, user_id=user_id)
+    # Exclude the internal "Pending FM objections" scratchpad — it is frozen at
+    # the FM phase and predates the reconcile/surgical edits, so it contradicts
+    # the FINAL body and the whole-artifact reader (correctly) flags it as a
+    # cross-surface contradiction. The reader must review the PLAN, not stale
+    # internal review metadata; the user-facing export still includes it.
+    full_text = build_plan_export_markdown(
+        session, user_id=user_id, include_fm_objections=False
+    )
 
     surface_values: dict[str, list[tuple[str, float]]] = {}
     extraction_errors: dict[str, str] = {}
