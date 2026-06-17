@@ -550,17 +550,25 @@ def build_plan_export_markdown(
         )
     else:
         push("- Synthesis last run: _not applicable (plan was not synthesized)_")
-    if codex_assessment is not None:
-        push(f"- Codex second-opinion: present, {codex_assessment}")
-    else:
-        push("- Codex second-opinion: absent")
-    if sr_counts:
-        red = int(sr_counts.get("RED", 0) or 0)
-        amber = int(sr_counts.get("AMBER", 0) or 0)
-        yellow = int(sr_counts.get("YELLOW", 0) or 0)
-        push(f"- Self-review: {red} RED, {amber} AMBER, {yellow} YELLOW")
-    else:
-        push("- Self-review: _no recent self-review report_")
+    # Codex-status + self-review counts are internal QA/governance metadata
+    # (was a second-opinion present? how many self-review flags?) — generation
+    # provenance, not client-plan content. They churn out of sync with the final
+    # body (e.g. "codex absent" vs receipts showing it ran) and the whole-artifact
+    # reader flags that as a contradiction. Excluded from the reader artifact via
+    # the same reader-view flag as the FM-objection scratchpad; the user export
+    # keeps them.
+    if include_fm_objections:
+        if codex_assessment is not None:
+            push(f"- Codex second-opinion: present, {codex_assessment}")
+        else:
+            push("- Codex second-opinion: absent")
+        if sr_counts:
+            red = int(sr_counts.get("RED", 0) or 0)
+            amber = int(sr_counts.get("AMBER", 0) or 0)
+            yellow = int(sr_counts.get("YELLOW", 0) or 0)
+            push(f"- Self-review: {red} RED, {amber} AMBER, {yellow} YELLOW")
+        else:
+            push("- Self-review: _no recent self-review report_")
     push("")
 
     # Footer ---------------------------------------------------------------
