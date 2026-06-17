@@ -19,6 +19,7 @@ class CoherenceFacilitatorAgent(BaseAgent[FacilitatorOutcome]):
     agent_role = "coherence_facilitator"
     output_model = FacilitatorOutcome
     require_citations = False
+    schema_retry_attempts = 2  # self-correct if the model mis-shapes a field
 
     def build_prompt(self, *, dispute_question: str, positions: list[dict]) -> tuple[str, str]:
         system = (

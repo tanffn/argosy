@@ -24,6 +24,7 @@ class CoherencePanelistAgent(BaseAgent[PanelistPosition]):
     agent_role = "coherence_panelist"
     output_model = PanelistPosition
     require_citations = False
+    schema_retry_attempts = 2  # self-correct if the model mis-shapes a field
 
     def build_prompt(
         self, *, represented_role: str, dispute_question: str,

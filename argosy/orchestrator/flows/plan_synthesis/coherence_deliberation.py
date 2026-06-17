@@ -202,10 +202,14 @@ def run_coherence_deliberation_pass(
             continue
         positions = []
         for role in panel_roles.get(d.subject_type, []):
-            pos = make_panelist(role).run_sync(
-                represented_role=role, dispute_question=d.question,
-                canonical_facts=canonical_facts, peer_positions=[p["position"] for p in positions],
-            ).output
+            try:
+                pos = make_panelist(role).run_sync(
+                    represented_role=role, dispute_question=d.question,
+                    canonical_facts=canonical_facts,
+                    peer_positions=[p["position"] for p in positions],
+                ).output
+            except Exception:  # noqa: BLE001 — one bad panelist must not sink the pass
+                continue
             positions.append({"role": role, "position": pos.position, "basis": pos.basis})
         result = deliberate_dispute(
             d, panelist_positions=positions, facilitator=facilitator, arbitrator=arbitrator,
