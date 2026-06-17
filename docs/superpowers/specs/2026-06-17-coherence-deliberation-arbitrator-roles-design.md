@@ -55,7 +55,23 @@ this mechanism, and the mechanism is reusable for every future synthesis.
 - **Machine-checkable invariants + a deterministic verifier.** Every ruling carries
   a `coherence_invariant` (a typed, code-evaluable predicate over named surfaces).
   A deterministic verifier checks all invariants **before** the stochastic re-read.
-  Telemetry is *visibility*, not proof of correctness — the verifier is the proof.
+  **Two gates, two scopes (per codex):** the verifier gates **mechanical
+  compliance** (numbers/fields/required-and-forbidden typed claims/surface coverage/
+  derived-field freshness); the reader appeal gates **semantic/plausibility
+  defects** (prose that is mechanically conformant but still reads wrong). Neither
+  alone is sufficient; telemetry is visibility, not proof.
+- **Framing disputes need a structured contract, not a number (critical, per codex).**
+  The retirement-age dispute is about *framing*, not a value, so it has no numeric
+  invariant. It is gated by a **framing contract**: typed fields (e.g.
+  `lead_age=46`, `strict_track_age=54`, `capital_preservation_role=target_sizing_basis`)
+  + `required_framing_role` and `forbidden_claim` predicates, with the conformed
+  prose constrained through **typed claim markers/templates** so the verifier checks
+  the typed metadata, not freeform semantics. A dispute with *no* writable structured
+  contract BLOCKs — but the age case *has* one, so it does not block draft 45.
+- **Two authority axes (per codex).** Factual authority: canonical facts win on
+  *truth* (a user directive cannot make a false number true). Policy authority:
+  prime directive > user directives > panelist preference on *strategy/framing*. The
+  arbitrator classifies the dispute onto the right axis first.
 - **Fail-closed = BLOCK.** Any panel / arbitrator / conformer / verifier failure
   blocks promotion. Never fall back to the old markdown closer (the known-unsound
   path).
@@ -131,10 +147,15 @@ question:
 - `normalized_options` — the distinct positions in play.
 - `implicated_canonical_fact_ids`, `implicated_user_directive_ids`.
 Surface IDs are **evidence**, not identity (except for pure
-`representation_mismatch`). An alias/equivalence table maps re-phrasings to the same
-key across stochastic re-reads. The clusterer must **split** a finding that bundles
-several issues, and must **reject** (→ BLOCK) any dispute it cannot express as a
-typed invariant.
+`representation_mismatch`). An **alias/equivalence table** maps re-phrasings to the
+same key across stochastic re-reads; it is owned by the clusterer, keyed on the
+structured fields (not `normalized_options` free text), and the dispute_key is
+computed **after** alias normalization so phrasing drift cannot mint a new key. The
+clusterer must **split** a finding that bundles several issues, and must **reject**
+(→ BLOCK) only a dispute it can express as *neither* a value invariant *nor* a
+**framing contract** (typed framing fields + required/forbidden claims). A framing
+dispute (e.g. retirement-age) is typeable via the framing contract and does NOT
+block.
 
 ### Router
 Deterministic classification of each dispute by `conflict_type`:
@@ -163,11 +184,12 @@ Reads panel positions → `{consensus: bool, ruling?, crux_of_disagreement?}`.
 Consensus → ruling recorded as `resolved_by=consensus`. No consensus → escalate.
 
 ### Arbitrator — `coherence_arbitrator` (new; embodies fund-manager authority)
-On no-consensus, issues a **binding ruling** under the authority order
-**prime directive > user directives > canonical facts > panelist preference**.
-Output schema: `{ruling_statement, rationale, basis, per_surface_instructions[],
-coherence_invariant}`. It decides *which claim binds and what invariant every
-surface must satisfy* — not the best plan.
+On no-consensus, issues a **binding ruling**. It first classifies the dispute onto
+an authority axis: **factual** (canonical facts win — a directive cannot make a false
+number true) vs **policy/framing** (prime directive > user directives > panelist
+preference). Output schema: `{ruling_statement, axis, rationale, basis,
+per_surface_instructions[], coherence_invariant}`. It decides *which claim binds and
+what invariant every surface must satisfy* — not the best plan.
 
 ### Surface registry
 A declarative map: `subject_type → [ {surface_name, field_path, conformance_method,
@@ -189,13 +211,37 @@ commit ⇒ BLOCK.
 `id, user_id, decision_run_id, dispute_key, subject_type, question, ruling,
 coherence_invariant (json), rationale, basis, resolved_by (resolver|consensus|
 arbitrator), conformed_surfaces (json), superseded_by (nullable FK), created_at`.
-Rulings are **versioned and supersedable** (a later, higher-authority ruling
-supersedes an earlier one rather than silently overwriting).
+Rulings are **versioned and supersedable**. Supersession rules: a `ruling_defect`
+(or a stale-fact detection) re-opens the dispute and the *replacement* ruling
+supersedes the prior one **only after** it is written, conformed, and verified — the
+old invariant stays active until then (no gap where nothing is enforced). A change in
+`subject_type`/`scope` is a **new** dispute, not a supersession. Superseded rows are
+retained for audit.
 
-### Verifier (deterministic, pre-re-read gate)
+### Verifier (deterministic, pre-re-read gate) + invariant DSL
 Evaluates every non-superseded ledger invariant against the current artifact +
-canonical facts. Any failure ⇒ BLOCK (no re-read, no promote). This is the
-correctness proof; the LLM re-read is an additional adversarial layer on top.
+canonical facts. Any failure ⇒ BLOCK (no re-read, no promote). This gates
+**mechanical compliance**; the LLM re-read is the additional **semantic** layer.
+
+The `coherence_invariant` is a typed predicate from a fixed, code-evaluable set —
+NOT freeform. Allowed classes (extensible later):
+- `equals_canonical(field_path, canonical_fact_id)` — surface value == resolver value.
+- `surface_claim_equals(surface, claim_key, value)` — a typed claim block on a surface
+  holds the expected value.
+- `required_framing_role(subject, role_field, value)` — e.g. `lead_age=46`,
+  `capital_preservation_role=target_sizing_basis`.
+- `forbidden_claim(scope, pattern_or_claim_key)` — e.g. no surface may call 54 the
+  lead/binding age; no surface may say "retain net vested as NVDA".
+- `derived_value_matches(derived_field, formula_inputs)` — derived/dashboard field is
+  fresh w.r.t. its inputs.
+- `all_registered_surfaces_present(subject)` — every registry surface for the subject
+  exists and was conformed (catches a missed surface).
+
+Because freeform markdown cannot be deterministically parsed, disputed prose is
+conformed into **typed claim markers** (a small machine-readable claim block the
+render emits alongside the human prose); the verifier reads the markers, not the
+prose. The verifier explicitly does NOT attempt open-ended semantic-truth checking
+of prose — that is the reader-appeal layer's job.
 
 ### Re-read with appeal path
 Reader prompt gets the settled rulings. Allowed emissions: `new_dispute`,
@@ -212,6 +258,11 @@ settled ruling on preference grounds. A `ruling_defect` re-opens that dispute
 - Round cap reached with open disputes → BLOCK; ledger persisted as audit trail.
 - Never fall back to the markdown-only closer for anything involving numbers,
   structured fields, canonical facts, user directives, or policy trade-offs.
+
+**Promotion gate (explicit).** Promote only when ALL hold: zero verifier failures;
+the re-read emits no `new_dispute`, no `ruling_divergence`, no `ruling_defect`; no
+un-typeable dispute remains; focused regression green. AMBER/YELLOW non-dispute prose
+nits do not block (decision-grade rule). Anything else BLOCKs.
 
 ## Telemetry / observability (explicit requirement)
 - All LLM-role calls land in `agent.run.finished` + the "Analysis team receipts"
@@ -242,6 +293,36 @@ settled ruling on preference grounds. A `ruling_defect` re-opens that dispute
   target-sizing basis, 54 as the strict track; the vest / SGLN / date disputes route
   to the resolver/conformer; verifier passes; reader returns no BLOCKER; draft 45
   promoted. Focused regression (gate/surgical/run106 suites) green.
+
+## Build order (decomposed — too large for one plan, per codex)
+
+Each slice ships independently and fails closed. The deterministic substrate
+(slices 1–4) closes draft 45 **without** the LLM panel; the panel is slices 5–6.
+
+1. **Minimal draft-45 closure — deterministic resolver + conformer + verifier.**
+   Surface registry entries for the known draft-45 subjects only (vest policy, SGLN
+   membership, dates, allocation / action-JSON / dashboard value mismatches). Resolver
+   conforms value mismatches across all registered surfaces; verifier checks
+   `equals_canonical` / `all_registered_surfaces_present`. Fail closed. No panel.
+2. **Retirement-age framing contract.** The one framing ruling for draft 45 as typed
+   fields (`lead_age=46`, `strict_track_age=54`,
+   `capital_preservation_role=target_sizing_basis`) + `required_framing_role` /
+   `forbidden_claim`; conformer writes typed claim markers; verifier checks them.
+   **This is the slice that closes draft 45's lone BLOCKER.**
+3. **Ledger v1 + supersession basics** — persist resolver rulings + the one framing
+   ruling, invariants, conformed surfaces, verifier result.
+4. **Reader appeal integration** — inject the ledger; allow only `new_dispute` /
+   `ruling_divergence` / `ruling_defect`; any appeal BLOCKs until resolved.
+5. **General panel + facilitator + `coherence_arbitrator`** — multi-agent
+   deliberation for *new* goal-tension disputes, on top of the working substrate.
+6. **General invariant-DSL / dispute-type expansion** — broaden beyond draft-45
+   subjects once the first e2e gate proves the model.
+
+**Acceptance of the first deliverable (slices 1–2, optionally 3):** draft 45 closes —
+vest/SGLN/date/value mismatches conformed deterministically across all surfaces, the
+retirement-age framing contract applied + verified, verifier green, reader no-BLOCKER,
+draft 45 promoted. The panel arrives later without re-work because rulings, invariants,
+and the registry are already the substrate it plugs into.
 
 ## What this is NOT (YAGNI)
 - No full panel for every contradiction — only goal/directive tensions.
