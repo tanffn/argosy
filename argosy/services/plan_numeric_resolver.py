@@ -119,6 +119,7 @@ class ResolvedPlanNumbers:
 
 _KEY_UNITS: dict[str, str] = {
     "portfolio.net_worth_nis": "nis",
+    "portfolio.liquid_net_worth_nis": "nis",
     "portfolio.usd_exposure_nis": "nis",
     "retirement.fi_target_nis": "nis",
     "retirement.fi_age": "age",
@@ -526,6 +527,83 @@ def _resolve_net_worth(
     )
 
 
+def _is_real_estate(position: dict) -> bool:
+    """True when a snapshot position is real estate (not a liquid/investable
+    asset). Driven by the snapshot's own ``asset_type`` / ``details`` fields —
+    never a hardcoded value — so excluding it from LIQUID net worth is honest."""
+    blob = " ".join(
+        str(position.get(k) or "") for k in ("asset_type", "details", "category", "type")
+    ).lower()
+    return "real estate" in blob or "real-estate" in blob
+
+
+def _resolve_liquid_net_worth(
+    session: "Session", user_id: str
+) -> ResolvedValue:
+    """Liquid/investable net worth — total net worth EXCLUDING real-estate
+    positions (the snapshot tags them ``asset_type='Real estate'``).
+
+    The plan compares FI capital sufficiency on a liquid/investable basis, so
+    counting an illiquid foreign-property row inside "liquid net worth" overstates
+    sufficiency (codex/reader 2026-06-17). This is the honest liquid figure shown
+    ALONGSIDE the real-estate-inclusive ``portfolio.net_worth_nis`` ("show both").
+    Pending — never fabricated — when no snapshot exists.
+    """
+    key = "portfolio.liquid_net_worth_nis"
+    try:
+        snap = session.execute(
+            select(PortfolioSnapshotRow)
+            .where(PortfolioSnapshotRow.user_id == user_id)
+            .order_by(PortfolioSnapshotRow.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.liquid_nw_query_failed err=%s", exc)
+        snap = None
+    if snap is None:
+        return ResolvedValue.pending(key, "nis", "portfolio_snapshot (none)")
+
+    snap_fx = _to_float(snap.fx_usd_nis) or 0.0
+    fx, fx_src = _current_boi_usd_nis(session, snap_fx)
+    if not fx or fx <= 0:
+        return ResolvedValue.pending(key, "nis", "no FX available")
+
+    try:
+        positions = json.loads(snap.positions_json or "[]")
+    except (json.JSONDecodeError, ValueError, TypeError):
+        positions = []
+    usd_assets_usd = 0.0
+    nis_native_nis = 0.0
+    re_excluded_nis = 0.0
+    for p in positions:
+        v = _to_float(p.get("usd_value_k")) or 0.0
+        is_usd = (p.get("currency") or "").upper() == "USD"
+        nis_val = v * 1000.0 * (fx if is_usd else (snap_fx if snap_fx > 0 else fx))
+        if _is_real_estate(p):
+            re_excluded_nis += nis_val
+            continue
+        if is_usd:
+            usd_assets_usd += v * 1000.0
+        else:
+            nis_native_nis += v * 1000.0 * (snap_fx if snap_fx > 0 else fx)
+
+    if usd_assets_usd <= 0 and nis_native_nis <= 0:
+        return ResolvedValue.pending(key, "nis", "snapshot has no liquid positions")
+    value = usd_assets_usd * fx + nis_native_nis
+    holdings_as_of = getattr(snap, "snapshot_date", None)
+    as_of = holdings_as_of.isoformat() if holdings_as_of else f"snapshot id={snap.id}"
+    loc = (
+        f"liquid = USD ${usd_assets_usd/1e6:.2f}M × {fx_src} {fx:.3f} + NIS-native "
+        f"₪{nis_native_nis:,.0f}, EXCLUDING ₪{re_excluded_nis:,.0f} real estate; "
+        f"holdings as of {as_of} (provisional)"
+    )
+    return ResolvedValue(
+        key=key, value=value, unit="nis", status="resolved",
+        source_locator=loc, agent_report_id=None, confidence="HIGH",
+        formula="net worth EXCLUDING asset_type='Real estate' positions",
+    )
+
+
 def _resolve_usd_exposure(
     session: "Session", user_id: str
 ) -> ResolvedValue:
@@ -638,6 +716,11 @@ def resolve_plan_numbers(
     # Snapshot-derived USD exposure (the FX-shock base — codex FX review).
     usd_exp = _resolve_usd_exposure(session, user_id)
     values[usd_exp.key] = usd_exp
+
+    # Liquid/investable net worth (ex real estate) — shown alongside the
+    # real-estate-inclusive net worth for honest FI-sufficiency framing.
+    liquid_nw = _resolve_liquid_net_worth(session, user_id)
+    values[liquid_nw.key] = liquid_nw
 
     decision_id = f"plan-synth-{decision_run_id}"
 

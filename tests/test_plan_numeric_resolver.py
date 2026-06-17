@@ -691,6 +691,37 @@ def test_usd_exposure_sums_usd_positions_at_current_boi_fx(session):
     assert abs(float(usd_exp.value) - 1_300_000 * 3.10) < 5_000, f"got {usd_exp.value}"
 
 
+def test_liquid_net_worth_excludes_real_estate(session):
+    """portfolio.liquid_net_worth_nis must EXCLUDE asset_type='Real estate'
+    positions, while portfolio.net_worth_nis includes them — the honest
+    'show both' basis for FI sufficiency (codex/reader 2026-06-17)."""
+    from datetime import date as _date
+    from decimal import Decimal
+    import json as _json
+    from argosy.state.models import FxRate, PortfolioSnapshotRow
+
+    session.add(PortfolioSnapshotRow(
+        user_id="ariel", imported_at=datetime(2026, 6, 1),
+        snapshot_date=_date(2026, 6, 1), fx_usd_nis=3.0,
+        totals_json=_json.dumps({"total_usd_value_k": 1069.0}),
+        positions_json=_json.dumps([
+            {"symbol": "NVDA", "currency": "USD", "usd_value_k": 1000.0},
+            {"symbol": "-", "currency": "USD", "usd_value_k": 69.0,
+             "asset_type": "Real estate", "details": "Real estate", "location": "Abroad"},
+        ]),
+    ))
+    session.add(FxRate(date=_date.today(), currency="USD", rate=Decimal("3.0"), source="boi"))
+    session.flush()
+    res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    nw = res.get("portfolio.net_worth_nis")
+    liq = res.get("portfolio.liquid_net_worth_nis")
+    assert nw.status == "resolved" and liq.status == "resolved"
+    # total includes the $69k property; liquid excludes it (× fx 3.0 = ₪207k)
+    assert abs(float(nw.value) - 1_069_000 * 3.0) < 5_000, f"nw {nw.value}"
+    assert abs(float(liq.value) - 1_000_000 * 3.0) < 5_000, f"liquid {liq.value}"
+    assert float(nw.value) - float(liq.value) > 200_000  # the excluded property
+
+
 def test_usd_exposure_pending_when_no_snapshot(session):
     from argosy.state.models import PortfolioSnapshotRow
     session.query(PortfolioSnapshotRow).delete()
