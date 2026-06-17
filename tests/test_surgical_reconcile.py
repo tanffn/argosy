@@ -103,6 +103,26 @@ def test_edit_leaking_prior_plan_is_rejected():
     assert finding in result.unaddressed
 
 
+def test_canonical_resolver_number_is_allowed_in_edit():
+    # the editor MAY cite a canonical resolver value (e.g. liquid net worth) when
+    # reconciling — only FABRICATED numbers are blocked. With resolved supplying
+    # liquid_net_worth ~= 11.69M, an edit introducing '11.69' is accepted.
+    class _RV:
+        def __init__(self, v): self.value = v; self.status = "resolved"
+    class _Resolved:
+        _m = {"portfolio.liquid_net_worth_nis": _RV(11_687_926.0)}
+        def get(self, k): return self._m.get(k)
+    bodies = {"long": "Net worth is reached.", "medium": "", "short": ""}
+    finding = SimpleNamespace(kind="fragile_claim", severity="BLOCKER", detail="show liquid",
+                              surfaces_cited=["Net worth is reached."])
+    result = surgically_correct_draft(
+        bodies=bodies, reader_verdict=_verdict([finding]), resolved=_Resolved(),
+        editor=lambda p: "Net worth is reached on a thin margin; liquid-only is ~11.69M, marginally short.",
+    )
+    assert len(result.edits) == 1
+    assert "11.69M" in result.corrected_bodies["long"]
+
+
 def test_qualitative_edit_with_no_new_number_is_accepted():
     bodies = {"long": "Runway is 8.7 months.", "medium": "", "short": ""}
     finding = SimpleNamespace(

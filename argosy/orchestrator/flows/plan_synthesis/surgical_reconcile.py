@@ -39,16 +39,49 @@ _BANNED_RE = re.compile(
 )
 
 
-def _edit_is_safe(before: str, after: str) -> bool:
-    """Reject an edit that introduces a NEW number or banned jargon. Keeps the
-    surgical pass net-safe regardless of editor behavior: a corrected snippet may
-    only use numbers already present in the original, and must not leak history
-    phrases / internal citation tokens."""
+def _edit_is_safe(before: str, after: str, allowed_numbers: frozenset = frozenset()) -> bool:
+    """Reject an edit that introduces a FABRICATED number or banned jargon. A
+    corrected snippet may use numbers already in the original OR a CANONICAL
+    resolver value (``allowed_numbers``) — the latter lets the editor honestly
+    cite a canonical figure (e.g. the liquid net-worth) when reconciling, while
+    still blocking invented numbers. Banned history/internal tokens are always
+    rejected."""
     if _BANNED_RE.search(after):
         return False
     before_nums = {m.group(0).replace(",", "") for m in _NUM_RE.finditer(before)}
     after_nums = {m.group(0).replace(",", "") for m in _NUM_RE.finditer(after)}
-    return after_nums.issubset(before_nums)
+    return after_nums.issubset(before_nums | set(allowed_numbers))
+
+
+def _canonical_number_forms(resolved) -> frozenset:
+    """Number-token forms of the canonical resolver values the editor may cite
+    (full integer + M-rounded ``.2f``/``.1f``), so the safety guard permits an
+    honest canonical figure but not a fabricated one."""
+    if resolved is None:
+        return frozenset()
+    forms: set[str] = set()
+    for k in (
+        "portfolio.net_worth_nis", "portfolio.liquid_net_worth_nis",
+        "retirement.fi_target_nis", "retirement.fi_total_capital_nis",
+        "retirement.fi_margin_signed_nis", "concentration.us_situs_estate_exposure_nis",
+    ):
+        try:
+            rv = resolved.get(k)
+        except Exception:  # noqa: BLE001
+            rv = None
+        val = _attr(rv, "value", None) if rv is not None else None
+        if val is None or _attr(rv, "status", None) != "resolved":
+            continue
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            continue
+        forms.add(str(int(v)))
+        forms.add(f"{v/1e6:.2f}")   # 11.69
+        forms.add(f"{v/1e6:.1f}")   # 11.7
+        forms.add(f"{abs(v)/1e6:.2f}")
+        forms.add(f"{abs(v)/1e6:.1f}")
+    return frozenset(forms)
 
 # Coherence finding kinds the segment editor can act on (mirror the reconcile
 # loop's _READER_COHERENCE_KINDS). An 'other' finding with no cited surface is a
@@ -96,7 +129,8 @@ def resolver_context(resolved) -> str:
     if resolved is None:
         return "(no resolver manifest available)"
     keys = (
-        "portfolio.net_worth_nis", "portfolio.usd_exposure_nis",
+        "portfolio.net_worth_nis", "portfolio.liquid_net_worth_nis",
+        "portfolio.usd_exposure_nis",
         "retirement.fi_target_nis", "retirement.fi_total_capital_nis",
         "retirement.fi_margin_signed_nis", "retirement.earliest_safe_age",
         "retirement.fi_age", "concentration.nvda_current_pct",
@@ -137,6 +171,7 @@ def surgically_correct_draft(
     addressed: list[Any] = []
     unaddressed: list[Any] = []
     context = resolver_context(resolved)
+    allowed_numbers = _canonical_number_forms(resolved)
 
     findings = _attr(reader_verdict, "findings", None) or []
     for finding in findings:
@@ -157,7 +192,7 @@ def surgically_correct_draft(
                         fact_id=f"reader.{kind}", canonical_value=context,
                         offending_text=ex, defect_reason=detail, editor=editor,
                     )
-                    if fixed and fixed != ex and _edit_is_safe(ex, fixed):
+                    if fixed and fixed != ex and _edit_is_safe(ex, fixed, allowed_numbers):
                         corrected[hz] = body.replace(ex, fixed, 1)
                         edits.append(SurgicalEdit(horizon=hz, before=ex, after=fixed, finding_kind=kind))
                         touched = True
