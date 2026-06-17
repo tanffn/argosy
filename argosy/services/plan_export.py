@@ -306,6 +306,29 @@ def _parse_codex_assessment(row: AgentReport | None) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Coherence deliberation appendix
+# ---------------------------------------------------------------------------
+
+
+def render_coherence_deliberation_appendix(rows: list[dict]) -> str:
+    """One row per coherence ruling: question -> resolution -> ruling -> surfaces.
+    Internal metadata: ships in the user export, stripped from the reader artifact."""
+    if not rows:
+        return ""
+    lines = ["## Appendix — Coherence deliberations", "",
+             "| Subject | Question | Resolved by | Ruling | Surfaces conformed |",
+             "|---|---|---|---|---|"]
+    for r in rows:
+        surfaces = ", ".join(r.get("conformed_surfaces") or [])
+        q = (r.get("question") or "").replace("|", "\\|")[:80]
+        ruling = (r.get("ruling") or "").replace("|", "\\|")[:120]
+        lines.append(
+            f"| {r.get('subject_type','')} | {q} | {r.get('resolved_by','')} | {ruling} | {surfaces} |"
+        )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 

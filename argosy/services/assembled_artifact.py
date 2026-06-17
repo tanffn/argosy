@@ -98,6 +98,7 @@ def _append(
 _INTERNAL_METADATA_HEADINGS = (
     "## Appendix — Fleet receipts",
     "## Appendix — Analysis team receipts",
+    "## Appendix — Coherence deliberations",
 )
 
 
