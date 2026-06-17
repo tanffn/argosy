@@ -97,6 +97,7 @@ def _append(
 # final body). Stripped only from the reader artifact; the user export keeps them.
 _INTERNAL_METADATA_HEADINGS = (
     "## Appendix — Fleet receipts",
+    "## Appendix — Analysis team receipts",
 )
 
 
