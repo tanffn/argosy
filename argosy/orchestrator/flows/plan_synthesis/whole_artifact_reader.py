@@ -88,7 +88,8 @@ class CoherenceFinding(BaseModel):
     """One whole-document coherence finding."""
 
     kind: Literal[
-        "contradiction", "cross_surface", "fragile_claim", "stale", "regression", "other"
+        "contradiction", "cross_surface", "fragile_claim", "stale", "regression",
+        "other", "new_dispute", "ruling_divergence", "ruling_defect",
     ]
     severity: Literal["BLOCKER", "AMBER", "YELLOW"]
     detail: str
@@ -96,6 +97,19 @@ class CoherenceFinding(BaseModel):
         default_factory=list,
         description="Verbatim excerpts from the document that conflict / "
         "anchor this finding.",
+    )
+    subject_type: str = Field(
+        default="",
+        description="The arbitrated subject this finding pertains to (e.g. a "
+        "settled-ruling subject_type).",
+    )
+    field_path: str = Field(
+        default="",
+        description="Dotted path to the structured field the claim maps to.",
+    )
+    normalized_claim: str = Field(
+        default="",
+        description="The normalized form of the claim made by the cited surface.",
     )
 
 
@@ -170,11 +184,29 @@ Produce the JSON now. No prose, no markdown fences — just the JSON object.
 """
 
 
+def build_settled_rulings_block(settled_rulings: list[dict]) -> str:
+    """Render the settled-ruling contract injected into the reader prompt."""
+    if not settled_rulings:
+        return ""
+    lines = [
+        "SETTLED RULINGS — these questions are arbitrated. Do NOT re-litigate the "
+        "preferred answer. You MUST still verify every surface against the ruling. "
+        "Emit `ruling_divergence` if a surface disagrees with a ruling; emit "
+        "`ruling_defect` if a ruling itself is stale, overbroad, unsupported, wrongly "
+        "scoped, or violates the authority order; emit `new_dispute` for anything not "
+        "covered below.",
+    ]
+    for r in settled_rulings:
+        lines.append(f"- [{r.get('subject_type','')}] {r.get('ruling','')}")
+    return "\n".join(lines)
+
+
 def _build_prompt(
     *,
     assembled_artifact: str,
     external_context: str,
     prior_plan_text: str,
+    settled_rulings: list[dict] | None = None,
 ) -> str:
     """Render the prompt with the three evidence blocks inlined.
 
@@ -193,6 +225,9 @@ def _build_prompt(
         else "(no fresh external-context packet on this run — assess staleness "
         "against the dates stated inside the document itself)"
     )
+    rulings_block = build_settled_rulings_block(settled_rulings or [])
+    if rulings_block:
+        context_block = f"{context_block}\n\n{rulings_block}"
     prior_block = (
         prior_plan_text.strip()
         if prior_plan_text and prior_plan_text.strip()
@@ -386,6 +421,7 @@ async def run_whole_artifact_review(
     prior_plan_text: str,
     decision_run_id: int,
     user_id: str,
+    settled_rulings: list[dict] | None = None,
 ) -> tuple[WholeArtifactVerdict | None, AgentReport | None]:
     """Dispatch the whole-artifact adversarial reader. Fail-soft.
 
@@ -439,6 +475,7 @@ async def run_whole_artifact_review(
         assembled_artifact=assembled_artifact,
         external_context=external_context,
         prior_plan_text=prior_plan_text,
+        settled_rulings=settled_rulings,
     )
 
     # ------------------------------------------------------------------
@@ -556,6 +593,7 @@ async def run_whole_artifact_review(
 __all__ = [
     "CoherenceFinding",
     "WholeArtifactVerdict",
+    "build_settled_rulings_block",
     "_build_prompt",
     "_coerce_verdict_dict",
     "_parse_verdict",
