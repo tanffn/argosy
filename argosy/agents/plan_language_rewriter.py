@@ -177,6 +177,11 @@ class PlanLanguageRewriter(BaseAgent[PlanSynthesisOutput]):
     output_model = PlanSynthesisOutput
     require_citations = False
     use_structured_output = True
+    # Self-correct a flaky schema miss (e.g. a delta emitted without its required
+    # `summary`) instead of aborting the whole ~1h synthesis. The rewriter is fail-loud
+    # by design (never publishes un-rewritten output), so a transient field omission must
+    # be retried, not fatal. Mirrors the coherence agents' schema_retry_attempts.
+    schema_retry_attempts = 2
 
     def build_prompt(
         self,
