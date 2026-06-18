@@ -1,32 +1,38 @@
-"""Production ladder participants — the real LLM seam for the negotiation ladder.
+"""Real-participant ladder seam (EXPERIMENTAL — not wired to any live path yet).
 
 ``negotiation_ladder.run_ladder`` drives a bounded A<->B<->arbiter dialogue but
 delegates the two LLM judgments to an injected ``LadderParticipants`` protocol
 (so the engine stays deterministic + unit-testable). This module wires that seam
 to the SAME agents the FM-objection ZigZag uses:
 
-  * peer_round (B, the node OWNER defending the current value) ->
-    ``AnalystResponderAgent`` (Sonnet). The change-request is presented to the
-    owning analyst as the "objection" to their current derivation. The analyst's
-    stance maps to the peer verdict:
-      - CONCEDE        -> B_CONCEDES  (the owner agrees A's change is warranted)
-      - REBUT / CLARIFY -> UNRESOLVED (the owner defends the current value;
-                            whether the rebuttal *lands* is the arbiter's call,
-                            never the peer's — mirrors the FM-dialogue split)
+  * peer_round (B, the node OWNER) -> ``AnalystResponderAgent`` (Sonnet). The
+    owner is asked to defend the current value against A's proposed change.
   * arbiter (the FM) -> ``FundManagerDialogueVerdictAgent`` (Opus). It reads the
     A<->B turns and classifies:
       - ESCALATE_TO_USER -> GENUINE_DECISION (a risk-appetite / values call only
-                            the client can make — surfaced as the one boxed
-                            question)
-      - everything else  -> EVIDENCE_RESOLVABLE (the FM rules in-fleet; the
-                            ruling text is its reasoning)
+                            the client can make)
+      - everything else  -> EVIDENCE_RESOLVABLE (the FM rules in-fleet)
 
-Hard/derived nodes are never "agreed away" here — the ladder only runs for
-NEEDS_LADDER (recipe/policy) change-requests; adjudicate() routes hard-input and
-derived-target changes elsewhere (apply / fail-closed). This class makes a REAL
-claude.exe call per turn, so it is NEVER constructed in a test path — tests
-inject a deterministic double. Production passes an instance to
-``run_incremental_cycle(participants=...)``.
+KNOWN SEMANTIC GAPS surfaced by the live SWR run (2026-06-18) — why peer_round
+NEVER returns B_CONCEDES and this stays experimental:
+
+  1. ``AnalystResponderAgent``'s CONCEDE/REBUT stance is framed relative to an FM
+     *objection* (CONCEDE = "the objector is right"). In the ladder's "owner
+     responds to a proposed change" frame that label INVERTS: in the live run the
+     analyst returned CONCEDE while its reasoning *rejected* the proposed SWR
+     raise as "anchor-shopping" and *defended* the current value. Trusting the
+     label would auto-apply a change the owner actually rejected. So peer_round
+     treats the reused agent's reply as DEFENSE ONLY (always UNRESOLVED) and lets
+     the FM arbiter rule — a purpose-built owner agent (ACCEPT/REJECT/UNRESOLVED
+     relative to the *change*) is the proper fix.
+  2. ``run_ladder`` collapses both directions of an EVIDENCE_RESOLVABLE ruling to
+     ``ARBITER_RULED``, and ``incremental_plan._apply_change`` APPLIES the change
+     on ARBITER_RULED regardless of whether the FM ruled FOR or AGAINST it. Until
+     the terminal state encodes ruling direction, an arbiter "keep current value"
+     ruling must not drive an apply. (Tracked as the next follow-on.)
+
+Makes a REAL claude.exe call per turn, so it is NEVER constructed in a test path
+— tests inject a deterministic double + assert the mapping with fakes.
 """
 from __future__ import annotations
 
@@ -92,17 +98,22 @@ class RealLadderParticipants:
         )
         prior_md = "\n".join(f"[{t.speaker.value}/{t.stance.value}] {t.text}" for t in prior_turns)
         agent = AnalystResponderAgent(user_id=self.user_id)
-        report = agent.run_sync(
-            analyst_role=role,
-            objection_topic=topic,
-            objection_detail=detail,
-            objection_severity="HIGH",
-            prior_agent_report_excerpt=prior_md,
-            prior_decision_audit_token="",
-            prior_agent_report_id=None,
-            user_guidance="",
-            decision_id="",
-        )
+        try:
+            report = agent.run_sync(
+                analyst_role=role,
+                objection_topic=topic,
+                objection_detail=detail,
+                objection_severity="HIGH",
+                prior_agent_report_excerpt=prior_md,
+                prior_decision_audit_token="",
+                prior_agent_report_id=None,
+                user_guidance="",
+                decision_id="",
+            )
+        except Exception as exc:  # noqa: BLE001 — an unresponsive owner is unresolved
+            log.warning("ladder.peer_round node=%s role=%s round=%s err=%s",
+                        change.target_node_key, role, round, exc)
+            return PeerVerdict.UNRESOLVED, f"owner response unavailable ({exc})"
         out = getattr(report, "output", report)
         stance = (getattr(out, "stance", "REBUT") or "REBUT").strip().upper()
         reasoning = getattr(out, "reasoning_md", "") or ""
@@ -110,10 +121,10 @@ class RealLadderParticipants:
             "ladder.peer_round node=%s role=%s round=%s stance=%s",
             change.target_node_key, role, round, stance,
         )
-        if stance == "CONCEDE":
-            return PeerVerdict.B_CONCEDES, reasoning
-        # REBUT / CLARIFY — the owner defends; let the arbiter weigh it.
-        return PeerVerdict.UNRESOLVED, reasoning
+        # Gap (1): the reused agent's CONCEDE label inverts in this frame, so it
+        # is NOT trusted to mean "accept A's change". The owner's reply is
+        # captured as DEFENSE and the FM arbiter rules. Always UNRESOLVED.
+        return PeerVerdict.UNRESOLVED, f"[owner stance={stance}] {reasoning}"
 
     # ---- arbiter: the FM classifies the impasse ---------------------------- #
     def arbiter(
@@ -129,22 +140,38 @@ class RealLadderParticipants:
             (t for t in reversed(prior_turns) if t.speaker.value == "B"), None
         )
         analyst_reasoning = last_b.text if last_b is not None else ""
+        # Ground the verdict in the derivation node itself: the ladder has no
+        # prior agent_report lineage to cite (unlike the FM-objection flow), and
+        # the FM agent requires citations. The node + its inputs ARE the evidence.
+        node_citation = f"derivation_node:{change.target_node_key}"
         agent = FundManagerDialogueVerdictAgent(user_id=self.user_id)
-        report = agent.run_sync(
-            objection_topic=f"Proposed change to {change.target_node_key}",
-            objection_detail=(
-                f"Set {change.target_node_key} to {_proposed_value_text(change)}. "
-                f"Rationale: {change.rationale}"
-            ),
-            objection_severity="HIGH",
-            analyst_role=role,
-            analyst_stance="REBUT",
-            analyst_reasoning_md=analyst_reasoning,
-            analyst_suggested_fix="",
-            analyst_cited_sources=[],
-            user_guidance="",
-            decision_id="",
-        )
+        try:
+            report = agent.run_sync(
+                objection_topic=f"Proposed change to {change.target_node_key}",
+                objection_detail=(
+                    f"Set {change.target_node_key} to {_proposed_value_text(change)}. "
+                    f"Rationale: {change.rationale}. Ground your verdict in the "
+                    f"derivation node {node_citation} (cite it)."
+                ),
+                objection_severity="HIGH",
+                analyst_role=role,
+                analyst_stance="REBUT",
+                analyst_reasoning_md=analyst_reasoning,
+                analyst_suggested_fix="",
+                analyst_cited_sources=[node_citation],
+                user_guidance="",
+                decision_id="",
+            )
+        except Exception as exc:  # noqa: BLE001
+            # The fleet could not produce a ruling — fail SAFE to a client
+            # decision rather than silently applying a contested change. Preserves
+            # the ladder guarantee: end CLOSED or with a real client question.
+            log.warning("ladder.arbiter node=%s role=%s err=%s -> escalate_to_user",
+                        change.target_node_key, role, exc)
+            return ArbiterClass.GENUINE_DECISION, (
+                f"the fleet could not adjudicate this change in-house ({exc}); "
+                "surfacing as a client decision"
+            )
         out = getattr(report, "output", report)
         resolution = (getattr(out, "resolution", "FM_MAINTAINS_OBJECTION") or "").strip().upper()
         reasoning = getattr(out, "reasoning_md", "") or resolution

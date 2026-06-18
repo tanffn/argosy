@@ -62,17 +62,18 @@ def _patch_fm(monkeypatch, resolution):
     monkeypatch.setattr(mod, "FundManagerDialogueVerdictAgent", _Fake)
 
 
-@pytest.mark.parametrize("stance,expected", [
-    ("CONCEDE", PeerVerdict.B_CONCEDES),
-    ("REBUT", PeerVerdict.UNRESOLVED),
-    ("CLARIFY", PeerVerdict.UNRESOLVED),
-])
-def test_peer_round_stance_mapping(monkeypatch, stance, expected):
+@pytest.mark.parametrize("stance", ["CONCEDE", "REBUT", "CLARIFY"])
+def test_peer_round_always_defers_to_arbiter(monkeypatch, stance):
+    """Gap (1): the reused agent's CONCEDE/REBUT label inverts in the ladder
+    frame, so peer_round NEVER auto-concedes — it captures the owner's reply as
+    defense and returns UNRESOLVED so the FM arbiter rules. (A CONCEDE that the
+    live agent used to REJECT a change must not auto-apply it.)"""
     _patch_analyst(monkeypatch, stance)
     p = RealLadderParticipants("ariel")
     verdict, text = p.peer_round(change=_cr(), prior_turns=[], round=1)
-    assert verdict is expected
+    assert verdict is PeerVerdict.UNRESOLVED
     assert "because X" in text
+    assert stance in text  # the raw stance is preserved for the arbiter
 
 
 @pytest.mark.parametrize("resolution,expected", [
@@ -86,6 +87,52 @@ def test_arbiter_resolution_mapping(monkeypatch, resolution, expected):
     p = RealLadderParticipants("ariel")
     klass, text = p.arbiter(change=_cr(), prior_turns=[])
     assert klass is expected
+
+
+def _patch_analyst_raises(monkeypatch):
+    import argosy.agents.analyst_responder as mod
+
+    class _Boom:
+        def __init__(self, **k):
+            pass
+
+        def run_sync(self, **k):
+            raise RuntimeError("claude.exe unavailable")
+
+    monkeypatch.setattr(mod, "AnalystResponderAgent", _Boom)
+
+
+def _patch_fm_raises(monkeypatch):
+    import argosy.agents.fund_manager_dialogue_verdict as mod
+
+    class _Boom:
+        def __init__(self, **k):
+            pass
+
+        def run_sync(self, **k):
+            raise RuntimeError("missing required citations")
+
+    monkeypatch.setattr(mod, "FundManagerDialogueVerdictAgent", _Boom)
+
+
+def test_peer_round_unresponsive_owner_is_unresolved(monkeypatch):
+    """An owner agent that errors -> UNRESOLVED (defer to the arbiter), never a
+    silent concession."""
+    _patch_analyst_raises(monkeypatch)
+    p = RealLadderParticipants("ariel")
+    verdict, text = p.peer_round(change=_cr(), prior_turns=[], round=1)
+    assert verdict is PeerVerdict.UNRESOLVED
+    assert "unavailable" in text
+
+
+def test_arbiter_failure_fails_safe_to_user(monkeypatch):
+    """An arbiter that can't produce a ruling -> GENUINE_DECISION (surface to the
+    client), never a silent auto-apply. Preserves the ladder guarantee."""
+    _patch_fm_raises(monkeypatch)
+    p = RealLadderParticipants("ariel")
+    klass, text = p.arbiter(change=_cr(), prior_turns=[])
+    assert klass is ArbiterClass.GENUINE_DECISION
+    assert "could not adjudicate" in text
 
 
 def test_owner_role_inference():
