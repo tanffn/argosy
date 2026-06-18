@@ -646,14 +646,27 @@ def run_synthesis(
                 "THE BOI CURRENT RATE. (The US-situs USD basis and instrument "
                 "set are identical; a NIS gap that vanishes at the BOI rate is "
                 "an FX-convention artifact, not a divergence.)",
-                "symbol | broker_location | currency | asset_type | "
-                "usd_value_k | details",
+                # The `details` cell is often Hebrew (mojibake on a cp1252 hop),
+                # which strips the exchange/domicile signal a US-situs
+                # classification needs. `instrument_name` is the OBJECTIVE
+                # plain-English identity (e.g. "iShares Core S&P 500 (UCITS)",
+                # "Schwab US Dividend Equity ETF") from the canonical reference —
+                # raw reference data, NOT Argosy's US-situs conclusion — so the
+                # reviewer classifies domicile correctly while still re-deriving
+                # the US-situs total independently. (Run-114 codex under-counted
+                # US-situs by ~$40K because it had only garbled tickers to go on.)
+                "symbol | instrument_name | broker_location | currency | "
+                "asset_type | usd_value_k | details",
             ]
+            from argosy.services.instrument_reference import name_for
+
             for p in positions:
                 if not isinstance(p, dict):
                     continue
+                _sym = (p.get("symbol") or "").strip()
+                _name = name_for(_sym, p.get("details") or "") or "-"
                 lines.append(
-                    f"{(p.get('symbol') or '-')} | {p.get('location') or '-'} | "
+                    f"{_sym or '-'} | {_name} | {p.get('location') or '-'} | "
                     f"{p.get('currency') or '-'} | {p.get('asset_type') or '-'} | "
                     f"{p.get('usd_value_k')} | {(p.get('details') or '')[:60]}"
                 )
