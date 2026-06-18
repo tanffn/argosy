@@ -46,6 +46,37 @@ _argosy_configure_logging()
 
 
 @pytest.fixture(autouse=True)
+def _guard_alternatives_phase(request, monkeypatch):
+    """Never let ``run_synthesis`` fire the REAL alternatives phase in tests.
+
+    ``run_synthesis`` calls ``run_alternatives_phase`` unconditionally, which
+    spawns real sourcer/reviewer/FM agents (live claude.exe). With no pytest
+    guard, any synthesis-flow test that doesn't stub it HANGS the suite (the
+    documented gotcha). Default it to a deterministic 0% sleeve for every test;
+    ``test_alternatives_phase`` (which exercises the real function by stubbing
+    its internals) opts out. Tests that stub it themselves win — their
+    monkeypatch runs after this fixture.
+    """
+    mod = getattr(request.node, "module", None)
+    mod_name = getattr(mod, "__name__", "") or ""
+    if not mod_name.endswith("test_alternatives_phase"):
+        try:
+            from argosy.orchestrator.flows.plan_synthesis import alternatives_phase as _ap
+
+            def _stub(*, user_id, macro_context):
+                return _ap._zero(
+                    "0_percent",
+                    "test guard: alternatives phase stubbed (no live LLM call)",
+                    [],
+                )
+
+            monkeypatch.setattr(_ap, "run_alternatives_phase", _stub)
+        except Exception:  # noqa: BLE001 — module shape changed; don't block tests
+            pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _structlog_isolation():
     """Ensure clean structlog / stdlib-logging state for every test.
 

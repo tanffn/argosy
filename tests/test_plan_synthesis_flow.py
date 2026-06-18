@@ -1307,11 +1307,16 @@ def test_phase_completion_threads_agent_report_ids(tmp_path, monkeypatch):
             ).order_by(DecisionPhase.seq.asc())
         ).scalars().all()
 
+        # Scope to the five LLM phases (1-5). The flow also emits non-LLM gate
+        # phases (e.g. synthesis.phase_53 = the deterministic output gate) which
+        # carry no agent_report participants, so they are excluded from this
+        # agent-report-threading assertion.
+        _LLM_PHASE_KINDS = {f"synthesis.phase_{n}" for n in range(1, 6)}
         synthesis_phase_rows = [
-            p for p in phase_rows if p.kind and p.kind.startswith("synthesis.phase_")
+            p for p in phase_rows if p.kind in _LLM_PHASE_KINDS
         ]
         assert len(synthesis_phase_rows) == 5, (
-            f"expected 5 synthesis.phase_N rows, got {len(synthesis_phase_rows)}: "
+            f"expected 5 synthesis LLM phase rows, got {len(synthesis_phase_rows)}: "
             f"{[p.kind for p in synthesis_phase_rows]}"
         )
 
