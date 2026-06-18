@@ -1515,6 +1515,31 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
         src = rv.source_locator if rv.status == "resolved" else "no approved source"
         conf = f"; conf {rv.confidence}" if rv.confidence else ""
         lines.append(f"  - {label}: {disp}   [{src}{conf}]")
+
+    # Canonical FI-sufficiency VERDICT — a single rendered conclusion the synthesizer must
+    # state VERBATIM. The recurring contradiction was the model RE-COMPUTING sufficiency
+    # from net worth − target itself (getting +118,020 off the investable basis) while the
+    # canonical margin is −148,208 on the liquid basis. Render the conclusion, don't let it
+    # be generated.
+    margin = resolved.get("retirement.fi_margin_signed_nis")
+    if margin is not None and margin.status == "resolved" and margin.value is not None:
+        m = float(margin.value)
+        if m >= 0:
+            verdict = (f"FI sufficiency VERDICT: REACHED — liquid net worth covers the "
+                       f"total capital target with a ₪{m:,.0f} margin.")
+        else:
+            verdict = (f"FI sufficiency VERDICT: NOT reached — liquid net worth is short "
+                       f"₪{abs(m):,.0f} of the total capital target. Do NOT state FI is "
+                       f"funded/reached anywhere.")
+        lines += [
+            "",
+            verdict,
+            "  ^ State FI sufficiency ONLY via this VERDICT. You are FORBIDDEN from "
+            "computing or stating any OTHER sufficiency margin (e.g. subtracting the "
+            "target from investable net worth to get a different/positive number) — that "
+            "is the recurring cross-surface contradiction. Liquid is the only FI basis; "
+            "never label investable net worth as 'liquid'.",
+        ]
     return "\n".join(lines)
 
 
