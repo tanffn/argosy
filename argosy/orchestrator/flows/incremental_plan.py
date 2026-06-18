@@ -303,6 +303,12 @@ def _apply_change(
             cr, "ladder_resolved", applied=False,
             note=f"{result.terminal_state.value} (no in-graph input to set)",
         )
+    if result.terminal_state is TerminalState.ARBITER_REJECTED:
+        # The arbiter ruled AGAINST the change (keep the current value) — NOT
+        # applied. (Without this, ARBITER_RULED-for and -against were conflated
+        # and both applied — the gap the live SWR run exposed.)
+        return AppliedChange(cr, "ladder_rejected", applied=False,
+                             note="arbiter_rejected (ruling held the current value)")
     if result.terminal_state is TerminalState.A_CONCEDED:
         return AppliedChange(cr, "withdrawn", applied=False,
                              note="A_conceded (rebuttal landed)")

@@ -27,10 +27,13 @@ def test_terminal_states_enumerated():
 
 class _FakeParticipants:
     """Deterministic test double for the LLM seam."""
-    def __init__(self, peer_sequence, arbiter_class=None, arbiter_ruling=""):
+    def __init__(self, peer_sequence, arbiter_class=None, arbiter_ruling="",
+                 arbiter_applies=None):
         self._peer = list(peer_sequence)
         self._arbiter_class = arbiter_class
         self._arbiter_ruling = arbiter_ruling
+        # None -> return the legacy 2-tuple (back-compat: treated as APPLY).
+        self._arbiter_applies = arbiter_applies
         self.peer_calls = 0
         self.arbiter_calls = 0
 
@@ -41,7 +44,9 @@ class _FakeParticipants:
 
     def arbiter(self, *, change, prior_turns):
         self.arbiter_calls += 1
-        return self._arbiter_class, self._arbiter_ruling
+        if self._arbiter_applies is None:
+            return self._arbiter_class, self._arbiter_ruling
+        return self._arbiter_class, self._arbiter_ruling, self._arbiter_applies
 
 
 def _change():
@@ -89,6 +94,45 @@ def test_escalates_to_arbiter_after_three_unresolved_rounds():
     assert res.arbiter_class is ArbiterClass.EVIDENCE_RESOLVABLE
     assert "re-derive" in res.turns[-1].text
     assert res.turns[-1].speaker.value == "arbiter"
+
+
+def test_arbiter_ruling_for_change_applies():
+    """EVIDENCE_RESOLVABLE + applies=True -> ARBITER_RULED (the change stands)."""
+    parts = _FakeParticipants(
+        [(PeerVerdict.UNRESOLVED, "no")] * 3,
+        arbiter_class=ArbiterClass.EVIDENCE_RESOLVABLE,
+        arbiter_ruling="A's 0.04 is supported — apply it",
+        arbiter_applies=True,
+    )
+    res = run_ladder(_change(), parts)
+    assert res.terminal_state.value == "arbiter_ruled"
+
+
+def test_arbiter_ruling_against_change_is_rejected_not_applied():
+    """EVIDENCE_RESOLVABLE + applies=False -> ARBITER_REJECTED (keep current
+    value). This is the gap the live SWR run exposed: a 'keep current' ruling
+    must NOT collapse to ARBITER_RULED and drive an apply."""
+    parts = _FakeParticipants(
+        [(PeerVerdict.UNRESOLVED, "no")] * 3,
+        arbiter_class=ArbiterClass.EVIDENCE_RESOLVABLE,
+        arbiter_ruling="the owner's rebuttal lands; hold the current value",
+        arbiter_applies=False,
+    )
+    res = run_ladder(_change(), parts)
+    assert res.terminal_state.value == "arbiter_rejected"
+    assert res.arbiter_class is ArbiterClass.EVIDENCE_RESOLVABLE
+
+
+def test_legacy_two_tuple_arbiter_still_applies():
+    """A double returning the legacy (class, ruling) 2-tuple is treated as
+    rule-FOR (ARBITER_RULED) — back-compat for existing participants."""
+    parts = _FakeParticipants(
+        [(PeerVerdict.UNRESOLVED, "no")] * 3,
+        arbiter_class=ArbiterClass.EVIDENCE_RESOLVABLE,
+        arbiter_ruling="supported",
+    )
+    res = run_ladder(_change(), parts)
+    assert res.terminal_state.value == "arbiter_ruled"
 
 
 def test_arbiter_routes_genuine_decision_to_user():

@@ -25,11 +25,13 @@ NEVER returns B_CONCEDES and this stays experimental:
      treats the reused agent's reply as DEFENSE ONLY (always UNRESOLVED) and lets
      the FM arbiter rule — a purpose-built owner agent (ACCEPT/REJECT/UNRESOLVED
      relative to the *change*) is the proper fix.
-  2. ``run_ladder`` collapses both directions of an EVIDENCE_RESOLVABLE ruling to
-     ``ARBITER_RULED``, and ``incremental_plan._apply_change`` APPLIES the change
-     on ARBITER_RULED regardless of whether the FM ruled FOR or AGAINST it. Until
-     the terminal state encodes ruling direction, an arbiter "keep current value"
-     ruling must not drive an apply. (Tracked as the next follow-on.)
+  2. (FIXED) ``arbiter`` now returns the ruling DIRECTION as a third tuple
+     element (``applies``): FM_MAINTAINS_OBJECTION -> apply; FM_ACCEPTS_ANALYST /
+     FM_REVISES_OBJECTION -> reject (keep current). ``run_ladder`` maps that to
+     ARBITER_RULED vs the new ARBITER_REJECTED, and ``_apply_change`` only applies
+     on ARBITER_RULED — so an "evidence-resolvable, keep current value" ruling no
+     longer drives an apply (the live SWR run's FM_ACCEPTS_ANALYST now correctly
+     yields ARBITER_REJECTED, not an applied 3.5%).
 
 Makes a REAL claude.exe call per turn, so it is NEVER constructed in a test path
 — tests inject a deterministic double + assert the mapping with fakes.
@@ -180,11 +182,14 @@ class RealLadderParticipants:
             change.target_node_key, role, resolution,
         )
         if resolution == "ESCALATE_TO_USER":
-            return ArbiterClass.GENUINE_DECISION, reasoning
-        # FM_ACCEPTS_ANALYST / FM_MAINTAINS_OBJECTION / FM_REVISES_OBJECTION —
-        # the FM rules in-fleet; the change either stands or is rejected by the
-        # ruling, but it is NOT a client decision.
-        return ArbiterClass.EVIDENCE_RESOLVABLE, reasoning
+            return ArbiterClass.GENUINE_DECISION, reasoning, False
+        # The FM rules in-fleet. Direction (objection_detail = the PROPOSED change,
+        # owner stance = REBUT defending the current value):
+        #   FM_MAINTAINS_OBJECTION -> FM stands by the proposed change  -> APPLY.
+        #   FM_ACCEPTS_ANALYST     -> the owner's rebuttal wins          -> REJECT.
+        #   FM_REVISES_OBJECTION   -> revised + still open               -> REJECT (keep current).
+        applies = resolution == "FM_MAINTAINS_OBJECTION"
+        return ArbiterClass.EVIDENCE_RESOLVABLE, reasoning, applies
 
 
 __all__ = ["RealLadderParticipants", "_owner_role_for"]

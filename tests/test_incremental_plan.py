@@ -126,6 +126,17 @@ class _EscalateParticipants:
         return ArbiterClass.GENUINE_DECISION, "this is a values judgment for the client"
 
 
+class _ArbiterRejectParticipants:
+    """Peers never resolve; the arbiter rules AGAINST the change (keep current)
+    -> arbiter_rejected, change NOT applied."""
+
+    def peer_round(self, *, change, prior_turns, round):
+        return PeerVerdict.UNRESOLVED, "owner defends the current value"
+
+    def arbiter(self, *, change, prior_turns):
+        return ArbiterClass.EVIDENCE_RESOLVABLE, "rebuttal lands; hold current", False
+
+
 # --------------------------------------------------------------------------- #
 # Task 1 — build_base_graph                                                   #
 # --------------------------------------------------------------------------- #
@@ -230,6 +241,31 @@ def test_genuine_decision_change_request_yields_real_question_no_apply():
     assert len(res.real_questions) == 1
     assert res.real_questions[0]["target_node_key"] == "retirement.required_real_yield_pct"
     assert not res.closed  # an open real question keeps it un-closed
+
+
+def test_arbiter_rejected_change_is_not_applied():
+    """The arbiter ruling AGAINST a proposed change (keep the current value) must
+    NOT mutate the node — the gap the live SWR run exposed (FM rejected the raise
+    yet the apply path would have set it)."""
+    session = _make_session()
+    rid = _seed_plan(session)
+    cr = ChangeRequest(
+        target_node_key="retirement.required_real_yield_pct",
+        author=Author(AuthorKind.AGENT, "fund_manager"),
+        kind=ChangeKind.SET_RECIPE,
+        payload={"value": 0.05},
+        rationale="raise the SWR assumption (anchor-shopping)",
+    )
+    res = run_incremental_cycle(
+        session, user_id=USER_ID, decision_run_id=rid,
+        change_requests=[cr], participants=_ArbiterRejectParticipants(),
+        persist=False,
+        recipe_node_keys={"retirement.required_real_yield_pct"},
+        resolver_values=_canonical_values(margin=-250_000.0, age=47),
+    )
+    # No client question (the fleet resolved it), and the node was NOT set to 0.05.
+    assert not res.real_questions
+    assert res.graph.get("retirement.required_real_yield_pct").value is None
 
 
 def test_cross_surface_fi_basis_no_flip_after_margin_change():

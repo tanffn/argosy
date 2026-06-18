@@ -76,17 +76,22 @@ def test_peer_round_always_defers_to_arbiter(monkeypatch, stance):
     assert stance in text  # the raw stance is preserved for the arbiter
 
 
-@pytest.mark.parametrize("resolution,expected", [
-    ("ESCALATE_TO_USER", ArbiterClass.GENUINE_DECISION),
-    ("FM_ACCEPTS_ANALYST", ArbiterClass.EVIDENCE_RESOLVABLE),
-    ("FM_MAINTAINS_OBJECTION", ArbiterClass.EVIDENCE_RESOLVABLE),
-    ("FM_REVISES_OBJECTION", ArbiterClass.EVIDENCE_RESOLVABLE),
+@pytest.mark.parametrize("resolution,expected_class,expected_applies", [
+    # ESCALATE -> a client decision (applies flag irrelevant / False).
+    ("ESCALATE_TO_USER", ArbiterClass.GENUINE_DECISION, False),
+    # Owner's rebuttal wins -> REJECT the proposed change (keep current).
+    ("FM_ACCEPTS_ANALYST", ArbiterClass.EVIDENCE_RESOLVABLE, False),
+    # FM stands by the proposed change -> APPLY.
+    ("FM_MAINTAINS_OBJECTION", ArbiterClass.EVIDENCE_RESOLVABLE, True),
+    # Revised + still open -> REJECT (don't apply an uncertain change).
+    ("FM_REVISES_OBJECTION", ArbiterClass.EVIDENCE_RESOLVABLE, False),
 ])
-def test_arbiter_resolution_mapping(monkeypatch, resolution, expected):
+def test_arbiter_resolution_mapping(monkeypatch, resolution, expected_class, expected_applies):
     _patch_fm(monkeypatch, resolution)
     p = RealLadderParticipants("ariel")
-    klass, text = p.arbiter(change=_cr(), prior_turns=[])
-    assert klass is expected
+    klass, text, applies = p.arbiter(change=_cr(), prior_turns=[])
+    assert klass is expected_class
+    assert applies is expected_applies
 
 
 def _patch_analyst_raises(monkeypatch):

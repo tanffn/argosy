@@ -55,7 +55,8 @@ class Stance(str, Enum):
 class TerminalState(str, Enum):
     A_CONCEDED = "A_conceded"
     B_CONCEDED = "B_conceded"
-    ARBITER_RULED = "arbiter_ruled"
+    ARBITER_RULED = "arbiter_ruled"        # arbiter ruled FOR the change (apply)
+    ARBITER_REJECTED = "arbiter_rejected"  # arbiter ruled AGAINST the change (keep)
     ESCALATED_TO_USER = "escalated_to_user"
     SUPERSEDED = "superseded"
 
@@ -141,8 +142,14 @@ def run_ladder(change: ChangeRequest, participants: LadderParticipants) -> Ladde
         turns.append(LadderTurn(rnd, Speaker.B, Stance.REBUT, text,
                                 [change.target_node_key]))
 
-    # Unresolved after n=3 — escalate to the arbiter (FM).
-    arbiter_class, ruling = participants.arbiter(change=change, prior_turns=turns)
+    # Unresolved after n=3 — escalate to the arbiter (FM). The arbiter may return
+    # (ArbiterClass, ruling) — legacy doubles, treated as rule-FOR for
+    # back-compat — or (ArbiterClass, ruling, applies: bool) carrying the ruling
+    # DIRECTION so an "evidence-resolvable, keep current value" ruling does NOT
+    # drive an apply (gap surfaced by the live SWR run).
+    arbiter_out = participants.arbiter(change=change, prior_turns=turns)
+    arbiter_class, ruling, *_rest = arbiter_out
+    applies = bool(_rest[0]) if _rest else True
     turns.append(LadderTurn(
         round=MAX_PEER_ROUNDS + 1, speaker=Speaker.ARBITER, stance=Stance.CLASSIFY,
         text=f"classification: {arbiter_class.value}",
@@ -153,8 +160,10 @@ def run_ladder(change: ChangeRequest, participants: LadderParticipants) -> Ladde
             round=MAX_PEER_ROUNDS + 1, speaker=Speaker.ARBITER, stance=Stance.RULE,
             text=ruling, cited_nodes=[change.target_node_key],
         ))
-        return LadderResult(TerminalState.ARBITER_RULED, turns,
-                            arbiter_class=arbiter_class)
+        return LadderResult(
+            TerminalState.ARBITER_RULED if applies else TerminalState.ARBITER_REJECTED,
+            turns, arbiter_class=arbiter_class,
+        )
 
     # Genuine decision — escalate to the user as a single boxed choice.
     question = (
