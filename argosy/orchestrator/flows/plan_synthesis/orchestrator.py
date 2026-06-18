@@ -635,12 +635,17 @@ def run_synthesis(
             lines = [
                 f"Snapshot stored FX USD/NIS = {fx} (snapshot id={snap.id}; "
                 f"usd_value_k is THOUSANDS of USD).",
-                "FX CONVENTION: net worth and all USD→NIS translation use the "
-                "Bank of Israel CURRENT daily representative USD/NIS rate "
-                "(stated as 'USD/NIS' in the PIPELINE-CLAIMED HEADLINE NUMBERS "
-                "block), which may differ slightly from this snapshot's stored "
-                "rate. Reproduce net worth at the BOI current rate; only flag "
-                "net_worth DIVERGES if it disagrees AT THAT RATE.",
+                "FX CONVENTION: net worth, US-situs estate exposure, and EVERY "
+                "other USD→NIS translation use the Bank of Israel CURRENT daily "
+                "representative USD/NIS rate (stated as 'USD/NIS' in the "
+                "PIPELINE-CLAIMED HEADLINE NUMBERS block), which may differ "
+                "slightly from this snapshot's stored rate. Reproduce net worth "
+                "AND the US-situs estate exposure at the BOI current rate — NOT "
+                "this snapshot's stored rate — and only flag a USD→NIS figure "
+                "(net_worth, us_situs_estate, …) as DIVERGES if it disagrees AT "
+                "THE BOI CURRENT RATE. (The US-situs USD basis and instrument "
+                "set are identical; a NIS gap that vanishes at the BOI rate is "
+                "an FX-convention artifact, not a divergence.)",
                 "symbol | broker_location | currency | asset_type | "
                 "usd_value_k | details",
             ]
