@@ -130,7 +130,18 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
             "headline figure and never substitute a rounded or carried-forward "
             "number. A post-synthesis gate replaces any headline number that "
             "does not match these derived values with `[derivation pending]`, "
-            "so inventing one only deletes your own figure.\n\n"
+            "so inventing one only deletes your own figure.\n"
+            "  HARD FACTS vs SOFT REFERENCE (HARD RULE): the user message is split "
+            "into a HARD FACTS section (current holdings, analyst outputs, and the "
+            "DERIVED HEADLINE NUMBERS — derive every target/rate from THESE + the "
+            "goal) and a SOFT REFERENCE section (the baseline plan, prior items, and "
+            "past execution/fills). SOFT REFERENCE is for continuity, narrative, and "
+            "item_id lineage ONLY. NEVER carry a number or target forward from it: a "
+            "target is DERIVED from HARD FACTS, never inherited from the past plan or "
+            "what was previously sold (e.g. a past sale cadence like 3,000 sh/yr is "
+            "HISTORY, not a target — use the DERIVED NVDA sell/target shares instead). "
+            "When you cite SOFT REFERENCE, frame it as 'previously'/'what was done', "
+            "never as 'the plan'.\n\n"
             "TECHNICAL-READING DISCIPLINE (gate-checked):\n"
             "  - Any symbol-level technical reading you state (RSI, MACD, "
             "moving average, price) MUST come from the CURRENT technical "
@@ -404,13 +415,25 @@ class PlanSynthesizerAgent(BaseAgent[PlanSynthesisOutput]):
         # preserve item_ids across revisions — without exposing the
         # prior prose to be paraphrased.
         usr = "\n\n".join(directive_section + [
-            "=== BASELINE DISTILLATE ===\n" + (baseline_distillate_md or "(no baseline)"),
-            "=== PRIOR ITEMS INDEX (id stability — see ID STABILITY in system prompt) ===\n"
-            + prior_items_block,
+            "================ HARD FACTS — GROUND TRUTH ================\n"
+            "Derive EVERY target and rate from THESE + the goal. The DERIVED HEADLINE "
+            "NUMBERS block above is authoritative; the holdings + analysis below are the "
+            "current-state facts to reason from.",
+            "=== PORTFOLIO SNAPSHOT (current holdings) ===\n" + portfolio_snapshot_summary,
             "=== ANALYST REPORTS (Phase 1 outputs) ===\n" + analyst_reports_text,
             "=== DEBATE OUTCOMES (Phase 2 outputs, one per horizon) ===\n" + debate_outcomes_text,
-            "=== PORTFOLIO SNAPSHOT ===\n" + portfolio_snapshot_summary,
-            "=== RECENT FILLS + DECISIONS (last 90 days) ===\n" + recent_fills_summary,
+            "================ SOFT REFERENCE — HISTORY (NOT a source of targets) ========\n"
+            "For continuity, narrative, and item_id lineage ONLY. Do NOT carry any "
+            "number or target forward from this section — a target must be DERIVED from "
+            "the HARD FACTS, never inherited from the past plan or past execution. The "
+            "past sale cadence (e.g. a 3,000 sh/yr figure) is HISTORY, not a target. If "
+            "you reference anything here, frame it as 'previously' / 'what was done', "
+            "NEVER as 'the plan'.",
+            "=== BASELINE PLAN [reference only] ===\n" + (baseline_distillate_md or "(no baseline)"),
+            "=== PRIOR ITEMS INDEX [reference — item_id stability only] ===\n"
+            + prior_items_block,
+            "=== RECENT FILLS + DECISIONS — past execution, last 90 days [reference] ===\n"
+            + recent_fills_summary,
             "Produce the PlanSynthesisOutput JSON now. Honor the medium-horizon "
             "centerpiece framing. If status=no_change for a horizon, deltas_from_prior "
             "must be empty AND the rationale must explicitly justify why nothing changed. "

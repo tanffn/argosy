@@ -132,6 +132,9 @@ _KEY_UNITS: dict[str, str] = {
     "spend.annual_t12_nis": "nis",
     "concentration.nvda_cap_pct": "pct",
     "concentration.nvda_current_pct": "pct",
+    "concentration.nvda_target_sh": "shares",
+    "concentration.nvda_sell_sh": "shares",
+    "concentration.nvda_eligible_now_sh": "shares",
     "retirement.liquidity_reserve_nis": "nis",
     "retirement.fi_total_capital_nis": "nis",
     "retirement.fi_margin_signed_nis": "nis",
@@ -816,6 +819,11 @@ def resolve_plan_numbers(
     # reached/not-reached sign can never diverge across surfaces again.
     _apply_fi_margin(values)
 
+    # DERIVED NVDA deconcentration (target/sell + capital-track-eligible count) as
+    # authoritative values, so the synthesizer uses a DERIVED target instead of
+    # inheriting the baseline doc's sale cadence (the 3,000 class).
+    _apply_nvda_deconcentration(session, user_id, values)
+
     # Canonical dual-track retirement ages — DISPLAY surfaces only (see the
     # docstring re: re-entrancy + MC cost). Gated so the re-entrant NVDA-haircut
     # hop and the non-display callers never trigger the heavy canonical MC.
@@ -1210,8 +1218,12 @@ def _apply_fi_margin(values: dict[str, ResolvedValue]) -> None:
     guess) when either input is unresolved.
     """
     key = "retirement.fi_margin_signed_nis"
-    loc = "portfolio.net_worth_nis − retirement.fi_total_capital_nis"
-    nw = values.get("portfolio.net_worth_nis")
+    # HONEST basis: liquid net worth (excludes ALL real estate) − FI total capital.
+    # Using the real-estate-inclusive net_worth overstated sufficiency (+₪118K) and
+    # claimed FI reached when the liquid basis is actually short (−₪148K) — the codex
+    # BLOCK on draft 45/46. FI sufficiency must be tested on spendable capital only.
+    loc = "portfolio.liquid_net_worth_nis − retirement.fi_total_capital_nis"
+    nw = values.get("portfolio.liquid_net_worth_nis")
     tot = values.get("retirement.fi_total_capital_nis")
     if (
         nw is None
@@ -1231,8 +1243,74 @@ def _apply_fi_margin(values: dict[str, ResolvedValue]) -> None:
         source_locator=loc,
         agent_report_id=None,
         confidence="HIGH",
-        formula="net_worth_nis − fi_total_capital_nis (signed; >0 => total target reached)",
+        formula="liquid_net_worth_nis − fi_total_capital_nis (signed; >0 => total target reached; LIQUID basis, excl. real estate)",
     )
+
+
+_NVDA_IPS_TARGET_W = 0.12  # IPS sleeve target (policy constraint)
+
+
+def _apply_nvda_deconcentration(
+    session: "Session", user_id: str, values: dict[str, ResolvedValue]
+) -> None:
+    """Derive the NVDA deconcentration target/sell-count + the capital-track-eligible
+    share count (from the latest tax-sim report), as authoritative values. Pending — never
+    a guess — when inputs are missing."""
+    keys = ("concentration.nvda_target_sh", "concentration.nvda_sell_sh",
+            "concentration.nvda_eligible_now_sh")
+    w = values.get("concentration.nvda_current_pct")
+    cap = values.get("concentration.nvda_cap_pct")
+    if not w or w.status != "resolved" or not cap or cap.status != "resolved":
+        for k in keys:
+            values[k] = ResolvedValue.pending(k, "shares", "nvda weight/cap pending")
+        return
+    nvda_sh = nvda_px = None
+    try:
+        snap = session.execute(
+            select(PortfolioSnapshotRow)
+            .where(PortfolioSnapshotRow.user_id == user_id)
+            .order_by(PortfolioSnapshotRow.id.desc()).limit(1)
+        ).scalar_one_or_none()
+        for p in (json.loads(snap.positions_json or "[]") if snap else []):
+            if str(p.get("symbol", "")).upper() == "NVDA":
+                nvda_sh = _to_float(p.get("shares"))
+                nvda_px = _to_float(p.get("current_price"))
+                break
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.nvda_deconc_snapshot_failed err=%s", exc)
+    if not nvda_sh or not nvda_px:
+        for k in keys:
+            values[k] = ResolvedValue.pending(k, "shares", "no NVDA snapshot position")
+        return
+    from argosy.services.plan_derivation import derive_nvda_deconcentration
+
+    dec = derive_nvda_deconcentration(
+        nvda_sh=int(nvda_sh), nvda_px_usd=nvda_px, nvda_weight=float(w.value),
+        target_w=_NVDA_IPS_TARGET_W, cap=float(cap.value),
+    )
+    for k, field in (("concentration.nvda_target_sh", "nvda_target_sh"),
+                     ("concentration.nvda_sell_sh", "nvda_sell_sh")):
+        values[k] = ResolvedValue(
+            key=k, value=dec[field].value, unit="shares", status="resolved",
+            source_locator="derive_nvda_deconcentration (12% IPS target)",
+            agent_report_id=None, confidence="HIGH", formula=dec[field].formula,
+        )
+    elig = None
+    try:
+        from argosy.services.tax_simulation_ingest import eligible_shares
+        elig = eligible_shares(session, user_id)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.nvda_eligible_failed err=%s", exc)
+    k = "concentration.nvda_eligible_now_sh"
+    if elig is None:
+        values[k] = ResolvedValue.pending(k, "shares", "no tax-sim report ingested")
+    else:
+        values[k] = ResolvedValue(
+            key=k, value=int(elig), unit="shares", status="resolved",
+            source_locator="tax_simulation_lots (latest report, eligible=OK)",
+            agent_report_id=None, confidence="HIGH",
+            formula="sum(shares) where Holding Period=OK in the latest tax-sim report",
+        )
 
 
 def _apply_fi_methodology(
@@ -1365,10 +1443,14 @@ def _apply_fi_methodology(
 # allowed to state. Pending keys still render (as [derivation pending]) so the
 # model knows the figure exists but has no approved value.
 _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
-    ("portfolio.net_worth_nis", "Liquid net worth (investable; ex-Israel-real-estate)"),
+    ("portfolio.liquid_net_worth_nis", "Liquid net worth (spendable; EXCLUDES all real estate — THE FI sufficiency basis)"),
+    ("portfolio.net_worth_nis", "Investable net worth (incl. foreign real-estate row; NOT the FI basis — reconciliation only)"),
     ("retirement.fi_target_nis", "FI capital target (perpetuity)"),
     ("retirement.fi_total_capital_nis", "FI total capital target (perpetuity + reserve)"),
-    ("retirement.fi_margin_signed_nis", "FI sufficiency margin (net worth − total target; >0 => reached)"),
+    ("retirement.fi_margin_signed_nis", "FI sufficiency margin (LIQUID net worth − total target; >0 => reached; if <0, FI is NOT reached — do not claim funded)"),
+    ("concentration.nvda_target_sh", "NVDA target shares (≤12% IPS sleeve — the DERIVED deconcentration target; replaces any inherited cadence)"),
+    ("concentration.nvda_sell_sh", "NVDA shares to SELL to reach the 12% target (derived; capital-track-eligible count below gates the pace)"),
+    ("concentration.nvda_eligible_now_sh", "NVDA shares already Section-102 capital-track eligible NOW (~25%; from the tax-sim report)"),
     ("retirement.liquidity_reserve_nis", "Liquidity reserve (finite liabilities, held separately)"),
     ("retirement.fire_bridge_nis", "FIRE bridge (retirement→60 liquid drawdown, permanent-equivalent)"),
     ("concentration.us_situs_estate_exposure_nis", "US-situs estate exposure (IRS NRA — all US-domiciled securities, every broker)"),
@@ -1401,6 +1483,8 @@ def _display_value(rv: ResolvedValue) -> str:
         return f"{v * 100:.1f}%"
     if rv.unit == "age":
         return f"age {v:.1f}"
+    if rv.unit == "shares":
+        return f"{v:,.0f} sh"
     return f"{v:,.2f}"
 
 

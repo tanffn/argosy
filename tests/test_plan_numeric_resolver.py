@@ -295,16 +295,33 @@ def test_fi_margin_signed_is_single_sourced(session):
     'reached vs −118,020 not-reached' contradiction was two surfaces computing
     the margin independently with opposite sign conventions."""
     _seed_all(session)
+    # The FI margin now uses liquid_net_worth, which needs positions (to exclude real
+    # estate) + a current FX. Seed both so it resolves regardless of the wall-clock date.
+    from datetime import date as _d
+    from decimal import Decimal as _Dec
+
+    from argosy.state.models import FxRate
+    session.add(FxRate(date=_d.today(), currency="USD", rate=_Dec("3.0"), source="boi"))
+    session.add(PortfolioSnapshotRow(
+        user_id="ariel", imported_at=datetime(2026, 6, 2), snapshot_date=_d.today(),
+        fx_usd_nis=3.0,
+        positions_json=json.dumps([
+            {"symbol": "VOO", "currency": "USD", "usd_value_k": 4000.0, "asset_type": "ETF"},
+        ]),
+    ))
+    session.commit()
     res = resolve_plan_numbers(
         session, user_id="ariel", decision_run_id=DRUN, include_canonical_ages=False
     )
-    nw = res.get("portfolio.net_worth_nis")
+    # FI sufficiency is tested on the HONEST liquid basis (excl. real estate), not the
+    # real-estate-inclusive net worth (which overstated it to +118K — the codex BLOCK).
+    nw = res.get("portfolio.liquid_net_worth_nis")
     tot = res.get("retirement.fi_total_capital_nis")
     margin = res.get("retirement.fi_margin_signed_nis")
     assert margin is not None and margin.status == "resolved"
-    # margin = net_worth − fi_total; positive => total target reached.
+    # margin = liquid_net_worth − fi_total; positive => total target reached.
     assert abs(float(margin.value) - (float(nw.value) - float(tot.value))) < 1.0
-    assert "net_worth" in margin.formula and "fi_total" in margin.formula
+    assert "liquid_net_worth" in margin.formula and "fi_total" in margin.formula
 
 
 def test_equity_scenario_disagreement_downgrades_confidence(session):
@@ -466,11 +483,12 @@ def test_one_bad_role_does_not_poison_others(session):
 def test_fx_usd_nis_resolves_from_boi_cache(session):
     """FX must come from the BOI cache (the authoritative feed), NOT a hardcoded
     3.45. Kills the magic number in the assumption ledger (A5/A6)."""
-    from datetime import date as _date
+    from datetime import date as _date, timedelta
     from decimal import Decimal
     from argosy.state.models import FxRate
     _seed_all(session)
-    for d, r in [(_date(2026, 6, 1), Decimal("2.813")), (_date(2026, 6, 2), Decimal("2.84"))]:
+    for d, r in [(_date.today() - timedelta(days=1), Decimal("2.813")),
+                 (_date.today(), Decimal("2.84"))]:
         session.add(FxRate(date=d, currency="USD", rate=r, source="boi"))
     session.flush()
     res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
@@ -651,7 +669,7 @@ def test_net_worth_marks_to_boi_current_fx(session):
             {"symbol": None, "currency": "NIS", "usd_value_k": 100.0},  # native ₪294k @2.94
         ]),
     ))
-    session.add(FxRate(date=_date(2026, 6, 2), currency="USD", rate=Decimal("2.80"), source="boi"))
+    session.add(FxRate(date=_date.today(), currency="USD", rate=Decimal("2.80"), source="boi"))
     session.flush()
     res = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
     nw = res.get("portfolio.net_worth_nis")
