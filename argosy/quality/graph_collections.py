@@ -32,6 +32,23 @@ from argosy.quality.derivation_graph import DerivationGraph, Node, NodeKind
 # nodes go stale on a compute change even when inputs are unchanged.
 COMPUTE_VERSION = "graph_collections.v1"
 
+
+def _estate_classifier_version() -> str:
+    """Stamp the estate-classification TABLE into the compute_version of the
+    domicile-dependent nodes (us_situs + symbol breakdown). codex review: those
+    nodes depend not only on (holdings, fx) but on instrument_reference's
+    domicile classification — if the table flips a ticker's estate_safe, the
+    exposure changes with holdings/fx unchanged. Folding a hash of the
+    {symbol: estate_safe} table into compute_version makes the engine invalidate
+    those nodes automatically when the classifier table changes."""
+    import hashlib
+
+    from argosy.services.instrument_reference import _REFERENCE
+
+    table = {sym: ref.estate_safe for sym, ref in sorted(_REFERENCE.items())}
+    digest = hashlib.sha256(repr(table).encode("utf-8")).hexdigest()[:12]
+    return f"{COMPUTE_VERSION}+ir:{digest}"
+
 HOLDINGS_KEY = "holdings"
 FX_KEY = "fx.usd_nis"
 US_SITUS_KEY = "concentration.us_situs_estate_nis"
@@ -139,15 +156,16 @@ def build_holdings_graph(positions: list[dict], fx: float) -> DerivationGraph:
     g.add_node(Node(key=HOLDINGS_KEY, kind=NodeKind.INPUT, value=positions))
     g.add_node(Node(key=FX_KEY, kind=NodeKind.INPUT, value=fx))
 
+    estate_version = _estate_classifier_version()
     g.add_node(Node(
         key=US_SITUS_KEY, kind=NodeKind.DERIVED,
         inputs=(HOLDINGS_KEY, FX_KEY),
-        recipe=_recipe_us_situs, compute_version=COMPUTE_VERSION,
+        recipe=_recipe_us_situs, compute_version=estate_version,
     ))
     g.add_node(Node(
         key=BREAKDOWN_KEY, kind=NodeKind.DERIVED,
         inputs=(HOLDINGS_KEY,),
-        recipe=_recipe_symbol_breakdown, compute_version=COMPUTE_VERSION,
+        recipe=_recipe_symbol_breakdown, compute_version=estate_version,
     ))
     g.add_node(Node(
         key=NET_WORTH_KEY, kind=NodeKind.DERIVED,
