@@ -43,6 +43,28 @@ def test_render_guidance_forbids_inherited_and_states_derived():
     assert "NOT met" in g and "LIQUID" in g
 
 
+def test_render_partial_eligibility_real_case():
+    # 9,230 eligible vs 9,270 needed -> 40-share gap; sell eligible now, season the rest.
+    facts = {
+        "nvda_target_w": 0.12, "nvda_target_sh": 2201, "nvda_sell_sh": 9270,
+        "nvda_cap_breach_x": 4.81, "fi_margin_liquid_nis": -148208.0,
+        "nvda_eligible_now_sh": 9230, "nvda_breaking_sh": 1710,
+    }
+    g = df.render_derived_facts_guidance(facts)
+    assert "9,230 capital-track-eligible shares NOW" in g
+    assert "40" in g  # the small remainder that must season
+
+
+def test_render_full_eligibility_now_horizon():
+    facts = {
+        "nvda_target_w": 0.12, "nvda_target_sh": 2201, "nvda_sell_sh": 9270,
+        "nvda_cap_breach_x": 4.81, "fi_margin_liquid_nis": -148208.0,
+        "nvda_eligible_now_sh": 9300, "nvda_breaking_sh": 1640,
+    }
+    g = df.render_derived_facts_guidance(facts)
+    assert "Horizon: NOW" in g and "do NOT wait for 2027" in g
+
+
 def test_render_empty_is_noop():
     assert df.render_derived_facts_guidance(None) == ""
     assert df.render_derived_facts_guidance({}) == ""

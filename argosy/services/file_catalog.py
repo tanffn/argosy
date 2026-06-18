@@ -73,7 +73,7 @@ _ALLOWED_SOURCES = frozenset({
 # Allowed values for the `kind` column. Cataloging-side classification
 # (callers pass kind explicitly so the helper doesn't need to re-classify).
 _ALLOWED_KINDS = frozenset({
-    "text", "image", "pdf", "plan_markdown", "broker_csv", "other",
+    "text", "image", "pdf", "plan_markdown", "broker_csv", "tax_simulation", "other",
 })
 
 

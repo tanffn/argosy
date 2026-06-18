@@ -80,6 +80,18 @@ def build_derived_facts(session, *, user_id: str, decision_run_id=None) -> dict 
         facts["fi_margin_liquid_nis"] = derive_fi_margin_liquid(
             liquid_nw_nis=liquid, fi_total_capital_nis=fi_total,
         ).value
+    # Lot-level Section-102 eligibility from the latest ingested tax-simulation report —
+    # turns the deconcentration horizon from an ASSUMPTION into data (how many shares are
+    # capital-track-eligible NOW). Best-effort; absent => the policy horizon stands.
+    try:
+        from argosy.services.tax_simulation_ingest import eligible_shares
+        elig = eligible_shares(session, user_id)
+        if elig is not None:
+            facts["nvda_eligible_now_sh"] = int(elig)
+            brk = eligible_shares(session, user_id, eligible=False)
+            facts["nvda_breaking_sh"] = int(brk or 0)
+    except Exception:  # noqa: BLE001
+        pass
     return facts or None
 
 
@@ -94,14 +106,35 @@ def render_derived_facts_guidance(facts: dict | None) -> str:
         "target). Derive all forward guidance from these:",
     ]
     if "nvda_target_sh" in facts:
-        lines.append(
+        line = (
             f"- NVDA deconcentration: reduce to the {facts['nvda_target_w']:.0%} IPS "
             f"target = retain ~{facts['nvda_target_sh']:,} shares, SELL ~"
             f"{facts['nvda_sell_sh']:,} shares (position breaches the risk cap by "
-            f"{facts['nvda_cap_breach_x']}x). Horizon: 2026 H2 capital-track-eligible "
-            "lots only, then front-load once the Section-102 capital-track window opens "
-            "2027-01-01, reaching target by ~mid-2027 (no tax reason to stretch to 2028)."
+            f"{facts['nvda_cap_breach_x']}x). "
         )
+        elig = facts.get("nvda_eligible_now_sh")
+        if elig is not None:
+            brk = facts.get("nvda_breaking_sh", 0)
+            if elig >= facts["nvda_sell_sh"]:
+                line += (
+                    f"Horizon: NOW. {elig:,} shares are ALREADY Section-102 capital-track "
+                    f"eligible (~25%), which covers the entire ~{facts['nvda_sell_sh']:,}-"
+                    f"share sale — execute it now at capital rates; do NOT wait for 2027. "
+                    f"Only ~{brk:,} 'Breaking' shares (recent ESPP/late grants) should "
+                    f"season first to avoid ~62% ordinary tax."
+                )
+            else:
+                line += (
+                    f"Horizon: sell the {elig:,} capital-track-eligible shares NOW (~25%); "
+                    f"the remaining ~{facts['nvda_sell_sh'] - elig:,} must wait for lots to "
+                    f"season past their Section-102 clock (selling sooner = ~62% ordinary)."
+                )
+        else:
+            line += (
+                "Horizon: front-load as lots clear their Section-102 capital-track clock; "
+                "ingest the Schwab tax-lot report to make this lot-exact."
+            )
+        lines.append(line)
     if "fi_margin_liquid_nis" in facts:
         m = facts["fi_margin_liquid_nis"]
         lines.append(

@@ -228,6 +228,39 @@ class CoherenceDecision(Base):
     )
 
 
+class TaxSimulationLot(Base):
+    """One sellable RSU/ESPP lot from a Schwab/ESOP simulated tax report.
+
+    The load-bearing field is ``eligible`` (Holding Period == "OK" → Section-102 capital
+    track ~25%, vs "Breaking" → ordinary income ~62%), which makes the NVDA
+    deconcentration a lot-exact, tax-aware schedule. Re-ingesting a report supersedes the
+    prior lots for the same (user_id, simulation_date)."""
+
+    __tablename__ = "tax_simulation_lots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    simulation_date: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    plan_type: Mapped[str] = mapped_column(String(8), nullable=False)  # RSU | ESPP
+    shares: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    holding_period: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    eligible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    grant_id: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    grant_date: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    purchase_date: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    sale_price_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_basis_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    capital_income_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ordinary_income_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    net_proceeds_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_file_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
 class PlanCritique(Base):
     """A plan-critique agent run output, stored as JSON in `critique_json`.
 
