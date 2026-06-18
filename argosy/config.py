@@ -125,7 +125,12 @@ class Settings(BaseSettings):
     # evaluate_promotion path (from-scratch synthesis is the fallback, untouched).
     # Read via ARGOSY_INCREMENTAL_PLAN; incremental_plan._flag_on() also honours
     # the raw env var so scripts/the demo can toggle it without a settings reload.
-    argosy_incremental_plan: bool = Field(default=False)
+    # Default flipped True after the live cutover cycle on ariel's data (run 115)
+    # landed CLOSED with zero open coherence flags — the canonical surfaces (FI
+    # verdict/tile, age, net-worth bases, US-situs) are byte-consistent by
+    # construction, and the gate still fails closed on real authority blocks.
+    # Set ARGOSY_INCREMENTAL_PLAN=0 to revert to the authority-only path.
+    argosy_incremental_plan: bool = Field(default=True)
 
     # Phase 5 prime-directive experts — when True (the default), the
     # PlanCoverageAnalyst, WithdrawalSequencerAgent and EquityCompAnalystAgent
