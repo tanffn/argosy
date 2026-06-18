@@ -123,10 +123,15 @@ def test_verify_gate_passes_registry_confirmed_picks() -> None:
     assert {c.domicile for c in clean} == {"IE"}
 
 
-def test_verify_gate_rejects_real_but_unverified_nonus() -> None:
-    # IB1T is a real Swiss BTC ETP but is NOT in the verified-facts registry,
-    # so it is UNVERIFIED -> rejected (cannot become a holding) even though it is
-    # non-US. This is the safe default that blocks hallucinated instruments.
+def test_verify_gate_rejects_real_but_unverified_nonus(monkeypatch) -> None:
+    # A real Swiss BTC ETP (valid ISIN, non-US) that is NOT in the verified-facts
+    # registry is UNVERIFIED -> rejected (cannot become a holding). This is the
+    # safe default that blocks hallucinated/un-curated instruments. We inject an
+    # EMPTY registry so the test asserts the "no registry hit" path regardless of
+    # which symbols the team has since curated into the on-disk registry (IB1T
+    # itself is now curated, so coupling the test to it made it stale).
+    import argosy.services.instrument_verification as iv
+    monkeypatch.setattr(iv, "load_registry", lambda: {})
     prop = _proposal(
         [_asset("IB1T", "CH", 100.0, asset_class="crypto", isin="XS2940466316")]
     )

@@ -48,6 +48,11 @@ from argosy.state.models import (
 
 USER = "ariel"
 AS_OF = date(2026, 5, 29)
+# Cache-staleness seeds must be anchored to AS_OF (the injected clock the
+# detector uses for its stale-days threshold), NOT real datetime.now() — else as
+# real time drifts the now()-N-days offset crosses the as_of-based threshold and
+# the fire/no-fire flips (a date-drift time-bomb).
+AS_OF_DT = datetime.combine(AS_OF, datetime.min.time(), tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +291,7 @@ def test_c2_fresh_cache_with_same_category_does_not_fire(sync_session):
         is_regex=False, category_id=cat_a,
         source="user", confidence=Decimal("1.0"),
         hit_count=10,
-        last_hit_at=datetime.now(timezone.utc) - timedelta(days=200),
+        last_hit_at=AS_OF_DT - timedelta(days=200),
     )
     sync_session.add(cache)
     sync_session.flush()
@@ -313,7 +318,7 @@ def test_c2_stale_cache_with_drift_fires_warning(sync_session):
         is_regex=False, category_id=cat_a,
         source="user", confidence=Decimal("1.0"),
         hit_count=10,
-        last_hit_at=datetime.now(timezone.utc) - timedelta(days=200),
+        last_hit_at=AS_OF_DT - timedelta(days=200),
     )
     sync_session.add(cache)
     sync_session.flush()
@@ -358,7 +363,7 @@ def test_c2_fresh_cache_does_not_fire_even_with_drift(sync_session):
         is_regex=False, category_id=cat_a,
         source="user", confidence=Decimal("1.0"),
         hit_count=10,
-        last_hit_at=datetime.now(timezone.utc) - timedelta(days=50),
+        last_hit_at=AS_OF_DT - timedelta(days=50),
     )
     sync_session.add(cache)
     sync_session.flush()
@@ -389,7 +394,7 @@ def test_c2_idempotency_no_double_write(sync_session):
         is_regex=False, category_id=cat_a,
         source="user", confidence=Decimal("1.0"),
         hit_count=10,
-        last_hit_at=datetime.now(timezone.utc) - timedelta(days=200),
+        last_hit_at=AS_OF_DT - timedelta(days=200),
     )
     sync_session.add(cache)
     sync_session.flush()

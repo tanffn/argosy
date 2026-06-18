@@ -1095,6 +1095,7 @@ def _rsu_income(
     user_ctx: dict[str, Any],
     snapshot: PortfolioSnapshotRow | None,
     fx_usd_nis: float,
+    today: date | None = None,
 ) -> RsuIncomeBlock:
     """Bar chart per quarter for the next 12 months.
 
@@ -1135,7 +1136,7 @@ def _rsu_income(
 
     quarters: list[RsuQuarter] = []
     total_nis = 0.0
-    today = date.today()
+    today = today or date.today()
     cutoff = date(today.year + 1, today.month, today.day)
     for q in raw_qs[:8]:  # cap at 8 entries to be safe; we filter by date below.
         if not isinstance(q, dict):
@@ -1435,7 +1436,7 @@ def compute_wealth_dashboard(
     )
     fx_exposure = _fx_exposure(snapshot=snapshot, fx_usd_nis=fx_usd_nis)
     rsu_income = _rsu_income(
-        user_ctx=user_ctx, snapshot=snapshot, fx_usd_nis=fx_usd_nis,
+        user_ctx=user_ctx, snapshot=snapshot, fx_usd_nis=fx_usd_nis, today=today,
     )
     estate_exposure = _estate_exposure(snapshot=snapshot, fx_usd_nis=fx_usd_nis)
     asset_class_composition, sector_composition, region_composition = _compositions(
