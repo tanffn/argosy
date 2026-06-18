@@ -150,11 +150,15 @@ def test_fx_scalar_edge_rederives_us_situs():
 
 def test_net_worth_and_nvda_pct_derived_from_holdings():
     positions = _base_positions()
-    g = build_holdings_graph(positions, FX)
+    # Distinct snapshot rate (!= current FX) to prove NIS-native is held at its
+    # nominal shekel value recovered via the SNAPSHOT rate, matching the resolver.
+    snap_fx = 3.2
+    g = build_holdings_graph(positions, FX, snap_fx)
     g.recompute()
     nw = g.get("portfolio.net_worth_nis").value
-    # USD assets (2000+300+100 = 2400k) * 1000 * fx + NIS native (50k * 1000).
-    expected_nw = 2400.0 * 1000.0 * FX + 50.0 * 1000.0
+    # USD assets (2000+300+100 = 2400k) * 1000 * current FX
+    #   + NIS native (50k * 1000) re-translated to nominal NIS via snap_fx.
+    expected_nw = 2400.0 * 1000.0 * FX + 50.0 * 1000.0 * snap_fx
     assert nw == expected_nw
 
     nvda = g.get("concentration.nvda_current_pct").value

@@ -149,8 +149,9 @@ class AppliedChange:
 # Task 1 — build_base_graph                                                   #
 # --------------------------------------------------------------------------- #
 
-def _snapshot_positions_fx(session, user_id: str) -> tuple[list[dict], float]:
-    """Read the latest portfolio snapshot's positions + fx (read-only)."""
+def _snapshot_positions_fx(session, user_id: str) -> tuple[list[dict], float, float]:
+    """Read the latest portfolio snapshot's positions + current/snapshot fx
+    (read-only). Returns ``(positions, current_boi_fx, snapshot_fx)``."""
     from sqlalchemy import select
 
     from argosy.state.models import PortfolioSnapshotRow
@@ -162,16 +163,16 @@ def _snapshot_positions_fx(session, user_id: str) -> tuple[list[dict], float]:
         .limit(1)
     ).scalar_one_or_none()
     if snap is None:
-        return [], 0.0
+        return [], 0.0, 0.0
     try:
         positions = json.loads(snap.positions_json or "[]")
     except (json.JSONDecodeError, ValueError, TypeError):
         positions = []
-    # Mark to the BOI CURRENT representative rate (snapshot fx is only the
-    # fallback) — the SAME "one FX per book" convention the resolver uses for
-    # net worth + US-situs. Seeding the collection fx node from the snapshot's
-    # stored rate instead would make the us-situs surface diverge from the
-    # authoritative resolver/codex figure (the FX-basis bug this design kills).
+    # Mark the USD-denominated sleeve to the BOI CURRENT representative rate
+    # (snapshot fx is only the fallback) — the SAME "one FX per book" convention
+    # the resolver uses for net worth + US-situs. The snapshot rate is returned
+    # ALONGSIDE so NIS-native positions can be held at their nominal shekel value
+    # (recovered via the snapshot rate), exactly as _resolve_net_worth does.
     snap_fx = float(snap.fx_usd_nis or 0.0)
     try:
         from argosy.services.plan_numeric_resolver import _current_boi_usd_nis
@@ -179,7 +180,7 @@ def _snapshot_positions_fx(session, user_id: str) -> tuple[list[dict], float]:
         fx, _src = _current_boi_usd_nis(session, snap_fx)
     except Exception:  # noqa: BLE001 — BOI unavailable -> snapshot fallback
         fx = snap_fx
-    return positions, float(fx or 0.0)
+    return positions, float(fx or 0.0), snap_fx
 
 
 def _resolver_scalars(session, user_id: str, decision_run_id: int) -> dict[str, float]:
@@ -225,8 +226,8 @@ def build_base_graph(
     re-entrant); when absent they are read from resolve_plan_numbers. Returns a
     recomputed, closed graph.
     """
-    positions, fx = _snapshot_positions_fx(session, user_id)
-    graph = build_holdings_graph(positions, fx)
+    positions, fx, snap_fx = _snapshot_positions_fx(session, user_id)
+    graph = build_holdings_graph(positions, fx, snap_fx)
 
     scalars = (
         dict(resolver_values) if resolver_values is not None

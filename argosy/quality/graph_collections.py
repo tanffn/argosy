@@ -51,6 +51,13 @@ def _estate_classifier_version() -> str:
 
 HOLDINGS_KEY = "holdings"
 FX_KEY = "fx.usd_nis"
+# The snapshot's stored USD/NIS rate. NIS-native positions are held at their
+# nominal shekel value (a shekel balance does not move in shekel terms when
+# USD/NIS moves), recovered from the stored ``usd_value_k`` via this snapshot
+# rate — NOT the current BOI rate (which marks the USD-denominated sleeve). This
+# mirrors ``plan_numeric_resolver._resolve_net_worth`` so the collection's
+# net-worth figure equals the authoritative resolver figure exactly.
+SNAP_FX_KEY = "fx.usd_nis_snapshot"
 US_SITUS_KEY = "concentration.us_situs_estate_nis"
 BREAKDOWN_KEY = "concentration.us_situs_symbol_breakdown"
 NET_WORTH_KEY = "portfolio.net_worth_nis"
@@ -121,10 +128,22 @@ def _recipe_symbol_breakdown(inbound: dict[str, Any]) -> list[dict]:
 
 
 def _recipe_net_worth(inbound: dict[str, Any]) -> float:
-    """USD-denominated assets × fx + NIS-native (already in shekels). Mirrors
-    ``plan_numeric_resolver._resolve_net_worth``'s per-position currency split."""
+    """USD-denominated assets × current FX + NIS-native at nominal shekels.
+    Mirrors ``plan_numeric_resolver._resolve_net_worth`` EXACTLY so the collection
+    figure equals the authoritative resolver figure:
+
+      * USD positions: ``usd_value_k`` is the USD value → × current BOI ``fx``.
+      * NIS-native positions: ``usd_value_k`` is the USD-translated value of a
+        shekel balance → recover the nominal NIS via the SNAPSHOT rate
+        (``snap_fx if snap_fx > 0 else fx``), held flat in shekels (a shekel
+        balance does not move in shekel terms when USD/NIS moves).
+
+    Re-translating NIS-native by the snapshot rate (not just adding the raw
+    ``usd_value_k``) is what closes the ~₪191K divergence from the resolver."""
     holdings = inbound[HOLDINGS_KEY]
     fx = float(inbound[FX_KEY])
+    snap_fx = float(inbound[SNAP_FX_KEY])
+    nis_rate = snap_fx if snap_fx > 0 else fx
     usd_assets_usd = 0.0
     nis_native_nis = 0.0
     for p in holdings:
@@ -132,7 +151,7 @@ def _recipe_net_worth(inbound: dict[str, Any]) -> float:
         if (p.get("currency") or "").upper() == "USD":
             usd_assets_usd += v
         else:
-            nis_native_nis += v
+            nis_native_nis += v * nis_rate
     return usd_assets_usd * fx + nis_native_nis
 
 
@@ -146,15 +165,25 @@ def _recipe_nvda_pct(inbound: dict[str, Any]) -> float | None:
     return None if pct is None else pct / 100.0
 
 
-def build_holdings_graph(positions: list[dict], fx: float) -> DerivationGraph:
-    """Wire a derivation graph rooted at the holdings COLLECTION + fx scalar.
+def build_holdings_graph(
+    positions: list[dict], fx: float, snap_fx: float | None = None
+) -> DerivationGraph:
+    """Wire a derivation graph rooted at the holdings COLLECTION + fx scalars.
 
-    Returns an un-computed graph (call ``recompute()``). The derived nodes all
-    carry an inbound edge to ``holdings`` so a membership change re-derives them.
+    ``fx`` is the current BOI USD/NIS (marks the USD-denominated sleeve);
+    ``snap_fx`` is the snapshot's stored rate (recovers nominal NIS for NIS-native
+    positions). When ``snap_fx`` is omitted it defaults to ``fx`` (single-rate
+    book). Returns an un-computed graph (call ``recompute()``). The derived nodes
+    all carry an inbound edge to ``holdings`` so a membership change re-derives
+    them.
     """
     g = DerivationGraph()
     g.add_node(Node(key=HOLDINGS_KEY, kind=NodeKind.INPUT, value=positions))
     g.add_node(Node(key=FX_KEY, kind=NodeKind.INPUT, value=fx))
+    g.add_node(Node(
+        key=SNAP_FX_KEY, kind=NodeKind.INPUT,
+        value=fx if snap_fx is None else snap_fx,
+    ))
 
     estate_version = _estate_classifier_version()
     g.add_node(Node(
@@ -169,7 +198,7 @@ def build_holdings_graph(positions: list[dict], fx: float) -> DerivationGraph:
     ))
     g.add_node(Node(
         key=NET_WORTH_KEY, kind=NodeKind.DERIVED,
-        inputs=(HOLDINGS_KEY, FX_KEY),
+        inputs=(HOLDINGS_KEY, FX_KEY, SNAP_FX_KEY),
         recipe=_recipe_net_worth, compute_version=COMPUTE_VERSION,
     ))
     g.add_node(Node(
@@ -185,6 +214,7 @@ __all__ = [
     "COMPUTE_VERSION",
     "HOLDINGS_KEY",
     "FX_KEY",
+    "SNAP_FX_KEY",
     "US_SITUS_KEY",
     "BREAKDOWN_KEY",
     "NET_WORTH_KEY",
