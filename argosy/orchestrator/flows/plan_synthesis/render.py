@@ -877,6 +877,7 @@ def render_trajectory_reconciliation_appendix(
 
     # All headline values come from the resolver — single source of truth.
     nw = resolved.get("portfolio.net_worth_nis")
+    liq = resolved.get("portfolio.liquid_net_worth_nis")
     fi_target = resolved.get("retirement.fi_target_nis")
     fi_total = resolved.get("retirement.fi_total_capital_nis")
     fi_reserve = resolved.get("retirement.liquidity_reserve_nis")
@@ -888,11 +889,16 @@ def render_trajectory_reconciliation_appendix(
     savings = resolved.get("savings.annual_net_nis")
     t12_spend = resolved.get("spend.annual_t12_nis")
 
-    # Starting point: the snapshot-derived net worth, in ₪M. When net
-    # worth is pending we cannot draw any trajectory at all.
-    if nw.status != "resolved" or nw.value is None:
+    # FI sufficiency is a LIQUID-basis question (spendable capital), and MUST use the
+    # same basis as the canonical front-door fi_margin (liquid_net_worth − fi_total).
+    # Using investable net worth here said "capital sufficiency reached" while the
+    # front-door said "−₪148K, not reached" — the cross-surface contradiction the reader
+    # BLOCKed. Base the trajectory on liquid net worth; fall back to investable only if
+    # liquid is unavailable.
+    fi_basis = liq if (liq.status == "resolved" and liq.value is not None) else nw
+    if fi_basis.status != "resolved" or fi_basis.value is None:
         return ""
-    a0_nis_m = nw.value / 1_000_000.0  # portfolio in millions of NIS
+    a0_nis_m = fi_basis.value / 1_000_000.0  # liquid (FI) capital in millions of NIS
 
     # FV at r real, annuity contribution C, starting P0, over n yrs:
     #   FV(n) = P0·(1+r)^n + C·((1+r)^n - 1)/r
@@ -1081,30 +1087,33 @@ def render_trajectory_reconciliation_appendix(
         f"`retirement.fi_total_capital_nis` |"
     )
     lines.append("")
-    # Honest reconciliation of which bar net worth currently clears.
+    # Honest reconciliation on the LIQUID basis (spendable capital, excl. real estate) —
+    # the SAME canonical basis the front-door fi_margin uses, so this conclusion can never
+    # contradict it.
     if (
-        nw.status == "resolved" and nw.value is not None
+        fi_basis.status == "resolved" and fi_basis.value is not None
         and fi_target.status == "resolved" and fi_target.value is not None
         and fi_total.status == "resolved" and fi_total.value is not None
     ):
-        if nw.value >= fi_total.value:
+        if fi_basis.value >= fi_total.value:
             lines.append(
-                "Net worth already covers the FULL total capital target "
-                "(perpetuity base + reserve) — capital sufficiency reached."
+                "Liquid net worth (spendable, excl. real estate) already covers the FULL "
+                "total capital target (perpetuity base + reserve) — capital sufficiency "
+                "reached."
             )
-        elif nw.value >= fi_target.value:
-            short = fi_total.value - nw.value
+        elif fi_basis.value >= fi_target.value:
+            short = fi_total.value - fi_basis.value
             lines.append(
-                f"Net worth clears the PERPETUITY BASE today, but full "
-                f"capital sufficiency (total {_fmt_nis_m(fi_total)}) is NOT "
-                f"yet reached — short by **₪{short:,.0f}** "
-                f"(the finite-liability reserve). This is not 'past FI'."
+                f"Liquid net worth clears the PERPETUITY BASE today, but full capital "
+                f"sufficiency (total {_fmt_nis_m(fi_total)}) is NOT yet reached — short by "
+                f"**₪{short:,.0f}** on the liquid basis (the finite-liability reserve). "
+                f"This is not 'past FI'."
             )
         else:
-            short = fi_target.value - nw.value
+            short = fi_target.value - fi_basis.value
             lines.append(
-                f"Net worth is below even the perpetuity base — short by "
-                f"**₪{short:,.0f}** before any reserve."
+                f"Liquid net worth is below even the perpetuity base — short by "
+                f"**₪{short:,.0f}**; FI is NOT reached on the liquid basis."
             )
     lines.append("")
 
