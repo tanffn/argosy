@@ -3766,3 +3766,178 @@ class ScanState(Base):
         ),
         Index("ix_trend_scan_state_user_status", "user_id", "status"),
     )
+
+
+# ----------------------------------------------------------------------
+# Phase 1c: derivation-graph persistence + replay trace
+# (spec: docs/superpowers/specs/2026-06-18-living-plan-derivation-graph-design.md
+#  "Data model" section). plan_nodes/plan_edges persist a DerivationGraph;
+# propagation_events records the per-change blast-radius ripple for
+# after-the-fact Replay. change_requests/dialogue_turns are created here so
+# the one migration is complete; the negotiation ladder that writes them is
+# Phase 2.
+# ----------------------------------------------------------------------
+
+
+class PlanNode(Base):
+    """One node of a persisted DerivationGraph for a plan.
+
+    Mirrors argosy.quality.derivation_graph.Node EXCEPT the recipe callable,
+    which is code (re-attached from a recipe_registry on load), not data.
+    status_validity (valid|stale) and status_flag (none|flagged) are
+    ORTHOGONAL per the spec — a node can be both stale AND flagged.
+    """
+
+    __tablename__ = "plan_nodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("plan_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    node_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # input|derived|surface
+    # DERIVED/INPUT numeric or structured value, JSON-encoded. NULL for a
+    # pure-prose surface (which uses `content`).
+    value_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # SURFACE rendered text/markup. NULL for input/derived nodes.
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status_validity: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="stale", server_default="stale"
+    )
+    status_flag: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="none", server_default="none"
+    )
+    # {recipe_key, author/source, render_template, ...}; recipe_key re-links
+    # to the recipe_registry on load.
+    provenance_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    owner: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    compute_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_plan_nodes_plan_key", "plan_id", "node_key", unique=True),
+    )
+
+
+class PlanEdge(Base):
+    """A derived_from edge, materialized for query/audit. Direction is
+    from_node_key (the input) -> to_node_key (the consumer that depends on it),
+    i.e. to_node_key has from_node_key in its `inputs`."""
+
+    __tablename__ = "plan_edges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("plan_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_node_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    to_node_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    # named | set | predicate (spec: hybrid edges). Plain "named" for now.
+    edge_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="named", server_default="named"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_plan_edges_plan_from_to",
+            "plan_id", "from_node_key", "to_node_key", "edge_kind",
+            unique=True,
+        ),
+    )
+
+
+class ChangeRequest(Base):
+    """The single author-agnostic primitive (user | agent_role) targeting one
+    node. CREATED here for schema completeness; the negotiation ladder that
+    populates it is Phase 2."""
+
+    __tablename__ = "change_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("plan_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    target_node_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    author: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    rationale: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # proposed|in_dialogue|escalated_arbiter|escalated_user|A_conceded|
+    # B_conceded|arbiter_ruled|superseded
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="proposed", server_default="proposed"
+    )
+    round_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    adjudicated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    terminal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
+class DialogueTurn(Base):
+    """One replayable back-and-forth turn on a ChangeRequest (Layer 5.1).
+    CREATED here for schema completeness; written in Phase 2."""
+
+    __tablename__ = "dialogue_turns"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    change_request_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("change_requests.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    round: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    speaker: Mapped[str] = mapped_column(String(16), nullable=False)  # A|B|arbiter|user
+    # propose|rebut|concede|rule|classify|ask|answer
+    stance: Mapped[str] = mapped_column(String(16), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    cited_nodes_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class PropagationEvent(Base):
+    """The visible blast-radius ripple for ONE applied change (Layer 5.2).
+    Written by graph_store.emit_propagation_event after a propagation;
+    read back by the Replay reader. trigger -> invalidated -> recomputed
+    (old->new) -> rerendered surfaces -> verification verdicts."""
+
+    __tablename__ = "propagation_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("plan_versions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Groups the propagation_events of one steady-state run for ordered replay.
+    cycle_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    trigger_node_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    invalidated_node_keys_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
+    # {node_key: {"old": <json-able>, "new": <json-able>}}
+    recomputed_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    rerendered_surfaces_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]"
+    )
+    # {check_name: verdict_str}
+    verification_verdicts_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_propagation_events_plan_cycle", "plan_id", "cycle_id"),
+    )
