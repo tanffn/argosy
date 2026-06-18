@@ -97,9 +97,36 @@ def _structlog_isolation():
     # never silently dropped by a prior test's uncleaned caplog state.
     original_disable = logging.root.manager.disable
     logging.disable(logging.NOTSET)
+    # Snapshot the root logger's handlers + level AND every existing logger's
+    # `disabled` flag. Alembic's env.py calls logging.config.fileConfig(alembic.ini)
+    # on every `command.upgrade` (corpus-replay + migration tests), which with the
+    # default disable_existing_loggers=True DISABLES all existing loggers and
+    # REPLACES root.handlers per the ini — nuking pytest's _LiveLoggingNullHandler
+    # + caplog handlers + Argosy's file handler, and silencing httpx/sqlalchemy/etc.
+    # That bleed breaks pytest's caplog capture for EVERY later caplog test in the
+    # same run (the full-suite-only flakes in test_discord_attachment_fetch /
+    # test_allocation_glidepath / test_lifecycle / test_plan_language_rewriter).
+    # Snapshot at setup, restore at teardown so logging state cannot bleed across
+    # tests. (pytest's caplog handler is added/removed during the call phase, which
+    # is inside this yield, so the snapshot taken here doesn't fight it.)
+    _root = logging.getLogger()
+    _saved_handlers = _root.handlers[:]
+    _saved_level = _root.level
+    _saved_disabled = {
+        name: lg.disabled
+        for name, lg in logging.root.manager.loggerDict.items()
+        if isinstance(lg, logging.Logger)
+    }
     yield
     # Restore the disable level (in case a test intentionally set it).
     logging.disable(original_disable)
+    _root.handlers[:] = _saved_handlers
+    _root.setLevel(_saved_level)
+    # Re-enable any logger a test (or alembic's fileConfig) disabled, and disable
+    # any it left enabled that was disabled before — restore the exact snapshot.
+    for name, lg in logging.root.manager.loggerDict.items():
+        if isinstance(lg, logging.Logger) and name in _saved_disabled:
+            lg.disabled = _saved_disabled[name]
 
 
 @pytest.fixture
