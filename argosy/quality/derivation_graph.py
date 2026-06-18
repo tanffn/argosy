@@ -57,6 +57,11 @@ class DerivationGraph:
         except KeyError as exc:
             raise UnknownNodeError(key) from exc
 
+    def keys(self) -> list[str]:
+        """All node keys in insertion order. Lets persistence/hydration enumerate
+        the graph without reaching into the private ``_nodes`` dict."""
+        return list(self._nodes)
+
     def _inbound_values(self, node: Node) -> dict[str, Any]:
         return {k: self.get(k).value for k in node.inputs}
 
