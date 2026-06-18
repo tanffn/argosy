@@ -29,6 +29,35 @@ This is the natural endpoint of derivation-first (we already have input-vs-deriv
 and it subsumes the negotiation-substrate work (an FM objection / reader finding / codex
 block is just a change-request on a node).
 
+## The guarantee this design must deliver
+
+**Every cycle ends in one of exactly two states: (1) the plan is CLOSED — promotable, every
+node valid, no open hard/coherence flag, all promotion authorities clear; or (2) a FINITE set
+of arbiter-certified GENUINE client decisions is surfaced — and nothing else reaches the user.**
+There is no third "endless self-generated contradictions" state. Why this holds:
+
+- **No reshuffle → monotone progress.** A change touches only its blast radius; everything
+  else is byte-identical. Fixing finding F1 cannot spawn an unrelated F2 (today's #1 reason
+  the system never converges). The open-finding set shrinks; it cannot churn.
+- **The two biggest finding-classes become impossible, not iterated.** Cross-surface
+  contradictions can't arise (one node → many surfaces, so surfaces can't disagree about the
+  same fact); ungrounded headline numbers can't appear (numbers render from nodes). These are
+  *eliminated by construction*, not caught-and-refixed.
+- **Every remaining finding routes to a typed resolution.** A finding is either (a) a wrong
+  derivation → fix the recipe (deterministic); (b) a wrong/missing input → fix the input; or
+  (c) a genuine judgment call → the arbiter escalates it as a real client question. The
+  negotiation ladder is bounded (peer n=3 → arbiter → user) and every change-request reaches a
+  typed terminal state, so it terminates.
+- **The user sees only real decisions.** Noise (basis-flips, stale objections, contradictions)
+  is resolved internally; the arbiter escalates to you *only* what it certifies as a genuine
+  goal/risk/tradeoff judgment — presented as a single boxed choice.
+
+**The one condition this rests on (honest):** the guarantee holds *iff the dependency edges are
+complete* (codex Theme A). A missed edge is the sole way a wrong value could slip past as
+"valid." Guards: set/predicate/version edges, a CI lint that every derivation+surface declares
+its edges, and the whole-artifact coherence recheck as the runtime backstop. This is engineered
+hard but demands discipline as the recipe/predicate registry grows — it is the thing to watch.
+
 ## Architecture — two layers over one graph
 
 ### Layer 1 — the derivation graph (the plan AS a DAG)
@@ -209,8 +238,9 @@ user (and a debugging developer) can **SEE**, not just read a final verdict:
 rows + a per-round **dialogue log** + a **propagation log** — into the existing
 `decision_phases` / `agent_reports` / decisions-tree **Replay** machinery, so the current
 Replay UI projects them; we add a **threaded change-request view** and a **blast-radius diff
-view** on top. (Surface choice — live-streaming view vs after-the-fact Replay vs both — is the
-one open UI decision; default recommendation: **both**, since the same event log drives each.)
+view** on top. **Surface = after-the-fact Replay only (user decision)** — no live-streaming
+view; the recorded event log is replayed on demand, which is sufficient for debugging and
+audit and keeps the build simpler.
 
 This is a hard acceptance criterion, not a nicety: **if you cannot replay the exact sequence
 of who-proposed-what, who-pushed-back, what-escalated-where, and what-rippled, the cycle is not
