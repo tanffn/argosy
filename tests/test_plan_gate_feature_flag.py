@@ -299,6 +299,36 @@ def _seed_ws_report(client_with_db, decision_run_id: int) -> None:
         sess.close()
 
 
+def _seed_authority_phases(
+    client_with_db, decision_run_id: int, *, codex="APPROVE", reader="APPROVE",
+) -> None:
+    """Persist the codex (phase_45) + whole-artifact reader (phase_55) verdicts a
+    clean synthesis run would carry, so the unified promote_gate (fail-closed on a
+    missing authority) sees them CLEARED. Tests isolating the numeric gate seed
+    APPROVE for both — the numeric gate is the surface under test, not the
+    authority gate."""
+    import json as _json
+    from datetime import datetime, timezone
+    from argosy.state.models import DecisionPhase
+
+    sess = client_with_db.app.state.session_factory()
+    try:
+        now = datetime.now(timezone.utc)
+        sess.add(DecisionPhase(
+            decision_run_id=decision_run_id, user_id="ariel", seq=45,
+            kind="synthesis.phase_45", started_at=now, finished_at=now,
+            phase_output_json=_json.dumps({"overall_assessment": codex}),
+        ))
+        sess.add(DecisionPhase(
+            decision_run_id=decision_run_id, user_id="ariel", seq=55,
+            kind="synthesis.phase_55", started_at=now, finished_at=now,
+            phase_output_json=_json.dumps({"overall_assessment": reader}),
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+
 def _make_run(client_with_db) -> int:
     from datetime import datetime, timezone
     from argosy.state.models import DecisionRun
@@ -372,6 +402,7 @@ def test_accept_matching_headline_number_passes_numeric_gate(client_with_db, mon
 
     run_id = _make_run(client_with_db)
     _seed_ws_report(client_with_db, run_id)
+    _seed_authority_phases(client_with_db, run_id)
     draft_id = _insert_draft(
         client_with_db,
         horizon_long_md="Derived FI target: **₪17.30M**; you could retire at age 49.\n",
@@ -405,6 +436,7 @@ def test_accept_derivation_pending_passes_numeric_gate(client_with_db, monkeypat
 
     run_id = _make_run(client_with_db)
     _seed_ws_report(client_with_db, run_id)
+    _seed_authority_phases(client_with_db, run_id)
     draft_id = _insert_draft(
         client_with_db,
         horizon_long_md="Derived FI target net worth: **[derivation pending]**.\n",

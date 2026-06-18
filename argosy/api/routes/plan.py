@@ -3011,6 +3011,16 @@ def post_draft_accept(
             "plan.draft.accepted.fm_override."
         ),
     ),
+    override_promote_gate: bool = Query(
+        False,
+        description=(
+            "Fail-closed promote-gate override: when true, promote a draft that "
+            "the unified promotion gate blocked on an authority WITHOUT its own "
+            "override (codex / whole-artifact reader / rederivation). The user "
+            "remains the final gate; audit-logged via "
+            "plan.draft.accepted.promote_gate_override."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> AcceptResponse:
     from argosy.state.queries import get_current_plan
@@ -3053,41 +3063,14 @@ def post_draft_accept(
     # query param bypasses the check (audit-logged).
     gate_verdict = _run_plan_output_gate(pv, db)
     gate_warning: dict | None = None
+    # ONE blocking/warned split (see _gate_blocking_checks) — reused by both the
+    # deterministic-gate 422 below and the unified promote_gate barrier.
+    gate_blocking, gate_warned = _gate_blocking_checks(gate_verdict, pv)
     if gate_verdict is not None and not gate_verdict.passes:
         from argosy.config import get_settings
-        from argosy.quality.gate_types import GateCheck
 
-        # The trust contract's CORE checks always BLOCK: history_leak,
-        # jargon_leak, headline_numeric_source (no fabrication), and
-        # section_coverage (the plan must cover the canonical sections). This is
-        # codex's enforce set {1,2,3,6}.
-        #
-        # The per-section EVIDENCE-quality checks (evidence_per_section,
-        # distillate_binding) are WARN during the evidence-hardening transition:
-        # the synthesizer emits structured sections (now persisted) but its
-        # per-fact citation completeness isn't yet contract-tight, so blocking on
-        # them would make every fresh plan un-promotable. Surfaced as
-        # `warned_only`; tracked task = harden synth evidence, then re-enforce.
-        # (codex 2026-06-10: WARN 4/5 during transition.) For LEGACY rows with no
-        # persisted sections, section_coverage is also demoted (it can't run).
-        _EVIDENCE_WARN = {
-            GateCheck.EVIDENCE_PER_SECTION,
-            GateCheck.DISTILLATE_SECTION_BINDING,
-        }
-        sections_present = bool(getattr(pv, "sections_json", None))
-        blocking_checks = set(GateCheck) - _EVIDENCE_WARN
-        if not sections_present:
-            blocking_checks.discard(GateCheck.SECTION_COVERAGE)
-        blocking = {
-            check: gate_verdict.for_check(check)
-            for check in blocking_checks
-            if gate_verdict.violations[check]
-        }
-        warned = {
-            check: gate_verdict.for_check(check)
-            for check in gate_verdict.violations
-            if gate_verdict.violations[check] and check not in blocking
-        }
+        blocking = gate_blocking
+        warned = gate_warned
 
         if override_gate:
             _publish(
@@ -3150,6 +3133,89 @@ def post_draft_accept(
                 },
             )
 
+    # ---- Unified fail-closed promotion gate -----------------------------
+    # Draft 45 became `current` while codex said BLOCK and the reader said BLOCK,
+    # because /accept enforced only the deterministic gate + the FM. This gate
+    # makes promotion atomic across ALL authorities: a plan promotes ONLY when
+    # EVERY authority clears; a missing verdict fails closed. The deterministic
+    # gate + FM are reflected here in their (passed / overridden) state — the
+    # NET-NEW enforcement is codex / whole-artifact reader / rederivation.
+    #
+    # rederivation (codex zigzag verdict (a'), 2026-06-18): the resolver IS the
+    # single blind derivation engine, so rederivation is satisfied by the
+    # resolver/gate pair — CLEARED iff the run has a manifest AND
+    # HEADLINE_NUMERIC_SOURCE is clean (in enforce mode that check fails closed
+    # on a resolver-rebuild failure, so a clean result == manifest rebuilt +
+    # every headline traced to a RESOLVED value or rendered [derivation pending]).
+    # We do NOT build a second manifest->PlanDecisionModel path (drift risk, no
+    # extra truth), but rederivation stays an EXPLICIT authority verdict.
+    # Scope: the five authorities are SYNTHESIS-flow artifacts (codex / reader /
+    # FM / deterministic gate / resolver-rederivation produced by a plan_revision
+    # run). A draft with no decision_run is not a synthesis product — it has no
+    # such verdicts to clear — so this barrier does not apply to it; the
+    # deterministic + FM gates above still govern it. Every real synthesis draft
+    # (the class the draft-45 incident lives in) carries a decision_run_id.
+    from argosy.config import get_settings as _get_settings
+
+    if _get_settings().plan_gate_enforce and pv.decision_run_id is not None:
+        from argosy.quality.gate_types import GateCheck
+        from argosy.quality.promote_gate import evaluate_promotion
+        from argosy.quality.promotion_authorities import (
+            read_codex_verdict,
+            read_reader_verdict,
+        )
+
+        _run = (
+            db.get(DecisionRun, pv.decision_run_id)
+            if pv.decision_run_id is not None else None
+        )
+        _fm_clear = (
+            override_fm_rejection
+            or _run is None
+            or _run.fund_manager_decision != "rejected"
+        )
+        _det_clear = bool(override_gate) or not gate_blocking
+        _hns_clean = (
+            gate_verdict is not None
+            and not gate_verdict.for_check(GateCheck.HEADLINE_NUMERIC_SOURCE)
+        )
+        _rederiv_clear = pv.decision_run_id is not None and _hns_clean
+        authorities = {
+            "codex": read_codex_verdict(db, pv.decision_run_id),
+            "deterministic_gate": _det_clear,
+            "fund_manager": "approved" if _fm_clear else "rejected",
+            "whole_artifact_reader": read_reader_verdict(db, pv.decision_run_id),
+            "rederivation": "APPROVE" if _rederiv_clear else "BLOCK",
+        }
+        decision = evaluate_promotion(authorities)
+        if not decision.can_promote:
+            if override_promote_gate:
+                _publish(
+                    "plan.draft.accepted.promote_gate_override",
+                    {
+                        "user_id": user_id,
+                        "draft_id": draft_id,
+                        "decision_run_id": pv.decision_run_id,
+                        "blocking_authorities": decision.blocking_authorities,
+                        "reasons": decision.reasons,
+                    },
+                )
+            else:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "promote_gate_blocked",
+                        "blocking_authorities": decision.blocking_authorities,
+                        "reasons": decision.reasons,
+                        "hint": (
+                            "Promotion is fail-closed across all authorities. "
+                            "Re-run synthesis until every authority clears, or "
+                            "pass ?override_promote_gate=true to promote anyway "
+                            "(audit-logged)."
+                        ),
+                    },
+                )
+
     now = datetime.now(timezone.utc)
     prior = get_current_plan(db, user_id)
     if prior is not None:
@@ -3179,6 +3245,40 @@ def post_draft_accept(
         new_current_id=pv.id,
         gate_warning=gate_warning,
     )
+
+
+def _gate_blocking_checks(gate_verdict, pv: "PlanVersion") -> tuple[dict, dict]:
+    """Split a GateVerdict's violations into (blocking, warned) using the same
+    enforce/warn policy the /accept handler applies. Extracted so BOTH the
+    deterministic-gate 422 and the unified promote_gate barrier read ONE
+    blocking set (no divergent copies of the demotion logic).
+
+    The trust-contract CORE checks always BLOCK; the per-section EVIDENCE checks
+    WARN during the evidence-hardening transition; SECTION_COVERAGE is demoted
+    when the row has no persisted structured sections (it can't run)."""
+    from argosy.quality.gate_types import GateCheck
+
+    if gate_verdict is None or gate_verdict.passes:
+        return {}, {}
+    _EVIDENCE_WARN = {
+        GateCheck.EVIDENCE_PER_SECTION,
+        GateCheck.DISTILLATE_SECTION_BINDING,
+    }
+    sections_present = bool(getattr(pv, "sections_json", None))
+    blocking_checks = set(GateCheck) - _EVIDENCE_WARN
+    if not sections_present:
+        blocking_checks.discard(GateCheck.SECTION_COVERAGE)
+    blocking = {
+        check: gate_verdict.for_check(check)
+        for check in blocking_checks
+        if gate_verdict.violations[check]
+    }
+    warned = {
+        check: gate_verdict.for_check(check)
+        for check in gate_verdict.violations
+        if gate_verdict.violations[check] and check not in blocking
+    }
+    return blocking, warned
 
 
 def _run_plan_output_gate(pv: "PlanVersion", db: "Session | None" = None):
