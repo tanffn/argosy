@@ -99,6 +99,7 @@ _INTERNAL_METADATA_HEADINGS = (
     "## Appendix — Fleet receipts",
     "## Appendix — Analysis team receipts",
     "## Appendix — Coherence deliberations",
+    "## Appendix — FM objection dialogues (how the FM talked to the fleet)",
 )
 
 

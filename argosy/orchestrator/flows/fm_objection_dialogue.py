@@ -721,6 +721,123 @@ def schedule_auto_dialogues_for_draft(
     return dispatched
 
 
+@dataclass
+class FmConvergenceResult:
+    """Outcome of running FM<->analyst dialogues INLINE to convergence."""
+
+    dispatched: int
+    resolutions: list[dict] = field(default_factory=list)   # per objection (+ terminal_state)
+    all_agreed: bool = False                                # every objection CLEARED_NO_CHANGE_REQUIRED
+    unresolved: list[str] = field(default_factory=list)     # why not (typed blocking states)
+
+
+# Cost/scope bound on inline convergence (codex: keep small; overflow stays blocking).
+_MAX_INLINE_OBJECTIONS = 10
+
+# Typed terminal states (codex): "dialogue resolved" != "authority cleared". ONLY
+# CLEARED_NO_CHANGE_REQUIRED clears the FM authority.
+_CLEARED = "CLEARED_NO_CHANGE_REQUIRED"
+
+
+def _terminal_state(resolution: str, analyst_stance: str) -> str:
+    """Map (FM resolution, analyst stance) → a fail-closed terminal state.
+
+    The critical guardrail (codex): an FM that ACCEPTS an analyst who CONCEDED is
+    confirming a DEFECT — the plan must change + re-gate, so it stays blocking. Only an
+    FM-accepted REBUT/CLARIFY (the objection was wrong / already satisfied, no artifact
+    change) clears. A REVISE silently weakening the objection never auto-clears."""
+    stance = (analyst_stance or "").strip().upper()
+    if resolution == "FM_ACCEPTS_ANALYST":
+        if stance == "CONCEDE":
+            return "CHANGE_REQUIRED"          # defect confirmed → blocking
+        return _CLEARED                       # rebut/clarify accepted → no change needed
+    if resolution == "FM_REVISES_OBJECTION":
+        return "REVISED_BLOCKING"             # revised, still open
+    if resolution == "ESCALATE_TO_USER":
+        return "ESCALATE_TO_USER"
+    return "MAINTAINED_BLOCKING"
+
+
+def converge_fm_objections(
+    session: Session, *, user_id: str, plan_version_id: int, decision_run_id: int,
+) -> FmConvergenceResult:
+    """Run the FM<->analyst dialogue for every objection INLINE (synchronous) and report
+    whether they ALL closed by agreement. The caller decides whether to clear the FM
+    authority; this function only negotiates + reports (bounded by the cost cap)."""
+    from argosy.api.routes.plan import (
+        _classify_severity, _parse_fm_response, _split_reason,
+    )
+    from argosy.state.models import AgentReport
+
+    decision_audit_token = f"plan-synth-{decision_run_id}"
+    fm_row = session.execute(
+        select(AgentReport).where(
+            AgentReport.user_id == user_id,
+            AgentReport.decision_id == decision_audit_token,
+            AgentReport.agent_role == "fund_manager",
+        ).order_by(desc(AgentReport.created_at)).limit(1)
+    ).scalar_one_or_none()
+    if fm_row is None or not fm_row.response_text:
+        return FmConvergenceResult(dispatched=0, all_agreed=False,
+                                   unresolved=["no FM objection report"])
+
+    reasons = _parse_fm_response(fm_row.response_text).get("reasons") or []
+    resolutions: list[dict] = []
+    unresolved: list[str] = []
+    dispatched = 0
+    for idx, raw in enumerate(reasons):
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        if dispatched >= _MAX_INLINE_OBJECTIONS:
+            unresolved.append(f"[{idx}] overflow > {_MAX_INLINE_OBJECTIONS} inline → blocking")
+            continue
+        topic, detail = _split_reason(raw)
+        roles = _parse_analyst_refs_any_form(topic + " " + detail)
+        if not roles:
+            unresolved.append(f"[{idx}] {topic}: UNOWNED_BLOCKING")
+            continue
+        try:
+            start = start_fm_objection_dialogue(
+                session, user_id=user_id, plan_version_id=plan_version_id,
+                objection_index=idx, analyst_role=roles[0], objection_topic=topic,
+                objection_detail=detail,
+                objection_severity=_classify_severity(topic, detail),
+                prior_decision_audit_token=decision_audit_token, user_guidance="",
+                run_inline=True,
+            )
+        except CostCapExceededError as exc:
+            unresolved.append(f"[{idx}] {topic}: TIMEOUT_BLOCKING (cost cap: {exc})")
+            break
+        except Exception as exc:  # noqa: BLE001
+            unresolved.append(f"[{idx}] {topic}: TIMEOUT_BLOCKING (dialogue failed: {exc})")
+            continue
+        dispatched += 1
+        run = session.get(DecisionRun, start.decision_run_id)
+        try:
+            notes = json.loads(run.notes_json or "{}") if run else {}
+        except (json.JSONDecodeError, TypeError):
+            notes = {}
+        resolution = notes.get("resolution", "FM_MAINTAINS_OBJECTION")
+        stance = notes.get("analyst_stance", "")
+        terminal = _terminal_state(resolution, stance)
+        resolutions.append({
+            "objection_index": idx, "analyst_role": roles[0], "topic": topic,
+            "resolution": resolution, "analyst_stance": stance,
+            "terminal_state": terminal,
+            "fm_reasoning_md": notes.get("fm_reasoning_md", ""),
+        })
+        if terminal != _CLEARED:
+            unresolved.append(f"[{idx}] {topic}: {terminal}")
+    all_agreed = dispatched > 0 and not unresolved
+    log.info(
+        "fm_objection_dialogue.converge_complete", user_id=user_id,
+        plan_version_id=plan_version_id, dispatched=dispatched,
+        all_agreed=all_agreed, unresolved=len(unresolved),
+    )
+    return FmConvergenceResult(dispatched=dispatched, resolutions=resolutions,
+                               all_agreed=all_agreed, unresolved=unresolved)
+
+
 def _parse_analyst_refs_any_form(text: str) -> list[str]:
     """Find every distinct analyst reference in ``text``, tolerating
     both the CamelCase class form (``agent_report:PlanCritiqueAgent``)

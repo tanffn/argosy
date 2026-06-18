@@ -1550,24 +1550,67 @@ def run_synthesis(
     # (still a Blocker, just without an analyst push-back attempt).
     # Skipped entirely when FM approved — no objections to dispatch.
     if not approved:
-        try:
-            from argosy.orchestrator.flows.fm_objection_dialogue import (
-                schedule_auto_dialogues_for_draft,
-            )
-            schedule_auto_dialogues_for_draft(
-                session,
-                user_id=user_id,
-                plan_version_id=draft.id,
-                decision_run_id=decision_run_id,
-            )
-        except Exception as exc:  # noqa: BLE001 — best-effort
-            log.warning(
-                "auto_dialogue.schedule_failed",
-                user_id=user_id,
-                decision_run_id=decision_run_id,
-                draft_id=draft.id,
-                error=str(exc),
-            )
+        # CLOSE-THE-LOOP (default OFF — ARGOSY_FM_DIALOGUE_CONVERGE=1): run the FM<->analyst
+        # dialogues INLINE to convergence and, if EVERY objection cleared by an FM-accepted
+        # rebuttal/clarification (no artifact change required), clear the FM authority so
+        # the draft is no longer FM-rejected. Fail-closed + authority-specific (codex
+        # review): a confirmed defect / revise / escalate / owner-less objection stays
+        # blocking, and the FM authority is cleared ONLY when the whole-artifact reader is
+        # also not blocking (the reader is a separate authority — never laundered away).
+        _fm_converged = False
+        if _os.environ.get("ARGOSY_FM_DIALOGUE_CONVERGE", "0") == "1":
+            try:
+                from argosy.orchestrator.flows.fm_objection_dialogue import (
+                    converge_fm_objections,
+                )
+                _conv = converge_fm_objections(
+                    session, user_id=user_id, plan_version_id=draft.id,
+                    decision_run_id=decision_run_id,
+                )
+                _reader_ok = (
+                    _reader_verdict is None
+                    or getattr(_reader_verdict, "overall_assessment", "") != "BLOCK"
+                )
+                if _conv.all_agreed and _reader_ok:
+                    decision_run.fund_manager_decision = "approved"
+                    session.commit()
+                    _fm_converged = True
+                    log.warning(
+                        "fm_objection_dialogue.authority_cleared",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        dispatched=_conv.dispatched,
+                    )
+                else:
+                    log.warning(
+                        "fm_objection_dialogue.not_cleared",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        all_agreed=_conv.all_agreed, reader_ok=_reader_ok,
+                        unresolved=_conv.unresolved[:6],
+                    )
+            except Exception as exc:  # noqa: BLE001 — fail-closed: stay rejected
+                log.warning(
+                    "fm_objection_dialogue.converge_failed",
+                    user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+                )
+        if not _fm_converged:
+            try:
+                from argosy.orchestrator.flows.fm_objection_dialogue import (
+                    schedule_auto_dialogues_for_draft,
+                )
+                schedule_auto_dialogues_for_draft(
+                    session,
+                    user_id=user_id,
+                    plan_version_id=draft.id,
+                    decision_run_id=decision_run_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                log.warning(
+                    "auto_dialogue.schedule_failed",
+                    user_id=user_id,
+                    decision_run_id=decision_run_id,
+                    draft_id=draft.id,
+                    error=str(exc),
+                )
 
     # Provenance Wave C — final FM-decision row with the parsed verdict
     # DTO. The 5 per-phase rows (kinds 'synthesis.phase_1'..'phase_5')
