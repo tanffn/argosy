@@ -3907,6 +3907,13 @@ class DialogueTurn(Base):
     )
 
 
+# Layer-2 (negotiation ladder) reuses the Phase-1c schema. The substrate code
+# refers to these tables via the *Row aliases to disambiguate from the pure
+# dataclass argosy.quality.change_adjudication.ChangeRequest.
+ChangeRequestRow = ChangeRequest
+DialogueTurnRow = DialogueTurn
+
+
 class PropagationEvent(Base):
     """The visible blast-radius ripple for ONE applied change (Layer 5.2).
     Written by graph_store.emit_propagation_event after a propagation;
