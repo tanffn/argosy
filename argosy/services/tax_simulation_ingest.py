@@ -59,6 +59,26 @@ def ingest_path(session, *, user_id: str, path: str,
     )
 
 
+def ingest_uploaded_file(user_id: str, storage_path: str,
+                         source_file_id: int | None = None) -> dict:
+    """Open a fresh sync session and ingest a catalog-stored report. Used by the upload
+    route (async) via a worker thread so future uploads flow straight into the plan."""
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.config import get_settings
+
+    eng = sa.create_engine(
+        f"sqlite:///{get_settings().db_file}", connect_args={"check_same_thread": False},
+    )
+    s = sessionmaker(bind=eng)()
+    try:
+        return ingest_path(s, user_id=user_id, path=storage_path,
+                           source_file_id=source_file_id)
+    finally:
+        s.close()
+        eng.dispose()
+
+
 def _latest_simulation_date(session, user_id: str) -> str | None:
     return session.execute(
         sa.select(TaxSimulationLot.simulation_date)

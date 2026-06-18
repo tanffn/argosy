@@ -150,6 +150,24 @@ async def upload_file(
         kind=kind,
         source="manual_upload",
     )
+    # Auto-ingest a recognized RSU/ESPP tax-simulation report (kind='tax_simulation'
+    # or an .xlsx the recognizer matches) so future uploads flow straight into the
+    # plan's lot-level Section-102 eligibility. Best-effort — never fail the upload.
+    if kind == "tax_simulation" or (user_file.original_name or "").lower().endswith(".xlsx"):
+        try:
+            import asyncio as _asyncio
+
+            from argosy.services.tax_simulation_ingest import (
+                ingest_uploaded_file, is_tax_simulation_workbook,
+            )
+            if is_tax_simulation_workbook(user_file.storage_path):
+                res = await _asyncio.to_thread(
+                    ingest_uploaded_file, user_id, user_file.storage_path, user_file.id,
+                )
+                log.info("tax_simulation.ingested", user_id=user_id, **res)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            log.warning("tax_simulation.ingest_failed", user_id=user_id, error=str(exc))
+
     # catalog_upload returns a UserFileDTO -- reshape into the catalog
     # row item the GET list endpoint already serves so the UI gets a
     # consistent shape across list + upload paths.
