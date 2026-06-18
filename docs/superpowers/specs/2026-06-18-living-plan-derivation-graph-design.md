@@ -181,6 +181,41 @@ not all 11 from zero (Layer-3 follow-on; see Phasing).
 - **Keep the from-scratch synthesizer** as (a) the cold-start path (new user, no plan) and
   (b) an explicit "full rebuild" escape hatch. **Steady state = incremental.**
 
+## Layer 5 — observability & debuggability (first-class, not an afterthought)
+
+Everything the substrate does is a **recorded, replayable, inspectable trace.** A cycle is not
+"done" until its full negotiation + propagation trace is reconstructable and viewable. The
+user (and a debugging developer) can **SEE**, not just read a final verdict:
+
+1. **The negotiation thread, per change-request — the back-and-forth and escalations.** A
+   threaded transcript: A's *"change X because Y"*, B's **rebuttal** of Y, each of the ≤3 peer
+   rounds, the **escalation to the arbiter** (showing the arbiter's *classification* —
+   evidence-resolvable vs genuine-decision — and its ruling), the **escalation to the user**
+   (the boxed choice that was asked), and the **typed terminal state**. Rendered as a
+   conversation — who said what, when, and why — the way `render_fm_dialogue_appendix` already
+   renders FM↔analyst dialogues today. This is the centerpiece the user asked for: *watch the
+   agents argue and escalate.*
+2. **The propagation / blast-radius, per change.** A visible "ripple": input X changed → which
+   nodes invalidated → each recomputed value (**old → new**) → which surfaces re-rendered →
+   the verification verdicts. So you can audit *why* Y and Z moved when X moved — and confirm
+   nothing **outside** the blast radius did (the diff is shown).
+3. **Node-level provenance + dispute history.** For any number or conclusion: its recipe, its
+   inbound edges, its current value, and **every change-request that ever touched it.** Click a
+   figure → see its derivation *and* its argument history.
+4. **Live status board.** Open change-requests, who is waiting on whom, what is escalated to
+   the arbiter, what is escalated to **you**, and what is currently blocking promotion.
+
+**Infra (reuse, don't reinvent):** the substrate emits structured events — `change_requests`
+rows + a per-round **dialogue log** + a **propagation log** — into the existing
+`decision_phases` / `agent_reports` / decisions-tree **Replay** machinery, so the current
+Replay UI projects them; we add a **threaded change-request view** and a **blast-radius diff
+view** on top. (Surface choice — live-streaming view vs after-the-fact Replay vs both — is the
+one open UI decision; default recommendation: **both**, since the same event log drives each.)
+
+This is a hard acceptance criterion, not a nicety: **if you cannot replay the exact sequence
+of who-proposed-what, who-pushed-back, what-escalated-where, and what-rippled, the cycle is not
+considered observable and the feature is not done.**
+
 ## Data model
 
 - `plan_nodes`: `id`, `plan_id`, `node_key`, `kind` (input|derived|surface), `value_json` /
@@ -194,6 +229,12 @@ not all 11 from zero (Layer-3 follow-on; see Phasing).
   `rationale`, `status` (proposed|in_dialogue|escalated_arbiter|escalated_user|A_conceded|
   B_conceded|arbiter_ruled|superseded), `round_count`, `adjudicated_by`, `terminal_reason`,
   timestamps.
+- `dialogue_turns` (Layer 5): `id`, `change_request_id`, `round`, `speaker` (A | B | arbiter |
+  user), `stance` (propose|rebut|concede|rule|classify|ask|answer), `text`, `cited_nodes`,
+  `created_at` — the replayable back-and-forth.
+- `propagation_events` (Layer 5): `id`, `plan_id`, `cycle_id`, `trigger_node_key`,
+  `invalidated_node_keys`, `recomputed` (node_key → old_value/new_value), `rerendered_surfaces`,
+  `verification_verdicts`, `created_at` — the visible blast-radius ripple.
 
 ## How a steady-state run works
 
@@ -227,6 +268,10 @@ not all 11 from zero (Layer-3 follow-on; see Phasing).
 - **Publish gate:** a plan with any open hard/coherence flag is not promotable.
 - **Migration:** hydration reproduces surfaces AND a defective imported plan yields open flags
   (not silent validity).
+- **Observability (Layer 5):** every change-request produces a replayable `dialogue_turns`
+  thread (propose → rebut → rounds → escalate → terminal); every applied change produces a
+  `propagation_events` row whose `invalidated`/`recomputed`/`rerendered` sets match the actual
+  closure; a cycle whose negotiation + ripple cannot be fully reconstructed FAILS the test.
 
 ## Risks / edge cases (codex-review-hardened)
 
@@ -262,10 +307,17 @@ not all 11 from zero (Layer-3 follow-on; see Phasing).
 
 1. **Graph + propagation core** (this spec's heart): node model, hybrid edges, deterministic
    recompute, exact invalidation, migration/hydration, blast-radius re-verify. Surfaces:
-   start with deterministic-render surfaces + the surgical editor for prose.
+   start with deterministic-render surfaces + the surgical editor for prose. **Ships with the
+   `propagation_events` trace + blast-radius diff view (Layer 5.2) — the ripple is visible from
+   day one.**
 2. **Change/adjudication substrate**: ChangeRequest table, ownership map, fail-closed
-   authority clearance, FM/reader/codex emit change-requests instead of whole-plan verdicts.
+   authority clearance, the negotiation ladder, FM/reader/codex emit change-requests instead of
+   whole-plan verdicts. **Ships with the `dialogue_turns` trace + threaded negotiation view
+   (Layer 5.1) — the back-and-forth + escalations are visible as they happen.**
 3. **Scoped agent re-runs**: an analyst re-runs only when its owned input is stale.
+
+Observability (Layer 5) is **not a separate phase** — each phase ships its slice of the trace
++ view, so the system is inspectable at every step rather than instrumented retroactively.
 
 Non-goals for sub-project 1: re-running analysts incrementally (phase 3); a UI for authoring
 change-requests (the user's existing intake + the agents are the authors initially).
