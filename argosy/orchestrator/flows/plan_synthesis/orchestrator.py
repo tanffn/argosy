@@ -244,6 +244,34 @@ def run_synthesis(
 
     cost_cap_usd = float(_os.environ.get("ARGOSY_SYNTHESIS_COST_CAP_USD", "20.0"))
 
+    # DERIVATION-FIRST: prepend LOCKED DERIVED FACTS to the synthesizer guidance so the
+    # synthesizer USES the team-derived numbers (NVDA deconcentration target/sell + FI
+    # margin on the honest liquid basis) instead of INHERITING a cadence/target from the
+    # baseline doc (the ``3,000 sh/yr`` class — past behavior laundered via a citation).
+    # Best-effort + flag-gated (default ON); a failure no-ops (the fail-closed promote
+    # gate is the separate backstop). Disabled with ARGOSY_DERIVED_FACTS=0.
+    if _os.environ.get("ARGOSY_DERIVED_FACTS", "1") == "1":
+        try:
+            from argosy.services.derived_facts import (
+                build_derived_facts, render_derived_facts_guidance,
+            )
+            _derived_block = render_derived_facts_guidance(
+                build_derived_facts(
+                    session, user_id=user_id, decision_run_id=decision_run_id,
+                )
+            )
+            if _derived_block:
+                guidance = (_derived_block + "\n\n" + (guidance or "")).strip()
+                log.info(
+                    "plan_synthesis.derived_facts_injected",
+                    user_id=user_id, decision_run_id=decision_run_id,
+                )
+        except Exception as exc:  # noqa: BLE001 — best-effort; never abort synthesis
+            log.warning(
+                "plan_synthesis.derived_facts_failed",
+                user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+            )
+
     # T2.3 — resume support. When `resume_from_phase` > 1, look up any
     # decision_phases rows already persisted for this decision_run (from
     # a prior crashed/orphaned run) and surface their phase_output_json
