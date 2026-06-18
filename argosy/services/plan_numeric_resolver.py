@@ -1540,6 +1540,46 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
             "is the recurring cross-surface contradiction. Liquid is the only FI basis; "
             "never label investable net worth as 'liquid'.",
         ]
+
+    # Canonical RETIREMENT-AGE verdict — the recurring contradiction was three age
+    # concepts (earliest-safe, fi_age trajectory marker, "crosses target in year N")
+    # conflated into divergent client-facing ages (46 vs 49 vs "today"). State ONE.
+    esa = resolved.get("retirement.earliest_safe_age")
+    if esa is not None and esa.status == "resolved" and esa.value is not None:
+        age_verdict = (f"RETIREMENT-AGE VERDICT: the headline retirement age is "
+                       f"{float(esa.value):.0f} (earliest-safe, typical drawdown, 90% MC "
+                       f"solvency). Use this ONE age everywhere a retirement age is stated.")
+    else:
+        age_verdict = ("RETIREMENT-AGE VERDICT: the earliest-safe headline age is "
+                       "[derivation pending] — do NOT state ANY single headline retirement "
+                       "age; write [derivation pending].")
+    lines += [
+        "",
+        age_verdict,
+        "  ^ fi_age (full-FI/perpetuity trajectory marker) and any 'portfolio crosses the "
+        "FI target in year N / today' projection are NOT the retirement age — NEVER present "
+        "them as 'you can retire at X'. Every age-bearing surface must equal this VERDICT.",
+    ]
+
+    # Canonical RSU-VEST-POLICY verdict — the recurring contradiction was 'hold vested NVDA
+    # by default' vs 'sell at vest' vs 'defer until Schwab CSV confirmed'. The tax-sim now
+    # CONFIRMS lot eligibility, so the defer-gate is obsolete and concentration dominates.
+    w = resolved.get("concentration.nvda_current_pct")
+    elig = resolved.get("concentration.nvda_eligible_now_sh")
+    if (w is not None and w.status == "resolved" and w.value is not None
+            and float(w.value) > _NVDA_IPS_TARGET_W):
+        elig_txt = (f"{int(elig.value):,} shares are Section-102 capital-track eligible NOW"
+                    if elig is not None and elig.status == "resolved" and elig.value is not None
+                    else "lot eligibility is in the ingested tax-sim report")
+        lines += [
+            "",
+            f"RSU-VEST-POLICY VERDICT: NVDA is {float(w.value) * 100:.0f}% of the book (far "
+            f"above the {_NVDA_IPS_TARGET_W:.0%} target) and {elig_txt} — therefore SELL net "
+            f"vested NVDA at vest and deconcentrate at the capital rate.",
+            "  ^ Do NOT state a 'hold vested NVDA by default' policy, and do NOT gate the "
+            "sale on a 'Schwab tax-lot CSV not yet confirmed' condition — the ingested "
+            "tax-sim IS that confirmation. State ONE vest policy consistent with this.",
+        ]
     return "\n".join(lines)
 
 
