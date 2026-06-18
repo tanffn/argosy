@@ -534,6 +534,150 @@ def test_override_fm_rejection_does_not_bypass_numeric_gate(client_with_db, monk
         sess.close()
 
 
+# ---------------------------------------------------------------------------
+# Living-plan cutover — /accept routed through the derivation-graph publish gate
+# ---------------------------------------------------------------------------
+
+def test_accept_incremental_gate_blocks_on_open_coherence_flag(client_with_db, monkeypatch):
+    """With ARGOSY_INCREMENTAL_PLAN on, /accept routes promotion through the
+    incremental cycle's publish gate. An open coherence flag (the cross-surface
+    contradiction class) fails closed with the unified promote_gate 422, EVEN
+    when every authority clears."""
+    import argosy.api.routes.plan as plan_routes
+    from argosy.orchestrator.flows import incremental_plan as inc
+    from argosy.quality.promote_gate import PromoteDecision
+
+    monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    monkeypatch.setenv("ARGOSY_INCREMENTAL_PLAN", "1")
+    from argosy.config import reload_settings
+    reload_settings()
+
+    run_id = _make_run(client_with_db)
+    _seed_ws_report(client_with_db, run_id)
+    _seed_authority_phases(client_with_db, run_id)  # all authorities clear
+    draft_id = _insert_draft(
+        client_with_db,
+        horizon_long_md="Derived FI target: **₪17.30M**; you could retire at age 49.\n",
+        horizon_medium_md="Steady growth.\n",
+        horizon_short_md="Park RSU proceeds.\n",
+    )
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        pv.decision_run_id = run_id
+        sess.commit()
+    finally:
+        sess.close()
+
+    # Force the cycle to report an open coherence flag (a blocking publish
+    # decision) — exercises the route's use of CycleResult.publish_decision.
+    def _fake_cycle(*a, **k):
+        from argosy.orchestrator.flows.incremental_plan import CycleResult
+        blocked = PromoteDecision(
+            False, ["open-coherence-flag:cross_surface"],
+            ["open-coherence-flag:cross_surface: node carries an open coherence flag"],
+        )
+        return CycleResult(
+            closed=False, open_flags=["coherence:'fi_capital_sufficiency'"],
+            promotable=False, publish_decision=blocked,
+        )
+    monkeypatch.setattr(inc, "run_incremental_cycle", _fake_cycle)
+
+    r = client_with_db.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "promote_gate_blocked"
+    assert any("coherence" in b for b in detail["blocking_authorities"])
+    sess = client_with_db.app.state.session_factory()
+    try:
+        assert sess.get(PlanVersion, draft_id).role == "draft"  # not promoted
+    finally:
+        sess.close()
+
+
+def test_accept_incremental_gate_promotes_when_clean(client_with_db, monkeypatch):
+    """With ARGOSY_INCREMENTAL_PLAN on and the cycle reporting no open flags +
+    all authorities clear, the incremental gate promotes (200)."""
+    import argosy.api.routes.plan as plan_routes
+    from argosy.orchestrator.flows import incremental_plan as inc
+    from argosy.quality.promote_gate import PromoteDecision
+
+    monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    monkeypatch.setenv("ARGOSY_INCREMENTAL_PLAN", "1")
+    from argosy.config import reload_settings
+    reload_settings()
+
+    run_id = _make_run(client_with_db)
+    _seed_ws_report(client_with_db, run_id)
+    _seed_authority_phases(client_with_db, run_id)
+    draft_id = _insert_draft(
+        client_with_db,
+        horizon_long_md="Derived FI target: **₪17.30M**; you could retire at age 49.\n",
+        horizon_medium_md="Steady growth.\n",
+        horizon_short_md="Park RSU proceeds.\n",
+    )
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        pv.decision_run_id = run_id
+        sess.commit()
+    finally:
+        sess.close()
+
+    def _fake_cycle(*a, **k):
+        from argosy.orchestrator.flows.incremental_plan import CycleResult
+        ok = PromoteDecision(True, [], [])
+        return CycleResult(closed=True, open_flags=[], promotable=True,
+                           publish_decision=ok)
+    monkeypatch.setattr(inc, "run_incremental_cycle", _fake_cycle)
+
+    r = client_with_db.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "accepted"
+
+
+def test_accept_incremental_gate_degrades_when_cycle_raises(client_with_db, monkeypatch):
+    """If the incremental cycle can't build the graph (raises), /accept degrades
+    to the authority-only evaluate_promotion path — synthesis stays the fallback,
+    promotion is NOT silently blocked by an infrastructure error."""
+    import argosy.api.routes.plan as plan_routes
+    from argosy.orchestrator.flows import incremental_plan as inc
+
+    monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
+    monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
+    monkeypatch.setenv("ARGOSY_INCREMENTAL_PLAN", "1")
+    from argosy.config import reload_settings
+    reload_settings()
+
+    run_id = _make_run(client_with_db)
+    _seed_ws_report(client_with_db, run_id)
+    _seed_authority_phases(client_with_db, run_id)
+    draft_id = _insert_draft(
+        client_with_db,
+        horizon_long_md="Derived FI target: **₪17.30M**; you could retire at age 49.\n",
+        horizon_medium_md="Steady growth.\n",
+        horizon_short_md="Park RSU proceeds.\n",
+    )
+    sess = client_with_db.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        pv.decision_run_id = run_id
+        sess.commit()
+    finally:
+        sess.close()
+
+    def _boom(*a, **k):
+        raise RuntimeError("resolver unavailable")
+    monkeypatch.setattr(inc, "run_incremental_cycle", _boom)
+
+    r = client_with_db.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    # Authorities all clear + clean markdown -> degrade path promotes.
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "accepted"
+
+
 def test_accept_skips_gate_when_no_horizon_data(
     client_with_db, monkeypatch,
 ):

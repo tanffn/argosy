@@ -114,6 +114,19 @@ class Settings(BaseSettings):
     # accept proceeds). ``?override_gate=true`` bypasses a single accept (audited).
     plan_gate_enforce: bool = Field(default=True)
 
+    # Living-plan incremental cutover — when True, /accept promotion is routed
+    # through the derivation-graph publish gate (build the living graph for the
+    # draft, recheck cross-surface coherence, fail closed on any open
+    # coherence/hard flag) IN ADDITION TO the authority set. This enforces that
+    # a promoted plan's canonical surfaces (FI verdict/tile, retirement age,
+    # net-worth bases, US-situs) are mutually consistent by construction — the
+    # cross-surface-contradiction class that the whack-a-mole synthesis loop
+    # kept reintroducing. When False, /accept uses the authority-only
+    # evaluate_promotion path (from-scratch synthesis is the fallback, untouched).
+    # Read via ARGOSY_INCREMENTAL_PLAN; incremental_plan._flag_on() also honours
+    # the raw env var so scripts/the demo can toggle it without a settings reload.
+    argosy_incremental_plan: bool = Field(default=False)
+
     # Phase 5 prime-directive experts — when True (the default), the
     # PlanCoverageAnalyst, WithdrawalSequencerAgent and EquityCompAnalystAgent
     # run alongside the core Phase 1 analyst fleet (10 → 13). Their numeric

@@ -68,6 +68,7 @@ from argosy.quality.live_surfaces import (
     EARLIEST_SAFE_AGE_NODE, FI_MARGIN_NODE, canonical_surface_concepts,
     register_canonical_surfaces,
 )
+from argosy.quality.promote_gate import PromoteDecision
 from argosy.quality.publish_gate import OpenFlag, can_publish_plan
 from argosy.quality.surface_rendering import (
     register_surface_concepts, recheck_coherence,
@@ -104,17 +105,21 @@ class IncrementalPlanDisabled(RuntimeError):
 
 
 def _flag_on() -> bool:
-    """Read ARGOSY_INCREMENTAL_PLAN via settings, falling back to os.environ.
+    """True when the living-plan incremental cutover is enabled.
+
+    Precedence: an explicit ``ARGOSY_INCREMENTAL_PLAN`` env var ALWAYS wins
+    (tests/scripts/the demo set it directly, after any settings cache is warm);
+    otherwise the configured default (``Settings.argosy_incremental_plan``).
     Truthy values: 1/true/yes/on (case-insensitive)."""
-    val: str | None = None
+    env = os.environ.get(FLAG_ENV)
+    if env is not None:
+        return str(env).strip().lower() in {"1", "true", "yes", "on"}
     try:
         from argosy.config import get_settings
 
         val = getattr(get_settings(), FLAG_ENV.lower(), None)
     except Exception:  # noqa: BLE001 — config optional / absent attr
         val = None
-    if val is None:
-        val = os.environ.get(FLAG_ENV)
     if isinstance(val, bool):
         return val
     return str(val or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -131,6 +136,10 @@ class CycleResult:
     replay_ref: str | None = None
     promotable: bool = False
     graph: DerivationGraph | None = None
+    # The fail-closed publish decision (authorities + open coherence/hard flags),
+    # set only when an authority set is supplied. The /accept cutover reads this
+    # so the route and the cycle agree on promotability by construction.
+    publish_decision: "PromoteDecision | None" = None
 
 
 @dataclass
@@ -405,6 +414,7 @@ def run_incremental_cycle(
     publish_flags += [
         OpenFlag(node_key=q["target_node_key"], kind="hard") for q in real_questions
     ]
+    decision = None
     if authorities is not None:
         decision = can_publish_plan(authorities=authorities, open_flags=publish_flags)
         promotable = decision.can_promote
@@ -424,6 +434,7 @@ def run_incremental_cycle(
         replay_ref=replay_ref,
         promotable=promotable,
         graph=graph,
+        publish_decision=decision,
     )
 
 

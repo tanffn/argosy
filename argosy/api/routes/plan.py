@@ -3187,7 +3187,39 @@ def post_draft_accept(
             "whole_artifact_reader": read_reader_verdict(db, pv.decision_run_id),
             "rederivation": "APPROVE" if _rederiv_clear else "BLOCK",
         }
-        decision = evaluate_promotion(authorities)
+
+        # Living-plan cutover (ARGOSY_INCREMENTAL_PLAN): build the derivation
+        # graph for this draft, recheck cross-surface coherence, and fail closed
+        # on any open coherence/hard flag IN ADDITION TO the authority set — so a
+        # promoted plan's canonical surfaces (FI verdict/tile, retirement age,
+        # net-worth bases, US-situs) are mutually consistent by construction.
+        # The cycle reuses the SAME can_publish_plan the route reads, so they
+        # agree. Degrades to the authority-only path if the graph can't be built
+        # (no snapshot / resolver pending) — synthesis stays the fallback.
+        decision = None
+        from argosy.orchestrator.flows import incremental_plan as _inc
+        if _inc._flag_on():
+            try:
+                _cycle = _inc.run_incremental_cycle(
+                    db, user_id=user_id, decision_run_id=pv.decision_run_id,
+                    change_requests=[], participants=None, persist=True,
+                    authorities=authorities,
+                )
+                decision = _cycle.publish_decision
+                if decision is not None and _cycle.open_flags:
+                    logger.info(
+                        "plan.accept.incremental_open_flags draft=%s flags=%s",
+                        draft_id, _cycle.open_flags,
+                    )
+            except Exception as exc:  # noqa: BLE001 — degrade to authority-only
+                logger.warning(
+                    "plan.accept.incremental_gate_unavailable draft=%s err=%s; "
+                    "falling back to authority-only evaluate_promotion",
+                    draft_id, exc,
+                )
+                decision = None
+        if decision is None:
+            decision = evaluate_promotion(authorities)
         if not decision.can_promote:
             if override_promote_gate:
                 _publish(
