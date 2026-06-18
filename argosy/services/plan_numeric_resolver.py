@@ -1558,7 +1558,11 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
         age_verdict,
         "  ^ fi_age (full-FI/perpetuity trajectory marker) and any 'portfolio crosses the "
         "FI target in year N / today' projection are NOT the retirement age — NEVER present "
-        "them as 'you can retire at X'. Every age-bearing surface must equal this VERDICT.",
+        "them as 'you can retire at X'. Every age-bearing surface must equal this VERDICT. "
+        "If you size a FIRE bridge sleeve from a LATER age (the fi_age, ~49) to pension, "
+        "state EXPLICITLY that the bridge spans fi_age→pension and is DISTINCT from the "
+        "earliest-safe retirement age above — the bridge's start age does NOT contradict, "
+        "supersede, or undercut the headline retirement age.",
     ]
 
     # Canonical RSU-VEST-POLICY verdict — the recurring contradiction was 'hold vested NVDA

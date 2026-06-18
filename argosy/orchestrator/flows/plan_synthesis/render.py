@@ -1072,17 +1072,24 @@ def render_trajectory_reconciliation_appendix(
     if savings_m is not None and r_real is not None and fi_total_m is not None:
         n_to_total = years_to(a0_nis_m, fi_total_m, savings_m, r_real)
 
-    lines.append("### When does the portfolio cross the FI target?")
+    lines.append("### When does the portfolio cross each FI threshold?")
+    lines.append("")
+    lines.append(
+        "Two DISTINCT thresholds — crossing the perpetuity BASE is NOT reaching "
+        "FI. Full capital sufficiency is the TOTAL-CAPITAL row; the headline FI "
+        "VERDICT is keyed to that row, never to the base crossing."
+    )
     lines.append("")
     lines.append("| Anchor | Threshold (₪M) | Crossed at | Source |")
     lines.append("|---|---|---|---|")
     lines.append(
-        f"| FI perpetuity base | {_fmt_nis_m(fi_target).lstrip('₪')} | "
+        f"| FI perpetuity base (partial — NOT full FI) | "
+        f"{_fmt_nis_m(fi_target).lstrip('₪')} | "
         f"{year_of(n_to_fi)} | `retirement.fi_target_nis` "
         f"({fi_target.source_locator}) |"
     )
     lines.append(
-        f"| FI total capital (base + reserve) | "
+        f"| FI total capital (base + reserve) — full sufficiency | "
         f"{_fmt_nis_m(fi_total).lstrip('₪')} | {year_of(n_to_total)} | "
         f"`retirement.fi_total_capital_nis` |"
     )
