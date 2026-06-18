@@ -149,10 +149,19 @@ tax lot — does not only mark existing dependents stale; it **creates new nodes
 (the new holding's value node, its surface rows, its set-membership in every set-query edge).
 Propagation runs over the *expanded* graph, not a static closure.
 
-**Publish blocker (codex Theme B):** a plan is promotable ONLY when **no node carries an open
-hard/coherence `status_flag`** — this is the `promote_gate` already wired into `/accept`
-(fail-closed across all authorities). Hash-validity alone never authorizes publication; an
-unresolved hard finding blocks it.
+**Publish blocker — ONE verification surface for steady-state AND migration (closes the
+codex re-review's asymmetry finding):** there are two distinct checks, do not conflate them:
+- **Per-change coherence recheck (continuous, cheap):** the deterministic gate + one
+  whole-artifact reader pass after every change. This catches cross-surface contradictions
+  fast; it is NOT the promotion authority.
+- **Promotion gate (before a plan becomes `current`):** the FULL `promote_gate` authority set
+  — codex / deterministic gate / fund_manager / whole-artifact reader / rederivation —
+  fail-closed, **identical for steady-state promotion and for migration's baseline admission.**
+  codex's re-derivation runs scoped to the **changed derived-value nodes** (net worth,
+  US-situs, NVDA weight, FI), so it is targeted rather than a full re-review, but it is NEVER
+  dropped from promotion. A plan is promotable ONLY when no node carries an open
+  hard/coherence `status_flag` AND every promote_gate authority clears. Hash-validity alone
+  never authorizes publication.
 
 Analysts re-run **only** when a change targets an input they own and that input is stale —
 not all 11 from zero (Layer-3 follow-on; see Phasing).
@@ -164,10 +173,11 @@ not all 11 from zero (Layer-3 follow-on; see Phasing).
   from recipes + citations + declared predicates.
 - **Migration must VERIFY, not just reproduce (codex Theme D).** A round-trip proves the graph
   reproduces the existing surfaces — it does NOT prove they are correct. So hydration runs the
-  **full verification once** (gate + reader + codex) on the hydrated graph and only admits a
+  **same promotion gate** (the full `promote_gate` authority set — gate / reader / codex /
+  fund_manager / rederivation; see Layer 3) once on the hydrated graph and only admits a
   **clean** baseline; any uncited claim, bad locator, or prose-only reconciliation surfaces as
-  an open flag to fix before the graph is trusted. We do not inherit the old plan's defects as
-  "valid graph state."
+  an open flag to fix before the graph is trusted. Migration and steady-state share ONE
+  verification surface — neither can promote what the other would reject.
 - **Keep the from-scratch synthesizer** as (a) the cold-start path (new user, no plan) and
   (b) an explicit "full rebuild" escape hatch. **Steady state = incremental.**
 
