@@ -84,6 +84,19 @@ def test_fi_shock_passes_when_claim_is_qualified():
     assert check_fi_sufficiency_under_shock(shock_result=_SHOCK_BREAKS, plan_text=text) == []
 
 
+def test_fi_shock_treats_cannot_be_claimed_as_a_denial():
+    """'FI cannot be claimed reached' is a DENIAL of sufficiency, not an
+    assertion — it must not fire. Regression: 'cannot'/'can't' were missing from
+    the negation set, so the honest 'FI cannot be claimed reached' line in a live
+    draft (pv53) was wrongly flagged."""
+    for text in (
+        "Accumulation must continue and FI cannot be claimed reached.",
+        "FI can't be claimed reached at the current mark.",
+        "FI can not yet be claimed reached.",
+    ):
+        assert check_fi_sufficiency_under_shock(shock_result=_SHOCK_BREAKS, plan_text=text) == [], text
+
+
 def test_fi_shock_passes_when_shock_survives():
     text = "Capital sufficiency reached — perpetuity and full target both clear."
     assert check_fi_sufficiency_under_shock(shock_result=_SHOCK_SURVIVES, plan_text=text) == []

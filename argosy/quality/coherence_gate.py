@@ -54,7 +54,7 @@ _SHOCK_QUALIFIER_RE = re.compile(
 # "below the base", "short of the target") — must NOT be flagged.
 _NEGATION_RE = re.compile(
     r"\b(?:not|isn't|is not|won't|will not|not yet|no longer|below|short of|"
-    r"fails? to|does not|doesn't|never)\b",
+    r"fails? to|does not|doesn't|never|cannot|can't|can not)\b",
     re.IGNORECASE,
 )
 # Split into sentence-ish clauses on terminal punctuation / newlines.

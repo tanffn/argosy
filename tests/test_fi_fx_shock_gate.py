@@ -26,6 +26,19 @@ def test_planted_defect_unqualified_claim_breaks_under_fx_shock() -> None:
     assert violations[0].check is GateCheck.FI_FX_SHOCK_SUFFICIENCY
 
 
+def test_cannot_be_claimed_reached_is_a_denial_not_an_assertion() -> None:
+    """'FI cannot be claimed reached' DENIES sufficiency — must not fire. Same
+    pv53 regression as the NVDA gate: 'cannot'/'can't' were absent from the
+    negation set, flagging an honest not-reached statement."""
+    fx_shock_result = {
+        "fx_shock_-0.10": {"total_reached": False, "perpetuity_reached": False, "net_worth_nis": 10_713_284}
+    }
+    plan_text = "Accumulation must continue and FI cannot be claimed reached."
+    assert check_fi_sufficiency_under_fx_shock(
+        fx_shock_result=fx_shock_result, plan_text=plan_text
+    ) == []
+
+
 def test_qualified_claim_with_fx_caveat_in_same_sentence_passes() -> None:
     """Same breaking shock, but the sentence carries the FX caveat → no flag."""
     fx_shock_result = {
