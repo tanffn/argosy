@@ -28,6 +28,19 @@ from argosy.quality.freshness_gate import (
     check_input_freshness,
     check_output_date_staleness,
 )
+from argosy.quality.figure_registry import (
+    FigureKind, FigureRecord, Materiality, OwnerRole, OwnerSpec,
+    OWNER_MAP, owner_for, build_figure_registry, validate_figure,
+)
+from argosy.quality.flow_events import (
+    ComplianceFinding,
+    CrossModelValidation,
+    Escalation,
+    FlowEventKind,
+    ZigZagAction,
+    ZigZagRound,
+    event_kind,
+)
 from argosy.quality.fx_gate import check_fx_unit_direction
 from argosy.quality.numeric_source_gate import check_headline_numeric_source
 from argosy.quality.plan_output_gate import (
@@ -57,4 +70,20 @@ __all__ = [
     "check_jargon_leak",
     "check_section_coverage",
     "gate_plan_output",
+    "FigureKind",
+    "FigureRecord",
+    "Materiality",
+    "OwnerRole",
+    "OwnerSpec",
+    "OWNER_MAP",
+    "owner_for",
+    "build_figure_registry",
+    "validate_figure",
+    "ComplianceFinding",
+    "CrossModelValidation",
+    "Escalation",
+    "FlowEventKind",
+    "ZigZagAction",
+    "ZigZagRound",
+    "event_kind",
 ]
