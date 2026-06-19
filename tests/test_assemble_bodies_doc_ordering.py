@@ -85,7 +85,12 @@ def test_fact_placeholders_are_rendered_into_the_persisted_body(monkeypatch):
     monkeypatch.setattr(flow, "_strip_history_leak", lambda x: x)
     monkeypatch.setattr(flow, "_strip_jargon", lambda x: x)
 
-    output = SimpleNamespace(long=object(), medium=object(), short=object(), sections=[])
+    # A structured section carrying a {{fact:}} token in its client-facing body —
+    # sections_json must be rendered too (the live pv54 leak was an action item).
+    _section = SimpleNamespace(
+        model_dump=lambda mode="json": {"title": "T", "body_md": "NVDA at {{fact:fx.usd_nis}}."}
+    )
+    output = SimpleNamespace(long=object(), medium=object(), short=object(), sections=[_section])
     bodies = orch._assemble_draft_bodies(
         session=object(), output=output, user_id="u",
         decision_run_id="plan-synth-1", alternatives_sleeve=None,
@@ -95,6 +100,11 @@ def test_fact_placeholders_are_rendered_into_the_persisted_body(monkeypatch):
     assert "{{fact:" not in long_md, f"raw placeholder leaked into body: {long_md!r}"
     assert "3.000" in long_md  # fx rendered
     assert "age 46" in long_md  # canonical-age fact rendered
+    # sections_json must be rendered too — the live pv54 leak was a section body.
+    assert "{{fact:" not in bodies["sections_json"], (
+        f"raw placeholder leaked into sections_json: {bodies['sections_json']!r}"
+    )
+    assert "3.000" in bodies["sections_json"]
     assert seen_kwargs.get("include_canonical_ages") is True, (
         "the render manifest must be built with include_canonical_ages=True so "
         "canonical-age placeholders (earliest_safe_age) resolve instead of leaking"

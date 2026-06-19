@@ -3547,6 +3547,13 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
         _long_md = _long_md.rstrip() + "\n\n" + _appendices
     _medium_md = _pkg._horizon_md_user(output.medium)
     _short_md = _pkg._horizon_md_user(output.short)
+    # Build the sections JSON HERE (not at return) so it flows through the SAME
+    # placeholder-render + fail-safe path as the horizon bodies. The structured
+    # sections carry {{fact:}} tokens in their body_md/evidence too and are
+    # client-facing (action items, derivation blocks) — they must not leak raw.
+    _sections_json = _json.dumps(
+        [s.model_dump(mode="json") for s in output.sections]
+    )
 
     # #24 PRIMARY gate — scrub headline numbers against the deterministic
     # resolver manifest so a synth-fabricated/stale figure never reaches the
@@ -3592,6 +3599,10 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
                 _long_md = render_placeholders(_long_md, _manifest, strict=False)
                 _medium_md = render_placeholders(_medium_md, _manifest, strict=False)
                 _short_md = render_placeholders(_short_md, _manifest, strict=False)
+                # The rendered values (₪11.69M, 12.0%, age 46) carry no JSON-special
+                # characters, so substituting tokens inside the serialized JSON
+                # string keeps it valid JSON while single-sourcing the section bodies.
+                _sections_json = render_placeholders(_sections_json, _manifest, strict=False)
     except Exception as exc:  # noqa: BLE001 — scrub is defense-in-depth
         log.warning(
             "plan_synthesis.headline_scrub_failed",
@@ -3603,11 +3614,14 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
     # unresolved, downgrade any surviving placeholder to the sanctioned pending
     # literal rather than ship literal braces. Runs unconditionally so it cannot be
     # bypassed by an exception in the render path (the bug that leaked 77 tokens).
-    if "{{fact:" in (_long_md + _medium_md + _short_md):
+    if "{{fact:" in (_long_md + _medium_md + _short_md + _sections_json):
         import re as _re
         from argosy.quality.fact_registry import PENDING_LABEL as _PENDING
         _leftover = _re.compile(r"\{\{fact:[A-Za-z0-9_.]+\}\}")
-        _n_left = sum(len(_leftover.findall(t)) for t in (_long_md, _medium_md, _short_md))
+        _n_left = sum(
+            len(_leftover.findall(t))
+            for t in (_long_md, _medium_md, _short_md, _sections_json)
+        )
         log.warning(
             "plan_synthesis.fact_placeholders_unrendered",
             user_id=user_id, decision_run_id=decision_run_id, count=_n_left,
@@ -3615,6 +3629,7 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
         _long_md = _leftover.sub(_PENDING, _long_md)
         _medium_md = _leftover.sub(_PENDING, _medium_md)
         _short_md = _leftover.sub(_PENDING, _short_md)
+        _sections_json = _leftover.sub(_PENDING, _sections_json)
 
     # De-jargon then strip history leaks over the FULL assembled body (the
     # appendix is included). Order: jargon → history, matching the prior inline.
@@ -3630,9 +3645,7 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
         "horizon_medium_md_audit": _pkg._horizon_md_audit(output.medium),
         "horizon_short_md_audit": _pkg._horizon_md_audit(output.short),
         "target_allocation_json": _target_allocation_json,
-        "sections_json": _json.dumps(
-            [s.model_dump(mode="json") for s in output.sections]
-        ),
+        "sections_json": _sections_json,
     }
 
 
