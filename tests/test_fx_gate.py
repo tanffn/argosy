@@ -34,3 +34,25 @@ def test_usd_ils_alias_is_scanned():
 
 def test_no_inputs_is_clean():
     assert check_fx_unit_direction(plan_text="", fx_usd_nis=None) == []
+
+
+def test_duration_window_not_read_as_rate():
+    """'BOI USD/NIS 90-day low → high' states a 90-DAY window, not a rate of 90.
+    The number is a duration (suffixed -day), not the pair value — must not flag."""
+    text = "| A6 | FX USD/NIS band | 2.81 → 3.16 | BOI USD/NIS 90-day low → high |"
+    assert check_fx_unit_direction(plan_text=text, fx_usd_nis=None) == []
+
+
+def test_currency_amount_after_label_not_read_as_rate():
+    """'every 0.10 move in USD/NIS = ₪386,527 of net worth' states a ₪ SENSITIVITY
+    amount, not the rate. A ₪/$ sign before the number marks it an amount — skip."""
+    text = "FX sensitivity: every 0.10 move in USD/NIS = ₪386,527 of net worth."
+    assert check_fx_unit_direction(plan_text=text, fx_usd_nis=None) == []
+
+
+def test_real_inverted_rate_still_flagged_alongside_duration():
+    """Guard: the duration/amount carve-outs must not blind the gate to a genuine
+    inverted rate elsewhere in the same text."""
+    text = "BOI USD/NIS 90-day band. Elsewhere the plan says USD/NIS of 0.33."
+    viol = check_fx_unit_direction(plan_text=text, fx_usd_nis=None)
+    assert len(viol) == 1

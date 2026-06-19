@@ -31,9 +31,22 @@ _FX_PLAUSIBLE_HI = 4.5
 # rate. ~15-char window keeps the number bound to its label, not a later figure.
 _FX_LABEL_NUM_RE = re.compile(
     r"USD\s*/\s*(?:NIS|ILS)"      # the pair label (NIS or ILS alias)
-    r"[^0-9]{0,15}?"              # up to ~15 non-digit chars ("of", "at", ":", "=")
-    r"(\d+(?:\.\d+)?)"            # the rate number
-    r"\s*(%?)",                   # optional immediate percent sign
+    r"(?P<gap>[^0-9]{0,15}?)"     # up to ~15 non-digit chars ("of", "at", ":", "=")
+    r"(?P<num>\d+(?:\.\d+)?)"     # the rate number
+    r"\s*(?P<pct>%?)",            # optional immediate percent sign
+    re.IGNORECASE,
+)
+
+# A currency sign in the gap means the bound number is an AMOUNT, not the rate
+# ("every 0.10 move in USD/NIS = ₪386,527 of net worth" — ₪386,527 is the
+# sensitivity, not the pair value). A bare "USD/NIS 3.02" has no sign → still scanned.
+_CURRENCY_SIGNS = ("₪", "$", "€", "£", "¥")
+
+# A duration unit right after the number means it is a WINDOW length, not a rate
+# ("BOI USD/NIS 90-day low → high" — 90 is the look-back, the rate is stated
+# separately). Anchored at the char after the number so only an immediate suffix counts.
+_DURATION_SUFFIX_RE = re.compile(
+    r"^\s*-?\s*(?:day|days|week|weeks|month|months|year|years|yr|yrs|quarter|quarters)\b",
     re.IGNORECASE,
 )
 
@@ -68,9 +81,18 @@ def check_fx_unit_direction(
             )
         )
 
-    for m in _FX_LABEL_NUM_RE.finditer(plan_text or ""):
-        num = float(m.group(1))
-        is_percent = m.group(2) == "%"
+    text = plan_text or ""
+    for m in _FX_LABEL_NUM_RE.finditer(text):
+        # Carve-out 1: a currency sign in the gap → the number is an AMOUNT, not
+        # the rate (an FX-sensitivity ₪/$ figure stated next to the pair label).
+        if any(sign in m.group("gap") for sign in _CURRENCY_SIGNS):
+            continue
+        # Carve-out 2: a duration unit immediately after → a WINDOW length (e.g.
+        # "USD/NIS 90-day"), not the pair value.
+        if _DURATION_SUFFIX_RE.match(text[m.end():]):
+            continue
+        num = float(m.group("num"))
+        is_percent = m.group("pct") == "%"
         if is_percent:
             violations.append(
                 GateViolation(
