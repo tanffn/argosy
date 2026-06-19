@@ -1,8 +1,0 @@
-VERDICT: COMMIT AS-IS
-
-1. None.
-
-NON-BLOCKING notes:
-- Verified with `.\.venv\Scripts\python.exe -m pytest tests/test_allocation_engine.py tests/test_contracts.py -q`: 29 passed.
-- Probed the called-out edge cases: mixed real legacy plus phantom, renormalize plus phantom, swap source whose twin is unnamed, and `named_total == 0`. No conservation or double-count failure found.
-- Cash-only remains cash-capped; pure rebalance conserves proceeds; rebalance-plus-cash sizes the book off holdings plus cash without the prior buy-then-sell artifact.

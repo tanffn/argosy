@@ -90,3 +90,8 @@ argosy/services/.progress/
 
 # Knowledge-graph output (regenerated via /graphify; never committed).
 graphify-out/
+
+# Scratch / review workspace (handover notes, codex-review scripts, run logs).
+# Never committed — like tools/codex-tandem/, this is working scratch only.
+tmp_review/
+result.md
