@@ -304,3 +304,51 @@ def test_event_kind_helper_over_heterogeneous_list():
         FlowEventKind.ESCALATION,
         FlowEventKind.COMPLIANCE_FINDING,
     ]
+
+
+# --- codex impl-review fixes (ZigZag) ---
+import pytest as _pytest
+from argosy.quality.flow_events import (
+    CrossModelValidation as _CMV,
+    ComplianceFinding as _CF,
+    ZigZagRound as _ZZ,
+    ZigZagAction as _ZA,
+)
+
+
+def test_diverge_requires_divergence():
+    with _pytest.raises(ValueError):
+        _CMV(figure_id="f", producer_model="opus", validator_model="codex",
+             producer_value="1", validator_value="2", verdict="diverge")  # no divergence
+    # with divergence -> ok
+    _CMV(figure_id="f", producer_model="opus", validator_model="codex",
+         producer_value="1", validator_value="2", verdict="diverge", divergence="1 vs 2")
+
+
+def test_agree_must_not_carry_divergence():
+    with _pytest.raises(ValueError):
+        _CMV(figure_id="f", producer_model="opus", validator_model="codex",
+             producer_value="1", validator_value="1", verdict="agree", divergence="x")
+
+
+def test_cross_model_requires_distinct_models():
+    with _pytest.raises(ValueError):
+        _CMV(figure_id="f", producer_model="opus", validator_model="opus",
+             producer_value="1", validator_value="1", verdict="agree")
+
+
+def test_compliance_finding_validates_materiality_and_kind():
+    with _pytest.raises(ValueError):
+        _CF(finding_kind="contradiction", root_cause_owner="tax",
+            severity="blocker", materiality="critical")  # bad materiality
+    with _pytest.raises(ValueError):
+        _CF(finding_kind="bogus_kind", root_cause_owner="tax",
+            severity="blocker", materiality="high")      # bad finding_kind
+    # valid -> ok
+    _CF(finding_kind="contradiction", root_cause_owner="tax",
+        severity="blocker", materiality="high")
+
+
+def test_zigzag_round_coerces_list_evidence_to_tuple():
+    z = _ZZ(edge="tax->investment", round=1, action=_ZA.PUSHBACK, evidence=["a", "b"])
+    assert isinstance(z.evidence, tuple) and z.evidence == ("a", "b")

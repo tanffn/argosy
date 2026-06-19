@@ -59,7 +59,9 @@ def test_unknown_key_is_flagged_not_crashed():
 
 
 def _rec(**kw):
-    base = dict(id="x", value=1.0, unit="nis",
+    # evidence present by default — every publishable figure must carry it
+    # (codex impl review #1); no-evidence cases pass evidence=() explicitly.
+    base = dict(id="x", value=1.0, unit="nis", evidence=("src:1",),
                 kind=FigureKind.FORMULA_RESULT, owner=OwnerRole.RETIREMENT_FI)
     base.update(kw)
     return FigureRecord(**base)
@@ -81,7 +83,7 @@ def test_source_fact_resolves_on_resolver():
 
 def test_material_judgment_no_evidence_is_blocked():
     out = validate_figure(_rec(kind=FigureKind.RECOMMENDATION,
-                               materiality=Materiality.HIGH))
+                               materiality=Materiality.HIGH, evidence=()))
     assert out.status == "blocked"
 
 
@@ -107,12 +109,65 @@ def test_low_materiality_judgment_resolves_on_evidence():
 
 def test_low_materiality_judgment_no_evidence_is_blocked():
     out = validate_figure(_rec(kind=FigureKind.ASSUMPTION,
-                               materiality=Materiality.LOW))
+                               materiality=Materiality.LOW, evidence=()))
     assert out.status == "blocked"
 
 
 def test_none_value_stays_pending():
     assert validate_figure(_rec(value=None, validated_by="resolver")).status == "pending"
+
+
+# --- codex impl-review fixes (ZigZag) ---
+
+def test_deterministic_no_evidence_is_blocked():
+    """A formula_result with no evidence must not resolve even when cleared
+    (codex #1)."""
+    out = validate_figure(_rec(validated_by="resolver", evidence=()))
+    assert out.status == "blocked"
+
+
+def test_uncategorized_figure_is_blocked_fail_closed():
+    """An un-owned (uncategorized) figure can never ship (codex #2)."""
+    out = validate_figure(_rec(validated_by="resolver", uncategorized=True))
+    assert out.status == "blocked"
+
+
+def test_non_finite_value_stays_pending():
+    """nan/inf are not publishable (codex #4)."""
+    import math
+    assert validate_figure(_rec(value=math.nan, validated_by="resolver")).status == "pending"
+    assert validate_figure(_rec(value=math.inf, validated_by="resolver")).status == "pending"
+
+
+def test_string_claim_value_is_publishable():
+    """A non-numeric claim string is a valid value (e.g. a 'suitable' assertion)."""
+    out = validate_figure(_rec(value="suitable", kind=FigureKind.RECOMMENDATION,
+                               materiality=Materiality.LOW, evidence=("src:1",)))
+    assert out.status == "resolved"
+
+
+def test_materiality_robust_to_string_hydration():
+    """materiality passed as a plain str (JSON hydration) is normalized so the
+    LOW branch still fires (codex #5)."""
+    out = validate_figure(_rec(kind=FigureKind.ASSUMPTION, materiality="low",
+                               evidence=("src:1",)))
+    assert out.status == "resolved"
+
+
+def test_frozen_record_coerces_mutable_sequences_to_tuple():
+    """A list passed for evidence/consult is coerced to a tuple so a 'frozen'
+    record can't be mutated through it (codex #7)."""
+    r = FigureRecord(id="x", value=1.0, unit="nis", kind=FigureKind.FORMULA_RESULT,
+                     owner=OwnerRole.RETIREMENT_FI, evidence=["a", "b"], consult=[OwnerRole.TAX])
+    assert isinstance(r.evidence, tuple) and r.evidence == ("a", "b")
+    assert isinstance(r.consult, tuple)
+
+
+def test_estate_keys_owned_by_estate_not_investment():
+    """Estate-tax figures must route to Estate, not be caught by the broad
+    concentration./fallback rules (codex #3)."""
+    assert owner_for("concentration.us_situs_estate_nis").owner is OwnerRole.ESTATE
+    assert owner_for("estate.us_situs_exposure_nis").owner is OwnerRole.ESTATE
 
 
 def test_build_registry_wraps_with_ownership_and_resolves_formula():

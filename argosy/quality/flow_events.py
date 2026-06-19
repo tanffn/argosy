@@ -39,6 +39,11 @@ _VALID_SEVERITIES = frozenset({"blocker", "amber", "yellow"})
 _VALID_DISPOSITIONS = frozenset(
     {"open", "routed", "remediated", "escalated", "accepted_risk"}
 )
+_VALID_MATERIALITY = frozenset({"high", "medium", "low"})
+_VALID_FINDING_KINDS = frozenset({
+    "contradiction", "unsupported", "stale", "unsuitable",
+    "missing_disclosure", "bad_method", "narrative_conflict", "extraction_error",
+})
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,10 @@ class ZigZagRound:
     evidence: tuple[str, ...] = ()
     before_value: str | None = None
     after_value: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.evidence, tuple):
+            object.__setattr__(self, "evidence", tuple(self.evidence))
 
     @property
     def kind(self) -> FlowEventKind:
@@ -84,6 +93,18 @@ class CrossModelValidation:
             raise ValueError(
                 f"verdict must be one of {sorted(_VALID_VERDICTS)}, "
                 f"got {self.verdict!r}"
+            )
+        # A diverge verdict must explain the gap; an agree verdict must NOT carry
+        # one — otherwise the telemetry contradicts itself (codex impl review #6).
+        if self.verdict == "diverge" and not (self.divergence and self.divergence.strip()):
+            raise ValueError("verdict 'diverge' requires a non-empty divergence")
+        if self.verdict == "agree" and self.divergence:
+            raise ValueError("verdict 'agree' must not carry a divergence")
+        # Cross-model means two DIFFERENT models; same model is not a cross-check.
+        if self.producer_model == self.validator_model:
+            raise ValueError(
+                "cross-model validation requires distinct producer/validator models, "
+                f"both were {self.producer_model!r}"
             )
 
     @property
@@ -138,6 +159,20 @@ class ComplianceFinding:
                 f"disposition must be one of {sorted(_VALID_DISPOSITIONS)}, "
                 f"got {self.disposition!r}"
             )
+        # materiality + finding_kind are part of the schema vocabulary — enforce
+        # them so a typo can't enter telemetry silently (codex impl review #6).
+        if self.materiality not in _VALID_MATERIALITY:
+            raise ValueError(
+                f"materiality must be one of {sorted(_VALID_MATERIALITY)}, "
+                f"got {self.materiality!r}"
+            )
+        if self.finding_kind not in _VALID_FINDING_KINDS:
+            raise ValueError(
+                f"finding_kind must be one of {sorted(_VALID_FINDING_KINDS)}, "
+                f"got {self.finding_kind!r}"
+            )
+        if not isinstance(self.evidence, tuple):
+            object.__setattr__(self, "evidence", tuple(self.evidence))
 
     @property
     def kind(self) -> FlowEventKind:

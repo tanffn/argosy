@@ -8,6 +8,7 @@ derivation math. See docs/superpowers/specs/2026-06-19-financial-advisory-team-d
 from __future__ import annotations
 
 import dataclasses
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -75,6 +76,22 @@ class FigureRecord:
     status: str = "pending"      # pending | resolved | blocked
     version: int = 0
     timestamp: str | None = None
+    # True when no owner could be assigned (owner_for fell back to the Lead). A
+    # registry consumer MUST fail-closed on these — an un-owned figure can never
+    # be `resolved` (codex impl review #2).
+    uncategorized: bool = False
+
+    def __post_init__(self) -> None:
+        # Coerce the tuple fields so a caller passing a mutable list cannot later
+        # mutate this "frozen" record's telemetry (codex impl review #7).
+        for fld in ("consult", "inputs", "evidence"):
+            val = getattr(self, fld)
+            if not isinstance(val, tuple):
+                object.__setattr__(self, fld, tuple(val))
+        # Normalize materiality to the enum so `==`/`is` are robust after a
+        # JSON/string hydration (codex impl review #5).
+        if not isinstance(self.materiality, Materiality):
+            object.__setattr__(self, "materiality", Materiality(self.materiality))
 
 
 @dataclass(frozen=True)
@@ -122,12 +139,17 @@ OWNER_MAP: dict[str, OwnerSpec] = {
     "concentration.nvda_eligible_now_sh": OwnerSpec(_T, _FR, _MED),
     "concentration.nvda_analyst_floor_pct": OwnerSpec(_I, _FR, _MED),
     "concentration.us_situs_estate_exposure_nis": OwnerSpec(OwnerRole.ESTATE, _FR, _HI),
+    # The collections/graph also key the same estate-tax figure differently;
+    # own it explicitly so the broad `concentration.` prefix can't claim it as
+    # an Investment figure (codex impl review #3).
+    "concentration.us_situs_estate_nis": OwnerSpec(OwnerRole.ESTATE, _FR, _HI),
     "spend.mc_central_nis": OwnerSpec(_C, _MP, _HI),
     "spend.mc_stress_nis": OwnerSpec(_C, _MP, _MED),
 }
 
 # Prefix rules own whole namespaces (incl. dynamic keys). First match wins.
 _PREFIX_RULES: tuple[tuple[str, OwnerSpec], ...] = (
+    ("estate.", OwnerSpec(OwnerRole.ESTATE, _FR, _HI)),  # before concentration.
     ("allocation.", OwnerSpec(_I, _FR, _MED)),
     ("concentration.", OwnerSpec(_I, _FR, _MED)),
     ("fx.", OwnerSpec(_B, _FR, _MED)),
@@ -159,25 +181,44 @@ _DETERMINISTIC_KINDS = {FigureKind.FORMULA_RESULT, FigureKind.SOURCE_FACT}
 _DETERMINISTIC_CLEARANCE = {"resolver", "recompute"}
 
 
+def _publishable_value(value) -> bool:
+    """A value may be published only if it is a non-empty claim string or a
+    FINITE number — never nan/inf (codex impl review #4)."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, bool):  # bool is an int subclass; not a figure value
+        return False
+    if isinstance(value, (int, float)):
+        return math.isfinite(value)
+    return False
+
+
 def validate_figure(record: FigureRecord) -> FigureRecord:
     """Return ``record`` with ``status`` set by the materiality-gated rules.
 
-    None value -> pending. Deterministic kinds -> resolved when cleared by the
-    resolver/recompute, else pending. Judgment kinds: no evidence -> blocked
-    (fail-closed); evidence + LOW -> resolved; evidence + HIGH/MEDIUM + cross-model
-    -> resolved; evidence + HIGH/MEDIUM without cross-model -> pending (awaiting
-    the Phase-3 cross-model validator), never silently resolved."""
-    if record.value is None:
+    Fail-closed throughout. None/non-finite value -> pending. An un-owned
+    (``uncategorized``) figure -> blocked (it has no accountable owner). Every
+    publishable figure — deterministic OR judgment — requires evidence. A
+    deterministic kind also needs resolver/recompute clearance; a judgment kind
+    with LOW materiality resolves on evidence, HIGH/MEDIUM needs the cross-model
+    re-derivation (else pending, awaiting the Phase-3 validator)."""
+    if record.value is None or not _publishable_value(record.value):
         return dataclasses.replace(record, status="pending")
+
+    # An un-owned figure can never ship — fail-closed (codex #2).
+    if record.uncategorized:
+        return dataclasses.replace(record, status="blocked")
+
+    # Every published figure must carry evidence (codex #1).
+    if not record.evidence:
+        return dataclasses.replace(record, status="blocked")
 
     if record.kind in _DETERMINISTIC_KINDS:
         status = "resolved" if record.validated_by in _DETERMINISTIC_CLEARANCE else "pending"
         return dataclasses.replace(record, status=status)
 
-    # judgment kinds
-    if not record.evidence:
-        return dataclasses.replace(record, status="blocked")
-    if record.materiality is Materiality.LOW:
+    # judgment kinds (evidence already confirmed present)
+    if record.materiality == Materiality.LOW:
         return dataclasses.replace(record, status="resolved")
     status = "resolved" if record.validated_by == "cross_model_rederivation" else "pending"
     return dataclasses.replace(record, status=status)
@@ -212,6 +253,7 @@ def build_figure_registry(resolved, *, today: str | None = None) -> dict[str, Fi
             materiality=spec.materiality,
             validated_by=validated_by,
             as_of=today,
+            uncategorized=spec.uncategorized,
         )
         out[key] = validate_figure(rec)
     return out
