@@ -150,7 +150,16 @@ the WHOLE document end-to-end and hunt for failures of COHERENCE OF THE WHOLE:
       context says has already happened, a price the context contradicts).
   (4) REGRESSIONS — content that got WORSE relative to the prior plan (a \
       section dropped, a hedge removed, a previously-stated risk no longer \
-      acknowledged, a number that moved without explanation).
+      acknowledged, a number that moved without explanation). \
+      NOT a regression: a deliberate change away from the prior plan that \
+      BETTER serves the client's standing goal (maximize wealth + earliest SAFE \
+      retirement; over-conservatism that costs retirement years is the explicit \
+      anti-goal) AND whose rationale is stated IN this document — e.g. acting on \
+      a gate the document shows is now satisfied, or no longer headlining an \
+      over-conservative scenario it still discloses as a what-if. The prior \
+      plan is being REPLACED, not ratified; only flag a regression when a \
+      load-bearing caveat/risk is dropped WITHOUT a stated, goal-consistent \
+      reason. When the document gives such a reason, treat it as an improvement.
 
 Quote conflicting passages VERBATIM in ``surfaces_cited`` so a human can \
 locate them. DO NOT re-derive numbers from scratch — a SEPARATE gate owns the \
