@@ -41,4 +41,31 @@ def render_sections_json_from_graph(
     return json.dumps(out, ensure_ascii=False)
 
 
-__all__ = ["render_sections_json_from_graph"]
+_HORIZONS = ("long", "medium", "short")
+
+
+def render_plan_fields_from_graph(
+    graph: DerivationGraph, base_sections: list[dict[str, Any]]
+) -> dict[str, str]:
+    """Assemble the full plan-version field dict from the graph:
+
+      * ``sections_json`` — every section with graph-overridden bodies.
+      * ``horizon_<h>_md`` for h in long/medium/short — that horizon's section
+        bodies (in section order) joined by a blank line.
+
+    Bodies come from :func:`render_sections_json_from_graph`, so the same
+    fail-safe applies (base body kept when the surface is absent/invalid)."""
+    sections_json = render_sections_json_from_graph(graph, base_sections)
+    rendered: list[dict[str, Any]] = json.loads(sections_json)
+    fields: dict[str, str] = {"sections_json": sections_json}
+    for h in _HORIZONS:
+        bodies = [
+            str(s.get("body_md", ""))
+            for s in rendered
+            if str(s.get("horizon", "")) == h
+        ]
+        fields[f"horizon_{h}_md"] = "\n\n".join(b for b in bodies if b)
+    return fields
+
+
+__all__ = ["render_sections_json_from_graph", "render_plan_fields_from_graph"]

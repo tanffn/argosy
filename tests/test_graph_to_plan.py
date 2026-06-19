@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 
 from argosy.quality.derivation_graph import DerivationGraph, Node, NodeKind
-from argosy.quality.graph_to_plan import render_sections_json_from_graph
+from argosy.quality.graph_to_plan import (
+    render_plan_fields_from_graph,
+    render_sections_json_from_graph,
+)
 
 
 def _section(section_id, horizon, body):
@@ -65,3 +68,27 @@ def test_roundtrip_hydrate_then_render_preserves_bodies():
     bodies = {(s["section_id"], s["horizon"]): s["body_md"] for s in out}
     assert bodies[("posture", "long")] == "long posture body"
     assert bodies[("vest", "medium")] == "medium vest body"
+
+
+def test_render_plan_fields_assembles_horizon_markdown():
+    base = [
+        _section("posture", "long", "long body A"),
+        _section("glide", "long", "long body B"),
+        _section("vest", "medium", "medium body"),
+        _section("park", "short", "short body"),
+    ]
+    g = DerivationGraph()
+    for key, val in [("surface:long:posture", "LONG A"),
+                     ("surface:long:glide", "LONG B")]:
+        g.add_node(Node(key=key, kind=NodeKind.SURFACE, value=val))
+        g.get(key).input_hash = g.hash_of(key)
+    fields = render_plan_fields_from_graph(g, base)
+    assert set(fields) >= {"sections_json", "horizon_long_md",
+                           "horizon_medium_md", "horizon_short_md"}
+    # Long horizon md = both long bodies (graph-overridden), in order, joined.
+    assert fields["horizon_long_md"] == "LONG A\n\nLONG B"
+    # Medium/short keep base bodies (no surface override).
+    assert fields["horizon_medium_md"] == "medium body"
+    assert fields["horizon_short_md"] == "short body"
+    # Long md must NOT contain the medium/short bodies.
+    assert "medium body" not in fields["horizon_long_md"]
