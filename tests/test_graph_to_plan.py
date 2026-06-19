@@ -92,3 +92,25 @@ def test_render_plan_fields_assembles_horizon_markdown():
     assert fields["horizon_short_md"] == "short body"
     # Long md must NOT contain the medium/short bodies.
     assert "medium body" not in fields["horizon_long_md"]
+
+
+def test_render_plan_fields_applies_prose_reconcile_seam():
+    """The render bridge accepts an injectable prose-reconcile step (M2 plugs the
+    real reader-driven surgical reconcile here). Deterministic fake: replace a
+    stale figure with the canonical one. Proves prose is reconciled BEFORE the
+    horizon markdown is assembled (so numbers in prose match canonical)."""
+    base = [_section("posture", "long", "FI target is short ₪OLD of the goal.")]
+    g = DerivationGraph()  # no surface override; reconcile does the edit
+
+    def _reconcile(sections):
+        out = []
+        for s in sections:
+            s = dict(s)
+            s["body_md"] = s["body_md"].replace("₪OLD", "₪148,208")
+            out.append(s)
+        return out
+
+    fields = render_plan_fields_from_graph(g, base, reconcile=_reconcile)
+    assert "₪148,208" in fields["horizon_long_md"]
+    assert "₪OLD" not in fields["horizon_long_md"]
+    assert "₪148,208" in fields["sections_json"]

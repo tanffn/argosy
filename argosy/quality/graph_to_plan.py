@@ -12,7 +12,7 @@ Pure: no DB, no LLM. The first piece of the generator-swap render bridge (M1).
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Callable
 
 from argosy.quality.derivation_graph import DerivationGraph
 
@@ -45,7 +45,10 @@ _HORIZONS = ("long", "medium", "short")
 
 
 def render_plan_fields_from_graph(
-    graph: DerivationGraph, base_sections: list[dict[str, Any]]
+    graph: DerivationGraph,
+    base_sections: list[dict[str, Any]],
+    *,
+    reconcile: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
 ) -> dict[str, str]:
     """Assemble the full plan-version field dict from the graph:
 
@@ -54,9 +57,19 @@ def render_plan_fields_from_graph(
         bodies (in section order) joined by a blank line.
 
     Bodies come from :func:`render_sections_json_from_graph`, so the same
-    fail-safe applies (base body kept when the surface is absent/invalid)."""
+    fail-safe applies (base body kept when the surface is absent/invalid).
+
+    ``reconcile`` is the injectable prose-reconcile seam: a function taking the
+    rendered section dicts and returning corrected ones, applied BEFORE the
+    horizon markdown is assembled — so numbers in prose match the canonical
+    surfaces. M2 plugs the reader-driven surgical reconcile
+    (``surface_rendering.reconcile_prose_surface``) in here; tests inject a
+    deterministic fake. When ``None``, bodies pass through unchanged."""
     sections_json = render_sections_json_from_graph(graph, base_sections)
     rendered: list[dict[str, Any]] = json.loads(sections_json)
+    if reconcile is not None:
+        rendered = reconcile(rendered)
+        sections_json = json.dumps(rendered, ensure_ascii=False)
     fields: dict[str, str] = {"sections_json": sections_json}
     for h in _HORIZONS:
         bodies = [
