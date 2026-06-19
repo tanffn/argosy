@@ -35,3 +35,33 @@ def test_render_keeps_base_body_when_surface_absent_or_invalid():
     g = DerivationGraph()  # no surface node for it
     out = json.loads(render_sections_json_from_graph(g, base))
     assert out[0]["body_md"] == "BASE body"
+
+
+def test_roundtrip_hydrate_then_render_preserves_bodies():
+    """hydrate(plan)->graph->render reproduces every section body unchanged — the
+    'verify, not just reproduce' foundation. Uses duck-typed sections (the same
+    attributes add_surface_nodes reads) to keep the round-trip pure."""
+    from types import SimpleNamespace
+
+    from argosy.quality.graph_hydration import add_surface_nodes, recompute_safe
+
+    def _cite(loc):
+        return SimpleNamespace(source_locator=loc)
+
+    secs = [
+        SimpleNamespace(section_id="posture", horizon="long",
+                        body_md="long posture body",
+                        evidence=SimpleNamespace(source_span=[_cite("x")])),
+        SimpleNamespace(section_id="vest", horizon="medium",
+                        body_md="medium vest body",
+                        evidence=SimpleNamespace(source_span=[_cite("y")])),
+    ]
+    g = DerivationGraph()
+    add_surface_nodes(g, secs)
+    recompute_safe(g)
+
+    base = [_section("posture", "long", "STALE"), _section("vest", "medium", "STALE")]
+    out = json.loads(render_sections_json_from_graph(g, base))
+    bodies = {(s["section_id"], s["horizon"]): s["body_md"] for s in out}
+    assert bodies[("posture", "long")] == "long posture body"
+    assert bodies[("vest", "medium")] == "medium vest body"
