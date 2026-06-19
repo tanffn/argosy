@@ -380,6 +380,15 @@ def run_incremental_cycle(
         resolver_values=resolver_values,
     )
 
+    # Bind the just-built graph into the ladder participants so a real owner
+    # agent (RealLadderParticipants) can ground its verdict in each node's live
+    # value + derivation. Deterministic test doubles have no `graph` attr -> skip.
+    if participants is not None and hasattr(participants, "graph"):
+        try:
+            participants.graph = graph
+        except Exception:  # noqa: BLE001 — defensive; never block the cycle
+            pass
+
     # Bind the coherence recheck to the canonical surface->concept map (every
     # surface of a subject reads the same node, so coherence sees identical
     # values — a basis-flip is impossible by construction).

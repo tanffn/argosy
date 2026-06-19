@@ -1,40 +1,32 @@
-"""Real-participant ladder seam (EXPERIMENTAL — not wired to any live path yet).
+"""Real-participant ladder seam — the production LLM wiring for the negotiation
+ladder (M2 of the generator swap).
 
 ``negotiation_ladder.run_ladder`` drives a bounded A<->B<->arbiter dialogue but
 delegates the two LLM judgments to an injected ``LadderParticipants`` protocol
-(so the engine stays deterministic + unit-testable). This module wires that seam
-to the SAME agents the FM-objection ZigZag uses:
+(so the engine stays deterministic + unit-testable). This module wires that seam:
 
-  * peer_round (B, the node OWNER) -> ``AnalystResponderAgent`` (Sonnet). The
-    owner is asked to defend the current value against A's proposed change.
-  * arbiter (the FM) -> ``FundManagerDialogueVerdictAgent`` (Opus). It reads the
-    A<->B turns and classifies:
-      - ESCALATE_TO_USER -> GENUINE_DECISION (a risk-appetite / values call only
-                            the client can make)
-      - everything else  -> EVIDENCE_RESOLVABLE (the FM rules in-fleet)
+  * peer_round (B, the node OWNER) -> ``PlanNodeOwnerAgent`` (Opus). A
+    PURPOSE-BUILT agent that decides RELATIVE TO THE CHANGE — ACCEPT_CHANGE /
+    REJECT_CHANGE / UNRESOLVED — grounded in the node's current value +
+    derivation (gap-1 fix). Mapping is DIRECT, no inversion:
+      - ACCEPT_CHANGE -> B_CONCEDES (apply A's change).
+      - REJECT_CHANGE / UNRESOLVED -> UNRESOLVED (the arbiter rules direction).
+  * arbiter (the FM) -> ``FundManagerDialogueVerdictAgent`` (Opus). Returns the
+    ruling DIRECTION as a third tuple element (``applies``):
+      - ESCALATE_TO_USER     -> GENUINE_DECISION (a client-only values call)
+      - FM_MAINTAINS_OBJECTION -> EVIDENCE_RESOLVABLE, applies=True (apply)
+      - FM_ACCEPTS_ANALYST / FM_REVISES_OBJECTION -> EVIDENCE_RESOLVABLE,
+        applies=False (keep current) -> ARBITER_REJECTED, NOT applied.
 
-KNOWN SEMANTIC GAPS surfaced by the live SWR run (2026-06-18) — why peer_round
-NEVER returns B_CONCEDES and this stays experimental:
-
-  1. ``AnalystResponderAgent``'s CONCEDE/REBUT stance is framed relative to an FM
-     *objection* (CONCEDE = "the objector is right"). In the ladder's "owner
-     responds to a proposed change" frame that label INVERTS: in the live run the
-     analyst returned CONCEDE while its reasoning *rejected* the proposed SWR
-     raise as "anchor-shopping" and *defended* the current value. Trusting the
-     label would auto-apply a change the owner actually rejected. So peer_round
-     treats the reused agent's reply as DEFENSE ONLY (always UNRESOLVED) and lets
-     the FM arbiter rule — a purpose-built owner agent (ACCEPT/REJECT/UNRESOLVED
-     relative to the *change*) is the proper fix.
-  2. (FIXED) ``arbiter`` now returns the ruling DIRECTION as a third tuple
-     element (``applies``): FM_MAINTAINS_OBJECTION -> apply; FM_ACCEPTS_ANALYST /
-     FM_REVISES_OBJECTION -> reject (keep current). ``run_ladder`` maps that to
-     ARBITER_RULED vs the new ARBITER_REJECTED, and ``_apply_change`` only applies
-     on ARBITER_RULED — so an "evidence-resolvable, keep current value" ruling no
-     longer drives an apply (the live SWR run's FM_ACCEPTS_ANALYST now correctly
-     yields ARBITER_REJECTED, not an applied 3.5%).
+History: the live SWR run (2026-06-18) exposed two gaps now BOTH FIXED — (1) the
+reused FM-objection agent's CONCEDE/REBUT inverted in the ladder frame (replaced
+here by the purpose-built owner agent), and (2) ARBITER_RULED ignored ruling
+direction (now ARBITER_RULED vs ARBITER_REJECTED).
 
 Makes a REAL claude.exe call per turn, so it is NEVER constructed in a test path
-— tests inject a deterministic double + assert the mapping with fakes.
+— tests inject a deterministic double + assert the mapping with fakes. The graph
+is bound (``self.graph``) by ``run_incremental_cycle`` after build so the owner
+agent is grounded in the node's live value + derivation.
 """
 from __future__ import annotations
 
@@ -79,53 +71,69 @@ class RealLadderParticipants:
     """LadderParticipants backed by the real analyst-responder + FM-verdict
     agents. Each method makes one live LLM call."""
 
-    def __init__(self, user_id: str, *, owner_role: str | None = None) -> None:
+    def __init__(
+        self, user_id: str, *, owner_role: str | None = None, graph=None,
+    ) -> None:
         self.user_id = user_id
-        self._owner_role_override = owner_role
+        self._owner_role_override = owner_role  # retained for the arbiter framing
+        # The derivation graph (set by run_incremental_cycle after build) so the
+        # owner agent can be grounded in the node's current value + derivation.
+        self.graph = graph
 
-    # ---- B: the node owner responds to A's proposed change ----------------- #
+    def _node_context(self, node_key: str) -> tuple[str, str]:
+        """(current_value, derivation_md) for the node, from the graph. Falls back
+        to '(unavailable)' when no graph is bound."""
+        g = self.graph
+        if g is None or node_key not in set(g.keys()):
+            return "(unavailable)", "(derivation unavailable — no graph bound)"
+        node = g.get(node_key)
+        current = repr(node.value)
+        inbound = {k: repr(g.get(k).value) for k in node.inputs if k in set(g.keys())}
+        if inbound:
+            deriv = (
+                f"computed via {node.compute_version or node.kind.value} from "
+                f"inbound values: {inbound}"
+            )
+        else:
+            deriv = f"{node.kind.value} (no inbound edges)"
+        return current, deriv
+
+    # ---- B: the node owner decides on A's proposed change ------------------ #
     def peer_round(
         self, *, change: ChangeRequest, prior_turns: list[LadderTurn], round: int,
     ) -> tuple[PeerVerdict, str]:
-        from argosy.agents.analyst_responder import AnalystResponderAgent
+        from argosy.agents.plan_node_owner import PlanNodeOwnerAgent
 
-        role = self._owner_role_override or _owner_role_for(change.target_node_key)
-        topic = f"Proposed change to {change.target_node_key}"
-        detail = (
-            f"An agent proposes to set {change.target_node_key} to "
-            f"{_proposed_value_text(change)}. Rationale: {change.rationale}. "
-            "You OWN this derivation. Respond CONCEDE if the change is warranted, "
-            "REBUT if the current value is correct and you can defend it with "
-            "evidence, or CLARIFY if the proposal misreads your derivation."
+        node_key = change.target_node_key
+        current_value, derivation_md = self._node_context(node_key)
+        prior_md = "\n".join(
+            f"[{t.speaker.value}/{t.stance.value}] {t.text}" for t in prior_turns
         )
-        prior_md = "\n".join(f"[{t.speaker.value}/{t.stance.value}] {t.text}" for t in prior_turns)
-        agent = AnalystResponderAgent(user_id=self.user_id)
+        agent = PlanNodeOwnerAgent(user_id=self.user_id)
         try:
             report = agent.run_sync(
-                analyst_role=role,
-                objection_topic=topic,
-                objection_detail=detail,
-                objection_severity="HIGH",
-                prior_agent_report_excerpt=prior_md,
-                prior_decision_audit_token="",
-                prior_agent_report_id=None,
-                user_guidance="",
+                node_key=node_key,
+                current_value=current_value,
+                derivation_md=derivation_md,
+                proposed_value=_proposed_value_text(change),
+                rationale=change.rationale,
+                prior_turns_md=prior_md,
                 decision_id="",
             )
         except Exception as exc:  # noqa: BLE001 — an unresponsive owner is unresolved
-            log.warning("ladder.peer_round node=%s role=%s round=%s err=%s",
-                        change.target_node_key, role, round, exc)
+            log.warning("ladder.peer_round node=%s round=%s err=%s",
+                        node_key, round, exc)
             return PeerVerdict.UNRESOLVED, f"owner response unavailable ({exc})"
         out = getattr(report, "output", report)
-        stance = (getattr(out, "stance", "REBUT") or "REBUT").strip().upper()
+        stance = (getattr(out, "stance", "UNRESOLVED") or "UNRESOLVED").strip().upper()
         reasoning = getattr(out, "reasoning_md", "") or ""
-        log.info(
-            "ladder.peer_round node=%s role=%s round=%s stance=%s",
-            change.target_node_key, role, round, stance,
-        )
-        # Gap (1): the reused agent's CONCEDE label inverts in this frame, so it
-        # is NOT trusted to mean "accept A's change". The owner's reply is
-        # captured as DEFENSE and the FM arbiter rules. Always UNRESOLVED.
+        log.info("ladder.peer_round node=%s round=%s stance=%s", node_key, round, stance)
+        # Purpose-built owner stance maps DIRECTLY (no inversion):
+        #   ACCEPT_CHANGE -> B concedes (apply A's change).
+        #   REJECT_CHANGE / UNRESOLVED -> unresolved; the arbiter rules direction
+        #   (gap-2: ARBITER_RULED applies, ARBITER_REJECTED keeps current value).
+        if stance == "ACCEPT_CHANGE":
+            return PeerVerdict.B_CONCEDES, reasoning
         return PeerVerdict.UNRESOLVED, f"[owner stance={stance}] {reasoning}"
 
     # ---- arbiter: the FM classifies the impasse ---------------------------- #

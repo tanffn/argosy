@@ -34,8 +34,8 @@ class _FakeReport:
         self.output = output
 
 
-def _patch_analyst(monkeypatch, stance):
-    import argosy.agents.analyst_responder as mod
+def _patch_owner(monkeypatch, stance):
+    import argosy.agents.plan_node_owner as mod
 
     class _Fake:
         def __init__(self, **k):
@@ -44,7 +44,7 @@ def _patch_analyst(monkeypatch, stance):
         def run_sync(self, **k):
             return _FakeReport(types.SimpleNamespace(stance=stance, reasoning_md="because X"))
 
-    monkeypatch.setattr(mod, "AnalystResponderAgent", _Fake)
+    monkeypatch.setattr(mod, "PlanNodeOwnerAgent", _Fake)
 
 
 def _patch_fm(monkeypatch, resolution):
@@ -62,18 +62,20 @@ def _patch_fm(monkeypatch, resolution):
     monkeypatch.setattr(mod, "FundManagerDialogueVerdictAgent", _Fake)
 
 
-@pytest.mark.parametrize("stance", ["CONCEDE", "REBUT", "CLARIFY"])
-def test_peer_round_always_defers_to_arbiter(monkeypatch, stance):
-    """Gap (1): the reused agent's CONCEDE/REBUT label inverts in the ladder
-    frame, so peer_round NEVER auto-concedes — it captures the owner's reply as
-    defense and returns UNRESOLVED so the FM arbiter rules. (A CONCEDE that the
-    live agent used to REJECT a change must not auto-apply it.)"""
-    _patch_analyst(monkeypatch, stance)
+@pytest.mark.parametrize("stance,expected", [
+    ("ACCEPT_CHANGE", PeerVerdict.B_CONCEDES),
+    ("REJECT_CHANGE", PeerVerdict.UNRESOLVED),
+    ("UNRESOLVED", PeerVerdict.UNRESOLVED),
+])
+def test_peer_round_owner_stance_mapping(monkeypatch, stance, expected):
+    """The purpose-built owner agent maps DIRECTLY (no inversion): ACCEPT_CHANGE
+    -> B concedes (apply); REJECT_CHANGE/UNRESOLVED -> defer to the arbiter, which
+    rules direction (gap-2)."""
+    _patch_owner(monkeypatch, stance)
     p = RealLadderParticipants("ariel")
     verdict, text = p.peer_round(change=_cr(), prior_turns=[], round=1)
-    assert verdict is PeerVerdict.UNRESOLVED
+    assert verdict is expected
     assert "because X" in text
-    assert stance in text  # the raw stance is preserved for the arbiter
 
 
 @pytest.mark.parametrize("resolution,expected_class,expected_applies", [
@@ -94,8 +96,8 @@ def test_arbiter_resolution_mapping(monkeypatch, resolution, expected_class, exp
     assert applies is expected_applies
 
 
-def _patch_analyst_raises(monkeypatch):
-    import argosy.agents.analyst_responder as mod
+def _patch_owner_raises(monkeypatch):
+    import argosy.agents.plan_node_owner as mod
 
     class _Boom:
         def __init__(self, **k):
@@ -104,7 +106,7 @@ def _patch_analyst_raises(monkeypatch):
         def run_sync(self, **k):
             raise RuntimeError("claude.exe unavailable")
 
-    monkeypatch.setattr(mod, "AnalystResponderAgent", _Boom)
+    monkeypatch.setattr(mod, "PlanNodeOwnerAgent", _Boom)
 
 
 def _patch_fm_raises(monkeypatch):
@@ -123,7 +125,7 @@ def _patch_fm_raises(monkeypatch):
 def test_peer_round_unresponsive_owner_is_unresolved(monkeypatch):
     """An owner agent that errors -> UNRESOLVED (defer to the arbiter), never a
     silent concession."""
-    _patch_analyst_raises(monkeypatch)
+    _patch_owner_raises(monkeypatch)
     p = RealLadderParticipants("ariel")
     verdict, text = p.peer_round(change=_cr(), prior_turns=[], round=1)
     assert verdict is PeerVerdict.UNRESOLVED
@@ -140,6 +142,34 @@ def test_arbiter_failure_fails_safe_to_user(monkeypatch):
     assert "could not adjudicate" in text
 
 
+def test_peer_round_grounds_owner_in_graph_node_context(monkeypatch):
+    """When a graph is bound, the owner agent receives the node's current value +
+    derivation (so it judges on the real derivation, not from cold)."""
+    import argosy.agents.plan_node_owner as mod
+    from argosy.quality.derivation_graph import DerivationGraph, Node, NodeKind
+
+    captured = {}
+
+    class _Capture:
+        def __init__(self, **k):
+            pass
+
+        def run_sync(self, **k):
+            captured.update(k)
+            return _FakeReport(types.SimpleNamespace(stance="UNRESOLVED", reasoning_md="r"))
+
+    monkeypatch.setattr(mod, "PlanNodeOwnerAgent", _Capture)
+
+    g = DerivationGraph()
+    g.add_node(Node(key="fx.usd_nis", kind=NodeKind.INPUT, value=3.7))
+    g.add_node(Node(key="retirement.required_real_yield_pct", kind=NodeKind.INPUT, value=0.03))
+    p = RealLadderParticipants("ariel", graph=g)
+    p.peer_round(change=_cr(), prior_turns=[], round=1)
+    assert captured["node_key"] == "retirement.required_real_yield_pct"
+    assert "0.03" in captured["current_value"]
+    assert captured["proposed_value"] == "0.035"
+
+
 def test_owner_role_inference():
     assert _owner_role_for("retirement.required_real_yield_pct") == "withdrawal_sequencer"
     assert _owner_role_for("spend.fi_basis_nis") == "household_budget"
@@ -149,8 +179,10 @@ def test_owner_role_inference():
 
 
 def test_owner_role_override(monkeypatch):
-    _patch_analyst(monkeypatch, "REBUT")
+    # owner_role now only frames the ARBITER; peer_round uses the node-keyed
+    # owner agent. Smoke: construction with the override + a REJECT_CHANGE
+    # owner verdict still defers to the arbiter.
+    _patch_owner(monkeypatch, "REJECT_CHANGE")
     p = RealLadderParticipants("ariel", owner_role="custom_role")
-    # No exception; override is used (smoke — the role threads into the prompt).
     verdict, _ = p.peer_round(change=_cr(node="spend.x"), prior_turns=[], round=1)
     assert verdict is PeerVerdict.UNRESOLVED

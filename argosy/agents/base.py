@@ -171,6 +171,8 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # FM-objection ZigZag (T4.9).
     "analyst_responder": "claude-opus-4-7",
     "fund_manager_dialogue_verdict": "claude-opus-4-7",
+    # Living-plan negotiation ladder — node owner's verdict on a proposed change.
+    "plan_node_owner": "claude-opus-4-7",
     # Household-budget analyst (synth Phase 1 #10).
     "household_budget": "claude-opus-4-7",
     # Household-expenses categorizer.
@@ -267,6 +269,7 @@ DEFAULT_THINKING_EFFORT_BY_ROLE: dict[
     "fund_manager":                  "max",
     "plan_critique":                 "max",
     "fund_manager_dialogue_verdict": "max",
+    "plan_node_owner":               "high",
     # Debate + arbitration — deep
     "bull_researcher":         "high",
     "bear_researcher":         "high",
@@ -425,6 +428,7 @@ DEFAULT_MAX_TOKENS_BY_ROLE: dict[str, int] = {
     "risk_officer":           64000,
     "risk_facilitator":       64000,
     "fund_manager_dialogue_verdict": 64000,
+    "plan_node_owner":               64000,
     # Light: 16K — single-ticker analysts produce structured reports
     # that rarely exceed a few KB. 16K is generous headroom and keeps
     # thinking_budget=2K well below the cap (Anthropic constraint).
