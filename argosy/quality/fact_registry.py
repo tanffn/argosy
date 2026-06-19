@@ -61,6 +61,14 @@ FACT_DISPLAY: dict[str, str] = {
     # Ages.
     "retirement.fi_age": "age",
     "retirement.earliest_safe_age": "age",
+    "retirement.preservation_age": "age",
+    # Share counts (NVDA glidepath) — whole shares.
+    "concentration.nvda_target_sh": "sh",
+    "concentration.nvda_sell_sh": "sh",
+    "concentration.nvda_eligible_now_sh": "sh",
+    # Estate exposure (₪) + MC central spend (₪).
+    "concentration.us_situs_estate_exposure_nis": "nis_millions",
+    "spend.mc_central_nis": "nis",
     # FX.
     "fx.usd_nis": "fx",
 }
@@ -80,6 +88,8 @@ def format_fact(value: float, unit: str, *, display: str) -> str:
         return f"{v * 100:.1f}%"
     if display == "age":
         return f"age {v:.0f}"
+    if display == "sh":
+        return f"{v:,.0f}"
     if display == "fx":
         return f"{v:.3f}"
     raise PlaceholderError(f"unknown display policy {display!r}")
