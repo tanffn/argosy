@@ -73,6 +73,20 @@ def test_after_tax_adjective_is_not_a_tax_event() -> None:
     assert check_event_currency_consistency(plan_text=text) == []
 
 
+def test_estate_tax_and_income_tax_are_distinct_events() -> None:
+    """A hyphenated KIND-of-tax qualifier ('estate-tax', 'income-tax') names a
+    DIFFERENT event and must anchor on its own key. Live pv55 false positive: the
+    USD RSU-vest 'estimated tax' ($78,385) and the NIS US-situs 'estate-tax'
+    exposure (₪9.45M) both collapsed to the bare label:tax: anchor and flipped
+    currency. The hyphen broke the qualifier capture; capture it so they split."""
+    text = (
+        "Estimated tax on the June 17 RSU vest (USD): $78,385.\n"
+        "Refresh the US non-resident-alien estate-tax data: re-derive the "
+        "US-situs exposure of ₪9,447,090."
+    )
+    assert check_event_currency_consistency(plan_text=text) == []
+
+
 def test_dollar_cost_average_is_not_a_usd_amount() -> None:
     """The word 'dollar' in 'dollar-cost average' is not a USD-denominated amount;
     only ₪180,000 (NIS) is present → no flip, no violation."""

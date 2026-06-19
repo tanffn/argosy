@@ -105,6 +105,11 @@ _STOPWORD_LABELS: frozenset[str] = frozenset(
 # can't masquerade as a sleeve and corrupt the self-sum. Sleeve names in the
 # canonical doc top out around 5 words ("Cash & T-bills (incl. ILS tranche)").
 _MAX_SLEEVE_LABEL_WORDS = 6
+# A real instrument-map PARTITION names many sleeves (equity / FI / gold / REIT /
+# cash / single-name …). A section with fewer than this is a focused note, not a
+# 100%-partition claim, so the prose self-sum must not run on it (it would flag a
+# lone "NVDA 12%" as "must be 100"). The canonical doc cross-check still runs.
+_MIN_PARTITION_SLEEVES = 3
 # A label whose FIRST word is a sentence opener ("the", "a", "above", "this",
 # "these", …) is prose narration, not a sleeve name.
 _SENTENCE_OPENERS: frozenset[str] = frozenset(
@@ -234,8 +239,12 @@ def check_ips_equality(
     violations: list[GateViolation] = []
     sleeves = _extract_prose_sleeves(plan_text)
 
-    # (1) PROSE SELF-SUM.
-    if sleeves:
+    # (1) PROSE SELF-SUM — only when the section has enough sleeves to plausibly BE
+    # a 100% partition. A 1-2 sleeve IPS-cued section is a FOCUSED NOTE (e.g.
+    # "NVDA IPS sleeve target is 12.0%"), not a partition claim; summing it and
+    # demanding 100 is a false positive (live pv55). The per-sleeve canonical
+    # equality check (2) still runs on any sleeve count.
+    if len(sleeves) >= _MIN_PARTITION_SLEEVES:
         total = round(sum(pct for _, pct in sleeves), 2)
         if abs(total - 100.0) > IPS_SUM_TOLERANCE_PCT:
             listing = "; ".join(f"{label}={pct}" for label, pct in sleeves)

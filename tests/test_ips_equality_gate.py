@@ -70,6 +70,36 @@ def test_prose_self_sum_100_clean():
     assert check_ips_equality(plan_text=_PLAN_100) == []
 
 
+# A single-sleeve IPS-cued section is a FOCUSED NOTE, not a 100% partition claim.
+# Live pv55 false positive: the densest IPS-cued section was a NVDA note
+# ("NVDA IPS sleeve target is 12.0% ...") whose lone surviving weight summed to
+# 12.0% → the self-sum flagged "must be 100". A <3-sleeve section cannot be a
+# partition; the self-sum must not run on it (the per-sleeve canonical check still does).
+_PLAN_NVDA_NOTE = """\
+## IPS — NVDA single-name policy
+NVDA IPS sleeve target is 12.0% of the tradeable book; the binding
+instrument-level cap sits ~1pp above at 13.0%. Current weight is 62.5%.
+"""
+
+
+def test_single_sleeve_ips_note_is_not_a_partition_self_sum():
+    """A focused 1-sleeve IPS note (NVDA 12%) must NOT fire the 100%-partition
+    self-sum (the live pv55 false positive)."""
+    assert check_ips_equality(plan_text=_PLAN_NVDA_NOTE) == []
+
+
+def test_single_sleeve_note_still_checked_against_canonical_doc():
+    """The carve-out only skips the SELF-SUM; a prose sleeve still must agree with
+    the canonical doc — a 12% prose NVDA vs a 30% doc NVDA still flags."""
+    one_sleeve = "## IPS — NVDA single-name policy\n- NVDA 12%\n"
+    viols = check_ips_equality(
+        plan_text=one_sleeve, target_allocation_doc=_doc(NVDA=30.0)
+    )
+    assert any(v.check is GateCheck.IPS_EQUALITY for v in viols), (
+        "the per-sleeve canonical-equality check must still run for a 1-sleeve section"
+    )
+
+
 def test_prose_vs_doc_divergence_flags():
     """(3) Prose-vs-doc divergence beyond tolerance → violation."""
     # Doc says Global equity 30%, prose says 35% — a 5pp divergence.

@@ -67,12 +67,15 @@ _MONTH_KEY = {
 # qualifier (up to ~3 words before "tax") is normalised into the key. A bare
 # "tax estimate"/"tax due" with no qualifier still anchors on a generic "tax".
 _LABEL_RE = re.compile(
-    r"\b((?:[a-z]+\s+){0,3})"            # up to 3 qualifier words ("US federal", "RSU")
+    # Up to 3 qualifier words, separated by space OR hyphen, so a hyphenated
+    # KIND-of-tax ("estate-tax", "income-tax", "capital-gains-tax") is captured as
+    # the event identity and anchors on its own key — not collapsed to bare
+    # `label:tax:`. Live pv55: a NIS "estate-tax" exposure and a USD RSU
+    # "estimated tax" both lost their qualifier and spuriously flipped currency.
+    r"\b((?:[a-z]+[\s-]+){0,3})"
     # "after-tax" / "pre-tax" / "post-tax" / "before-tax" are ADJECTIVES modifying
-    # another noun (a rate, an SWR, a return) — NOT a tax-liability event. They
-    # hyphenate to "tax" so the qualifier capture above misses them and they would
-    # collapse to the bare `label:tax:` anchor; exclude them so a NIS "after-tax
-    # SWR" capital figure is not flipped against a genuine USD tax event.
+    # another noun (a rate, an SWR, a return) — NOT a tax-liability event. Exclude
+    # them so a NIS "after-tax SWR" capital figure is not flipped against a tax event.
     r"(?<!after-)(?<!pre-)(?<!post-)(?<!before-)"
     r"tax\b"                              # the "tax" head
     r"(?:\s+(?:estimate|due|bill|liability|payment|withholding))?",  # optional tax-kind
@@ -144,10 +147,13 @@ def _anchor_keys(clause: str) -> set[str]:
         # "RSU tax" and "US federal tax" anchor on DIFFERENT keys; strip
         # stopwords / dates so "the June 17 RSU tax" == "RSU tax".
         qualifier = m.group(1) or ""
+        # Split on whitespace AND hyphen so "estate-tax" → ["estate"]; strip any
+        # stray hyphens so the key is clean ("label:tax:estate", not "estate-").
         ident = [
-            w.lower()
-            for w in qualifier.split()
-            if w.lower() not in _LABEL_STOPWORDS and not _DAY_NUM_RE.match(w)
+            w.strip("-").lower()
+            for w in re.split(r"[\s-]+", qualifier)
+            if w.strip("-") and w.strip("-").lower() not in _LABEL_STOPWORDS
+            and not _DAY_NUM_RE.match(w.strip("-"))
         ]
         keys.add("label:tax:" + "_".join(ident))
 
