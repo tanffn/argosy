@@ -3518,6 +3518,7 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
     ``PlanVersion`` body fields.
     """
     import json as _json
+    import os as _os
     from argosy.orchestrator.flows import plan_synthesis as _pkg
 
     # Build the canonical instrument-level TargetAllocationDoc FIRST — BEFORE any
@@ -3559,8 +3560,13 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
 
         _drun_int = _decision_run_int(decision_run_id)
         if _drun_int is not None:
+            # include_canonical_ages=True so canonical-age placeholders
+            # ({{fact:retirement.earliest_safe_age}} / preservation_age) + the
+            # canonical MC spend / allocation resolve and render; without it those
+            # tokens stay pending and leak raw into the client body.
             _manifest = resolve_plan_numbers(
-                session, user_id=user_id, decision_run_id=_drun_int
+                session, user_id=user_id, decision_run_id=_drun_int,
+                include_canonical_ages=True,
             )
             _scrubbed, _scrub_log = scrub_headline_numeric_source(
                 {"long": _long_md, "medium": _medium_md, "short": _short_md},
@@ -3591,6 +3597,24 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
             "plan_synthesis.headline_scrub_failed",
             user_id=user_id, error=str(exc),
         )
+
+    # Fail-safe: a raw {{fact:key}} token must NEVER reach the client body. If the
+    # render above was skipped (a failure in the try-block) or a key was genuinely
+    # unresolved, downgrade any surviving placeholder to the sanctioned pending
+    # literal rather than ship literal braces. Runs unconditionally so it cannot be
+    # bypassed by an exception in the render path (the bug that leaked 77 tokens).
+    if "{{fact:" in (_long_md + _medium_md + _short_md):
+        import re as _re
+        from argosy.quality.fact_registry import PENDING_LABEL as _PENDING
+        _leftover = _re.compile(r"\{\{fact:[A-Za-z0-9_.]+\}\}")
+        _n_left = sum(len(_leftover.findall(t)) for t in (_long_md, _medium_md, _short_md))
+        log.warning(
+            "plan_synthesis.fact_placeholders_unrendered",
+            user_id=user_id, decision_run_id=decision_run_id, count=_n_left,
+        )
+        _long_md = _leftover.sub(_PENDING, _long_md)
+        _medium_md = _leftover.sub(_PENDING, _medium_md)
+        _short_md = _leftover.sub(_PENDING, _short_md)
 
     # De-jargon then strip history leaks over the FULL assembled body (the
     # appendix is included). Order: jargon → history, matching the prior inline.
