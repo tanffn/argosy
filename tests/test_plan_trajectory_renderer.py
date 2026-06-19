@@ -122,7 +122,10 @@ def test_appendix_shows_derived_figures(session):
     # Resolver source keys are surfaced for traceability.
     assert "retirement.fi_target_nis" in md
     assert "savings.annual_net_nis" in md
-    assert "portfolio.net_worth_nis" in md
+    # The "where you are today" surface leads with the LIQUID FI basis (the
+    # same basis the front-door fi_margin uses), so the trajectory cannot read
+    # as "FI reached" off the investable figure.
+    assert "portfolio.liquid_net_worth_nis" in md
     # The trajectory grows at the 5.0% real return; the FI target is sized on
     # the decoupled 3.0% perpetual SWR — both surfaced from the resolver.
     assert "5.0% real" in md

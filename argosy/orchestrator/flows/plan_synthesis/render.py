@@ -997,10 +997,22 @@ def render_trajectory_reconciliation_appendix(
 
     lines.append("### Where you are today")
     lines.append("")
+    # Lead with the LIQUID basis — the FI sufficiency comparison is made against
+    # liquid net worth (ex-real-estate), so this surface must show the same basis
+    # the front-door fi_margin uses. Showing the investable figure here first (vs
+    # the FI target right below) read as "FI reached" and contradicted the −₪148K
+    # short verdict — the cross-surface BLOCK. Investable follows, explicitly
+    # qualified as reconciliation-only.
     lines.append(
-        f"- Current portfolio (net worth): **{_fmt_nis_m(nw)}** "
-        f"(`portfolio.net_worth_nis` — {nw.source_locator})."
+        f"- Current liquid capital (FI sufficiency basis, EXCLUDES all real estate): "
+        f"**{_fmt_nis_m(fi_basis)}** (`portfolio.liquid_net_worth_nis` — {fi_basis.source_locator})."
     )
+    if nw.status == "resolved" and nw.value is not None and fi_basis is not nw:
+        lines.append(
+            f"- Broad investable net worth (incl. the foreign real-estate row; "
+            f"reconciliation only — NOT the FI basis): **{_fmt_nis_m(nw)}** "
+            f"(`portfolio.net_worth_nis` — {nw.source_locator})."
+        )
     lines.append(
         f"- FI spend basis: **{_fmt_nis(fi_spend)}/yr** "
         f"(`spend.fi_basis_nis` — the spend the FI target funds)."
@@ -1043,7 +1055,8 @@ def render_trajectory_reconciliation_appendix(
         lines.append("")
         lines.append(
             f"Formula: `FV(n) = P0·(1+r)^n + C·((1+r)^n - 1)/r` with "
-            f"P0 = {_fmt_nis_m(nw)}, C = {c_disp}/yr, r = {r_disp}. All "
+            f"P0 = {_fmt_nis_m(fi_basis)} (liquid FI basis — the same basis the "
+            f"trajectory projects from), C = {c_disp}/yr, r = {r_disp}. All "
             "inputs resolver-sourced."
         )
     else:
@@ -1192,11 +1205,14 @@ def render_trajectory_reconciliation_appendix(
         "FI age because it permits drawing principal down rather than living "
         "off a perpetuity yield; "
         "(3) the per-scenario *target age* in the retirement-projection grid "
-        "is the deterministic crossing age under EACH scenario's return "
-        "assumption (the Typical-scenario row, not a separate headline). "
-        "Each already encodes margin against return-rate uncertainty, "
-        "sequence risk, NVDA concentration, and life-event spend spikes via "
-        "the spend basis the withdrawal sequencer used — none is a round "
+        "is the SAME Monte-Carlo earliest-safe age as (2), recomputed under "
+        "EACH scenario's central real return as μ (the Typical-scenario row IS "
+        "the headline earliest-safe age; Bear/Conservative are the same MC "
+        "method at lower μ). It is NOT a deterministic crossing — that is the "
+        "perpetuity-basis fi_age in (1) — so the grid's Typical age and the "
+        "deterministic fi_age legitimately differ. Each MC age encodes "
+        "return-rate uncertainty, sequence risk, NVDA concentration, and "
+        "life-event spend spikes through the simulated draws — none is a round "
         "marketing number."
     )
     return "\n".join(lines).rstrip() + "\n"

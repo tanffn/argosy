@@ -385,13 +385,15 @@ def test_export_includes_wealth_dashboard_numbers(client_with_db):
     assert "| Bear |" in body
     assert "| Conservative |" in body
     assert "| Typical |" in body
-    # Coherence guard (run-102 reader BLOCKER): the per-scenario age column
-    # must be labelled as a per-scenario FI age, NOT a bare "Target age" that
-    # reads as a fourth headline retirement age. The caption must say it is
-    # distinct from the Monte-Carlo earliest-safe headline age.
-    assert "FI age (this scenario)" in body
+    # Coherence guard (reader BLOCKER): the per-scenario age column must be
+    # labelled for what it IS — the Monte-Carlo earliest-safe age recomputed
+    # under each scenario's μ — NOT a bare "Target age" and NOT a mislabelled
+    # "deterministic crossing" (that is the perpetuity-basis fi_age). The caption
+    # must explicitly distinguish it from the deterministic fi_age so the grid's
+    # Typical age (46) and the deterministic fi_age (49) don't read as a conflict.
+    assert "Earliest-safe age (MC" in body
     assert "Target age |" not in body
-    assert "not the headline retirement age" in body
+    assert "deterministic perpetuity-basis fi_age" in body
 
 
 def test_export_includes_action_items(client_with_db):

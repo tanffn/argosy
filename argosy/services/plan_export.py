@@ -544,12 +544,13 @@ def build_plan_export_markdown(
 
         push("### Retirement projection")
         push(
-            "_FI age by scenario (deterministic crossing under each scenario's "
-            "return assumption) — not the headline retirement age; the "
-            "Typical-scenario row is the deterministic-trajectory point, "
-            "distinct from the Monte-Carlo earliest-safe headline age._"
+            "_Earliest-safe retirement age by scenario — the Monte-Carlo age "
+            "(90% solvency to 95) recomputed under each scenario's central real "
+            "return as μ. The Typical-scenario row IS the headline earliest-safe "
+            "age; it is NOT a deterministic crossing, so it legitimately differs "
+            "from the deterministic perpetuity-basis fi_age._"
         )
-        push("| Scenario | Real return | Years to FI target | FI age (this scenario) |")
+        push("| Scenario | Real return | Years to safe retirement | Earliest-safe age (MC, this μ) |")
         push("|---|---|---|---|")
         for sc in ret.scenarios:
             y2t = sc.years_to_target
