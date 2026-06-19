@@ -740,6 +740,29 @@ def test_structural_age_constants_always_resolved(session):
     assert horizon.unit == "age"
 
 
+def test_nvda_target_pct_resolved_distinct_from_cap(session):
+    """The 12% NVDA IPS target weight and the 13% hard cap are DELIBERATELY
+    distinct (Ariel sign-off + 1pp drift headroom, SDD §3479). Both must be
+    resolved facts so the prose's "12% target" and "13% cap" each trace to their
+    OWN canonical value (and can be placeholdered) — NOT collapsed into one
+    number (which would erase the risk buffer)."""
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    target = resolved.get("concentration.nvda_target_pct")
+    assert target.status == "resolved"
+    assert target.value == pytest.approx(0.12)  # stored as a fraction, like the cap
+    assert target.unit == "pct"
+
+
+def test_nvda_target_pct_locked_to_allocation_plan():
+    """Guard against drift between the resolver's IPS target fraction and the
+    canonical allocation policy constant (codex caveat). They must denote the
+    same 12% target — single source of truth."""
+    from argosy.services.allocation_plan import NVDA_TARGET_PCT
+    from argosy.services.plan_numeric_resolver import _NVDA_IPS_TARGET_W
+
+    assert _NVDA_IPS_TARGET_W == pytest.approx(NVDA_TARGET_PCT / 100.0)
+
+
 def test_structural_age_constants_in_synth_block(session):
     """Both structural ages appear in the synth numbers block so the synthesizer
     sees them as approved facts to placeholder."""

@@ -131,6 +131,7 @@ _KEY_UNITS: dict[str, str] = {
     "savings.annual_net_nis": "nis",
     "spend.annual_t12_nis": "nis",
     "concentration.nvda_cap_pct": "pct",
+    "concentration.nvda_target_pct": "pct",
     "concentration.nvda_current_pct": "pct",
     "concentration.nvda_target_sh": "shares",
     "concentration.nvda_sell_sh": "shares",
@@ -1329,6 +1330,17 @@ def _apply_nvda_deconcentration(
     a guess — when inputs are missing."""
     keys = ("concentration.nvda_target_sh", "concentration.nvda_sell_sh",
             "concentration.nvda_eligible_now_sh")
+    # The IPS target WEIGHT (12%) is a policy constant DISTINCT from the 13% hard
+    # cap — held ~1pp below it for drift headroom (Ariel sign-off, SDD §3479).
+    # Register it as its own resolved pct so the prose's "12% target" traces to a
+    # canonical value (and can be placeholdered) without collapsing into the cap.
+    # Always present (a constant), even when the share-count derivation is pending.
+    values["concentration.nvda_target_pct"] = ResolvedValue(
+        key="concentration.nvda_target_pct", value=_NVDA_IPS_TARGET_W, unit="pct",
+        status="resolved", source_locator="plan_numeric_resolver._NVDA_IPS_TARGET_W",
+        confidence="HIGH",
+        formula="IPS single-name target weight (held ~1pp below the hard cap for drift headroom)",
+    )
     w = values.get("concentration.nvda_current_pct")
     cap = values.get("concentration.nvda_cap_pct")
     if not w or w.status != "resolved" or not cap or cap.status != "resolved":
@@ -1535,7 +1547,8 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("retirement.mc_horizon_age", "Monte-Carlo solvency horizon age (every drawdown P(ruin) runs to here — a fixed constant)"),
     ("spend.annual_t12_nis", "Current tracked spend (T12)"),
     ("savings.annual_net_nis", "Annual net savings (RSU, conservative floor)"),
-    ("concentration.nvda_cap_pct", "NVDA concentration cap"),
+    ("concentration.nvda_target_pct", "NVDA IPS target weight (the steering target — DISTINCT from the cap below)"),
+    ("concentration.nvda_cap_pct", "NVDA concentration cap (the hard ceiling — ~1pp above the target)"),
     ("concentration.nvda_current_pct", "NVDA current weight"),
     ("fx.usd_nis", "USD/NIS (BOI daily representative rate)"),
 )

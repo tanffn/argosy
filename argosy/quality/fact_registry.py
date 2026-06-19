@@ -55,6 +55,7 @@ FACT_DISPLAY: dict[str, str] = {
     "spend.mc_central_nis": "nis",
     # Percentages — resolver stores FRACTIONS (0-1); displayed as percent-points.
     "concentration.nvda_cap_pct": "pct",
+    "concentration.nvda_target_pct": "pct",
     "concentration.nvda_current_pct": "pct",
     "retirement.required_real_yield_pct": "pct",
     "retirement.return_assumption_pct": "pct",
