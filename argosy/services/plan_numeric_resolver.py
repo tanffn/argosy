@@ -138,7 +138,19 @@ _KEY_UNITS: dict[str, str] = {
     "retirement.liquidity_reserve_nis": "nis",
     "retirement.fi_total_capital_nis": "nis",
     "retirement.fi_margin_signed_nis": "nis",
+    "retirement.pension_unlock_age": "age",
+    "retirement.mc_horizon_age": "age",
 }
+
+# Fixed STRUCTURAL ages — not derived, not MC-dependent. The pension unlock age
+# (Israeli keren-hishtalmut / kupat-gemel lump availability + the FIRE-bridge
+# endpoint, see retirement/derived_inputs.py) and the Monte-Carlo solvency
+# horizon (every drawdown MC runs P(ruin) to this age). Registering them as
+# resolved facts lets the synthesizer placeholder them ({{fact:}}) instead of
+# hand-typing 60 / 95 — so a correctly-stated age stops tripping the
+# headline_numeric_source gate. Single-sourced here so a change is one edit.
+PENSION_UNLOCK_AGE = 60.0
+MC_HORIZON_AGE = 95.0
 
 
 # ---------------------------------------------------------------------------
@@ -851,6 +863,7 @@ def resolve_plan_numbers(
     _apply_us_situs_estate(session, user_id, values)
     _apply_nvda_current_weight(session, user_id, values)
     _apply_fx_boi(session, values)
+    _apply_structural_ages(values)
 
     # ONE signed FI sufficiency margin (net_worth − FI-total-capital). Computed
     # once here so every surface cites the SAME signed number — the
@@ -872,6 +885,26 @@ def resolve_plan_numbers(
             _apply_canonical_allocation(session, decision_run_id, values)
 
     return ResolvedPlanNumbers(values=values)
+
+
+def _apply_structural_ages(values: dict[str, ResolvedValue]) -> None:
+    """Register the two FIXED structural ages as resolved facts. These are
+    constants (no DB read, no MC), so they resolve unconditionally — present on
+    BOTH the default and the canonical-age resolver paths. The synthesizer can
+    then placeholder them instead of typing 60 / 95, removing them as a
+    headline_numeric_source false-positive source."""
+    values["retirement.pension_unlock_age"] = ResolvedValue(
+        key="retirement.pension_unlock_age", value=PENSION_UNLOCK_AGE, unit="age",
+        status="resolved", source_locator="plan_numeric_resolver.PENSION_UNLOCK_AGE",
+        confidence="HIGH",
+        formula="Israeli pension/hishtalmut lump-availability age (FIRE-bridge endpoint)",
+    )
+    values["retirement.mc_horizon_age"] = ResolvedValue(
+        key="retirement.mc_horizon_age", value=MC_HORIZON_AGE, unit="age",
+        status="resolved", source_locator="plan_numeric_resolver.MC_HORIZON_AGE",
+        confidence="HIGH",
+        formula="Monte-Carlo solvency horizon (every drawdown P(ruin) runs to this age)",
+    )
 
 
 def _apply_canonical_mc_spend(
@@ -1498,6 +1531,8 @@ _SYNTH_DISPLAY: tuple[tuple[str, str], ...] = (
     ("retirement.earliest_safe_age", "Earliest safe retirement age — typical drawdown, 90% MC solvency to 95 (THE headline retirement age)"),
     ("retirement.preservation_age", "Capital-preservation retirement age — worst-10% real principal preserved (a what-if, not a constraint)"),
     ("retirement.fi_age", "Full-FI / perpetuity target age — trajectory feasibility, for FIRE-bridge sizing (NOT the earliest-safe age)"),
+    ("retirement.pension_unlock_age", "Pension/hishtalmut unlock age (FIRE-bridge endpoint — a fixed constant)"),
+    ("retirement.mc_horizon_age", "Monte-Carlo solvency horizon age (every drawdown P(ruin) runs to here — a fixed constant)"),
     ("spend.annual_t12_nis", "Current tracked spend (T12)"),
     ("savings.annual_net_nis", "Annual net savings (RSU, conservative floor)"),
     ("concentration.nvda_cap_pct", "NVDA concentration cap"),

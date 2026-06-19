@@ -718,6 +718,37 @@ def test_render_synth_leads_with_earliest_safe_age(session, monkeypatch):
     assert block.index("age 46.0") < block.index("age 51.7")
 
 
+def test_structural_age_constants_always_resolved(session):
+    """The two FIXED structural ages — pension unlock (60) + MC horizon (95) —
+    are pure constants (no MC, no re-entrancy), so they resolve unconditionally
+    (even on the default, non-canonical-age path). Registering them lets the
+    synthesizer placeholder them ({{fact:}}) instead of hand-typing 60 / 95,
+    so the numeric-source gate stops false-flagging a correctly-stated age."""
+    pension = resolve_plan_numbers(
+        session, user_id="ariel", decision_run_id=DRUN
+    ).get("retirement.pension_unlock_age")
+    horizon = resolve_plan_numbers(
+        session, user_id="ariel", decision_run_id=DRUN
+    ).get("retirement.mc_horizon_age")
+
+    assert pension.status == "resolved"
+    assert pension.value == pytest.approx(60.0)
+    assert pension.unit == "age"
+
+    assert horizon.status == "resolved"
+    assert horizon.value == pytest.approx(95.0)
+    assert horizon.unit == "age"
+
+
+def test_structural_age_constants_in_synth_block(session):
+    """Both structural ages appear in the synth numbers block so the synthesizer
+    sees them as approved facts to placeholder."""
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    block = render_numbers_for_synth(resolved)
+    assert "age 60.0" in block
+    assert "age 95.0" in block
+
+
 def test_net_worth_marks_to_boi_current_fx(session):
     """Net worth = USD assets × CURRENT BOI FX + NIS-native cash (codex FX
     review) — not the erroneous stored snapshot FX. NIS cash kept in native

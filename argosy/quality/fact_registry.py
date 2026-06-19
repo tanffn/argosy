@@ -62,6 +62,10 @@ FACT_DISPLAY: dict[str, str] = {
     "retirement.fi_age": "age",
     "retirement.earliest_safe_age": "age",
     "retirement.preservation_age": "age",
+    # Fixed structural ages (pension unlock / MC solvency horizon) — constants,
+    # placeholdered so a correctly-stated `age 60` / `age 95` is single-sourced.
+    "retirement.pension_unlock_age": "age",
+    "retirement.mc_horizon_age": "age",
     # Share counts (NVDA glidepath) — whole shares.
     "concentration.nvda_target_sh": "sh",
     "concentration.nvda_sell_sh": "sh",
