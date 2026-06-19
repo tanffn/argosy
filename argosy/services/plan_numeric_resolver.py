@@ -531,13 +531,31 @@ def _resolve_net_worth(
 
 
 def _is_real_estate(position: dict) -> bool:
-    """True when a snapshot position is real estate (not a liquid/investable
-    asset). Driven by the snapshot's own ``asset_type`` / ``details`` fields —
-    never a hardcoded value — so excluding it from LIQUID net worth is honest."""
+    """True when a position is ILLIQUID / direct real estate that must be
+    EXCLUDED from the liquid FI sufficiency basis.
+
+    Driven by the snapshot's own ``asset_type`` / ``details`` fields — never a
+    hardcoded value. A LISTED property security (a property ETF / REIT with a
+    tradable ticker, e.g. ``IWDP``, ``O``) is liquid spendable capital and stays
+    IN the liquid basis; only direct/illiquid holdings (foreign property carrying
+    no tradable ticker — the snapshot tags these ``symbol='-'``) are excluded.
+
+    This closes a keyword-classifier asymmetry (codex 2026-06-19): the prior
+    ``"real estate" in blob`` test dropped ``IWDP`` ("Real Estate") from liquid
+    while keeping ``O`` ("REIT") — same economic class, opposite treatment, by
+    accident of the keyword. The FI policy is "exclude illiquid property," not
+    "exclude every row whose label mentions real estate."
+    """
     blob = " ".join(
         str(position.get(k) or "") for k in ("asset_type", "details", "category", "type")
     ).lower()
-    return "real estate" in blob or "real-estate" in blob
+    if "real estate" not in blob and "real-estate" not in blob:
+        return False
+    # A listed property security has a tradable ticker → liquid (keep it). Only a
+    # real-estate-tagged row WITHOUT a tradable ticker is direct/illiquid property.
+    sym = str(position.get("symbol") or "").strip().lower()
+    has_tradable_ticker = bool(sym) and sym not in {"-", "—", "n/a", "na", "none"}
+    return not has_tradable_ticker
 
 
 def liquid_components_from_positions(

@@ -48,7 +48,7 @@ DECISION_ID = f"plan-synth-{DRUN}"
 # ---------------------------------------------------------------------------
 
 
-def test_liquid_components_excludes_real_estate_rows():
+def test_liquid_components_excludes_only_illiquid_real_estate():
     from argosy.services.plan_numeric_resolver import liquid_components_from_positions
 
     positions = [
@@ -56,23 +56,29 @@ def test_liquid_components_excludes_real_estate_rows():
          "asset_type": "Individual stocks"},
         {"symbol": "ILS-CASH", "currency": "ILS", "usd_value_k": 100.0,
          "asset_type": "Cash"},
-        # An illiquid foreign property row tagged real estate — MUST be excluded.
+        # Direct/illiquid foreign property — no tradable ticker (snapshot tags it
+        # symbol '-'). MUST be excluded from the liquid FI basis.
         {"symbol": "-", "currency": "USD", "usd_value_k": 69.0,
          "asset_type": "Real estate"},
-        # A property-yield ETF the snapshot also tags real estate — excluded too
-        # (matches the canonical liquid basis; the FI basis is ex-ALL-real-estate).
+        # A LISTED property ETF the snapshot also tags "Real Estate" but which has
+        # a tradable ticker — it is liquid spendable capital and MUST stay IN the
+        # liquid basis (codex 2026-06-19: keyword-only exclusion wrongly dropped it
+        # while keeping REIT O, an accidental asymmetry).
         {"symbol": "IWDP", "currency": "USD", "usd_value_k": 20.79,
-         "asset_type": "Real Estate"},
+         "asset_type": "Real Estate", "details": "(ISHR DM PRPTY YD) IWDP SW"},
+        # A listed REIT — already liquid (tagged "REIT", not "real estate").
+        {"symbol": "O", "currency": "USD", "usd_value_k": 18.57,
+         "asset_type": "REIT"},
     ]
     usd_assets_usd, nis_native_nis, re_excluded_nis = liquid_components_from_positions(
         positions, fx=3.0, snap_fx=3.0,
     )
-    # USD liquid = NVDA only (2000k); the two RE rows are dropped.
-    assert usd_assets_usd == pytest.approx(2_000_000.0)
-    # NIS-native liquid = the ILS cash row, valued at snap_fx.
+    # USD liquid = NVDA + IWDP + O (listed securities); only the no-ticker
+    # physical property row is dropped.
+    assert usd_assets_usd == pytest.approx((2000.0 + 20.79 + 18.57) * 1000.0)
     assert nis_native_nis == pytest.approx(100_000.0 * 3.0)
-    # The excluded RE total is surfaced (for the audit/source string).
-    assert re_excluded_nis == pytest.approx((69.0 + 20.79) * 1000.0 * 3.0)
+    # Only the illiquid physical row is excluded.
+    assert re_excluded_nis == pytest.approx(69.0 * 1000.0 * 3.0)
 
 
 def test_render_fx_block_binds_to_liquid_basis_not_investable():
@@ -84,7 +90,8 @@ def test_render_fx_block_binds_to_liquid_basis_not_investable():
     positions = [
         {"symbol": "USDX", "currency": "USD", "usd_value_k": 3_940.0,
          "asset_type": "Core equity"},
-        {"symbol": "FOREIGN-PROP", "currency": "USD", "usd_value_k": 100.0,
+        # Direct/illiquid foreign property — no tradable ticker.
+        {"symbol": "-", "currency": "USD", "usd_value_k": 100.0,
          "asset_type": "Real estate"},
     ]
     usd_liq, nis_liq, _ = liquid_components_from_positions(positions, fx=2.965, snap_fx=2.965)
