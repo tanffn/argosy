@@ -76,7 +76,12 @@ implementation drifted from the SDD; this design realigns to it and generalizes 
    "tax-sensitive", "defer exercise" — and assumptions, disclosures, and client
    constraints. These can contradict figures and each other, so each has an owner
    and is checked like any figure.
-9. **Generalized domain experts.** Each role is an expert in its own domain and
+9. **The corrections/verification flow is observable.** Every push-back, tweak,
+   counter, cross-model validation, escalation, ruling, and compliance finding is
+   recorded as telemetry AND rendered in the UI. The user can watch the team
+   converge and audit any figure's correction/verification trail — the flow is a
+   first-class deliverable, not a hidden internal.
+10. **Generalized domain experts.** Each role is an expert in its own domain and
    serves any client (employee, business owner, retiree, multi-property,
    equity-comp recipient). No role is overfit to one client's situation; a
    specific instrument (e.g. employer RSUs in one stock) is one *instance* a
@@ -228,6 +233,41 @@ spans multiple owners routes to all, with the Lead arbitrating sequencing.
 7. Sign-off (owners → Lead → Compliance → Committee for exceptions) → fail-closed
    publish gate (`can_publish_plan`).
 
+## Telemetry & UI — the corrections/verification flow is first-class observable
+
+The collaboration is only trustworthy if you can SEE it. Every correction and
+verification step is recorded as structured telemetry AND surfaced in the UI —
+not just the final plan. This extends the SDD §17 provenance (negotiation
+transcript per phase, `propagation_events`, the `/decisions/[id]` replay surface,
+the agent-tree + Mermaid sequence) down to the per-figure level.
+
+**Telemetry (structured events, persisted):**
+- **ZigZag round:** `{edge: A→B, round, action: accept|pushback|tweak|counter,
+  objection, evidence, before→after value}` — one row per round on every edge.
+- **Cross-model validation:** `{figure_id, producer_model, validator_model,
+  producer_value, validator_value, verdict: agree|diverge, divergence}`.
+- **Escalation + ruling:** `{figure_id/edge, escalated_to, arbiter, ruling,
+  rationale}`.
+- **Compliance finding lifecycle:** the `Finding` schema above with its
+  `disposition` transitions (open→routed→remediated/escalated/accepted_risk).
+- **Per-figure status:** each `FigureRecord`'s `validated_by` + `status` + the
+  check that cleared it, so a figure's provenance is auditable end-to-end.
+
+**UI (renders the flow, modeled on the producer→critic→solver loop):**
+- **Per-figure provenance card:** owner, kind, value, basis/scenario, evidence
+  (citations), validation status, which model/check cleared it — the
+  "substantiate-on-demand" record made visible.
+- **Correction/verification flow view:** for a decision run, a graph/timeline of
+  every owner→critic→validator edge with its ZigZag loop-backs (the OuterLink),
+  cross-model agree/diverge, escalations, and findings → routed-owner →
+  remediation. The attached Planner→Critic→Solver topology is the per-edge unit;
+  the surface composes them for the whole plan.
+- **Live status:** which figures are `resolved` / `pending` (awaiting validation)
+  / `blocked`, and why — so the user watches the team converge in real time.
+
+This is a cross-cutting requirement: each build phase emits its telemetry, and a
+dedicated UI surface (extending `/decisions/[id]` + the agent-tree) renders it.
+
 ## Gap vs. what is already built
 
 **Built:** derivation graph (canonical nodes), negotiation ladder (A↔B↔arbiter),
@@ -265,6 +305,12 @@ contradiction-prone-surface render cutover move EARLY, because Phase 1's evidenc
   at publish.
 - **Phase 4 — Remaining roles + governance:** Operations (implementation), full
   Client Discovery, and the governance responsibilities below.
+- **Cross-cutting — Telemetry & UI (built alongside every phase):** each phase
+  emits the structured correction/verification telemetry above; a dedicated UI
+  surface (extending `/decisions/[id]` + the agent-tree) renders the per-figure
+  provenance cards + the producer→critic→validator flow with its ZigZag loop-backs,
+  escalations, and findings. Phase 1a already produces the per-figure `status` +
+  `validated_by` data this surface needs.
 
 **Governance responsibilities a real firm has (codex review — assign explicitly,
 not necessarily as new agents):** client consent / lawful-instruction capture,
