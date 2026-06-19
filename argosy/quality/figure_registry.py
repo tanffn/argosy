@@ -115,6 +115,7 @@ _HI, _MED, _LO = Materiality.HIGH, Materiality.MEDIUM, Materiality.LOW
 OWNER_MAP: dict[str, OwnerSpec] = {
     "portfolio.net_worth_nis": OwnerSpec(_B, _FR, _HI, basis="investable"),
     "portfolio.liquid_net_worth_nis": OwnerSpec(_B, _FR, _HI, basis="liquid"),
+    "portfolio.total_net_worth_incl_residence_nis": OwnerSpec(_B, _FR, _HI, basis="total"),
     "portfolio.usd_exposure_nis": OwnerSpec(_B, _FR, _MED),
     "retirement.fi_target_nis": OwnerSpec(_R, _FR, _HI),
     "retirement.fi_total_capital_nis": OwnerSpec(_R, _FR, _HI),

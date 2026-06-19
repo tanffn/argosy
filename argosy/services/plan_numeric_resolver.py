@@ -120,6 +120,7 @@ class ResolvedPlanNumbers:
 _KEY_UNITS: dict[str, str] = {
     "portfolio.net_worth_nis": "nis",
     "portfolio.liquid_net_worth_nis": "nis",
+    "portfolio.total_net_worth_incl_residence_nis": "nis",
     "portfolio.usd_exposure_nis": "nis",
     "retirement.fi_target_nis": "nis",
     "retirement.fi_age": "age",
@@ -543,6 +544,47 @@ def _resolve_net_worth(
     )
 
 
+def _apply_total_net_worth(session, user_id, values):
+    """Register total net worth INCL. primary-residence equity — the third
+    canonical basis (alongside investable portfolio.net_worth_nis and liquid
+    portfolio.liquid_net_worth_nis). Single-sourced from the shared
+    net_worth_bases helper the Wealth Dashboard also uses, so the two cannot
+    diverge. Pending (never a guess) when no snapshot/FX exists."""
+    from argosy.services.net_worth_bases import total_net_worth_incl_residence
+    key = "portfolio.total_net_worth_incl_residence_nis"
+    try:
+        snap = session.execute(
+            select(PortfolioSnapshotRow)
+            .where(PortfolioSnapshotRow.user_id == user_id)
+            .order_by(PortfolioSnapshotRow.id.desc()).limit(1)
+        ).scalar_one_or_none()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("plan_numeric_resolver.total_net_worth_query_failed err=%s", exc)
+        snap = None
+    if snap is None:
+        values[key] = ResolvedValue.pending(key, "nis", "portfolio_snapshot (none)")
+        return
+    snap_fx = _to_float(snap.fx_usd_nis) or 0.0
+    fx, _src = _current_boi_usd_nis(session, snap_fx)
+    if not fx or fx <= 0:
+        values[key] = ResolvedValue.pending(key, "nis", "no FX available")
+        return
+    try:
+        nw_nis, _ = total_net_worth_incl_residence(
+            snapshot=snap, fx_usd_nis=fx, session=session, user_id=user_id)
+    except Exception as exc:  # noqa: BLE001 — never break the resolver
+        log.warning("plan_numeric_resolver.total_net_worth_failed err=%s", exc)
+        nw_nis = None
+    if nw_nis is None:
+        values[key] = ResolvedValue.pending(key, "nis", "total net worth unavailable")
+        return
+    values[key] = ResolvedValue(
+        key=key, value=float(nw_nis), unit="nis", status="resolved",
+        source_locator="net_worth_bases.total_net_worth_incl_residence",
+        confidence="HIGH",
+        formula="investable net worth + real-estate net equity (incl. primary residence)")
+
+
 def _is_real_estate(position: dict) -> bool:
     """True when a position is ILLIQUID / direct real estate that must be
     EXCLUDED from the liquid FI sufficiency basis.
@@ -766,6 +808,10 @@ def resolve_plan_numbers(
     # Snapshot-derived net worth.
     nw = _resolve_net_worth(session, user_id)
     values[nw.key] = nw
+
+    # Third canonical basis: total net worth INCL. primary-residence equity,
+    # single-sourced from the shared net_worth_bases helper the dashboard uses.
+    _apply_total_net_worth(session, user_id, values)
 
     # Snapshot-derived USD exposure (the FX-shock base — codex FX review).
     usd_exp = _resolve_usd_exposure(session, user_id)

@@ -261,3 +261,10 @@ def test_live_resolver_keys_all_owned_and_no_blocked_formula():
         k for k, r in reg.items()
         if r.status == "blocked" and r.kind in (FigureKind.FORMULA_RESULT, FigureKind.SOURCE_FACT))
     assert blocked_formula == [], f"deterministic figures blocked: {blocked_formula}"
+
+
+def test_total_net_worth_basis_owned_and_labeled():
+    spec = owner_for("portfolio.total_net_worth_incl_residence_nis")
+    assert spec.owner is OwnerRole.BALANCE_SHEET
+    assert spec.basis == "total"
+    assert spec.uncategorized is False

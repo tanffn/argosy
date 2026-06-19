@@ -959,3 +959,39 @@ def test_net_worth_synth_render_carries_liquid_label():
     })
     out = render_numbers_for_synth(resolved)
     assert "Liquid net worth" in out
+
+
+def test_total_net_worth_incl_residence_matches_helper(session):
+    """The total-incl-residence basis is resolved and EQUALS the shared
+    net_worth_bases helper on the same snapshot (single-source parity — the
+    dashboard reads the same helper, so they cannot diverge)."""
+    from datetime import date as _date
+    from decimal import Decimal as _Dec
+    import json as _json
+    from argosy.state.models import PortfolioSnapshotRow, FxRate
+    from argosy.services.net_worth_bases import total_net_worth_incl_residence
+
+    session.add(FxRate(date=_date.today(), currency="USD", rate=_Dec("3.0"), source="boi"))
+    snap = PortfolioSnapshotRow(
+        user_id="ariel", imported_at=__import__("datetime").datetime(2026, 6, 2),
+        snapshot_date=_date.today(), fx_usd_nis=3.0,
+        totals_json=_json.dumps({"total_usd_value_k": 4000.0}),
+        positions_json=_json.dumps([
+            {"symbol": "VOO", "currency": "USD", "usd_value_k": 3931.0, "asset_type": "ETF"},
+            {"asset_type": "real estate", "currency": "USD", "usd_value_k": 69.0},
+        ]),
+        real_estate_json=_json.dumps([
+            {"location": "Home", "currency": "USD", "role": "Home", "value_local": 800000.0},
+            {"location": "Home", "currency": "USD", "role": "Loan", "value_local": 300000.0},
+        ]),
+    )
+    session.add(snap)
+    session.commit()
+
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    total = resolved.get("portfolio.total_net_worth_incl_residence_nis")
+    assert total.status == "resolved" and total.unit == "nis"
+    # exact parity with the shared helper on the SAME snapshot (BOI rate 3.0).
+    expect_nis, _ = total_net_worth_incl_residence(
+        snapshot=snap, fx_usd_nis=3.0, session=session, user_id="ariel")
+    assert total.value == pytest.approx(expect_nis)
