@@ -59,12 +59,54 @@ _RETAIN_CUE = (
 )
 _RETENTION_PCT_RE = re.compile(
     r"(?:"
-    r"(?P<cue_first>" + _RETAIN_CUE + r")[^.!?\n]{0,24}?(?P<num1>\d{1,3}(?:\.\d+)?)\s*%"  # cue → number
+    # The gap must not contain another '%' so the cue binds to the NEAREST
+    # percentage, not a distant one across an intervening rate (live pv56:
+    # "3% surtax; ~47% net retention" must bind 47%, not the 3% surtax).
+    r"(?P<cue_first>" + _RETAIN_CUE + r")[^.!?\n%]{0,24}?(?P<num1>\d{1,3}(?:\.\d+)?)\s*%"  # cue → number
     r"|"
-    r"(?P<num2>\d{1,3}(?:\.\d+)?)\s*%[^.!?\n]{0,24}?(?P<cue_last>" + _RETAIN_CUE + r")"  # number → cue
+    r"(?P<num2>\d{1,3}(?:\.\d+)?)\s*%[^.!?\n%]{0,24}?(?P<cue_last>" + _RETAIN_CUE + r")"  # number → cue
     r")",
     re.IGNORECASE,
 )
+
+# Tax-treatment buckets. The AT-VEST / ordinary-income rate (~47%) and the
+# CAPITAL-TRACK / Section-102 long-term rate (~72%) are DIFFERENT treatments
+# yielding DIFFERENT legitimate retention rates — not a contradiction. Only flag
+# divergence WITHIN one bucket (codex 2026-06-19). A match with no treatment cue
+# nearby is "unknown" — two distinct unknowns still flag (fail-loud, the run-106
+# same-vest case). Context window scanned around each match for these cues.
+_CAPITAL_CUE_RE = re.compile(
+    r"capital[\s-]*track|section[\s-]*102|long[\s-]*term|\bcgt\b|capital[\s-]*gains",
+    re.IGNORECASE,
+)
+_ORDINARY_CUE_RE = re.compile(
+    r"at[\s-]*vest|\bordinary\b|\bmarginal\b|\bwage\b|vest[\s-]*event|at[\s-]*the[\s-]*vest",
+    re.IGNORECASE,
+)
+# Chars on each side of a retention match scanned for a tax-treatment cue.
+_TREATMENT_CONTEXT_CHARS = 80
+
+
+def _treatment_bucket(text: str, start: int, end: int) -> str:
+    """Bucket a retention match by the NEAREST tax-treatment cue. Adjacent
+    sentences (at-vest … capital-track …) overlap in a fixed window, so pick the
+    cue closest to the match rather than a fixed precedence — otherwise an at-vest
+    rate inherits a neighbouring capital-track cue and mis-buckets."""
+    lo = max(0, start - _TREATMENT_CONTEXT_CHARS)
+    ctx = text[lo: end + _TREATMENT_CONTEXT_CHARS]
+    mid = start - lo  # match position within ctx
+    best_bucket = "unknown"
+    best_dist = None
+    for bucket, rx in (("capital", _CAPITAL_CUE_RE), ("ordinary", _ORDINARY_CUE_RE)):
+        for cm in rx.finditer(ctx):
+            # distance from the cue to the match (0 if overlapping).
+            dist = 0 if cm.start() <= mid <= cm.end() else min(
+                abs(cm.start() - mid), abs(cm.end() - mid)
+            )
+            if best_dist is None or dist < best_dist:
+                best_dist = dist
+                best_bucket = bucket
+    return best_bucket
 
 
 def check_rsu_retention_consistency(*, plan_text: str) -> list[GateViolation]:
@@ -81,7 +123,10 @@ def check_rsu_retention_consistency(*, plan_text: str) -> list[GateViolation]:
     the divergent values is emitted.
     """
     text = plan_text or ""
-    values: list[float] = []
+    # Collect (value, tax-treatment bucket). Compare only within a bucket: an
+    # at-vest ordinary rate and a capital-track long-term rate are different
+    # treatments, not a contradiction.
+    by_bucket: dict[str, list[float]] = {}
     for m in _RETENTION_PCT_RE.finditer(text):
         raw = m.group("num1") or m.group("num2")
         if raw is None:
@@ -89,16 +134,20 @@ def check_rsu_retention_consistency(*, plan_text: str) -> list[GateViolation]:
         pct = float(raw)
         # A retention share is a fraction of a vest; >100% is not a retention.
         if 0.0 < pct <= 100.0:
-            values.append(pct)
+            bucket = _treatment_bucket(text, m.start(), m.end())
+            by_bucket.setdefault(bucket, []).append(pct)
 
-    if not values:
-        return []
-
-    # Distinct = differs from an already-seen value by more than the tolerance.
+    # Distinct values that diverge WITHIN any single bucket.
     distinct: list[float] = []
-    for v in values:
-        if not any(abs(v - d) <= _RETENTION_TOLERANCE_PP for d in distinct):
-            distinct.append(v)
+    for vals in by_bucket.values():
+        bucket_distinct: list[float] = []
+        for v in vals:
+            if not any(abs(v - d) <= _RETENTION_TOLERANCE_PP for d in bucket_distinct):
+                bucket_distinct.append(v)
+        if len(bucket_distinct) >= 2:
+            for v in bucket_distinct:
+                if not any(abs(v - d) <= _RETENTION_TOLERANCE_PP for d in distinct):
+                    distinct.append(v)
 
     if len(distinct) < 2:
         return []

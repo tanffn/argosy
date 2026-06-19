@@ -76,6 +76,19 @@ def test_matching_nis_headline_passes_within_rounding_tolerance():
     assert check_headline_numeric_source(md, resolved) == []
 
 
+def test_subject_window_does_not_truncate_a_multicomma_number():
+    """Regression (live pv56): a long phrase between the subject and the value
+    pushed the ₪ amount across the subject-window boundary, so the extractor read
+    a truncated `₪11,` (→ 11) instead of the full `₪11,836,133`, which matches the
+    resolved fi_total_capital_nis exactly. A number must never be cut mid-digits."""
+    resolved = _resolved(**{"retirement.fi_total_capital_nis": 11_836_133.0})
+    md = {"long": "FI capital target " + "reconciled " * 5 + "₪11,836,133 total."}
+    assert check_headline_numeric_source(md, resolved) == [], (
+        "the full ₪11,836,133 matches the resolved value; a window-truncated parse "
+        "must not false-flag it"
+    )
+
+
 def test_matching_age_headline_passes():
     resolved = _resolved(**{"retirement.fi_age": 49.0})
     md = {"long": "You could retire at age 49 on the derived path."}

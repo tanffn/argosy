@@ -19,6 +19,27 @@ def test_planted_run106_defect_47_vs_65() -> None:
     assert "47" in v.detail and "65" in v.detail
 
 
+def test_two_tax_treatment_rates_are_not_a_contradiction() -> None:
+    """Live pv56: ~47% net retention is the AT-VEST ordinary-income rate; ~72% net
+    retention is the CAPITAL-TRACK (Section-102 long-term) rate. Two different tax
+    treatments yield two legitimate rates — NOT a contradiction. Only same-bucket
+    divergence should flag."""
+    text = (
+        "At-vest sales bear the ordinary marginal rate, leaving ~47% net retention. "
+        "The capital-track deconcentration program runs at ~72% net retention on "
+        "Section-102 long-term lots."
+    )
+    assert check_rsu_retention_consistency(plan_text=text) == []
+
+
+def test_surtax_percent_is_not_bound_as_the_retention_rate() -> None:
+    """Live pv56 mis-extraction: '~50% marginal plus 3% surtax; ~47% net retention'
+    must bind the NEAREST retention number (47%), not the 3% surtax across it. With
+    only one retention value, there is no contradiction → no violation."""
+    text = "RSU at vest: ~50% marginal plus 3% surtax; ~47% net retention on the vest."
+    assert check_rsu_retention_consistency(plan_text=text) == []
+
+
 def test_clean_consistent_65_across_surfaces() -> None:
     """RSU net retention stated 65% everywhere → no violation."""
     text = (

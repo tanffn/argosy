@@ -394,6 +394,14 @@ def _bind_value(
         return None
 
     right_raw = line[e: e + window]
+    # Never cut a number mid-digits at the window boundary: if the slice ends
+    # inside a numeric run (digit / comma / decimal), extend it to the full token
+    # so a multi-comma amount like ₪11,836,133 isn't parsed as a truncated ₪11
+    # (live pv56 false positive). Bounded extension over the contiguous numeric run.
+    if right_raw and right_raw[-1] in "0123456789,.":
+        _cont = re.match(r"[0-9,.]+", line[e + window:])
+        if _cont:
+            right_raw += _cont.group(0)
     right = _clause(right_raw)
 
     # Pending escape preceding any digit in the after-clause → nothing to trace.
