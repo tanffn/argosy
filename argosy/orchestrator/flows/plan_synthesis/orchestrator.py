@@ -3575,6 +3575,17 @@ def _assemble_draft_bodies(session, *, output, user_id, decision_run_id,
                     user_id=user_id, decision_run_id=decision_run_id,
                     count=len(_scrub_log), tokens=_scrub_log[:20],
                 )
+            # Canonical fact placeholders (default OFF — ARGOSY_FACT_PLACEHOLDERS=1).
+            # When the synthesizer emits {{fact:key}} tokens, render them from the
+            # SAME resolver manifest so the body's numbers ARE the canonical ones
+            # (no LLM-typed drift). No-op on current output (no placeholders).
+            # Non-strict here: an unresolved token is left for the gate to surface
+            # rather than aborting this best-effort block.
+            if _os.environ.get("ARGOSY_FACT_PLACEHOLDERS", "0") == "1":
+                from argosy.quality.fact_registry import render_placeholders
+                _long_md = render_placeholders(_long_md, _manifest, strict=False)
+                _medium_md = render_placeholders(_medium_md, _manifest, strict=False)
+                _short_md = render_placeholders(_short_md, _manifest, strict=False)
     except Exception as exc:  # noqa: BLE001 — scrub is defense-in-depth
         log.warning(
             "plan_synthesis.headline_scrub_failed",

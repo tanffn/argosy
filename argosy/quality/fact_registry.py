@@ -112,12 +112,23 @@ def render_fact(key: str, resolved, *, registry: dict[str, str] = FACT_DISPLAY) 
 _PLACEHOLDER = re.compile(r"\{\{fact:([A-Za-z0-9_.]+)\}\}")
 
 
-def render_placeholders(text: str, resolved, *, registry: dict[str, str] = FACT_DISPLAY) -> str:
-    """Replace every ``{{fact:key}}`` with the canonical rendered value. Any
-    unknown/unregistered key or unresolved value raises PlaceholderError (the
-    build fails rather than shipping a hole or a stale number)."""
+def render_placeholders(
+    text: str, resolved, *, registry: dict[str, str] = FACT_DISPLAY, strict: bool = True
+) -> str:
+    """Replace every ``{{fact:key}}`` with the canonical rendered value.
+
+    ``strict=True`` (default): an unknown/unregistered key or unresolved value
+    raises PlaceholderError — the build fails rather than shipping a hole or a
+    stale number. ``strict=False``: leave an unrenderable token in place (so the
+    ban-gate / numeric gate surfaces it) instead of aborting; used by the
+    best-effort assembly wiring before strict enforcement is switched on."""
     def _sub(m: re.Match) -> str:
-        return render_fact(m.group(1), resolved, registry=registry)
+        try:
+            return render_fact(m.group(1), resolved, registry=registry)
+        except PlaceholderError:
+            if strict:
+                raise
+            return m.group(0)
 
     return _PLACEHOLDER.sub(_sub, text or "")
 

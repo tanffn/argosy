@@ -94,6 +94,16 @@ def test_render_placeholders_unresolved_value_is_build_failure():
         render_placeholders("nw {{fact:portfolio.liquid_net_worth_nis}}", resolved)
 
 
+def test_render_placeholders_non_strict_leaves_unrenderable_token():
+    # The best-effort assembly wiring leaves an unresolved token in place (for the
+    # gate to surface) instead of aborting; resolvable facts still render.
+    resolved = _Resolved({"retirement.fi_age": _RV(49.0, "age")})
+    text = "age {{fact:retirement.fi_age}} key {{fact:not.a.key}}"
+    out = render_placeholders(text, resolved, strict=False)
+    assert "age age 49" in out
+    assert "{{fact:not.a.key}}" in out  # left for the gate
+
+
 # --- step 3: ban-unauthorized-numbers gate ----------------------------------
 def test_ban_gate_flags_raw_financial_numbers_in_prose():
     text = "Liquid net worth is ₪11,687,926, a margin of ₪-148,208, NVDA at 12% by age 46."
