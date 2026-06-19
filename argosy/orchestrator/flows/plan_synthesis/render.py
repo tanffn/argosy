@@ -1333,18 +1333,44 @@ def render_number_derivations_appendix(
         ret_age = float(ret_rv.value)
         bridge_years = max(0.0, float(LUMP_PENSION_AGE) - ret_age)
         bridge_nis = bridge_years * m.permanent_annual_spend_nis
+        esa_rv = (
+            resolved.get("retirement.earliest_safe_age") if resolved is not None else None
+        )
+        esa = (
+            float(esa_rv.value)
+            if (esa_rv is not None and esa_rv.status == "resolved" and esa_rv.value is not None)
+            else None
+        )
         lines.append(
             f"### FIRE bridge — {_n(bridge_nis)} liquid drawdown "
-            f"(age {ret_age:.0f}→{LUMP_PENSION_AGE})"
+            f"(perpetuity track: age {ret_age:.0f}→{LUMP_PENSION_AGE})"
         )
         lines.append("")
         lines.append(
             f"- **Bridge requirement** = ({LUMP_PENSION_AGE} − {ret_age:.0f}) "
             f"= {bridge_years:.0f} yrs × permanent-equivalent spend "
             f"{_n(m.permanent_annual_spend_nis)}/yr = **{_n(bridge_nis)}** — the liquid "
-            "capital that must fund spend BEFORE the age-60 partial pension unlock. "
+            "capital that funds spend BEFORE the age-60 partial pension unlock. "
             "Sized on the permanent-equivalent basis, not the lower tracked T12 burn."
         )
+        # Two-track reconciliation: the bridge belongs to the PERPETUITY track
+        # (retire at the deterministic perpetuity-FI age, then live off yield).
+        # The HEADLINE earliest-safe age is a DISTINCT, more aggressive track —
+        # its pre-60 funding is modelled INSIDE the Monte-Carlo drawdown (90%
+        # solvent to 95), NOT via this perpetuity bridge — so the two ages are
+        # two valid retirement models, not a contradiction.
+        if esa is not None and abs(esa - ret_age) >= 0.5:
+            lines.append(
+                f"- **Which age is this?** This bridge is sized to the **perpetuity "
+                f"self-sufficiency age {ret_age:.0f}** (live off yield forever, no "
+                f"principal drawdown). The plan's **headline retirement age is the "
+                f"earliest-safe {esa:.0f}** — a distinct, more aggressive track that "
+                "draws principal down and is validated by the Monte-Carlo solvency "
+                "run (which already funds its own age-→60 gap internally). Retiring at "
+                f"{esa:.0f} is the earlier option; reaching {ret_age:.0f} is when the "
+                "portfolio becomes perpetuity-self-sufficient. Both are real; they are "
+                "NOT two conflicting values for one age."
+            )
         lines.append("")
 
     # --- Currency-mismatch / FX risk (assets ~USD, spend NIS). --------------

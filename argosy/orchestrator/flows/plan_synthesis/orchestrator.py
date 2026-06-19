@@ -1092,6 +1092,17 @@ def run_synthesis(
                 prior_current.horizon_medium_md,
                 prior_current.horizon_short_md,
             ]))
+            # Strip the prior plan's baked internal-review metadata (fleet/analysis
+            # receipts, coherence/FM-dialogue appendices) BEFORE the reader diffs
+            # against it — exactly as the assembled artifact strips its own. A
+            # stale "second opinion returned BLOCK" receipt baked into the prior
+            # body is process metadata, not plan content; left in, the reader reads
+            # the new draft's "pending review" status as a regression/downgrade
+            # against it. The reader must diff PLAN-to-PLAN, not against receipts.
+            from argosy.services.assembled_artifact import (
+                _strip_internal_metadata_sections,
+            )
+            _prior_plan_text = _strip_internal_metadata_sections(_prior_plan_text)
 
         _assembled_text = ""
         try:
