@@ -1357,15 +1357,19 @@ def render_number_derivations_appendix(
                 holdings_as_of = getattr(snap, "snapshot_date", None)
                 positions = json.loads(snap.positions_json or "[]")
                 snap_fx = float(snap.fx_usd_nis or fx_spot)
-                usd_assets_usd = sum(
-                    float(p.get("usd_value_k") or 0.0) * 1000.0
-                    for p in positions if (p.get("currency") or "").upper() == "USD"
+                # Bind to the SAME liquid-basis decomposition the resolver uses
+                # (excludes real-estate rows) so the FX-risk net worth + FI gap
+                # cannot diverge from the canonical ``portfolio.liquid_net_worth_nis``.
+                # The FI sufficiency basis is liquid (ex-ALL-real-estate); summing
+                # the foreign-property rows here produced a sign-flipped FI surplus
+                # the whole-artifact reader BLOCKED on.
+                from argosy.services.plan_numeric_resolver import (
+                    liquid_components_from_positions,
                 )
-                # NIS-origin positions: recover native NIS (don't re-translate
-                # as USD exposure — codex FX review).
-                nis_assets_nis = sum(
-                    float(p.get("usd_value_k") or 0.0) * 1000.0 * snap_fx
-                    for p in positions if (p.get("currency") or "").upper() != "USD"
+                usd_assets_usd, nis_assets_nis, _re_excluded_nis = (
+                    liquid_components_from_positions(
+                        positions, fx=fx_spot, snap_fx=snap_fx,
+                    )
                 )
         except Exception:  # noqa: BLE001 — FX-risk block is best-effort
             usd_assets_usd = None
@@ -1412,7 +1416,13 @@ def render_number_derivations_appendix(
     if resolved is not None:
         rows: list[tuple[str, str]] = []
         for key, label in (
-            ("portfolio.net_worth_nis", "Liquid net worth (investable; ex-Israel-real-estate)"),
+            # Both bases, each labeled by what it IS — the liquid figure is THE
+            # FI sufficiency basis; the investable figure (incl. foreign real
+            # estate) is reconciliation only and must NOT be read as the FI basis.
+            ("portfolio.liquid_net_worth_nis",
+             "Liquid net worth (spendable; EXCLUDES all real estate — THE FI sufficiency basis)"),
+            ("portfolio.net_worth_nis",
+             "Investable net worth (incl. foreign real-estate row; reconciliation only — NOT the FI basis)"),
             ("savings.annual_net_nis", "Annual net savings"),
             ("concentration.nvda_cap_pct", "NVDA concentration cap"),
             ("concentration.nvda_current_pct", "NVDA current weight"),

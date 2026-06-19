@@ -540,6 +540,37 @@ def _is_real_estate(position: dict) -> bool:
     return "real estate" in blob or "real-estate" in blob
 
 
+def liquid_components_from_positions(
+    positions: list, *, fx: float, snap_fx: float
+) -> tuple[float, float, float]:
+    """Split snapshot positions into the LIQUID basis components, EXCLUDING
+    real-estate rows: ``(usd_assets_usd, nis_native_nis, re_excluded_nis)``.
+
+    This is the SINGLE source the resolver's ``portfolio.liquid_net_worth_nis``
+    and the plan render's FX-risk block both bind to, so the two surfaces cannot
+    diverge on whether real estate counts toward the FI sufficiency basis. The
+    bug it closes: the render summed positions INCLUDING the foreign-property
+    rows (₪11,954,153), computing a +₪118,020 FI *surplus* that contradicted the
+    canonical liquid basis ₪11,687,926 (−₪148,208 *short*) — a sign-flipped FI
+    verdict the whole-artifact reader (correctly) BLOCKED on.
+    """
+    usd_assets_usd = 0.0
+    nis_native_nis = 0.0
+    re_excluded_nis = 0.0
+    eff_nis_fx = snap_fx if snap_fx > 0 else fx
+    for p in positions:
+        v = _to_float(p.get("usd_value_k")) or 0.0
+        is_usd = (p.get("currency") or "").upper() == "USD"
+        if _is_real_estate(p):
+            re_excluded_nis += v * 1000.0 * (fx if is_usd else eff_nis_fx)
+            continue
+        if is_usd:
+            usd_assets_usd += v * 1000.0
+        else:
+            nis_native_nis += v * 1000.0 * eff_nis_fx
+    return usd_assets_usd, nis_native_nis, re_excluded_nis
+
+
 def _resolve_liquid_net_worth(
     session: "Session", user_id: str
 ) -> ResolvedValue:
@@ -575,20 +606,9 @@ def _resolve_liquid_net_worth(
         positions = json.loads(snap.positions_json or "[]")
     except (json.JSONDecodeError, ValueError, TypeError):
         positions = []
-    usd_assets_usd = 0.0
-    nis_native_nis = 0.0
-    re_excluded_nis = 0.0
-    for p in positions:
-        v = _to_float(p.get("usd_value_k")) or 0.0
-        is_usd = (p.get("currency") or "").upper() == "USD"
-        nis_val = v * 1000.0 * (fx if is_usd else (snap_fx if snap_fx > 0 else fx))
-        if _is_real_estate(p):
-            re_excluded_nis += nis_val
-            continue
-        if is_usd:
-            usd_assets_usd += v * 1000.0
-        else:
-            nis_native_nis += v * 1000.0 * (snap_fx if snap_fx > 0 else fx)
+    usd_assets_usd, nis_native_nis, re_excluded_nis = liquid_components_from_positions(
+        positions, fx=fx, snap_fx=snap_fx,
+    )
 
     if usd_assets_usd <= 0 and nis_native_nis <= 0:
         return ResolvedValue.pending(key, "nis", "snapshot has no liquid positions")

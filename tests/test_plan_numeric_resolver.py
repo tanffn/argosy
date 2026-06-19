@@ -39,6 +39,66 @@ DECISION_ID = f"plan-synth-{DRUN}"
 
 
 # ---------------------------------------------------------------------------
+# liquid_components_from_positions — the SINGLE source the resolver's liquid
+# net worth AND the plan render's FX block both bind to, so the two surfaces
+# cannot diverge on whether real estate counts toward the FI basis. The bug it
+# fixes: the render summed positions INCLUDING the foreign-property rows
+# (₪11,954,153), computing a +₪118,020 FI *surplus* that flatly contradicted
+# the canonical liquid basis ₪11,687,926 (−₪148,208 *short*).
+# ---------------------------------------------------------------------------
+
+
+def test_liquid_components_excludes_real_estate_rows():
+    from argosy.services.plan_numeric_resolver import liquid_components_from_positions
+
+    positions = [
+        {"symbol": "NVDA", "currency": "USD", "usd_value_k": 2000.0,
+         "asset_type": "Individual stocks"},
+        {"symbol": "ILS-CASH", "currency": "ILS", "usd_value_k": 100.0,
+         "asset_type": "Cash"},
+        # An illiquid foreign property row tagged real estate — MUST be excluded.
+        {"symbol": "-", "currency": "USD", "usd_value_k": 69.0,
+         "asset_type": "Real estate"},
+        # A property-yield ETF the snapshot also tags real estate — excluded too
+        # (matches the canonical liquid basis; the FI basis is ex-ALL-real-estate).
+        {"symbol": "IWDP", "currency": "USD", "usd_value_k": 20.79,
+         "asset_type": "Real Estate"},
+    ]
+    usd_assets_usd, nis_native_nis, re_excluded_nis = liquid_components_from_positions(
+        positions, fx=3.0, snap_fx=3.0,
+    )
+    # USD liquid = NVDA only (2000k); the two RE rows are dropped.
+    assert usd_assets_usd == pytest.approx(2_000_000.0)
+    # NIS-native liquid = the ILS cash row, valued at snap_fx.
+    assert nis_native_nis == pytest.approx(100_000.0 * 3.0)
+    # The excluded RE total is surfaced (for the audit/source string).
+    assert re_excluded_nis == pytest.approx((69.0 + 20.79) * 1000.0 * 3.0)
+
+
+def test_render_fx_block_binds_to_liquid_basis_not_investable():
+    """Regression: the FX-risk scenario table's net-worth + FI-gap columns must
+    use the liquid (ex-real-estate) basis, so the FI verdict cannot flip sign
+    between this surface and the canonical liquid headline."""
+    from argosy.services.plan_numeric_resolver import liquid_components_from_positions
+
+    positions = [
+        {"symbol": "USDX", "currency": "USD", "usd_value_k": 3_940.0,
+         "asset_type": "Core equity"},
+        {"symbol": "FOREIGN-PROP", "currency": "USD", "usd_value_k": 100.0,
+         "asset_type": "Real estate"},
+    ]
+    usd_liq, nis_liq, _ = liquid_components_from_positions(positions, fx=2.965, snap_fx=2.965)
+    fi_total = 11_836_133.0
+    nw = usd_liq * 2.965 + nis_liq
+    gap = nw - fi_total
+    # Liquid basis is SHORT of the FI target (the honest verdict), NOT a surplus.
+    assert gap < 0, f"expected FI short on liquid basis, got gap={gap:,.0f}"
+    # And the foreign-property row never inflates it into a surplus.
+    nw_incl_re = (3_940.0 + 100.0) * 1000.0 * 2.965
+    assert nw_incl_re - fi_total > 0, "guard: incl-RE would wrongly read as surplus"
+
+
+# ---------------------------------------------------------------------------
 # Valid typed payloads (mirror the real agent output JSON shape).
 # ---------------------------------------------------------------------------
 
