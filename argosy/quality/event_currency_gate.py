@@ -68,6 +68,12 @@ _MONTH_KEY = {
 # "tax estimate"/"tax due" with no qualifier still anchors on a generic "tax".
 _LABEL_RE = re.compile(
     r"\b((?:[a-z]+\s+){0,3})"            # up to 3 qualifier words ("US federal", "RSU")
+    # "after-tax" / "pre-tax" / "post-tax" / "before-tax" are ADJECTIVES modifying
+    # another noun (a rate, an SWR, a return) — NOT a tax-liability event. They
+    # hyphenate to "tax" so the qualifier capture above misses them and they would
+    # collapse to the bare `label:tax:` anchor; exclude them so a NIS "after-tax
+    # SWR" capital figure is not flipped against a genuine USD tax event.
+    r"(?<!after-)(?<!pre-)(?<!post-)(?<!before-)"
     r"tax\b"                              # the "tax" head
     r"(?:\s+(?:estimate|due|bill|liability|payment|withholding))?",  # optional tax-kind
     re.IGNORECASE,
