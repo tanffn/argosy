@@ -102,6 +102,40 @@ def test_default_path_calls_services_by_keyword_not_positional():
     )
 
 
+def test_default_resolve_binding_includes_canonical_ages(monkeypatch):
+    """The instage gate must build its resolver manifest WITH the canonical
+    dual-track ages (earliest-safe 46 / preservation 54). Without it those ages
+    are absent from the manifest, so a correctly-rendered `age 46` / `age 54`
+    headline traces to nothing and the numeric-source gate false-flags it. The
+    /accept enforce path already passes include_canonical_ages=True; the instage
+    gate (run on the just-synthesized draft) must match it."""
+    import argosy.services.plan_numeric_resolver as resolver_mod
+
+    seen: dict = {}
+
+    def _spy(session, *, user_id, decision_run_id, include_canonical_ages=False, **kw):
+        seen["include_canonical_ages"] = include_canonical_ages
+        return None
+
+    monkeypatch.setattr(resolver_mod, "resolve_plan_numbers", _spy)
+
+    draft = _NS(id=11, user_id="u", decision_run_id=11,
+                horizon_long_md="x", horizon_medium_md="", horizon_short_md="",
+                target_allocation_json=None, sections_json="[]")
+    _run(
+        session=object(), user_id="u", draft=draft, decision_run_id=11,
+        today=_d(2026, 6, 16),
+        assemble=lambda session, user_id: None,
+        # resolve left at default so the real binding (under test) is exercised.
+        current_plan=lambda session, user_id: None,
+        snapshot_date=_d(2026, 6, 16),
+    )
+    assert seen.get("include_canonical_ages") is True, (
+        "the instage gate's default resolve binding must pass "
+        "include_canonical_ages=True so canonical ages are in the manifest"
+    )
+
+
 def test_ips_style_divergence_caught_instage_not_left_to_reader():
     class _Art:
         full_text = "IPS"

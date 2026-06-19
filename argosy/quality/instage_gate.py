@@ -52,7 +52,21 @@ def run_deterministic_gate_instage(
     if assemble is None:
         from argosy.services.assembled_artifact import assemble_plan_artifact as assemble
     if resolve is None:
-        from argosy.services.plan_numeric_resolver import resolve_plan_numbers as resolve
+        # include_canonical_ages=True so the manifest carries the canonical
+        # dual-track ages (earliest-safe 46 / preservation 54) — matching the
+        # /accept enforce path (plan._run_plan_output_gate). Without it a
+        # correctly-rendered `age 46`/`age 54` headline traces to nothing and the
+        # numeric-source gate false-flags it. Wrapped (not imported directly) so
+        # the call site below keeps the injectable 3-arg signature for test stubs.
+        from argosy.services.plan_numeric_resolver import resolve_plan_numbers as _resolve_real
+
+        def resolve(session, *, user_id, decision_run_id):
+            return _resolve_real(
+                session,
+                user_id=user_id,
+                decision_run_id=decision_run_id,
+                include_canonical_ages=True,
+            )
     if current_plan is None:
         from argosy.state.queries import get_current_plan as current_plan
 
