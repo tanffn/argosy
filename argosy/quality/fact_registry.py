@@ -59,6 +59,11 @@ FACT_DISPLAY: dict[str, str] = {
     "concentration.nvda_current_pct": "pct",
     "retirement.required_real_yield_pct": "pct",
     "retirement.return_assumption_pct": "pct",
+    # RSU retention — TWO distinct statutory rates (at-vest ordinary vs Section-102
+    # capital track). Placeholdered so the body binds 50%/70% canonically and can
+    # never hand-type a conflated "~47%" (the run-117 reader A/B drift).
+    "tax.retention_at_vest_pct": "pct",
+    "tax.retention_capital_track_pct": "pct",
     # Ages.
     "retirement.fi_age": "age",
     "retirement.earliest_safe_age": "age",
@@ -74,6 +79,12 @@ FACT_DISPLAY: dict[str, str] = {
     # Estate exposure (₪) + MC central spend (₪).
     "concentration.us_situs_estate_exposure_nis": "nis_millions",
     "spend.mc_central_nis": "nis",
+    # Total net worth (incl. residence) — the third labeled basis, bindable so the
+    # body never hand-types the ₪14.05M total in a way that drifts from canonical.
+    "portfolio.total_net_worth_incl_residence_nis": "nis_millions",
+    # FI-capital crossing year — the reconciled trajectory year (e.g. 2027), so the
+    # body can't say "crossed 2026" while the registry says 2027.
+    "retirement.fi_crossing_year": "year",
     # FX.
     "fx.usd_nis": "fx",
 }
@@ -97,6 +108,8 @@ def format_fact(value: float, unit: str, *, display: str) -> str:
         return f"{v:,.0f}"
     if display == "fx":
         return f"{v:.3f}"
+    if display == "year":
+        return f"{v:.0f}"
     raise PlaceholderError(f"unknown display policy {display!r}")
 
 

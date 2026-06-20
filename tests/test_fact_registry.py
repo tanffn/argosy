@@ -36,6 +36,31 @@ class _Resolved:
         return self._d.get(key)
 
 
+# --- Phase 2b: retention split, FI-crossing year, total net worth are bindable
+def test_retention_and_fi_crossing_are_placeholder_bindable():
+    """The synthesizer must be able to placeholder the RSU retention rates and the
+    FI-crossing year (the prose-vs-registry drift the run-117 reader A/B caught:
+    prose '~47%' vs canonical 50%/70%). These keys must be in FACT_DISPLAY and
+    render canonically."""
+    assert FACT_DISPLAY.get("tax.retention_at_vest_pct") == "pct"
+    assert FACT_DISPLAY.get("tax.retention_capital_track_pct") == "pct"
+    assert FACT_DISPLAY.get("retirement.fi_crossing_year") == "year"
+    assert FACT_DISPLAY.get("portfolio.total_net_worth_incl_residence_nis") == "nis_millions"
+
+    resolved = _Resolved({
+        "tax.retention_at_vest_pct": _RV(0.50, "pct"),
+        "tax.retention_capital_track_pct": _RV(0.70, "pct"),
+        "retirement.fi_crossing_year": _RV(2027.0, "year"),
+    })
+    assert render_fact("tax.retention_at_vest_pct", resolved) == "50.0%"
+    assert render_fact("tax.retention_capital_track_pct", resolved) == "70.0%"
+    assert render_fact("retirement.fi_crossing_year", resolved) == "2027"
+
+
+def test_format_fact_year_is_a_plain_integer_year():
+    assert format_fact(2027.0, "year", display="year") == "2027"
+
+
 # --- step 1: format_fact matches the existing renderer's display forms ------
 def test_format_fact_nis_full_matches_render_n():
     # render._n(x) == f"₪{x:,.0f}"
