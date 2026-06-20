@@ -469,11 +469,11 @@ _ASSUMPTION_LEDGER_V1: list[dict[str, str]] = [
         "id": "A7", "name": "RSU net retention (after IL Section 102 + US)",
         "value": "[derivation pending]", "source": "tax_analyst + equity_comp_analyst",
         "year": "2026", "confidence": "MEDIUM-HIGH",
-        "affects": "Active-grant net stream; the ₪307,852/yr net savings floor (A8)",
+        "affects": "Active-grant net stream; the net savings floor (A8)",
     },
     {
         "id": "A8", "name": "RSU net savings (conservative known-grants floor)",
-        "value": "₪307,852/yr net", "source": "equity_comp_analyst (known_grants_only)",
+        "value": "[derivation pending]", "source": "equity_comp_analyst (known_grants_only)",
         "year": "2026-2029", "confidence": "MEDIUM-HIGH",
         "affects": "Working-years savings; FI bridge (conservative floor, not optimistic steady-state)",
     },

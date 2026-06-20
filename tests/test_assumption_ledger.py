@@ -51,3 +51,17 @@ def test_a7_invalid_rate_leaves_row_pending():
     a7 = {r["id"]: r for r in rows}["A7"]
     assert "pending" in a7["value"].lower()
     assert "0%" not in a7["value"]
+
+
+def test_no_stale_hardcoded_net_savings_literal():
+    """A8's net-savings floor must hydrate from the resolver, never show a stale
+    hardcoded ₪307,852 (the pv58 reader AMBER: A7 affects 307,852 vs A8 312,021)."""
+    rows = _ledger_rows_with_manifest(None)
+    by_id = {r["id"]: r for r in rows}
+    # cold cache: A8 is pending, A7 affects has no hardcoded figure
+    assert "307,852" not in by_id["A8"]["value"]
+    assert "307,852" not in by_id["A7"].get("affects", "")
+    # hydrated: A8 renders the resolved savings figure
+    resolved = _Resolved({"savings.annual_net_nis": _RV(312021.0)})
+    a8 = {r["id"]: r for r in _ledger_rows_with_manifest(resolved)}["A8"]
+    assert "312,021" in a8["value"]
