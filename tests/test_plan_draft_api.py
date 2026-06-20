@@ -841,6 +841,41 @@ def test_post_draft_accept_promotes_to_current(app_with_draft):
         sess.close()
 
 
+def test_post_draft_accept_blocked_on_artifact_leakage(app_with_draft):
+    """A draft whose assembled artifact still contains unrendered placeholders /
+    leaked emission scaffolding must NOT promote on a plain /accept — fail-closed
+    422; an explicit ?override_leakage=true promotes (audit-logged)."""
+    r1 = app_with_draft.get("/api/plan/draft?user_id=ariel")
+    draft_id = r1.json()["plan_version_id"]
+
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        pv = sess.get(PlanVersion, draft_id)
+        pv.horizon_long_md = "# Long\n\nPerpetuity base [derivation pending] NIS short of target."
+        sess.commit()
+    finally:
+        sess.close()
+
+    r2 = app_with_draft.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
+    assert r2.status_code == 422, r2.text
+    assert r2.json()["detail"]["error"] == "artifact_leakage"
+    assert any("derivation pending" in s.lower() for s in r2.json()["detail"]["leaks"])
+
+    # The draft stayed a draft.
+    sess = app_with_draft.app.state.session_factory()
+    try:
+        assert sess.get(PlanVersion, draft_id).role == "draft"
+    finally:
+        sess.close()
+
+    # Explicit override promotes.
+    r3 = app_with_draft.post(
+        f"/api/plan/draft/{draft_id}/accept?user_id=ariel&override_leakage=true"
+    )
+    assert r3.status_code == 200, r3.text
+    assert r3.json()["status"] == "accepted"
+
+
 def test_post_draft_accept_supersedes_prior_current(app_with_draft):
     # Insert a prior current first.
     sess = app_with_draft.app.state.session_factory()

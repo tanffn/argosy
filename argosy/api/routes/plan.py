@@ -3021,6 +3021,16 @@ def post_draft_accept(
             "plan.draft.accepted.promote_gate_override."
         ),
     ),
+    override_leakage: bool = Query(
+        False,
+        description=(
+            "Artifact-integrity override: when true, promote a draft whose assembled "
+            "artifact still contains unrendered placeholders / leaked emission "
+            "scaffolding ([derivation pending] / EMIT AS / {{fact:). The default is "
+            "fail-closed — a leaky artifact must never ship. Audit-logged via "
+            "plan.draft.accepted.leakage_override."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> AcceptResponse:
     from argosy.state.queries import get_current_plan
@@ -3052,6 +3062,36 @@ def post_draft_accept(
                         "addressing them, or pass "
                         "?override_fm_rejection=true to promote anyway "
                         "(audit-logged)."
+                    ),
+                },
+            )
+
+    # Artifact-integrity (leakage) gate — assemble the bytes the client would read
+    # and fail-closed if any unrendered placeholder / leaked emission scaffolding
+    # survives. The whole-artifact reader (an LLM coherence critic) does NOT reliably
+    # catch this class, so a leaky draft has read as promotable; this deterministic
+    # check is the backstop. Bypass only with an explicit, audit-logged override.
+    if not override_leakage:
+        from argosy.quality.leakage_gate import scan_leakage
+        from argosy.services.assembled_artifact import assemble_plan_artifact
+
+        try:
+            _accept_artifact = assemble_plan_artifact(db, user_id=user_id).full_text or ""
+        except Exception:  # noqa: BLE001 — if we cannot assemble, fall through to the gates
+            _accept_artifact = ""
+        _accept_leaks = scan_leakage(_accept_artifact)
+        if _accept_leaks:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "artifact_leakage",
+                    "draft_id": draft_id,
+                    "leaks": _accept_leaks,
+                    "hint": (
+                        "The assembled plan still contains unrendered placeholders / "
+                        "leaked emission scaffolding ([derivation pending] / EMIT AS / "
+                        "{{fact:). Re-render / re-synthesize until clean, or pass "
+                        "?override_leakage=true to promote anyway (audit-logged)."
                     ),
                 },
             )

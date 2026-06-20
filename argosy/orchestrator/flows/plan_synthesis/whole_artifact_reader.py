@@ -523,6 +523,56 @@ async def run_whole_artifact_review(
         return None, None
 
     # ------------------------------------------------------------------
+    # Deterministic leakage precheck — runs BEFORE any codex dispatch (cheaper)
+    # and catches a class the LLM reader misses: an artifact that still carries
+    # unrendered placeholders / leaked emission scaffolding (``[derivation pending]``,
+    # ``EMIT AS``, ``{{fact:``). The client must never see those, so this is a
+    # fail-closed BLOCK with no LLM judgement. The downstream reconcile loop's
+    # owner path cannot prose-fix a render artifact, so it falls through to a
+    # re-render / re-synth — exactly the right repair for a leak.
+    # ------------------------------------------------------------------
+    from argosy.quality.leakage_gate import scan_leakage
+
+    _leaks = scan_leakage(assembled_artifact)
+    if _leaks:
+        log.warning(
+            "whole_artifact_reader.leakage_blocked",
+            decision_run_id=decision_run_id, leaks=_leaks,
+        )
+        _leak_verdict = WholeArtifactVerdict(
+            overall_assessment="BLOCK",
+            findings=[CoherenceFinding(
+                kind="other",
+                severity="BLOCKER",
+                detail=(
+                    "Artifact-integrity BLOCK: the assembled plan still contains "
+                    "unrendered placeholders / leaked emission scaffolding — every "
+                    "figure must render before the plan can ship. Leak tokens: "
+                    + "; ".join(_leaks)
+                ),
+                surfaces_cited=_leaks,
+                subject_type="artifact_integrity",
+            )],
+        )
+        _leak_row = AgentReport(
+            agent_role="whole_artifact_reader",
+            user_id=user_id,
+            model="deterministic-leakage-gate",
+            response_text=_leak_verdict.model_dump_json(indent=2),
+            tokens_in=0,
+            tokens_out=0,
+            cost_usd=0.0,
+            prompt_hash="",
+            confidence=None,
+            output=_leak_verdict,
+            decision_id=decision_audit_token,
+            run_correlation_id=str(uuid.uuid4()),
+            system_prompt="",
+            user_prompt="(deterministic leakage precheck — no LLM dispatch)",
+        )
+        return _leak_verdict, _leak_row
+
+    # ------------------------------------------------------------------
     # Resolve the kit. The codex-tandem scripts dir is only added to
     # ``sys.path`` here — no top-level import of ``engine_codex`` so the
     # rest of argosy doesn't require the kit to be present.
