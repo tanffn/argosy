@@ -933,6 +933,14 @@ def resolve_plan_numbers(
     _apply_fx_boi(session, values)
     _apply_structural_ages(values)
     _apply_retention_rates(values)
+    # B1 NOTE: a deterministic contractual-RSU calculator exists
+    # (argosy.services.rsu_savings.contractual_rsu_net_by_year) and is the building
+    # block for the savings fix. It is deliberately NOT wired to override the flat
+    # `savings.annual_net_nis` scalar: codex review found the contractual grants run
+    # off steeply (2026 ₪519k → 2030 ₪18k), so a flat 5-yr MEAN understates exactly the
+    # 2026-2028 window where the FI crossing falls — the correct fix is feeding the
+    # PER-YEAR vector into the trajectory + fi_crossing (render.fv/years_to +
+    # _apply_fi_crossing_year), a headline-figure change tracked as the B1 follow-up.
 
     # ONE signed FI sufficiency margin (net_worth − FI-total-capital). Computed
     # once here so every surface cites the SAME signed number — the
