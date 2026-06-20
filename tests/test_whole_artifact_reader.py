@@ -16,8 +16,25 @@ import pytest
 from argosy.orchestrator.flows.plan_synthesis.whole_artifact_reader import (
     CoherenceFinding,
     WholeArtifactVerdict,
+    _hard_ceiling_s,
     _parse_verdict,
+    _reader_codex_timeout_s,
 )
+
+
+def test_reader_codex_timeout_default_and_env_override(monkeypatch):
+    monkeypatch.delenv("ARGOSY_READER_CODEX_TIMEOUT_S", raising=False)
+    assert _reader_codex_timeout_s() == 300
+    assert _hard_ceiling_s() == 360
+    # A large artifact can need more than 5 min; the timeout is bumpable.
+    monkeypatch.setenv("ARGOSY_READER_CODEX_TIMEOUT_S", "540")
+    assert _reader_codex_timeout_s() == 540
+    assert _hard_ceiling_s() == 600
+    # Clamped to run_codex's 600s subprocess ceiling; garbage falls back to default.
+    monkeypatch.setenv("ARGOSY_READER_CODEX_TIMEOUT_S", "99999")
+    assert _reader_codex_timeout_s() == 600
+    monkeypatch.setenv("ARGOSY_READER_CODEX_TIMEOUT_S", "not-a-number")
+    assert _reader_codex_timeout_s() == 300
 
 
 class _StubCodexResult:
@@ -48,7 +65,7 @@ def test_reader_hard_ceiling_times_out_a_hung_dispatch(monkeypatch, tmp_path):
     reload_settings()
 
     import argosy.orchestrator.flows.plan_synthesis.whole_artifact_reader as war
-    monkeypatch.setattr(war, "_HARD_CEILING_S", 0.2)
+    monkeypatch.setattr(war, "_hard_ceiling_s", lambda: 0.2)
 
     import sys
     import types

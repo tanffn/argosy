@@ -82,7 +82,29 @@ _SUBJECT_TAXONOMY_STR = ", ".join(sorted(SUBJECT_REGISTRY.keys()))
 # ``run_codex`` keeps going (you can't kill a thread). Acceptable — the
 # orphaned thread may linger but no longer blocks synthesis. We do NOT try
 # to kill the thread.
-_HARD_CEILING_S = 360  # 300s run_codex timeout_s + 60s grace
+#
+# The codex timeout is env-configurable (ARGOSY_READER_CODEX_TIMEOUT_S, default
+# 300) because a large assembled artifact (~100k chars) can legitimately need
+# more than 5 minutes for the reviewer to read — a too-tight timeout reads as a
+# dispatch failure (the fail-closed synthetic BLOCK) even though nothing is hung.
+# Clamped to run_codex's own 600s subprocess ceiling; the hard backstop adds the
+# same 60s grace margin as before.
+_DEFAULT_READER_CODEX_TIMEOUT_S = 300
+
+
+def _reader_codex_timeout_s() -> int:
+    """codex ``timeout_s`` for the reader, from env (clamped to [60, 600])."""
+    try:
+        v = int(os.environ.get("ARGOSY_READER_CODEX_TIMEOUT_S",
+                               str(_DEFAULT_READER_CODEX_TIMEOUT_S)))
+    except (TypeError, ValueError):
+        v = _DEFAULT_READER_CODEX_TIMEOUT_S
+    return max(60, min(v, 600))
+
+
+def _hard_ceiling_s() -> int:
+    """asyncio backstop = codex timeout + 60s grace."""
+    return _reader_codex_timeout_s() + 60
 
 
 # ----------------------------------------------------------------------
@@ -544,7 +566,7 @@ async def run_whole_artifact_review(
         loop = asyncio.get_running_loop()
         # Wrap the executor await in ``asyncio.wait_for`` so a hung codex
         # subprocess (which run_codex's own timeout_s does not reliably
-        # kill — see _HARD_CEILING_S) can't block synthesis indefinitely.
+        # kill — see _hard_ceiling_s) can't block synthesis indefinitely.
         # A timeout raises asyncio.TimeoutError, caught by the except below
         # and handled exactly like any other dispatch failure: (None, None),
         # so the reader simply doesn't run and synthesis proceeds.
@@ -556,10 +578,10 @@ async def run_whole_artifact_review(
                     prompt=prompt,
                     agent_name=f"whole_artifact_reader_run_{decision_run_id}",
                     role="whole_artifact_reader",
-                    timeout_s=300,
+                    timeout_s=_reader_codex_timeout_s(),
                 ),
             ),
-            timeout=_HARD_CEILING_S,
+            timeout=_hard_ceiling_s(),
         )
     except asyncio.TimeoutError:
         # Hard ceiling tripped — a stuck codex subprocess. The orphaned
@@ -570,7 +592,7 @@ async def run_whole_artifact_review(
         log.warning(
             "whole_artifact_reader.dispatch_failed",
             decision_run_id=decision_run_id,
-            error=f"hard ceiling exceeded ({_HARD_CEILING_S}s) — codex hung",
+            error=f"hard ceiling exceeded ({_hard_ceiling_s()}s) — codex hung",
             timed_out=True,
         )
         return None, None
