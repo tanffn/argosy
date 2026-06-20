@@ -138,6 +138,26 @@ def render_fact(key: str, resolved, *, registry: dict[str, str] = FACT_DISPLAY) 
 # Step 2 — placeholder substitution.
 # ---------------------------------------------------------------------------
 _PLACEHOLDER = re.compile(r"\{\{fact:([A-Za-z0-9_.]+)\}\}")
+
+# The synth guidance presents each figure as ``→ EMIT AS: {{fact:KEY}}``. The model
+# sometimes copies that SCAFFOLDING into the prose body. Strip it deterministically:
+#   1. "…EMIT AS: {{fact:KEY}}" → keep the token (its value still renders), drop the verb;
+#   2. "…EMIT AS [derivation pending]." → drop the whole leaked pending stub;
+#   3. any residual bare "EMIT AS[:]" verb → drop it.
+_EMIT_PREFIX = re.compile(r"(?:→\s*)?EMIT[ _]AS:?\s*(?=\{\{fact:)", re.IGNORECASE)
+_EMIT_PENDING = re.compile(
+    r"\s*(?:→\s*)?EMIT[ _]AS:?\s*\[derivation pending\]\.?", re.IGNORECASE)
+_EMIT_BARE = re.compile(r"\s*(?:→\s*)?EMIT[ _]AS:?(?=\s|$)", re.IGNORECASE)
+
+
+def strip_emission_scaffolding(text: str) -> str:
+    """Remove leaked ``EMIT AS`` placeholder-emission scaffolding from a rendered body
+    while preserving any ``{{fact:KEY}}`` token (so its canonical value still renders).
+    ``EMIT AS`` never appears in legitimate financial prose, so this is safe."""
+    t = _EMIT_PREFIX.sub("", text or "")
+    t = _EMIT_PENDING.sub("", t)
+    t = _EMIT_BARE.sub("", t)
+    return t
 # An ``age`` fact renders as "age NN" (so a bare placeholder reads naturally). When
 # prose already wrote the word "age" before such a placeholder ("at age {{fact:…}}"
 # → "at age age 49") — or a hyphenated template ("to-age-{{fact:…}}" → "to-age-age
@@ -168,7 +188,10 @@ def render_placeholders(
                 raise
             return m.group(0)
 
-    rendered = _PLACEHOLDER.sub(_sub, text or "")
+    # Strip leaked EMIT-AS scaffolding FIRST (while {{fact:}} tokens are still intact),
+    # then substitute the tokens, then collapse any doubled age word.
+    sanitized = strip_emission_scaffolding(text or "")
+    rendered = _PLACEHOLDER.sub(_sub, sanitized)
     return _AGE_DOUBLING.sub(r"age\1", rendered)
 
 

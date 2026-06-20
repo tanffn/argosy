@@ -1770,8 +1770,12 @@ def render_numbers_for_synth(resolved: "ResolvedPlanNumbers") -> str:
         src = rv.source_locator if rv.status == "resolved" else "no approved source"
         conf = f"; conf {rv.confidence}" if rv.confidence else ""
         if _placeholders_on and key in _FACT_DISPLAY and rv.status == "resolved":
+            # Present the token as bracketed metadata, NOT as a copyable "EMIT AS:"
+            # instruction — the model was reproducing that verb verbatim in prose. A
+            # render-time sanitizer (fact_registry.strip_emission_scaffolding) strips any
+            # residual leak as a deterministic backstop.
             lines.append(
-                f"  - {label}: {disp}  → EMIT AS: {{{{fact:{key}}}}}   [{src}{conf}]"
+                f"  - {label}: {disp}   [write the token {{{{fact:{key}}}}} verbatim · {src}{conf}]"
             )
         else:
             lines.append(f"  - {label}: {disp}   [{src}{conf}]")
