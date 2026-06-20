@@ -8,38 +8,38 @@
         <mxCell id="title" value="Argosy — Agent Fleet" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
           <mxGeometry x="600" y="20" width="500" height="36" as="geometry"/>
         </mxCell>
-        <mxCell id="subtitle" value="5 decision teams (left-to-right pipeline) + 4 cross-cutting agents — model badges show default assignment" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+        <mxCell id="subtitle" value="5 decision teams (left-to-right pipeline) + 4 cross-cutting agents — every role defaults to Opus 4.7 (accuracy over LLM cost)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
           <mxGeometry x="350" y="58" width="1000" height="20" as="geometry"/>
         </mxCell>
 
         <mxCell id="swim_analysts" value="ANALYST TEAM  (parallel, structured reports)" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
           <mxGeometry x="40" y="100" width="320" height="640" as="geometry"/>
         </mxCell>
-        <mxCell id="a_fund" value="Fundamentals  [Sonnet]&#10;earnings · valuation · sector" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
+        <mxCell id="a_fund" value="Fundamentals  [Opus 4.7]&#10;earnings · valuation · sector" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
           <mxGeometry x="20" y="44" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="a_tech" value="Technical  [Haiku]&#10;OHLC · MA · RSI · MACD" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
+        <mxCell id="a_tech" value="Technical  [Opus 4.7]&#10;OHLC · MA · RSI · MACD" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
           <mxGeometry x="20" y="100" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="a_news" value="News  [Sonnet]&#10;headlines · filings · materiality" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
+        <mxCell id="a_news" value="News  [Opus 4.7]&#10;headlines · filings · materiality" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
           <mxGeometry x="20" y="156" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="a_sent" value="Sentiment  [Haiku]&#10;social · fear-greed · options flow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
+        <mxCell id="a_sent" value="Sentiment  [Opus 4.7]&#10;social · fear-greed · options flow" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
           <mxGeometry x="20" y="212" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="a_macro" value="Macro  [Sonnet]&#10;rates · VIX · USD/NIS · regime" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
+        <mxCell id="a_macro" value="Macro  [Opus 4.7]&#10;rates · VIX · USD/NIS · regime" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
           <mxGeometry x="20" y="268" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="a_pc" value="Plan-critique  [Sonnet · Opus on RED]&#10;RED / YELLOW / GREEN per item" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_analysts">
+        <mxCell id="a_pc" value="Plan-critique  [Opus 4.7]&#10;RED / YELLOW / GREEN per item" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_analysts">
           <mxGeometry x="20" y="324" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="a_conc" value="Concentration  [Haiku]&#10;cap breaches · NVDA pace" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
+        <mxCell id="a_conc" value="Concentration  [Opus 4.7]&#10;cap breaches · NVDA pace" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
           <mxGeometry x="20" y="380" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="a_tax" value="Tax  [Sonnet]&#10;TLH · dividend · RSU · YE plan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
+        <mxCell id="a_tax" value="Tax  [Opus 4.7]&#10;TLH · dividend · RSU · YE plan" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
           <mxGeometry x="20" y="436" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="a_fx" value="FX  [Haiku]&#10;USD/NIS/EUR · hedging notes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
+        <mxCell id="a_fx" value="FX  [Opus 4.7]&#10;USD/NIS/EUR · hedging notes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_analysts">
           <mxGeometry x="20" y="492" width="280" height="46" as="geometry"/>
         </mxCell>
         <mxCell id="lbl_an" value="9 analysts run in parallel; outputs persisted as agent_reports" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fontStyle=2;fontColor=#666666;" vertex="1" parent="swim_analysts">
@@ -55,7 +55,7 @@
         <mxCell id="r_bear" value="Bear  [Opus]&#10;marshals bearish thesis&#10;rebuts strongest bull point" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_research">
           <mxGeometry x="20" y="120" width="240" height="60" as="geometry"/>
         </mxCell>
-        <mxCell id="r_fac" value="Facilitator  [Sonnet]&#10;bounds rounds · extracts thesis" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_research">
+        <mxCell id="r_fac" value="Facilitator  [Opus 4.7]&#10;bounds rounds · extracts thesis" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_research">
           <mxGeometry x="20" y="196" width="240" height="50" as="geometry"/>
         </mxCell>
         <mxCell id="r_out" value="debate outcome record&#10;(structured)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;dashed=1;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_research">
@@ -65,23 +65,23 @@
         <mxCell id="swim_trader" value="TRADER" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
           <mxGeometry x="720" y="100" width="240" height="320" as="geometry"/>
         </mxCell>
-        <mxCell id="t_trader" value="Trader&#10;[Opus T2/T3 · Sonnet T0/T1]&#10;&#10;synthesizes analysts +&#10;debate outcome into:&#10;ticker · action · size&#10;instrument · order type&#10;limits · TIF · rationale&#10;expected impact" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_trader">
+        <mxCell id="t_trader" value="Trader&#10;[Opus 4.7]&#10;&#10;synthesizes analysts +&#10;debate outcome into:&#10;ticker · action · size&#10;instrument · order type&#10;limits · TIF · rationale&#10;expected impact" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_trader">
           <mxGeometry x="20" y="44" width="200" height="240" as="geometry"/>
         </mxCell>
 
         <mxCell id="swim_risk" value="RISK TEAM  (debate, n rounds)" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
           <mxGeometry x="1000" y="100" width="320" height="320" as="geometry"/>
         </mxCell>
-        <mxCell id="rk_agg" value="Aggressive  [Sonnet]&#10;tolerate vol if Sharpe-improving" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_risk">
+        <mxCell id="rk_agg" value="Aggressive  [Opus 4.7]&#10;tolerate vol if Sharpe-improving" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_risk">
           <mxGeometry x="20" y="44" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="rk_neu" value="Neutral  [Sonnet]&#10;balanced view · constraint check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_risk">
+        <mxCell id="rk_neu" value="Neutral  [Opus 4.7]&#10;balanced view · constraint check" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_risk">
           <mxGeometry x="20" y="100" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="rk_con" value="Conservative  [Sonnet]&#10;capital preservation · worst case" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_risk">
+        <mxCell id="rk_con" value="Conservative  [Opus 4.7]&#10;capital preservation · worst case" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_risk">
           <mxGeometry x="20" y="156" width="280" height="46" as="geometry"/>
         </mxCell>
-        <mxCell id="rk_fac" value="Risk facilitator  [Sonnet]&#10;extracts consensus / escalates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_risk">
+        <mxCell id="rk_fac" value="Risk facilitator  [Opus 4.7]&#10;extracts consensus / escalates" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_risk">
           <mxGeometry x="20" y="212" width="280" height="46" as="geometry"/>
         </mxCell>
         <mxCell id="rk_out" value="verdict: APPROVE | APPROVE_WITH_CONDITIONS | REJECT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=1.5;dashed=1;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_risk">
@@ -98,16 +98,16 @@
         <mxCell id="swim_xc" value="CROSS-CUTTING AGENTS  (own cadences; not part of any decision team)" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;fontColor=#000000;" vertex="1" parent="1">
           <mxGeometry x="40" y="780" width="1600" height="220" as="geometry"/>
         </mxCell>
-        <mxCell id="xc_intake" value="Intake  [Sonnet]&#10;&#10;6-stage interview&#10;doc ingestion&#10;updates user_context&#10;&#10;cadence: setup + monthly /&#10;quarterly / annual" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_xc">
+        <mxCell id="xc_intake" value="Intake  [Opus 4.7]&#10;&#10;6-stage interview&#10;doc ingestion&#10;updates user_context&#10;&#10;cadence: setup + monthly /&#10;quarterly / annual" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_xc">
           <mxGeometry x="20" y="44" width="370" height="160" as="geometry"/>
         </mxCell>
-        <mxCell id="xc_dom" value="Domain refresh  [Sonnet]&#10;&#10;re-fetches Tier-1 sources&#10;diffs against KB&#10;writes to review queue&#10;NEVER auto-edits&#10;&#10;cadence: weekly + annual" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_xc">
+        <mxCell id="xc_dom" value="Domain refresh  [Opus 4.7]&#10;&#10;re-fetches Tier-1 sources&#10;diffs against KB&#10;writes to review queue&#10;NEVER auto-edits&#10;&#10;cadence: weekly + annual" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_xc">
           <mxGeometry x="410" y="44" width="370" height="160" as="geometry"/>
         </mxCell>
         <mxCell id="xc_audit" value="Audit  [Opus]&#10;&#10;reviews last week's decisions&#10;identifies systematic errors&#10;proposes prompt tweaks&#10;&#10;cadence: weekly Sun 19:00" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_xc">
           <mxGeometry x="800" y="44" width="370" height="160" as="geometry"/>
         </mxCell>
-        <mxCell id="xc_watch" value="Watchlist  [Haiku]&#10;&#10;maintains universe of tickers&#10;positions + candidates + reduce-list&#10;feeds analyst team&#10;&#10;cadence: daily 08:30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_xc">
+        <mxCell id="xc_watch" value="Watchlist  [Opus 4.7]&#10;&#10;maintains universe of tickers&#10;positions + candidates + reduce-list&#10;feeds analyst team&#10;&#10;cadence: daily 08:30" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=1.5;fontColor=#000000;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_xc">
           <mxGeometry x="1190" y="44" width="370" height="160" as="geometry"/>
         </mxCell>
 
@@ -163,7 +163,7 @@
         <mxCell id="lg_ag_o_l" value="Facilitator / cross-cutting" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend_frame">
           <mxGeometry x="726" y="28" width="200" height="20" as="geometry"/>
         </mxCell>
-        <mxCell id="lg_ag_models" value="Model badges:  Haiku = cheap deterministic  ·  Sonnet = reasoned analysis  ·  Opus = adversarial reasoning + final integrity" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
+        <mxCell id="lg_ag_models" value="Model badges: every role defaults to Opus 4.7 (canonical: argosy.agents.base.DEFAULT_MODEL_BY_ROLE) — Haiku/Sonnet remain per-role overrides for cost-sensitive tenants, not defaults" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend_frame">
           <mxGeometry x="940" y="28" width="640" height="20" as="geometry"/>
         </mxCell>
 

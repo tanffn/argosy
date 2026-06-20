@@ -242,7 +242,7 @@ Argosy is two things glued together: an always-on background process and a dashb
 
 **The engine and its cadences** ([06-cadence-loops.png](diagrams/06-cadence-loops.png)) is the always-on Python orchestrator. Each cadence loop polls cheaply (read prices, scan news headlines, recompute concentration) and only invokes an LLM when a trigger fires. Background processes (`process_cooling`, daily backup, watchlist refresh, fill reconciliation) keep the rest of the system honest.
 
-**The agent fleet** ([04-agent-fleet.png](diagrams/04-agent-fleet.png)) is 5 decision teams (analysts → researchers → trader → risk → fund manager) plus several cross-cutting agents (intake, advisor, intake_extractor, domain_refresh, audit, watchlist, plan_distiller, plan_synthesizer, household_categorizer). Each agent has a default model assignment (Sonnet for most analysts / cross-cutting roles, Opus for adversarial researchers / trader / fund_manager / audit / plan_synthesizer) tuned to its role; see §3.8 for the canonical policy. Haiku is intentionally not a default for any role today (instruction-following ceiling on Argosy's structured prompts) but stays available as a per-role override for cost-sensitive tenants.
+**The agent fleet** ([04-agent-fleet.png](diagrams/04-agent-fleet.png)) is 5 decision teams (analysts → researchers → trader → risk → fund manager) plus several cross-cutting agents (intake, advisor, intake_extractor, domain_refresh, audit, watchlist, plan_distiller, plan_synthesizer, household_categorizer). Every role defaults to Opus 4.7 (the "accuracy over LLM cost" policy drove a fleet-wide upgrade); see §3.8 for the canonical policy. Sonnet and Haiku stay available as per-role overrides for cost-sensitive tenants but are not defaults for any role today.
 
 **Decision tiers** ([05-decision-tiers.png](diagrams/05-decision-tiers.png)) are the four review-depth grades. T0 is trader-only with rule-based preflight. T1 is 3 analysts plus a one-round debate plus one risk perspective. T2 runs the whole stack. T3 adds plan-critique sign-off, a 24h cooling-off, and a next-day re-check.
 
@@ -463,15 +463,15 @@ Run in parallel; produce structured reports written to state. Reports are persis
 
 | Agent | Knows | Outputs | Tools | Default model | Thinking budget | Citations |
 |---|---|---|---|---|---|---|
-| **Fundamentals** | Earnings, financials, valuation multiples, sector context | Structured fundamentals report (PE/PEG/EV-EBITDA, growth, balance sheet quality, fair-value estimate) | yfinance, SEC EDGAR | Sonnet | 0 | yes |
-| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Sonnet (was Haiku — see §3.8) | 0 | yes |
-| **News** | Headlines, filings, earnings calls, regulatory news on holdings + watchlist | Per-ticker news digest with materiality score | Finnhub, RSS, SEC EDGAR | Sonnet | 0 | yes |
-| **Sentiment** | Social/Reddit chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Reddit (PRAW), Finnhub | Sonnet (was Haiku — see §3.8) | 0 | yes |
-| **Macro** | Rates, VIX, USD/NIS/EUR, oil, BoI/Fed actions, ISM/PMI | Regime classification (risk-on/risk-off; hard/soft landing) + drivers | FRED, Bank of Israel, OECD | Sonnet | 0 | yes |
-| **Plan-critique** | The imported plan + current portfolio state + domain knowledge | RED/YELLOW/GREEN list of plan items with evidence | Plan doc, state, domain KB | Sonnet (Opus on RED) | 0 | yes |
-| **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Sonnet (was Haiku — see §3.8) | 0 | yes |
-| **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Sonnet | 0 | yes |
-| **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Sonnet (was Haiku — see §3.8) | 0 | yes |
+| **Fundamentals** | Earnings, financials, valuation multiples, sector context | Structured fundamentals report (PE/PEG/EV-EBITDA, growth, balance sheet quality, fair-value estimate) | yfinance, SEC EDGAR | Opus 4.7 | 0 | yes |
+| **Technical** | Price/volume, MA crossings, RSI, MACD, support/resistance | Indicator dashboard + signal classification (entry / hold / exit) | yfinance OHLC, ta-lib | Opus 4.7 | 0 | yes |
+| **News** | Headlines, filings, earnings calls, regulatory news on holdings + watchlist | Per-ticker news digest with materiality score | Finnhub, RSS, SEC EDGAR | Opus 4.7 | 0 | yes |
+| **Sentiment** | Social/Reddit chatter, fear-greed, options flow imbalance | Sentiment regime per ticker; outlier alerts | Reddit (PRAW), Finnhub | Opus 4.7 | 0 | yes |
+| **Macro** | Rates, VIX, USD/NIS/EUR, oil, BoI/Fed actions, ISM/PMI | Regime classification (risk-on/risk-off; hard/soft landing) + drivers | FRED, Bank of Israel, OECD | Opus 4.7 | 0 | yes |
+| **Plan-critique** | The imported plan + current portfolio state + domain knowledge | RED/YELLOW/GREEN list of plan items with evidence | Plan doc, state, domain KB | Opus 4.7 | 0 | yes |
+| **Concentration** | Position sizes vs caps; sector & geography exposure; NVDA pace vs schedule | Breach/warning report; tranche proposals | Positions table | Opus 4.7 | 0 | yes |
+| **Tax** | Israeli tax + US treaty + estate exposure; lot-level data | TLH candidates, dividend-tax projections, RSU-vest tax, year-end planning | Domain KB + lots | Opus 4.7 | 0 | yes |
+| **FX** | USD/NIS/EUR levels and recent trend; user's NIS-vs-USD exposure | FX-aware position sizing notes; hedging recommendations | FRED, Bank of Israel | Opus 4.7 | 0 | yes |
 | **Plan coverage** (`PlanCoverageAnalyst`) | Distillate + portfolio snapshot; the 18 canonical section_ids | Baseline `Section` drafts for canonical sections the user's plan didn't author (e.g. healthcare, insurance, cross-border forms calendar); `unfilled_section_ids` list for sections it intentionally skipped (IPS, client goals, capital sufficiency) | `argosy/quality/canonical_sections.py` | Opus | 4000 | yes (`agent_baseline` kind) |
 | **Withdrawal sequencer** (`WithdrawalSequencerAgent`) | Portfolio snapshot + positions + household budget + plan markdown | FI-bridge waterfall (`fi_bridge: list[BridgeRung]`) + year-by-year `withdrawal_schedule: list[WithdrawalYearRow]` — encodes the IL pension stack (keren_hishtalmut → kupot_gemel → executive_insurance → portfolio_drawdown → pensia) | `argosy/agents/plan_distiller_types.py` typed fields | Opus | 4000 | yes |
 | **Equity comp** (`EquityCompAnalystAgent`) | `identity_yaml.rsu_vest_schedule` (active grants + quarterly vests) + portfolio positions + tax payload + FX + base salary USD | 3-scenario RSU projection (`known_grants_only` / `conservative_decay` at 55% of base / `optimistic_flat` at 90% of base) with per-year `YearVestRow` (gross_shares, gross_usd, gross_nis, net_nis, retention_pct, confidence, source); separates contractual vesting from discretionary refresh grants; NVDA-sell-on-vest policy (default defer with cap-band rebalance); FI-date sensitivity per scenario; advisor intake questions when RSU portal pages 2-4 missing | `argosy/agents/equity_comp_analyst_types.py` typed fields with Pydantic `field_validator` coercion of LLM structured citations/questions back to strings | Opus | 4000 | yes |
@@ -486,7 +486,7 @@ Adversarial debate, n rounds, facilitated. Produces a structured debate outcome 
 |---|---|---|---|---|
 | **Bull** | Marshals bullish thesis from analyst reports; argues for adding/holding | Opus | 4000 | yes |
 | **Bear** | Marshals bearish thesis; argues for trimming/selling | Opus | 4000 | yes |
-| **Facilitator** | Bounds the debate; extracts winning thesis to structured record | Sonnet | 0 | no |
+| **Facilitator** | Bounds the debate; extracts winning thesis to structured record | Opus 4.7 | 0 | no |
 
 ### 3.3 Trader
 
@@ -494,7 +494,7 @@ Synthesizes analyst reports + researcher debate outcome into a concrete proposal
 
 | Agent | Role | Default model | Thinking budget | Citations |
 |---|---|---|---|---|
-| **Trader** | Produces concrete proposal (action, size, instrument, limits, time-in-force) | Opus for T2/T3; Sonnet for T0/T1 | 8000 | yes |
+| **Trader** | Produces concrete proposal (action, size, instrument, limits, time-in-force) | Opus 4.7 | 8000 | yes |
 
 ### 3.4 Risk Team
 
@@ -502,10 +502,10 @@ Adversarial debate over the proposed action; n rounds, facilitated.
 
 | Agent | Role | Default model | Thinking budget | Citations |
 |---|---|---|---|---|
-| **Aggressive risk** | Tolerant of vol/drawdown if Sharpe-improving | Sonnet | 0 | no |
-| **Neutral risk** | Balanced perspective | Sonnet | 0 | no |
-| **Conservative risk** | Capital-preservation-first; flags worst-case path | Sonnet | 0 | no |
-| **Risk facilitator** | Extracts consensus or escalates conflict | Sonnet | 0 | no |
+| **Aggressive risk** | Tolerant of vol/drawdown if Sharpe-improving | Opus 4.7 | 0 | no |
+| **Neutral risk** | Balanced perspective | Opus 4.7 | 0 | no |
+| **Conservative risk** | Capital-preservation-first; flags worst-case path | Opus 4.7 | 0 | no |
+| **Risk facilitator** | Extracts consensus or escalates conflict | Opus 4.7 | 0 | no |
 
 ### 3.5 Approval Layer
 
@@ -519,17 +519,17 @@ Run on their own cadences; not part of any decision team.
 
 | Agent | Role | Cadence | Default model | Thinking budget | Citations |
 |---|---|---|---|---|---|
-| **Intake** (`IntakeAgent`) | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Sonnet | 0 | no |
-| **Intake extractor** (`IntakeExtractorAgent`) | Single-pass markdown extractor for user-supplied plan/intake docs; populates `user_context` from a self-described file. Citations not required (the source IS the user's doc). | On upload | Sonnet | 0 | yes |
-| **Advisor** (`AdvisorAgent`) | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. emits an optional `amendment` field in its turn output (`AmendmentIntent`) when the latest user message asks for a structural plan change; the route layer routes through `argosy.orchestrator.flows.plan_amendment` (§6.13). The route only enables the LLM amendment-classification block when `has_current_plan=True`. See §6.5. | Per-turn (user-initiated) | Sonnet | 0 | no |
-| **Domain refresh** (`DomainRefreshAgent`) | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Sonnet | 0 | no |
+| **Intake** (`IntakeAgent`) | LLM-led conversational interview; ingests docs; updates `user_context` | One-shot + monthly/quarterly/annual rhythms | Opus 4.7 | 0 | no |
+| **Intake extractor** (`IntakeExtractorAgent`) | Single-pass markdown extractor for user-supplied plan/intake docs; populates `user_context` from a self-described file. Citations not required (the source IS the user's doc). | On upload | Opus 4.7 | 0 | yes |
+| **Advisor** (`AdvisorAgent`) | Subclass of Intake with `gap_driven` / `user_driven` modes; backs the persistent `/advisor` panel and the home-brief card. emits an optional `amendment` field in its turn output (`AmendmentIntent`) when the latest user message asks for a structural plan change; the route layer routes through `argosy.orchestrator.flows.plan_amendment` (§6.13). The route only enables the LLM amendment-classification block when `has_current_plan=True`. See §6.5. | Per-turn (user-initiated) | Opus 4.7 | 0 | no |
+| **Domain refresh** (`DomainRefreshAgent`) | Re-verifies domain knowledge against sources; queues changes for human review | Weekly | Opus 4.7 | 0 | no |
 | **Audit** (`AuditAgent`) | Reviews last week's decisions; identifies systematic errors; proposes prompt tweaks | Weekly | Opus | 4000 | yes |
-| **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Sonnet (Opus on RED) | 0 | yes |
-| **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Sonnet | 0 | yes |
+| **Plan critique** (`PlanCritiqueAgent`) | Standalone critique agent; runs in monthly_cycle and on plan-import. Listed both here (cross-cutting) and in §3.1 (analyst-team plan_critique role). | Monthly + on import | Opus 4.7 | 0 | yes |
+| **Plan distiller** (`PlanDistillerAgent`) | Extracts a durable structured distillate from a user-imported plan markdown. See §6.10. | One-shot on import + on baseline file change | Opus 4.7 | 0 | yes |
 | **Plan synthesizer** (`PlanSynthesizerAgent`) | Phase 3 of plan_synthesis_flow and the worker for plan-amendment-chat Medium/Large tiers — produces the three HorizonSection drafts plus the top-level `sections: list[Section]` (Phase 3 canonical evidence-bearing shape). See §6.11, §6.13. | Monthly + quarterly + annual + on user check-in + on amendment | Opus | 8000 | yes |
 | **Plan language rewriter** (`PlanLanguageRewriter`) | The structured `PlanSynthesisOutput` from the synthesizer. Runs between Phase 3 and the speculation-cap enforcer; translates prose fields (posture, rationale, theme/action/target labels and details) from internal agent phrasing to household-readable English while preserving every structured field (numeric values, units, dates, item_ids, `SectionEvidence` subtree, deltas, speculative candidates, `inputs` provenance) bit-for-bit. Validator at `argosy/quality/rewriter_invariants.py::validate_rewriter_invariants` enforces the preservation contract: structural drift hard-aborts; residual prose drift logs a warning and ships the mostly-scrubbed output (defense-in-depth: the `/accept` gate catches residual). | Per plan_synthesis_flow run | Opus | 4000 | no |
-| **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Sonnet (was Haiku; bumped — see §3.8) | 0 | no |
-| **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions. Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Sonnet | 0 | no |
+| **Watchlist** (`WatchlistAgent`) | Maintains the universe of tickers tracked (positions + candidates + reduce-list) | Daily | Opus 4.7 | 0 | no |
+| **Household categorizer** (`HouseholdCategorizerAgent`) | Batched LLM categorization for household-budget transactions. Input: list of normalized merchant rows + the taxonomy slug list. Output: per-row `(category_slug, confidence, rationale)`. Confidence < 0.85 → `uncategorized` (caller writes `expense_review_queue` row). Cached LLM verdicts go to `merchant_category_cache` so subsequent runs short-circuit. | On expense ingest (one batched call per ~50 uncached merchants) | Opus 4.7 | 0 | no |
 
 > **Telemetry caveat.** The `Thinking budget` and `Citations` columns above describe per-role *configuration* (sourced from `DEFAULT_THINKING_BUDGET_BY_ROLE` and `DEFAULT_CITATIONS_BY_ROLE` in `argosy/agents/base.py`). On the `claude_code` backend (Argosy's default per `argosy.toml`) The system backports most of the behaviour from the `api_key` path:
 >
@@ -573,7 +573,7 @@ against per-lot Section 102 windows.
 
 | Path | LLM shape | Estimated cost |
 |---|---|---|
-| Plan distillation (§6.10) | Single PlanDistillerAgent call (Sonnet) | ~$0.30 |
+| Plan distillation (§6.10) | Single PlanDistillerAgent call (Opus 4.7) | ~$0.30 |
 | Full plan synthesis (§6.11; monthly_cycle / quarterly / annual / `/api/advisor/check-in`) | 9 analysts (parallel) + 3 horizon debates (parallel) + 1 synthesizer (Opus) + 3 risk perspectives + 1 fund-manager | ~$5–8 |
 | Amendment chat — small (§6.13) | None — applies advisor-emitted Delta inline | $0 marginal (advisor turn cost already paid) |
 | Amendment chat — medium (§6.13) | 1 PlanSynthesizerAgent call (Opus) only | ~$0.50 |
@@ -587,10 +587,9 @@ Default model per agent role is configurable; user can override at any layer.
 
 **Current defaults** (canonical source: `argosy.agents.base.DEFAULT_MODEL_BY_ROLE`):
 
-- **Sonnet** (`claude-sonnet-4-6`) — every analyst (fundamentals, technical, news, sentiment, macro, concentration, tax, fx), plan-critique, intake / intake_extractor, advisor (subclass of intake), researcher_facilitator, all three risk_officer perspectives, risk_facilitator, plan_distiller, domain_refresh, watchlist, household_categorizer.
-- **Opus** (`claude-opus-4-7`) — bull_researcher, bear_researcher (adversarial debate), trader (synthesis under contradiction), fund_manager (final integrity check), audit (weekly post-mortem), plan_synthesizer (monthly/amendment Phase 3).
+- **Opus** (`claude-opus-4-7`) — **every role.** `DEFAULT_MODEL_BY_ROLE` maps all roles (analysts, researcher/risk debate, trader, fund_manager, plan_synthesizer, audit, all cross-cutting agents, and the living-plan owner/dialogue agents) to Opus 4.7. The whole-artifact reader and the codex numeric gate run on an independent cross-model reviewer (GPT-5 via the codex tandem), not a Claude tier.
 
-**Why Haiku is no longer a default.** The original SDD policy slotted Haiku into deterministic formatting roles (technical, sentiment, watchlist, concentration, fx). In practice, Argosy's prompts are heavily structured (multi-question batched intake, citation-required analysts, JSON-schema-constrained outputs). Haiku's instruction-following ceiling could not reliably (a) honor "do not re-ask answered fields" given an explicit ALREADY-ANSWERED list, (b) emit yaml_patch entries that match the canonical key shape, (c) hold the batched-question structure without drift. Sonnet halves the number of turns in practice despite being 2–3× slower per turn, and the "accuracy over LLM cost" policy (memory: `feedback_accuracy_over_cost.md`) explicitly prefers it. Override to Haiku is still possible per-role via `agent_settings.yaml` for cost-sensitive tenants — the pricing entry is preserved in `APPROX_PRICING_USD_PER_MTOK` so historical agent_reports rows still cost-track correctly.
+**Why neither Haiku nor Sonnet is a default.** The original policy slotted Haiku into deterministic formatting roles (technical, sentiment, watchlist, concentration, fx) and Sonnet into most analysts. In practice, Argosy's prompts are heavily structured (multi-question batched intake, citation-required analysts, JSON-schema-constrained outputs) and the downstream consequence of a wrong figure is large (it feeds the plan, the FI date, and the concentration cap). Haiku's instruction-following ceiling could not reliably hold those structures; and under the binding "accuracy over LLM cost" policy (memory: `feedback_accuracy_over_cost.md`) the fleet was upgraded the rest of the way to Opus 4.7 — accuracy and instruction-following over per-token cost. Sonnet/Haiku overrides remain possible per-role via `agent_settings.yaml` for cost-sensitive tenants; the pricing entries are preserved in `APPROX_PRICING_USD_PER_MTOK` so historical agent_reports rows still cost-track correctly.
 
 Set `models.override: {all: opus}` in `agent_settings.yaml` for quality-first regardless of cost; or override per-role.
 
@@ -1086,7 +1085,7 @@ current state.
 
 1. User uploads `Jacobs_Wealth_Plan.md` via `/api/intake/upload` — the
  row lands in `plan_versions` with `role='baseline'`.
-2. The intake route asynchronously calls `PlanDistillerAgent` (Sonnet,
+2. The intake route asynchronously calls `PlanDistillerAgent` (Opus 4.7,
  ~$0.30) and writes `distillate_json` + `distillate_rendered` +
  `source_hash` + `distilled_at` on the same row. Failure of distillation
  is non-fatal — the upload still succeeds; the user can retry via the
@@ -2354,7 +2353,7 @@ sequenceDiagram
  - `permission_mode="bypassPermissions"` silences the SDK's interactive permission flow (which otherwise hangs in a headless server context).
  - Combined: the model can request a tool, but the SDK refuses without prompting; the model proceeds to answer without it.
 
-5. **Cost shape per turn:** ~3 input tokens (the user's accumulated answers are tiny relative to the system prompt + schema) + 500-1500 output tokens for the structured response. ~$0.01 per turn at Sonnet rates.
+5. **Cost shape per turn:** ~3 input tokens (the user's accumulated answers are tiny relative to the system prompt + schema) + 500-1500 output tokens for the structured response. ~$0.04 per turn at Opus 4.7 rates.
 
 6. **Why each turn is a fresh subprocess:** simplicity and crash-isolation. A long-lived `claude.exe` would be cheaper but harder to reason about across restart, kill switch, and per-tenant isolation. The cost difference (~500 ms subprocess startup × number of turns) is negligible relative to the LLM call latency.
 
