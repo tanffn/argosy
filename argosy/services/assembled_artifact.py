@@ -194,6 +194,20 @@ def assemble_plan_artifact(session: Session, *, user_id: str) -> AssembledArtifa
 
         if resolved is not None:
             _add_body_values(resolved, surface_values)
+            # FINAL placeholder-render pass over the WHOLE assembled artifact: a
+            # per-surface renderer (e.g. the short-actions labels) can leave a
+            # {{fact:KEY}} token unsubstituted, leaking into the client bytes. One
+            # render_placeholders pass here substitutes EVERY resolvable token
+            # regardless of which sub-renderer emitted it (idempotent — already-
+            # rendered text has none), and strips any residual EMIT-AS scaffolding.
+            # strict=False leaves a genuinely unresolvable token in place so the
+            # leakage gate still surfaces it (fail-loud, never silently dropped).
+            try:
+                from argosy.quality.fact_registry import render_placeholders
+
+                full_text = render_placeholders(full_text, resolved, strict=False)
+            except Exception as exc:  # noqa: BLE001 — never crash assembly on a render pass
+                log.warning("assembled_artifact.final_render_pass_failed err=%s", exc)
 
     # ----- Dashboard surface: the typed WealthDashboard dataclass -----------
     try:

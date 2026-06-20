@@ -1025,8 +1025,8 @@ def render_trajectory_reconciliation_appendix(
         "DERIVED assumptions. Every headline number below is pulled from "
         "the shared plan-numeric resolver (single source of truth across "
         "the synth, this appendix, and the UI) — no hardcoded constants, "
-        "no LLM judgement. Any figure the fleet has not yet derived shows "
-        f"as `{_pending_label()}`."
+        "no LLM judgement. Any figure the fleet has not yet derived is shown as "
+        "pending (never a guessed number)."
     )
     lines.append("")
 
