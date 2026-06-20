@@ -68,7 +68,7 @@ from argosy.quality.graph_collections import (
 from argosy.quality.live_surfaces import (
     EARLIEST_SAFE_AGE_NODE, FI_CROSSING_YEAR_NODE, FI_MARGIN_NODE,
     RETENTION_AT_VEST_NODE, RETENTION_CAPITAL_TRACK_NODE,
-    canonical_surface_concepts, register_canonical_surfaces,
+    canonical_surface_concepts, register_canonical_surfaces, valid_crossing_year,
 )
 from argosy.quality.promote_gate import PromoteDecision
 from argosy.quality.publish_gate import OpenFlag, can_publish_plan
@@ -218,18 +218,28 @@ def _resolver_scalars(session, user_id: str, decision_run_id: int) -> dict[str, 
 
 def _reconcile_fi_crossing(scalars: dict[str, float], *, current_year: int) -> dict[str, float]:
     """Enforce the FI-crossing/margin invariant on the seeded canonical scalars
-    (the surface can't see the margin): margin < 0 must never pair with a
-    past/present crossing -> drop the crossing so the pending (0.0) seed renders
-    'not reached'; margin >= 0 -> normalize the crossing to the current year
-    (FI already reached). Pure; no graph, no DB."""
+    (the surface can't see the margin):
+
+      * margin >= 0 (FI reached, incl. the margin == 0 boundary) -> the crossing
+        IS the current year, AUTHORITATIVELY — even when the resolver left the
+        crossing pending/absent (else a REACHED verdict would pair with a
+        'beyond horizon' crossing).
+      * margin < 0 (FI short) -> keep ONLY a valid, strictly-FUTURE crossing year;
+        any missing/invalid/past-or-present value is dropped so the fail-closed
+        0.0 seed renders 'not reached' (the seeding loop fills a dropped key with
+        0.0 because it iterates the fixed key tuple, not scalars.keys()).
+
+    Pure; no graph, no DB."""
     out = dict(scalars)
     margin = out.get(FI_MARGIN_NODE)
+    if margin is None:
+        return out
+    if margin >= 0:
+        out[FI_CROSSING_YEAR_NODE] = float(current_year)
+        return out
     crossing = out.get(FI_CROSSING_YEAR_NODE)
-    if margin is not None and crossing is not None:
-        if margin < 0 and crossing <= current_year:
-            out.pop(FI_CROSSING_YEAR_NODE, None)
-        elif margin >= 0 and crossing != current_year:
-            out[FI_CROSSING_YEAR_NODE] = float(current_year)
+    if not (valid_crossing_year(crossing) and crossing > current_year):
+        out.pop(FI_CROSSING_YEAR_NODE, None)
     return out
 
 

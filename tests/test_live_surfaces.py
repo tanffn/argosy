@@ -158,6 +158,23 @@ def test_fi_crossing_surface_renders_future_year_and_handles_pending() -> None:
     assert "beyond horizon" in pending_tile.lower()
 
 
+def test_fi_crossing_rejects_non_integer_and_non_finite_years() -> None:
+    """A stale/injected non-integer (2026.5) or non-finite (inf) year is treated
+    as pending — never truncated to a present-crossing contradiction, never an
+    int() crash on recompute (codex impl-review #2)."""
+    import math
+    from argosy.quality.live_surfaces import valid_crossing_year
+    assert valid_crossing_year(2027.0) is True
+    assert valid_crossing_year(2027) is True
+    for bad in (2026.5, math.inf, math.nan, 0.0, 1999.0, True):
+        assert valid_crossing_year(bad) is False
+    g = _build_graph_with_canonical_inputs()
+    g.set_input(FI_CROSSING_YEAR_NODE, 2026.5)
+    g.recompute()  # must not raise
+    assert "not reached" in g.get("surface:fi_crossing_statement").value.lower()
+    assert "beyond horizon" in g.get("surface:dashboard.fi_crossing_tile").value.lower()
+
+
 def test_retention_rates_render_as_two_distinct_labelled_surfaces() -> None:
     """The at-vest (ordinary) and capital-track (Section-102) retention rates
     render from two SEPARATE nodes, each distinctly labelled, so prose can never

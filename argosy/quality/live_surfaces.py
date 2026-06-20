@@ -21,6 +21,7 @@ See docs/superpowers/specs/2026-06-18-living-plan-derivation-graph-design.md
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -196,17 +197,28 @@ def _us_situs_estate_surfaces(node_key: str) -> list[Node]:
     ]
 
 
+def valid_crossing_year(value) -> bool:
+    """A renderable FI-crossing year is a FINITE, INTEGER-valued calendar year
+    >= 2000. Rejects the fail-closed 0.0 seed, bools, NaN/inf (which would crash
+    ``int()`` on recompute), and non-integer years like 2026.5 (which would
+    truncate to a present-crossing contradiction)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    y = float(value)
+    return math.isfinite(y) and y.is_integer() and y >= 2000.0
+
+
 def _fi_crossing_surfaces(node_key: str) -> list[Node]:
     """FI-crossing-year surface — the projected calendar year the current liquid
     net worth plus a real-savings annuity reaches the FI total-capital target.
     The value is reconciled with the FI margin at the resolver (and again on the
     seeded scalars in incremental_plan._reconcile_fi_crossing), so this surface
     can never show a past/present crossing while the FI verdict says 'not
-    reached'. A non-positive / pre-2000 value is the fail-closed seed for a
-    pending crossing and renders explicitly."""
+    reached'. Any value that is not a finite integer year >= 2000 is the
+    fail-closed seed for a pending crossing and renders explicitly."""
     def _render(i: dict) -> str:
         yr = i[node_key]
-        if yr and yr >= 2000:
+        if valid_crossing_year(yr):
             return (
                 "Projected FI-capital crossing year (current liquid net worth + "
                 f"real-savings trajectory): {int(yr)}."
@@ -225,7 +237,7 @@ def _fi_crossing_surfaces(node_key: str) -> list[Node]:
             inputs=(node_key,),
             recipe=lambda i: (
                 f"FI crossing: {int(i[node_key])}"
-                if i[node_key] and i[node_key] >= 2000
+                if valid_crossing_year(i[node_key])
                 else "FI crossing: beyond horizon"
             ),
             compute_version="fi-crossing-tile-v1",
@@ -375,4 +387,5 @@ __all__ = [
     "CanonicalRegistration",
     "register_canonical_surfaces",
     "canonical_surface_concepts",
+    "valid_crossing_year",
 ]

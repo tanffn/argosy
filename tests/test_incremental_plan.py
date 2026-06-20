@@ -365,8 +365,11 @@ def test_persist_writes_graph_and_propagation_event():
 
 def test_fi_crossing_reconciled_against_negative_margin():
     """The base-graph FI-crossing reconciliation guard: a negative margin can
-    never pair with a past/present crossing (the surface can't see the margin)."""
+    never pair with a past/present crossing (the surface can't see the margin),
+    and a non-negative margin is AUTHORITATIVE even when the crossing is
+    missing/invalid (codex impl-review #1/#2)."""
     import datetime as _dt
+    import math
     from argosy.orchestrator.flows.incremental_plan import (
         _reconcile_fi_crossing, FI_CROSSING_YEAR_NODE,
     )
@@ -388,3 +391,31 @@ def test_fi_crossing_reconciled_against_negative_margin():
         {FI_MARGIN_NODE: 200_000.0, FI_CROSSING_YEAR_NODE: float(cur + 3)},
         current_year=cur)
     assert out3[FI_CROSSING_YEAR_NODE] == float(cur)
+    # Reached with NO crossing key (resolver left it pending) -> still set to cur.
+    out4 = _reconcile_fi_crossing({FI_MARGIN_NODE: 200_000.0}, current_year=cur)
+    assert out4[FI_CROSSING_YEAR_NODE] == float(cur)
+    # margin == 0 boundary is "reached".
+    out5 = _reconcile_fi_crossing({FI_MARGIN_NODE: 0.0}, current_year=cur)
+    assert out5[FI_CROSSING_YEAR_NODE] == float(cur)
+    # margin < 0 with an invalid crossing (non-integer / inf) -> dropped.
+    for bad in (float(cur) + 0.5, math.inf):
+        outx = _reconcile_fi_crossing(
+            {FI_MARGIN_NODE: -100_000.0, FI_CROSSING_YEAR_NODE: bad}, current_year=cur)
+        assert FI_CROSSING_YEAR_NODE not in outx
+
+
+def test_build_base_graph_drops_contradictory_crossing_to_pending_seed():
+    """End-to-end (real graph path, not just the pure helper): a negative margin
+    with a current-year crossing in resolver_values seeds the crossing node 0.0
+    and renders the pending/beyond-horizon surfaces (codex impl-review #3)."""
+    import datetime as _dt
+    from argosy.orchestrator.flows.incremental_plan import FI_CROSSING_YEAR_NODE
+    session = _make_session()
+    rid = _seed_plan(session)
+    cur = _dt.date.today().year
+    vals = _canonical_values(margin=-250_000.0, age=47)
+    vals[FI_CROSSING_YEAR_NODE] = float(cur)  # contradiction: short + current crossing
+    graph = build_base_graph(session, USER_ID, decision_run_id=rid, resolver_values=vals)
+    assert graph.get(FI_CROSSING_YEAR_NODE).value == 0.0
+    assert "not reached" in graph.get("surface:fi_crossing_statement").value.lower()
+    assert "beyond horizon" in graph.get("surface:dashboard.fi_crossing_tile").value.lower()
