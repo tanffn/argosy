@@ -137,6 +137,16 @@ def adjudicate(
     include a hard node whose verdict would change sign, the premise edit is
     not silently accepted.
     """
+    # An OBJECTION is a reader/FM/codex FINDING against a node — not an edit. It
+    # ROUTES to the node's owner for review/remediation via the ladder; it is
+    # never applied directly and never auto-rejected by node class (the owner
+    # decides whether to fix an input or the recipe). Checked first so a finding
+    # against a DerivedValue still reaches its owner instead of REJECTED.
+    if cr.kind is ChangeKind.OBJECTION:
+        return AdjudicationOutcome(
+            Disposition.NEEDS_LADDER,
+            "objection routes to the node owner for review, not a direct edit",
+        )
     node_class = owners.classify(cr.target_node_key)
     if node_class is NodeClass.DERIVED or cr.kind is ChangeKind.SET_DERIVED:
         return AdjudicationOutcome(
