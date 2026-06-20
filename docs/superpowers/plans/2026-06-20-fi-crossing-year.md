@@ -8,8 +8,13 @@
 
 **Tech Stack:** Python 3.12, pytest. Deterministic future-value-of-annuity in REAL terms (the resolver's `required_real_yield`/`return_assumption` and FI target are real, so the projection is real — no inflation double-count).
 
-**Methodology (to be codex-reviewed BEFORE build):** real future value after `n` years =
-`liquid_now*(1+r)^n + annual_savings * ((1+r)^n - 1)/r` (r = real return; r=0 handled as `liquid_now + annual_savings*n`). `fi_crossing_year` = `current_year + n` for the smallest integer `n ≥ 0` with FV ≥ `fi_total`. Capped at a horizon (e.g. current_year+60); beyond → `None` (never reached on this trajectory). This is a TRAJECTORY crossing reconciled with the margin — NOT "derived from the margin alone" (codex's earlier caution).
+**Methodology (codex-reviewed — CHANGES NEEDED incorporated):** real future value after `n` years =
+`liquid_now*(1+r)^n + annual_real_savings * ((1+r)^n - 1)/r` — an **ordinary (end-of-year) annuity** (savings deposited at year-end; the `n=1` deposit earns no growth). `r` = REAL return. `r=0` → `liquid_now + annual_real_savings*n`. `fi_crossing_year` = `current_year + n` for the smallest integer `n ≥ 0` with FV ≥ `fi_total`; capped at `horizon_years` (60), beyond → `None` (not reached on this trajectory).
+
+**Unit + basis contracts (codex):**
+- `r` is a DECIMAL FRACTION (e.g. 0.03), matching the resolver's `return_assumption_pct` (stored as a fraction, labeled "Expected real return"). The function asserts `-1 < r < 1` to fail loudly if points (3.0) are ever passed.
+- `annual_real_savings`: `savings.annual_net_nis` is current annual net savings, treated as CONSTANT in REAL terms (i.e. nominal savings assumed to rise with inflation) — stated as the model contract.
+- **Reconciliation is EXACT, not approximate:** `retirement.fi_margin_signed_nis` is defined as `liquid_net_worth − fi_total_capital` (verified in `_apply_fi_margin`), the SAME basis as this crossing. So at `n=0`, FV = liquid ≥ fi_total ⟺ margin ≥ 0. The resolver ALSO explicitly enforces: margin ≥ 0 → current year; margin < 0 → the resolved year must be > current year (else `None`/pending). Reworded invariant: *if a crossing year is resolved and margin < 0, it is strictly future; otherwise the target is not reached within the horizon (pending).*
 
 **Scope:** only `retirement.fi_crossing_year`. The trajectory-table render cutover (table reads this figure) is Phase 1c. Scenario bands (bear/base/bull crossing) are a later enhancement; this ships the base-trajectory crossing.
 
@@ -30,35 +35,55 @@ from argosy.services.fi_crossing import fi_crossing_year
 
 
 def test_already_reached_is_current_year():
-    # liquid already >= target -> crosses now.
+    # liquid already >= target -> crosses now (margin >= 0).
     assert fi_crossing_year(liquid_now=12_000_000, fi_total=11_836_133,
-                            real_return=0.03, annual_savings=300_000,
+                            real_return=0.03, annual_real_savings=300_000,
                             current_year=2026) == 2026
 
 
-def test_future_crossing_with_growth_and_savings():
-    # short of target now -> future year; grows via return + savings.
-    yr = fi_crossing_year(liquid_now=11_668_397, fi_total=11_836_133,
-                          real_return=0.03, annual_savings=300_000,
+def test_savings_are_actually_included_in_crossing():
+    # CODEX #6: growth ALONE must NOT clear the target, so the test proves savings
+    # matter. 11.30M * 1.03 = 11.639M < 11.836M (growth alone short); + 300k = 11.939M
+    # clears -> 2027. (If savings were ignored, n=1 would fail and it'd be 2028.)
+    yr = fi_crossing_year(liquid_now=11_300_000, fi_total=11_836_133,
+                          real_return=0.03, annual_real_savings=300_000,
                           current_year=2026)
-    assert yr is not None and yr > 2026   # MUST be future (margin negative now)
-    # one year of 3% growth + 300k savings on 11.67M clears 11.84M -> 2027.
     assert yr == 2027
+    # guard: growth alone at n=1 is below target (proves savings were the difference)
+    assert 11_300_000 * 1.03 < 11_836_133
 
 
 def test_zero_return_uses_linear_savings():
     yr = fi_crossing_year(liquid_now=11_000_000, fi_total=11_900_000,
-                          real_return=0.0, annual_savings=300_000,
+                          real_return=0.0, annual_real_savings=300_000,
                           current_year=2026)
     # need 900k / 300k = 3 years -> 2029.
     assert yr == 2029
 
 
 def test_never_reached_within_horizon_returns_none():
-    # tiny base, no savings, target unreachable -> None within horizon.
     assert fi_crossing_year(liquid_now=1_000, fi_total=10_000_000,
-                            real_return=0.0, annual_savings=0.0,
+                            real_return=0.0, annual_real_savings=0.0,
                             current_year=2026, horizon_years=60) is None
+
+
+def test_horizon_boundary_inclusive():
+    # CODEX #7: exactly reachable at n=60 is included; n=61 returns None.
+    # 0 return, savings 1/yr: FV(n) = base + n. target = base + 60 -> n=60 ok.
+    base = 1_000_000.0
+    assert fi_crossing_year(liquid_now=base, fi_total=base + 60, real_return=0.0,
+                            annual_real_savings=1.0, current_year=2026,
+                            horizon_years=60) == 2086
+    assert fi_crossing_year(liquid_now=base, fi_total=base + 61, real_return=0.0,
+                            annual_real_savings=1.0, current_year=2026,
+                            horizon_years=60) is None
+
+
+def test_points_instead_of_fraction_fails_loud():
+    # CODEX #1: a real_return of 3.0 (points) must raise, not silently project 300%.
+    with pytest.raises(ValueError):
+        fi_crossing_year(liquid_now=1.0, fi_total=2.0, real_return=3.0,
+                         annual_real_savings=0.0, current_year=2026)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -83,24 +108,33 @@ from __future__ import annotations
 
 
 def _future_value(liquid_now: float, real_return: float,
-                  annual_savings: float, n: int) -> float:
+                  annual_real_savings: float, n: int) -> float:
+    """Real future value after ``n`` years with end-of-year (ordinary) savings."""
     if n <= 0:
         return liquid_now
     if real_return == 0.0:
-        return liquid_now + annual_savings * n
+        return liquid_now + annual_real_savings * n
     growth = (1.0 + real_return) ** n
-    return liquid_now * growth + annual_savings * (growth - 1.0) / real_return
+    return liquid_now * growth + annual_real_savings * (growth - 1.0) / real_return
 
 
 def fi_crossing_year(
     *, liquid_now: float, fi_total: float, real_return: float,
-    annual_savings: float, current_year: int, horizon_years: int = 60,
+    annual_real_savings: float, current_year: int, horizon_years: int = 60,
 ) -> int | None:
-    """Smallest year >= current_year whose projected real net worth >= fi_total.
-    None when the target is not reached within ``horizon_years`` on this
-    trajectory. Already-at-or-above-target -> current_year."""
+    """Smallest year >= current_year whose projected REAL net worth >= fi_total.
+
+    ``real_return`` is a DECIMAL FRACTION (0.03 = 3% real); a magnitude >= 1 (or
+    <= -1) is almost certainly percent-points passed by mistake -> raise, never
+    silently project a 300% return (codex #1). ``annual_real_savings`` is constant
+    real (end-of-year). Returns None when the target is not reached within
+    ``horizon_years``. Already-at-or-above-target -> current_year."""
+    if not (-1.0 < real_return < 1.0):
+        raise ValueError(
+            f"real_return must be a decimal fraction in (-1, 1), got {real_return!r} "
+            "(did you pass percent-points instead of a fraction?)")
     for n in range(0, horizon_years + 1):
-        if _future_value(liquid_now, real_return, annual_savings, n) >= fi_total:
+        if _future_value(liquid_now, real_return, annual_real_savings, n) >= fi_total:
             return current_year + n
     return None
 ```
@@ -172,21 +206,35 @@ def _apply_fi_crossing_year(values):
     fi_total = _r("retirement.fi_total_capital_nis")
     real_return = _r("retirement.return_assumption_pct")
     savings = _r("savings.annual_net_nis")
+    margin = _r("retirement.fi_margin_signed_nis")
     if None in (liquid, fi_total, real_return, savings):
         values[key] = ResolvedValue.pending(key, "year", "fi_crossing inputs pending")
         return
+    cur_year = _date.today().year
     yr = fi_crossing_year(
         liquid_now=float(liquid), fi_total=float(fi_total),
-        real_return=float(real_return), annual_savings=float(savings),
-        current_year=_date.today().year)
+        real_return=float(real_return), annual_real_savings=float(savings),
+        current_year=cur_year)
     if yr is None:
         values[key] = ResolvedValue.pending(key, "year", "FI target not reached within horizon")
         return
+    # Explicit reconciliation with the resolved margin (codex #2/#4): the math
+    # already guarantees this because margin = liquid - fi_total (same basis), but
+    # enforce it so a future basis drift fails LOUD instead of shipping a
+    # contradiction. margin >= 0 -> current year; margin < 0 -> strictly future.
+    if margin is not None:
+        if margin >= 0 and yr != cur_year:
+            log.warning("fi_crossing.margin_reconcile margin>=0 but yr=%s", yr)
+            yr = cur_year
+        elif margin < 0 and yr <= cur_year:
+            values[key] = ResolvedValue.pending(
+                key, "year", "fi_crossing contradicts negative margin")
+            return
     values[key] = ResolvedValue(
         key=key, value=float(yr), unit="year", status="resolved",
         source_locator="fi_crossing.fi_crossing_year",
         confidence="HIGH",
-        formula="first year FV(liquid, real return, savings annuity) >= FI total capital")
+        formula="first year FV(liquid, real return, end-of-year real-savings annuity) >= FI total capital")
 ```
 
 Add `"retirement.fi_crossing_year": "year"` to `_KEY_UNITS`; call `_apply_fi_crossing_year(values)` after `_apply_fi_margin(values)`.
