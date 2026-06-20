@@ -101,12 +101,11 @@ def test_owner_set_value_is_surfaced_not_applied_as_a_body_edit():
 
 
 def test_owner_decline_is_recorded_and_makes_no_progress():
-    # A declined NON-contradiction finding (here fragile_claim) is recorded and
-    # leaves the body untouched (the declined-contradiction reconcile is a separate
-    # path, covered below).
+    # A declined 'stale' finding (not contradiction / cross_surface / fragile_claim)
+    # is recorded and leaves the body untouched.
     body = "FI margin is -167,735 NIS; the plan is honestly short."
     verdict = _verdict([
-        _finding(subject_type="fi_capital_sufficiency", kind="fragile_claim",
+        _finding(subject_type="fi_capital_sufficiency", kind="stale",
                  surfaces=[body]),
     ])
     proposer = _FixedProposer(RemediationProposal(
@@ -146,17 +145,39 @@ def test_declined_contradiction_is_still_prose_reconciled():
     assert res.made_progress
 
 
-def test_declined_non_contradiction_finding_is_left_alone():
-    # A declined fragile_claim / other (not a cross-surface contradiction) respects
-    # the owner — no forced prose edit.
-    snippet = "The age-46 headline absorbs all sequence risk."
+def test_declined_fragile_claim_is_qualified_in_prose():
+    # A declined fragile_claim the reader flagged is still QUALIFIED in prose
+    # ("qualify, don't delete" doctrine): a decline keeps the figure/claim, but the
+    # reader-flagged fragility must be honestly acknowledged in the wording.
+    snippet = "The age-46 headline already absorbs all NVDA concentration risk."
     body = f"Note: {snippet}"
     verdict = _verdict([
         _finding(subject_type="retirement_age_headline", kind="fragile_claim",
-                 detail="unsupported", surfaces=[snippet]),
+                 detail="undercut by 62.5% NVDA concentration", surfaces=[snippet]),
     ])
     proposer = _FixedProposer(RemediationProposal(
-        kind="decline", rationale="the claim is adequately supported"))
+        kind="decline", rationale="the headline age is correct"))
+    res = run_owner_routed_reconcile_round(
+        reader_verdict=verdict,
+        bodies={"long": body, "medium": "", "short": ""},
+        graph=_graph(), proposer=proposer, editor=_stub_editor,
+    )
+    assert len(res.declines) == 1            # the figure/claim is kept
+    assert len(res.prose_edits) == 1         # but the fragility is qualified in prose
+    assert res.made_progress
+
+
+def test_declined_stale_finding_is_left_alone():
+    # A declined 'stale' / other finding (not contradiction / cross_surface /
+    # fragile_claim) respects the owner — no forced prose edit.
+    snippet = "Re-validate at the next annual review."
+    body = f"Note: {snippet}"
+    verdict = _verdict([
+        _finding(subject_type="retirement_age_headline", kind="stale",
+                 detail="date", surfaces=[snippet]),
+    ])
+    proposer = _FixedProposer(RemediationProposal(
+        kind="decline", rationale="the date is correct"))
     res = run_owner_routed_reconcile_round(
         reader_verdict=verdict,
         bodies={"long": body, "medium": "", "short": ""},
