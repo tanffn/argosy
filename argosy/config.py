@@ -132,6 +132,19 @@ class Settings(BaseSettings):
     # Set ARGOSY_INCREMENTAL_PLAN=0 to revert to the authority-only path.
     argosy_incremental_plan: bool = Field(default=True)
 
+    # Registry-rendered reader anchor (Phase 2): the whole-artifact reviewer is
+    # given a reviewer-only "canonical reconciliation anchor" rendered from the
+    # derivation-graph surfaces (one owner per figure), so it judges plan prose
+    # against the ONE registry value. Default flipped True after a live A/B on
+    # ariel's run-117 draft: the anchor was NOT critiqued (oracle framing held),
+    # it REMOVED a false positive (the 3 labeled net-worth bases stopped reading
+    # as a contradiction), and it CAUGHT true prose-vs-registry drift the baseline
+    # missed (RSU retention 47% vs canonical 50%/70%; FI crossing 2026-vs-2027).
+    # On fresh synthesis the prose binds canonical via fact-placeholders, so the
+    # anchor mostly confirms agreement. Set ARGOSY_REGISTRY_REVIEW_ARTIFACT=0 to
+    # revert to the from-scratch-only reader artifact.
+    argosy_registry_review_artifact: bool = Field(default=True)
+
     # Phase 5 prime-directive experts — when True (the default), the
     # PlanCoverageAnalyst, WithdrawalSequencerAgent and EquityCompAnalystAgent
     # run alongside the core Phase 1 analyst fleet (10 → 13). Their numeric

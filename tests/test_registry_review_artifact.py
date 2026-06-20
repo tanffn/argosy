@@ -198,6 +198,15 @@ def test_flag_off_by_default(monkeypatch):
         assert _flag_on() is True
 
 
+def test_registry_review_flag_defaults_on(monkeypatch):
+    """The live default is ON (flipped after the run-117 A/B). Env still overrides;
+    a future silent flip-back is caught here."""
+    monkeypatch.delenv(FLAG_ENV, raising=False)
+    from argosy.config import Settings
+    assert Settings().argosy_registry_review_artifact is True
+    assert _flag_on() is True  # no env override -> settings default (True)
+
+
 def test_compute_anchor_off_is_empty(monkeypatch):
     monkeypatch.setenv(FLAG_ENV, "0")
 
