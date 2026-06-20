@@ -138,6 +138,12 @@ def render_fact(key: str, resolved, *, registry: dict[str, str] = FACT_DISPLAY) 
 # Step 2 — placeholder substitution.
 # ---------------------------------------------------------------------------
 _PLACEHOLDER = re.compile(r"\{\{fact:([A-Za-z0-9_.]+)\}\}")
+# An ``age`` fact renders as "age NN" (so a bare placeholder reads naturally). When
+# prose already wrote the word "age" before such a placeholder ("at age {{fact:…}}"
+# → "at age age 49") — or a hyphenated template ("to-age-{{fact:…}}" → "to-age-age
+# 49") — the word doubles. Collapse the redundant "age" (never valid English) so the
+# rendered surface reads "age 49" / "to-age 49". Idempotent.
+_AGE_DOUBLING = re.compile(r"\bage[\s-]+age(\s+\d)")
 
 
 def render_placeholders(
@@ -149,7 +155,11 @@ def render_placeholders(
     raises PlaceholderError — the build fails rather than shipping a hole or a
     stale number. ``strict=False``: leave an unrenderable token in place (so the
     ban-gate / numeric gate surfaces it) instead of aborting; used by the
-    best-effort assembly wiring before strict enforcement is switched on."""
+    best-effort assembly wiring before strict enforcement is switched on.
+
+    After substitution, a doubled age word introduced by an "age"-prefixed prose
+    around an age placeholder (e.g. "age age 49") is collapsed to one (see
+    ``_AGE_DOUBLING``)."""
     def _sub(m: re.Match) -> str:
         try:
             return render_fact(m.group(1), resolved, registry=registry)
@@ -158,7 +168,8 @@ def render_placeholders(
                 raise
             return m.group(0)
 
-    return _PLACEHOLDER.sub(_sub, text or "")
+    rendered = _PLACEHOLDER.sub(_sub, text or "")
+    return _AGE_DOUBLING.sub(r"age\1", rendered)
 
 
 # ---------------------------------------------------------------------------

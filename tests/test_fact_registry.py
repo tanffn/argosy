@@ -103,8 +103,29 @@ def test_render_placeholders_substitutes_known_facts():
     })
     text = "Liquid net worth is {{fact:portfolio.liquid_net_worth_nis}} at age {{fact:retirement.fi_age}}."
     out = render_placeholders(text, resolved)
-    assert out == "Liquid net worth is ₪11.75M at age age 49."
+    # The age fact renders "age 49"; the prose already wrote "age", so the naive
+    # substitution would double it ("age age 49"). The renderer collapses that.
+    assert out == "Liquid net worth is ₪11.75M at age 49."
     assert "{{fact:" not in out
+
+
+def test_render_placeholders_collapses_doubled_age_word():
+    resolved = _Resolved({
+        "retirement.earliest_safe_age": _RV(46.0, "age"),
+        "retirement.fi_age": _RV(49.0, "age"),
+        "retirement.mc_horizon_age": _RV(95.0, "age"),
+    })
+    # Doubling arises from "age <placeholder>" (space) and "to-age-<placeholder>"
+    # (hyphen) where the placeholder itself renders "age NN".
+    text = ("retire at age {{fact:retirement.earliest_safe_age}}; bridge to-age-"
+            "{{fact:retirement.fi_age}}; horizon runs to age "
+            "{{fact:retirement.mc_horizon_age}}")
+    out = render_placeholders(text, resolved)
+    assert "age age" not in out
+    assert "age-age" not in out
+    assert "retire at age 46;" in out
+    assert "bridge to-age 49;" in out
+    assert "horizon runs to age 95" in out
 
 
 def test_render_placeholders_unknown_key_is_build_failure():
@@ -125,7 +146,7 @@ def test_render_placeholders_non_strict_leaves_unrenderable_token():
     resolved = _Resolved({"retirement.fi_age": _RV(49.0, "age")})
     text = "age {{fact:retirement.fi_age}} key {{fact:not.a.key}}"
     out = render_placeholders(text, resolved, strict=False)
-    assert "age age 49" in out
+    assert "age 49" in out and "age age 49" not in out  # doubling collapsed
     assert "{{fact:not.a.key}}" in out  # left for the gate
 
 
