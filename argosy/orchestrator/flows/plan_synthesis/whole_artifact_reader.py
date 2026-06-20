@@ -197,6 +197,14 @@ fences:
 
 === ASSEMBLED PLAN ARTIFACT (the exact bytes the user reads) ===
 {assembled_artifact}
+=== REVIEWER-ONLY CANONICAL RECONCILIATION ANCHOR (NOT client-facing) ===
+This section is NOT part of the client-facing plan. Use it ONLY as the canonical
+registry reference (one owner per figure) for checking whether the client-facing
+plan prose above AGREES with it. Do NOT critique this section itself, do NOT treat
+it as a stale/regression client surface, and do NOT average its figures with the
+prose. When a prose figure disagrees with this anchor, emit a finding citing the
+prose excerpt (the anchor is the source of truth, not the disagreement).
+{canonical_anchor}
 === FRESH EXTERNAL CONTEXT (today + any market/event context) ===
 {external_context}
 === PRIOR PLAN (diff against this — flag regressions) ===
@@ -228,17 +236,26 @@ def _build_prompt(
     external_context: str,
     prior_plan_text: str,
     settled_rulings: list[dict] | None = None,
+    canonical_anchor: str | None = None,
 ) -> str:
-    """Render the prompt with the three evidence blocks inlined.
+    """Render the prompt with the evidence blocks inlined.
 
-    Sentinel strings stand in for an empty external-context / prior-plan
-    block so the model never gets a bare placeholder it must guess at.
+    Sentinel strings stand in for an empty external-context / prior-plan /
+    canonical-anchor block so the model never gets a bare placeholder it must
+    guess at. The canonical anchor (when present) is a reviewer-only oracle —
+    the prompt section header tells the model not to critique it.
     """
     artifact_block = (
         assembled_artifact.strip()
         if assembled_artifact and assembled_artifact.strip()
         else "(assembled artifact unavailable on this run — this is itself a "
         "coherence failure: BLOCK with a BLOCKER finding noting the empty plan)"
+    )
+    anchor_block = (
+        canonical_anchor.strip()
+        if canonical_anchor and canonical_anchor.strip()
+        else "(no canonical registry anchor on this run — judge coherence from "
+        "the artifact's own stated figures)"
     )
     context_block = (
         external_context.strip()
@@ -257,6 +274,7 @@ def _build_prompt(
     )
     return _PROMPT_TEMPLATE.format(
         assembled_artifact=artifact_block,
+        canonical_anchor=anchor_block,
         external_context=context_block,
         prior_plan=prior_block,
         subject_taxonomy=_SUBJECT_TAXONOMY_STR,
@@ -450,6 +468,7 @@ async def run_whole_artifact_review(
     decision_run_id: int,
     user_id: str,
     settled_rulings: list[dict] | None = None,
+    canonical_anchor: str | None = None,
 ) -> tuple[WholeArtifactVerdict | None, AgentReport | None]:
     """Dispatch the whole-artifact adversarial reader. Fail-soft.
 
@@ -504,6 +523,7 @@ async def run_whole_artifact_review(
         external_context=external_context,
         prior_plan_text=prior_plan_text,
         settled_rulings=settled_rulings,
+        canonical_anchor=canonical_anchor,
     )
 
     # ------------------------------------------------------------------

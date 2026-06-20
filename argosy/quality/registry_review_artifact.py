@@ -152,64 +152,100 @@ def render_canonical_reconciliation_block(
     return "\n".join([_HEADER, "", _INTRO, "", *bullets]) + "\n"
 
 
-def assemble_registry_review_artifact(
-    session, *, user_id: str, decision_run_id: int,
-    base_text: str | None = None, graph=None, resolved=None,
+def _resolver_values_for_graph(resolved) -> dict[str, float]:
+    """The resolved canonical source values to seed the graph with — taken from
+    the SAME manifest that authorizes rendering, so the graph the surfaces render
+    from and the gate that authorizes them can never come from two different
+    resolver passes (codex impl review)."""
+    values: dict[str, float] = {}
+    for key in set(_SURFACE_RESOLVER_SOURCE.values()):
+        rv = resolved.get(key)
+        if (
+            getattr(rv, "status", None) == "resolved"
+            and getattr(rv, "value", None) is not None
+        ):
+            values[key] = float(rv.value)
+    return values
+
+
+def build_reader_anchor_block(
+    session, *, user_id: str, decision_run_id: int, graph=None, resolved=None,
 ) -> str:
-    """The reader-candidate artifact: today's assembled from-scratch text with a
-    reviewer-only canonical reconciliation anchor appended. ``base_text`` /
-    ``graph`` / ``resolved`` are injectable for tests; in production they are read
-    from ``assemble_plan_artifact`` / ``build_base_graph`` / ``resolve_plan_numbers``
-    (the same graph + manifest Phase 1c used). Returns ``base_text`` UNCHANGED
-    when no canonical surface renders (fail-safe — never strip or corrupt the
-    artifact)."""
-    if base_text is None:
-        from argosy.services.assembled_artifact import assemble_plan_artifact
-        base_text = assemble_plan_artifact(session, user_id=user_id).full_text or ""
-    if graph is None or resolved is None:
-        from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+    """Render the reviewer-only canonical reconciliation anchor block (or "" when
+    no canonical surface is authoritative). ``graph`` / ``resolved`` injectable
+    for tests; in production the manifest is resolved ONCE and the graph is seeded
+    from THAT manifest (build_base_graph ignores keys outside its scalar tuple),
+    so the rendered values and the authorizing manifest are one snapshot."""
+    if graph is None:
+        # Production: resolve the manifest ONCE and seed the graph from THAT same
+        # manifest, so the rendered values and the authorizing gate are one
+        # resolver snapshot. (When a graph is injected — tests — we never resolve.)
         if resolved is None:
+            from argosy.services.plan_numeric_resolver import resolve_plan_numbers
             resolved = resolve_plan_numbers(
                 session, user_id=user_id, decision_run_id=decision_run_id,
                 include_canonical_ages=True,
             )
-        if graph is None:
-            from argosy.orchestrator.flows.incremental_plan import build_base_graph
-            graph = build_base_graph(session, user_id, decision_run_id=decision_run_id)
-    block = render_canonical_reconciliation_block(graph, resolved=resolved)
+        from argosy.orchestrator.flows.incremental_plan import build_base_graph
+        graph = build_base_graph(
+            session, user_id, decision_run_id=decision_run_id,
+            resolver_values=_resolver_values_for_graph(resolved),
+        )
+    return render_canonical_reconciliation_block(graph, resolved=resolved)
+
+
+def assemble_registry_review_artifact(
+    session, *, user_id: str, decision_run_id: int,
+    base_text: str | None = None, graph=None, resolved=None,
+) -> str:
+    """The reader-candidate artifact as ONE string: today's assembled from-scratch
+    text with a reviewer-only canonical reconciliation anchor APPENDED (append-only
+    — ``base_text`` is always an exact prefix of the result). Returns ``base_text``
+    UNCHANGED when no canonical surface renders. (The orchestrator passes the anchor
+    SEPARATELY to the reader; this single-string form is for non-prompt consumers.)"""
+    if base_text is None:
+        from argosy.services.assembled_artifact import assemble_plan_artifact
+        base_text = assemble_plan_artifact(session, user_id=user_id).full_text or ""
+    block = build_reader_anchor_block(
+        session, user_id=user_id, decision_run_id=decision_run_id,
+        graph=graph, resolved=resolved)
     if not block:
         return base_text
-    return base_text.rstrip() + "\n\n" + block
+    if not base_text:
+        return block
+    sep = "" if base_text.endswith("\n\n") else "\n" if base_text.endswith("\n") else "\n\n"
+    return base_text + sep + block
 
 
-def maybe_anchor_reader_artifact(
-    session, *, user_id: str, decision_run_id: int, base_text: str,
-    _builder=None,
+def compute_reader_anchor(
+    session, *, user_id: str, decision_run_id: int, _builder=None,
 ) -> str:
-    """Return ``base_text`` anchored with the canonical reconciliation block when
-    the flag is ON, else ``base_text`` unchanged. Fail-soft: any error logs and
-    returns ``base_text`` (the from-scratch artifact is never lost). ``_builder``
+    """Return the reviewer-only canonical anchor block for the whole-artifact
+    reader, or "" when the flag is OFF / nothing is authoritative / anything
+    fails. Flag default OFF ⇒ "" ⇒ the reader prompt's anchor section shows its
+    "no anchor on this run" sentinel and the reader path is unchanged. Fail-soft:
+    a graph/resolver error never loses the from-scratch review. ``_builder``
     injects the graph builder for tests."""
     if not _flag_on():
-        return base_text
+        return ""
     try:
         graph = None
         if _builder is not None:
             graph = _builder(session, user_id, decision_run_id=decision_run_id)
-        return assemble_registry_review_artifact(
-            session, user_id=user_id, decision_run_id=decision_run_id,
-            base_text=base_text, graph=graph)
-    except Exception as exc:  # noqa: BLE001 — fail-soft, keep from-scratch text
+        return build_reader_anchor_block(
+            session, user_id=user_id, decision_run_id=decision_run_id, graph=graph)
+    except Exception as exc:  # noqa: BLE001 — fail-soft, keep the from-scratch review
         log.warning(
             "registry_review.anchor_failed user_id=%s decision_run_id=%s err=%s",
             user_id, decision_run_id, exc)
-        return base_text
+        return ""
 
 
 __all__ = [
     "CANONICAL_REVIEW_SURFACES",
     "FLAG_ENV",
     "render_canonical_reconciliation_block",
+    "build_reader_anchor_block",
     "assemble_registry_review_artifact",
-    "maybe_anchor_reader_artifact",
+    "compute_reader_anchor",
 ]

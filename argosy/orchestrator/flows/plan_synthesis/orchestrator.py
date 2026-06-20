@@ -1116,22 +1116,20 @@ def run_synthesis(
                 user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
             )
 
-        # Phase 2a: when ARGOSY_REGISTRY_REVIEW_ARTIFACT is ON, anchor the reader
-        # artifact with the canonical reconciliation block (the registry single
-        # source). Default OFF -> maybe_anchor_reader_artifact is identity, so the
-        # reader path is byte-identical to today. Its own narrow fail-soft boundary
-        # (separate from assemble above) so an anchor/import error never masquerades
-        # as an assemble failure and never loses the from-scratch text.
+        # Phase 2a: when ARGOSY_REGISTRY_REVIEW_ARTIFACT is ON, compute the
+        # reviewer-only canonical reconciliation anchor (the registry single
+        # source) and pass it to the reader as a SEPARATE oracle section — never
+        # concatenated into the client-facing artifact. Default OFF -> "" -> the
+        # reader path is byte-identical to today. Own narrow fail-soft boundary so
+        # an anchor/import error never affects the from-scratch assemble above.
+        _canonical_anchor = ""
         try:
-            from argosy.quality.registry_review_artifact import (
-                maybe_anchor_reader_artifact,
-            )
+            from argosy.quality.registry_review_artifact import compute_reader_anchor
 
-            _assembled_text = maybe_anchor_reader_artifact(
+            _canonical_anchor = compute_reader_anchor(
                 session, user_id=user_id, decision_run_id=decision_run_id,
-                base_text=_assembled_text,
             )
-        except Exception as exc:  # noqa: BLE001 — keep the from-scratch artifact
+        except Exception as exc:  # noqa: BLE001 — keep the from-scratch review
             log.warning(
                 "whole_artifact_reader.anchor_failed",
                 user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
@@ -1152,6 +1150,7 @@ def run_synthesis(
                 decision_run_id=decision_run_id,
                 user_id=user_id,
                 settled_rulings=settled_rulings,
+                canonical_anchor=(_canonical_anchor or None),
             )
         )
 
