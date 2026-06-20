@@ -153,16 +153,25 @@ def test_appendix_labels_three_age_definitions_distinctly(session):
     md = render_trajectory_reconciliation_appendix(
         session=session, user_id="ariel", decision_run_id=DRUN
     )
-    # 1) Derived FI age must carry the deterministic / perpetuity qualifier.
-    assert "Derived FI age (deterministic, perpetuity basis)" in md
+    # 1) The fi_age milestone must be labelled as a DETERMINISTIC FULL-SELF-
+    #    SUFFICIENCY AGE (net of the reserve, withdrawal-model basis) — NOT as a
+    #    "perpetuity basis" crossing, which collided with the gross capital-stock
+    #    crossing rows (base cleared today / total ~year) and read as one concept
+    #    with two answers (the live reconcile residual).
+    assert "full-self-sufficiency age" in md.lower()
+    assert "Derived FI age (deterministic, perpetuity basis)" not in md
     # 2) The reconciliation prose must qualify the Monte-Carlo earliest-safe
     #    headline age distinctly, so it never reads as the same concept as the
-    #    deterministic FI age.
+    #    deterministic full-self-sufficiency age.
     assert "earliest safe retirement age* (Monte-Carlo, 90% solvency" in md
-    # 3) The reconciliation prose must frame these as three DIFFERENT valid
-    #    definitions, not a contradiction, and name the per-scenario age.
+    # 3) The reconciliation prose must frame these as DIFFERENT valid definitions
+    #    measuring DIFFERENT things, not a contradiction, and name the per-scenario age.
     assert "three DIFFERENT" in md
     assert "per-scenario" in md
+    # 4) The gross capital-stock crossing must be explicitly distinguished from the
+    #    full-self-sufficiency AGE (the crux of killing the today-vs-49 collision):
+    #    the base is a GROSS capital level cleared today, NOT the age.
+    assert "gross" in md.lower()
     # The bare, unqualified "Derived FI age |" label must be gone.
     assert "| Derived FI age | " not in md
 

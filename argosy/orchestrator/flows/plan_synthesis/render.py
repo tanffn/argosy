@@ -1019,8 +1019,9 @@ def render_trajectory_reconciliation_appendix(
     lines.append(
         "This block answers two questions the plan must own: (1) how do "
         "we get from today's portfolio to the FI target, and (2) how the "
-        "earliest math-feasible retire age relates to the plan's derived "
-        f"FI age (**{fi_age_disp}**). Both are pure-math answers under the "
+        "earliest math-feasible retire age relates to the plan's deterministic "
+        f"full-self-sufficiency age (**{fi_age_disp}**, net of the reserve). Both "
+        "are pure-math answers under the "
         "DERIVED assumptions. Every headline number below is pulled from "
         "the shared plan-numeric resolver (single source of truth across "
         "the synth, this appendix, and the UI) — no hardcoded constants, "
@@ -1119,12 +1120,15 @@ def render_trajectory_reconciliation_appendix(
     if savings_m is not None and r_real is not None and fi_total_m is not None:
         n_to_total = years_to(a0_nis_m, fi_total_m, savings_m, r_real)
 
-    lines.append("### When does the portfolio cross each FI threshold?")
+    lines.append("### When does the portfolio cross each FI threshold? (GROSS capital-stock)")
     lines.append("")
     lines.append(
-        "Two DISTINCT thresholds — crossing the perpetuity BASE is NOT reaching "
-        "FI. Full capital sufficiency is the TOTAL-CAPITAL row; the headline FI "
-        "VERDICT is keyed to that row, never to the base crossing."
+        "These are GROSS capital-stock milestones — the ₪ balance touching a target "
+        "level — NOT a self-sufficiency AGE (the age milestone, net of the reserve, "
+        "is the distinct row further below). Two DISTINCT thresholds: clearing the "
+        "perpetuity BASE (gross) is NOT reaching FI. Full capital sufficiency is the "
+        "TOTAL-CAPITAL row; the headline FI VERDICT is keyed to that row, never to "
+        "the base crossing."
     )
     lines.append("")
     lines.append("| Anchor | Threshold (₪M) | Crossed at | Source |")
@@ -1179,12 +1183,13 @@ def render_trajectory_reconciliation_appendix(
             )
     lines.append("")
 
-    lines.append("### How the math-feasible age relates to the plan's FI age")
+    lines.append("### The self-sufficiency AGE milestones (distinct from the gross crossings above)")
     lines.append("")
     lines.append(
-        "Different surfaces answer different questions; each is math-"
-        "correct at its inputs. The numbers here are the resolver's "
-        "derived values, not constants:"
+        "These are AGE milestones — when you can stop working — NOT the gross "
+        "capital-stock crossings above. Different surfaces answer different "
+        "questions; each is math-correct at its inputs. The numbers here are the "
+        "resolver's derived values, not constants:"
     )
     lines.append("")
     lines.append(
@@ -1194,8 +1199,9 @@ def render_trajectory_reconciliation_appendix(
         "|---|---|---|"
     )
     lines.append(
-        f"| Derived FI age (deterministic, perpetuity basis) | {fi_age_disp} "
-        "| `retirement.fi_age` |"
+        f"| Deterministic full-self-sufficiency age (net of the {_fmt_nis_m(fi_reserve)} "
+        f"reserve; withdrawal-model basis — live off perpetual yield, no principal "
+        f"drawdown) | {fi_age_disp} | `retirement.fi_age` |"
     )
     # Cross-reference the Monte-Carlo earliest-safe headline age in the SAME
     # table so the deterministic FI age never reads as an orphaned, conflicting
@@ -1235,24 +1241,29 @@ def render_trajectory_reconciliation_appendix(
     )
     lines.append("")
     lines.append(
-        "**Honest reconciliation — three DIFFERENT, each-valid age "
-        "definitions (not a contradiction):** "
-        "(1) the *derived FI age* (deterministic, perpetuity basis) is the "
-        "earliest age the projected portfolio first reaches the derived FI "
-        "target under the resolver's return assumption; "
+        "**Honest reconciliation — three DIFFERENT age definitions that measure "
+        "DIFFERENT things (not a contradiction):** "
+        "(1) the *deterministic full-self-sufficiency age* (withdrawal-model basis, "
+        "net of the finite-liability reserve) is the age the portfolio can sustain "
+        "PERPETUAL real drawdown — living off yield with no principal draw, through "
+        "the pension/bridge sequence. It is LATER than the gross capital-stock "
+        "crossings above (perpetuity base cleared today; total target crossed at the "
+        "FV year) precisely because sustaining a perpetuity net of the reserve is a "
+        "higher bar than the balance merely touching the target gross; it is NOT a "
+        "capital-stock crossing; "
         "(2) the *earliest safe retirement age* (Monte-Carlo, 90% solvency "
         "to 95, typical-drawdown) is THE headline retirement age — the "
         "earliest you could stop working with the money lasting in ~9 of 10 "
         "market paths; it is normally a year or two below the deterministic "
-        "FI age because it permits drawing principal down rather than living "
-        "off a perpetuity yield; "
+        "full-self-sufficiency age because it permits drawing principal down "
+        "rather than living off a perpetuity yield; "
         "(3) the per-scenario *target age* in the retirement-projection grid "
         "is the SAME Monte-Carlo earliest-safe age as (2), recomputed under "
         "EACH scenario's central real return as μ (the Typical-scenario row IS "
         "the headline earliest-safe age; Bear/Conservative are the same MC "
         "method at lower μ). It is NOT a deterministic crossing — that is the "
-        "perpetuity-basis fi_age in (1) — so the grid's Typical age and the "
-        "deterministic fi_age legitimately differ. Each MC age encodes "
+        "full-self-sufficiency age in (1) — so the grid's Typical age and the "
+        "deterministic full-self-sufficiency age legitimately differ. Each MC age encodes "
         "return-rate uncertainty, sequence risk, NVDA concentration, and "
         "life-event spend spikes through the simulated draws — none is a round "
         "marketing number."
