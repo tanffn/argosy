@@ -147,6 +147,8 @@ OWNER_MAP: dict[str, OwnerSpec] = {
     "concentration.us_situs_estate_nis": OwnerSpec(OwnerRole.ESTATE, _FR, _HI),
     "spend.mc_central_nis": OwnerSpec(_C, _MP, _HI),
     "spend.mc_stress_nis": OwnerSpec(_C, _MP, _MED),
+    "tax.retention_at_vest_pct": OwnerSpec(_T, _AS, _HI),
+    "tax.retention_capital_track_pct": OwnerSpec(_T, _AS, _HI),
 }
 
 # Prefix rules own whole namespaces (incl. dynamic keys). First match wins.

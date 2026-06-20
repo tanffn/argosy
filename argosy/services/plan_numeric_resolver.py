@@ -143,6 +143,8 @@ _KEY_UNITS: dict[str, str] = {
     "retirement.fi_crossing_year": "year",
     "retirement.pension_unlock_age": "age",
     "retirement.mc_horizon_age": "age",
+    "tax.retention_at_vest_pct": "pct",
+    "tax.retention_capital_track_pct": "pct",
 }
 
 # Fixed STRUCTURAL ages — not derived, not MC-dependent. The pension unlock age
@@ -154,6 +156,16 @@ _KEY_UNITS: dict[str, str] = {
 # headline_numeric_source gate. Single-sourced here so a change is one edit.
 PENSION_UNLOCK_AGE = 60.0
 MC_HORIZON_AGE = 95.0
+
+# Israeli Section-102 capital-track HIGH-INCOME marginal effective rate on the
+# capital-gain slice: 25% base CGT + 3% general surtax + 2% capital-source surtax
+# (applies once capital-source income exceeds the threshold). domain_knowledge/
+# tax/israel/section_102.md: "use 30% marginal effective" for the post-24-month
+# NVDA tranche. Statutory policy parameter, NOT a guess (codex tax review 2026-06-20).
+SECTION_102_HIGH_INCOME_RATE = 0.30
+# At-vest ORDINARY-income high-income effective rate: 47% top marginal + 3% general
+# surtax = 50% (domain_knowledge/tax/israel/surtax.md). Statutory policy parameter.
+ORDINARY_HIGH_INCOME_RATE = 0.50
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +326,7 @@ def _resolve_equity_comp_analyst(
             conf = "LOW"
             formula += f"; scenarios disagree (max spread {spread * 100:.0f}% vs floor)"
 
-    return [
+    out_values = [
         ResolvedValue(
             key=key,
             value=value,
@@ -326,6 +338,14 @@ def _resolve_equity_comp_analyst(
             formula=formula,
         )
     ]
+
+    # NOTE: the at-vest ordinary retention is NOT sourced from this analyst's
+    # net_retention_pct — on live run 117 that field read 72% (a blended/after-sale
+    # figure), which contradicts the at-vest ORDINARY rate (~50%). The two
+    # statutory retention rates are published deterministically in
+    # _apply_retention_rates (auditable to domain_knowledge/tax/israel), not from
+    # this ambiguous field.
+    return out_values
 
 
 def _resolve_household_budget(
@@ -912,6 +932,7 @@ def resolve_plan_numbers(
     _apply_nvda_current_weight(session, user_id, values)
     _apply_fx_boi(session, values)
     _apply_structural_ages(values)
+    _apply_retention_rates(values)
 
     # ONE signed FI sufficiency margin (net_worth − FI-total-capital). Computed
     # once here so every surface cites the SAME signed number — the
@@ -959,6 +980,33 @@ def _apply_structural_ages(values: dict[str, ResolvedValue]) -> None:
         confidence="HIGH",
         formula="Monte-Carlo solvency horizon (every drawdown P(ruin) runs to this age)",
     )
+
+
+def _apply_retention_rates(values):
+    """Publish BOTH RSU net-retention rates as DISTINCT, statutory-derived figures
+    so prose can never conflate them (the recurring reader contradiction):
+
+      * tax.retention_at_vest_pct — retention on AT-VEST ORDINARY income: top
+        marginal IL 47% + 3% general surtax = 50% tax (domain_knowledge/tax/israel/
+        surtax.md: ordinary income above the threshold). retention = 0.50.
+      * tax.retention_capital_track_pct — retention on the Section-102 capital-GAIN
+        SLICE at the high-income marginal: 25% CGT + 3% + 2% capital-source surtax
+        = 30% (section_102.md "use 30% marginal effective"). retention = 0.70.
+
+    Both are statutory policy parameters auditable to domain knowledge — not the
+    equity_comp analyst's ambiguous blended net_retention_pct (72% on run 117)."""
+    values["tax.retention_at_vest_pct"] = ResolvedValue(
+        key="tax.retention_at_vest_pct", value=1.0 - ORDINARY_HIGH_INCOME_RATE,
+        unit="pct", status="resolved",
+        source_locator="plan_numeric_resolver.ORDINARY_HIGH_INCOME_RATE (domain_knowledge/tax/israel/surtax.md)",
+        confidence="HIGH",
+        formula="1 - at-vest ordinary high-income rate (47% marginal + 3% surtax)")
+    values["tax.retention_capital_track_pct"] = ResolvedValue(
+        key="tax.retention_capital_track_pct", value=1.0 - SECTION_102_HIGH_INCOME_RATE,
+        unit="pct", status="resolved",
+        source_locator="plan_numeric_resolver.SECTION_102_HIGH_INCOME_RATE (domain_knowledge/tax/israel/section_102.md)",
+        confidence="HIGH",
+        formula="1 - Section-102 high-income marginal (25% CGT + 3% + 2% surtax) on the capital-gain slice")
 
 
 def _apply_canonical_mc_spend(

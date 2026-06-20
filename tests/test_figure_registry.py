@@ -275,3 +275,10 @@ def test_fi_crossing_year_owned_by_retirement():
     assert spec.owner is OwnerRole.RETIREMENT_FI
     assert spec.kind is FigureKind.FORMULA_RESULT
     assert spec.uncategorized is False
+
+
+def test_retention_rates_owned_by_tax_and_distinct():
+    at_vest = owner_for("tax.retention_at_vest_pct")
+    cap = owner_for("tax.retention_capital_track_pct")
+    assert at_vest.owner is OwnerRole.TAX and cap.owner is OwnerRole.TAX
+    assert at_vest.uncategorized is False and cap.uncategorized is False

@@ -1067,3 +1067,27 @@ def test_apply_fi_crossing_positive_margin_is_current_year():
     out = values["retirement.fi_crossing_year"]
     assert out.status == "resolved"
     assert out.value == float(_date.today().year)
+
+
+def test_retention_at_vest_pct_is_statutory_ordinary(session):
+    """At-vest ordinary retention is the STATUTORY rate (1 - 0.50: 47% marginal +
+    3% surtax) — NOT the equity_comp analyst's ambiguous net_retention_pct (which
+    read 72% on live run 117, a blended/after-sale figure that mislabels at-vest)."""
+    _seed_all(session)
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    r = resolved.get("tax.retention_at_vest_pct")
+    assert r.status == "resolved"
+    assert r.unit == "pct"
+    assert r.value == pytest.approx(0.50)   # 1 - (47% marginal + 3% surtax)
+
+
+def test_retention_capital_track_pct_from_statutory_rate(session):
+    _seed_all(session)
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    r = resolved.get("tax.retention_capital_track_pct")
+    assert r.status == "resolved"
+    assert r.unit == "pct"
+    assert r.value == pytest.approx(0.70)   # 1 - 0.30 (25% CGT + 3% + 2% surtax)
+    # and it is DISTINCT from the at-vest rate (the whole point)
+    at_vest = resolved.get("tax.retention_at_vest_pct")
+    assert abs(r.value - at_vest.value) > 0.1
