@@ -14,12 +14,14 @@ from argosy.quality.finding_remediation import (
 )
 
 
-def _objection(node_key, *, owner="retirement_fi", detail="d"):
+def _objection(node_key, *, owner="retirement_fi", detail="d",
+               finding_kind="contradiction", surfaces=("x",)):
     return ChangeRequest(
         target_node_key=node_key,
         author=Author(kind=AuthorKind.AGENT, role="whole_artifact_reader"),
         kind=ChangeKind.OBJECTION,
-        payload={"owner_role": owner, "surfaces_cited": ["x"]},
+        payload={"owner_role": owner, "surfaces_cited": list(surfaces),
+                 "finding_kind": finding_kind},
         rationale=detail,
     )
 
@@ -72,6 +74,19 @@ def test_decline_is_recorded_not_dropped():
                                proposer=p, graph=_graph())
     assert not res.value_change_requests and not res.prose_fixes
     assert res.declines and res.declines[0]["rationale"] == "finding is wrong"
+
+
+def test_decline_carries_finding_kind_and_surfaces_for_downstream_prose_reconcile():
+    # A decline means "don't change the FIGURE" — not "leave the contradiction". The
+    # decline record must carry the finding kind + cited surfaces so the caller can
+    # still prose-reconcile a declined contradiction.
+    p = _FakeProposer(RemediationProposal(kind="decline", rationale="figure is right"))
+    obj = _objection("retirement.fi_margin_signed_nis",
+                     finding_kind="contradiction", surfaces=("A says X", "B says Y"))
+    res = propose_remediations([obj], proposer=p, graph=_graph())
+    d = res.declines[0]
+    assert d["finding_kind"] == "contradiction"
+    assert d["surfaces_cited"] == ["A says X", "B says Y"]
 
 
 def test_proposer_error_is_a_decline_not_a_crash():

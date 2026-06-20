@@ -122,6 +122,8 @@ def propose_remediations(
             out.declines.append({
                 "target_node_key": target, "owner_role": owner_role,
                 "rationale": f"owner remediation unavailable ({exc})",
+                "finding_kind": cr.payload.get("finding_kind", ""),
+                "surfaces_cited": list(cr.payload.get("surfaces_cited", ()) or ()),
             })
             continue
 
@@ -143,6 +145,11 @@ def propose_remediations(
             out.declines.append({
                 "target_node_key": target, "owner_role": owner_role,
                 "rationale": proposal.rationale or proposal.instruction,
+                # Carry the finding kind + surfaces so the caller can still
+                # prose-reconcile a declined CONTRADICTION (a decline means the
+                # figure stands, not that a real cross-surface conflict is dropped).
+                "finding_kind": cr.payload.get("finding_kind", ""),
+                "surfaces_cited": list(cr.payload.get("surfaces_cited", ()) or ()),
             })
     return out
 

@@ -101,9 +101,13 @@ def test_owner_set_value_is_surfaced_not_applied_as_a_body_edit():
 
 
 def test_owner_decline_is_recorded_and_makes_no_progress():
+    # A declined NON-contradiction finding (here fragile_claim) is recorded and
+    # leaves the body untouched (the declined-contradiction reconcile is a separate
+    # path, covered below).
     body = "FI margin is -167,735 NIS; the plan is honestly short."
     verdict = _verdict([
-        _finding(subject_type="fi_capital_sufficiency", surfaces=[body]),
+        _finding(subject_type="fi_capital_sufficiency", kind="fragile_claim",
+                 surfaces=[body]),
     ])
     proposer = _FixedProposer(RemediationProposal(
         kind="decline", rationale="the margin is correctly short"))
@@ -117,6 +121,51 @@ def test_owner_decline_is_recorded_and_makes_no_progress():
     assert not res.prose_edits and not res.value_change_requests
     assert not res.made_progress
     assert res.bodies["long"] == body  # untouched
+
+
+def test_declined_contradiction_is_still_prose_reconciled():
+    # The owner declines (the FIGURE is correct), but the reader flagged a
+    # CONTRADICTION between two surfaces — the prose still disagrees with the correct
+    # figure, so the round reconciles the prose anyway (decline ≠ leave the conflict).
+    snippet = "Liquid net worth clears the perpetuity base today."
+    body = f"Verdict: {snippet} Yet self-sufficiency is reached only at 49."
+    verdict = _verdict([
+        _finding(subject_type="fi_capital_sufficiency", kind="contradiction",
+                 detail="cleared today vs self-sufficient at 49", surfaces=[snippet]),
+    ])
+    proposer = _FixedProposer(RemediationProposal(
+        kind="decline", rationale="the margin is correctly short"))
+    res = run_owner_routed_reconcile_round(
+        reader_verdict=verdict,
+        bodies={"long": body, "medium": "", "short": ""},
+        graph=_graph(), proposer=proposer, editor=_stub_editor,
+    )
+    assert len(res.declines) == 1               # the figure decline is still recorded
+    assert len(res.prose_edits) == 1            # but the contradiction prose is reconciled
+    assert "reconciled clause" in res.bodies["long"]
+    assert res.made_progress
+
+
+def test_declined_non_contradiction_finding_is_left_alone():
+    # A declined fragile_claim / other (not a cross-surface contradiction) respects
+    # the owner — no forced prose edit.
+    snippet = "The age-46 headline absorbs all sequence risk."
+    body = f"Note: {snippet}"
+    verdict = _verdict([
+        _finding(subject_type="retirement_age_headline", kind="fragile_claim",
+                 detail="unsupported", surfaces=[snippet]),
+    ])
+    proposer = _FixedProposer(RemediationProposal(
+        kind="decline", rationale="the claim is adequately supported"))
+    res = run_owner_routed_reconcile_round(
+        reader_verdict=verdict,
+        bodies={"long": body, "medium": "", "short": ""},
+        graph=_graph(), proposer=proposer, editor=_stub_editor,
+    )
+    assert len(res.declines) == 1
+    assert not res.prose_edits
+    assert not res.made_progress
+    assert res.bodies["long"] == body
 
 
 def test_prose_routed_subject_is_edited_without_calling_the_proposer():

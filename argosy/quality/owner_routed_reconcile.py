@@ -43,6 +43,12 @@ from argosy.orchestrator.flows.plan_synthesis.surgical_reconcile import (
 from argosy.quality.finding_remediation import propose_remediations
 from argosy.quality.finding_router import findings_to_change_requests
 
+# Finding kinds where a declined figure still warrants a PROSE reconcile: the reader
+# demonstrated two surfaces in conflict, so the prose must align to the (correct,
+# owner-kept) figure even though the figure itself does not change. A declined
+# fragile_claim / stale / other respects the owner — not force-edited.
+_RECONCILE_ON_DECLINE_KINDS = frozenset({"contradiction", "cross_surface"})
+
 
 @dataclass
 class OwnerRoutedRoundResult:
@@ -124,6 +130,19 @@ def run_owner_routed_reconcile_round(
             ))
         else:
             unowned.append(f)
+
+    # A DECLINED objection means the owner judged the FIGURE correct — it does NOT
+    # mean a real cross-surface CONTRADICTION should stand. For a declined
+    # contradiction / cross_surface finding that still cites a surface, reconcile the
+    # PROSE to the (correct) figure: the editor forbids new numbers, so it can only
+    # qualify/align the wording, never re-fit the figure the owner kept.
+    for d in remediation.declines:
+        if (d.get("finding_kind") or "").lower() in _RECONCILE_ON_DECLINE_KINDS:
+            surfaces = d.get("surfaces_cited") or []
+            if surfaces:
+                prose_findings.append(_ProseFinding(
+                    detail=d.get("rationale") or "", surfaces_cited=surfaces,
+                ))
 
     # Coalesce findings that cite the SAME surface so the editor never edits a span
     # twice (after the first splice the second wouldn't find it → silently dropped).
