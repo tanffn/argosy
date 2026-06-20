@@ -1260,9 +1260,36 @@ def _apply_fx_boi(session: "Session", values: dict[str, ResolvedValue]) -> None:
             key="fx.usd_nis_band_high", value=hi, unit="nis_per_usd", status="resolved",
             source_locator="boi USD/NIS 90-day high", agent_report_id=None, confidence="HIGH",
         )
-    except Exception as exc:  # noqa: BLE001 — no cached rate → pending, never 3.45
-        log.warning("plan_numeric_resolver.fx_boi_unavailable err=%s", exc)
-        values[key] = ResolvedValue.pending(key, "nis_per_usd", loc)
+    except Exception as exc:  # noqa: BLE001 — walkback gap → carry forward last-known
+        # A missing DAILY rate (a feed-job gap > the 10-day walkback, a long
+        # holiday, a cold cache) must NOT pending-out every NIS figure in the plan.
+        # Carry forward the most-recent cached BOI rate (any age) — a stale-but-real
+        # representative rate is vastly better than pending the whole plan — flagged
+        # MEDIUM with an explicit "as of" provenance. Pending ONLY if the cache holds
+        # no USD rate at all (never the magic 3.45).
+        from argosy.state.models import FxRate
+
+        last = session.execute(
+            select(FxRate.date, FxRate.rate)
+            .where(FxRate.currency == "USD")
+            .order_by(FxRate.date.desc())
+            .limit(1)
+        ).first()
+        if last is not None and last[1] is not None:
+            as_of, rate = last[0], float(last[1])
+            log.warning(
+                "plan_numeric_resolver.fx_boi_carry_forward as_of=%s rate=%.4f (%s)",
+                as_of, rate, exc,
+            )
+            values[key] = ResolvedValue(
+                key=key, value=rate, unit="nis_per_usd", status="resolved",
+                source_locator=f"{loc} — carried forward, as of {as_of} (no rate within walkback)",
+                agent_report_id=None, confidence="MEDIUM",
+                formula=f"Bank of Israel representative USD/NIS, last-known as of {as_of}",
+            )
+        else:
+            log.warning("plan_numeric_resolver.fx_boi_unavailable err=%s", exc)
+            values[key] = ResolvedValue.pending(key, "nis_per_usd", loc)
 
 
 def _apply_us_situs_estate(
