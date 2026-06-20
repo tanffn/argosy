@@ -1116,6 +1116,27 @@ def run_synthesis(
                 user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
             )
 
+        # Phase 2a: when ARGOSY_REGISTRY_REVIEW_ARTIFACT is ON, anchor the reader
+        # artifact with the canonical reconciliation block (the registry single
+        # source). Default OFF -> maybe_anchor_reader_artifact is identity, so the
+        # reader path is byte-identical to today. Its own narrow fail-soft boundary
+        # (separate from assemble above) so an anchor/import error never masquerades
+        # as an assemble failure and never loses the from-scratch text.
+        try:
+            from argosy.quality.registry_review_artifact import (
+                maybe_anchor_reader_artifact,
+            )
+
+            _assembled_text = maybe_anchor_reader_artifact(
+                session, user_id=user_id, decision_run_id=decision_run_id,
+                base_text=_assembled_text,
+            )
+        except Exception as exc:  # noqa: BLE001 — keep the from-scratch artifact
+            log.warning(
+                "whole_artifact_reader.anchor_failed",
+                user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+            )
+
         # Fresh external-context packet: at minimum today's ISO date so the
         # reader can flag stale "as of" content. No market context threads
         # through this caller today (empty is handled by the reader).
