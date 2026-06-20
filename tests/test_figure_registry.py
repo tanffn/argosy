@@ -268,3 +268,10 @@ def test_total_net_worth_basis_owned_and_labeled():
     assert spec.owner is OwnerRole.BALANCE_SHEET
     assert spec.basis == "total"
     assert spec.uncategorized is False
+
+
+def test_fi_crossing_year_owned_by_retirement():
+    spec = owner_for("retirement.fi_crossing_year")
+    assert spec.owner is OwnerRole.RETIREMENT_FI
+    assert spec.kind is FigureKind.FORMULA_RESULT
+    assert spec.uncategorized is False

@@ -120,6 +120,7 @@ OWNER_MAP: dict[str, OwnerSpec] = {
     "retirement.fi_target_nis": OwnerSpec(_R, _FR, _HI),
     "retirement.fi_total_capital_nis": OwnerSpec(_R, _FR, _HI),
     "retirement.fi_margin_signed_nis": OwnerSpec(_R, _FR, _HI),
+    "retirement.fi_crossing_year": OwnerSpec(_R, _FR, _HI),
     "retirement.fire_bridge_nis": OwnerSpec(_R, _FR, _MED),
     "retirement.fi_age": OwnerSpec(_R, _MP, _HI),
     "retirement.earliest_safe_age": OwnerSpec(_R, _MP, _HI),

@@ -995,3 +995,75 @@ def test_total_net_worth_incl_residence_matches_helper(session):
     expect_nis, _ = total_net_worth_incl_residence(
         snapshot=snap, fx_usd_nis=3.0, session=session, user_id="ariel")
     assert total.value == pytest.approx(expect_nis)
+
+
+def test_fi_crossing_year_is_future_when_margin_negative(session):
+    """The crossing year must be a FUTURE year whenever the FI margin is
+    negative (the live pv56/pv57 reader BLOCKer: a table said 'crossed 2026'
+    while the plan said not-yet-reached)."""
+    from datetime import date as _date
+    from decimal import Decimal as _Dec
+    from argosy.state.models import FxRate
+
+    _seed_all(session)   # FI-methodology inputs (spend basis, yield, savings).
+    # Seed a positions+FX snapshot so the liquid net worth resolves — sized SHORT
+    # of the FI total target so the margin is negative (crossing must be future).
+    session.add(FxRate(date=_date.today(), currency="USD", rate=_Dec("3.0"), source="boi"))
+    session.add(PortfolioSnapshotRow(
+        user_id="ariel", imported_at=datetime(2026, 6, 2), snapshot_date=_date.today(),
+        fx_usd_nis=3.0,
+        positions_json=json.dumps([
+            {"symbol": "VOO", "currency": "USD", "usd_value_k": 3000.0, "asset_type": "ETF"},
+        ]),
+    ))
+    session.commit()
+
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    margin = resolved.get("retirement.fi_margin_signed_nis")
+    crossing = resolved.get("retirement.fi_crossing_year")
+    assert crossing.status == "resolved"
+    assert crossing.unit == "year"
+    if margin.status == "resolved" and margin.value is not None and margin.value < 0:
+        assert crossing.value > _date.today().year, (
+            "FI not reached -> crossing must be a future year, never the current year")
+
+
+def test_apply_fi_crossing_requires_margin_input():
+    """codex impl review: a missing/pending FI margin -> fi_crossing pending
+    (never an un-reconciled year)."""
+    from datetime import date as _date
+    from argosy.services.plan_numeric_resolver import _apply_fi_crossing_year
+
+    def _rv(k, v):
+        return ResolvedValue(key=k, value=v, unit="nis", status="resolved", source_locator="t")
+    values = {
+        "portfolio.liquid_net_worth_nis": _rv("portfolio.liquid_net_worth_nis", 9_000_000.0),
+        "retirement.fi_total_capital_nis": _rv("retirement.fi_total_capital_nis", 11_000_000.0),
+        "retirement.return_assumption_pct": ResolvedValue(
+            key="retirement.return_assumption_pct", value=0.03, unit="pct",
+            status="resolved", source_locator="t"),
+        "savings.annual_net_nis": _rv("savings.annual_net_nis", 300_000.0),
+        # margin DELIBERATELY absent -> pending
+    }
+    _apply_fi_crossing_year(values)
+    assert values["retirement.fi_crossing_year"].status == "pending"
+
+
+def test_apply_fi_crossing_positive_margin_is_current_year():
+    """Positive margin (FI reached) -> crossing reconciles to the current year."""
+    from datetime import date as _date
+    from argosy.services.plan_numeric_resolver import _apply_fi_crossing_year
+
+    def _rv(k, v, unit="nis"):
+        return ResolvedValue(key=k, value=v, unit=unit, status="resolved", source_locator="t")
+    values = {
+        "portfolio.liquid_net_worth_nis": _rv("portfolio.liquid_net_worth_nis", 12_000_000.0),
+        "retirement.fi_total_capital_nis": _rv("retirement.fi_total_capital_nis", 11_000_000.0),
+        "retirement.return_assumption_pct": _rv("retirement.return_assumption_pct", 0.03, "pct"),
+        "savings.annual_net_nis": _rv("savings.annual_net_nis", 300_000.0),
+        "retirement.fi_margin_signed_nis": _rv("retirement.fi_margin_signed_nis", 1_000_000.0),
+    }
+    _apply_fi_crossing_year(values)
+    out = values["retirement.fi_crossing_year"]
+    assert out.status == "resolved"
+    assert out.value == float(_date.today().year)

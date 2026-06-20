@@ -140,6 +140,7 @@ _KEY_UNITS: dict[str, str] = {
     "retirement.liquidity_reserve_nis": "nis",
     "retirement.fi_total_capital_nis": "nis",
     "retirement.fi_margin_signed_nis": "nis",
+    "retirement.fi_crossing_year": "year",
     "retirement.pension_unlock_age": "age",
     "retirement.mc_horizon_age": "age",
 }
@@ -917,6 +918,12 @@ def resolve_plan_numbers(
     # reached/not-reached sign can never diverge across surfaces again.
     _apply_fi_margin(values)
 
+    # ONE canonical FI-crossing year, derived from the resolver's own figures and
+    # reconciled with the FI-margin verdict by construction (margin >= 0 => current
+    # year; margin < 0 => strictly future). Called AFTER _apply_fi_margin so the
+    # margin + all inputs are resolved.
+    _apply_fi_crossing_year(values)
+
     # DERIVED NVDA deconcentration (target/sell + capital-track-eligible count) as
     # authoritative values, so the synthesizer uses a DERIVED target instead of
     # inheriting the baseline doc's sale cadence (the 3,000 class).
@@ -1363,6 +1370,56 @@ def _apply_fi_margin(values: dict[str, ResolvedValue]) -> None:
         confidence="HIGH",
         formula="liquid_net_worth_nis − fi_total_capital_nis (signed; >0 => total target reached; LIQUID basis, excl. real estate)",
     )
+
+
+def _apply_fi_crossing_year(values):
+    """Publish retirement.fi_crossing_year from already-resolved figures.
+    Reconciled with the FI margin by construction (the money-math returns the
+    current year only when liquid already clears the target). Pending when any
+    input is missing — never a guess."""
+    from datetime import date as _date
+    from argosy.services.fi_crossing import fi_crossing_year
+    key = "retirement.fi_crossing_year"
+
+    def _r(k):
+        rv = values.get(k)
+        return rv.value if (rv and rv.status == "resolved" and rv.value is not None) else None
+
+    liquid = _r("portfolio.liquid_net_worth_nis")
+    fi_total = _r("retirement.fi_total_capital_nis")
+    real_return = _r("retirement.return_assumption_pct")
+    savings = _r("savings.annual_net_nis")
+    margin = _r("retirement.fi_margin_signed_nis")
+    # margin is REQUIRED (codex impl review): the figure must be reconciled with the
+    # margin verdict, so a missing margin -> pending, never an un-reconciled year.
+    if None in (liquid, fi_total, real_return, savings, margin):
+        values[key] = ResolvedValue.pending(key, "year", "fi_crossing inputs pending")
+        return
+    cur_year = _date.today().year
+    yr = fi_crossing_year(
+        liquid_now=float(liquid), fi_total=float(fi_total),
+        real_return=float(real_return), annual_real_savings=float(savings),
+        current_year=cur_year)
+    if yr is None:
+        values[key] = ResolvedValue.pending(key, "year", "FI target not reached within horizon")
+        return
+    # Explicit reconciliation with the resolved margin (codex #2/#4): the math
+    # already guarantees this because margin = liquid - fi_total (same basis), but
+    # enforce it so a future basis drift fails LOUD instead of shipping a
+    # contradiction. margin >= 0 -> current year; margin < 0 -> strictly future.
+    if margin is not None:
+        if margin >= 0 and yr != cur_year:
+            log.warning("fi_crossing.margin_reconcile margin>=0 but yr=%s", yr)
+            yr = cur_year
+        elif margin < 0 and yr <= cur_year:
+            values[key] = ResolvedValue.pending(
+                key, "year", "fi_crossing contradicts negative margin")
+            return
+    values[key] = ResolvedValue(
+        key=key, value=float(yr), unit="year", status="resolved",
+        source_locator="fi_crossing.fi_crossing_year",
+        confidence="HIGH",
+        formula="first year FV(liquid, real return, end-of-year real-savings annuity) >= FI total capital")
 
 
 _NVDA_IPS_TARGET_W = 0.12  # IPS sleeve target (policy constraint)
