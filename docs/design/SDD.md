@@ -1100,18 +1100,38 @@ reader BLOCK marks the draft not auto-promotable through the same
 user remains the final gate, with an explicit, audit-logged override.
 
 **Coherence reconcile loop.** A reader BLOCK does not merely stop — it feeds
-back. When the reader blocks on a *fixable* coherence hole (a contradiction,
-cross-surface mismatch, stale date, or a fragile headline claim — anything but
-its own synthetic infra-failure BLOCK), the orchestrator folds the finding into
-synthesizer guidance (`_reader_coherence_reconcile_guidance`), re-runs phase-3
-synthesis, re-persists the draft body in place through the single shared
-renderer (`_assemble_draft_bodies`, used by both the initial persist and this
-re-persist so a reconciled draft is identical in shape to a normal one), and
-re-reads the corrected artifact — bounded to one round and fail-closed (a draft
-that still blocks stays not-auto-promotable). This mirrors the codex numeric
-reconcile zigzag; a `reader_reconcile` marker on the phase-5.5 row drives the
-visible reconcile banner on `/decisions/[id]`. The loop is gated on
-`ARGOSY_READER_RECONCILE` (default on).
+back. The loop is gated on `ARGOSY_READER_RECONCILE` (default on), bounded by
+`ARGOSY_READER_RECONCILE_MAX_ROUNDS`, and fail-closed (a draft that still blocks
+stays not-auto-promotable); a `reader_reconcile` marker on the phase-5.5 row
+drives the visible reconcile banner on `/decisions/[id]`. Each round, the
+orchestrator resolves the BLOCK by one of three strategies, in precedence order:
+
+1. **Owner-routed (default, the firm model — `ARGOSY_OWNER_ROUTED_RECONCILE`,
+   default on).** A BLOCK is a *set of findings*, each owned by exactly one role.
+   `owner_routed_reconcile.run_owner_routed_reconcile_round` routes every BLOCKER
+   to its owner (`finding_router`: figure objection / prose-routed / unroutable),
+   asks each *figure* owner for a targeted remediation (`finding_remediation`:
+   `set_value` / `prose_fix` / `decline`), and applies every prose fix —
+   owner `prose_fix`, prose-routed findings, and a catch-all Lead pass over any
+   unroutable finding that still cites a surface — through the segment-level
+   surgical editor (`surgical_reconcile`): span-local, no fabricated numbers,
+   same-surface findings coalesced. This is *targeted* repair (recompute a
+   finding's blast radius, never regenerate the whole document), which is what
+   lets the plan converge. Prose is the only artifact change a round makes; a
+   genuine *figure* change is surfaced (not silently applied — applying it without
+   re-rendering every surface that shows it would recreate the very cross-surface
+   contradiction this prevents) and left to the full re-synth fallback. A round
+   that splices a prose edit iterates; a round that can only decline / surface a
+   figure change / report an unowned finding falls through to (3).
+2. **Coherence deliberation** (`ARGOSY_COHERENCE_DELIBERATION`, opt-in) and
+   **surgical correction** (`ARGOSY_SURGICAL_CORRECTION`, opt-in) — alternate
+   strategies that, when explicitly enabled, take precedence over owner-routing.
+3. **Full re-synth fallback (the safety net).** The orchestrator folds the
+   finding into synthesizer guidance (`_reader_coherence_reconcile_guidance`),
+   re-runs phase-3 synthesis, re-persists the draft body in place through the
+   single shared renderer (`_assemble_draft_bodies`, used by both the initial
+   persist and this re-persist so a reconciled draft is identical in shape to a
+   normal one), and re-reads. This mirrors the codex numeric reconcile zigzag.
 
 **Idempotency.** Re-running synthesis when an unaccepted draft already
 exists demotes the prior draft to `role='superseded'` and writes a
