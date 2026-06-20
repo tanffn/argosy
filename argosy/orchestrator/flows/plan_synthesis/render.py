@@ -467,7 +467,7 @@ _ASSUMPTION_LEDGER_V1: list[dict[str, str]] = [
     },
     {
         "id": "A7", "name": "RSU net retention (after IL Section 102 + US)",
-        "value": "47%", "source": "tax_analyst + equity_comp_analyst",
+        "value": "[derivation pending]", "source": "tax_analyst + equity_comp_analyst",
         "year": "2026", "confidence": "MEDIUM-HIGH",
         "affects": "Active-grant net stream; the ₪307,852/yr net savings floor (A8)",
     },
@@ -581,6 +581,8 @@ def _ledger_rows_with_manifest(resolved) -> list[dict[str, str]]:
     fx_spot = _rv("fx.usd_nis")
     fx_lo = _rv("fx.usd_nis_band_low")
     fx_hi = _rv("fx.usd_nis_band_high")
+    ret_vest = _rv("tax.retention_at_vest_pct")
+    ret_cap = _rv("tax.retention_capital_track_pct")
 
     if ret is not None and "A1" in by_id:
         by_id["A1"]["value"] = f"{ret*100:.1f}% real"
@@ -631,6 +633,24 @@ def _ledger_rows_with_manifest(resolved) -> list[dict[str, str]]:
     if fx_lo is not None and fx_hi is not None and "A6" in by_id:
         by_id["A6"]["value"] = f"{fx_lo:.2f} → {fx_hi:.2f}"
         by_id["A6"]["source"] = "BOI USD/NIS 90-day low → high"
+    # A7 — RSU net retention: render the TWO distinct statutory rates (at-vest
+    # ordinary vs Section-102 capital-gain slice), never one conflated number.
+    # Both must be valid fractions in (0, 1] or the row stays [derivation pending]
+    # (a pending/garbage resolver value never displays a false rate).
+    def _valid_pct(x) -> bool:
+        return isinstance(x, (int, float)) and not isinstance(x, bool) and 0.0 < x <= 1.0
+
+    if _valid_pct(ret_vest) and _valid_pct(ret_cap) and "A7" in by_id:
+        by_id["A7"]["value"] = (
+            f"{ret_vest*100:.0f}% at-vest ordinary-income retention / "
+            f"{ret_cap*100:.0f}% Section 102 capital-gain-slice retention"
+        )
+        by_id["A7"]["source"] = (
+            "tax_analyst (resolver: tax.retention_at_vest_pct / "
+            "tax.retention_capital_track_pct — statutory tax parameters; the "
+            "active-grant net stream is the resolved A8 figure, not a recompute "
+            "from either single rate)"
+        )
     return rows
 
 
