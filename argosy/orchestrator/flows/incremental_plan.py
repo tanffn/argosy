@@ -50,6 +50,7 @@ import json
 import logging
 import os
 import uuid
+from datetime import date
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -65,8 +66,9 @@ from argosy.quality.graph_collections import (
     US_SITUS_KEY, build_holdings_graph,
 )
 from argosy.quality.live_surfaces import (
-    EARLIEST_SAFE_AGE_NODE, FI_MARGIN_NODE, canonical_surface_concepts,
-    register_canonical_surfaces,
+    EARLIEST_SAFE_AGE_NODE, FI_CROSSING_YEAR_NODE, FI_MARGIN_NODE,
+    RETENTION_AT_VEST_NODE, RETENTION_CAPITAL_TRACK_NODE,
+    canonical_surface_concepts, register_canonical_surfaces,
 )
 from argosy.quality.promote_gate import PromoteDecision
 from argosy.quality.publish_gate import OpenFlag, can_publish_plan
@@ -85,6 +87,7 @@ FLAG_ENV = "ARGOSY_INCREMENTAL_PLAN"
 # cross-surface contradiction this whole design exists to kill.
 LIQUID_NW_KEY = "portfolio.liquid_net_worth_nis"
 INVESTABLE_NW_KEY = "portfolio.net_worth_nis"
+TOTAL_NW_KEY = "portfolio.total_net_worth_incl_residence_nis"
 
 # subject_type -> the node key actually present in the base graph (overrides the
 # live_surfaces CANONICAL_SUBJECT_NODE defaults where the namespaces differ).
@@ -92,11 +95,14 @@ SUBJECT_NODE_MAP: dict[str, str] = {
     "us_situs_estate": US_SITUS_KEY,
     "net_worth_liquid": LIQUID_NW_KEY,
     "net_worth_investable": INVESTABLE_NW_KEY,
+    "net_worth_total": TOTAL_NW_KEY,
 }
 
 # Canonical scalar nodes seeded from the authoritative resolver manifest.
 _RESOLVER_SCALAR_KEYS = (
     FI_MARGIN_NODE, EARLIEST_SAFE_AGE_NODE, LIQUID_NW_KEY, INVESTABLE_NW_KEY,
+    TOTAL_NW_KEY, FI_CROSSING_YEAR_NODE,
+    RETENTION_AT_VEST_NODE, RETENTION_CAPITAL_TRACK_NODE,
 )
 
 
@@ -210,6 +216,23 @@ def _resolver_scalars(session, user_id: str, decision_run_id: int) -> dict[str, 
     return out
 
 
+def _reconcile_fi_crossing(scalars: dict[str, float], *, current_year: int) -> dict[str, float]:
+    """Enforce the FI-crossing/margin invariant on the seeded canonical scalars
+    (the surface can't see the margin): margin < 0 must never pair with a
+    past/present crossing -> drop the crossing so the pending (0.0) seed renders
+    'not reached'; margin >= 0 -> normalize the crossing to the current year
+    (FI already reached). Pure; no graph, no DB."""
+    out = dict(scalars)
+    margin = out.get(FI_MARGIN_NODE)
+    crossing = out.get(FI_CROSSING_YEAR_NODE)
+    if margin is not None and crossing is not None:
+        if margin < 0 and crossing <= current_year:
+            out.pop(FI_CROSSING_YEAR_NODE, None)
+        elif margin >= 0 and crossing != current_year:
+            out[FI_CROSSING_YEAR_NODE] = float(current_year)
+    return out
+
+
 def build_base_graph(
     session,
     user_id: str,
@@ -242,6 +265,11 @@ def build_base_graph(
         dict(resolver_values) if resolver_values is not None
         else _resolver_scalars(session, user_id, decision_run_id)
     )
+    # The surface renders the crossing year with no access to the margin, so
+    # enforce the resolver's FI-crossing/margin invariant on the seeded scalars
+    # here too — a stale/injected crossing that contradicts the margin falls back
+    # to the pending (0.0) seed instead of rendering a false crossing.
+    scalars = _reconcile_fi_crossing(scalars, current_year=date.today().year)
     # Seed the canonical scalar nodes as INPUTs carrying the resolver value.
     # register_canonical_surfaces assumes these DERIVED-equivalent nodes already
     # exist — ensure each canonical subject's node is present first.
@@ -392,7 +420,7 @@ def run_incremental_cycle(
     # Bind the coherence recheck to the canonical surface->concept map (every
     # surface of a subject reads the same node, so coherence sees identical
     # values — a basis-flip is impossible by construction).
-    register_surface_concepts(canonical_surface_concepts())
+    register_surface_concepts(canonical_surface_concepts(SUBJECT_NODE_MAP))
 
     # A recipe/policy change-request may target a policy node that is not a
     # materialized derived/collection node in the base graph (it is a policy

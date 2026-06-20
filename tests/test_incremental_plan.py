@@ -361,3 +361,30 @@ def test_persist_writes_graph_and_propagation_event():
     assert steps  # at least one propagation event recorded
     nodes = session.query(PlanNode).filter(PlanNode.plan_id == plan_id).count()
     assert nodes > 0
+
+
+def test_fi_crossing_reconciled_against_negative_margin():
+    """The base-graph FI-crossing reconciliation guard: a negative margin can
+    never pair with a past/present crossing (the surface can't see the margin)."""
+    import datetime as _dt
+    from argosy.orchestrator.flows.incremental_plan import (
+        _reconcile_fi_crossing, FI_CROSSING_YEAR_NODE,
+    )
+    from argosy.quality.live_surfaces import FI_MARGIN_NODE
+
+    cur = _dt.date.today().year
+    # Contradiction: FI short (margin<0) but a current-year crossing -> dropped.
+    out = _reconcile_fi_crossing(
+        {FI_MARGIN_NODE: -500_000.0, FI_CROSSING_YEAR_NODE: float(cur)},
+        current_year=cur)
+    assert FI_CROSSING_YEAR_NODE not in out  # -> 0.0 seed -> 'not reached'
+    # A genuine future crossing with a negative margin is preserved.
+    out2 = _reconcile_fi_crossing(
+        {FI_MARGIN_NODE: -500_000.0, FI_CROSSING_YEAR_NODE: float(cur + 1)},
+        current_year=cur)
+    assert out2[FI_CROSSING_YEAR_NODE] == float(cur + 1)
+    # Margin reached -> crossing normalized to the current year.
+    out3 = _reconcile_fi_crossing(
+        {FI_MARGIN_NODE: 200_000.0, FI_CROSSING_YEAR_NODE: float(cur + 3)},
+        current_year=cur)
+    assert out3[FI_CROSSING_YEAR_NODE] == float(cur)
