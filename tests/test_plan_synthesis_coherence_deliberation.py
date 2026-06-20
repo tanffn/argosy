@@ -158,6 +158,9 @@ def test_deliberation_disabled_by_env_uses_old_path(synth_db, monkeypatch):
     from argosy.orchestrator.flows import plan_synthesis as flow
     p3_calls, r_calls, pass_calls = _wire(monkeypatch, flow, [_BLOCK, _APPROVE], pass_ok=True)
     monkeypatch.setenv("ARGOSY_COHERENCE_DELIBERATION", "0")
+    # Isolate the OLD reconcile/re-synth fallback: with the default-ON owner-routed
+    # path also disabled, a reader BLOCK must reach the legacy full re-synth.
+    monkeypatch.setenv("ARGOSY_OWNER_ROUTED_RECONCILE", "0")
 
     flow.run_synthesis(session, user_id=user_id, trigger="scheduled")
 

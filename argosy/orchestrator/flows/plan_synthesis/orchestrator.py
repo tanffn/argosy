@@ -1201,6 +1201,113 @@ def run_synthesis(
                 user_id=user_id, decision_run_id=decision_run_id,
                 round=_reader_round,
             )
+            # OWNER-ROUTED reconcile (default ON — ARGOSY_OWNER_ROUTED_RECONCILE=0
+            # disables; the firm-model path). The reader BLOCK is not a veto on the
+            # whole plan — it is a set of findings, each owned by exactly one role.
+            # Route each BLOCKER to its owner; the owner proposes a TARGETED fix
+            # (prose_fix / prose-routed / a catch-all Lead pass → a span-local
+            # surgical edit, no new numbers; set_value → SURFACED, not applied here;
+            # decline → recorded). PROSE is the only artifact change this round makes:
+            # applying a figure change without re-rendering every surface that shows it
+            # would recreate the cross-surface contradiction this redesign prevents, so
+            # a genuine figure correction is left to the full-re-synth fallback (it
+            # regenerates every surface coherently). Persist the corrected prose,
+            # re-read, and if a prose edit landed, iterate (bounded by the while
+            # condition); if the round made NO body progress (only declines / surfaced
+            # figure changes / unowned findings), fall through to the generic
+            # deliberation/surgical/full-re-synth fallback — the safety net.
+            #
+            # Precedence: an EXPLICITLY enabled alternate strategy (coherence
+            # deliberation / surgical correction — both default-OFF, opt-in) takes
+            # priority over the default-ON owner-routed path. If the operator opted
+            # into one of those, honour it; owner-routed yields and the matching
+            # branch below runs.
+            if (
+                _os.environ.get("ARGOSY_OWNER_ROUTED_RECONCILE", "1") == "1"
+                and _os.environ.get("ARGOSY_COHERENCE_DELIBERATION", "0") != "1"
+                and _os.environ.get("ARGOSY_SURGICAL_CORRECTION", "0") != "1"
+            ):
+                try:
+                    from argosy.quality.owner_routed_reconcile import (
+                        run_owner_routed_reconcile_round,
+                    )
+                    from argosy.orchestrator.flows.remediation_proposer import (
+                        RealRemediationProposer,
+                    )
+                    from argosy.orchestrator.flows.incremental_plan import (
+                        build_base_graph,
+                    )
+                    from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+                    _own_started = datetime.now(timezone.utc)
+                    _own_drun = _decision_run_int(decision_run_id)
+                    # Resolver + graph ground the owner's judgment (node value +
+                    # derivation) and the prose editor's canonical context — they are
+                    # READ-ONLY inputs here; this round never mutates the graph.
+                    _own_resolved = (
+                        resolve_plan_numbers(session, user_id=user_id, decision_run_id=_own_drun)
+                        if _own_drun is not None else None
+                    )
+                    _own_graph = (
+                        build_base_graph(session, user_id, decision_run_id=_own_drun)
+                        if _own_drun is not None else None
+                    )
+                    _own = run_owner_routed_reconcile_round(
+                        reader_verdict=_reader_verdict,
+                        bodies={
+                            "long": draft.horizon_long_md or "",
+                            "medium": draft.horizon_medium_md or "",
+                            "short": draft.horizon_short_md or "",
+                        },
+                        graph=_own_graph,
+                        proposer=RealRemediationProposer(user_id=user_id),
+                        resolved=_own_resolved,
+                    )
+                    # Persist the surgically-corrected bodies in place so the next
+                    # assemble re-reads the reconciled prose (one commit; no graph
+                    # write, so there is no partial-state hazard).
+                    if _own.prose_edits:
+                        draft.horizon_long_md = _own.bodies["long"]
+                        draft.horizon_medium_md = _own.bodies["medium"]
+                        draft.horizon_short_md = _own.bodies["short"]
+                        session.commit()
+                    _pkg._record_phase_completion(
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        phase_n=57, started_at=_own_started,
+                        phase_output=(
+                            f"owner_routed: {len(_own.prose_edits)} prose edits, "
+                            f"{len(_own.value_change_requests)} figure changes surfaced, "
+                            f"{len(_own.declines)} declines, "
+                            f"{len(_own.unaddressed)} unaddressed, {len(_own.unowned)} unowned"
+                        ),
+                        agent_report_rows=[],
+                    )
+                    if _own.made_progress:
+                        _reader_verdict, _reader_row = _assemble_and_read()
+                        # Iterate (or exit clean): the while condition re-checks BLOCK
+                        # and the round bound; never fall through to a full re-synth
+                        # while the owner path is still making targeted prose progress.
+                        continue
+                    # No body progress (only declines / surfaced figure changes /
+                    # unowned) — fall through to the generic fallback below.
+                    log.warning(
+                        "plan_synthesis.owner_routed_no_progress",
+                        user_id=user_id, decision_run_id=decision_run_id,
+                        round=_reader_round, figure_changes=len(_own.value_change_requests),
+                        unaddressed=len(_own.unaddressed), unowned=len(_own.unowned),
+                        declines=len(_own.declines),
+                    )
+                except Exception as exc:  # noqa: BLE001 — rollback + fall through
+                    # A failed/partial transaction would poison the fallback path's
+                    # session — roll back before continuing to the safety net.
+                    try:
+                        session.rollback()
+                    except Exception:  # noqa: BLE001 — best-effort
+                        pass
+                    log.warning(
+                        "plan_synthesis.owner_routed_failed",
+                        user_id=user_id, decision_run_id=decision_run_id, error=str(exc),
+                    )
             # COHERENCE-DELIBERATION reconcile (default OFF — set
             # ARGOSY_COHERENCE_DELIBERATION=1 to enable). Replaces the surgical
             # closer + full re-synth for this round: cluster the reader's BLOCKER
