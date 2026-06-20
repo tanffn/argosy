@@ -842,6 +842,20 @@ def _pending_label() -> str:
     return "[derivation pending]"
 
 
+def _canonical_crossing_cell(fi_crossing_rv, fallback: str) -> str:
+    """Render the FI-crossing-year table cell from the ONE canonical
+    ``retirement.fi_crossing_year`` figure when resolved, else the local-compute
+    ``fallback``. Single-sourcing: the table can't disagree with the body/anchor
+    about the crossing year (kills the 2026-vs-2027 drift)."""
+    if (
+        fi_crossing_rv is not None
+        and getattr(fi_crossing_rv, "status", None) == "resolved"
+        and getattr(fi_crossing_rv, "value", None) is not None
+    ):
+        return f"{int(fi_crossing_rv.value)}"
+    return fallback
+
+
 def _fmt_nis_m(rv) -> str:
     """Format a resolver NIS value in ₪M, or the pending label."""
     if rv is None or rv.status != "resolved" or rv.value is None:
@@ -1121,10 +1135,18 @@ def render_trajectory_reconciliation_appendix(
         f"{year_of(n_to_fi)} | `retirement.fi_target_nis` "
         f"({fi_target.source_locator}) |"
     )
+    # The FULL-sufficiency crossing renders from the ONE canonical
+    # retirement.fi_crossing_year (reconciled with the FI margin), NOT a local
+    # years_to() recompute — two implementations of the same crossing drifted
+    # (table said 2026 while the body/anchor say 2027), the exact "second copy of
+    # a number" the registry exists to kill. Fall back to the local compute only
+    # if the canonical figure is unresolved.
+    fi_crossing = resolved.get("retirement.fi_crossing_year")
+    total_crossed_at = _canonical_crossing_cell(fi_crossing, year_of(n_to_total))
     lines.append(
         f"| FI total capital (base + reserve) — full sufficiency | "
-        f"{_fmt_nis_m(fi_total).lstrip('₪')} | {year_of(n_to_total)} | "
-        f"`retirement.fi_total_capital_nis` |"
+        f"{_fmt_nis_m(fi_total).lstrip('₪')} | {total_crossed_at} | "
+        f"`retirement.fi_crossing_year` (reconciled) / `retirement.fi_total_capital_nis` |"
     )
     lines.append("")
     # Honest reconciliation on the LIQUID basis (spendable capital, excl. real estate) —

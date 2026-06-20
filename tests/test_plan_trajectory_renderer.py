@@ -245,3 +245,38 @@ def test_no_decision_run_id_returns_empty(session):
         session=session, user_id="ariel", decision_run_id=None
     )
     assert md == ""
+
+
+def test_canonical_crossing_cell_prefers_resolved_else_fallback():
+    """The crossing cell renders the canonical fi_crossing_year when resolved,
+    else the local-compute fallback (Phase 2c — kills the 2026-vs-2027 drift)."""
+    from argosy.orchestrator.flows.plan_synthesis.render import _canonical_crossing_cell
+
+    class _RV:
+        def __init__(self, v, s):
+            self.value, self.status = v, s
+
+    assert _canonical_crossing_cell(_RV(2027.0, "resolved"), "2026") == "2027"
+    assert _canonical_crossing_cell(_RV(None, "pending"), "2026") == "2026"
+    assert _canonical_crossing_cell(None, "2029") == "2029"
+
+
+def test_full_sufficiency_crossing_renders_canonical_fi_crossing_year(session):
+    """The full-sufficiency crossing cell renders the ONE canonical
+    retirement.fi_crossing_year (reconciled), not a local years_to recompute that
+    can drift (the live pv58 reader BLOCKER: table '2026' vs body/anchor)."""
+    _seed_all(session)
+    from argosy.services.plan_numeric_resolver import resolve_plan_numbers
+
+    resolved = resolve_plan_numbers(session, user_id="ariel", decision_run_id=DRUN)
+    fc = resolved.get("retirement.fi_crossing_year")
+    md = render_trajectory_reconciliation_appendix(
+        session=session, user_id="ariel", decision_run_id=DRUN
+    )
+    assert "retirement.fi_crossing_year" in md  # canonical source cited
+    if fc is not None and fc.status == "resolved" and fc.value is not None:
+        yr = str(int(fc.value))
+        row = [ln for ln in md.splitlines() if "full sufficiency" in ln]
+        assert row and yr in row[0], (
+            f"full-sufficiency row {row} must show the canonical crossing year {yr}"
+        )
