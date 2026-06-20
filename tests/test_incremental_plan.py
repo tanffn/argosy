@@ -419,3 +419,49 @@ def test_build_base_graph_drops_contradictory_crossing_to_pending_seed():
     assert graph.get(FI_CROSSING_YEAR_NODE).value == 0.0
     assert "not reached" in graph.get("surface:fi_crossing_statement").value.lower()
     assert "beyond horizon" in graph.get("surface:dashboard.fi_crossing_tile").value.lower()
+
+
+class _RecordingParticipants:
+    """Records which node keys reached the owner (peer_round), then concedes."""
+
+    def __init__(self):
+        self.peer_calls = []
+
+    def peer_round(self, *, change, prior_turns, round):
+        self.peer_calls.append(change.target_node_key)
+        return PeerVerdict.B_CONCEDES, "ack"
+
+    def arbiter(self, *, change, prior_turns):  # pragma: no cover - not reached
+        return ArbiterClass.EVIDENCE_RESOLVABLE, "n/a", False
+
+
+def test_reader_objection_routes_to_owner_via_cycle():
+    """End-to-end Phase 3b glue: a reader BLOCK finding -> owner-targeted OBJECTION
+    change-request -> run_incremental_cycle -> the OWNER (ladder peer_round) sees
+    the finding's target node. The reader no longer vetoes the monolith; its
+    finding routes to the accountable owner."""
+    from argosy.quality.finding_router import findings_to_change_requests
+    from argosy.orchestrator.flows.plan_synthesis.whole_artifact_reader import (
+        CoherenceFinding, WholeArtifactVerdict,
+    )
+
+    session = _make_session()
+    rid = _seed_plan(session)
+    verdict = WholeArtifactVerdict(overall_assessment="BLOCK", findings=[
+        CoherenceFinding(
+            kind="contradiction", severity="BLOCKER",
+            detail="headline age 46 vs withdrawal funds spend through 48",
+            surfaces_cited=["age 46", "through 48"],
+            subject_type="retirement_age_headline"),
+    ])
+    figure_crs, prose_routed, unroutable = findings_to_change_requests(verdict)
+    assert len(figure_crs) == 1 and not prose_routed and not unroutable
+
+    rec = _RecordingParticipants()
+    run_incremental_cycle(
+        session, user_id=USER_ID, decision_run_id=rid,
+        change_requests=figure_crs, participants=rec, persist=False,
+        resolver_values=_canonical_values(margin=-250_000.0, age=47),
+    )
+    # The objection reached the accountable owner via the ladder.
+    assert "retirement.earliest_safe_age" in rec.peer_calls

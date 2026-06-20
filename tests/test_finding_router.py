@@ -12,6 +12,7 @@ from argosy.quality.live_surfaces import CANONICAL_SUBJECT_NODE
 from argosy.quality.finding_router import (
     RoutedFinding,
     SUBJECT_OWNER_FALLBACK,
+    findings_to_change_requests,
     route_finding,
     route_verdict,
     subject_owner,
@@ -124,3 +125,37 @@ def test_objection_change_request_routes_to_owner_not_rejected():
                     inputs=("x",), recipe=lambda i: i["x"], compute_version="v1"))
     owners = OwnershipMap(g)
     assert adjudicate(cr, owners).disposition is Disposition.NEEDS_LADDER
+
+
+def test_findings_to_change_requests_splits_three_ways():
+    """A reader verdict splits into figure change-requests (for the cycle),
+    prose-routed findings (for surgical reconcile), and unroutable (surfaced)."""
+    verdict = WholeArtifactVerdict(overall_assessment="BLOCK", findings=[
+        _f("fi_capital_sufficiency"),    # figure -> change-request
+        _f("retirement_age_headline"),   # figure -> change-request
+        _f("tranche_execution_gate"),    # prose/policy -> prose_routed (no node)
+        _f("sgln_ucits_membership"),     # prose/policy -> prose_routed
+        _f("mystery"),                   # unroutable
+        _f("net_worth_liquid", sev="YELLOW"),  # filtered out (default BLOCKER-only)
+    ])
+    figure_crs, prose_routed, unroutable = findings_to_change_requests(verdict)
+    assert {cr.target_node_key for cr in figure_crs} == {
+        "retirement.fi_margin_signed_nis", "retirement.earliest_safe_age",
+    }
+    assert all(cr.kind is ChangeKind.OBJECTION for cr in figure_crs)
+    assert {r.subject_type for r in prose_routed} == {
+        "tranche_execution_gate", "sgln_ucits_membership",
+    }
+    assert all(r.target_node_key is None for r in prose_routed)
+    assert [f.subject_type for f in unroutable] == ["mystery"]
+
+
+def test_findings_to_change_requests_severity_filter():
+    verdict = WholeArtifactVerdict(overall_assessment="BLOCK", findings=[
+        _f("fi_capital_sufficiency", sev="YELLOW"),
+    ])
+    # default BLOCKER-only -> nothing; widen severities -> the YELLOW figure routes
+    assert findings_to_change_requests(verdict) == ([], [], [])
+    figure_crs, _, _ = findings_to_change_requests(
+        verdict, severities=("BLOCKER", "AMBER", "YELLOW"))
+    assert len(figure_crs) == 1

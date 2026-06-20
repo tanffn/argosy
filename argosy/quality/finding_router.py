@@ -148,6 +148,38 @@ def to_change_request(routed: "RoutedFinding | None") -> ChangeRequest | None:
     )
 
 
+def findings_to_change_requests(
+    verdict, *, severities: tuple[str, ...] = ("BLOCKER",),
+):
+    """Turn a reader verdict into the inputs the remediation loop needs, split
+    THREE ways by how each finding is fixed:
+
+      * ``figure_crs``    — ChangeRequest(OBJECTION) for findings that target a
+                            single canonical figure node; fed to
+                            ``run_incremental_cycle(change_requests=...)`` so the
+                            cycle routes each to its owner via the ladder and
+                            recomputes only the blast radius (never regenerates).
+      * ``prose_routed``  — RoutedFindings that have an owner but NO single figure
+                            node (instrument membership, execution-gate, vest
+                            policy); the owner fixes the PROSE via the surgical
+                            reconcile editor, not a one-node graph edit.
+      * ``unroutable``    — findings with no routable subject (empty/unknown
+                            subject_type); surfaced, never silently dropped.
+
+    Only findings whose severity is in ``severities`` are considered (default:
+    BLOCKER — the promotion-blocking set)."""
+    routed, unroutable = route_verdict(verdict, severities=severities)
+    figure_crs: list[ChangeRequest] = []
+    prose_routed: list[RoutedFinding] = []
+    for r in routed:
+        cr = to_change_request(r)
+        if cr is not None:
+            figure_crs.append(cr)
+        else:
+            prose_routed.append(r)
+    return figure_crs, prose_routed, unroutable
+
+
 __all__ = [
     "SUBJECT_OWNER_FALLBACK",
     "RoutedFinding",
@@ -156,4 +188,5 @@ __all__ = [
     "route_finding",
     "route_verdict",
     "to_change_request",
+    "findings_to_change_requests",
 ]
