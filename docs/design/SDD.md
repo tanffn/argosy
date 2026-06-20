@@ -594,6 +594,136 @@ Default model per agent role is configurable; user can override at any layer.
 
 Set `models.override: {all: opus}` in `agent_settings.yaml` for quality-first regardless of cost; or override per-role.
 
+### 3.9 The advisory firm — collaboration & convergence
+
+The decision-pipeline fleet (§3.1–§3.5) trades a position. The **plan-synthesis firm** authors the *living plan* — and it is organized as a real advisory firm: **one accountable owner per figure**, every surface rendered from a **canonical registry**, and reviewers that **route** findings to owners rather than rewriting the document. This is what makes the plan coherent by construction and able to *converge* instead of being regenerated from scratch each cycle.
+
+Three diagrams below capture how the roles collaborate toward the goal — including how disagreement is handled (rejects, escalations, the codex zigzag). Each has a PNG render embedded (canonical), the draw.io source (editable), and a Mermaid fallback for environments that do not show the PNG.
+
+#### 3.9.1 Roles & the convergence loop
+
+![Advisory firm — roles & convergence loop](diagrams/17-advisory-firm-collaboration.png)
+
+*Source: [17-advisory-firm-collaboration.drawio](diagrams/17-advisory-firm-collaboration.drawio) — open in draw.io to edit.*
+
+```mermaid
+flowchart LR
+  GOAL["THE GOAL — maximize finances & earliest SAFE retirement"]:::goal
+  subgraph FIRM["THE FIRM — per-figure owners"]
+    LEAD["Lead Planner (integrates / catch-all)"]
+    BS["Balance-Sheet — net-worth bases · FX"]
+    CF["Cash-Flow — spend · savings · FI basis"]
+    RET["Retirement-FI — FI target/margin/crossing · ages · SWR"]
+    INV["Investment — allocation · NVDA · instruments"]
+    TAX["Tax — RSU retention · Section-102"]
+    EST["Estate — US-situs"]
+    EQ["Equity-Comp — RSU vest policy"]
+  end
+  REG["CANONICAL FIGURE REGISTRY — one validated value per figure"]:::reg
+  subgraph GATES["GATES & REVIEW (route, never rewrite)"]
+    CODEX["Codex numeric gate — blind re-derivation"]:::gate
+    READER["Whole-artifact Reader / Compliance"]:::gate
+    ROUTER["Finding Router — subject_type → owner"]:::route
+    FM["Fund Manager / Committee — authority + arbiter"]:::ok
+    PUB["Publish gate (fail-closed)"]:::ok
+  end
+  PLAN["THE LIVING PLAN — /plan · /portfolio · /retirement (pure projections)"]:::ok
+  USER["USER — sets goals · final gate"]:::goal
+
+  GOAL --- USER
+  FIRM -->|write figures| REG
+  REG --> GATES
+  ROUTER -.->|route findings back: targeted fix, never regenerate| FIRM
+  REG -->|render| PLAN
+  PUB -->|promote| PLAN
+  FM -->|escalate: values / irreversible| USER
+  classDef goal fill:#FFF7D6,stroke:#C9A227;
+  classDef reg fill:#EDE7F6,stroke:#7E57C2;
+  classDef gate fill:#FFE6E6,stroke:#E27474;
+  classDef route fill:#FFF4E6,stroke:#E2A674;
+  classDef ok fill:#E6FFE6,stroke:#43A047;
+```
+
+#### 3.9.2 Convergence: reject → route → remediate → re-read
+
+A reader BLOCK is a *set of findings*, each owned by one role. The fix is **targeted** (recompute a finding's blast radius / edit its cited span), never a whole-document regeneration. Strategies run in precedence order: **owner-routed** (default) → opt-in deliberation/surgical → full-resynth fallback (the safety net). Key rule: a **decline** keeps the figure, but a real **contradiction** still gets its prose reconciled — *decline ≠ leave the conflict*.
+
+![Convergence: reject → route → remediate → re-read](diagrams/18-reconcile-convergence-loop.png)
+
+*Source: [18-reconcile-convergence-loop.drawio](diagrams/18-reconcile-convergence-loop.drawio) — open in draw.io to edit.*
+
+```mermaid
+flowchart TD
+  SYN["Synthesizer drafts plan → assemble artifact"]:::blue
+  RD["Whole-artifact Reader"]:::red
+  Q{"assessment?"}:::route
+  OK["APPROVE / APPROVE_WITH_CONDITIONS → publish (fail-closed)"]:::ok
+  SYN --> RD --> Q
+  Q -->|APPROVE| OK
+  Q -->|BLOCK| ROUTER["Finding Router (3-way split)"]:::route
+  ROUTER -->|figure| OWN["Owner remediation"]:::blue
+  ROUTER -->|prose-routed| EDIT
+  ROUTER -->|unroutable + surface| EDIT
+  OWN -->|set_value| SURF["surfaced for full re-synth (not applied here)"]:::red
+  OWN -->|prose_fix| EDIT["Surgical prose editor — cited span only, no new numbers"]:::ok
+  OWN -->|decline| DK{"contradiction / cross_surface?"}:::route
+  DK -->|yes| EDIT
+  DK -->|"no (fragile/other)"| LEAVE["respect the owner — leave as-is"]:::red
+  EDIT --> PROG{"made progress? (prose spliced)"}:::route
+  PROG -->|yes| RR["RE-READ (loop while round < bound & BLOCK)"]:::red
+  PROG -->|no| FB["Full re-synth fallback (safety net)"]:::orange
+  FB --> RR
+  RR -->|now APPROVE| OK
+  RR -->|bound reached & still BLOCK| FAIL["FAIL-CLOSED — FM rejected, not promotable"]:::red
+  classDef blue fill:#E6F3FF,stroke:#4A90E2;
+  classDef red fill:#FFE6E6,stroke:#E27474;
+  classDef route fill:#FFF4E6,stroke:#E2A674;
+  classDef ok fill:#E6FFE6,stroke:#43A047;
+  classDef orange fill:#FFF3E0,stroke:#FB8C00;
+```
+
+#### 3.9.3 Disagreement resolution — negotiation ladder & codex zigzag
+
+Agents settle disputes between themselves first; only a genuine values/irreversible call reaches the user. The **negotiation ladder** resolves a change-request against an owned figure (owner A ⇄ peer B → FM arbiter → user). The **codex zigzag** catches a wrong number (or wrong code) by independent blind re-derivation — the reviewer re-derives from raw inputs, it does not ratify the author's logic.
+
+![Disagreement resolution — negotiation ladder & codex zigzag](diagrams/19-ladder-and-zigzag.png)
+
+*Source: [19-ladder-and-zigzag.drawio](diagrams/19-ladder-and-zigzag.drawio) — open in draw.io to edit.*
+
+```mermaid
+flowchart TD
+  subgraph LADDER["A · Negotiation ladder"]
+    CR["Change request (OBJECTION) on a figure"]:::route
+    OA["Owner A defends (grounded in derivation)"]:::blue
+    OB["Counterparty B (objecting peer)"]:::red
+    OA <--> OB
+    OV{"owner verdict?"}:::route
+    CR --> OA --> OV
+    OV -->|ACCEPT_CHANGE| AP["APPLY (recompute blast radius)"]:::ok
+    OV -->|REJECT / UNRESOLVED| ARB["Arbiter = Fund Manager"]:::purple
+    ARB --> AV{"ruling?"}:::purple
+    AV -->|ARBITER_RULED| AP
+    AV -->|ARBITER_REJECTED| KEEP["keep current → REJECT"]:::red
+    AV -->|ESCALATE_TO_USER| U["USER decides (values / irreversible)"]:::goal
+  end
+  subgraph ZZ["B · Codex zigzag"]
+    CL["Claude proposes a figure/claim (or a diff)"]:::blue
+    CX["Codex re-derives BLIND from raw inputs"]:::red
+    CL --> CX --> AG{"agree?"}:::route
+    AG -->|yes| PASS["adopt / PASS the gate"]:::ok
+    AG -->|no| REB["bounded rebuttal round (Claude ⇄ Codex)"]:::route
+    REB --> CV{"converged in bound?"}:::route
+    CV -->|yes| ADOPT["adopt corrected value (real error fixed)"]:::ok
+    CV -->|no| BLK["BLOCK (fail-closed) / escalate"]:::red
+  end
+  classDef blue fill:#E6F3FF,stroke:#4A90E2;
+  classDef red fill:#FFE6E6,stroke:#E27474;
+  classDef route fill:#FFF4E6,stroke:#E2A674;
+  classDef purple fill:#EDE7F6,stroke:#7E57C2;
+  classDef ok fill:#E6FFE6,stroke:#43A047;
+  classDef goal fill:#FFF7D6,stroke:#C9A227;
+```
+
 ---
 
 ## 4. Decision Tiers & Cross-Checks
@@ -3969,7 +4099,7 @@ solely on Tier 3+.
 
 ## Appendix C: Diagram Sources
 
-The 17 drawio source files committed alongside this SDD, each with a pre-rendered PNG export beside it (PNGs are produced by `docs/tools/drawio_export.py`):
+The 20 drawio source files committed alongside this SDD, each with a pre-rendered PNG export beside it (PNGs are produced by `docs/tools/drawio_export.py`):
 
 | # | Diagram | Source (`docs/design/diagrams/`) | Render | SDD anchor |
 |---|---|---|---|---|
@@ -3990,6 +4120,9 @@ The 17 drawio source files committed alongside this SDD, each with a pre-rendere
 | 14 | Argonaut limited-acct autonomy | `14-argonaut-autonomy.drawio` | `14-argonaut-autonomy.png` | §13 (Phase 5) |
 | 15 | Cost cap & pause flow | `15-cost-cap-pause-flow.drawio` | `15-cost-cap-pause-flow.png` | §14.7 |
 | 16 | Data layer ER schema (8 logical groups) | `16-data-layer-schema.drawio` | `16-data-layer-schema.png` | §8.1 |
+| 17 | Advisory firm — roles & convergence loop | `17-advisory-firm-collaboration.drawio` | `17-advisory-firm-collaboration.png` | §3.9.1 |
+| 18 | Reconcile convergence loop (reject → route → remediate → re-read) | `18-reconcile-convergence-loop.drawio` | `18-reconcile-convergence-loop.png` | §3.9.2 |
+| 19 | Negotiation ladder & codex zigzag (rejects / escalations) | `19-ladder-and-zigzag.drawio` | `19-ladder-and-zigzag.png` | §3.9.3 |
 
 Re-rendering: from `ARGOSY_HOME` run
 

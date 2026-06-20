@@ -1,0 +1,139 @@
+<mxfile host="app.diagrams.net" modified="2026-06-20">
+  <diagram id="argosy-firm" name="Advisory Firm Collaboration">
+    <mxGraphModel dx="1422" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1180">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — The Advisory Firm: roles, collaboration, and the convergence loop" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="350" y="16" width="1000" height="34" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="One accountable OWNER per figure · every surface renders from the canonical registry · reviewers ROUTE findings to owners, never rewrite · the plan is coherent by construction" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="250" y="50" width="1200" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- THE GOAL -->
+        <mxCell id="goal" value="THE GOAL  —  maximize the family's financial position &amp; secure the earliest SAFE retirement&#10;(&quot;retire from work, not from life&quot;).  Every owner, gate, and default is subordinate to this." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7D6;strokeColor=#C9A227;strokeWidth=2;fontColor=#000000;fontFamily=Calibri;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="84" width="940" height="48" as="geometry"/>
+        </mxCell>
+
+        <!-- THE FIRM: owner roster -->
+        <mxCell id="swim_firm" value="THE FIRM — per-figure owners (each role owns a slice of the plan and is accountable for its figures)" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="156" width="780" height="430" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_lead" value="Lead Planner  [Opus]&#10;integrates the whole · catch-all owner&#10;for anything un-routed" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCECFF;strokeColor=#4A90E2;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_firm">
+          <mxGeometry x="20" y="40" width="360" height="46" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_bs" value="Balance-Sheet&#10;net-worth bases (liquid / investable / total) · FX" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_firm">
+          <mxGeometry x="20" y="96" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_cf" value="Cash-Flow&#10;spend · savings · FI spend basis (permanent-equiv)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_firm">
+          <mxGeometry x="20" y="150" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_ret" value="Retirement-FI&#10;FI target / margin / crossing-year · ages · SWR" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_firm">
+          <mxGeometry x="20" y="204" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_inv" value="Investment&#10;allocation · NVDA concentration &amp; pace · instruments (UCITS)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_firm">
+          <mxGeometry x="20" y="258" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_tax" value="Tax&#10;RSU retention (at-vest / capital-track) · Section-102 lots" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_firm">
+          <mxGeometry x="20" y="312" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_est" value="Estate&#10;US-situs estate exposure" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_firm">
+          <mxGeometry x="400" y="96" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_eq" value="Equity-Comp&#10;RSU vest policy (sell-at-vest)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_firm">
+          <mxGeometry x="400" y="150" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_note" value="owner_for(figure_id) resolves the accountable role&#10;(figure_registry.OWNER_MAP + prefix rules; un-owned → Lead, flagged)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0F7FF;strokeColor=#9CC3EF;dashed=1;fontFamily=Calibri;fontSize=9;fontStyle=2;fontColor=#33567f;" vertex="1" parent="swim_firm">
+          <mxGeometry x="400" y="204" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_consult" value="Consult edges: Investment ⇄ Tax ⇄ Retirement-FI&#10;on the NVDA cap (cross-owner sign-off)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0F7FF;strokeColor=#9CC3EF;dashed=1;fontFamily=Calibri;fontSize=9;fontStyle=2;fontColor=#33567f;" vertex="1" parent="swim_firm">
+          <mxGeometry x="400" y="258" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="o_resolver" value="Deterministic resolver computes each figure ONCE from raw data&#10;(plan_numeric_resolver); owners reason over it, never re-type numbers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0F7FF;strokeColor=#9CC3EF;dashed=1;fontFamily=Calibri;fontSize=9;fontStyle=2;fontColor=#33567f;" vertex="1" parent="swim_firm">
+          <mxGeometry x="400" y="312" width="360" height="44" as="geometry"/>
+        </mxCell>
+
+        <!-- CANONICAL REGISTRY -->
+        <mxCell id="registry" value="CANONICAL FIGURE REGISTRY&#10;&#10;one validated value per figure&#10;(value · owner · basis · evidence&#10;· materiality · status)&#10;&#10;EVERY surface renders&#10;from here — no surface&#10;holds its own number" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EDE7F6;strokeColor=#7E57C2;strokeWidth=2;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="860" y="200" width="220" height="240" as="geometry"/>
+        </mxCell>
+
+        <!-- GATES / REVIEW -->
+        <mxCell id="swim_gates" value="GATES &amp; REVIEW — compliance is orthogonal: it ROUTES, never rewrites" style="swimlane;fontFamily=Calibri;fontSize=12;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;startSize=28;rounded=1;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="156" width="540" height="430" as="geometry"/>
+        </mxCell>
+        <mxCell id="g_codex" value="Codex numeric gate  [GPT-5 · independent]&#10;blind-re-derives material figures from RAW data&#10;BLOCK on divergence (zigzag → see 19)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0E0;strokeColor=#E27474;strokeWidth=1.5;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_gates">
+          <mxGeometry x="20" y="44" width="500" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="g_reader" value="Whole-artifact Reader / Compliance  [Opus + Codex]&#10;reads the WHOLE assembled plan blind to the synthesis logic;&#10;flags contradictions · fragile claims · staleness · regressions&#10;→ emits findings, each tagged with a subject_type" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE0E0;strokeColor=#E27474;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_gates">
+          <mxGeometry x="20" y="112" width="500" height="74" as="geometry"/>
+        </mxCell>
+        <mxCell id="g_router" value="Finding Router&#10;subject_type → OWNER (+ target figure node)&#10;3-way split: figure objection · prose-routed · unroutable" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_gates">
+          <mxGeometry x="20" y="198" width="500" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="g_fm" value="Fund Manager / Committee  [Opus]&#10;final authority + arbiter of cross-owner impasses;&#10;clears or holds the publish gate (can_publish_plan)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="swim_gates">
+          <mxGeometry x="20" y="266" width="500" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="g_publish" value="PUBLISH GATE (fail-closed)&#10;promote only when authorities clear AND no open coherence flag" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=1.5;dashed=1;fontFamily=Calibri;fontSize=10;" vertex="1" parent="swim_gates">
+          <mxGeometry x="20" y="334" width="500" height="44" as="geometry"/>
+        </mxCell>
+
+        <!-- THE PLAN + USER -->
+        <mxCell id="plan" value="THE LIVING PLAN&#10;policy · instrument-level target · transition · glide · thesis/holding · monitoring&#10;/plan · /portfolio · /retirement — all pure projections of the registry" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;strokeWidth=2;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="640" width="940" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="user" value="USER (Ariel)&#10;sets GOALS · the final gate&#10;(explicit, audit-logged)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7D6;strokeColor=#C9A227;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="1400" y="636" width="240" height="64" as="geometry"/>
+        </mxCell>
+
+        <!-- EDGES -->
+        <mxCell id="e_firm_reg" value="owners write&#10;figures" style="endArrow=classic;html=1;rounded=1;strokeColor=#7E57C2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#5e3aa0;" edge="1" parent="1" source="swim_firm" target="registry">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_reg_gates" value="surfaces + figures&#10;handed to review" style="endArrow=classic;html=1;rounded=1;strokeColor=#7E57C2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#5e3aa0;" edge="1" parent="1" source="registry" target="swim_gates">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_router_firm" value="ROUTE findings back to owners&#10;(reject → targeted fix, never regenerate)" style="endArrow=classic;html=1;rounded=1;strokeColor=#E2A674;strokeWidth=2.5;edgeStyle=orthogonalEdgeStyle;dashed=1;fontFamily=Calibri;fontSize=10;fontStyle=1;fontColor=#9c5a1e;" edge="1" parent="1" source="g_router" target="swim_firm">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1390" y="410"/>
+              <mxPoint x="1390" y="120"/>
+              <mxPoint x="430" y="120"/>
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e_reg_plan" value="render" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#2e7d32;" edge="1" parent="1" source="registry" target="plan">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_publish_plan" value="promote" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#2e7d32;" edge="1" parent="1" source="g_publish" target="plan">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_fm_user" value="ESCALATE&#10;(values / irreversible call)" style="endArrow=classic;html=1;rounded=1;strokeColor=#C9A227;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontStyle=1;fontColor=#8a6d1a;" edge="1" parent="1" source="g_fm" target="user">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="e_goal_user" style="endArrow=none;html=1;rounded=1;strokeColor=#C9A227;strokeWidth=1.5;dashed=1;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="goal" target="user">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- LEGEND -->
+        <mxCell id="legend" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="740" width="1280" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="lg1" value="" style="rounded=1;fillColor=#E6F3FF;strokeColor=#4A90E2;" vertex="1" parent="legend"><mxGeometry x="20" y="34" width="20" height="14" as="geometry"/></mxCell>
+        <mxCell id="lg1l" value="Owner role (writes figures)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend"><mxGeometry x="46" y="30" width="200" height="20" as="geometry"/></mxCell>
+        <mxCell id="lg2" value="" style="rounded=1;fillColor=#EDE7F6;strokeColor=#7E57C2;" vertex="1" parent="legend"><mxGeometry x="270" y="34" width="20" height="14" as="geometry"/></mxCell>
+        <mxCell id="lg2l" value="Canonical registry (single source)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend"><mxGeometry x="296" y="30" width="230" height="20" as="geometry"/></mxCell>
+        <mxCell id="lg3" value="" style="rounded=1;fillColor=#FFE6E6;strokeColor=#E27474;" vertex="1" parent="legend"><mxGeometry x="540" y="34" width="20" height="14" as="geometry"/></mxCell>
+        <mxCell id="lg3l" value="Gate / reviewer (routes, never rewrites)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend"><mxGeometry x="566" y="30" width="260" height="20" as="geometry"/></mxCell>
+        <mxCell id="lg4" value="" style="rounded=1;fillColor=#E6FFE6;strokeColor=#74E274;" vertex="1" parent="legend"><mxGeometry x="840" y="34" width="20" height="14" as="geometry"/></mxCell>
+        <mxCell id="lg4l" value="Authority / publish (positive)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend"><mxGeometry x="866" y="30" width="200" height="20" as="geometry"/></mxCell>
+        <mxCell id="lg5" value="" style="rounded=1;fillColor=#FFF7D6;strokeColor=#C9A227;" vertex="1" parent="legend"><mxGeometry x="1070" y="34" width="20" height="14" as="geometry"/></mxCell>
+        <mxCell id="lg5l" value="Goal / user (sets goals, final gate)" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend"><mxGeometry x="1096" y="30" width="180" height="20" as="geometry"/></mxCell>
+        <mxCell id="lg6l" value="Orange dashed = ROUTE/reject feedback  ·  Gold = ESCALATE to user  ·  Purple = render-from-registry path" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend"><mxGeometry x="20" y="58" width="1240" height="20" as="geometry"/></mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,148 @@
+<mxfile host="app.diagrams.net" modified="2026-06-20">
+  <diagram id="argosy-reconcile" name="Reconcile Convergence Loop">
+    <mxGraphModel dx="1422" dy="820" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1260">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Convergence: reject → route → remediate → re-read" style="text;html=1;strokeColor=none;fillColor=none;align=center;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="450" y="16" width="800" height="34" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="A reader BLOCK is a SET of findings, each owned by one role. Fix is TARGETED (recompute a finding's blast radius / edit its cited span) — never a whole-document regeneration. That is what lets the plan converge." style="text;html=1;strokeColor=none;fillColor=none;align=center;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="250" y="50" width="1200" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- Generation -->
+        <mxCell id="synth" value="Synthesizer drafts the plan&#10;(from analyst reports + debates)&#10;→ assemble full artifact" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="80" y="100" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="reader" value="Whole-artifact Reader&#10;reviews the assembled plan&#10;against the canonical anchor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="100" width="240" height="64" as="geometry"/>
+        </mxCell>
+        <mxCell id="dec_block" value="overall&#10;assessment?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="720" y="98" width="150" height="68" as="geometry"/>
+        </mxCell>
+        <mxCell id="approve" value="APPROVE /&#10;APPROVE_WITH_CONDITIONS&#10;→ publish gate (fail-closed)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="960" y="100" width="260" height="64" as="geometry"/>
+        </mxCell>
+
+        <!-- RECONCILE LOOP container -->
+        <mxCell id="loop" value="RECONCILE LOOP on BLOCK — bounded N rounds (ARGOSY_READER_RECONCILE_MAX_ROUNDS), fail-closed; strategies in precedence order" style="swimlane;whiteSpace=wrap;html=1;fillColor=#F7FAFF;strokeColor=#4A90E2;strokeWidth=2;startSize=30;rounded=1;fontFamily=Calibri;fontSize=12;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="80" y="230" width="1540" height="640" as="geometry"/>
+        </mxCell>
+
+        <!-- (1) owner-routed -->
+        <mxCell id="own_hdr" value="(1) OWNER-ROUTED  [default ON]" style="text;html=1;align=left;fontFamily=Calibri;fontSize=12;fontStyle=1;fontColor=#1f5fa8;" vertex="1" parent="loop">
+          <mxGeometry x="20" y="36" width="400" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="router" value="Finding Router — for each BLOCKER, subject_type → owner&#10;3-way split" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="loop">
+          <mxGeometry x="20" y="60" width="300" height="56" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="fig" value="FIGURE objection&#10;(targets one canonical figure node)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="loop">
+          <mxGeometry x="20" y="150" width="300" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="proutd" value="PROSE-routed&#10;(owner, but no single figure node)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="loop">
+          <mxGeometry x="20" y="208" width="300" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="unrt" value="UNROUTABLE (empty/unknown subject)&#10;w/ surface → Lead catch-all · no surface → UNOWNED (surfaced, fail-loud)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;dashed=1;fontFamily=Calibri;fontSize=10;" vertex="1" parent="loop">
+          <mxGeometry x="20" y="266" width="300" height="48" as="geometry"/>
+        </mxCell>
+
+        <!-- owner remediation -->
+        <mxCell id="owner" value="OWNER proposes a targeted remediation&#10;(OwnerRemediationAgent · Opus · grounded in the node's derivation)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCECFF;strokeColor=#4A90E2;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="loop">
+          <mxGeometry x="380" y="150" width="320" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="setv" value="set_value&#10;the FIGURE is wrong" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;fontFamily=Calibri;fontSize=10;" vertex="1" parent="loop">
+          <mxGeometry x="760" y="120" width="200" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="prosef" value="prose_fix&#10;figure right, narrative drifted" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;fontFamily=Calibri;fontSize=10;" vertex="1" parent="loop">
+          <mxGeometry x="760" y="174" width="200" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="decl" value="decline&#10;the figure is correct" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;fontFamily=Calibri;fontSize=10;" vertex="1" parent="loop">
+          <mxGeometry x="760" y="228" width="200" height="44" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="surf_change" value="SURFACED for the full-resynth fallback&#10;(NOT applied as a prose edit — changing a figure without re-rendering&#10;every surface would recreate a cross-surface contradiction)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FBE9E7;strokeColor=#E27474;dashed=1;fontFamily=Calibri;fontSize=9;fontStyle=2;fontColor=#a33;" vertex="1" parent="loop">
+          <mxGeometry x="1010" y="116" width="480" height="52" as="geometry"/>
+        </mxCell>
+        <mxCell id="declkind" value="decline of a CONTRADICTION / cross_surface finding?&#10;a decline means &quot;don't change the figure&quot; — NOT &quot;leave the contradiction&quot;:&#10;the cited prose is STILL reconciled to the (kept, correct) figure.&#10;decline of fragile_claim / stale / other → respect the owner, leave as-is" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=9;fontColor=#7a4a12;" vertex="1" parent="loop">
+          <mxGeometry x="1010" y="224" width="480" height="64" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="editor" value="SURGICAL PROSE EDITOR&#10;edits ONLY the finding's cited span · forbids new numbers&#10;(can align/qualify wording, never re-fit a figure) · coalesces same-surface findings" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="loop">
+          <mxGeometry x="760" y="320" width="500" height="58" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="progress" value="made&#10;progress?&#10;(any prose edit spliced)" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="loop">
+          <mxGeometry x="1330" y="316" width="170" height="84" as="geometry"/>
+        </mxCell>
+
+        <!-- (2) alternates -->
+        <mxCell id="alt_hdr" value="(2) OPT-IN ALTERNATES — take precedence over owner-routing when enabled" style="text;html=1;align=left;fontFamily=Calibri;fontSize=12;fontStyle=1;fontColor=#1f5fa8;" vertex="1" parent="loop">
+          <mxGeometry x="20" y="430" width="600" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="delib" value="Coherence deliberation&#10;(panel → facilitator → arbitrator; ledgered rulings)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EDE7F6;strokeColor=#7E57C2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="loop">
+          <mxGeometry x="20" y="456" width="360" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="surg2" value="Surgical correction&#10;(segment-level edits to reader-cited snippets)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EDE7F6;strokeColor=#7E57C2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="loop">
+          <mxGeometry x="400" y="456" width="360" height="44" as="geometry"/>
+        </mxCell>
+
+        <!-- (3) fallback -->
+        <mxCell id="fb_hdr" value="(3) FALLBACK — the safety net" style="text;html=1;align=left;fontFamily=Calibri;fontSize=12;fontStyle=1;fontColor=#1f5fa8;" vertex="1" parent="loop">
+          <mxGeometry x="20" y="520" width="400" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="resynth" value="Full re-synth&#10;fold the finding into synthesizer guidance, regenerate the body,&#10;re-render from the single shared renderer (the from-scratch path)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#FB8C00;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="loop">
+          <mxGeometry x="20" y="544" width="740" height="52" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="reread" value="RE-READ the corrected artifact&#10;(loops while round &lt; bound AND still BLOCK)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="loop">
+          <mxGeometry x="800" y="544" width="460" height="52" as="geometry"/>
+        </mxCell>
+
+        <!-- Outcome -->
+        <mxCell id="failclosed" value="Bound reached &amp; still BLOCK → FAIL-CLOSED&#10;FM authority = rejected · draft NOT auto-promotable" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FBE9E7;strokeColor=#E27474;strokeWidth=2;fontFamily=Calibri;fontSize=11;fontStyle=1;fontColor=#a33;" vertex="1" parent="1">
+          <mxGeometry x="80" y="910" width="600" height="48" as="geometry"/>
+        </mxCell>
+
+        <!-- top-row edges -->
+        <mxCell id="e1" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="synth" target="reader"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="1" source="reader" target="dec_block"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e3" value="APPROVE" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#2e7d32;" edge="1" parent="1" source="dec_block" target="approve"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" value="BLOCK" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=2.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=10;fontStyle=1;fontColor=#a33;" edge="1" parent="1" source="dec_block" target="loop"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="795" y="210"/></Array></mxGeometry></mxCell>
+
+        <!-- loop internal edges -->
+        <mxCell id="le1" style="endArrow=classic;html=1;rounded=1;strokeColor=#E2A674;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="loop" source="router" target="fig"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le2" style="endArrow=classic;html=1;rounded=1;strokeColor=#E2A674;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="loop" source="router" target="proutd"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le3" style="endArrow=classic;html=1;rounded=1;strokeColor=#E2A674;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="loop" source="router" target="unrt"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le4" value="ask owner" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;" edge="1" parent="loop" source="fig" target="owner"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le5" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="loop" source="owner" target="setv"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le6" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="loop" source="owner" target="prosef"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le7" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="loop" source="owner" target="decl"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le8" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.2;edgeStyle=orthogonalEdgeStyle;dashed=1;" edge="1" parent="loop" source="setv" target="surf_change"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le9" value="apply" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;" edge="1" parent="loop" source="prosef" target="editor"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le10" style="endArrow=classic;html=1;rounded=1;strokeColor=#E2A674;strokeWidth=1.2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="loop" source="decl" target="declkind"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le11" value="contradiction → reconcile prose" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;dashed=1;fontFamily=Calibri;fontSize=9;fontColor=#2e7d32;" edge="1" parent="loop" source="declkind" target="editor"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le12" value="prose-fix" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=1.2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;" edge="1" parent="loop" source="proutd" target="editor"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="700" y="349"/></Array></mxGeometry></mxCell>
+        <mxCell id="le13" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="loop" source="editor" target="progress"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le14" value="yes → RE-READ" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#a33;" edge="1" parent="loop" source="progress" target="reread"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="le15" value="no progress → fall through" style="endArrow=classic;html=1;rounded=1;strokeColor=#FB8C00;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#b35e00;" edge="1" parent="loop" source="progress" target="resynth"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1415" y="620"/></Array></mxGeometry></mxCell>
+        <mxCell id="le16" style="endArrow=classic;html=1;rounded=1;strokeColor=#FB8C00;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="loop" source="resynth" target="reread"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- re-read back to decision (loop) and to fail-closed -->
+        <mxCell id="e_reread_block" value="round &lt; bound &amp; still BLOCK → next round" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;dashed=1;fontFamily=Calibri;fontSize=9;fontColor=#a33;" edge="1" parent="1" source="reread" target="router"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="60" y="826"/><mxPoint x="60" y="350"/></Array></mxGeometry></mxCell>
+        <mxCell id="e_reread_ok" value="now APPROVE → publish" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#2e7d32;" edge="1" parent="1" source="reread" target="approve"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1340" y="500"/><mxPoint x="1340" y="132"/></Array></mxGeometry></mxCell>
+        <mxCell id="e_fail" value="bound reached" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#a33;" edge="1" parent="1" source="loop" target="failclosed"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- LEGEND -->
+        <mxCell id="legend" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="740" y="910" width="880" height="74" as="geometry"/>
+        </mxCell>
+        <mxCell id="lgA" value="Blue = generation/owner · Red = review/reject · Orange = route &amp; fallback · Green = applied prose fix · Purple = opt-in alternates" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend"><mxGeometry x="16" y="30" width="850" height="20" as="geometry"/></mxCell>
+        <mxCell id="lgB" value="Key insight: a DECLINE keeps the figure but a real CONTRADICTION still gets its prose reconciled — decline ≠ leave the conflict." style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend"><mxGeometry x="16" y="50" width="850" height="20" as="geometry"/></mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

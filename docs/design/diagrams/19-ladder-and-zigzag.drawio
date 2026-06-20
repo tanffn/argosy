@@ -1,0 +1,146 @@
+<mxfile host="app.diagrams.net" modified="2026-06-20">
+  <diagram id="argosy-ladder-zigzag" name="Ladder and Zigzag">
+    <mxGraphModel dx="1422" dy="820" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1080">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <mxCell id="title" value="Argosy — Disagreement resolution: the negotiation ladder &amp; the codex zigzag" style="text;html=1;strokeColor=none;fillColor=none;align=center;whiteSpace=wrap;fontFamily=Calibri;fontSize=20;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="400" y="16" width="900" height="34" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Agents settle disputes between themselves first; only a genuine values/irreversible call escalates to the user. Every rung is bounded and fail-closed." style="text;html=1;strokeColor=none;fillColor=none;align=center;whiteSpace=wrap;fontFamily=Calibri;fontSize=12;fontStyle=2;fontColor=#555555;" vertex="1" parent="1">
+          <mxGeometry x="300" y="50" width="1100" height="20" as="geometry"/>
+        </mxCell>
+
+        <!-- ============ PANEL A : NEGOTIATION LADDER ============ -->
+        <mxCell id="panelA" value="A · NEGOTIATION LADDER — resolving a change-request against an owned figure" style="swimlane;whiteSpace=wrap;html=1;fillColor=#F7FAFF;strokeColor=#4A90E2;strokeWidth=2;startSize=30;rounded=1;fontFamily=Calibri;fontSize=13;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="90" width="780" height="900" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="cr" value="CHANGE REQUEST (OBJECTION)&#10;against a figure node — from a reviewer or a peer owner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="220" y="44" width="340" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- peer round -->
+        <mxCell id="ownerA" value="OWNER A  [Opus · PlanNodeOwnerAgent]&#10;defends/answers, grounded in the node's value + derivation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="40" y="130" width="320" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="peerB" value="COUNTERPARTY B&#10;the objecting peer / reviewer position" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="420" y="130" width="320" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="peerlbl" value="bounded A⇄B peer round (run_ladder)" style="text;html=1;align=center;fontFamily=Calibri;fontSize=9;fontStyle=2;fontColor=#666666;" vertex="1" parent="panelA">
+          <mxGeometry x="220" y="190" width="340" height="18" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ownerverdict" value="owner A verdict?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="300" y="220" width="180" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="accept" value="ACCEPT_CHANGE&#10;→ APPLY (recompute blast radius)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="40" y="320" width="300" height="46" as="geometry"/>
+        </mxCell>
+        <mxCell id="impasse" value="REJECT_CHANGE / UNRESOLVED&#10;→ impasse: the arbiter rules direction" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="440" y="320" width="300" height="46" as="geometry"/>
+        </mxCell>
+
+        <!-- arbiter -->
+        <mxCell id="arbiter" value="ARBITER = Fund Manager  [Opus · FundManagerDialogueVerdictAgent]&#10;classifies the impasse on the merits (PRIME DIRECTIVE, never parameter-fit)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EDE7F6;strokeColor=#7E57C2;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="200" y="400" width="380" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="arbverdict" value="arbiter ruling?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#EDE7F6;strokeColor=#7E57C2;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="300" y="486" width="180" height="74" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arbruled" value="ARBITER_RULED&#10;change wins → APPLY" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=1.5;fontFamily=Calibri;fontSize=10;" vertex="1" parent="panelA">
+          <mxGeometry x="20" y="600" width="220" height="46" as="geometry"/>
+        </mxCell>
+        <mxCell id="arbrej" value="ARBITER_REJECTED&#10;keep current → REJECT" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=1.5;fontFamily=Calibri;fontSize=10;" vertex="1" parent="panelA">
+          <mxGeometry x="280" y="600" width="220" height="46" as="geometry"/>
+        </mxCell>
+        <mxCell id="escal" value="ESCALATE_TO_USER&#10;genuine values / irreversible call" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7D6;strokeColor=#C9A227;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="540" y="600" width="200" height="46" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="userA" value="USER decides (explicit, audit-logged) — the ONLY human gate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF7D6;strokeColor=#C9A227;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelA">
+          <mxGeometry x="420" y="690" width="320" height="46" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="ladderNote" value="The fleet talks to itself first: a reviewer/owner disagreement is settled A⇄B, then by the FM arbiter, and only a true values call reaches the user — never &quot;please refresh and try again&quot;.&#10;FM resolutions map: FM_ACCEPTS_ANALYST → owner's rebuttal wins (REJECT) · FM_REVISES_OBJECTION → keep current (REJECT) · escalate_to_user → USER." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F0F7FF;strokeColor=#9CC3EF;dashed=1;fontFamily=Calibri;fontSize=9;fontStyle=2;fontColor=#33567f;align=left;verticalAlign=top;" vertex="1" parent="panelA">
+          <mxGeometry x="40" y="770" width="700" height="110" as="geometry"/>
+        </mxCell>
+
+        <!-- panel A edges -->
+        <mxCell id="ae1" style="endArrow=classic;html=1;rounded=1;strokeColor=#E2A674;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelA" source="cr" target="ownerA"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae2" style="endArrow=classic;startArrow=classic;html=1;rounded=1;strokeColor=#999999;strokeWidth=1.5;" edge="1" parent="panelA" source="ownerA" target="peerB"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae3" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelA" source="ownerA" target="ownerverdict"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae4" value="accept" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#2e7d32;" edge="1" parent="panelA" source="ownerverdict" target="accept"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae5" value="reject / unresolved" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#a33;" edge="1" parent="panelA" source="ownerverdict" target="impasse"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae6" style="endArrow=classic;html=1;rounded=1;strokeColor=#7E57C2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelA" source="impasse" target="arbiter"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae7" style="endArrow=classic;html=1;rounded=1;strokeColor=#7E57C2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelA" source="arbiter" target="arbverdict"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae8" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelA" source="arbverdict" target="arbruled"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae9" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelA" source="arbverdict" target="arbrej"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae10" style="endArrow=classic;html=1;rounded=1;strokeColor=#C9A227;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelA" source="arbverdict" target="escal"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="ae11" style="endArrow=classic;html=1;rounded=1;strokeColor=#C9A227;strokeWidth=2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelA" source="escal" target="userA"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- ============ PANEL B : CODEX ZIGZAG ============ -->
+        <mxCell id="panelB" value="B · CODEX ZIGZAG — independent re-derivation catches a wrong number / wrong code" style="swimlane;whiteSpace=wrap;html=1;fillColor=#FFF9F2;strokeColor=#E2A674;strokeWidth=2;startSize=30;rounded=1;fontFamily=Calibri;fontSize=13;fontStyle=1;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="860" y="90" width="800" height="900" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="claim" value="CLAUDE proposes&#10;a material figure / claim (runtime gate)&#10;— or a code diff (dev tandem)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;strokeWidth=2;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="panelB">
+          <mxGeometry x="250" y="44" width="300" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="codex" value="CODEX re-derives BLIND  [GPT-5 · independent model]&#10;runtime: recompute the figure from RAW inputs only (the claim is a CLAIM, not truth)&#10;dev: adversarially review the diff against the goal + tests" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelB">
+          <mxGeometry x="120" y="140" width="560" height="62" as="geometry"/>
+        </mxCell>
+        <mxCell id="agree" value="agree?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=11;fontStyle=1;" vertex="1" parent="panelB">
+          <mxGeometry x="320" y="240" width="160" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="pass" value="AGREE → adopt / PASS the gate&#10;(figure validated · diff ready)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelB">
+          <mxGeometry x="500" y="248" width="280" height="54" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="rebut" value="DIVERGE → bounded rebuttal round (MAX_ROUNDS)&#10;Claude rebuts with raw evidence ⇄ Codex holds or concedes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelB">
+          <mxGeometry x="160" y="360" width="480" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="zzowner" value="CLAUDE&#10;re-argues from raw data" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F3FF;strokeColor=#4A90E2;fontFamily=Calibri;fontSize=10;" vertex="1" parent="panelB">
+          <mxGeometry x="160" y="440" width="220" height="46" as="geometry"/>
+        </mxCell>
+        <mxCell id="zzcodex" value="CODEX&#10;re-checks the rebuttal" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#E27474;fontFamily=Calibri;fontSize=10;" vertex="1" parent="panelB">
+          <mxGeometry x="420" y="440" width="220" height="46" as="geometry"/>
+        </mxCell>
+        <mxCell id="converged" value="converged within bound?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF4E6;strokeColor=#E2A674;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelB">
+          <mxGeometry x="300" y="520" width="200" height="74" as="geometry"/>
+        </mxCell>
+        <mxCell id="adopt" value="CONVERGED&#10;adopt the corrected value&#10;(the gate fixed a real error)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6FFE6;strokeColor=#74E274;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;" vertex="1" parent="panelB">
+          <mxGeometry x="80" y="630" width="280" height="54" as="geometry"/>
+        </mxCell>
+        <mxCell id="blockz" value="STILL DIVERGENT → BLOCK (fail-closed)&#10;runtime: draft not promotable · dev: escalate the disagreement" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FBE9E7;strokeColor=#E27474;strokeWidth=2;fontFamily=Calibri;fontSize=10;fontStyle=1;fontColor=#a33;" vertex="1" parent="panelB">
+          <mxGeometry x="420" y="630" width="320" height="54" as="geometry"/>
+        </mxCell>
+        <mxCell id="zzNote" value="The reviewer re-derives BLIND from RAW inputs — it does not ratify Claude's logic. Correlated failure (everyone trusting one manifest) is the bug this prevents: BLOCK-on-divergence is forced in code.&#10;Same shape serves the runtime numeric gate (per-figure) and the dev-time codex tandem (per-diff)." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E6;strokeColor=#E2A674;dashed=1;fontFamily=Calibri;fontSize=9;fontStyle=2;fontColor=#7a4a12;align=left;verticalAlign=top;" vertex="1" parent="panelB">
+          <mxGeometry x="80" y="720" width="660" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- panel B edges -->
+        <mxCell id="be1" style="endArrow=classic;html=1;rounded=1;strokeColor=#4A90E2;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelB" source="claim" target="codex"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="be2" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelB" source="codex" target="agree"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="be3" value="yes" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#2e7d32;" edge="1" parent="panelB" source="agree" target="pass"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="be4" value="no" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#a33;" edge="1" parent="panelB" source="agree" target="rebut"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="be5" style="endArrow=classic;html=1;rounded=1;strokeColor=#999999;strokeWidth=1.2;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelB" source="rebut" target="zzowner"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="be6" style="endArrow=classic;startArrow=classic;html=1;rounded=1;strokeColor=#999999;strokeWidth=1.5;" edge="1" parent="panelB" source="zzowner" target="zzcodex"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="be7" style="endArrow=classic;html=1;rounded=1;strokeColor=#E2A674;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;" edge="1" parent="panelB" source="zzcodex" target="converged"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="be8" value="yes" style="endArrow=classic;html=1;rounded=1;strokeColor=#43A047;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#2e7d32;" edge="1" parent="panelB" source="converged" target="adopt"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="be9" value="no (bound hit)" style="endArrow=classic;html=1;rounded=1;strokeColor=#E27474;strokeWidth=1.5;edgeStyle=orthogonalEdgeStyle;fontFamily=Calibri;fontSize=9;fontColor=#a33;" edge="1" parent="panelB" source="converged" target="blockz"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- LEGEND -->
+        <mxCell id="legend" value="Legend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#999999;fontFamily=Calibri;fontSize=11;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1000" width="1620" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="lgZ" value="Blue = proposing/owner agent · Red = challenging/reviewing agent · Purple = arbiter (FM) · Green = accepted/applied · Gold = user (values gate) · Grey double-arrow = bounded back-and-forth round" style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;" vertex="1" parent="legend"><mxGeometry x="16" y="20" width="1580" height="20" as="geometry"/></mxCell>
+        <mxCell id="lgZ2" value="Principle: agents resolve disagreement between themselves (peer → arbiter); the user is the LAST rung, reserved for genuine values/irreversible decisions — not routine reconciliation." style="text;html=1;align=left;verticalAlign=middle;fontFamily=Calibri;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="legend"><mxGeometry x="16" y="38" width="1580" height="18" as="geometry"/></mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
