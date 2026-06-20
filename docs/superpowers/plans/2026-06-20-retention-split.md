@@ -6,12 +6,12 @@
 
 **Architecture:**
 - `tax.retention_at_vest_pct` — sourced from `equity_comp_analyst` base scenario `net_retention_pct` (the after marginal+surtax rate on vest income). Resolver convention is a FRACTION (0-1), but equity_comp stores `net_retention_pct` as 0-100 → divide by 100.
-- `tax.retention_capital_track_pct` — derived from the Israeli Section-102 capital-track long-term rate (statutory 25% CGT + 3% surtax in the high-income zone) as a DOCUMENTED policy constant `SECTION_102_LT_CGT_RATE = 0.28` → retention `1 - 0.28 = 0.72`. Sourced to `domain_knowledge/tax/israel/` (a statutory parameter, like the structural ages — not a magic number).
+- `tax.retention_capital_track_pct` — retention on the Section-102 capital-gain SLICE (post-basis appreciation), at the HIGH-INCOME marginal rate. CODEX-CORRECTED rate: `SECTION_102_HIGH_INCOME_RATE = 0.30` (25% base CGT + 3% general surtax + 2% capital-source surtax, per `domain_knowledge/tax/israel/section_102.md` which says "use 30% marginal effective" for the post-24-month NVDA tranche) → retention `1 - 0.30 = 0.70`. A documented statutory policy constant (like the structural ages), not a magic number.
 - Registry owns both (TAX owner), each a distinct labeled figure.
 
 **Tech Stack:** Python 3.12, pytest. No MC; deterministic.
 
-**Methodology (codex-review BEFORE build — tax-rate correctness):** confirm the Section-102 capital-track long-term effective rate (25% base + 3% surtax = 28% for high earners; verify against `domain_knowledge/tax/israel/`), and that at-vest `net_retention_pct` (0-100) maps to a 0-1 fraction.
+**Methodology (codex-reviewed against the domain files — CHANGES NEEDED incorporated):** the capital-track HIGH-INCOME marginal is **0.30** (not 0.28 — the +2% capital-source surtax applies once capital-source income exceeds the threshold; `section_102.md` + `capital_gains.md` + `surtax.md`). `net_retention_pct` (0-100) maps to a 0-1 fraction with a guard (reject an already-fraction). The at-vest figure is the BASE-YEAR (`years[0]`) retention, labeled as such. The capital-track rate is retention on the capital-GAIN slice, not gross proceeds.
 
 **Scope:** only the two retention figures. The prose/ledger render cutover (sections read these figures + label them) is Phase 1c.
 
@@ -56,16 +56,19 @@ Expected: FAIL — `status == "pending"` (key not produced).
     years = getattr(base, "years", None) or []
     if years:
         nrp = _to_float(getattr(years[0], "net_retention_pct", None))
-        if nrp is not None:
+        # Guard (codex #2): the model stores 0-100 human percent; a value already
+        # in (0,1] would mean an upstream contract change — reject rather than
+        # silently produce 0.0047. Expect > 1 for a real percent.
+        if nrp is not None and nrp > 1.0:
             ret_val = nrp / 100.0
     out_values.append(
         ResolvedValue(key=ret_key, value=ret_val, unit="pct",
                       status="resolved" if ret_val is not None else "pending",
                       source_locator="equity_comp_analyst.scenarios[known_grants_only].years[0].net_retention_pct",
                       agent_report_id=report_id, confidence="MEDIUM",
-                      formula="at-vest ordinary-income net retention (1 - marginal - surtax)")
+                      formula="base-year at-vest ordinary-income net retention (1 - marginal - 3% surtax)")
         if ret_val is not None else
-        ResolvedValue.pending(ret_key, "pct", "equity_comp net_retention_pct missing", agent_report_id=report_id)
+        ResolvedValue.pending(ret_key, "pct", "equity_comp net_retention_pct missing/invalid", agent_report_id=report_id)
     )
 ```
 
@@ -103,7 +106,7 @@ def test_retention_capital_track_pct_from_statutory_rate(session):
     r = resolved.get("tax.retention_capital_track_pct")
     assert r.status == "resolved"
     assert r.unit == "pct"
-    assert r.value == pytest.approx(0.72)   # 1 - 0.28 (25% CGT + 3% surtax)
+    assert r.value == pytest.approx(0.70)   # 1 - 0.30 (25% CGT + 3% + 2% surtax)
     # and it is DISTINCT from the at-vest rate (the whole point)
     at_vest = resolved.get("tax.retention_at_vest_pct")
     assert abs(r.value - at_vest.value) > 0.1
@@ -118,21 +121,25 @@ Expected: FAIL — pending.
 
 ```python
 # near the other policy constants (e.g. PENSION_UNLOCK_AGE):
-# Israeli Section-102 capital-track long-term effective rate in the high-income
-# surtax zone: 25% base CGT + 3% surtax. Statutory policy parameter (domain
-# knowledge: domain_knowledge/tax/israel/), NOT a derived/guessed number.
-SECTION_102_LT_CGT_RATE = 0.28
+# Israeli Section-102 capital-track HIGH-INCOME marginal effective rate on the
+# capital-gain slice: 25% base CGT + 3% general surtax + 2% capital-source surtax
+# (applies once capital-source income exceeds the threshold). domain_knowledge/
+# tax/israel/section_102.md: "use 30% marginal effective" for the post-24-month
+# NVDA tranche. Statutory policy parameter, NOT a guess (codex tax review 2026-06-20).
+SECTION_102_HIGH_INCOME_RATE = 0.30
 
 
 def _apply_capital_track_retention(values):
-    """Publish tax.retention_capital_track_pct = 1 - Section-102 long-term rate.
-    Distinct from the at-vest ordinary rate — two legitimate treatments."""
+    """Publish tax.retention_capital_track_pct = 1 - Section-102 high-income rate.
+    This is retention on the capital-GAIN slice (post-basis appreciation), NOT
+    gross proceeds — distinct from the at-vest ordinary rate (two legitimate
+    treatments)."""
     key = "tax.retention_capital_track_pct"
     values[key] = ResolvedValue(
-        key=key, value=1.0 - SECTION_102_LT_CGT_RATE, unit="pct", status="resolved",
-        source_locator="plan_numeric_resolver.SECTION_102_LT_CGT_RATE (domain_knowledge/tax/israel)",
+        key=key, value=1.0 - SECTION_102_HIGH_INCOME_RATE, unit="pct", status="resolved",
+        source_locator="plan_numeric_resolver.SECTION_102_HIGH_INCOME_RATE (domain_knowledge/tax/israel/section_102.md)",
         confidence="HIGH",
-        formula="1 - Section-102 capital-track long-term rate (25% CGT + 3% surtax)")
+        formula="1 - Section-102 high-income marginal (25% CGT + 3% + 2% surtax) on the capital-gain slice")
 ```
 
 Add `"tax.retention_capital_track_pct": "pct"` to `_KEY_UNITS`; call `_apply_capital_track_retention(values)` in `resolve_plan_numbers` near the other `_apply_*` constants.
@@ -199,5 +206,5 @@ git commit -m "feat(registry): own the two RSU retention rates (TAX)"
 - **Spec coverage:** implements the retention split (spec Phase-1 item 3) — two distinctly-labeled rates so prose cannot conflate them.
 - **No magic number:** the capital-track rate is a STATUTORY policy constant sourced to domain knowledge (like the structural ages), not a guess; the at-vest rate is sourced from the equity_comp analyst output.
 - **Unit convention:** at-vest divides the analyst's 0-100 `net_retention_pct` to the resolver's 0-1 fraction (a real source of bugs — explicitly tested == 0.47).
-- **To codex-review BEFORE build:** the 28% Section-102 rate value (verify vs `domain_knowledge/tax/israel/`) and the 0-100→0-1 conversion.
+- **Codex tax-review (CHANGES NEEDED) incorporated:** the high-income Section-102 capital-track marginal is **0.30** (not 0.28 — +2% capital-source surtax applies; per `section_102.md` "use 30% marginal effective"), retention **0.70**; the rate is retention on the capital-GAIN slice (not gross); the at-vest figure is labeled base-year; a 0-100 guard rejects an already-fraction value.
 - **Placeholder scan:** Task 1 Step 3 notes the exact return-mechanism must match the real `_resolve_equity_comp_analyst` (it returns a list) — a "verify against real code" instruction, not a placeholder.
