@@ -1916,6 +1916,11 @@ Cross-references for adapter endpoint details: `domain_knowledge/data_sources/{s
 
 Cache entries record `provider`, `retrieved_at`, `expires_at`, `payload_hash` for auditability.
 
+**Derived-computation cache (`argosy/services/derived_cache.py`).** The market-data cache above memoizes *fetched* data; the derived cache memoizes Argosy's expensive *computed* outputs — chiefly the Monte-Carlo-heavy `resolve_plan_numbers(..., include_canonical_ages=True)` that the plan story (§11.9) and `/retirement` panels recompute on every request. It is a process-local, LRU-bounded memo (`get_or_compute(tag, version, compute)`) covering the overview, the retirement MC endpoints (derived-inputs, feasible-age, dual-track-plan, scenarios), the portfolio computations (wealth-dashboard, allocation-breakdown, real-estate), and the plan computations (allocation-glidepath, cashflow-projection, nvda-trajectory).
+
+- **Invalidation is STRUCTURAL, never time-based** (output-trust doctrine — never serve a stale financial number). The cache key embeds a `version_tuple` = current plan id + its `decision_run_id` + the latest portfolio snapshot id + its `imported_at`. Any of those changing changes the key → automatic miss → recompute; there is no explicit "bust." When no version can be determined (no current plan / no decision run) the tuple is `None` and the value is treated as **uncacheable** (always compute) rather than risk a cross-plan hit. The draft/identity/TSV-sensitive endpoints (cashflow-projection, nvda-trajectory) extend the key via `draft_aware_version` so the pending draft, `UserContext.identity_yaml`, and the latest TSV file's `(mtime, size)` are part of the key too. The unseeded-MC endpoints (cashflow-monte-carlo / plan-series, `seed=None`) are deliberately neither warmed nor cached, so a cached value can't pin one random draw. Toggle off with `ARGOSY_DERIVED_CACHE=0`.
+- **Pre-warming (`warm` / `warm_async`).** The cache is lazy, so the first request after a change still pays the full compute. Warming recomputes the hot entries for the current version on a background daemon thread — on **startup**, on **plan-promote**, and on **snapshot-ingest** — going through the SAME `get_or_compute(tag, version, …)` path with the SAME tags + param-key suffixes the routes use, so a warmed entry is a genuine route hit. **Warming is SEQUENTIAL by design.** Parallelizing the warm computations caused CPU/IO contention that made them collectively SLOWER (the MC sweeps are already CPU-bound); the entries are therefore warmed one after another. Each entry is individually guarded so one failing computation never aborts the rest, and the whole pass swallows all errors (warming is best-effort and must never break a request). Toggle off independently with `ARGOSY_DERIVED_CACHE_WARM=0`.
+
 ### 8.4 Backups
 
 - Daily SQLite snapshot to `${ARGOSY_HOME}/backups/argosy-YYYYMMDD.db` (path is **relative to ARGOSY_HOME by default; configurable to absolute** for off-drive or network-share destinations)
@@ -2163,7 +2168,7 @@ Stack: FastAPI on `localhost:8000` + Next.js + TypeScript + Tailwind + shadcn/ui
 The product model is four surfaces, each with a single, non-overlapping job. This is the canonical framing the whole UI binds to; a surface must not duplicate another's job — duplication is exactly how cross-surface inconsistencies (the same number computed two ways, disagreeing) creep in.
 
 1. **Plan** (`/plan`) — **high-level strategic planning.** "How can we retire, given what we know now?" Forecasts, analysis, Monte Carlo; generates THE PLAN across horizons (policy, target, transition, glide, theses). Forward-looking.
-2. **Retirement** (`/retirement`) — **tracking plan execution.** "Are we on track?" Measures actual progress against the plan and shows the expected retirement date. It **owns the FI projection** — the dual-track readiness engine (§19); no other surface re-derives it.
+2. **Retirement** (`/retirement`) — **tracking plan execution.** "Are we on track?" Measures actual progress against the plan and shows the expected retirement date. It **owns the FI projection** — the dual-track readiness engine (§19); no other surface re-derives it. A **plain-language plan story** (§11.9) leads the surface, translating the canonical numbers into a seven-chapter narrative; the expert readiness cards render below it in collapsible, lazy-mounted sections.
 3. **Portfolio** (`/portfolio`) — **current allocation vs target, and where our money is.** Current allocation against the plan's target; **free cash in BOTH USD and NIS** (the system must know how much there is and where it sits); a high-level hold / sell / buy review of what we already OWN. Net-worth context (including real estate) lives here; the FI projection does not.
 4. **Proposals** (`/proposals`) — **actions to take.** Surfaces new buy opportunities and how to deploy the free cash. Driven by a **daily agent** that reacts not only to a free-cash change but to **per-stock market-sentiment changes** — broad/long ETFs rarely move, individual stocks might, so the daily "do we need to act?" check reasons at the per-holding / per-candidate level, not just on cash deltas.
 
@@ -2180,7 +2185,7 @@ Nav splits into a **PRIMARY** row (always visible — daily-to-monthly use) and 
 | PRIMARY | **Portfolio** (`/portfolio`) | Net-worth summary (true net worth incl. real estate, NIS/USD + monthly burn/income/surplus — the FI projection itself lives on Retirement, §19); positions grouped per account (the NVDA RSU folds under "schwab 876") with sortable headers + an **Estate** column (US-situs vs estate-safe, §20.4); asset-class · **exposure & style** · **region** **composition donuts** classified via the §20.4 instrument reference (the per-account **Type** column shows the same reference's 2-level `"<structure> · <exposure>"` label, so the table and the donut reconcile; un-curated holdings are flagged "⚠ unclassified", §20.4); **current allocation vs the §20 plan target** (every plan class shown, targets conserve to 100%, per-symbol drill-down with account + estate tags); a page-level **exclude-NVDA** toggle (default on) that drives the donuts AND the allocation card together; free cash in **USD and NIS**; a **Real estate** net-worth panel (per-property net equity, separate from the investable book); one merged "Update portfolio data" panel (generate-from-state / upload-statement). The central return used for the wealth bands is single-sourced from the retirement engine's `mu_real_typical` (§19) | Toggle exclude-NVDA; sort tables by header; click a class to drill into its symbols; click ticker → lots/holding-period detail |
 | PRIMARY | **Expenses** (`/expenses`) — see §18.3 | Yearly-focus dashboard: savings-rate trend, top movers YTD-vs-prior, currency mix, yearly summary, dividends/taxes, sources health. Sub-tabs: `/monthly`, `/transactions`, `/sources`, `/merchants`, `/trips`, `/rsu`, `/income` | Month picker (Monthly tab) re-scopes the page; per-row category PATCH; bulk-label / bulk-categorize; tag/untag; FX-mode toggle (per-currency ↔ NIS-converted) |
 | PRIMARY | **Plan** (`/plan`) | Rendered plan + critique-agent output (findings with evidence); plan version history; diff view between versions; the allocation glidepath chart (§20) | "Re-critique now"; export current plan as md |
-| PRIMARY | **Retirement** (`/retirement`) — see §19 | The dual-track readiness verdict: the ruin hero (P(solvent) at 75/85/95), the scenario grid (base/bull/bear + μ-grid + T12 + fat-tail stress), the per-age estate frontier, the FX-stress band, and the displayed earliest-safe age — all reconciled to the one canonical basis | Pick a retire age + market regime to re-run the per-tick bands |
+| PRIMARY | **Retirement** (`/retirement`) — see §19, §11.9 | A plain-language **plan story** (seven chapters: FI / liquidity / allocation / NVDA wind-down / forward RSU / life phases / dual-track) leads the page; below it, in collapsible lazy-mounted sections, the dual-track readiness verdict: the ruin hero (P(solvent) at 75/85/95), the scenario grid (base/bull/bear + μ-grid + T12 + fat-tail stress), the per-age estate frontier, the FX-stress band, and the displayed earliest-safe age — all reconciled to the one canonical basis | Click a chapter in the story rail to focus it; pick a retire age + market regime to re-run the per-tick bands |
 | PRIMARY | **Consult** (`/consult`) | Ad-hoc per-ticker second opinion: submit tickers with a conviction (buy/sell/hold/lean) + rationale; the agent fleet runs a per-ticker decision flow and returns a recommendation with a full reasoning trail. Modes: **Long hold** (no FX/technical analysts, long-horizon thesis-fit trader prompt) vs **Tactical trade** (entry-timing). Tiers T1/T2/T3 | Add/remove ticker rows; choose mode + tier; accept/execute happens on `/proposals` |
 | PRIMARY | **Proposals queue** (`/proposals`) | Cards per pending proposal: tier badge, account, ticker, action, size, expected impact; full reasoning trail on expand | Approve / Reject / Escalate-tier / Defer; bulk-approve grouped |
 | More | **Argonaut** (`/argonaut`, limited acct) | P&L curve since inception; open positions; recent trades incl. paper fills; per-strategy stats (win rate, avg hold period); mode toggle | Toggle paper/live/queue_only with confirmation modal; deposit/withdraw config |
@@ -2419,6 +2424,7 @@ All routes mount under `/api` (canonical source: `argosy.api.main.create_app`). 
 | POST | `/api/argonaut/snapshot` | Manually record an Argonaut snapshot row. |
 | GET | `/api/argonaut/trades` | Recent trades (incl. paper fills). |
 | **Portfolio / brief / agents / domain KB / settings / branding / onboarding / security** | | |
+| GET | `/api/overview` | The plain-language plan story (§11.9): `available`, plan/decision_run ids, the seven `chapters` (each with rendered headline, cited `FactRef`s, a kind-tagged `viz`, drill link, optional `your_move`), and an `actions_banner` open-count. Every number is resolved through the canonical `resolve_plan_numbers`; `available=false` with a reason when there is no current plan. |
 | GET | `/api/portfolio/snapshot` | Positions per account + drift indicator. |
 | GET | `/api/portfolio/wealth-dashboard` | Net-worth summary (incl. real estate) + cash runway, NVDA concentration, savings rate, FX exposure, RSU income, estate exposure, and the asset-class · exposure-&-style · region composition donuts (classified via §20.4). `exclude_nvda=true` drops NVDA from the donuts. |
 | GET | `/api/portfolio/allocation-breakdown` | Live current allocation vs the §20 plan-target by class, with per-symbol drill-down. `exclude_nvda=true` renormalises over the ex-NVDA book. Region-aware (§20.4): pure non-US equity routes to "International developed (ex-US)", not US-core. |
@@ -2465,6 +2471,28 @@ The current cascade view replaces the flat, per-agent-report activity feed with 
 **WS↔DB linking.** `agent_reports.run_correlation_id` persists `agent_reports.run_correlation_id`. The hook now does O(1) `byCorrelationId.get(row.run_correlation_id)` for any persisted row with a non-NULL correlation_id. The legacy ±10 s + agent_role heuristic survives only as a fallback for rows persisted before 0028 landed (NULL correlation_id), preventing a regression but with the known mis-match risk for multi-round same-agent runs (rare). Once the agent_reports backlog cycles past the migration date, the heuristic is dead code we can remove.
 
 **Memory bounds (after Phase 2 codex fixes).** `processedKeysRef` (dedup set for WS event keys) is capped at 2,000 keys; when exceeded, the oldest half is evicted. `claimedDbIdsRef` is grown only via the legacy heuristic (the O(1) path is claim-by-correlation-id, no separate ref needed). Initial REST load is a functional merge by `id` — a WS-triggered REST refetch arriving before the bulk fetch resolves is not clobbered.
+
+### 11.9 Plain-language plan story (the Retirement lead)
+
+The plan story is the human translation of the canonical plan: a non-financial-expert reads it top-to-bottom and learns what every decision-relevant number *means and why it matters*, with the FI question — "am I there yet, how close, what closes the gap?" — as its flagship. It leads the `/retirement` surface (it is **not** a separate tab); the expert readiness cards (§19) render below it. It explains; it does not act — inline "your move" nudges deep-link to `/proposals`, where the consolidated action checklist lives.
+
+**Backend — `argosy/services/overview_assembler.py`.** `build_overview(session, *, user_id) -> OverviewModel` is a pure, testable assembler. It calls `get_current_plan`; with no current plan (or no `decision_run_id`) it returns `available=False` with a reason (fail-loud, no fabrication). Otherwise it resolves every magnitude through `resolve_plan_numbers(..., include_canonical_ages=True)` — the SAME canonical resolver the expert surfaces read — and builds the chapter list. Served at `GET /api/overview?user_id=` (`argosy/api/routes/overview.py`). UI: `PlanStoryLead` and the per-chapter / per-viz components in `ui/src/components/overview/`.
+
+**No hand-typed numbers (canonical-fact-registry doctrine).** Chapter prose is human-authored template constants; every monetary / percent / age / share / year magnitude is a `{{fact:KEY}}` placeholder rendered centrally by the fact registry — never a literal. Sign/threshold prose (e.g. "short" vs "ahead", "Almost" vs "Reached") branches in Python from the resolved value, choosing between template variants that still carry only placeholders. Each rendered headline is run through `find_unauthorized_numbers`: at runtime a hit logs and marks the chapter `degraded`; the consistency test asserts it is empty for every chapter. `render_placeholders(strict=False)` at runtime degrades (a pending fact leaves its token visible and the chapter is marked `degraded`) rather than throwing; the test suite renders `strict=True`.
+
+**The seven chapters.** Each carries an `eyebrow`/`title` (the rail label), a rendered plain-language `headline`, the `FactRef`s it cites (for the audit drill), a kind-tagged `viz` payload, a drill link to the matching expert surface, and an optional `your_move`:
+
+1. **`fi` — "Can you stop working yet?"** (flagship): the FI target vs liquid net worth, the signed margin, and the crossing year, over a `fi_crossing` progress-meter + forward-projection hero. Drills to `/retirement`.
+2. **`liquidity` — "What's actually spendable"**: total net worth (incl. residence) vs the liquid amount that counts toward retiring. Drills to `/portfolio`.
+3. **`allocation` — "Where your money sits vs the plan"**: per-class current (from the snapshot) vs the §20 plan target. Drills to `/plan`.
+4. **`nvda` — "Winding down your NVDA bet"**: current/target/cap %, eligible-now vs wait shares; carries the "sell ~N shares now" `your_move`. Drills to `/portfolio`.
+5. **`rsu_income` — "The income still coming in"**: a **read-only** display of the deterministic forward vest projection (`rsu_savings.project_quarterly_vests`, aggregated per-year net NIS). It is NOT wired into `fi_crossing` or the savings vector. Drills to `/portfolio` / `/retirement`.
+6. **`phases` — "Life phases ahead"**: the life-event cashflow phases (the same source feeding `/api/retirement/phase-expenses`). Drills to `/retirement`.
+7. **`dual_track` — "When can you retire — two honest answers"**: the typical-drawdown earliest-safe age and the principal-preservation age (§19). Drills to `/retirement`.
+
+A top-of-story actions banner counts open user-owned `PrioritizedAction`s (`action_engine`) plus open `ActionProposal`s and links to `/proposals`.
+
+**Consistency guard.** A dedicated test asserts that for every `FactRef` in every chapter the displayed `value`/`display` equals the resolver's — so the story shows exactly the same numbers as `/retirement`, `/portfolio`, and `/plan`, which all read that one resolver — and that no chapter carries an unauthorized number.
 
 ---
 
@@ -2614,6 +2642,47 @@ Logs are append-only; rotation by date; never log secrets or full position value
 | Disk space | < 20% free on `ARGOSY_HOME` drive | Alert |
 
 A small `argosy-watchdog` process runs separately from the engine, polls health, sends email on threshold breach. No external monitoring service needed for Phase 1.
+
+#### 14.2.1 Monitoring flags — the `status` lifecycle
+
+User-facing monitoring observations (the Home Red-Flag Strip,
+`GET /api/retirement/monitor/flags`) are `monitor_flags` rows written by
+three producers: the state-observer (`state_observer_flag_writer.py`,
+`state_observer_*` kinds), the thesis-monitor
+(`orchestrator/loops/thesis_monitor.py`, `thesis_monitor_*` kinds), and
+plan-promotion. Each row carries a **`status`** column
+(`active` | `superseded` | `acknowledged`); the strip query returns only
+`active` rows. Without it, the producers' dedup_keys jitter run-to-run (a
+`large`-vs-`extreme` bucket, an `allocations[1]`-vs-`allocations[5]`
+field-index) so the same logical observation lands under a fresh key each
+run and the strip accumulated stale duplicates.
+
+`status` gives each producer a **supersede primitive** — a fresh run marks
+its OWN prior stale flags `superseded`:
+
+- **State-observer (producer-scoped).** A fresh observer run replaces its
+ observation set: any prior `active` + unacknowledged `state_observer_*`
+ flag whose dedup_key was NOT refreshed by this run is marked
+ `superseded`. Confined strictly to the `state_observer_` prefix so it
+ never touches thesis-monitor / alpha / mc rows. Guarded to run only when
+ the pass actually processed candidates — an empty observation set never
+ wipes the live strip (absence of new observations is not evidence the old
+ ones resolved). User-acknowledged rows are left alone.
+- **Thesis-monitor (same-ticker-scoped).** A fresh thesis verdict for a
+ ticker supersedes any prior `active` thesis flag for the SAME ticker under
+ a different status (e.g. a `weakened`→`broken` transition retires the stale
+ `weakened` row). Confined to that ticker so other tickers' theses are
+ untouched.
+- **Plan-promotion.** Promoting a plan to `role='current'` (`/accept`)
+ clears stale plan-assumption flags: `supersede_plan_assumption_flags`
+ marks active `state_observer_plan_assumption_observation` rows `superseded`
+ unless their payload references the just-promoted plan label (so a
+ legitimate observation about the fresh plan survives; fail-safe is to
+ supersede). The state-observer additionally still uses the dedup_key +
+ partial-unique-index + 7-day-TTL tombstone-then-insert path for
+ within-producer dedup; supersession is the orthogonal cross-run cleanup
+ layered on top. Supersession is always best-effort and never breaks a
+ producer's write batch.
 
 ### 14.3 Secrets management
 
@@ -3500,6 +3569,56 @@ tax: 25% + 3% surtax, withheld at the bank) bridges Schwab gross →
 Leumi net. Adding a soft-match tolerance for the haircut is queued
 (see §15.4 open items).
 
+#### 18.4.1 §102 RSU-sale → Leumi-cash reconciliation
+
+`argosy/services/cash_source_reconciler.py` answers "what produced this
+USD cash?" from REAL transactions — linking each Schwab RSU sale 1:1 to
+the Leumi USD wire it produced — rather than diffing two TSV snapshots.
+
+- **The only source of real sales is the Schwab CSV.** The sale side comes
+ from the Schwab Equity Awards Center transactions CSV
+ (`EquityAwardsCenter_Transactions*.csv`, parsed by
+ `rsu_reconciliation/schwab_csv.py`). The newest date-stamped export is
+ preferred — the bare-named file can be a stale partial export missing
+ the latest sale.
+- **The simulation xlsx is the §102 tax-RATE authority — NOT a source of
+ sales.** `argosy/services/rsu_reconciliation/sim_tax.py` parses the
+ NVIDIA ESOP "Nvidia simulation Report.xlsx" into a per-grant Israeli
+ §102 `GrantTaxModel` (the verified capital-track formula: capital income
+ @ 25% + ordinary income @ the ordinary rate, vs a breaking-grant grant
+ where the whole proceed is ordinary). The sim is a HYPOTHETICAL used only
+ to look up a grant's §102 split/rates so the actual sold quantities can be
+ taxed correctly; its own quantities and "Amount Wired" rows are never read
+ as real sales. When the sim is unavailable the net degrades to a labeled
+ flat-rate estimate (`FALLBACK_IL_CGT_RATE = 0.25`, `tax_is_estimated=True`).
+- **The wire ordinary rate is ~50%, not the sim's ~62%.** The sim withholds
+ ordinary income at `0.6217` to reproduce its own "Amount Wired," but the
+ ACTUAL ESOP bank wire reflects an effective ordinary rate of
+ `WIRE_ORDINARY_RATE = 0.50` (Israeli top marginal 47% + 3% surtax). The
+ extra ~12.17% the sim withholds is employee National Insurance / health
+ (Bituah Leumi, capped) reconciled via payroll, NOT deducted at the wire.
+ Reconciling against real Leumi inflows therefore applies the ~50% ordinary
+ rate, which closes the residual across the real 2026 sales to <0.05%. (This
+ reconciles the ESOP cash wire, not the final annual tax return, which can
+ still adjust NI/health caps, annual surtax, and FX basis.)
+- **The cash side** is projected from `expense_transactions` on the Leumi
+ USD account (external_id `44745200`): USD-denominated transfer credits
+ (`העברת כספים`), exact-duplicate-deduped. The reconciler matches
+ chronologically, 1:1, smallest-discrepancy: each sale claims the in-window
+ transfer closest to its §102-derived net. Genuinely unmatched sales /
+ transfers are reported, never fabricated.
+
+**The TSV is an OUTPUT, never an input for cash attribution.** The legacy
+windfall path (`retirement/windfall_detector.py`) that inferred sales by
+diffing two Family-Finances TSV snapshots is **neutralized by default** — a
+hand-maintained TSV diff fabricated phantom sales whenever a row's
+ticker/columns shifted between months (e.g. a `BRK.B`→`BRK/B` relabel made a
+*grown* position read as a sale). The detector still surfaces the reliable
+cash delta but asserts no sale source; the TSV-diff attribution re-enables
+only behind `ARGOSY_WINDFALL_TSV_SALE_DIFF` (default off). Cash-source
+attribution comes exclusively from the real inputs — broker RSU sales (Schwab
+CSV) + bank cash transactions — via the reconciler above.
+
 ### 18.5 Tags + Trips (EX5)
 
 **Schema** (migration **0024**): `expense_transactions.tags TEXT NOT NULL
@@ -3641,6 +3760,10 @@ Every emitted target carries the explicit **`snapshot_category`** from its `Allo
 - **Whole-plan scale.** The pct scale (fraction-of-1 vs whole-percent) is decided once for the whole plan from the sum of all target values, so a single legitimately sub-1% sleeve is never wrongly ×100'd (the root of the prior 229% chart).
 - **Explicit-category anchoring.** Today's value is anchored via the exact `snapshot_category` match (no fragile substring alias), with the legacy alias matcher kept only as a fallback for targets that carry no explicit category.
 - **Shared-category split.** When several labels share one snapshot category (e.g. low-vol + IG bonds both on "Defensive"), today's single snapshot value is split among them proportional to their end targets, so t=0 doesn't double-count it. Untargeted snapshot bands flat-line at today's value and are labeled "unconstrained" rather than dropped.
+
+**Conservation of the full-book composition (`target_allocation_doc.py`).** The glide's t=0 anchor is today's FULL tradeable-book composition (`derive_full_book_today_composition`). NVDA's weight is its concentration-report share; the ex-NVDA snapshot category rows arrive as **%-of-TOTAL-book** (they sum to ~(100 − NVDA's total share), NOT ~100). The correct derivation first **renormalizes** those rows onto the ex-NVDA book (sum → 100) and then scales them by `(100 − nvda_pct)/100` into the (100 − NVDA) space — so the whole book sums to ~100. Treating the rows as already-%-of-ex-NVDA-book and then re-scaling double-discounts the ex-NVDA sleeve: ~25% of the book vanishes and the glide sums to ~76 (which also 500'd the deploy-cash sizer that refused the non-conserving plan).
+
+**Fail-loud conservation guard on persist.** `_assert_conserving_glide` runs on every doc BEFORE it is persisted — on the freshly-built doc AND on any carried-forward doc (the carry-forward path must not silently re-persist a prior bad doc). It raises unless every glide waypoint is **finite, nonnegative, and sums to ~100** (within 0.1pp). Sum-alone is insufficient — a NaN passes a naive sum check and a >100 NVDA weight yields negative sleeves that still sum to 100 — so finiteness and nonnegativity are asserted too. A non-conserving doc is refused at the persistence boundary so the caller carries forward the prior good plan rather than shipping a book-weight-dropping allocation.
 
 ### 20.3 How targets reach the surfaces
 
