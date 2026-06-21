@@ -566,20 +566,43 @@ def _latest_draft_with_targets(
     ).scalar_one_or_none()
 
 
+# Content-keyed memo for parsed user-context YAML. A single
+# ``compute_wealth_dashboard`` call (and its 3 canonical-MC scenario sweeps)
+# resolves the SAME identity/goals/constraints YAML blobs 70+ times — each
+# ``yaml.safe_load`` of the (large) identity blob costs ~80ms, so the redundant
+# re-parses dominated cold compute (~6s of the ~16s profile). Keying on the raw
+# blob *content* (not just user_id) makes the cache self-invalidating: any DB
+# edit changes the key, so we never serve a stale parse, and the returned dict
+# is byte-identical to a fresh parse. Bounded to the few distinct blob-triples
+# in play (single-user today; one entry per user otherwise).
+_USER_CTX_YAML_CACHE: dict[tuple[str | None, str | None, str | None], dict[str, Any]] = {}
+
+
 def _load_user_context_yaml(session: Session, user_id: str) -> dict[str, Any]:
     """Return a single dict merged from identity_yaml + goals_yaml +
     constraints_yaml. Each YAML block is its own top-level mapping.
 
     On parse failure, the offending block is skipped (other blocks still
     populate the dict).
+
+    The parse is memoized on the raw blob content (see ``_USER_CTX_YAML_CACHE``)
+    so the many repeated resolutions within one dashboard/MC compute don't
+    re-parse identical YAML; the cache self-invalidates whenever the stored
+    blobs change.
     """
     row = session.execute(
         select(UserContext).where(UserContext.user_id == user_id)
     ).scalar_one_or_none()
     if row is None:
         return {}
+    blobs = (row.identity_yaml, row.goals_yaml, row.constraints_yaml)
+    cached = _USER_CTX_YAML_CACHE.get(blobs)
+    if cached is not None:
+        # Return a shallow copy so callers that mutate the merged dict can't
+        # corrupt the shared cache entry.
+        return dict(cached)
     out: dict[str, Any] = {}
-    for blob in (row.identity_yaml, row.goals_yaml, row.constraints_yaml):
+    for blob in blobs:
         if not blob:
             continue
         try:
@@ -588,7 +611,10 @@ def _load_user_context_yaml(session: Session, user_id: str) -> dict[str, Any]:
             continue
         if isinstance(parsed, dict):
             out.update(parsed)
-    return out
+    if len(_USER_CTX_YAML_CACHE) > 64:
+        _USER_CTX_YAML_CACHE.clear()
+    _USER_CTX_YAML_CACHE[blobs] = out
+    return dict(out)
 
 
 # ---------------------------------------------------------------------------
