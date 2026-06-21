@@ -427,7 +427,7 @@ def _chapter_allocation(alloc_rows: list[dict], *, source_locator: str) -> Overv
     )
 
 
-def _chapter_nvda(resolved) -> OverviewChapterData:
+def _chapter_nvda(resolved, *, held_sh: float | None = None) -> OverviewChapterData:
     keys = [
         "concentration.nvda_current_pct",
         "concentration.nvda_target_pct",
@@ -443,9 +443,11 @@ def _chapter_nvda(resolved) -> OverviewChapterData:
     eligible = _value(resolved, "concentration.nvda_eligible_now_sh")
     sell = _value(resolved, "concentration.nvda_sell_sh")
     target_sh = _value(resolved, "concentration.nvda_target_sh")
-    held_sh = None
     cur_pct = _value(resolved, "concentration.nvda_current_pct")
-    # held shares not a resolver key; left None unless derivable — keep honest.
+    # held_sh = TOTAL NVDA shares held (from the snapshot), so the viz can split
+    # the holding into "sellable now at the capital-track rate" (eligible) vs the
+    # rest still inside the 2-year holding period — the real "worth waiting" story
+    # (not the meaningless sell_sh − eligible remainder).
 
     viz_data = {
         "current_pct": cur_pct,
@@ -676,6 +678,31 @@ def _as_float(v) -> float | None:
         return None
 
 
+def _nvda_held_shares(snapshot) -> float | None:
+    """Total NVDA shares held, from the latest snapshot's positions. None if
+    unavailable — keeps the NVDA 'worth waiting' split honest rather than faking
+    a denominator."""
+    import json
+
+    if snapshot is None:
+        return None
+    try:
+        positions = json.loads(snapshot.positions_json or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    total = 0.0
+    found = False
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        if (p.get("symbol") or "").upper() == "NVDA":
+            sh = _as_float(p.get("shares"))
+            if sh is not None:
+                total += sh
+                found = True
+    return total if found else None
+
+
 def _event_year(ev) -> int | None:
     """Extract a calendar year from a vest event's date — accepts date/datetime
     objects and ISO-ish strings; returns None for anything unparseable."""
@@ -884,7 +911,7 @@ def build_overview(session, *, user_id: str) -> OverviewModel:
         _chapter_fi(resolved, base_year=base_year),
         _chapter_liquidity(resolved, illiquid_nis=illiquid_nis),
         _chapter_allocation(alloc_rows, source_locator=alloc_src),
-        _chapter_nvda(resolved),
+        _chapter_nvda(resolved, held_sh=_nvda_held_shares(snapshot)),
         _chapter_rsu(rsu_years, degraded_reason=rsu_reason),
         _chapter_phases(phase_rows),
         _chapter_dual_track(resolved),

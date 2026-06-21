@@ -6,9 +6,10 @@
  * Two pieces:
  *  (1) a small glidepath line from current_pct → target_pct (with the cap
  *      drawn as a ceiling reference), and
- *  (2) a sell-now / wait split bar: of the shares the plan wants sold
- *      (sell_sh), how much is sellable at the low tax rate RIGHT NOW
- *      (eligible_now_sh) vs how much is worth waiting for.
+ *  (2) a sell-now / wait split bar: of the TOTAL NVDA holding (held_sh),
+ *      how much is sellable at the low capital-track rate RIGHT NOW
+ *      (eligible_now_sh) vs how much is still inside the 2-year §102
+ *      holding period (held_sh − eligible_now_sh).
  *
  * UNITS: current/target/cap_pct are FRACTIONS (0-1). Charts only need
  * relative geometry; where an axis/label shows a percent we normalize
@@ -64,19 +65,21 @@ export function NvdaWinddown({ data }: { data: NvdaWinddownData }) {
         ]
       : [];
 
-  // Sell-now vs wait split. The "sellable now" slice is the eligible
-  // shares, capped to the shares the plan wants sold; the remainder of
-  // sell_sh is "worth waiting for". If sell_sh is unknown, fall back to
-  // showing eligible as the whole sellable slice.
-  const sell = typeof data.sell_sh === "number" ? data.sell_sh : null;
+  // Sellable-now vs still-holding split, taken of the TOTAL NVDA holding.
+  // `held_sh` is every NVDA share held; `eligible_now_sh` is the slice
+  // already past the 2-year §102 holding period (sellable now at the low
+  // capital-track rate). The remainder is still inside the holding period.
+  // Fallback (held_sh absent): degrade to showing the eligible slice alone
+  // so the bar stays meaningful instead of computing a bogus remainder.
+  const held = typeof data.held_sh === "number" ? data.held_sh : null;
   const eligible =
     typeof data.eligible_now_sh === "number" ? data.eligible_now_sh : null;
 
   let sellNow = 0;
   let wait = 0;
-  if (sell != null && sell > 0) {
-    sellNow = eligible != null ? Math.min(eligible, sell) : 0;
-    wait = Math.max(0, sell - sellNow);
+  if (held != null && held > 0) {
+    sellNow = eligible != null ? Math.min(eligible, held) : 0;
+    wait = Math.max(0, held - sellNow);
   } else if (eligible != null) {
     sellNow = eligible;
     wait = 0;
@@ -139,7 +142,7 @@ export function NvdaWinddown({ data }: { data: NvdaWinddownData }) {
       {/* Sell-now vs wait split bar */}
       <div>
         <div className="mb-1.5 text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
-          Of the shares to trim
+          Of your NVDA, what&apos;s sellable now
         </div>
         {splitTotal > 0 ? (
           <>
@@ -147,13 +150,13 @@ export function NvdaWinddown({ data }: { data: NvdaWinddownData }) {
               <div
                 className="flex items-center justify-center bg-success/70 text-[11px] font-medium text-success-foreground"
                 style={{ width: `${sellNowPct}%` }}
-                title={`Sellable now: ${fmtSh(sellNow)}`}
+                title={`Sellable now at the low tax rate: ${fmtSh(sellNow)}`}
               />
               {wait > 0 && (
                 <div
                   className="flex items-center justify-center bg-warning/60 text-[11px] font-medium"
                   style={{ width: `${waitPct}%` }}
-                  title={`Worth waiting: ${fmtSh(wait)}`}
+                  title={`Still in the 2-year holding period: ${fmtSh(wait)}`}
                 />
               )}
             </div>
@@ -165,7 +168,7 @@ export function NvdaWinddown({ data }: { data: NvdaWinddownData }) {
                     {fmtSh(sellNow)}
                   </div>
                   <div className="text-muted-foreground">
-                    Sellable now (low tax rate)
+                    Sellable now at the low tax rate
                   </div>
                 </div>
               </div>
@@ -177,7 +180,7 @@ export function NvdaWinddown({ data }: { data: NvdaWinddownData }) {
                       {fmtSh(wait)}
                     </div>
                     <div className="text-muted-foreground">
-                      Worth waiting for
+                      Still in the 2-year holding period
                     </div>
                   </div>
                 </div>
@@ -186,7 +189,7 @@ export function NvdaWinddown({ data }: { data: NvdaWinddownData }) {
           </>
         ) : (
           <p className="py-4 text-center text-sm text-muted-foreground">
-            No trim recommended right now.
+            Holding breakdown not available yet.
           </p>
         )}
       </div>
