@@ -11,7 +11,6 @@ import {
   api,
   type AllocationBreakdownDTO,
   type WindfallActionListItem,
-  type WindfallClassifiedSource,
   type WindfallDetectResponse,
   type WindfallEventDTO,
   type WindfallProposalDTO,
@@ -24,12 +23,18 @@ import type { ValueWithRationale } from "@/lib/retirement-types";
 const USER_ID = "ariel";
 
 /**
- * Full-surface windfall card for /retirement.
+ * Full-surface card for the auto-detected cash-position change on
+ * /retirement.
  *
  * Renders the same auto-detected event as <WindfallBanner> on Home, but
- * with the entire allocation plan visible: hero verdict + 8-row allocation
- * delta table + 3 horizon proposal cards (long/medium/short) with
- * Accept/Defer buttons.
+ * with the entire allocation plan visible: hero verdict + a source
+ * breakdown (what's explained by sales vs the unexplained residual) +
+ * 8-row allocation delta table + 3 horizon proposal cards
+ * (long/medium/short) with Accept/Defer buttons.
+ *
+ * This is NOT framed as a "windfall"/gift: the cash delta is a
+ * month-over-month change in the cash position to be allocated, and the
+ * card surfaces its likely SOURCE rather than implying free money.
  *
  * Buttons are disabled in this iteration — Accept/Defer wiring through
  * action_engine is deferred to a follow-up; see the resume note at
@@ -60,7 +65,7 @@ export function WindfallCard() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Windfall detector</CardTitle>
+          <CardTitle className="text-base">Cash-change detector</CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-rose-400 font-mono">
           Failed to fetch: {err}
@@ -81,6 +86,7 @@ export function WindfallCard() {
   return (
     <div className="space-y-3">
       <WindfallHero event={event} plan={plan} />
+      <CashSourceBreakdown event={event} />
       <AllocationDeltaTable />
       <ProposalsGrid plan={plan} event={event} />
 
@@ -95,9 +101,9 @@ export function WindfallCard() {
           crosses <span className="font-mono">$25K USD</span> or{" "}
           <span className="font-mono">₪75K NIS</span>, it tags the event and
           classifies the source by matching equity sales in the same month
-          (5% tolerance). The plan splits the windfall 60/25/15 across
-          long/medium/short horizons; long-term picks tickers you already
-          hold to close the biggest plan-target gaps.
+          (5% tolerance). The plan splits the cash to allocate 60/25/15
+          across long/medium/short horizons; long-term picks tickers you
+          already hold to close the biggest plan-target gaps.
         </p>
         <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
           Medium-term and short-term proposals are placeholders — the agent
@@ -116,17 +122,23 @@ interface WindfallHeroProps {
 
 function WindfallHero({ event, plan }: WindfallHeroProps) {
   const status = event.requires_user_classification ? "WARN" : "UNCERTAIN";
+  const hasSales = event.matching_sales.length > 0;
 
-  // Use the backend allocator's canonical headline rationale as the
-  // verdict — it already reasons over classification + plan-gap
-  // priorities + allocator confidence. Synthesizing a verdict on the
-  // client would drift from the backend's intent and leave the
-  // canonical rationale orphaned.
+  // Title + verdict never imply free money — this is a cash-position
+  // change to allocate, with its likely SOURCE named.
+  const title = hasSales
+    ? "Cash position changed — to allocate"
+    : "Unexplained cash change — review & allocate";
+
+  // Prefer the backend allocator's canonical headline rationale (it
+  // reasons over classification + plan-gap priorities + allocator
+  // confidence). Fall back to source-driven copy that frames the delta
+  // honestly when the backend doesn't supply one.
   const verdict =
     plan?.headline?.rationale ??
-    (event.requires_user_classification
-      ? "Source unclear — likely cash was redeployed in-month. Confirm classification before allocating."
-      : `Classified as ${classificationLabel(event.classified_source)}. Review the proposed allocation below.`);
+    (hasSales
+      ? `Includes ${saleNames(event.matching_sales)} sale(s); allocate per the plan below.`
+      : "No matching sale this month — likely an in-month reallocation. Review the source before allocating.");
 
   const longTotal = (plan?.long_term ?? []).reduce(
     (acc, p) => acc + p.amount_usd,
@@ -143,12 +155,12 @@ function WindfallHero({ event, plan }: WindfallHeroProps) {
 
   return (
     <HeroCard
-      title="Windfall detected"
+      title={title}
       status={status}
       verdict={verdict}
       numbers={[
         {
-          label: "Cash delta",
+          label: "Cash to allocate",
           display: formatUsd(event.cash_delta_total_usd_equiv),
           secondary: `${formatUsd(event.cash_delta_usd)} USD + ${formatNis(event.cash_delta_nis)} NIS @ ₪${event.fx_usd_nis.toFixed(2)}/$`,
           children: (
@@ -158,7 +170,7 @@ function WindfallHero({ event, plan }: WindfallHeroProps) {
                 value: event.cash_delta_total_usd_equiv,
                 unit: "USD",
                 source_id: event.source_tsv,
-                rationale: `Difference between the cash + USD bank rows in ${humanTsvLabel(event.source_tsv)} vs ${humanTsvLabel(event.previous_tsv ?? "")}. NIS leg converted at the snapshot's FX (₪${event.fx_usd_nis.toFixed(4)}/$).`,
+                rationale: `Difference between the cash + USD bank rows in ${humanTsvLabel(event.source_tsv)} vs ${humanTsvLabel(event.previous_tsv ?? "")}. NIS leg converted at the snapshot's FX (₪${event.fx_usd_nis.toFixed(4)}/$). This is a month-over-month change in the cash position to allocate — not a gift.`,
                 confidence: "high",
               }}
             />
@@ -182,6 +194,75 @@ function WindfallHero({ event, plan }: WindfallHeroProps) {
         </span>
       }
     />
+  );
+}
+
+/**
+ * Compact source breakdown for the cash delta — answers "where did the
+ * $X come from?" so the headline isn't an unexplained number. Splits the
+ * total into what matched equity sales explain vs the unexplained
+ * residual, using only data already in the response (matching_sales).
+ */
+function CashSourceBreakdown({ event }: { event: WindfallEventDTO }) {
+  const total = event.cash_delta_total_usd_equiv;
+  const matched = event.matching_sales.reduce((acc, s) => acc + s.value_usd, 0);
+  const residual = total - matched;
+  // Mirror the detector's 5% match band: a residual under 5% of the
+  // total is rounding/FX noise, not a separate unexplained source.
+  const hasResidual = Math.abs(residual) > 0.05 * Math.abs(total);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base font-mono">
+          What produced the {formatUsd(total)} change
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ul className="space-y-1.5 text-sm font-mono tabular-nums">
+          {event.matching_sales.map((s) => (
+            <li
+              key={s.symbol}
+              className="flex items-center justify-between gap-3 border-b border-border/20 pb-1.5"
+            >
+              <span>
+                {s.symbol} {Math.abs(s.shares_sold).toLocaleString()} sh sold
+                <span className="text-muted-foreground">
+                  {" "}
+                  @ ${s.current_price.toFixed(2)}
+                </span>
+              </span>
+              <span className="text-info">{formatUsd(s.value_usd)}</span>
+            </li>
+          ))}
+          {event.matching_sales.length === 0 ? (
+            <li className="flex items-center justify-between gap-3 border-b border-border/20 pb-1.5">
+              <span className="text-muted-foreground">
+                No matching equity sale this month
+              </span>
+              <span className="text-muted-foreground">$0</span>
+            </li>
+          ) : null}
+          {hasResidual ? (
+            <li className="flex items-center justify-between gap-3 pt-0.5">
+              <span className="text-amber-400">
+                Unexplained residual — likely a reallocation
+              </span>
+              <span className="text-amber-400">
+                {formatUsd(Math.abs(residual))}
+              </span>
+            </li>
+          ) : null}
+        </ul>
+        <p className="mt-3 text-[11px] text-muted-foreground leading-relaxed">
+          {event.matching_sales.length === 0
+            ? `No sale in ${humanTsvLabel(event.source_tsv)} matched the cash delta. A cash change with no matching gift or sale is most likely an in-month reallocation — review the source before treating it as new money.`
+            : hasResidual
+              ? `Matched sales explain ${formatUsd(matched)} of the ${formatUsd(total)} change; the remaining ${formatUsd(Math.abs(residual))} is unexplained (most likely an in-month reallocation). This is cash to allocate, not a gift.`
+              : `The matched sale(s) account for the full ${formatUsd(total)} change. This is cash to allocate, not a gift.`}
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -275,11 +356,11 @@ function AllocationDeltaTable() {
           </table>
         </div>
         <p className="mt-2 text-[11px] text-muted-foreground">
-          DESTINATION rows are under target — the natural home for new
-          money. OVER rows are above target (trimming, not adding) and
-          aren&apos;t windfall destinations. Cash is excluded by
-          construction — a windfall is cash, allocating cash to cash is
-          a no-op.
+          DESTINATION rows are under target — the natural home for the
+          cash to allocate. OVER rows are above target (trimming, not
+          adding) and aren&apos;t destinations. Cash is excluded by
+          construction — the delta is already cash, so allocating cash to
+          cash is a no-op.
         </p>
       </CardContent>
     </Card>
@@ -632,15 +713,10 @@ function formatNis(value: number): string {
   return `₪${Math.round(value).toLocaleString()}`;
 }
 
-function classificationLabel(source: WindfallClassifiedSource): string {
-  switch (source) {
-    case "rsu_sale":
-      return "RSU sale";
-    case "stock_sale":
-      return "stock sale";
-    default:
-      return "unclear";
-  }
+// Human-readable join of matched sale symbols, e.g. "BRK.B" or
+// "BRK.B + AAPL". Used in the hero verdict to name the cash source.
+function saleNames(sales: { symbol: string }[]): string {
+  return sales.map((s) => s.symbol).join(" + ");
 }
 
 function confidenceClass(c: "high" | "medium" | "low"): string {

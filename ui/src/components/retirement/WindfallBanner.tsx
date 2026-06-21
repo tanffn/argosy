@@ -8,10 +8,11 @@ import {
   api,
   type WindfallClassifiedSource,
   type WindfallDetectResponse,
+  type WindfallEventDTO,
 } from "@/lib/api";
 
 /**
- * Home-page banner for the auto-detected windfall flow.
+ * Home-page banner for the auto-detected cash-position change.
  *
  * Calls GET /api/retirement/windfall/detect on mount. The endpoint diffs
  * the two most-recent monthly TSVs in $ARGOSY_EXPENSE_SAMPLES_ROOT and
@@ -19,9 +20,12 @@ import {
  * event is detected (or fewer than 2 TSVs on disk), the banner renders
  * nothing — keeping a clean home page in the common case.
  *
- * Tone follows classification: WARN (amber) when classified_source is
- * "unclear" because the user still needs to weigh in; INFO (blue) once
- * the detector matched equity sales to the cash delta.
+ * This is NOT a "windfall" / gift banner: the cash delta is a month-over-
+ * month change in the cash position that needs allocating. Its likely
+ * SOURCE is named (a matched equity sale, or — when nothing matches — an
+ * unexplained move that's probably a reallocation). Tone follows
+ * confidence: WARN (amber) when the source is unexplained and the user
+ * needs to weigh in; INFO (blue) once a sale explains the delta.
  */
 export function WindfallBanner() {
   const [data, setData] = useState<WindfallDetectResponse | null>(null);
@@ -45,13 +49,13 @@ export function WindfallBanner() {
   if (!data?.event) return null;
   const e = data.event;
 
-  const isUnclear = e.classified_source === "unclear";
-  const borderClass = isUnclear ? "border-l-warning/80" : "border-l-info/80";
-  const dotClass = isUnclear ? "text-warning" : "text-info";
-  // Glyph mirrors the tone — ⚠ only when the user actually needs to
-  // weigh in. A confidently-classified RSU/stock sale gets a $-mark
-  // so a green-path event isn't visually flagged as a warning.
-  const glyph = isUnclear ? "⚠" : "$";
+  const frame = describeCashChange(e);
+  const borderClass = frame.tone === "warn" ? "border-l-warning/80" : "border-l-info/80";
+  const dotClass = frame.tone === "warn" ? "text-warning" : "text-info";
+  // Glyph mirrors the tone — ⚠ only when the source is unexplained and
+  // the user actually needs to weigh in. A sale-explained delta gets a
+  // $-mark so an explained event isn't visually flagged as a warning.
+  const glyph = frame.tone === "warn" ? "⚠" : "$";
 
   return (
     <section
@@ -64,11 +68,10 @@ export function WindfallBanner() {
             {glyph}
           </span>
           <span className="font-mono text-sm font-semibold">
-            {formatUsd(e.cash_delta_total_usd_equiv)} windfall detected in{" "}
-            {humanTsvLabel(e.source_tsv)}
+            {frame.headline} in {humanTsvLabel(e.source_tsv)}
           </span>
-          <StatusPill tone={isUnclear ? "warning" : "accent"} mono>
-            {classificationLabel(e.classified_source)}
+          <StatusPill tone={frame.tone === "warn" ? "warning" : "accent"} mono>
+            {frame.pill}
           </StatusPill>
           {e.requires_user_classification ? (
             <StatusPill tone="warning" mono>
@@ -77,7 +80,7 @@ export function WindfallBanner() {
           ) : null}
         </div>
         <div className="font-mono text-[11px] text-muted-foreground tabular-nums">
-          {salesSummary(e.matching_sales)}
+          {frame.breakdownLine}
         </div>
         <div className="font-mono text-[11px] text-muted-foreground">
           compared {humanTsvLabel(e.previous_tsv ?? "")} →{" "}
@@ -89,27 +92,91 @@ export function WindfallBanner() {
           href="/proposals#allocation"
           className="font-mono text-xs text-info hover:underline"
         >
-          See allocation plan -&gt;
+          Allocate this cash -&gt;
         </Link>
       </div>
     </section>
   );
 }
 
+// ---------- cash-change framing ----------------------------------------
+
+interface CashChangeFrame {
+  tone: "warn" | "info";
+  /** Plain-language headline — never implies free money. */
+  headline: string;
+  pill: string;
+  /** One-line source/breakdown hint. */
+  breakdownLine: string;
+}
+
+/**
+ * Turn a raw cash delta into honest, source-driven copy.
+ *
+ * Discriminator order:
+ *   1. matching_sales non-empty → name the sale(s); call out the
+ *      unexplained residual when the sales don't cover the full delta.
+ *   2. classified_source salary/bonus → "new cash from <source>".
+ *      (Not in the current TS union, but handled defensively in case the
+ *      backend widens it — see api.ts WindfallClassifiedSource.)
+ *   3. otherwise → unexplained change, likely a reallocation/sale.
+ */
+function describeCashChange(e: WindfallEventDTO): CashChangeFrame {
+  const total = e.cash_delta_total_usd_equiv;
+  const totalStr = formatUsd(total);
+
+  if (e.matching_sales.length > 0) {
+    const matched = e.matching_sales.reduce((acc, s) => acc + s.value_usd, 0);
+    const residual = total - matched;
+    const saleNames = e.matching_sales
+      .map((s) => `${s.symbol} (~${formatUsd(s.value_usd)})`)
+      .join(" + ");
+    // A material residual means a chunk of the delta isn't explained by
+    // the matched sale(s) — flag it so the user knows it's not "just" the
+    // sale. Threshold mirrors the detector's 5% match band.
+    const materialResidual = Math.abs(residual) > 0.05 * Math.abs(total);
+    return {
+      tone: materialResidual ? "warn" : "info",
+      headline: `Cash position changed by ${totalStr}`,
+      pill: materialResidual ? "PARTLY EXPLAINED" : "SALE",
+      breakdownLine: materialResidual
+        ? `${saleNames} sale explains ~${formatUsd(matched)}; ${formatUsd(Math.abs(residual))} unexplained — review & allocate`
+        : `includes a ${saleNames} sale — to allocate`,
+    };
+  }
+
+  const sourceWord = salarySource(e.classified_source);
+  if (sourceWord) {
+    return {
+      tone: "info",
+      headline: `New cash from ${sourceWord}: ${totalStr}`,
+      pill: sourceWord.toUpperCase(),
+      breakdownLine: "to allocate",
+    };
+  }
+
+  return {
+    tone: "warn",
+    headline: `Unexplained cash change of ${totalStr}`,
+    pill: "UNEXPLAINED",
+    breakdownLine:
+      "no matching sale this month — likely a reallocation or sale; review & allocate",
+  };
+}
+
+// The TS union is rsu_sale|stock_sale|unclear today, but the backend
+// enum (salary|bonus|sale|other|unclassified|unclear) may widen it. Match
+// defensively on the string so salary/bonus get human copy if they arrive.
+function salarySource(source: WindfallClassifiedSource): string | null {
+  const s = String(source);
+  if (s === "salary") return "salary";
+  if (s === "bonus") return "a bonus";
+  return null;
+}
+
 function formatUsd(value: number): string {
   if (!Number.isFinite(value)) return "$—";
   return `$${Math.round(value).toLocaleString()}`;
-}
-
-function classificationLabel(source: WindfallClassifiedSource): string {
-  switch (source) {
-    case "rsu_sale":
-      return "RSU SALE";
-    case "stock_sale":
-      return "STOCK SALE";
-    default:
-      return "UNCLEAR";
-  }
 }
 
 // "Family Finances Status - 26 May.tsv" → "May 2026". Falls back to the
@@ -122,14 +189,4 @@ function humanTsvLabel(filename: string): string {
   const [, yy, mon] = m;
   const year = 2000 + Number(yy);
   return `${mon} ${year}`;
-}
-
-function salesSummary(
-  sales: { symbol: string; shares_sold: number }[],
-): string {
-  if (sales.length === 0) return "no matching equity sales in the same month";
-  const parts = sales.map(
-    (s) => `${s.symbol} -${Math.abs(s.shares_sold).toLocaleString()}`,
-  );
-  return `matching sales: ${parts.join(" + ")}`;
 }
