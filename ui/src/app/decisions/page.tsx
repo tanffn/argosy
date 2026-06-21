@@ -100,11 +100,35 @@ function formatDuration(startedAt: string, finishedAt: string | null): string {
   return remM === 0 ? `${h}h` : `${h}h ${remM}m`;
 }
 
-// First ~120 chars of the most recent agent_run.response_text. Runs come
-// back ordered by id in the DTO; we don't re-sort here because the
-// backend has the canonical view. Falls back to "—" if no agent has
-// written a response yet (e.g. brand-new "running" rows).
+// Humanized labels for the decision_kind taxonomy. Mirrors the backend
+// _KIND_LABELS map. Unlisted kinds fall back to a Title-cased version of
+// the raw value so a newly-added kind never renders blank.
+const KIND_LABELS: Record<string, string> = {
+  trade_proposal: "Trade proposal",
+  plan_revision: "Plan synthesis / revision",
+  plan_amendment_chat: "Plan amendment chat",
+  delta_pushback: "Delta pushback",
+  daily_brief: "Daily brief",
+};
+
+function humanizeKind(kind: string | null): string {
+  if (!kind) return "—";
+  return (
+    KIND_LABELS[kind] ??
+    kind
+      .replace(/_/g, " ")
+      .replace(/^./, (c) => c.toUpperCase())
+  );
+}
+
+// Short human description for the row. Prefers the backend-derived
+// `description` (built from real DecisionRun fields). Falls back to the
+// most recent agent_run.response_text when present (trade runs), then to
+// "—" for brand-new "running" rows with nothing factual yet.
 function describeRun(g: DecisionGroup): string {
+  if (g.description && g.description.trim().length > 0) {
+    return g.description.trim();
+  }
   for (let i = g.agent_runs.length - 1; i >= 0; i -= 1) {
     const t = g.agent_runs[i]?.response_text;
     if (t && t.trim().length > 0) {
@@ -306,7 +330,7 @@ export default function DecisionsListPage() {
 
 function DecisionRow({ group }: { group: DecisionGroup }) {
   const tone = statusTone(group.status);
-  const kind = group.decision_kind ?? "—";
+  const kind = humanizeKind(group.decision_kind);
   const description = describeRun(group);
   return (
     <tr className="border-b border-border/40 hover:bg-secondary/40 transition-colors">

@@ -1038,6 +1038,10 @@ export interface DecisionGroup {
   // by the row renderer: delta_pushback surfaces `delta_item_id`,
   // daily_brief surfaces `brief_date`. Synthesis runs leave it null.
   notes_json?: string | null;
+  // Short human description derived server-side from real DecisionRun
+  // fields (decision_kind + fund_manager_decision + proposal_id + agent
+  // count). Null when nothing factual is available (renders "—").
+  description?: string | null;
 }
 
 export interface ProposalListItem {

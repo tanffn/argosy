@@ -586,6 +586,61 @@ class DecisionGroupDTO(BaseModel):
     # null. Forwarded as a raw string (not pre-parsed) so the wire shape
     # remains stable regardless of which kinds are added later.
     notes_json: str | None = None
+    # Short human description derived from real DecisionRun fields (never
+    # fabricated). For plan_revision/synthesis runs there is no per-ticker
+    # trade text, so the UI would otherwise show "—"; this gives the row a
+    # meaningful summary from decision_kind + fund_manager_decision +
+    # proposal_id + agent count.
+    description: str | None = None
+
+
+# Human-readable labels for the decision_kind taxonomy. Anything not listed
+# falls back to a Title-cased version of the raw value so a newly-added kind
+# never renders blank.
+_KIND_LABELS: dict[str, str] = {
+    "trade_proposal": "Trade proposal",
+    "plan_revision": "Plan synthesis / revision",
+    "plan_amendment_chat": "Plan amendment chat",
+    "delta_pushback": "Delta pushback",
+    "daily_brief": "Daily brief",
+}
+
+
+def _resolve_decision_run_id(decision_id: str) -> int | None:
+    """Map a free-form agent_reports.decision_id to a DecisionRun.id.
+
+    Trade-proposal runs use the plain integer id. Synthesis runs use a
+    ``plan-synth-<id>`` prefix (see agent_tree_builder). Intake-session
+    UUIDs and other free-form ids have no DecisionRun and return None.
+    """
+    try:
+        return int(decision_id)
+    except (ValueError, TypeError):
+        pass
+    if decision_id.startswith("plan-synth-"):
+        try:
+            return int(decision_id[len("plan-synth-"):])
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _describe_run(dr: DecisionRun | None, agent_count: int) -> str | None:
+    """Build a short human description from real DecisionRun fields only.
+
+    Returns None when there is nothing factual to say (the UI renders "—").
+    """
+    if dr is None:
+        return None
+    label = _KIND_LABELS.get(dr.decision_kind, dr.decision_kind.replace("_", " ").capitalize())
+    parts: list[str] = [label]
+    if dr.fund_manager_decision:
+        parts.append(f"FM: {dr.fund_manager_decision}")
+    if dr.proposal_id is not None:
+        parts.append(f"proposal #{dr.proposal_id}")
+    if agent_count:
+        parts.append(f"{agent_count} agents")
+    return " · ".join(parts)
 
 
 @router.get("/recent", response_model=list[DecisionGroupDTO])
@@ -671,12 +726,16 @@ async def get_decisions_recent(
 
         # --- Step 3: batch-fetch matching DecisionRun rows (for tier/ticker/status) ---
         dr_by_id: dict[int, DecisionRun] = {}
-        parseable_ids: list[int] = []
+        # Map each decision_id string to its DecisionRun.id (plain int for
+        # trade runs, ``plan-synth-<id>`` prefix for synthesis runs). Keep
+        # the reverse map so we can resolve per-group below without
+        # re-parsing.
+        run_id_by_did: dict[str, int] = {}
         for did in top_ids_rows:
-            try:
-                parseable_ids.append(int(did))
-            except (ValueError, TypeError):
-                pass
+            rid = _resolve_decision_run_id(did)
+            if rid is not None:
+                run_id_by_did[did] = rid
+        parseable_ids = list(set(run_id_by_did.values()))
         if parseable_ids:
             dr_rows = (
                 await session.execute(
@@ -700,12 +759,12 @@ async def get_decisions_recent(
         if not rows:
             continue
 
-        # Resolve join to DecisionRun (may be None for non-integer decision_ids).
+        # Resolve join to DecisionRun (may be None for free-form decision_ids
+        # such as intake-session UUIDs).
         dr: DecisionRun | None = None
-        try:
-            dr = dr_by_id.get(int(did))
-        except (ValueError, TypeError):
-            pass
+        rid = run_id_by_did.get(did)
+        if rid is not None:
+            dr = dr_by_id.get(rid)
 
         # T4.4 — decision_kind filter is applied post-join because the
         # agent_reports decision_id column is free-form (see Step 1 note).
@@ -763,6 +822,7 @@ async def get_decisions_recent(
             agent_runs=agent_runs_out,
             # T4.4 — opaque blob; UI parses by decision_kind.
             notes_json=(dr.notes_json if dr else None),
+            description=_describe_run(dr, len(rows)),
         ))
 
     return result

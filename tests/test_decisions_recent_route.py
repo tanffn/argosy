@@ -357,6 +357,67 @@ async def test_decisions_recent_filter_by_daily_brief_returns_only_briefs(
 
 
 @pytest.mark.asyncio
+async def test_decisions_recent_plan_synth_prefix_resolves_kind(
+    engine: None, client: AsyncClient,
+) -> None:
+    """A plan-synthesis run whose agent_reports use the ``plan-synth-<id>``
+    decision_id prefix must still join to its DecisionRun row so the row
+    surfaces a non-empty decision_kind ('plan_revision') and a human
+    description — instead of the all-"—" bug.
+    """
+    async with db_mod.get_session() as session:
+        session.add(User(id="ariel"))
+        dr = DecisionRun(
+            user_id="ariel",
+            ticker="(plan)",
+            tier=None,
+            decision_kind="plan_revision",
+            status="approved",
+            fund_manager_decision="APPROVE_WITH_CONDITIONS",
+            proposal_id=None,
+        )
+        session.add(dr)
+        await session.flush()
+        # Synthesis agents fan out under the plan-synth-<id> decision_id.
+        for role in ("plan_synthesizer", "audit", "bull_researcher"):
+            session.add(AgentReportRow(
+                user_id="ariel", agent_role=role,
+                decision_id=f"plan-synth-{dr.id}",
+                response_text="{}", prompt_hash="h",
+                tokens_in=10, tokens_out=20, cost_usd=0.05,
+                model="claude-opus-4-8",
+                cache_input_tokens=0, cache_creation_tokens=0, thinking_tokens=0,
+            ))
+        await session.commit()
+        synth_did = f"plan-synth-{dr.id}"
+
+    res = await client.get("/api/decisions/recent?user_id=ariel&limit=20")
+    assert res.status_code == 200, res.text
+    groups = res.json()
+    g = next(g for g in groups if g["decision_id"] == synth_did)
+    # The bug was decision_kind/tier/ticker all None because int("plan-synth-49")
+    # failed; the prefix-aware join now resolves them.
+    assert g["decision_kind"] == "plan_revision"
+    assert g["ticker"] == "(plan)"
+    assert g["status"] == "approved"
+    assert g["agent_count"] == 3
+    # Description must be non-empty and reflect real fields.
+    assert g["description"]
+    assert "Plan synthesis / revision" in g["description"]
+    assert "FM: APPROVE_WITH_CONDITIONS" in g["description"]
+    assert "3 agents" in g["description"]
+
+    # The server-side decision_kind filter must also match prefixed runs.
+    res2 = await client.get(
+        "/api/decisions/recent?user_id=ariel&limit=20&decision_kind=plan_revision"
+    )
+    assert res2.status_code == 200, res2.text
+    g2 = res2.json()
+    assert len(g2) == 1
+    assert g2[0]["decision_id"] == synth_did
+
+
+@pytest.mark.asyncio
 async def test_decisions_recent_filter_excludes_unjoinable_groups(
     engine: None, client: AsyncClient,
 ) -> None:
