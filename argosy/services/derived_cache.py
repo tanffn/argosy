@@ -27,6 +27,7 @@ just memoized. It never mutates or reshapes a value.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 from collections import OrderedDict
@@ -41,6 +42,10 @@ _MAXSIZE = 64
 
 _LOCK = threading.RLock()
 _STORE: "OrderedDict[tuple, Any]" = OrderedDict()
+
+# Sentinel: "no tsv_override supplied" (distinct from an explicit None, which
+# means "the caller already resolved that there is no TSV").
+_UNSET = object()
 
 
 def _enabled() -> bool:
@@ -101,6 +106,148 @@ def version_tuple(session, user_id: str) -> Optional[tuple]:
         )
     except Exception:  # noqa: BLE001 — uncacheable on any failure
         return None
+
+
+def tsv_fingerprint(tsv) -> Optional[tuple]:
+    """Return ``(mtime, size)`` for a TSV path, or ``None`` on any failure.
+
+    The cheap, structural staleness probe for the latest portfolio TSV: a new
+    file (different mtime/size) yields a different fingerprint -> the key busts.
+    Accepts a ``pathlib.Path``-like (anything with ``.stat()``) or ``None``.
+    Never raises.
+    """
+    if tsv is None:
+        return None
+    try:
+        st = tsv.stat()
+        return (st.st_mtime, st.st_size)
+    except Exception:  # noqa: BLE001 — None on any error
+        return None
+
+
+def draft_aware_version(
+    session,
+    user_id: str,
+    *,
+    include_identity: bool = False,
+    include_tsv: bool = False,
+    tsv_override: Any = _UNSET,
+) -> Optional[tuple]:
+    """Staleness key for the ``/draft/*`` plan endpoints, or ``None``.
+
+    These endpoints read MORE than ``(current plan, snapshot)`` — they also
+    read the PENDING DRAFT (a fallback share-ceiling target), and optionally the
+    user's ``UserContext.identity_yaml`` (vest schedule + NVDA sale progress) and
+    the latest portfolio TSV file (today's NVDA share count). The bare
+    :func:`version_tuple` does NOT capture those, so caching keyed on it alone
+    could serve a STALE cross-state value — forbidden by the output-trust
+    doctrine. This helper extends ``version_tuple`` with every extra input so the
+    resulting key fully determines the endpoint's output.
+
+    Build order (each segment is appended, never reordered):
+
+      1. ``version_tuple(session, user_id)`` — current plan id + decision_run_id +
+         snapshot id + imported_at. If that is ``None`` (no current plan ->
+         uncacheable), this returns ``None`` immediately.
+      2. The pending draft's identity: ``(draft_id, draft_stamp_iso)``. The stamp
+         is the first present of ``updated_at`` / ``accepted_at`` / ``imported_at``
+         (isoformat). When there is NO pending draft, append ``(None, None)`` —
+         the endpoints fall back to the current plan, and that absence is itself
+         part of the key (so a draft appearing/disappearing busts it).
+      3. When ``include_identity``: a short sha1 of ``UserContext.identity_yaml``
+         (``None`` when absent) so any vest-schedule / sale-progress edit busts
+         the key.
+      4. When ``include_tsv``: the latest TSV file's ``(mtime, size)`` (``None``
+         on any error) so a freshly-ingested TSV busts the key.
+
+    NEVER raises — any failure degrades to ``None`` (uncacheable -> always
+    compute). A partial/ambiguous key is never returned: a per-segment failure
+    appends an explicit ``None`` sentinel (distinct from a real value) rather
+    than dropping the segment.
+    """
+    try:
+        base = version_tuple(session, user_id)
+        if base is None:
+            return None
+
+        # --- pending-draft identity ---------------------------------------
+        draft_id = None
+        draft_stamp = None
+        try:
+            from argosy.state.queries import get_pending_draft
+
+            draft = get_pending_draft(session, user_id)
+            if draft is not None:
+                draft_id = int(draft.id)
+                for attr in ("updated_at", "accepted_at", "imported_at"):
+                    stamp = getattr(draft, attr, None)
+                    if stamp is not None:
+                        draft_stamp = (
+                            stamp.isoformat()
+                            if hasattr(stamp, "isoformat")
+                            else str(stamp)
+                        )
+                        break
+        except Exception:  # noqa: BLE001 — uncacheable on any draft-read failure
+            return None
+
+        key = base + (draft_id, draft_stamp)
+
+        # --- identity_yaml hash (vest schedule + NVDA sale progress) ------
+        if include_identity:
+            identity_hash = None
+            try:
+                from argosy.state.models import UserContext
+
+                ctx = session.execute(
+                    select_user_context(UserContext, user_id)
+                ).scalar_one_or_none()
+                raw = getattr(ctx, "identity_yaml", None) if ctx is not None else None
+                if raw:
+                    identity_hash = hashlib.sha1(
+                        raw.encode("utf-8")
+                    ).hexdigest()[:12]
+            except Exception:  # noqa: BLE001 — None-safe; absence is part of key
+                identity_hash = None
+            key = key + (identity_hash,)
+
+        # --- latest TSV file fingerprint (mtime + size) -------------------
+        # The fingerprint is the staleness probe for the TSV the endpoint reads
+        # (today's NVDA share count). A new file -> new fingerprint -> bust.
+        #
+        # Finding the latest TSV is an ``rglob`` over ARGOSY_HOME (~2-5s) — the
+        # SAME walk the endpoint itself does. To avoid globbing TWICE per request
+        # (once here, once in the compute), the route resolves the path ONCE and
+        # threads it in via ``tsv_override``; we fingerprint that instead of
+        # re-globbing. ``tsv_override=None`` means "caller resolved: no TSV".
+        # When no override is given we fall back to resolving it ourselves.
+        if include_tsv:
+            try:
+                if tsv_override is _UNSET:
+                    from argosy.api.routes.portfolio import _find_latest_tsv
+
+                    tsv = _find_latest_tsv()
+                else:
+                    tsv = tsv_override
+                tsv_stamp = tsv_fingerprint(tsv)
+            except Exception:  # noqa: BLE001 — None on any error
+                tsv_stamp = None
+            key = key + (tsv_stamp,)
+
+        return key
+    except Exception:  # noqa: BLE001 — uncacheable on any failure
+        return None
+
+
+def select_user_context(UserContext, user_id):
+    """Build the ``select(UserContext).where(...)`` used by draft_aware_version.
+
+    Factored out so the import of ``sqlalchemy.select`` is local and the helper
+    above stays readable. Returns a SQLAlchemy ``Select``.
+    """
+    from sqlalchemy import select
+
+    return select(UserContext).where(UserContext.user_id == user_id)
 
 
 def get_or_compute(
@@ -248,12 +395,17 @@ def warm(user_id: str) -> None:
       * ``"portfolio.real-estate"`` -> ``_compute_real_estate``, key ``("real-estate",)``.
       * ``"plan.allocation-glidepath"`` -> ``compute_allocation_glidepath``, key
         ``("allocation-glidepath", today_iso)``.
+      * ``"plan.cashflow-projection"`` -> ``_compute_cashflow_projection`` at the
+        route DEFAULTS, key ``draft_aware_version(...) + ("cashflow-projection",
+        30, None, 0.25, None, None, 0.08, 0.18, 0.0)``. Deterministic (no random
+        seed) so the warmed value is reproducible.
+      * ``"plan.nvda-trajectory"`` -> ``_compute_nvda_trajectory``, key
+        ``draft_aware_version(..., include_identity=True, include_tsv=True) +
+        ("nvda-trajectory",)`` — captures plan+snapshot+draft+identity_yaml+TSV.
 
     NOT warmed (and NOT cached): the unseeded-MC plan endpoints
     (cashflow-monte-carlo / plan-series) — they default seed=None (random), so
-    a cached value would pin one draw; and nvda-trajectory — it reads the PENDING
-    DRAFT (a fallback ceiling) which the version tuple doesn't capture, so caching
-    risks a stale cross-state value. Those stay lazy + uncached.
+    a cached value would pin one draw. Those stay lazy + uncached.
     """
     if not _enabled() or not _warm_enabled():
         return
@@ -543,6 +695,85 @@ def warm(user_id: str) -> None:
         except Exception:  # noqa: BLE001
             pass
 
+        # --- plan.cashflow-projection (route default params) --------------
+        # Route: GET /plan/draft/cashflow-projection
+        #   draft_aware_version(db,user_id) + ("cashflow-projection", years,
+        #   retirement_age, tax_rate, portfolio_value_usd_override,
+        #   monthly_expenses_nis_override, mu_nominal_annual, sigma_annual,
+        #   lifestyle_drift_annual). Defaults: years=30, retirement_age=None,
+        #   tax_rate=0.25, overrides=None, mu=0.08, sigma=0.18, drift=0.0.
+        try:
+            from argosy.api.routes.plan import _compute_cashflow_projection
+
+            cf_base = draft_aware_version(session, user_id)
+            if cf_base is not None:
+                cf_version = cf_base + (
+                    "cashflow-projection",
+                    30,      # years
+                    None,    # retirement_age (canonical default resolved inside)
+                    0.25,    # tax_rate
+                    None,    # portfolio_value_usd_override
+                    None,    # monthly_expenses_nis_override
+                    0.08,    # mu_nominal_annual
+                    0.18,    # sigma_annual
+                    0.0,     # lifestyle_drift_annual
+                )
+
+                def _warm_cashflow():
+                    return _compute_cashflow_projection(
+                        db=session,
+                        user_id=user_id,
+                        years=30,
+                        retirement_age=None,
+                        tax_rate=0.25,
+                        portfolio_value_usd_override=None,
+                        monthly_expenses_nis_override=None,
+                        mu_nominal_annual=0.08,
+                        sigma_annual=0.18,
+                        lifestyle_drift_annual=0.0,
+                    )
+
+                get_or_compute(
+                    "plan.cashflow-projection", cf_version, _warm_cashflow
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- plan.nvda-trajectory (no params) -----------------------------
+        # Route: GET /plan/draft/nvda-trajectory
+        #   draft_aware_version(db,user_id, include_identity=True,
+        #   include_tsv=True) + ("nvda-trajectory",)
+        try:
+            from argosy.api.routes.plan import _compute_nvda_trajectory
+
+            # Resolve the TSV once (matches the route) so the warmed key + value
+            # use the SAME single-glob path the route reads.
+            try:
+                from argosy.api.routes.portfolio import _find_latest_tsv
+
+                _nt_tsv = _find_latest_tsv()
+            except Exception:  # noqa: BLE001
+                _nt_tsv = None
+
+            nt_base = draft_aware_version(
+                session,
+                user_id,
+                include_identity=True,
+                include_tsv=True,
+                tsv_override=_nt_tsv,
+            )
+            if nt_base is not None:
+                nt_version = nt_base + ("nvda-trajectory",)
+                get_or_compute(
+                    "plan.nvda-trajectory",
+                    nt_version,
+                    lambda: _compute_nvda_trajectory(
+                        user_id=user_id, db=session, tsv=_nt_tsv
+                    ),
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
     except Exception:  # noqa: BLE001 — warming is best-effort; never propagate
         pass
     finally:
@@ -586,6 +817,8 @@ def cache_size() -> int:
 
 __all__ = [
     "version_tuple",
+    "draft_aware_version",
+    "tsv_fingerprint",
     "get_or_compute",
     "warm",
     "warm_async",

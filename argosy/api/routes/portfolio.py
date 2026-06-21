@@ -109,19 +109,28 @@ def _find_latest_tsv() -> Path | None:
     under ``uploads/<user>/.../<timestamp>__<hash>__p.tsv``) don't shadow
     the real ``Family Finances Status - <date>.tsv`` file.
     """
+    import os
+
     settings = get_settings()
     home = settings.home
+    # Prune heavy build/VCS dirs DURING the walk (os.walk + in-place dirs edit)
+    # rather than rglob-then-filter — rglob descends into .git/.venv/node_modules
+    # before we can skip them, which cost ~2-5s over ARGOSY_HOME. Pruning here
+    # keeps the TSV scan sub-100ms.
+    _PRUNE = {"node_modules", "__pycache__"}
     candidates: list[tuple[float, Path]] = []
-    for tsv in home.rglob("*.tsv"):
-        # Skip our own scratch / temp directories.
-        s = str(tsv).lower()
-        if any(seg in s for seg in (".venv", "node_modules", "__pycache__")):
-            continue
-        try:
-            mtime = tsv.stat().st_mtime
-        except OSError:  # pragma: no cover - defensive
-            continue
-        candidates.append((mtime, tsv))
+    for root, dirs, files in os.walk(home):
+        # Skip dot-dirs (.git, .venv, .next, .superpowers, …) and known heavy dirs.
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in _PRUNE]
+        for fn in files:
+            if not fn.lower().endswith(".tsv"):
+                continue
+            tsv = Path(root) / fn
+            try:
+                mtime = tsv.stat().st_mtime
+            except OSError:  # pragma: no cover - defensive
+                continue
+            candidates.append((mtime, tsv))
     if not candidates:
         return None
     candidates.sort(reverse=True)

@@ -1375,7 +1375,67 @@ def get_draft_cashflow_projection(
     """Return a per-month cashflow projection for the /plan retirement view.
 
     Pure-math endpoint — no LLM, no external HTTP, just three DB reads
-    + the projection loop. <30 ms for a 30-year horizon."""
+    + the projection loop. Deterministic (no random seed) so it is cacheable.
+
+    Cached via the process-local derived cache keyed by ``draft_aware_version``
+    (current plan + snapshot + pending draft) PLUS every what-if query param, so
+    the default page load caches and slider/what-if changes recompute (a distinct
+    key per param set). The canonical retirement_age default is resolved INSIDE
+    the compute closure (so the resolved age is part of the cached value, not the
+    key) — but the key already pins the plan version that age derives from, so no
+    stale age can be served."""
+    from argosy.services import derived_cache
+
+    cache_version = derived_cache.draft_aware_version(db, user_id)
+    if cache_version is not None:
+        cache_version = cache_version + (
+            "cashflow-projection",
+            years,
+            retirement_age,
+            tax_rate,
+            portfolio_value_usd_override,
+            monthly_expenses_nis_override,
+            mu_nominal_annual,
+            sigma_annual,
+            lifestyle_drift_annual,
+        )
+
+    def _compute() -> CashflowProjectionResponse:
+        return _compute_cashflow_projection(
+            db=db,
+            user_id=user_id,
+            years=years,
+            retirement_age=retirement_age,
+            tax_rate=tax_rate,
+            portfolio_value_usd_override=portfolio_value_usd_override,
+            monthly_expenses_nis_override=monthly_expenses_nis_override,
+            mu_nominal_annual=mu_nominal_annual,
+            sigma_annual=sigma_annual,
+            lifestyle_drift_annual=lifestyle_drift_annual,
+        )
+
+    return derived_cache.get_or_compute(
+        "plan.cashflow-projection", cache_version, _compute
+    )
+
+
+def _compute_cashflow_projection(
+    *,
+    db: Session,
+    user_id: str,
+    years: int,
+    retirement_age: float | None,
+    tax_rate: float,
+    portfolio_value_usd_override: float | None,
+    monthly_expenses_nis_override: float | None,
+    mu_nominal_annual: float,
+    sigma_annual: float,
+    lifestyle_drift_annual: float,
+) -> CashflowProjectionResponse:
+    """Pure cashflow-projection computation (memoized by the route).
+
+    Unchanged from the original inline route body — extracted so the route can
+    wrap it in ``get_or_compute`` without altering the math or output."""
     from argosy.services.cashflow_projection import (
         extract_household_state,
         extract_pension_state,
@@ -1794,6 +1854,48 @@ def get_draft_nvda_trajectory(
 ) -> NvdaTrajectoryResponse:
     """Return NVDA share-count trajectory data for the /plan trajectory chart.
 
+    Cached via the process-local derived cache. This endpoint reads MORE than
+    ``(plan, snapshot)`` — it also reads ``UserContext.identity_yaml`` (vest
+    schedule + NVDA sale progress), the latest portfolio TSV file (today's NVDA
+    share count — the ~5s cost), AND the pending draft (fallback share ceiling).
+    The key therefore uses ``draft_aware_version(..., include_identity=True,
+    include_tsv=True)`` which captures plan + snapshot + draft + identity_yaml
+    hash + TSV (mtime,size) — i.e. EVERY input — so no stale value can be served.
+    The cached object is the exact ``NvdaTrajectoryResponse`` the compute returns.
+    """
+    from argosy.services import derived_cache
+
+    # Resolve the latest TSV ONCE (an rglob over ARGOSY_HOME — the dominant
+    # cost) and reuse it for BOTH the cache key's staleness fingerprint AND the
+    # compute, so we never walk the tree twice per request.
+    try:
+        from argosy.api.routes.portfolio import _find_latest_tsv
+
+        tsv_path = _find_latest_tsv()
+    except Exception:  # noqa: BLE001 — compute re-resolves if None passed
+        tsv_path = None
+
+    cache_version = derived_cache.draft_aware_version(
+        db, user_id, include_identity=True, include_tsv=True, tsv_override=tsv_path
+    )
+    if cache_version is not None:
+        cache_version = cache_version + ("nvda-trajectory",)
+
+    return derived_cache.get_or_compute(
+        "plan.nvda-trajectory",
+        cache_version,
+        lambda: _compute_nvda_trajectory(user_id=user_id, db=db, tsv=tsv_path),
+    )
+
+
+def _compute_nvda_trajectory(
+    *, user_id: str, db: Session, tsv: object = None
+) -> NvdaTrajectoryResponse:
+    """NVDA share-count trajectory computation (memoized by the route).
+
+    Unchanged from the original inline route body — extracted so the route can
+    memoize it without altering what it reads or returns.
+
     Sources:
       - today_shares: from portfolio_positions / latest TSV (NVDA row).
       - vests: from identity_yaml::rsu_vest_schedule.quarterly_vests.
@@ -1821,10 +1923,14 @@ def get_draft_nvda_trajectory(
     today_shares: int | None = None
     past_sales_raw: list[NvdaSaleEvent] = []
     try:
-        from argosy.api.routes.portfolio import _find_latest_tsv
         from argosy.ingest.tsv import parse_portfolio_tsv
 
-        tsv = _find_latest_tsv()
+        # Reuse the path the caller already resolved (one rglob/request); only
+        # re-resolve if the caller didn't pass one (e.g. a direct unit call).
+        if tsv is None:
+            from argosy.api.routes.portfolio import _find_latest_tsv
+
+            tsv = _find_latest_tsv()
         if tsv is not None:
             snap = parse_portfolio_tsv(tsv)
             for pos in snap.positions:
