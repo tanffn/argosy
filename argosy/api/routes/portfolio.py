@@ -1302,19 +1302,34 @@ def get_allocation_breakdown(
     from argosy.services.allocation_breakdown import build_allocation_breakdown
     from argosy.services.target_allocation_doc import load_plan_target_allocation
     from argosy.state.queries import get_current_plan
+    from argosy.services import derived_cache
 
-    row = get_latest_snapshot_row(db, user_id)
-    if row is None:
-        return AllocationBreakdownDTO(rows=[], total_value_k=0.0,
-                                      note="No portfolio snapshot found.")
-    snap = row_to_snapshot(row)
-    pv = get_current_plan(db, user_id)
-    doc = load_plan_target_allocation(pv) if pv is not None else None
-    rows = build_allocation_breakdown(snap, doc, exclude_nvda=exclude_nvda)
-    note = ("Current = your live holdings grouped by asset class; target = the "
-            "canonical plan's class targets. Click a class to see its symbols. "
-            + ("" if doc is not None
-               else "No current plan — targets shown blank."))
+    def _compute() -> AllocationBreakdownDTO:
+        row = get_latest_snapshot_row(db, user_id)
+        if row is None:
+            return AllocationBreakdownDTO(rows=[], total_value_k=0.0,
+                                          note="No portfolio snapshot found.")
+        snap = row_to_snapshot(row)
+        pv = get_current_plan(db, user_id)
+        doc = load_plan_target_allocation(pv) if pv is not None else None
+        rows = build_allocation_breakdown(snap, doc, exclude_nvda=exclude_nvda)
+        note = ("Current = your live holdings grouped by asset class; target = the "
+                "canonical plan's class targets. Click a class to see its symbols. "
+                + ("" if doc is not None
+                   else "No current plan — targets shown blank."))
+        return _allocation_breakdown_dto(rows, note)
+
+    # Pure function of (plan, snapshot, exclude_nvda) — no time/random/live-market
+    # dependence — so memoize on the version tuple + the one query param.
+    version = derived_cache.version_tuple(db, user_id)
+    if version is not None:
+        version = version + ("allocation-breakdown", exclude_nvda)
+    return derived_cache.get_or_compute(
+        "portfolio.allocation-breakdown", version, _compute
+    )
+
+
+def _allocation_breakdown_dto(rows, note: str) -> "AllocationBreakdownDTO":
     return AllocationBreakdownDTO(
         rows=[CategoryBreakdownDTO(
             label=r.label, current_pct=r.current_pct, target_pct=r.target_pct,
@@ -1375,6 +1390,19 @@ def get_real_estate(
     """Per-property real-estate net equity (Home − Loan, FX-converted) from the
     snapshot's "Real estate details". Net WORTH context — deliberately separate
     from the investable allocation (a primary residence isn't investable)."""
+    from argosy.services import derived_cache
+
+    # Pure function of (plan, snapshot) — the snapshot's real-estate block + the
+    # payment ledgers + the durable overrides, all keyed by the version tuple
+    # (snapshot id/imported_at). No time/random/live-market dependence, so memoize.
+    version = derived_cache.version_tuple(db, user_id)
+    version = (version + ("real-estate",)) if version is not None else None
+    return derived_cache.get_or_compute(
+        "portfolio.real-estate", version, lambda: _compute_real_estate(db, user_id)
+    )
+
+
+def _compute_real_estate(db: Session, user_id: str) -> RealEstateEquityDTO:
     from argosy.services.real_estate_equity import compute_real_estate_equity
     from argosy.services.real_estate_ledger import (
         load_property_ledgers,

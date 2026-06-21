@@ -69,6 +69,11 @@ def _patch_heavy_computes(monkeypatch):
         "compute_derived_inputs": 0,
         "canonical_feasible_dual_track": 0,
         "build_retirement_plan": 0,
+        "run_retirement_scenarios": 0,
+        "compute_wealth_dashboard": 0,
+        "get_allocation_breakdown": 0,
+        "_compute_real_estate": 0,
+        "compute_allocation_glidepath": 0,
     }
 
     def _overview(session, *, user_id):
@@ -97,6 +102,26 @@ def _patch_heavy_computes(monkeypatch):
             spend_to_retire_now_nis=1.0, fx_stress_band=[], assumptions={},
         )
 
+    def _scenarios(*, user_id, session, retirement_age, n_paths, seed):
+        calls["run_retirement_scenarios"] += 1
+        return SimpleNamespace(kind="scenarios", retirement_age=retirement_age)
+
+    def _wealth(session, *, user_id, exclude_nvda):
+        calls["compute_wealth_dashboard"] += 1
+        return SimpleNamespace(kind="wealth")
+
+    def _alloc_breakdown(*, user_id, exclude_nvda, db):
+        calls["get_allocation_breakdown"] += 1
+        return SimpleNamespace(kind="allocation-breakdown")
+
+    def _real_estate(db, user_id):
+        calls["_compute_real_estate"] += 1
+        return SimpleNamespace(kind="real-estate")
+
+    def _glidepath(session, user_id, today):
+        calls["compute_allocation_glidepath"] += 1
+        return SimpleNamespace(kind="glidepath")
+
     monkeypatch.setattr(
         "argosy.services.overview_assembler.build_overview", _overview
     )
@@ -109,6 +134,37 @@ def _patch_heavy_computes(monkeypatch):
     )
     monkeypatch.setattr(
         "argosy.services.retirement.retirement_plan.build_retirement_plan", _plan
+    )
+    # New warm targets (portfolio + scenarios + plan glidepath).
+    monkeypatch.setattr(
+        "argosy.services.retirement.scenario_mc.run_retirement_scenarios",
+        _scenarios,
+    )
+    monkeypatch.setattr(
+        "argosy.services.wealth_dashboard.compute_wealth_dashboard", _wealth
+    )
+    monkeypatch.setattr(
+        "argosy.services.wealth_dashboard.wealth_dashboard_to_dict",
+        lambda dash: {},
+    )
+    # WealthDashboardDTO(**{}) would fail pydantic validation; passthrough.
+    monkeypatch.setattr(
+        "argosy.api.routes.wealth_dashboard.WealthDashboardDTO",
+        lambda **kw: SimpleNamespace(kind="wealth-dto"),
+    )
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio.get_allocation_breakdown", _alloc_breakdown
+    )
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._compute_real_estate", _real_estate
+    )
+    monkeypatch.setattr(
+        "argosy.services.allocation_glidepath.compute_allocation_glidepath",
+        _glidepath,
+    )
+    monkeypatch.setattr(
+        "argosy.api.routes.plan._glidepath_to_response",
+        lambda out: SimpleNamespace(kind="glidepath-resp"),
     )
     return calls
 
@@ -123,17 +179,26 @@ def test_warm_populates_cache_and_read_is_a_hit(monkeypatch):
 
     derived_cache.warm("ariel")
 
-    # Each heavy compute ran exactly once during warm.
+    # Each heavy compute ran during warm.
     assert calls["build_overview"] == 1
     assert calls["compute_derived_inputs"] == 1
     assert calls["canonical_feasible_dual_track"] == 1
-    assert calls["build_retirement_plan"] == 1
+    # build_retirement_plan runs twice: once for dual-track, once for the
+    # scenarios block's canonical-age discovery.
+    assert calls["build_retirement_plan"] == 2
+    assert calls["run_retirement_scenarios"] == 1  # default age only (tracks=[])
+    assert calls["compute_wealth_dashboard"] == 1
+    assert calls["get_allocation_breakdown"] == 1
+    assert calls["_compute_real_estate"] == 1
+    assert calls["compute_allocation_glidepath"] == 1
 
     # The session was opened and closed.
     assert sess.closed is True
 
-    # All four hot entries are now cached.
-    assert derived_cache.cache_size() == 4
+    # All nine hot entries are now cached: overview, derived-inputs,
+    # feasible-age, dual-track-plan, scenarios, wealth-dashboard,
+    # allocation-breakdown, real-estate, allocation-glidepath.
+    assert derived_cache.cache_size() == 9
 
     # A subsequent get_or_compute for overview's (tag, version) is a HIT:
     # the compute fn is NOT called again.
@@ -261,6 +326,21 @@ def test_warm_swallows_compute_errors(monkeypatch):
     monkeypatch.setattr(
         "argosy.services.retirement.retirement_plan.build_retirement_plan", _boom
     )
+    monkeypatch.setattr(
+        "argosy.services.retirement.scenario_mc.run_retirement_scenarios", _boom
+    )
+    monkeypatch.setattr(
+        "argosy.services.wealth_dashboard.compute_wealth_dashboard", _boom
+    )
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio.get_allocation_breakdown", _boom
+    )
+    monkeypatch.setattr(
+        "argosy.api.routes.portfolio._compute_real_estate", _boom
+    )
+    monkeypatch.setattr(
+        "argosy.services.allocation_glidepath.compute_allocation_glidepath", _boom
+    )
 
     # Must not raise; session still gets closed.
     derived_cache.warm("ariel")
@@ -304,7 +384,103 @@ def test_warm_async_spawns_thread_and_populates(monkeypatch):
     assert done.wait(timeout=5.0), "warm_async must run warm on a thread"
 
     assert calls["build_overview"] == 1
-    assert derived_cache.cache_size() == 4
+    assert derived_cache.cache_size() == 9
+
+
+def test_warm_scenarios_key_matches_route_suffix(monkeypatch):
+    """The warmed scenarios key for the route default age must equal
+    ``version + ("scenarios", 49.0, 2000, 42)`` so a fresh load hits it."""
+    _patch_session(monkeypatch)
+    _patch_version(monkeypatch)
+    _patch_heavy_computes(monkeypatch)
+
+    derived_cache.warm("ariel")
+
+    route_version = _VERSION + ("scenarios", 49.0, 2000, 42)
+    sentinel = {"recomputed": False}
+
+    def _should_not_run():
+        sentinel["recomputed"] = True
+        return {}
+
+    derived_cache.get_or_compute(
+        "retirement.scenarios", route_version, _should_not_run
+    )
+    assert sentinel["recomputed"] is False, "route's scenarios key must hit warm"
+
+
+def test_warm_portfolio_keys_match_route_suffixes(monkeypatch):
+    """The warmed portfolio entries must use the SAME keys the routes read."""
+    _patch_session(monkeypatch)
+    _patch_version(monkeypatch)
+    _patch_heavy_computes(monkeypatch)
+
+    import datetime as _dt
+
+    derived_cache.warm("ariel")
+
+    today = _dt.date.today().isoformat()
+    for tag, suffix in (
+        ("portfolio.wealth-dashboard", ("wealth-dashboard", False, today)),
+        ("portfolio.allocation-breakdown", ("allocation-breakdown", False)),
+        ("portfolio.real-estate", ("real-estate",)),
+        ("plan.allocation-glidepath", ("allocation-glidepath", today)),
+    ):
+        sentinel = {"recomputed": False}
+
+        def _should_not_run():
+            sentinel["recomputed"] = True
+            return {}
+
+        derived_cache.get_or_compute(tag, _VERSION + suffix, _should_not_run)
+        assert sentinel["recomputed"] is False, f"{tag} warm key mismatch"
+
+
+def test_portfolio_endpoint_memoized_per_version(monkeypatch):
+    """A portfolio endpoint compute runs ONCE per (tag, version); a 2nd
+    get_or_compute for the same key is a HIT (no recompute)."""
+    version = _VERSION + ("allocation-breakdown", False)
+    runs = {"n": 0}
+
+    def _compute():
+        runs["n"] += 1
+        return {"rows": []}
+
+    a = derived_cache.get_or_compute("portfolio.allocation-breakdown", version, _compute)
+    b = derived_cache.get_or_compute("portfolio.allocation-breakdown", version, _compute)
+    assert runs["n"] == 1, "second call must be a cache HIT"
+    assert a is b
+
+    # A different version (new snapshot) is a MISS -> recompute.
+    version2 = _VERSION[:-1] + ("2026-07-01T00:00:00",) + ("allocation-breakdown", False)
+    derived_cache.get_or_compute("portfolio.allocation-breakdown", version2, _compute)
+    assert runs["n"] == 2, "changed version must recompute"
+
+
+def test_startup_hook_calls_warm_async_without_blocking(monkeypatch):
+    """The FastAPI startup hook fires derived_cache.warm_async('ariel') and
+    does not block boot (warm_async is non-blocking by contract)."""
+    monkeypatch.setenv("ARGOSY_RUN_SCHEDULER", "0")  # don't boot the scheduler
+    monkeypatch.setenv("ARGOSY_DAILY_BRIEF_ENABLED", "0")
+
+    seen = {"user_id": None, "n": 0}
+
+    def _warm_async(user_id):
+        seen["user_id"] = user_id
+        seen["n"] += 1
+
+    monkeypatch.setattr(derived_cache, "warm_async", _warm_async)
+
+    from fastapi.testclient import TestClient
+
+    from argosy.api.main import create_app
+
+    # Entering the TestClient context runs the app's startup events.
+    with TestClient(create_app()):
+        pass
+
+    assert seen["n"] == 1, "startup must call warm_async exactly once"
+    assert seen["user_id"] == "ariel"
 
 
 def test_warm_async_noop_when_disabled(monkeypatch):

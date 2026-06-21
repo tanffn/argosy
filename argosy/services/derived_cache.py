@@ -235,9 +235,25 @@ def warm(user_id: str) -> None:
         route's DEFAULT params (n_paths=1500, seed=42) and the SAME suffix
         ``("dual-track-plan", n_paths, seed)``.
 
-    NOT warmed: ``"retirement.scenarios"`` — its key includes ``retirement_age``
-    which has no single canonical default (the card requests a specific age), so
-    pre-warming would compute a key the user may never request. It stays lazy.
+    Additionally warmed (matching each route's exact key/param defaults):
+
+      * ``"retirement.scenarios"`` -> ``run_retirement_scenarios`` at the route
+        default (retirement_age=49.0, n_paths=2000, seed=42) PLUS the dual-track's
+        canonical drawdown + preservation ages, key
+        ``("scenarios", retirement_age, n_paths, seed)``.
+      * ``"portfolio.wealth-dashboard"`` -> ``compute_wealth_dashboard`` (default
+        exclude_nvda=False), key ``("wealth-dashboard", exclude_nvda, today_iso)``.
+      * ``"portfolio.allocation-breakdown"`` -> ``get_allocation_breakdown``
+        (default exclude_nvda=False), key ``("allocation-breakdown", exclude_nvda)``.
+      * ``"portfolio.real-estate"`` -> ``_compute_real_estate``, key ``("real-estate",)``.
+      * ``"plan.allocation-glidepath"`` -> ``compute_allocation_glidepath``, key
+        ``("allocation-glidepath", today_iso)``.
+
+    NOT warmed (and NOT cached): the unseeded-MC plan endpoints
+    (cashflow-monte-carlo / plan-series) — they default seed=None (random), so
+    a cached value would pin one draw; and nvda-trajectory — it reads the PENDING
+    DRAFT (a fallback ceiling) which the version tuple doesn't capture, so caching
+    risks a stale cross-state value. Those stay lazy + uncached.
     """
     if not _enabled() or not _warm_enabled():
         return
@@ -375,6 +391,155 @@ def warm(user_id: str) -> None:
                 }
 
             get_or_compute("retirement.dual-track-plan", dt_version, _warm_dual_track)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- retirement.scenarios (route default params + canonical ages) -
+        # Route: GET /retirement/projection/scenarios
+        #   retirement_age=49.0, n_paths=2000, seed=42 (seed now DEFAULTS to 42)
+        #   version + ("scenarios", retirement_age, n_paths, seed)
+        # The card requests a specific age; we warm the route default plus the
+        # dual-track's canonical drawdown + preservation ages so a fresh load at
+        # any of those hits the warm. Each is best-effort + individually guarded.
+        try:
+            from argosy.services.retirement.scenario_mc import (
+                run_retirement_scenarios,
+            )
+
+            sc_paths, sc_seed = 2000, 42
+            # Default age + the canonical dual-track ages (deduped). The
+            # dual-track ages are pulled best-effort from a cheap recompute via
+            # the SAME assumptions; if that fails we still warm the default.
+            ages: list[float] = [49.0]
+            try:
+                from argosy.services.retirement.retirement_plan import (
+                    RetirementAssumptions,
+                    build_retirement_plan,
+                )
+
+                _p = build_retirement_plan(
+                    session=session,
+                    user_id=user_id,
+                    assumptions=RetirementAssumptions(n_paths=1500, seed=42),
+                )
+                for t in _p.tracks:
+                    for a in (
+                        getattr(t, "drawdown_age", None),
+                        getattr(t, "preservation_age", None),
+                    ):
+                        if a is not None:
+                            ages.append(float(a))
+            except Exception:  # noqa: BLE001 — default age still warmed below
+                pass
+
+            seen_ages: set[float] = set()
+            for age in ages:
+                if age in seen_ages:
+                    continue
+                seen_ages.add(age)
+                sc_version = version + ("scenarios", age, sc_paths, sc_seed)
+
+                def _warm_scenarios(_age=age):
+                    return run_retirement_scenarios(
+                        user_id=user_id,
+                        session=session,
+                        retirement_age=_age,
+                        n_paths=sc_paths,
+                        seed=sc_seed,
+                    )
+
+                try:
+                    get_or_compute(
+                        "retirement.scenarios", sc_version, _warm_scenarios
+                    )
+                except Exception:  # noqa: BLE001 — one age failing is fine
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- portfolio.wealth-dashboard (route default params) ------------
+        # Route: GET /portfolio/wealth-dashboard
+        #   exclude_nvda=False; version + ("wealth-dashboard", exclude_nvda,
+        #   today_iso). today_iso folds the date.today() anchor of the cash-
+        #   runway / RSU blocks so a day rollover busts the key.
+        try:
+            import datetime as _dt
+
+            from argosy.api.routes.wealth_dashboard import WealthDashboardDTO
+            from argosy.services.wealth_dashboard import (
+                compute_wealth_dashboard,
+                wealth_dashboard_to_dict,
+            )
+
+            wd_exclude = False
+            wd_today = _dt.date.today().isoformat()
+            wd_version = version + ("wealth-dashboard", wd_exclude, wd_today)
+
+            def _warm_wealth_dashboard():
+                dash = compute_wealth_dashboard(
+                    session, user_id=user_id, exclude_nvda=wd_exclude
+                )
+                return WealthDashboardDTO(**wealth_dashboard_to_dict(dash))
+
+            get_or_compute(
+                "portfolio.wealth-dashboard", wd_version, _warm_wealth_dashboard
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- portfolio.allocation-breakdown (route default params) --------
+        # Route: GET /portfolio/allocation-breakdown
+        #   exclude_nvda=False; version + ("allocation-breakdown", exclude_nvda)
+        try:
+            from argosy.api.routes.portfolio import get_allocation_breakdown
+
+            ab_exclude = False
+            ab_version = version + ("allocation-breakdown", ab_exclude)
+            get_or_compute(
+                "portfolio.allocation-breakdown",
+                ab_version,
+                lambda: get_allocation_breakdown(
+                    user_id=user_id, exclude_nvda=ab_exclude, db=session
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- portfolio.real-estate ----------------------------------------
+        # Route: GET /portfolio/real-estate; version + ("real-estate",)
+        try:
+            from argosy.api.routes.portfolio import _compute_real_estate
+
+            re_version = version + ("real-estate",)
+            get_or_compute(
+                "portfolio.real-estate",
+                re_version,
+                lambda: _compute_real_estate(session, user_id),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- plan.allocation-glidepath (route default params) -------------
+        # Route: GET /plan/current/allocation-glidepath
+        #   version + ("allocation-glidepath", today_iso)
+        try:
+            import datetime as _dt2
+
+            from argosy.api.routes.plan import _glidepath_to_response
+            from argosy.services.allocation_glidepath import (
+                compute_allocation_glidepath,
+            )
+
+            gp_today = _dt2.datetime.now(_dt2.timezone.utc).date()
+            gp_version = version + ("allocation-glidepath", gp_today.isoformat())
+
+            def _warm_glidepath():
+                out = compute_allocation_glidepath(session, user_id, gp_today)
+                return None if out is None else _glidepath_to_response(out)
+
+            get_or_compute(
+                "plan.allocation-glidepath", gp_version, _warm_glidepath
+            )
         except Exception:  # noqa: BLE001
             pass
 

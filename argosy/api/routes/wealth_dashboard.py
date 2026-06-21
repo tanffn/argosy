@@ -171,10 +171,27 @@ def get_wealth_dashboard(
     precondition fails, the relevant fields are ``None`` and the block's
     ``missing_reasons`` carries the human-readable cause.
     """
-    dash: WealthDashboard = compute_wealth_dashboard(
-        db, user_id=user_id, exclude_nvda=exclude_nvda)
-    # asdict round-trip lands us straight in pydantic-validated shape.
-    return WealthDashboardDTO(**wealth_dashboard_to_dict(dash))
+    from datetime import date as _date
+
+    from argosy.services import derived_cache
+
+    def _compute() -> WealthDashboardDTO:
+        dash: WealthDashboard = compute_wealth_dashboard(
+            db, user_id=user_id, exclude_nvda=exclude_nvda)
+        # asdict round-trip lands us straight in pydantic-validated shape.
+        return WealthDashboardDTO(**wealth_dashboard_to_dict(dash))
+
+    # Deterministic given (plan, snapshot, exclude_nvda) EXCEPT the cash-runway /
+    # RSU-projection blocks anchor on date.today(); fold today's ISO date into the
+    # key so a day rollover busts the entry (never serve yesterday's "today").
+    version = derived_cache.version_tuple(db, user_id)
+    if version is not None:
+        version = version + (
+            "wealth-dashboard", exclude_nvda, _date.today().isoformat()
+        )
+    return derived_cache.get_or_compute(
+        "portfolio.wealth-dashboard", version, _compute
+    )
 
 
 __all__ = ["router"]

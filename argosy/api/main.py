@@ -256,6 +256,24 @@ def create_app() -> FastAPI:
         except Exception as exc:  # noqa: BLE001 — must NEVER block startup
             log.warning("orphan_sweep.failed", error=str(exc))
 
+    # Derived-cache startup warming — the lazy cache is cold after a restart,
+    # so the FIRST /retirement / /portfolio / /api/overview load pays the full
+    # MC + dashboard compute (dual-track ~26s cold). Warm the current user's hot
+    # caches on a daemon thread at boot so that first load is already fast.
+    # Respects ARGOSY_DERIVED_CACHE{,_WARM} (warm_async no-ops when disabled);
+    # warm_async never blocks (daemon thread) and warm() swallows all errors —
+    # the try/except here is belt-and-suspenders so boot can NEVER fail on it.
+    @app.on_event("startup")
+    async def _warm_derived_cache_at_startup() -> None:
+        try:
+            from argosy.services import derived_cache
+
+            # Single-user convention (mirrors the scheduler's user_id="ariel").
+            derived_cache.warm_async("ariel")
+            log.info("derived_cache.warm_scheduled", user_id="ariel")
+        except Exception as exc:  # noqa: BLE001 — must NEVER block startup
+            log.warning("derived_cache.warm_at_startup_failed", error=str(exc))
+
     # Expenses Wave EX1 — household-expenses ingest surface.
     from argosy.api.routes import expenses as expenses_routes
     app.include_router(expenses_routes.router)

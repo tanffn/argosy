@@ -288,7 +288,7 @@ def get_projection_scenarios(
     user_id: str,
     retirement_age: float = 49.0,
     n_paths: int = 2000,
-    seed: int | None = None,
+    seed: int = 42,
     db: Session = Depends(get_db),
 ) -> dict:
     """Scenario-grid retirement-readiness table (codex MC review 2026-06-04).
@@ -309,18 +309,18 @@ def get_projection_scenarios(
         )
 
     try:
-        # Only memoize when seed is pinned — otherwise the MC is non-deterministic
-        # and caching could pin one random draw (output-trust: never serve a value
-        # that isn't reproducible from inputs). Unseeded calls always recompute.
-        if seed is not None:
-            from argosy.services import derived_cache
+        # ``seed`` defaults to 42 (matching feasible-age / dual-track) so the MC is
+        # reproducible AND cacheable even when the UI omits it. The cache key embeds
+        # everything that changes the output: the version tuple + (retirement_age,
+        # n_paths, seed). A caller passing seed=None historically meant "random";
+        # FastAPI now coerces an explicit ``?seed=`` (any int) — there is no longer
+        # an unseeded path, so every call is deterministic + memoizable.
+        from argosy.services import derived_cache
 
-            version = derived_cache.version_tuple(db, user_id)
-            if version is not None:
-                version = version + ("scenarios", retirement_age, n_paths, seed)
-            g = derived_cache.get_or_compute("retirement.scenarios", version, _run)
-        else:
-            g = _run()
+        version = derived_cache.version_tuple(db, user_id)
+        if version is not None:
+            version = version + ("scenarios", retirement_age, n_paths, seed)
+        g = derived_cache.get_or_compute("retirement.scenarios", version, _run)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {

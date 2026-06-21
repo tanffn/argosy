@@ -2773,11 +2773,28 @@ def get_current_allocation_glidepath(
     from argosy.services.allocation_glidepath import (
         compute_allocation_glidepath,
     )
+    from argosy.services import derived_cache
 
     today = datetime.now(timezone.utc).date()
-    out = compute_allocation_glidepath(db, user_id, today)
-    if out is None:
-        return None
+
+    def _compute() -> AllocationGlidepathResponse | None:
+        out = compute_allocation_glidepath(db, user_id, today)
+        if out is None:
+            return None
+        return _glidepath_to_response(out)
+
+    # Pure function of (plan, snapshot, today): the glide projects the canonical
+    # plan's targets from today's anchor. Fold today's date into the key so a day
+    # rollover recomputes; version busts on plan-promote / snapshot-ingest.
+    version = derived_cache.version_tuple(db, user_id)
+    if version is not None:
+        version = version + ("allocation-glidepath", today.isoformat())
+    return derived_cache.get_or_compute(
+        "plan.allocation-glidepath", version, _compute
+    )
+
+
+def _glidepath_to_response(out) -> "AllocationGlidepathResponse":
     return AllocationGlidepathResponse(
         points=[
             GlidepathPointDTO(
