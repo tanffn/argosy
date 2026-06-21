@@ -790,7 +790,12 @@ async def run_codex_second_opinion(
     row = AgentReport(
         agent_role="codex_second_opinion",
         user_id=user_id,
-        model="gpt-5-codex",
+        # ``run_codex`` passes no ``--model``, so the dispatched model is the
+        # codex CLI's configured default (``~/.codex/config.toml`` → gpt-5.5,
+        # with an auto-migration table that rolls older slugs forward to the
+        # newest reasoning tier). Label it accurately rather than the stale
+        # "gpt-5-codex" string, which mis-reported the model in the replay UI.
+        model="gpt-5.5",
         # Persist BOTH the raw verdict (for manual review) and the parsed
         # JSON so the FM's prompt builder can re-parse identically off
         # the DB row.

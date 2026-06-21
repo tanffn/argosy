@@ -229,8 +229,8 @@ class _MockProposerAgent(ActionProposerAgent):
 
 
 def test_action_proposer_registered_as_opus() -> None:
-    """Role MUST default to Opus 4.7 per binding preference."""
-    assert DEFAULT_MODEL_BY_ROLE.get("action_proposer") == "claude-opus-4-7"
+    """Role MUST default to Opus 4.8 per binding preference."""
+    assert DEFAULT_MODEL_BY_ROLE.get("action_proposer") == "claude-opus-4-8"
 
 
 def test_action_proposer_thinking_effort_high() -> None:

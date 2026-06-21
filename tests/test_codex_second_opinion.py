@@ -441,7 +441,7 @@ def test_codex_full_path_with_valid_output(monkeypatch, tmp_path):
 
     assert row is not None
     assert row.agent_role == "codex_second_opinion"
-    assert row.model == "gpt-5-codex"
+    assert row.model == "gpt-5.5"
     assert row.tokens_out == 4200
     assert row.decision_id == "plan-synth-5"
     # response_text holds the parsed-and-reserialized JSON — guards the

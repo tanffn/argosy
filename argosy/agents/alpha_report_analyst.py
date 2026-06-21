@@ -88,7 +88,7 @@ Hallucination guard
 Model
 =====
 
-``claude-opus-4-7`` per the binding preference "accuracy over LLM
+``claude-opus-4-8`` per the binding preference "accuracy over LLM
 cost." Per-role defaults are registered in ``argosy/agents/base.py``
 so the YAML override path works (model + thinking_effort + max_tokens
 all live in the role tables).

@@ -48,7 +48,7 @@ _BUY_PROPOSAL = {
 @pytest.mark.asyncio
 async def test_trader_produces_proposal_t2_default_opus() -> None:
     agent = _mock(_BUY_PROPOSAL, tier="T2")
-    assert agent.model == "claude-opus-4-7"
+    assert agent.model == "claude-opus-4-8"
     rep = await agent.run(
         analyst_reports=[
             {"agent_role": "fundamentals", "cited_sources": ["x"]}

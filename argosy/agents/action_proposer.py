@@ -74,7 +74,7 @@ The agent accepts ONE of three discriminated-union trigger shapes:
 Cost / model
 ============
 
-Per [[feedback_accuracy_over_cost]] — ``claude-opus-4-7``. Thinking
+Per [[feedback_accuracy_over_cost]] — ``claude-opus-4-8``. Thinking
 effort ``"high"`` (matches state_observer; emergent action generation
 with high downstream consequence). Registration of model / effort /
 max_tokens / citations lives in ``argosy/agents/base.py``.

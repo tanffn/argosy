@@ -98,7 +98,7 @@ class TraderAgent(BaseAgent[TraderProposal]):
             if t in ("T0", "T1"):
                 model = "claude-sonnet-4-6"
             else:
-                model = "claude-opus-4-7"
+                model = "claude-opus-4-8"
         super().__init__(user_id=user_id, model=model)
         self.tier = tier
 

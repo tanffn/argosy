@@ -84,12 +84,14 @@ _SUBJECT_TAXONOMY_STR = ", ".join(sorted(SUBJECT_REGISTRY.keys()))
 # to kill the thread.
 #
 # The codex timeout is env-configurable (ARGOSY_READER_CODEX_TIMEOUT_S, default
-# 300) because a large assembled artifact (~100k chars) can legitimately need
-# more than 5 minutes for the reviewer to read — a too-tight timeout reads as a
+# 540) because a large assembled artifact (~100k chars) legitimately needs more
+# than 5 minutes for the reviewer to read — a too-tight timeout reads as a
 # dispatch failure (the fail-closed synthetic BLOCK) even though nothing is hung.
-# Clamped to run_codex's own 600s subprocess ceiling; the hard backstop adds the
-# same 60s grace margin as before.
-_DEFAULT_READER_CODEX_TIMEOUT_S = 300
+# The old 300s default fail-closed real-but-slow reads in EVERY ~100k-artifact
+# run (drun 117 logged three 0-token synthetic BLOCKs before the real APPROVE),
+# so 540 is the default. Clamped to run_codex's own 600s subprocess ceiling; the
+# hard backstop adds the same 60s grace margin (540 + 60 = 600).
+_DEFAULT_READER_CODEX_TIMEOUT_S = 540
 
 
 def _reader_codex_timeout_s() -> int:
@@ -693,7 +695,9 @@ async def run_whole_artifact_review(
     row = AgentReport(
         agent_role="whole_artifact_reader",
         user_id=user_id,
-        model="gpt-5-codex",
+        # Dispatched via run_codex with no ``--model``, so the real model is the
+        # codex CLI default (gpt-5.5). Label it accurately, not "gpt-5-codex".
+        model="gpt-5.5",
         response_text=parsed.model_dump_json(indent=2),
         tokens_in=0,
         tokens_out=total_tokens,

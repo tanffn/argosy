@@ -29,7 +29,7 @@ which is far less powerful than full raw-text injection. The
 ``test_news_signal_analyst.py::test_raw_text_canary_not_in_prompt``
 test pins this contract — failing it must fail loudly.
 
-Model: ``claude-opus-4-7`` per the binding preference "accuracy over
+Model: ``claude-opus-4-8`` per the binding preference "accuracy over
 LLM cost" (CLAUDE.md). Falls back via ``FALLBACK_MODEL`` because this
 role is not in ``DEFAULT_MODEL_BY_ROLE`` (which would also resolve to
 Opus 4.7 today — the table-vs-fallback path produces the same model).

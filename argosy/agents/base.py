@@ -127,73 +127,73 @@ _CLAUDE_CODE_SDK_THINKING_FIELD = _probe_claude_code_sdk_thinking_field()
 # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` per SDD A.2;
 # the per-role default below is the fallback when the file is absent.
 DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
-    # Fleet-wide Opus 4.7 posture (2026-05-27). Per SDD binding preferences
-    # ("accuracy over LLM cost"), every role defaults to Opus 4.7. Per-tenant
+    # Fleet-wide Opus 4.8 posture. Per SDD binding preferences ("accuracy over
+    # LLM cost"), every role defaults to the newest Opus tier (4.8). Per-tenant
     # cost-sensitivity overrides remain available via
     # `${ARGOSY_HOME}/configs/<user_id>/agent_settings.yaml` (Wave A — see
-    # `BaseAgent.__init__` override loader). The earlier mixed Opus/Sonnet
-    # fleet predates this preference and is preserved in git history if a
+    # `BaseAgent.__init__` override loader). The prior 4.7 posture and the
+    # earlier mixed Opus/Sonnet fleet are preserved in git history if a
     # downgrade is ever needed for a specific role.
-    "intake": "claude-opus-4-7",
-    "advisor": "claude-opus-4-7",
-    "intake_extractor": "claude-opus-4-7",
-    "plan_critique": "claude-opus-4-7",
-    "plan_distiller": "claude-opus-4-7",
+    "intake": "claude-opus-4-8",
+    "advisor": "claude-opus-4-8",
+    "intake_extractor": "claude-opus-4-8",
+    "plan_critique": "claude-opus-4-8",
+    "plan_distiller": "claude-opus-4-8",
     # Phase 2 analyst team:
-    "news": "claude-opus-4-7",
-    "macro": "claude-opus-4-7",
-    "concentration": "claude-opus-4-7",
+    "news": "claude-opus-4-8",
+    "macro": "claude-opus-4-8",
+    "concentration": "claude-opus-4-8",
     # Phase 3 decision team:
-    "bull_researcher": "claude-opus-4-7",
-    "bear_researcher": "claude-opus-4-7",
-    "researcher_facilitator": "claude-opus-4-7",
-    "trader": "claude-opus-4-7",
-    "risk_officer": "claude-opus-4-7",
-    "risk_facilitator": "claude-opus-4-7",
-    "fund_manager": "claude-opus-4-7",
+    "bull_researcher": "claude-opus-4-8",
+    "bear_researcher": "claude-opus-4-8",
+    "researcher_facilitator": "claude-opus-4-8",
+    "trader": "claude-opus-4-8",
+    "risk_officer": "claude-opus-4-8",
+    "risk_facilitator": "claude-opus-4-8",
+    "fund_manager": "claude-opus-4-8",
     # Phase 7 analysts (SDD §3.1, §3.8):
-    "fundamentals": "claude-opus-4-7",
-    "technical": "claude-opus-4-7",
-    "sentiment": "claude-opus-4-7",
-    "tax": "claude-opus-4-7",
-    "fx": "claude-opus-4-7",
+    "fundamentals": "claude-opus-4-8",
+    "technical": "claude-opus-4-8",
+    "sentiment": "claude-opus-4-8",
+    "tax": "claude-opus-4-8",
+    "fx": "claude-opus-4-8",
     # Phase 7 cross-cutting (SDD §3.6):
-    "domain_refresh": "claude-opus-4-7",
-    "audit": "claude-opus-4-7",
-    "watchlist": "claude-opus-4-7",
+    "domain_refresh": "claude-opus-4-8",
+    "audit": "claude-opus-4-8",
+    "watchlist": "claude-opus-4-8",
     # Plan synthesizer (Phase 3 of plan_synthesis_flow).
-    "plan_synthesizer": "claude-opus-4-7",
+    "plan_synthesizer": "claude-opus-4-8",
     # Objection translator (T4.6).
-    "objection_translator": "claude-opus-4-7",
+    "objection_translator": "claude-opus-4-8",
     # Advisor welcome-card insight (single-paragraph "today's insight" appended
     # below the static welcome surface on /advisor — see argosy/agents/advisor_insight.py).
-    "advisor_insight": "claude-opus-4-7",
+    "advisor_insight": "claude-opus-4-8",
     # FM-objection ZigZag (T4.9).
-    "analyst_responder": "claude-opus-4-7",
-    "fund_manager_dialogue_verdict": "claude-opus-4-7",
+    "analyst_responder": "claude-opus-4-8",
+    "fund_manager_dialogue_verdict": "claude-opus-4-8",
     # Living-plan negotiation ladder — node owner's verdict on a proposed change.
-    "plan_node_owner": "claude-opus-4-7",
+    "plan_node_owner": "claude-opus-4-8",
     # Household-budget analyst (synth Phase 1 #10).
-    "household_budget": "claude-opus-4-7",
+    "household_budget": "claude-opus-4-8",
     # Household-expenses categorizer.
-    "household_categorizer": "claude-opus-4-7",
+    "household_categorizer": "claude-opus-4-8",
     # Daily-briefer (T4.5).
-    "daily_briefer": "claude-opus-4-7",
+    "daily_briefer": "claude-opus-4-8",
     # Spec B commit #4 — general state-vs-expectation observer.
     # Opus per binding preference "accuracy over LLM cost"; the observer
     # is doing emergent flag-classification with high downstream
     # consequence (replaces hand-rolled detectors). No Haiku fallback.
-    "state_observer": "claude-opus-4-7",
+    "state_observer": "claude-opus-4-8",
     # Spec E commit #2 — action_proposer agent (LLM money path).
     # Opus per binding preference "accuracy over LLM cost"; the proposer
     # turns observer flags / snapshot triggers / inferred events into
     # structured action suggestions. NO auto-execution — the agent
     # RECORDS only; user reviews via /proposals. No Haiku fallback.
-    "action_proposer": "claude-opus-4-7",
+    "action_proposer": "claude-opus-4-8",
     # Per-holding thesis monitor (LLM money path). Opus per binding preference
     # "accuracy over LLM cost"; high bar, RECORDS only (escalations flow through
     # the monitor-flag → action_proposer pipeline). No Haiku fallback.
-    "thesis_monitor": "claude-opus-4-7",
+    "thesis_monitor": "claude-opus-4-8",
     # Long-form Discord alpha-report analyst — replaces the regex
     # extract_alpha_call_from_text for posts > 500 chars / > 5 newlines.
     # Opus per binding preference "accuracy over LLM cost" — the agent
@@ -201,7 +201,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # cautions from multi-page commentary; downstream writes fan out to
     # the predictions ledger (source='discord_alpha_report') and
     # monitor_flags (kind='alpha_report_caution'). No Haiku fallback.
-    "alpha_report_analyst": "claude-opus-4-7",
+    "alpha_report_analyst": "claude-opus-4-8",
     # Equity-comp analyst (Phase 5 topic owner) — owns the RSU /
     # equity-compensation projection across three scenarios
     # (known_grants_only / conservative_decay / optimistic_flat).
@@ -210,21 +210,21 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # assumption with a year-by-year contractual-vs-discretionary
     # projection. Downstream consequence is large (FI-date sensitivity
     # + cashflow + concentration cap all read from the output).
-    "equity_comp_analyst": "claude-opus-4-7",
+    "equity_comp_analyst": "claude-opus-4-8",
     # Alternatives sourcer (feat/alternatives-asset-class) — sources the
     # Alternatives sleeve's instruments so they are agent-derived +
     # estate-gated, not hardcoded. Opus per binding preference "accuracy
     # over LLM cost": sourcing estate-safe (non-US-situs) instruments is a
     # high-consequence money path; the picks feed the domicile gate.
-    "alternatives_sourcer": "claude-opus-4-7",
+    "alternatives_sourcer": "claude-opus-4-8",
     # Alternatives reviewer fleet + sleeve fund-manager (ETP-aware debate over
     # the verified candidates). Opus per "accuracy over LLM cost"; these weigh
     # wrapper/structure, diversification value, liquidity/tax, and the final
     # sleeve size (which may be 0%) — a high-consequence money path.
-    "alt_exposure_structure": "claude-opus-4-7",
-    "alt_macro_diversification": "claude-opus-4-7",
-    "alt_risk_liquidity_tax": "claude-opus-4-7",
-    "alternatives_fund_manager": "claude-opus-4-7",
+    "alt_exposure_structure": "claude-opus-4-8",
+    "alt_macro_diversification": "claude-opus-4-8",
+    "alt_risk_liquidity_tax": "claude-opus-4-8",
+    "alternatives_fund_manager": "claude-opus-4-8",
     # NOTE: Haiku is intentionally NOT used in any role default after the
     # intake instruction-following ceiling (commit 432bd6f) made it clear
     # that Argosy's prompts are too structured for Haiku's adherence
@@ -233,7 +233,7 @@ DEFAULT_MODEL_BY_ROLE: dict[str, str] = {
     # to Haiku is still possible per-role via agent_settings.yaml for
     # cost-sensitive tenants.
 }
-FALLBACK_MODEL = "claude-opus-4-7"
+FALLBACK_MODEL = "claude-opus-4-8"
 
 # Per-role adaptive-thinking effort (Opus 4.7 canonical pattern).
 #
@@ -574,7 +574,7 @@ _PRICE_BY_MODEL: dict[str, tuple[float, float]] = {
     # model: (input_per_mtok, output_per_mtok)
     "claude-sonnet-4-6": (3.00, 15.00),
     "claude-haiku-4-5": (1.00, 5.00),
-    "claude-opus-4-7": (5.00, 25.00),
+    "claude-opus-4-8": (5.00, 25.00),
 }
 # Back-compat alias for any external callers / docs referencing the prior name.
 APPROX_PRICING_USD_PER_MTOK = _PRICE_BY_MODEL

@@ -26,7 +26,7 @@ def _stub_model(monkeypatch, payload):
 
 def test_agent_defaults_to_opus():
     agent = aa.AllocationAgent(user_id="ariel")
-    assert agent.model == "claude-opus-4-7"
+    assert agent.model == "claude-opus-4-8"
     assert agent.require_citations is False
 
 

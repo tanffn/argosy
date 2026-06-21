@@ -38,7 +38,7 @@ async def test_fund_manager_green_lights() -> None:
         "cited_sources": ["risk_facilitator", "plan_critique:GREEN"],
     }
     agent = _mock(canned)
-    assert agent.model == "claude-opus-4-7"
+    assert agent.model == "claude-opus-4-8"
     rep = await agent.run(
         proposal={"ticker": "AAPL", "action": "buy", "size_shares_or_currency": 50},
         risk_outcome={"consensus_verdict": "APPROVE"},

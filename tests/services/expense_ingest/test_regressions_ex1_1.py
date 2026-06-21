@@ -19,6 +19,7 @@ def test_bug5_household_categorizer_uses_canonical_model_id():
     """
     from argosy.agents.base import DEFAULT_MODEL_BY_ROLE
     known_canonical_ids = {
+        "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-sonnet-4-6",
         "claude-haiku-4-5",

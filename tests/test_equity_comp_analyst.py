@@ -55,16 +55,16 @@ def test_agent_class_metadata() -> None:
 def test_role_registered_in_base_default_tables() -> None:
     """Per the task spec the role must be wired into all three role
     tables in argosy.agents.base with the documented values."""
-    assert DEFAULT_MODEL_BY_ROLE["equity_comp_analyst"] == "claude-opus-4-7"
+    assert DEFAULT_MODEL_BY_ROLE["equity_comp_analyst"] == "claude-opus-4-8"
     assert DEFAULT_THINKING_BUDGET_BY_ROLE["equity_comp_analyst"] == 4000
     assert DEFAULT_CITATIONS_BY_ROLE["equity_comp_analyst"] is True
 
 
 def test_agent_init_applies_role_defaults() -> None:
     """Instantiating the agent must pick up the per-role table values
-    (Opus 4.7 + 4000-token fixed-budget fallback + citations enabled)."""
+    (Opus 4.8 + 4000-token fixed-budget fallback + citations enabled)."""
     agent = EquityCompAnalystAgent(user_id="ariel")
-    assert agent.model == "claude-opus-4-7"
+    assert agent.model == "claude-opus-4-8"
     assert agent.thinking_budget == 4000
     assert agent.citations_enabled is True
 
