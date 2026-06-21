@@ -180,6 +180,22 @@ function TimelineBody({ data }: TimelineBodyProps) {
   const range = useMemo(() => computeRange(data), [data]);
   const ticks = useMemo(() => buildAxisTicks(range), [range]);
 
+  // Degenerate-state nudge — the backend returned no vests + no life
+  // events, and every retire-ready zone collapsed onto a single date
+  // (typically `today`, when the FI crossing is already cleared). With
+  // nothing spanning the axis the timeline plane would render as a few
+  // overlapping 2px stripes at one point — visually blank/misleading.
+  // Show an honest explanatory state instead of an invisible chart, and
+  // still surface the zone verdicts via the chips row below.
+  const zoneDates = new Set(
+    data.retire_ready_zones.map((z) => z.expected_date),
+  );
+  const degenerate =
+    data.past_vests.length === 0 &&
+    data.future_vests.length === 0 &&
+    data.life_events.length === 0 &&
+    zoneDates.size <= 1;
+
   // Empty-state nudge — distinct from "API failed" so the user gets a
   // pointer to the two seeding surfaces (Advisor chat for life events +
   // Schwab CSV upload for vests).
@@ -194,6 +210,39 @@ function TimelineBody({ data }: TimelineBodyProps) {
           /advisor
         </Link>{" "}
         to populate it, or upload a Schwab CSV to seed vest events.
+      </div>
+    );
+  }
+
+  if (degenerate) {
+    return (
+      <div className="space-y-3">
+        <div className="rounded-md border border-dashed border-border bg-secondary/20 px-4 py-6 text-sm text-muted-foreground">
+          Nothing spans the timeline yet: there are no recorded RSU vests or
+          life events, and every retire-ready scenario resolves to a single
+          date
+          {data.retire_ready_zones.length > 0 ? (
+            <>
+              {" "}(
+              <span className="font-mono">
+                {data.retire_ready_zones[0].expected_date}
+              </span>
+              )
+            </>
+          ) : null}
+          . Mention upcoming life events on{" "}
+          <Link href="/advisor" className="text-info hover:underline">
+            /advisor
+          </Link>{" "}
+          or upload a Schwab CSV to seed vest events and populate the axis.
+        </div>
+        {data.retire_ready_zones.length > 0 ? (
+          <div className="flex flex-wrap gap-2 pt-1">
+            {data.retire_ready_zones.map((zone, i) => (
+              <RetireZoneChip key={`chip-${i}`} zone={zone} />
+            ))}
+          </div>
+        ) : null}
       </div>
     );
   }

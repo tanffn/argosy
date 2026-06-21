@@ -28,42 +28,40 @@ import { SourcesPanel } from "@/components/retirement/SourcesPanel";
 import { PlanStoryLead } from "@/components/overview/PlanStoryLead";
 import { StochasticFxCard } from "@/components/retirement/StochasticFxCard";
 import { TaxBreakdownCard } from "@/components/retirement/TaxBreakdownCard";
-import { UpcomingVestCard } from "@/components/retirement/UpcomingVestCard";
 import { WithdrawalPolicySelector } from "@/components/retirement/WithdrawalPolicySelector";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 
 const USER_ID = "ariel";
 
-// Fix UX #6 — page-internal section anchors with a sticky TOC.
-// Allocation actions (formerly "Windfall" section here) moved to
-// /proposals#allocation in sprint commit #6 — /retirement is now a
-// read-only visualization surface.
+// Page-internal jump rail. The page LEADS with the plain-language plan
+// story + the headline answer + the verdict (all visible by default), then
+// groups the expert depth into collapsible, lazy-mounted sections so the
+// page opens clean and the slow Monte-Carlo cards don't fetch until their
+// section is expanded.
 const SECTIONS: Array<{ id: string; label: string }> = [
   { id: "when-can-i-retire", label: "When can I retire?" },
-  { id: "timeline",          label: "Holistic Timeline" },
-  { id: "upcoming-vests",    label: "Upcoming RSU vests" },
-  { id: "verdict",           label: "Verdict" },
-  { id: "safety",        label: "Safety gates" },
-  { id: "predictions",   label: "Prediction trust" },
-  { id: "decision",      label: "Decision policy" },
-  { id: "expenses",      label: "Expense modeling" },
-  { id: "tax",           label: "Tax" },
-  { id: "decumulation",  label: "Decumulation" },
-  { id: "balance",       label: "Balance sheet" },
-  { id: "risk-transfer", label: "Risk transfer" },
-  { id: "israeli",       label: "Israeli structure" },
-  { id: "sources",       label: "Sources" },
+  { id: "verdict", label: "Verdict" },
+  { id: "safety", label: "Safety & withdrawal policy" },
+  { id: "taxes", label: "Taxes" },
+  { id: "expenses", label: "Expenses & life phases" },
+  { id: "income", label: "Income, real estate & insurance" },
+  { id: "methodology", label: "Methodology & sources" },
 ];
 
 /**
- * Retirement companion page — built incrementally across 7 waves.
+ * Retirement companion page.
  *
- * Plan: docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md
+ * Visible by default: PlanStoryLead (the plain-language spine),
+ * ExpectedRetirementAgeCard (the headline answer), and the verdict
+ * (ScenarioGridCard + RuinProbabilityHero). Everything else lives in
+ * collapsible sections that mount their children only when expanded
+ * (CollapsibleSection renders `children` only while `open`), so the
+ * page de-clutters AND the expert cards' slow backend calls are deferred
+ * until the user opens the section.
  *
- * Fix #1 (sigma pipe): the page fetches sigma-calibration once on mount
- * and passes the calibrated σ to <RuinProbabilityHero> so the verdict
- * actually consumes the auto-calibrated NVDA-aware σ instead of the
- * 0.18 diversified default that compute_ruin_probability would otherwise
- * fall back to.
+ * Sigma pipe: the page fetches sigma-calibration once on mount and passes
+ * the calibrated σ to <RuinProbabilityHero> so the verdict consumes the
+ * auto-calibrated NVDA-aware σ instead of the 0.18 diversified default.
  */
 export default function RetirementPage() {
   const [policy, setPolicy] = useState<WithdrawalPolicy["id"]>("guyton_klinger");
@@ -144,7 +142,7 @@ export default function RetirementPage() {
 
   return (
     <div className="container mx-auto px-4 py-6 max-w-6xl grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-6">
-      {/* Fix UX #6 — sticky section TOC */}
+      {/* Sticky section jump rail. */}
       <nav className="hidden lg:block sticky top-6 self-start text-sm">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
           Jump to
@@ -164,40 +162,21 @@ export default function RetirementPage() {
       </nav>
 
       <div className="space-y-4 min-w-0">
-        {/* Plain-language plan "story" lead — merged in from the former
-            standalone /overview tab. Fetches /api/overview and renders the
-            chapters above the expert verdict cards. */}
+        {/* ── Visible by default: the spine + headline + verdict ── */}
+
+        {/* Plain-language plan "story" lead — the spine of the page. */}
         <PlanStoryLead />
 
-        {/* Expected retirement age headline (2026-05-29) — the most
-            direct answer to "when can I retire?" surfaced as a card
-            ABOVE the P(solvent) verdict. Sourced from the cashflow
-            projection on the current plan draft. */}
+        {/* The most direct answer to "when can I retire?", surfaced
+            above the P(solvent) verdict. */}
         <section id="when-can-i-retire" className="scroll-mt-6">
           <ExpectedRetirementAgeCard userId={USER_ID} />
         </section>
 
-        {/* The dual-track "spend down vs. leave it to the kids" tradeoff is
-            now told by the plain-language story lead above (its dual-track
-            chapter), so the standalone DualTrackPlanCard is de-duped out. */}
-
-        <section id="timeline" className="scroll-mt-6">
-          <HolisticTimelineCard userId={USER_ID} />
-        </section>
-
-        {/* Sprint #2 commit #12 — three-scenario tax outlook +
-            allocation preview for upcoming RSU vests. Between the
-            holistic timeline ("what's the long-range schedule?") and
-            the safety section. */}
-        <section id="upcoming-vests" className="scroll-mt-6">
-          <UpcomingVestCard userId={USER_ID} />
-        </section>
-
         <section id="verdict" className="scroll-mt-6 space-y-4">
           {/* Decision-surface scenario table — base/bull/bear at the
-              permanent-equivalent spend basis with BL credited (codex MC
-              review 2026-06-04). The single-number hero below is kept as the
-              CI-gated point estimate. */}
+              permanent-equivalent spend basis with BL credited. The
+              single-number hero below is the CI-gated point estimate. */}
           <ScenarioGridCard
             userId={USER_ID}
             retirementAge={numOf("retirement_age")}
@@ -211,231 +190,231 @@ export default function RetirementPage() {
           />
         </section>
 
+        {/* ── Collapsible depth: lazy-mounted, collapsed by default ── */}
+
         <section id="safety" className="scroll-mt-6">
-          <SafetyGatesPanel userId={USER_ID} />
+          <CollapsibleSection title="Safety & withdrawal policy">
+            <SafetyGatesPanel userId={USER_ID} />
+            <SigmaCalibrationCard userId={USER_ID} />
+            <WithdrawalPolicySelector
+              initialPolicyId="guyton_klinger"
+              onChange={(id) => setPolicy(id)}
+            />
+            {numOf("fx_usd_nis") === undefined ? (
+              loadingCard("Stochastic FX")
+            ) : (
+              <StochasticFxCard initialFx={numOf("fx_usd_nis")!} horizonMonths={360} />
+            )}
+            {(() => {
+              const age = numOf("current_age");
+              return (
+                <>
+                  <GlidePathCard
+                    currentAge={age === undefined ? undefined : Math.round(age)}
+                    policy="vanguard_target_date"
+                  />
+                  {age === undefined ? (
+                    loadingCard("Rebalancing alerts")
+                  ) : (
+                    <RebalancingAlertsCard userId={USER_ID} currentAge={Math.round(age)} />
+                  )}
+                </>
+              );
+            })()}
+          </CollapsibleSection>
         </section>
 
-        <section id="predictions" className="scroll-mt-6 space-y-4">
-          <SigmaCalibrationCard userId={USER_ID} />
-          <WithdrawalPolicySelector
-            initialPolicyId="guyton_klinger"
-            onChange={(id) => setPolicy(id)}
-          />
-          {numOf("fx_usd_nis") === undefined ? (
-            loadingCard("Stochastic FX")
-          ) : (
-            <StochasticFxCard initialFx={numOf("fx_usd_nis")!} horizonMonths={360} />
-          )}
-        </section>
-
-        <section id="decision" className="scroll-mt-6 space-y-4">
-          {(() => {
-            const age = numOf("current_age");
-            return (
-              <>
-                <GlidePathCard
-                  currentAge={age === undefined ? undefined : Math.round(age)}
-                  policy="vanguard_target_date"
+        <section id="taxes" className="scroll-mt-6">
+          <CollapsibleSection title="Taxes">
+            <TaxBreakdownCard userId={USER_ID} />
+            {(() => {
+              const age = numOf("current_age");
+              const firstDeposit = strOf("hishtalmut_first_deposit_date");
+              if (age === undefined) return loadingCard("Hishtalmut eligibility timer");
+              // first-deposit date is intake; pending → needs-intake note, never a
+              // fabricated 2018-01-01 (the §3(e) 6yr timer must trace to a real date).
+              if (firstDeposit === undefined) {
+                return (
+                  <div className="rounded-lg border border-border bg-card p-4">
+                    <div className="text-base font-semibold">Hishtalmut eligibility</div>
+                    <div className="text-sm text-muted-foreground mt-1">
+                      First-deposit date needs intake — add it on the intake page to
+                      compute the §3(e) 6-year tax-free timer.
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <HishtalmutTimerCard
+                  userId={USER_ID}
+                  firstDepositDate={firstDeposit}
+                  currentAge={Math.round(age)}
                 />
-                {age === undefined ? (
-                  loadingCard("Rebalancing alerts")
-                ) : (
-                  <RebalancingAlertsCard userId={USER_ID} currentAge={Math.round(age)} />
-                )}
-              </>
-            );
-          })()}
-        </section>
-
-        <section id="expenses" className="scroll-mt-6 space-y-4">
-          <PhaseExpenseCard hasKids={boolOf("has_kids_under_18") ?? false} />
-          {numOf("monthly_burn_nis") === undefined ? (
-            loadingCard("Healthcare cost curve")
-          ) : (
-            <HealthcareCurveCard monthlyBurnNis={numOf("monthly_burn_nis")} />
-          )}
-        </section>
-
-        <section id="tax" className="scroll-mt-6 space-y-4">
-          <TaxBreakdownCard userId={USER_ID} />
-          {(() => {
-            const age = numOf("current_age");
-            const firstDeposit = strOf("hishtalmut_first_deposit_date");
-            if (age === undefined) return loadingCard("Hishtalmut eligibility timer");
-            // first-deposit date is intake; pending → needs-intake note, never a
-            // fabricated 2018-01-01 (the §3(e) 6yr timer must trace to a real date).
-            if (firstDeposit === undefined) {
-              return (
-                <div className="rounded-lg border border-border bg-card p-4">
-                  <div className="text-base font-semibold">Hishtalmut eligibility</div>
-                  <div className="text-sm text-muted-foreground mt-1">
-                    First-deposit date needs intake — add it on the intake page to
-                    compute the §3(e) 6-year tax-free timer.
-                  </div>
-                </div>
               );
-            }
-            return (
-              <HishtalmutTimerCard
-                userId={USER_ID}
-                firstDepositDate={firstDeposit}
-                currentAge={Math.round(age)}
-              />
-            );
-          })()}
+            })()}
+          </CollapsibleSection>
         </section>
 
-        <section id="decumulation" className="scroll-mt-6 space-y-4">
-          {(() => {
-            const monthlyNeed = numOf("monthly_need_nis");
-            const taxable = numOf("taxable_balance_nis");
-            const hishtalmut = numOf("hishtalmut_balance_nis");
-            const kupatGemel = numOf("kupat_gemel_balance_nis");
-            const pension = numOf("pension_balance_nis");
-            const decReady =
-              monthlyNeed !== undefined &&
-              taxable !== undefined &&
-              hishtalmut !== undefined;
-            return (
-              <>
-                {decReady ? (
-                  <DecumulationOrderCard
-                    monthlyNeedNis={monthlyNeed!}
-                    taxableBalanceNis={taxable!}
-                    hishtalmutBalanceNis={hishtalmut!}
-                    kupatGemelBalanceNis={kupatGemel}
-                  />
-                ) : (
-                  loadingCard("Decumulation order")
-                )}
-                {pension !== undefined && monthlyNeed !== undefined ? (
-                  <LumpVsAnnuityCard
-                    pensionBalanceNis={pension}
-                    mekademTypical={numOf("mekadem_typical")!}
-                    monthlyExpenseNeedNis={monthlyNeed}
-                  />
-                ) : (
-                  loadingCard("Lump sum vs annuity")
-                )}
-              </>
-            );
-          })()}
+        <section id="expenses" className="scroll-mt-6">
+          <CollapsibleSection title="Expenses & life phases">
+            <PhaseExpenseCard hasKids={boolOf("has_kids_under_18") ?? false} />
+            {numOf("monthly_burn_nis") === undefined ? (
+              loadingCard("Healthcare cost curve")
+            ) : (
+              <HealthcareCurveCard monthlyBurnNis={numOf("monthly_burn_nis")} />
+            )}
+            <HolisticTimelineCard userId={USER_ID} />
+          </CollapsibleSection>
         </section>
 
-        <section id="balance" className="scroll-mt-6">
-          {(() => {
-            const residence = numOf("residence_value_nis");
-            const mortgage = numOf("mortgage_balance_nis");
-            // residence_value_nis is PENDING (no intake yet) → value:null.
-            // Do NOT invent a residence value: show a needs-intake note so
-            // equity (value − mortgage) is never computed off a fake number.
-            const residencePending =
-              derived !== null && derived.residence_value_nis.status === "pending";
-            if (residencePending || (derived !== null && residence === undefined)) {
+        <section id="income" className="scroll-mt-6">
+          <CollapsibleSection title="Income, real estate & insurance">
+            {(() => {
+              const monthlyNeed = numOf("monthly_need_nis");
+              const taxable = numOf("taxable_balance_nis");
+              const hishtalmut = numOf("hishtalmut_balance_nis");
+              const kupatGemel = numOf("kupat_gemel_balance_nis");
+              const pension = numOf("pension_balance_nis");
+              const decReady =
+                monthlyNeed !== undefined &&
+                taxable !== undefined &&
+                hishtalmut !== undefined;
               return (
-                <div className="rounded-lg border border-border bg-card p-4">
-                  <div className="text-base font-semibold">Real estate + mortgage</div>
-                  <div className="text-sm text-muted-foreground mt-1">
-                    Primary-residence value needs intake — add it on the intake
-                    page to compute home equity. Mortgage balance:{" "}
-                    {mortgage === undefined
-                      ? "—"
-                      : `₪${mortgage.toLocaleString()}`}
-                    .
-                  </div>
-                </div>
+                <>
+                  {decReady ? (
+                    <DecumulationOrderCard
+                      monthlyNeedNis={monthlyNeed!}
+                      taxableBalanceNis={taxable!}
+                      hishtalmutBalanceNis={hishtalmut!}
+                      kupatGemelBalanceNis={kupatGemel}
+                    />
+                  ) : (
+                    loadingCard("Decumulation order")
+                  )}
+                  {pension !== undefined && monthlyNeed !== undefined ? (
+                    <LumpVsAnnuityCard
+                      pensionBalanceNis={pension}
+                      mekademTypical={numOf("mekadem_typical")!}
+                      monthlyExpenseNeedNis={monthlyNeed}
+                    />
+                  ) : (
+                    loadingCard("Lump sum vs annuity")
+                  )}
+                </>
               );
-            }
-            if (residence === undefined || mortgage === undefined) {
-              return loadingCard("Real estate + mortgage");
-            }
-            return (
-              <RealEstateMortgageCard
-                primaryResidenceValueNis={residence}
-                mortgageBalanceNis={mortgage}
-                annualRate={numOf("mortgage_annual_rate")}
-                termMonths={numOf("mortgage_term_months")}
-              />
-            );
-          })()}
+            })()}
+
+            {(() => {
+              const residence = numOf("residence_value_nis");
+              const mortgage = numOf("mortgage_balance_nis");
+              // residence_value_nis is PENDING (no intake yet) → value:null.
+              // Do NOT invent a residence value: show a needs-intake note so
+              // equity (value − mortgage) is never computed off a fake number.
+              const residencePending =
+                derived !== null && derived.residence_value_nis.status === "pending";
+              if (residencePending || (derived !== null && residence === undefined)) {
+                return (
+                  <div className="rounded-lg border border-border bg-card p-4">
+                    <div className="text-base font-semibold">Real estate + mortgage</div>
+                    <div className="text-sm text-muted-foreground mt-1">
+                      Primary-residence value needs intake — add it on the intake
+                      page to compute home equity. Mortgage balance:{" "}
+                      {mortgage === undefined
+                        ? "—"
+                        : `₪${mortgage.toLocaleString()}`}
+                      .
+                    </div>
+                  </div>
+                );
+              }
+              if (residence === undefined || mortgage === undefined) {
+                return loadingCard("Real estate + mortgage");
+              }
+              return (
+                <RealEstateMortgageCard
+                  primaryResidenceValueNis={residence}
+                  mortgageBalanceNis={mortgage}
+                  annualRate={numOf("mortgage_annual_rate")}
+                  termMonths={numOf("mortgage_term_months")}
+                />
+              );
+            })()}
+
+            {(() => {
+              const age = numOf("current_age");
+              return age === undefined ? (
+                loadingCard("Bituach Leumi (National Insurance)")
+              ) : (
+                <BituachLeumiCard
+                  userId={USER_ID}
+                  currentAge={Math.round(age)}
+                  contributionHistoryYears={numOf("bl_contribution_history_years")}
+                  /* spouseEligible: needs intake — defaults false (conservative) */
+                  spouseEligible={false}
+                />
+              );
+            })()}
+
+            <MekademBand
+              userId={USER_ID}
+              /* TODO: derive fundId — not yet in derived-inputs */
+              fundId="clal_pensia"
+              balanceNis={numOf("pension_balance_nis")}
+            />
+
+            {(() => {
+              const income = numOf("monthly_income_nis");
+              const expenses = numOf("monthly_burn_nis");
+              const dependents = numOf("dependents_count");
+              const kids = boolOf("has_kids_under_18");
+              const assets = numOf("net_worth_nis");
+              const ready =
+                income !== undefined &&
+                expenses !== undefined &&
+                dependents !== undefined &&
+                kids !== undefined &&
+                assets !== undefined;
+              return ready ? (
+                <InsuranceGapsCard
+                  monthlyIncomeNis={income!}
+                  monthlyExpensesNis={expenses!}
+                  dependentsCount={dependents!}
+                  hasKidsUnder18={kids!}
+                  assetsNis={assets!}
+                />
+              ) : (
+                loadingCard("Insurance gaps")
+              );
+            })()}
+          </CollapsibleSection>
         </section>
 
-        <section id="risk-transfer" className="scroll-mt-6">
-          {(() => {
-            const income = numOf("monthly_income_nis");
-            const expenses = numOf("monthly_burn_nis");
-            const dependents = numOf("dependents_count");
-            const kids = boolOf("has_kids_under_18");
-            const assets = numOf("net_worth_nis");
-            const ready =
-              income !== undefined &&
-              expenses !== undefined &&
-              dependents !== undefined &&
-              kids !== undefined &&
-              assets !== undefined;
-            return ready ? (
-              <InsuranceGapsCard
-                monthlyIncomeNis={income!}
-                monthlyExpensesNis={expenses!}
-                dependentsCount={dependents!}
-                hasKidsUnder18={kids!}
-                assetsNis={assets!}
-              />
-            ) : (
-              loadingCard("Insurance gaps")
-            );
-          })()}
-        </section>
+        <section id="methodology" className="scroll-mt-6">
+          <CollapsibleSection title="Methodology & sources">
+            <DrilldownSection title="Methodology" defaultOpen={false}>
+              <MethodologyPanel>
+                <p>
+                  The retirement companion follows a &quot;hero + chart +
+                  drill-down&quot; standard. Top: a verdict card with the
+                  one-line answer + 1-3 key numbers. Middle: the relevant
+                  chart. Bottom: collapsible drill-down sections like this
+                  one for the methodology, sensitivity analysis, and sources.
+                </p>
+                <p>
+                  Every value on the page passes through the{" "}
+                  <code>ValueWithRationale</code> shape: the value plus its
+                  source plus its rationale plus any freshness warnings.
+                  Hover any dotted-underline number to see the explanation.
+                </p>
+              </MethodologyPanel>
+            </DrilldownSection>
 
-        <section id="israeli" className="scroll-mt-6 space-y-4">
-          {(() => {
-            const age = numOf("current_age");
-            return age === undefined ? (
-              loadingCard("Bituach Leumi (National Insurance)")
-            ) : (
-              <BituachLeumiCard
-                userId={USER_ID}
-                currentAge={Math.round(age)}
-                contributionHistoryYears={numOf("bl_contribution_history_years")}
-                /* spouseEligible: needs intake — defaults false (conservative) */
-                spouseEligible={false}
-              />
-            );
-          })()}
-          <MekademBand
-            userId={USER_ID}
-            /* TODO: derive fundId — not yet in derived-inputs */
-            fundId="clal_pensia"
-            balanceNis={numOf("pension_balance_nis")}
-          />
-        </section>
+            <DrilldownSection title="Sources" badge="all">
+              <SourcesPanel filterIds={null} />
+            </DrilldownSection>
 
-        <section id="sources" className="scroll-mt-6">
-          <DrilldownSection title="Methodology" defaultOpen={false}>
-            <MethodologyPanel>
-              <p>
-                The retirement companion follows a &quot;hero + chart +
-                drill-down&quot; standard. Top: a verdict card with the
-                one-line answer + 1-3 key numbers. Middle: the relevant
-                chart. Bottom: collapsible drill-down sections like this
-                one for the methodology, sensitivity analysis, and sources.
-              </p>
-              <p>
-                Every value on the page passes through the{" "}
-                <code>ValueWithRationale</code> shape: the value plus its
-                source plus its rationale plus any freshness warnings.
-                Hover any dotted-underline number to see the explanation.
-              </p>
-            </MethodologyPanel>
-          </DrilldownSection>
-
-          <DrilldownSection title="Sources" badge="all">
-            <SourcesPanel filterIds={null} />
-          </DrilldownSection>
-
-          <div className="mt-4">
             <DerivedInputsProvenancePanel data={derived} />
-          </div>
+          </CollapsibleSection>
         </section>
       </div>
     </div>
