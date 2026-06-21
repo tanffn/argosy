@@ -1585,7 +1585,61 @@ async function putJSON<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * Overview — plain-language plan-explainer surface. One canonical-bound story of
+ * the plan (7 chapters); see argosy/services/overview_assembler.py and
+ * docs/superpowers/specs/2026-06-21-overview-plan-explainer-design.md.
+ * Every number is resolver-derived (no divergent sources); `viz.data` is
+ * kind-specific (see the spec §4 / the chapter components).
+ */
+export interface OverviewFactRef {
+  key: string;
+  value: number | null;
+  unit: string;
+  status: string; // "resolved" | "pending"
+  display: string | null;
+  source_locator: string;
+  confidence: string | null;
+}
+export interface OverviewVizPayload {
+  kind: string; // fi_crossing | liquid_split | alloc_vs_target | nvda_winddown | rsu_forward | phase_timeline | dual_track_age
+  data: Record<string, unknown>;
+}
+export interface OverviewYourMove {
+  label: string;
+  href: string;
+}
+export interface OverviewChapter {
+  id: string;
+  title: string;
+  eyebrow: string;
+  headline: string;
+  degraded: boolean;
+  facts: OverviewFactRef[];
+  viz: OverviewVizPayload;
+  drill_label: string;
+  drill_href: string;
+  your_move: OverviewYourMove | null;
+}
+export interface OverviewActionsBanner {
+  open_count: number;
+  href: string;
+}
+export interface OverviewResponse {
+  available: boolean;
+  reason: string | null;
+  plan_version_id: number | null;
+  decision_run_id: number | null;
+  as_of: string | null;
+  chapters: OverviewChapter[];
+  actions_banner: OverviewActionsBanner;
+}
+
 export const api = {
+  overview: (userId: string) =>
+    getJSON<OverviewResponse>(
+      `/api/overview?user_id=${encodeURIComponent(userId)}`,
+    ),
   /**
    * Retirement-companion engine. Plan:
    * docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md
