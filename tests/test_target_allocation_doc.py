@@ -239,6 +239,32 @@ def test_derive_full_book_composition_conserves_on_total_book_basis() -> None:
     assert comp["Strategic single-stock (NVDA)"] == pytest.approx(62.52)
 
 
+def test_assert_conserving_glide_rejects_bad_waypoints() -> None:
+    """The fail-loud conservation guard must reject a non-conserving glide AND be
+    NaN/negative-aware (sum-only would let NaN pass via abs(nan-100)>tol == False)."""
+    from types import SimpleNamespace
+
+    from argosy.services.target_allocation_doc import _assert_conserving_glide
+
+    def _doc(comp: dict) -> object:
+        return SimpleNamespace(
+            glide=[SimpleNamespace(date="2026-06-20", composition_pct_by_class=comp)]
+        )
+
+    # the live 76.46 bug shape
+    with pytest.raises(ValueError, match="not ~100|non-conserving"):
+        _assert_conserving_glide(_doc({"NVDA": 62.52, "Cash": 13.94}))
+    # NaN must be caught (not silently pass)
+    with pytest.raises(ValueError, match="non-finite"):
+        _assert_conserving_glide(_doc({"A": float("nan"), "B": 100.0}))
+    # negative weight (e.g. nvda>100) must be caught
+    with pytest.raises(ValueError, match="negative"):
+        _assert_conserving_glide(_doc({"A": -5.0, "B": 105.0}))
+    # a conserving glide passes (no raise); empty glide is a no-op
+    _assert_conserving_glide(_doc({"A": 60.0, "B": 40.0}))
+    _assert_conserving_glide(SimpleNamespace(glide=[]))
+
+
 # ─── T4.2: deconcentration glide horizon follows the optimizer ─────────────
 
 

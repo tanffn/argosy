@@ -15,6 +15,7 @@ roadmap. T1.1 defines the schema; ``build_target_allocation_doc`` (T1.3) fills i
 
 from __future__ import annotations
 
+import math
 from datetime import date
 from typing import TYPE_CHECKING, Literal
 
@@ -189,8 +190,10 @@ def derive_full_book_today_composition(
     The settled basis (codex danger-full-access verified against the live DB):
     NVDA's weight is ``nvda_tradeable_pct`` (from the concentration report, NOT the
     snapshot's 'Individual Stocks' row, which is the OTHER singles). The ex-NVDA
-    snapshot categories (each a % of the ex-NVDA book, summing to ~100) are scaled
-    by ``(100 - nvda_tradeable_pct)/100`` so the whole book sums to ~100.
+    snapshot categories arrive as **%-of-TOTAL-book** (they sum to ~(100 − NVDA's
+    total share), NOT ~100), so they are RENORMALIZED onto the ex-NVDA book
+    (sum → 100) and then scaled by ``(100 - nvda_tradeable_pct)/100`` so the whole
+    book sums to ~100.
 
     Special cases:
       * ``defensive`` splits between US low-vol + short IG bonds proportional to
@@ -207,22 +210,45 @@ def derive_full_book_today_composition(
     and ~25% of the book vanished, yielding a glide that summed to ~76 instead of
     100 (and a deploy-cash sizer that refused the non-conserving plan).
     """
+    # NVDA weight must be a sane share of the book; outside (0,100) would make the
+    # ex-NVDA space negative/degenerate, so refuse rather than emit garbage weights.
+    if not (0.0 <= float(nvda_tradeable_pct) <= 100.0):
+        raise ValueError(
+            f"nvda_tradeable_pct={nvda_tradeable_pct!r} out of [0,100] — refusing "
+            f"to derive a composition off a non-physical NVDA weight")
     mult = (100.0 - nvda_tradeable_pct) / 100.0
     # Renormalize the ex-NVDA categories onto the ex-NVDA book (they arrive as
     # %-of-total-book). renorm[cat] sums to ~100 over the ex-NVDA categories;
     # scaling by ``mult`` then fills exactly the (100 − NVDA) space.
-    ex_sum = sum(v for v in ex_nvda_categories.values() if isinstance(v, (int, float)))
+    ex_sum = sum(
+        v for v in ex_nvda_categories.values()
+        if isinstance(v, (int, float)) and math.isfinite(v)
+    )
+    # The snapshot's own implied NVDA share is (100 − ex_sum); it should roughly
+    # agree with the concentration report's nvda_tradeable_pct. A large gap means
+    # the two bases have diverged (the renorm would silently paper over it).
+    if ex_sum > 0 and abs(nvda_tradeable_pct - (100.0 - ex_sum)) > 10.0:
+        log.warning(
+            "alloc_doc.nvda_basis_mismatch",
+            nvda_tradeable_pct=nvda_tradeable_pct,
+            snapshot_implied_nvda=round(100.0 - ex_sum, 2),
+            ex_sum=round(ex_sum, 2),
+        )
     comp: dict[str, float] = {_NVDA_LABEL: nvda_tradeable_pct}
     for cat, pct in ex_nvda_categories.items():
+        if not (isinstance(pct, (int, float)) and math.isfinite(pct)):
+            continue
         renorm = (pct * 100.0 / ex_sum) if ex_sum > 0 else 0.0
         scaled = renorm * mult
         if cat == "defensive":
             denom = low_vol_target + bonds_target
             if denom <= 0:
-                comp["US low-volatility equity"] = scaled
+                comp["US low-volatility equity"] = comp.get("US low-volatility equity", 0.0) + scaled
                 continue
-            comp["US low-volatility equity"] = scaled * low_vol_target / denom
-            comp["Short-duration IG bonds"] = scaled * bonds_target / denom
+            comp["US low-volatility equity"] = (
+                comp.get("US low-volatility equity", 0.0) + scaled * low_vol_target / denom)
+            comp["Short-duration IG bonds"] = (
+                comp.get("Short-duration IG bonds", 0.0) + scaled * bonds_target / denom)
         elif cat == "individual stocks":
             comp[OTHER_SINGLES_LABEL] = comp.get(OTHER_SINGLES_LABEL, 0.0) + scaled
         else:
@@ -433,23 +459,39 @@ def build_plan_target_allocation_doc(
             f"(this run's snapshot/concentration composition was unavailable; "
             f"the end-state target is freshly derived)"
         )
-    # Conservation gate (fail-loud): every glide waypoint must sum to ~100. A
-    # non-conserving glide means the composition derivation dropped book weight
-    # (the basis-mismatch bug that summed to ~76 and broke deploy-cash). Never
-    # PERSIST such a doc — refuse here so the caller carries forward the prior
-    # good plan rather than promoting a broken allocation.
-    for wp in getattr(doc, "glide", []) or []:
-        s = sum(
-            v for v in dict(wp.composition_pct_by_class).values()
-            if isinstance(v, (int, float))
-        )
-        if abs(s - 100.0) > 0.5:
-            raise ValueError(
-                f"target-allocation glide waypoint {wp.date} sums to {s:.2f}, not "
-                f"~100 — refusing to persist a non-conserving allocation doc "
-                f"(composition derivation dropped book weight)"
-            )
+    # Conservation gate (fail-loud): never PERSIST a non-conserving doc — refuse
+    # here so the caller carries forward the prior good plan instead.
+    _assert_conserving_glide(doc)
     return doc
+
+
+def _assert_conserving_glide(doc: "TargetAllocationDoc") -> None:
+    """Raise unless every glide waypoint is finite, nonnegative, and sums to ~100.
+
+    A non-conserving glide means the composition derivation dropped/мangled book
+    weight (the basis-mismatch bug that summed to ~76 and 500'd deploy-cash). This
+    runs on BOTH freshly-built AND carried-forward docs before they are persisted
+    (codex: the carry-forward path must not silently re-persist a prior bad doc).
+    Sum-only is not enough — NaN passes ``abs(nan-100) > tol`` and a >100 NVDA
+    weight yields negative sleeves that still sum to 100; so finiteness +
+    nonnegativity are checked too. Tolerance is tight (waypoint pcts are rounded
+    to 4dp, so the per-waypoint sum is within a few hundredths of 100)."""
+    for wp in getattr(doc, "glide", []) or []:
+        vals = list(dict(wp.composition_pct_by_class).values())
+        if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in vals):
+            raise ValueError(
+                f"target-allocation glide waypoint {getattr(wp, 'date', '?')} has a "
+                f"non-finite weight — refusing to persist")
+        if any(v < -0.01 for v in vals):
+            raise ValueError(
+                f"target-allocation glide waypoint {getattr(wp, 'date', '?')} has a "
+                f"negative weight — refusing to persist")
+        s = sum(vals)
+        if abs(s - 100.0) > 0.1:
+            raise ValueError(
+                f"target-allocation glide waypoint {getattr(wp, 'date', '?')} sums to "
+                f"{s:.2f}, not ~100 — refusing to persist a non-conserving allocation "
+                f"doc (composition derivation dropped book weight)")
 
 
 def _strip_stale_alternatives(doc: "TargetAllocationDoc") -> None:
@@ -540,19 +582,35 @@ def resolve_target_allocation_json(
             # Stamp provenance so the carried doc is NOT mistaken for a fresh,
             # this-run-canonical doc downstream (codex r2 B3): a reader (or the
             # accept-time numeric resolver) can see the cap/glide came from a
-            # PRIOR run because the fresh build failed. If the prior doc is
-            # corrupt/unparseable, fall back to the verbatim string (still better
-            # than NULL, which false-flags the body's correct cap).
+            # PRIOR run because the fresh build failed.
+            #
+            # Two distinct failure modes, handled differently:
+            #  * UNPARSEABLE by this code (e.g. a future/legacy schema) -> return the
+            #    verbatim string; a schema-version mismatch shouldn't fail-close, and
+            #    NULL false-flags the body's correct cap (original behavior).
+            #  * PARSES but is NON-CONSERVING (the 76% bug) -> must NOT be re-persisted
+            #    (codex): fall through to fail-closed None.
             try:
                 doc = TargetAllocationDoc.model_validate_json(carried)
+            except (ValueError, TypeError):
+                return carried
+            try:
                 doc.provenance = (
                     f"{doc.provenance} | CARRIED-FORWARD from plan_version "
                     f"{prior_id} (run {decision_run_id} fresh build failed)"
                 )
                 _strip_stale_alternatives(doc)
+                _assert_conserving_glide(doc)
                 return doc.model_dump_json()
-            except (ValueError, TypeError):
-                return carried
+            except (ValueError, TypeError) as exc:
+                log.warning(
+                    "plan_alloc_doc.carried_doc_rejected_non_conserving",
+                    user_id=user_id,
+                    decision_run_id=decision_run_id,
+                    prior_plan_version_id=prior_id,
+                    error=str(exc),
+                )
+                # fall through to the fail-closed None below
     except Exception as exc:  # noqa: BLE001
         log.warning(
             "plan_alloc_doc.carry_forward_failed",
