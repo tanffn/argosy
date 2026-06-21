@@ -42,6 +42,24 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"])
 _log = get_logger(__name__)
 
 
+def _warm_derived_cache(user_id: str) -> None:
+    """Fire-and-forget pre-warm of the derived cache after a NEW snapshot.
+
+    A new portfolio snapshot bumps the derived-cache version tuple, leaving
+    every /retirement + /api/overview entry cold. Warm them on a background
+    thread so the user's next page load is already fast. Best-effort: never
+    raises into the snapshot path.
+    """
+    try:
+        from argosy.services import derived_cache
+
+        derived_cache.warm_async(user_id)
+    except Exception as exc:  # noqa: BLE001 — warming must never break ingest
+        _log.warning(
+            "portfolio_snapshot.warm_failed", user_id=user_id, error=str(exc),
+        )
+
+
 class PositionDTO(BaseModel):
     location: str
     currency: str
@@ -308,7 +326,9 @@ def get_portfolio_snapshot(
 
     snap = parse_portfolio_tsv(tsv)
     try:
-        write_through_if_changed(db, user_id=user_id, snapshot=snap)
+        written = write_through_if_changed(db, user_id=user_id, snapshot=snap)
+        if written is not None:
+            _warm_derived_cache(user_id)
     except Exception as exc:  # noqa: BLE001 - defensive
         _log.warning(
             "portfolio_snapshot.write_through_failed",
@@ -519,7 +539,9 @@ def upload_snapshot(
         # the next GET /snapshot returns the freshest data without a
         # filesystem walk.
         try:
-            write_through_if_changed(db, user_id=user_id, snapshot=snap)
+            written = write_through_if_changed(db, user_id=user_id, snapshot=snap)
+            if written is not None:
+                _warm_derived_cache(user_id)
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "portfolio_snapshot.write_through_failed",

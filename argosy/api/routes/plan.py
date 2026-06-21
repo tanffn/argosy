@@ -3312,6 +3312,17 @@ def post_draft_accept(
     _publish("plan.draft.accepted", {"user_id": user_id, "draft_id": draft_id})
     _publish("plan.current.changed", {"user_id": user_id, "current_id": pv.id})
 
+    # A new plan is now role='current' -> the derived-cache version tuple has
+    # changed and every /retirement + /api/overview entry is cold. Pre-warm the
+    # hot entries on a background thread so the user's next page load is fast
+    # (not just repeat loads). Best-effort, never blocks /accept, never raises.
+    try:
+        from argosy.services import derived_cache
+
+        derived_cache.warm_async(user_id)
+    except Exception:  # noqa: BLE001 — warming must never break promotion
+        pass
+
     return AcceptResponse(
         status="accepted",
         new_current_id=pv.id,

@@ -151,6 +151,262 @@ def get_or_compute(
     return value
 
 
+# ---------------------------------------------------------------------------
+# Background pre-warming
+#
+# The cache above is LAZY: the FIRST request after a plan-promote / snapshot-
+# ingest still pays the full ~3.7s Monte-Carlo compute. ``warm`` recomputes the
+# hot entries for the CURRENT version on a background thread right after the
+# plan or snapshot changes, so the value is already cached by the time the user
+# opens /retirement or /api/overview.
+#
+# CORRECTNESS: warming goes through the SAME ``get_or_compute(tag, version, ...)``
+# path the routes use, with the SAME tags + version-key suffixes (params), so a
+# warmed entry is a genuine cache HIT for the route — never a divergent key. The
+# version is recomputed from a fresh session inside ``warm`` (the version a
+# trigger saw may already be one step stale by the time the thread runs; we want
+# whatever is current NOW).
+# ---------------------------------------------------------------------------
+
+
+def _warm_enabled() -> bool:
+    """Pre-warming is ON unless ``ARGOSY_DERIVED_CACHE_WARM`` is explicitly off.
+
+    Independent of ``ARGOSY_DERIVED_CACHE`` so warming can be disabled alone
+    (e.g. to keep a test deterministic) while the lazy cache stays on. Warming
+    is ALSO a no-op when the cache itself is disabled — there is nothing to warm
+    into.
+    """
+    raw = os.environ.get("ARGOSY_DERIVED_CACHE_WARM", "1").strip().lower()
+    return raw not in {"0", "false", "off", "no", ""}
+
+
+def _new_sync_session():
+    """Build a fresh, self-owned sync SQLAlchemy session for background work.
+
+    Warming runs on a daemon thread AFTER the request returned, so it must NOT
+    borrow the request-scoped session (already closed / wrong thread). This
+    mirrors ``argosy.api.routes.plan.get_db``'s sync engine construction
+    (aiosqlite stripped to plain sqlite, WAL pragmas) but builds its own
+    short-lived session that the caller closes. Returns ``None`` if a session
+    can't be built (warming then no-ops).
+    """
+    try:
+        from sqlalchemy import create_engine, event
+        from sqlalchemy.orm import sessionmaker
+
+        from argosy.config import get_settings
+
+        settings = get_settings()
+        sync_url = settings.database_url.replace("+aiosqlite", "")
+        engine = create_engine(sync_url, connect_args={"check_same_thread": False})
+        if sync_url.startswith("sqlite") and ":memory:" not in sync_url:
+            @event.listens_for(engine, "connect")
+            def _set_sqlite_pragmas(dbapi_connection, _connection_record):
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA busy_timeout=60000")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+        return factory()
+    except Exception:  # noqa: BLE001 — best-effort; no session -> no warming
+        return None
+
+
+def warm(user_id: str) -> None:
+    """Best-effort pre-compute of the hot cache entries for ``user_id``.
+
+    Opens its OWN sync session (background-thread-safe), resolves the current
+    version, and runs each hot computation through ``get_or_compute`` so the
+    stored keys exactly match what the routes read. No-ops when caching/warming
+    is disabled or no current plan exists. NEVER raises into the caller.
+
+    Warmed entries (tag -> compute), matching the routes' keys:
+
+      * ``"overview"``               -> ``build_overview`` (GET /api/overview)
+      * ``"retirement.derived-inputs"`` -> ``compute_derived_inputs``
+                                        (GET /retirement/derived-inputs)
+      * ``"retirement.feasible-age"`` -> ``canonical_feasible_dual_track`` with
+        the route's DEFAULT params (target_p_solvent=0.90, n_paths=1500,
+        seed=42) and the SAME version suffix
+        ``("feasible-age", target_p_solvent, n_paths, seed)``.
+      * ``"retirement.dual-track-plan"`` -> ``build_retirement_plan`` with the
+        route's DEFAULT params (n_paths=1500, seed=42) and the SAME suffix
+        ``("dual-track-plan", n_paths, seed)``.
+
+    NOT warmed: ``"retirement.scenarios"`` — its key includes ``retirement_age``
+    which has no single canonical default (the card requests a specific age), so
+    pre-warming would compute a key the user may never request. It stays lazy.
+    """
+    if not _enabled() or not _warm_enabled():
+        return
+
+    session = None
+    try:
+        session = _new_sync_session()
+        if session is None:
+            return
+
+        version = version_tuple(session, user_id)
+        if version is None:
+            return  # no current plan -> uncacheable -> nothing to warm
+
+        # --- overview ------------------------------------------------------
+        try:
+            from argosy.services.overview_assembler import build_overview
+
+            get_or_compute(
+                "overview", version, lambda: build_overview(session, user_id=user_id)
+            )
+        except Exception:  # noqa: BLE001 — one entry failing must not stop others
+            pass
+
+        # --- retirement.derived-inputs ------------------------------------
+        try:
+            from argosy.services.retirement.derived_inputs import (
+                compute_derived_inputs,
+            )
+
+            get_or_compute(
+                "retirement.derived-inputs",
+                version,
+                lambda: compute_derived_inputs(session, user_id=user_id),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- retirement.feasible-age (route default params) ---------------
+        # Route: GET /retirement/projection/feasible-age
+        #   target_p_solvent=0.90, n_paths=1500, seed=42
+        #   version + ("feasible-age", target_p_solvent, n_paths, seed)
+        try:
+            from argosy.services.retirement.retirement_plan import (
+                RetirementAssumptions,
+                canonical_feasible_dual_track,
+            )
+
+            fa_target, fa_paths, fa_seed = 0.90, 1500, 42
+            fa_version = version + ("feasible-age", fa_target, fa_paths, fa_seed)
+
+            def _warm_feasible_age():
+                r = canonical_feasible_dual_track(
+                    session=session,
+                    user_id=user_id,
+                    target_p_solvent=fa_target,
+                    assumptions=RetirementAssumptions(n_paths=fa_paths, seed=fa_seed),
+                )
+                return {
+                    "earliest_feasible_age": r.earliest_feasible_age,
+                    "p_solvent_at_age": r.p_solvent_at_age,
+                    "target_p_solvent": r.target_p_solvent,
+                    "operational_target_age": r.operational_target_age,
+                    "statutory_lump_age": r.statutory_lump_age,
+                    "statutory_annuity_age": r.statutory_annuity_age,
+                    "current_age": r.current_age,
+                    "reserve_netted_nis": r.reserve_netted_nis,
+                    "basis": r.basis,
+                }
+
+            get_or_compute("retirement.feasible-age", fa_version, _warm_feasible_age)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # --- retirement.dual-track-plan (route default params) ------------
+        # Route: GET /retirement/projection/dual-track-plan
+        #   n_paths=1500, seed=42; version + ("dual-track-plan", n_paths, seed)
+        try:
+            from argosy.services.retirement.retirement_plan import (
+                RetirementAssumptions,
+                build_retirement_plan,
+            )
+
+            dt_paths, dt_seed = 1500, 42
+            dt_version = version + ("dual-track-plan", dt_paths, dt_seed)
+
+            def _track(t) -> dict:
+                return {
+                    "name": t.name,
+                    "label": t.label,
+                    "mu_real": t.mu_real,
+                    "drawdown_age": t.drawdown_age,
+                    "drawdown_p": t.drawdown_p,
+                    "preservation_age": t.preservation_age,
+                    "preservation_p": t.preservation_p,
+                    "frontier": [
+                        {
+                            "retire_age": p.retire_age,
+                            "p_solvent_95": p.p_solvent_95,
+                            "median_estate_nis": p.median_estate_nis,
+                            "median_estate_real_nis": p.median_estate_real_nis,
+                            "worst10_estate_nis": p.worst10_estate_nis,
+                            "worst10_estate_real_nis": p.worst10_estate_real_nis,
+                            "principal_preserved": p.principal_preserved,
+                        }
+                        for p in t.frontier
+                    ],
+                }
+
+            def _warm_dual_track():
+                plan = build_retirement_plan(
+                    session=session,
+                    user_id=user_id,
+                    assumptions=RetirementAssumptions(n_paths=dt_paths, seed=dt_seed),
+                )
+                return {
+                    "current_age": plan.current_age,
+                    "full_portfolio_nis": plan.full_portfolio_nis,
+                    "cgt_haircut_nis": plan.cgt_haircut_nis,
+                    "reserve_raw_nis": plan.reserve_raw_nis,
+                    "reserve_pv_nis": plan.reserve_pv_nis,
+                    "deployable_nis": plan.deployable_nis,
+                    "spend_central_nis": plan.spend_central_nis,
+                    "spend_stress_nis": plan.spend_stress_nis,
+                    "sigma_current": plan.sigma_current,
+                    "tracks": [_track(t) for t in plan.tracks],
+                    "stress_drawdown_age": plan.stress_drawdown_age,
+                    "stress_preservation_age": plan.stress_preservation_age,
+                    "spend_to_retire_now_nis": plan.spend_to_retire_now_nis,
+                    "fx_stress_band": [
+                        {"fx_adverse_pct": hit, "drawdown_age": age}
+                        for hit, age in plan.fx_stress_band
+                    ],
+                    "assumptions": plan.assumptions,
+                }
+
+            get_or_compute("retirement.dual-track-plan", dt_version, _warm_dual_track)
+        except Exception:  # noqa: BLE001
+            pass
+
+    except Exception:  # noqa: BLE001 — warming is best-effort; never propagate
+        pass
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def warm_async(user_id: str) -> None:
+    """Fire :func:`warm` on a daemon thread so it never blocks the request.
+
+    No-ops (no thread spawned) when caching or warming is disabled. The thread
+    is a daemon so it can't keep the process alive; ``warm`` itself swallows all
+    errors so the thread can't crash noisily.
+    """
+    if not _enabled() or not _warm_enabled():
+        return
+    try:
+        t = threading.Thread(
+            target=warm, args=(user_id,), name=f"derived-cache-warm-{user_id}",
+            daemon=True,
+        )
+        t.start()
+    except Exception:  # noqa: BLE001 — spawning must never break the caller
+        pass
+
+
 def clear() -> None:
     """Drop all cached entries (test hook / manual bust)."""
     with _LOCK:
@@ -166,6 +422,8 @@ def cache_size() -> int:
 __all__ = [
     "version_tuple",
     "get_or_compute",
+    "warm",
+    "warm_async",
     "clear",
     "cache_size",
 ]
