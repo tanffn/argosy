@@ -211,6 +211,34 @@ def test_derive_full_book_composition_matches_codex_verified() -> None:
     assert comp[OTHER_SINGLES_LABEL] == pytest.approx(6.399, abs=0.001)
 
 
+def test_derive_full_book_composition_conserves_on_total_book_basis() -> None:
+    """Regression: the live snapshot's allocation rows are %-of-TOTAL-book (the
+    ex-NVDA rows sum to ~(100 − NVDA's share), NOT ~100). The composition must
+    still conserve to ~100 — the prior code double-discounted (treated total-book
+    rows as ex-NVDA-book rows and re-scaled by mult), dropping ~25% of the book and
+    yielding a glide that summed to ~76 (which broke the deploy-cash sizer)."""
+    # ex-NVDA categories as the snapshot actually emits them: % of the WHOLE book,
+    # summing to ~37 (NVDA is the ~63% remainder), not ~100.
+    ex_nvda_total_basis = {
+        "cash": 7.22,
+        "core equity": 8.31,
+        "defensive": 3.11,
+        "dividend": 6.72,
+        "growth": 4.12,
+        "individual stocks": 6.84,
+        "international": 0.87,
+    }
+    assert sum(ex_nvda_total_basis.values()) == pytest.approx(37.19, abs=0.01)
+    comp = derive_full_book_today_composition(
+        nvda_tradeable_pct=62.52,
+        ex_nvda_categories=ex_nvda_total_basis,
+        low_vol_target=5.92,
+        bonds_target=2.40,
+    )
+    assert sum(comp.values()) == pytest.approx(100.0, abs=0.5)
+    assert comp["Strategic single-stock (NVDA)"] == pytest.approx(62.52)
+
+
 # ─── T4.2: deconcentration glide horizon follows the optimizer ─────────────
 
 

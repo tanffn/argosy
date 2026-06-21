@@ -198,11 +198,24 @@ def derive_full_book_today_composition(
       * ``individual stocks`` (the non-NVDA singles) becomes the redeploy band
         ``OTHER_SINGLES_LABEL`` (glides to 0 — no target sleeve);
       * unknown categories are kept under their raw key so the sum is preserved.
+
+    Conservation: the snapshot's allocation rows are %-of-TOTAL-book (the ex-NVDA
+    rows sum to ~(100 − NVDA's total share), NOT ~100), so they are first
+    RENORMALIZED onto the ex-NVDA book (sum → 100) before being scaled by ``mult``
+    into the (100 − NVDA) space. Without the renormalization the ex-NVDA sleeve
+    was double-discounted (once as a fraction of the whole book, again by ``mult``)
+    and ~25% of the book vanished, yielding a glide that summed to ~76 instead of
+    100 (and a deploy-cash sizer that refused the non-conserving plan).
     """
     mult = (100.0 - nvda_tradeable_pct) / 100.0
+    # Renormalize the ex-NVDA categories onto the ex-NVDA book (they arrive as
+    # %-of-total-book). renorm[cat] sums to ~100 over the ex-NVDA categories;
+    # scaling by ``mult`` then fills exactly the (100 − NVDA) space.
+    ex_sum = sum(v for v in ex_nvda_categories.values() if isinstance(v, (int, float)))
     comp: dict[str, float] = {_NVDA_LABEL: nvda_tradeable_pct}
     for cat, pct in ex_nvda_categories.items():
-        scaled = pct * mult
+        renorm = (pct * 100.0 / ex_sum) if ex_sum > 0 else 0.0
+        scaled = renorm * mult
         if cat == "defensive":
             denom = low_vol_target + bonds_target
             if denom <= 0:
@@ -420,6 +433,22 @@ def build_plan_target_allocation_doc(
             f"(this run's snapshot/concentration composition was unavailable; "
             f"the end-state target is freshly derived)"
         )
+    # Conservation gate (fail-loud): every glide waypoint must sum to ~100. A
+    # non-conserving glide means the composition derivation dropped book weight
+    # (the basis-mismatch bug that summed to ~76 and broke deploy-cash). Never
+    # PERSIST such a doc — refuse here so the caller carries forward the prior
+    # good plan rather than promoting a broken allocation.
+    for wp in getattr(doc, "glide", []) or []:
+        s = sum(
+            v for v in dict(wp.composition_pct_by_class).values()
+            if isinstance(v, (int, float))
+        )
+        if abs(s - 100.0) > 0.5:
+            raise ValueError(
+                f"target-allocation glide waypoint {wp.date} sums to {s:.2f}, not "
+                f"~100 — refusing to persist a non-conserving allocation doc "
+                f"(composition derivation dropped book weight)"
+            )
     return doc
 
 
