@@ -90,6 +90,8 @@ export function WindfallCard() {
       <AllocationDeltaTable />
       <ProposalsGrid plan={plan} event={event} />
 
+      <ReconciledSourceLines event={event} />
+
       <DrilldownSection title="Matching equity sales (same month)">
         <SalesTable event={event} />
       </DrilldownSection>
@@ -263,6 +265,83 @@ function CashSourceBreakdown({ event }: { event: WindfallEventDTO }) {
         </p>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Transaction-based source attribution — the real RSU-sale → Leumi-cash
+ * reconciliation. Each row is one Schwab RSU sale linked to the Leumi USD
+ * transfer it produced, taxed per the NVIDIA ESOP §102 simulation
+ * (grant-dependent capital@25% / ordinary split — not a flat rate).
+ *
+ * The backend serializes these as pre-formatted attribution strings
+ * (``reconciled_source_lines``), each already carrying the sale's share
+ * count, price, gross, §102 tax split, net, retention, and the matched wire
+ * date + amount. We render them verbatim as a table so the wording stays
+ * the single canonical source — no client-side re-derivation. Suppresses
+ * entirely when nothing reconciled (the surface falls back to the heuristic
+ * CashSourceBreakdown above).
+ */
+function ReconciledSourceLines({ event }: { event: WindfallEventDTO }) {
+  const lines = event.reconciled_source_lines ?? [];
+  if (lines.length === 0) return null;
+
+  return (
+    <DrilldownSection title="Reconciled cash source — RSU sale → Leumi transfer">
+      <div className="space-y-2">
+        <table className="w-full text-sm font-mono tabular-nums">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border/40">
+              <th className="text-left py-1.5 pr-3 w-6">#</th>
+              <th className="text-left py-1.5">
+                Sale → §102 net → matched Leumi USD transfer
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((line, i) => (
+              <tr
+                key={i}
+                className="border-b border-border/20 last:border-0 align-top"
+              >
+                <td className="py-1.5 pr-3 text-muted-foreground">{i + 1}</td>
+                <td className="py-1.5 leading-relaxed">{line}</td>
+              </tr>
+            ))}
+            <tr className="border-t border-border/40 font-semibold">
+              <td className="py-1.5 pr-3" />
+              <td className="py-1.5 flex items-center justify-between gap-3">
+                <span>Attributed to RSU sales</span>
+                <span className="text-info">
+                  {formatUsd(event.reconciled_matched_usd)}
+                </span>
+              </td>
+            </tr>
+            {event.reconciled_unexplained_usd > 0 ? (
+              <tr>
+                <td className="py-1.5 pr-3" />
+                <td className="py-1.5 flex items-center justify-between gap-3">
+                  <span className="text-amber-400">
+                    Unexplained (salary / FX / out-of-window sales)
+                  </span>
+                  <span className="text-amber-400">
+                    {formatUsd(event.reconciled_unexplained_usd)}
+                  </span>
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          Each Schwab RSU sale (EquityAwardsCenter CSV) is taxed per the
+          NVIDIA ESOP §102 simulation — a grant-dependent capital @25% /
+          ordinary split, not a flat rate — then linked 1:1 to the Leumi USD
+          transfer credit it produced (account 44745200). This is the real
+          transaction-based attribution; it supersedes the heuristic source
+          breakdown above.
+        </p>
+      </div>
+    </DrilldownSection>
   );
 }
 

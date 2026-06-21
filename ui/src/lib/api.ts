@@ -98,6 +98,14 @@ export interface WindfallEventDTO {
   fx_usd_nis: number;
   classified_source: WindfallClassifiedSource;
   requires_user_classification: boolean;
+  /** Transaction-based source attribution: one pre-formatted human line per
+   *  Schwab RSU sale linked to the Leumi USD transfer it produced (§102
+   *  sim-derived net). Empty when no link could be established. */
+  reconciled_source_lines: string[];
+  /** Total inflow attributed to reconciled sales (USD). */
+  reconciled_matched_usd: number;
+  /** Residual inflow not attributed to any sale (USD). */
+  reconciled_unexplained_usd: number;
   matching_sales: WindfallMatchingSale[];
   allocation_delta_table: WindfallAllocationLineDTO[];
   source_tsv: string;
@@ -1665,11 +1673,21 @@ export interface OverviewResponse {
   actions_banner: OverviewActionsBanner;
 }
 
+export interface ConfigResponse {
+  // Agent fleet size, derived from the backend codebase (see
+  // argosy.api.routes.config.derive_fleet_count).
+  fleet_count: number;
+}
+
 export const api = {
   overview: (userId: string) =>
     getJSON<OverviewResponse>(
       `/api/overview?user_id=${encodeURIComponent(userId)}`,
     ),
+  // Home-page config counts derived from the backend (see
+  // argosy.api.routes.config). Today just the agent fleet size, which the
+  // hero copy used to hardcode.
+  config: () => getJSON<ConfigResponse>("/api/config"),
   /**
    * Retirement-companion engine. Plan:
    * docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md

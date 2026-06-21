@@ -38,16 +38,12 @@ import { DecisionAccordion } from "@/components/agent/DecisionAccordion";
 
 const USER_ID = "ariel";
 
-// SDD §3.1 fleet size and §5.1 cadence-loop count. Hardcoded today (no backend
-// /config or health route exposes these counts; verified 2026-06-21). The 51
-// count is the concrete count of public `class \w+Agent` declarations under
-// `argosy/agents/` (excluding the abstract `BaseAgent` base and the private
-// `_ResearcherAgent` helper). RiskOfficerAgent counts as one class even though
-// it's instantiated three times per decision (perspective kwarg in
-// {aggressive, neutral, conservative}). Re-derive with:
-//   grep -rhoE "^class [A-Za-z_]+Agent\b" argosy/agents/*.py \
-//     | grep -vE "BaseAgent|_ResearcherAgent" | sort -u | wc -l
-const AGENT_FLEET_SIZE = 51;
+// SDD §3.1 fleet size and §5.1 cadence-loop count. The live count comes from
+// the backend GET /api/config (derived from the public `class \w+Agent`
+// declarations under `argosy/agents/`, excluding the abstract `BaseAgent` base
+// and the private `_ResearcherAgent` helper). This literal is only the fallback
+// shown if that fetch fails, so the hero still renders a sensible number.
+const AGENT_FLEET_SIZE_FALLBACK = 51;
 // 9 cadence ticks displayed in the CADENCES TODAY strip below (see
 // CADENCE_NAMES) — a curated home-page subset of the ~23 loops registered in
 // the scheduler, NOT the total registered-loop count.
@@ -122,6 +118,9 @@ interface HomeData {
   // page so the user can SEE that the fleet is working without having
   // to navigate to /plan first. Polled every 10 s while non-null.
   inFlightSynthesis: InFlightSynthesisDTO | null;
+  // Agent fleet size from the backend (GET /api/config). Null until the
+  // fetch resolves; the hero falls back to AGENT_FLEET_SIZE_FALLBACK.
+  fleetCount: number | null;
   error: string | null;
 }
 
@@ -140,6 +139,7 @@ const initial: HomeData = {
   fleetReview: null,
   anomalyReport: null,
   inFlightSynthesis: null,
+  fleetCount: null,
   error: null,
 };
 
@@ -219,6 +219,7 @@ export default function Home() {
         fleetReviewLatest,
         anomalyLatest,
         inFlightSynth,
+        configRes,
       ] = await Promise.all([
         api.portfolioSnapshot(USER_ID).catch(() => null),
         api.planCurrent(USER_ID).catch(() => null),
@@ -296,6 +297,9 @@ export default function Home() {
         api
           .planInFlightSynthesis(USER_ID)
           .catch(() => ({ in_flight_synthesis: null })),
+        // Backend-derived config counts (agent fleet size). Fails gracefully
+        // to null so the hero falls back to AGENT_FLEET_SIZE_FALLBACK.
+        api.config().catch(() => null),
       ]);
 
       // ---- Monthly spend resolution -------------------------------------
@@ -359,6 +363,7 @@ export default function Home() {
         fleetReview: fleetReviewLatest,
         anomalyReport: anomalyLatest,
         inFlightSynthesis: inFlightSynth?.in_flight_synthesis ?? null,
+        fleetCount: configRes?.fleet_count ?? null,
         error: null,
       });
     } catch (e: unknown) {
@@ -626,7 +631,7 @@ export default function Home() {
                   v0.1.0
                 </StatusPill>
                 <StatusPill tone="neutral" mono>
-                  {AGENT_FLEET_SIZE} agents
+                  {data.fleetCount ?? AGENT_FLEET_SIZE_FALLBACK} agents
                 </StatusPill>
                 <StatusPill tone="neutral" mono>
                   {CADENCE_LOOPS} cadence loops

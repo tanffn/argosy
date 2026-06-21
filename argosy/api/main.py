@@ -35,6 +35,7 @@ from argosy.api.routes.advisor import router as advisor_router
 from argosy.api.routes.agent_activity import router as agent_activity_router
 from argosy.api.routes.argonaut import router as argonaut_router
 from argosy.api.routes.branding import router as branding_router
+from argosy.api.routes.config import router as config_router
 from argosy.api.routes.daily_brief import router as daily_brief_router
 from argosy.api.routes.decisions import router as decisions_router
 from argosy.api.routes.decisions_tree import router as decisions_tree_router
@@ -168,6 +169,7 @@ def create_app() -> FastAPI:
 
     # Phase 6 — branding + onboarding + admin/internal
     app.include_router(branding_router, prefix=api_prefix)
+    app.include_router(config_router, prefix=api_prefix)
     app.include_router(onboarding_router, prefix=api_prefix)
     app.include_router(internal_router)
 
