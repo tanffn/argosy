@@ -95,3 +95,6 @@ graphify-out/
 # Never committed — like tools/codex-tandem/, this is working scratch only.
 tmp_review/
 result.md
+
+# superpowers brainstorm artifacts
+.superpowers/
