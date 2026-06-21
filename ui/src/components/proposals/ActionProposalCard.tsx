@@ -108,11 +108,15 @@ export function ActionProposalCard({
             #{proposal.id}
           </div>
         </div>
-        {proposal.expires_at && (
-          <CardDescription className="text-xs font-mono">
-            expires {proposal.expires_at.slice(0, 10)}
-          </CardDescription>
-        )}
+        <CardDescription className="text-xs font-mono">
+          {proposal.surfaced_at
+            ? `proposed ${proposal.surfaced_at.slice(0, 10)}`
+            : null}
+          {proposal.surfaced_at && proposal.expires_at ? " · " : null}
+          {proposal.expires_at
+            ? `expires ${proposal.expires_at.slice(0, 10)}`
+            : null}
+        </CardDescription>
       </CardHeader>
 
       <CardContent className="flex flex-col gap-3">
@@ -121,7 +125,7 @@ export function ActionProposalCard({
         {Object.keys(proposal.suggested_payload).length > 0 && (
           <div className="rounded-md border border-border/40 bg-muted/20 p-3">
             <h4 className="text-xs font-semibold mb-2 text-muted-foreground">
-              Suggested payload
+              Proposed change — system-generated, review before acting
             </h4>
             <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs font-mono">
               {Object.entries(proposal.suggested_payload).map(([k, v]) => (
