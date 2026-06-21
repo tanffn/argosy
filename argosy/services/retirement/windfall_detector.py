@@ -384,10 +384,23 @@ def detect_windfall(
     ):
         return None
 
-    sales = _find_sales(current, previous, fx_usd_nis=fx)
-    classified, needs_user = _classify_source(
-        cash_delta_total_usd_equiv, sales,
-    )
+    # TSV-DIFF SALE ATTRIBUTION IS NEUTRALIZED BY DEFAULT.
+    # The TSV is a hand-maintained OUTPUT, not a transaction source. Diffing two
+    # months' holdings by (location, exact-symbol, fixed-column) fabricated phantom
+    # sales whenever a row's ticker/columns shifted between snapshots — e.g. a
+    # BRK.B->BRK/B relabel + a leading status-flag column made a GROWN position
+    # (150->185) read as "sold 150". Cash-source attribution must come from the
+    # real inputs (broker RSU sales + bank cash transactions), via the
+    # rsu_reconciliation pipeline — not this diff. Until that linkage lands we
+    # still surface the (reliable) cash DELTA, but assert NO sale source.
+    # Set ARGOSY_WINDFALL_TSV_SALE_DIFF=1 to re-enable the legacy diff.
+    import os as _os
+    if _os.environ.get("ARGOSY_WINDFALL_TSV_SALE_DIFF", "0").strip().lower() in {"1", "true", "on", "yes"}:
+        sales = _find_sales(current, previous, fx_usd_nis=fx)
+        classified, needs_user = _classify_source(cash_delta_total_usd_equiv, sales)
+    else:
+        sales = []
+        classified, needs_user = "unclear", True
 
     allocation_table = _find_allocation_table(current)
 

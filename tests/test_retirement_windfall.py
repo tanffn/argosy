@@ -123,7 +123,11 @@ class TestClassification:
 
 
 class TestEndToEnd:
-    def test_full_event_with_rsu_sale(self, tmp_path: Path) -> None:
+    def test_full_event_with_rsu_sale(self, tmp_path: Path, monkeypatch) -> None:
+        # The legacy TSV-diff sale attribution is now opt-in (it fabricated
+        # phantom sales on symbol/column shifts in hand-maintained TSVs); this
+        # test exercises that opt-in path on a CLEAN fixture where it's reliable.
+        monkeypatch.setenv("ARGOSY_WINDFALL_TSV_SALE_DIFF", "1")
         prev = tmp_path / "prev.tsv"
         cur = tmp_path / "cur.tsv"
         # NVDA stays on Schwab in both files; only the share count drops.
@@ -144,6 +148,25 @@ class TestEndToEnd:
         assert event.matching_sales[0].shares_sold == 500
         assert event.classified_source == "rsu_sale"
         assert event.requires_user_classification is False
+
+    def test_default_does_not_fabricate_tsv_diff_sales(self, tmp_path: Path) -> None:
+        # DEFAULT (flag off): even when a holding's share count drops between two
+        # TSVs, the detector must NOT assert a sale source — TSV diffs are an
+        # unreliable output, not a transaction. It surfaces the cash delta only.
+        prev = tmp_path / "prev.tsv"
+        cur = tmp_path / "cur.tsv"
+        _write_tsv(prev, _minimal_tsv(
+            leumi_usd_cash=55_000, leumi_nis_cash=80_000, nvda_shares=11971,
+        ))
+        _write_tsv(cur, _minimal_tsv(
+            leumi_usd_cash=155_000, leumi_nis_cash=80_000, nvda_shares=11471,
+        ))
+        event = detect_windfall(cur, prev)
+        assert event is not None
+        assert event.cash_delta_usd == 100_000.0  # the cash signal is still real
+        assert event.matching_sales == []  # but NO fabricated sale source
+        assert event.classified_source == "unclear"
+        assert event.requires_user_classification is True
 
     def test_allocation_table_parsed(self, tmp_path: Path) -> None:
         prev = tmp_path / "prev.tsv"
