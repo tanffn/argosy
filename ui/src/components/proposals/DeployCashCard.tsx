@@ -165,7 +165,17 @@ function TierBlock({ tier }: { tier: DeploymentTierDTO }) {
                   </div>
                 )}
               </td>
-              <td>{l.is_new ? "NEW" : "held"}</td>
+              <td>
+                <span
+                  className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold ${
+                    l.is_new
+                      ? "bg-emerald-500/15 text-emerald-600"
+                      : "bg-muted text-muted-foreground"
+                  }`}
+                >
+                  {l.is_new ? "NEW" : "ADD"}
+                </span>
+              </td>
               <td>{l.estate.status.replace(/_/g, " ")}</td>
               <td>
                 {l.cap_note}

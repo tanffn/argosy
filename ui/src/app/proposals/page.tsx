@@ -646,34 +646,61 @@ export default function ProposalsPage() {
         onConfirm={onActionCustomizeSubmit}
       />
 
-      {/* Unallocated-cash proposal — the continuous "free cash above plan
-          target → here's where it could go" trigger (fires when current cash
-          exceeds the plan-target cash row by ~1.5x; renders nothing when no
-          overage). Leads the actions flow because deploying idle cash is
-          surface 4's primary job. See argosy/services/unallocated_cash_detector.py. */}
-      <UnallocatedCashCard userId={USER_ID} />
+      {/* Deploy your cash — ONE unified flow. The three cards below all act
+          on the SAME idle cash through different engines; wrapping them under
+          a single header (with a shared intro) makes that explicit so the user
+          reads them as one flow, not three unrelated surfaces. Internals of
+          the three cards are unchanged; this is a presentational wrapper.
 
-      {/* Allocation actions surface — WindfallCard self-suppresses when no
-          event is detected, so the section renders as an empty scroll
-          target most of the time. Banner on Home + the unallocated-cash
-          tile both deep-link here via /proposals#allocation. */}
-      <section id="allocation" className="scroll-mt-6">
-        <WindfallCard />
-      </section>
+          Anchors #allocation and #deploy-cash are preserved as scroll targets
+          inside the section (Home banner + intra-page links deep-link here). */}
+      <section id="deploy-cash-flow" className="scroll-mt-6 flex flex-col gap-4">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">
+            Deploy your cash
+          </h2>
+          <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
+            One pool of idle cash, seen three ways:{" "}
+            <span className="text-foreground">how much is deployable</span>{" "}
+            (what&apos;s above your plan target),{" "}
+            <span className="text-foreground">where it goes</span> (the buy
+            list by risk tier), and{" "}
+            <span className="text-foreground">the horizon split</span>{" "}
+            (long/medium/short reconciliation, shown only when a cash-position
+            change is detected). These are the same money — not three separate
+            piles to allocate.
+          </p>
+        </div>
 
-      {/* Deploy Cash surface (P1) — plan-bound, estate-annotated BUY list
-          for a net-of-tax cash amount. Prefilled from detected idle cash;
-          user can adjust the amount and regenerate the plan. */}
-      <section id="deploy-cash" className="scroll-mt-6">
-        <DeployCashCard
-          plan={deployPlan}
-          loading={deployLoading}
-          amount={deployAmount}
-          onAmountChange={setDeployAmount}
-          unallocatedUsd={unallocatedUsd}
-          live={deployLive}
-          onLiveChange={setDeployLive}
-        />
+        {/* (a) How much is deployable — the continuous "free cash above plan
+            target → here's where it could go" detector. Renders nothing when
+            no overage. See argosy/services/unallocated_cash_detector.py. */}
+        <UnallocatedCashCard userId={USER_ID} />
+
+        {/* (b) Where it goes — the primary plan-bound, estate-annotated BUY
+            list by risk tier for a net-of-tax cash amount. Prefilled from
+            detected idle cash; user can adjust the amount and regenerate. The
+            #deploy-cash anchor stays here so existing deep-links resolve. */}
+        <div id="deploy-cash" className="scroll-mt-6">
+          <DeployCashCard
+            plan={deployPlan}
+            loading={deployLoading}
+            amount={deployAmount}
+            onAmountChange={setDeployAmount}
+            unallocatedUsd={unallocatedUsd}
+            live={deployLive}
+            onLiveChange={setDeployLive}
+          />
+        </div>
+
+        {/* (c) The horizon split / event-driven reconciliation. WindfallCard
+            self-suppresses (renders null) when no cash-position change is
+            detected, so this is an empty scroll target most of the time.
+            Banner on Home + the unallocated-cash tile deep-link here via
+            /proposals#allocation, so the anchor is kept. */}
+        <div id="allocation" className="scroll-mt-6">
+          <WindfallCard />
+        </div>
       </section>
 
       {/* High-potential satellite sleeve — the med-high-risk slice (≥5% of a
