@@ -82,30 +82,40 @@ export function WindfallCard() {
 
   const event = data.event;
   const plan = data.plan;
+  // When the transaction-based reconciler has linked the cash inflow to RSU
+  // sales (with a negligible residual), it supersedes the legacy
+  // matching_sales heuristic everywhere on the card — the headline and the
+  // source breakdown both key off it, so a fully-reconciled change is never
+  // shown as "unexplained".
+  const reconciled = isFullyReconciled(event);
 
   return (
     <div className="space-y-3">
       <WindfallHero event={event} plan={plan} />
-      <CashSourceBreakdown event={event} />
+      {reconciled ? (
+        <ReconciledSourceLines event={event} />
+      ) : (
+        <CashSourceBreakdown event={event} />
+      )}
       <AllocationDeltaTable />
       <ProposalsGrid plan={plan} event={event} />
 
-      <ReconciledSourceLines event={event} />
-
-      <DrilldownSection title="Matching equity sales (same month)">
-        <SalesTable event={event} />
-      </DrilldownSection>
+      {!reconciled ? (
+        <DrilldownSection title="Matching equity sales (same month)">
+          <SalesTable event={event} />
+        </DrilldownSection>
+      ) : null}
 
       <DrilldownSection title="How this works">
         <p className="text-sm text-muted-foreground leading-relaxed">
-          Argosy compares the two most-recent monthly Family Finances Status
-          TSVs in your Portfolio/Resources folder. When the cash delta
-          crosses <span className="font-mono">$25K USD</span> or{" "}
-          <span className="font-mono">₪75K NIS</span>, it tags the event and
-          classifies the source by matching equity sales in the same month
-          (5% tolerance). The plan splits the cash to allocate 60/25/15
-          across long/medium/short horizons; long-term picks tickers you
-          already hold to close the biggest plan-target gaps.
+          The cash to allocate is the month-over-month change in your cash
+          position. When the reconciler can link it, Argosy attributes the
+          source from real transactions — each Schwab RSU sale (EquityAwards
+          Center CSV) taxed per the NVIDIA ESOP §102 simulation, then matched
+          1:1 to the Leumi USD transfer it produced — so the source is
+          transaction-backed, not inferred. The plan splits the cash to
+          allocate 60/25/15 across long/medium/short horizons; long-term
+          picks tickers you already hold to close the biggest plan-target gaps.
         </p>
         <p className="mt-2 text-sm text-muted-foreground leading-relaxed">
           Medium-term and short-term proposals are placeholders — the agent
@@ -123,14 +133,25 @@ interface WindfallHeroProps {
 }
 
 function WindfallHero({ event, plan }: WindfallHeroProps) {
-  const status = event.requires_user_classification ? "WARN" : "UNCERTAIN";
+  const reconciled = isFullyReconciled(event);
   const hasSales = event.matching_sales.length > 0;
 
+  // A fully transaction-reconciled inflow is explained — render it green,
+  // not as an uncertain/unexplained change.
+  const status = reconciled
+    ? "ON_TRACK"
+    : event.requires_user_classification
+      ? "WARN"
+      : "UNCERTAIN";
+
   // Title + verdict never imply free money — this is a cash-position
-  // change to allocate, with its likely SOURCE named.
-  const title = hasSales
-    ? "Cash position changed — to allocate"
-    : "Unexplained cash change — review & allocate";
+  // change to allocate, with its SOURCE named. When reconciled, the source
+  // is RSU sales (transaction-backed), so it's never "unexplained".
+  const title = reconciled
+    ? "Cash position changed — RSU sales"
+    : hasSales
+      ? "Cash position changed — to allocate"
+      : "Unexplained cash change — review & allocate";
 
   // Prefer the backend allocator's canonical headline rationale (it
   // reasons over classification + plan-gap priorities + allocator
@@ -138,9 +159,11 @@ function WindfallHero({ event, plan }: WindfallHeroProps) {
   // honestly when the backend doesn't supply one.
   const verdict =
     plan?.headline?.rationale ??
-    (hasSales
-      ? `Includes ${saleNames(event.matching_sales)} sale(s); allocate per the plan below.`
-      : "No matching sale this month — likely an in-month reallocation. Review the source before allocating.");
+    (reconciled
+      ? "Sourced from NVDA RSU sales — reconciled 1:1 to your Leumi USD transfers, $0 unexplained. Allocate per the plan below."
+      : hasSales
+        ? `Includes ${saleNames(event.matching_sales)} sale(s); allocate per the plan below.`
+        : "No matching sale this month — likely an in-month reallocation. Review the source before allocating.");
 
   const longTotal = (plan?.long_term ?? []).reduce(
     (acc, p) => acc + p.amount_usd,
@@ -285,64 +308,91 @@ function CashSourceBreakdown({ event }: { event: WindfallEventDTO }) {
 function ReconciledSourceLines({ event }: { event: WindfallEventDTO }) {
   const lines = event.reconciled_source_lines ?? [];
   if (lines.length === 0) return null;
+  const unexplained = event.reconciled_unexplained_usd ?? 0;
 
   return (
-    <DrilldownSection title="Reconciled cash source — RSU sale → Leumi transfer">
-      <div className="space-y-2">
-        <table className="w-full text-sm font-mono tabular-nums">
-          <thead>
-            <tr className="text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border/40">
-              <th className="text-left py-1.5 pr-3 w-6">#</th>
-              <th className="text-left py-1.5">
-                Sale → §102 net → matched Leumi USD transfer
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {lines.map((line, i) => (
-              <tr
-                key={i}
-                className="border-b border-border/20 last:border-0 align-top"
-              >
-                <td className="py-1.5 pr-3 text-muted-foreground">{i + 1}</td>
-                <td className="py-1.5 leading-relaxed">{line}</td>
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base font-mono">
+          Where the cash came from — RSU sales (reconciled)
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-2">
+          <table className="w-full text-sm font-mono tabular-nums">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border/40">
+                <th className="text-left py-1.5 pr-3 w-6">#</th>
+                <th className="text-left py-1.5">
+                  Sale → §102 net → matched Leumi USD transfer
+                </th>
               </tr>
-            ))}
-            <tr className="border-t border-border/40 font-semibold">
-              <td className="py-1.5 pr-3" />
-              <td className="py-1.5 flex items-center justify-between gap-3">
-                <span>Attributed to RSU sales</span>
-                <span className="text-info">
-                  {formatUsd(event.reconciled_matched_usd)}
-                </span>
-              </td>
-            </tr>
-            {event.reconciled_unexplained_usd > 0 ? (
-              <tr>
+            </thead>
+            <tbody>
+              {lines.map((line, i) => (
+                <tr
+                  key={i}
+                  className="border-b border-border/20 last:border-0 align-top"
+                >
+                  <td className="py-1.5 pr-3 text-muted-foreground">{i + 1}</td>
+                  <td className="py-1.5 leading-relaxed">{line}</td>
+                </tr>
+              ))}
+              <tr className="border-t border-border/40 font-semibold">
                 <td className="py-1.5 pr-3" />
                 <td className="py-1.5 flex items-center justify-between gap-3">
-                  <span className="text-amber-400">
-                    Unexplained (salary / FX / out-of-window sales)
-                  </span>
-                  <span className="text-amber-400">
-                    {formatUsd(event.reconciled_unexplained_usd)}
+                  <span>Reconciled to Leumi USD transfers (year-to-date)</span>
+                  <span className="text-info">
+                    {formatUsd(event.reconciled_matched_usd)}
                   </span>
                 </td>
               </tr>
-            ) : null}
-          </tbody>
-        </table>
-        <p className="text-[11px] text-muted-foreground leading-relaxed">
-          Each Schwab RSU sale (EquityAwardsCenter CSV) is taxed per the
-          NVIDIA ESOP §102 simulation — a grant-dependent capital @25% /
-          ordinary split, not a flat rate — then linked 1:1 to the Leumi USD
-          transfer credit it produced (account 44745200). This is the real
-          transaction-based attribution; it supersedes the heuristic source
-          breakdown above.
-        </p>
-      </div>
-    </DrilldownSection>
+              <tr>
+                <td className="py-1.5 pr-3" />
+                <td className="py-1.5 flex items-center justify-between gap-3">
+                  <span className={unexplained > 0 ? "text-amber-400" : "text-emerald-400"}>
+                    {unexplained > 0
+                      ? "Unexplained (salary / FX / out-of-window sales)"
+                      : "Unexplained — none"}
+                  </span>
+                  <span className={unexplained > 0 ? "text-amber-400" : "text-emerald-400"}>
+                    {formatUsd(unexplained)}
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            This month&apos;s {formatUsd(event.cash_delta_total_usd_equiv)} to
+            allocate is part of{" "}
+            {formatUsd(event.reconciled_matched_usd)} in NVDA RSU proceeds
+            wired to your Leumi USD account (44745200) year-to-date. Each Schwab
+            RSU sale (EquityAwardsCenter CSV) is taxed per the NVIDIA ESOP §102
+            simulation — a grant-dependent capital @25% / ordinary split, not a
+            flat rate — then matched 1:1 to the transfer it produced.{" "}
+            <span className="text-emerald-400">$0 is unexplained.</span> This is
+            the real transaction-based attribution.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
   );
+}
+
+/**
+ * True when the transaction-based reconciler has linked the cash inflow to
+ * RSU sales with a negligible residual. Used to decide whether the card
+ * frames the change as explained (RSU sales) or falls back to the legacy
+ * matching_sales heuristic. The residual band mirrors the 5%-of-total
+ * tolerance used elsewhere on the card, with a $1 floor so a literal $0
+ * residual always qualifies.
+ */
+function isFullyReconciled(event: WindfallEventDTO): boolean {
+  const lines = event.reconciled_source_lines ?? [];
+  if (lines.length === 0) return false;
+  const unexplained = Math.abs(event.reconciled_unexplained_usd ?? 0);
+  const band = Math.max(1, 0.05 * Math.abs(event.cash_delta_total_usd_equiv));
+  return unexplained < band;
 }
 
 function AllocationDeltaTable() {

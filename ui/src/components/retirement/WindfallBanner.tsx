@@ -125,6 +125,23 @@ function describeCashChange(e: WindfallEventDTO): CashChangeFrame {
   const total = e.cash_delta_total_usd_equiv;
   const totalStr = formatUsd(total);
 
+  // Transaction-based reconciliation supersedes the matching_sales
+  // heuristic: when the inflow is linked 1:1 to RSU sales with a negligible
+  // residual, the source IS RSU sales — never "unexplained". Mirrors
+  // isFullyReconciled() in WindfallCard.
+  const reconciledLines = e.reconciled_source_lines ?? [];
+  const reconciledUnexplained = Math.abs(e.reconciled_unexplained_usd ?? 0);
+  const reconciledBand = Math.max(1, 0.05 * Math.abs(total));
+  if (reconciledLines.length > 0 && reconciledUnexplained < reconciledBand) {
+    return {
+      tone: "info",
+      headline: `Cash position changed by ${totalStr}`,
+      pill: "RSU SALE",
+      breakdownLine:
+        "sourced from NVDA RSU sales — reconciled to your Leumi USD transfers, $0 unexplained; to allocate",
+    };
+  }
+
   if (e.matching_sales.length > 0) {
     const matched = e.matching_sales.reduce((acc, s) => acc + s.value_usd, 0);
     const residual = total - matched;
