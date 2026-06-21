@@ -114,5 +114,20 @@ def _to_response(model: OverviewModel) -> OverviewResponse:
 def get_overview(
     user_id: str = "ariel", db: Session = Depends(get_db)
 ) -> OverviewResponse:
-    """Return the plain-language Overview story for ``user_id`` (always 200)."""
-    return _to_response(build_overview(db, user_id=user_id))
+    """Return the plain-language Overview story for ``user_id`` (always 200).
+
+    ``build_overview`` runs the heavy resolver (``include_canonical_ages=True``
+    -> MC). It is a pure read of (current plan + latest snapshot), so the result
+    is memoized by :mod:`argosy.services.derived_cache` keyed on the plan +
+    snapshot version tuple. A promoted plan or ingested snapshot changes the key
+    -> automatic recompute; no stale numbers can be served (output-trust).
+    """
+    from argosy.services import derived_cache
+
+    version = derived_cache.version_tuple(db, user_id)
+    model = derived_cache.get_or_compute(
+        "overview",
+        version,
+        lambda: build_overview(db, user_id=user_id),
+    )
+    return _to_response(model)

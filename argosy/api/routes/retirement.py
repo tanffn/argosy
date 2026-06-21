@@ -125,7 +125,14 @@ def get_derived_inputs(user_id: str, db: Session = Depends(get_db)) -> dict:
     "needs intake") where Argosy genuinely lacks the datum — never a guess.
     """
     from argosy.services.retirement.derived_inputs import compute_derived_inputs
-    return compute_derived_inputs(db, user_id=user_id)
+    from argosy.services import derived_cache
+
+    version = derived_cache.version_tuple(db, user_id)
+    return derived_cache.get_or_compute(
+        "retirement.derived-inputs",
+        version,
+        lambda: compute_derived_inputs(db, user_id=user_id),
+    )
 
 
 @router.get("/sources", response_model=SourcesResponse)
@@ -292,14 +299,28 @@ def get_projection_scenarios(
     P(solvent) by scenario plus the spend/BL provenance the UI renders as
     auditable chips. 404 when the FI spend basis cannot be sourced (never a
     fabricated headline)."""
-    try:
-        g = run_retirement_scenarios(
+    def _run():
+        return run_retirement_scenarios(
             user_id=user_id,
             session=db,
             retirement_age=retirement_age,
             n_paths=n_paths,
             seed=seed,
         )
+
+    try:
+        # Only memoize when seed is pinned — otherwise the MC is non-deterministic
+        # and caching could pin one random draw (output-trust: never serve a value
+        # that isn't reproducible from inputs). Unseeded calls always recompute.
+        if seed is not None:
+            from argosy.services import derived_cache
+
+            version = derived_cache.version_tuple(db, user_id)
+            if version is not None:
+                version = version + ("scenarios", retirement_age, n_paths, seed)
+            g = derived_cache.get_or_compute("retirement.scenarios", version, _run)
+        else:
+            g = _run()
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return {
@@ -356,7 +377,7 @@ def get_feasible_age(
     reserve earmarked, plus the labeled anchors (earliest-feasible /
     operational-target / statutory) so no surface contradicts another. 404 when
     the FI basis can't be sourced."""
-    try:
+    def _compute() -> dict:
         # Canonical dual-track engine (deconcentrated, σ-glide 34→18%, 5% real,
         # 10% interim tax) so this card matches the dual-track card on the same
         # page — not the legacy flat-σ / 4.5% engine that read a different age.
@@ -364,19 +385,29 @@ def get_feasible_age(
             session=db, user_id=user_id, target_p_solvent=target_p_solvent,
             assumptions=RetirementAssumptions(n_paths=n_paths, seed=seed),
         )
+        return {
+            "earliest_feasible_age": r.earliest_feasible_age,
+            "p_solvent_at_age": r.p_solvent_at_age,
+            "target_p_solvent": r.target_p_solvent,
+            "operational_target_age": r.operational_target_age,
+            "statutory_lump_age": r.statutory_lump_age,
+            "statutory_annuity_age": r.statutory_annuity_age,
+            "current_age": r.current_age,
+            "reserve_netted_nis": r.reserve_netted_nis,
+            "basis": r.basis,
+        }
+
+    # Deterministic given (plan, snapshot, params) — seed defaults to 42, so the
+    # MC is reproducible. Cache keyed on the version tuple + the MC params.
+    from argosy.services import derived_cache
+
+    version = derived_cache.version_tuple(db, user_id)
+    if version is not None:
+        version = version + ("feasible-age", target_p_solvent, n_paths, seed)
+    try:
+        return derived_cache.get_or_compute("retirement.feasible-age", version, _compute)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {
-        "earliest_feasible_age": r.earliest_feasible_age,
-        "p_solvent_at_age": r.p_solvent_at_age,
-        "target_p_solvent": r.target_p_solvent,
-        "operational_target_age": r.operational_target_age,
-        "statutory_lump_age": r.statutory_lump_age,
-        "statutory_annuity_age": r.statutory_annuity_age,
-        "current_age": r.current_age,
-        "reserve_netted_nis": r.reserve_netted_nis,
-        "basis": r.basis,
-    }
 
 
 @router.get("/projection/dual-track-plan")
@@ -398,14 +429,6 @@ def get_dual_track_plan(
     regimes). ``n_paths`` is tunable for responsiveness; the decision-grade
     headline should be (re)computed at higher paths / multiple seeds, ideally as
     a cached scheduler job rather than per-request."""
-    try:
-        plan = build_retirement_plan(
-            session=db, user_id=user_id,
-            assumptions=RetirementAssumptions(n_paths=n_paths, seed=seed),
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
     def _track(t) -> dict:
         return {
             "name": t.name,
@@ -429,26 +452,42 @@ def get_dual_track_plan(
             ],
         }
 
-    return {
-        "current_age": plan.current_age,
-        "full_portfolio_nis": plan.full_portfolio_nis,
-        "cgt_haircut_nis": plan.cgt_haircut_nis,
-        "reserve_raw_nis": plan.reserve_raw_nis,
-        "reserve_pv_nis": plan.reserve_pv_nis,
-        "deployable_nis": plan.deployable_nis,
-        "spend_central_nis": plan.spend_central_nis,
-        "spend_stress_nis": plan.spend_stress_nis,
-        "sigma_current": plan.sigma_current,
-        "tracks": [_track(t) for t in plan.tracks],
-        "stress_drawdown_age": plan.stress_drawdown_age,
-        "stress_preservation_age": plan.stress_preservation_age,
-        "spend_to_retire_now_nis": plan.spend_to_retire_now_nis,
-        "fx_stress_band": [
-            {"fx_adverse_pct": hit, "drawdown_age": age}
-            for hit, age in plan.fx_stress_band
-        ],
-        "assumptions": plan.assumptions,
-    }
+    def _compute() -> dict:
+        plan = build_retirement_plan(
+            session=db, user_id=user_id,
+            assumptions=RetirementAssumptions(n_paths=n_paths, seed=seed),
+        )
+        return {
+            "current_age": plan.current_age,
+            "full_portfolio_nis": plan.full_portfolio_nis,
+            "cgt_haircut_nis": plan.cgt_haircut_nis,
+            "reserve_raw_nis": plan.reserve_raw_nis,
+            "reserve_pv_nis": plan.reserve_pv_nis,
+            "deployable_nis": plan.deployable_nis,
+            "spend_central_nis": plan.spend_central_nis,
+            "spend_stress_nis": plan.spend_stress_nis,
+            "sigma_current": plan.sigma_current,
+            "tracks": [_track(t) for t in plan.tracks],
+            "stress_drawdown_age": plan.stress_drawdown_age,
+            "stress_preservation_age": plan.stress_preservation_age,
+            "spend_to_retire_now_nis": plan.spend_to_retire_now_nis,
+            "fx_stress_band": [
+                {"fx_adverse_pct": hit, "drawdown_age": age}
+                for hit, age in plan.fx_stress_band
+            ],
+            "assumptions": plan.assumptions,
+        }
+
+    # Deterministic given (plan, snapshot, params): seed defaults to 42.
+    from argosy.services import derived_cache
+
+    version = derived_cache.version_tuple(db, user_id)
+    if version is not None:
+        version = version + ("dual-track-plan", n_paths, seed)
+    try:
+        return derived_cache.get_or_compute("retirement.dual-track-plan", version, _compute)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # Wave 4 — decision policy
