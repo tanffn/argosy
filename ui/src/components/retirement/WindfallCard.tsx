@@ -182,6 +182,7 @@ function WindfallHero({ event, plan }: WindfallHeroProps) {
     <HeroCard
       title={title}
       status={status}
+      statusLabel={reconciled ? "RECONCILED" : undefined}
       verdict={verdict}
       numbers={[
         {
@@ -311,15 +312,9 @@ function ReconciledSourceLines({ event }: { event: WindfallEventDTO }) {
   const unexplained = event.reconciled_unexplained_usd ?? 0;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base font-mono">
-          Where the cash came from — RSU sales (reconciled)
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-2">
-          <table className="w-full text-sm font-mono tabular-nums">
+    <DrilldownSection title="Where the cash came from — RSU sales (reconciled)">
+      <div className="space-y-2">
+        <table className="w-full text-sm font-mono tabular-nums">
             <thead>
               <tr className="text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border/40">
                 <th className="text-left py-1.5 pr-3 w-6">#</th>
@@ -373,9 +368,8 @@ function ReconciledSourceLines({ event }: { event: WindfallEventDTO }) {
             <span className="text-emerald-400">$0 is unexplained.</span> This is
             the real transaction-based attribution.
           </p>
-        </div>
-      </CardContent>
-    </Card>
+      </div>
+    </DrilldownSection>
   );
 }
 

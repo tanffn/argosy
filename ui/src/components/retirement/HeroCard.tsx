@@ -17,6 +17,13 @@ interface KeyValue {
 interface Props {
   title: string;
   status: Status;
+  /**
+   * Optional override for the status chip text. The status still drives the
+   * color (dot/bar/text), but some surfaces want a domain word instead of
+   * the readiness vocabulary — e.g. a reconciled cash event reads
+   * "RECONCILED", not "ON TRACK". Defaults to the status's standard label.
+   */
+  statusLabel?: string;
   /** One-line verdict copy (e.g. "P(solvent at 95) above target"). */
   verdict?: string;
   /** 1-3 primary numbers. */
@@ -56,7 +63,7 @@ const STATUS_LABEL: Record<Status, string> = {
  *     ]}
  *   />
  */
-export function HeroCard({ title, status, verdict, numbers, subline }: Props) {
+export function HeroCard({ title, status, statusLabel, verdict, numbers, subline }: Props) {
   const s = STATUS_STYLE[status];
   return (
     <Card className={`relative overflow-hidden bg-gradient-to-r ${s.bar}`}>
@@ -69,7 +76,7 @@ export function HeroCard({ title, status, verdict, numbers, subline }: Props) {
             />
             <h2 className="text-lg font-semibold">{title}</h2>
             <span className={`text-xs font-mono font-semibold ${s.text}`}>
-              {STATUS_LABEL[status]}
+              {statusLabel ?? STATUS_LABEL[status]}
             </span>
           </div>
           {verdict && (
