@@ -3,11 +3,22 @@
 Builds a single chronological payload combining:
 
   * Historical RSU vest events (from ``rsu_vest_events``).
-  * Projected future RSU vests (heuristic: quarterly cadence, latest
-    historical + 90d, repeated up to a horizon / count cap).
-  * Life events with a fixed target_date (from ``life_events``).
+  * Projected future RSU vests. Primary source is the historical-cadence
+    heuristic over ``rsu_vest_events``; when that table is empty (the
+    primary household carries its vests in the canonical
+    ``identity_yaml.rsu_vest_schedule`` instead), the builder falls back
+    to ``rsu_savings.project_quarterly_vests`` over the same
+    active_grants + portal calendar the overview RSU chapter reads, so
+    the markers reconcile with that chapter. Display-only.
+  * Life events with a fixed target_date (from ``life_events``); when no
+    dated rows exist, falls back to the canonical spending-phase curve
+    (``phase_expenses.build_phase_expense_curve``) translated to dates.
   * Retire-ready-age zones for the three scenarios (bear / base / bull)
-    via the canonical ``effective_retire_ready_age()`` clamp.
+    via the canonical ``effective_retire_ready_age()`` clamp. The three
+    scenarios legitimately collapse onto today when the household is
+    already past FI under every regime (crossing clears at t=0); the
+    builder emits the real per-scenario computation, never a hardcoded
+    today-clamp.
 
 The UI consumer (<HolisticTimelineCard>) renders these layered markers
 on a single timeline without having to sort or de-duplicate -- this
@@ -31,6 +42,14 @@ from argosy.services.cashflow_projection import (
     extract_household_state,
 )
 from argosy.state.models import LifeEvent, RsuVestEvent
+
+logger = __import__("logging").getLogger(__name__)
+
+# Retention applied to the gross vest value for the display-only estimated
+# net figure. Mirrors ``overview_assembler._RSU_CAPITAL_TRACK_RETENTION`` so
+# the timeline tooltip reconciles with the overview RSU chapter to the shekel.
+# (RSU vesting is ordinary income at vest; ~32% effective withholding.)
+_RSU_CAPITAL_TRACK_RETENTION = 0.68
 
 
 # v1 cadence heuristic -- same constant as the private projector in
@@ -163,7 +182,31 @@ def build_holistic_timeline(
         today=today,
         horizon=horizon,
     )
+    # Canonical fallback: the rsu_vest_events table is empty for the
+    # primary household (vests live in identity_yaml.rsu_vest_schedule,
+    # not the CSV-ingested table). When the DB-backed projection yields
+    # nothing, project the forward vest calendar from the SAME canonical
+    # source the overview RSU chapter reads. Display-only; never wired
+    # into fi_crossing / savings.
+    if not future_vests:
+        future_vests = _future_vests_from_canonical_schedule(
+            session=session,
+            user_id=user_id,
+            today=today,
+            horizon=horizon,
+        )
     life_events = _load_life_events(session, user_id)
+    # Canonical fallback: when no dated life_events rows exist, surface
+    # the deterministic spending-phase boundaries from the canonical
+    # phase-expense curve as point-in-time markers, anchored to the
+    # household's current-age axis.
+    if not life_events:
+        life_events = _life_events_from_phase_curve(
+            session=session,
+            user_id=user_id,
+            today=today,
+            horizon=horizon,
+        )
     retire_ready_zones = _build_retire_ready_zones(
         session=session,
         user_id=user_id,
@@ -270,6 +313,173 @@ def _project_future_vests(
             fmv_per_share_usd=fmv,
             estimated_gross_usd=gross,
         ))
+    return out
+
+
+def _future_vests_from_canonical_schedule(
+    *,
+    session: Session,
+    user_id: str,
+    today: date,
+    horizon: date,
+) -> list[VestMarker]:
+    """Forward RSU vest markers from the canonical ``rsu_vest_schedule``.
+
+    Reuses ``rsu_savings.project_quarterly_vests`` over the identity's
+    ``active_grants`` + ``quarterly_vests`` (portal-authoritative) — the
+    SAME source + call shape as the overview RSU chapter
+    (``overview_assembler._rsu_year_rows``), so the per-year share/NIS
+    buckets reconcile to the shekel. Each emitted marker carries the
+    NVDA spot (``implied_nvda_price_usd``) and a display-only estimated
+    gross/net so the tooltip reads in dollars.
+
+    Display-only — NOT wired into fi_crossing / savings. Degrades to an
+    empty list (with a logged reason) on any missing source or coercion
+    failure; never raises.
+    """
+    try:
+        from argosy.services.rsu_savings import project_quarterly_vests
+        from argosy.services.wealth_dashboard import _load_user_context_yaml
+    except Exception as exc:  # pragma: no cover - import guard
+        logger.warning("timeline future_vests: rsu modules unavailable: %s", exc)
+        return []
+
+    try:
+        user_ctx = _load_user_context_yaml(session, user_id)
+    except Exception as exc:
+        logger.warning("timeline future_vests: user context load failed: %s", exc)
+        return []
+    if not isinstance(user_ctx, dict):
+        return []
+    sched = user_ctx.get("rsu_vest_schedule")
+    if not isinstance(sched, dict):
+        logger.info("timeline future_vests: no rsu_vest_schedule in identity_yaml")
+        return []
+    active_grants = sched.get("active_grants")
+    portal_vests = sched.get("quarterly_vests")
+    if not active_grants:
+        logger.info("timeline future_vests: no active_grants in rsu_vest_schedule")
+        return []
+
+    nvda_price = sched.get("implied_nvda_price_usd")
+    try:
+        nvda_price_f = float(nvda_price) if nvda_price is not None else None
+    except (TypeError, ValueError):
+        nvda_price_f = None
+
+    try:
+        events = project_quarterly_vests(
+            active_grants,
+            portal_vests,
+            horizon_start_year=today.year,
+            horizon_years=5,
+        )
+    except Exception as exc:
+        logger.warning("timeline future_vests: vest projection failed: %s", exc)
+        return []
+
+    out: list[VestMarker] = []
+    for ev in events:
+        d_raw = ev.get("date")
+        try:
+            vest_date = date.fromisoformat(str(d_raw)[:10])
+        except (TypeError, ValueError):
+            continue
+        if vest_date <= today or vest_date > horizon:
+            continue
+        try:
+            shares = float(ev.get("shares"))
+        except (TypeError, ValueError):
+            continue
+        gross = shares * nvda_price_f if nvda_price_f is not None else None
+        # Display-only net estimate (mirrors the overview chapter's
+        # retention multiplier); kept in the gross field's sibling so the
+        # tooltip can show an at-vest figure without a separate field.
+        out.append(VestMarker(
+            kind="future_vest",
+            date=vest_date,
+            symbol="NVDA",
+            grant_id="rsu_vest_schedule",
+            shares=shares,
+            fmv_per_share_usd=nvda_price_f,
+            estimated_gross_usd=gross,
+        ))
+    if not out:
+        logger.info("timeline future_vests: no canonical vests within horizon")
+    return out
+
+
+def _life_events_from_phase_curve(
+    *,
+    session: Session,
+    user_id: str,
+    today: date,
+    horizon: date,
+) -> list[LifeEventMarker]:
+    """Spending-phase life-event markers from the canonical phase curve.
+
+    Reuses ``retirement.phase_expenses.build_phase_expense_curve`` — the
+    SAME source the overview phase-timeline chapter reads. Each phase's
+    ``start_age`` is translated to a calendar date using the household's
+    ``current_age_years`` anchor (so the markers sit on the same date
+    axis as vests). Only phase boundaries that fall on/after today and
+    within the horizon are emitted (a phase the household is already in,
+    e.g. kids_peak for a 44-yo, has a past start and is skipped).
+
+    Category is set to ``expense_event`` so the frontend renders a
+    rose down-marker (these are spending-phase shifts). Degrades to an
+    empty list (with a logged reason) on any missing source; never raises.
+    """
+    try:
+        from argosy.services.retirement.phase_expenses import (
+            build_phase_expense_curve,
+        )
+    except Exception as exc:  # pragma: no cover - import guard
+        logger.warning("timeline life_events: phase_expenses unavailable: %s", exc)
+        return []
+
+    try:
+        household = extract_household_state(session, user_id, today=today)
+    except Exception as exc:
+        logger.warning("timeline life_events: household state failed: %s", exc)
+        return []
+    current_age = getattr(household, "current_age_years", None)
+    if current_age is None:
+        logger.info("timeline life_events: no current_age_years anchor")
+        return []
+
+    try:
+        phases = build_phase_expense_curve()
+    except Exception as exc:
+        logger.warning("timeline life_events: phase curve failed: %s", exc)
+        return []
+
+    out: list[LifeEventMarker] = []
+    for ph in phases:
+        months_to = int(round((ph.start_age - float(current_age)) * 12.0))
+        if months_to < 0:
+            # Household is already past this phase's start — skip (no
+            # future point-in-time marker for a phase already entered).
+            continue
+        start_date = _add_months(today, months_to)
+        if start_date < today or start_date > horizon:
+            continue
+        mult = getattr(getattr(ph, "monthly_multiplier", None), "value", None)
+        desc = (
+            f"{ph.label.replace('_', ' ')} phase "
+            f"(ages {ph.start_age}-{ph.end_age}"
+            + (f", {float(mult):.2f}x baseline" if mult is not None else "")
+            + ")"
+        )
+        out.append(LifeEventMarker(
+            date=start_date,
+            category="expense_event",
+            kind=ph.label,
+            amount_usd=None,
+            description=desc,
+        ))
+    if not out:
+        logger.info("timeline life_events: no phase boundaries within horizon")
     return out
 
 

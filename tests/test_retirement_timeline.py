@@ -25,6 +25,7 @@ from argosy.state.models import (
     LifeEvent,
     RsuVestEvent,
     User,
+    UserContext,
 )
 
 
@@ -74,9 +75,15 @@ def _seed_vest(
 
 
 class TestEmptyUser:
-    """Empty user has no vests, no life events; payload still well-formed."""
+    """Empty user has no DB vests / DB life events; payload still well-formed.
 
-    def test_empty_user_returns_empty_arrays(self, db_session):
+    future_vests stays empty (no rsu_vest_schedule in identity_yaml, no
+    RsuVestEvent rows). life_events is NOT empty: the canonical phase-
+    expense fallback fires off the household age anchor (which always
+    resolves — falls back to ~43yo when DOB is missing), so the spending-
+    phase markers populate even for a user with no other state."""
+
+    def test_empty_user_returns_well_formed_payload(self, db_session):
         as_of = date(2026, 5, 29)
         out = build_holistic_timeline(
             session=db_session,
@@ -85,8 +92,11 @@ class TestEmptyUser:
         )
         assert out.today == as_of
         assert out.past_vests == []
+        # No vest source (neither DB table nor identity_yaml schedule).
         assert out.future_vests == []
-        assert out.life_events == []
+        # life_events come from the canonical phase curve (age-anchored).
+        assert all(e.category == "expense_event" for e in out.life_events)
+        assert all(e.date >= as_of for e in out.life_events)
         # With portfolio=0 / expenses=0 the retire-ready check trips at
         # t=0, so all three scenario zones land on current_age. That's
         # documented behavior of the canonical clamp on empty users.
@@ -183,6 +193,118 @@ class TestLifeEventsMarker:
         assert marker.category == "retirement_milestone"
         assert marker.kind == "target_retire_year_change"
         assert marker.description == "bump target retirement to Sep-2028"
+
+
+class TestCanonicalScheduleFallback:
+    """When rsu_vest_events is empty (the primary household keeps its
+    vests in identity_yaml.rsu_vest_schedule, not the CSV table), the
+    builder falls back to the canonical project_quarterly_vests source
+    for future_vests AND the phase-expense curve for life_events. This
+    is the path the live /api/retirement/timeline?user_id=ariel hits."""
+
+    _IDENTITY_YAML = """\
+rsu_vest_schedule:
+  implied_nvda_price_usd: 215.05
+  active_grants:
+    - award_date: "2023-06-08"
+      award_id: "246477"
+      quarterly_shares: 220
+    - award_date: "2025-03-10"
+      award_id: "331375"
+      quarterly_shares_approx: 71
+  quarterly_vests:
+    - {date: "2026-06-17", period: "June 2026", shares: 729}
+    - {date: "2026-09-16", period: "September 2026", shares: 449}
+    - {date: "2026-12-09", period: "December 2026", shares: 460}
+    - {date: "2027-03-17", period: "March 2027", shares: 450}
+"""
+
+    def _seed_ctx(self, session, yaml_text: str) -> None:
+        session.add(UserContext(user_id="ariel", identity_yaml=yaml_text))
+        session.commit()
+
+    def test_future_vests_from_canonical_schedule(self, db_session):
+        # No RsuVestEvent rows seeded — DB-backed projection is empty, so
+        # the canonical rsu_vest_schedule fallback must populate it.
+        self._seed_ctx(db_session, self._IDENTITY_YAML)
+        as_of = date(2026, 6, 21)
+
+        out = build_holistic_timeline(
+            session=db_session,
+            user_id="ariel",
+            as_of=as_of,
+        )
+
+        # DB had no vest rows → past stays empty, future comes from YAML.
+        assert out.past_vests == []
+        assert len(out.future_vests) > 0
+        assert all(v.kind == "future_vest" for v in out.future_vests)
+        # Sourced from the canonical schedule, valued at the implied NVDA
+        # price; strictly future + ascending.
+        assert all(v.symbol == "NVDA" for v in out.future_vests)
+        assert all(v.grant_id == "rsu_vest_schedule" for v in out.future_vests)
+        assert all(v.fmv_per_share_usd == pytest.approx(215.05) for v in out.future_vests)
+        assert all(v.date > as_of for v in out.future_vests)
+        for i in range(1, len(out.future_vests)):
+            assert out.future_vests[i].date > out.future_vests[i - 1].date
+        # The portal June-2026 vest already vested (<= today) → excluded;
+        # Sept-2026 (449sh) is the first forward marker, reconciling with
+        # the overview RSU chapter's share buckets.
+        first = out.future_vests[0]
+        assert first.date == date(2026, 9, 15)
+        assert first.shares == pytest.approx(449.0)
+        assert first.estimated_gross_usd == pytest.approx(449.0 * 215.05)
+
+    def test_life_events_from_phase_curve(self, db_session):
+        # No LifeEvent rows → canonical phase-expense curve fallback.
+        self._seed_ctx(db_session, self._IDENTITY_YAML)
+        as_of = date(2026, 6, 21)
+
+        out = build_holistic_timeline(
+            session=db_session,
+            user_id="ariel",
+            as_of=as_of,
+        )
+
+        assert len(out.life_events) > 0
+        labels = {e.kind for e in out.life_events}
+        # empty_nest (age 56) + healthcare_ramp (age 65) fall inside the
+        # 30y default horizon for a ~43yo; kids_peak (already entered) and
+        # late_life (beyond horizon) are correctly skipped.
+        assert "empty_nest" in labels
+        assert all(e.category == "expense_event" for e in out.life_events)
+        assert all(e.date >= as_of for e in out.life_events)
+        # Markers carry a human-readable phase description.
+        assert all(e.description for e in out.life_events)
+
+    def test_db_vests_take_precedence_over_canonical(self, db_session):
+        # When the DB DOES have vest rows, the canonical fallback must NOT
+        # fire (no double-counting / source mixing).
+        self._seed_ctx(db_session, self._IDENTITY_YAML)
+        _seed_vest(
+            db_session, grant_id="G1",
+            vest_date=date(2026, 3, 18), shares=100, fmv=180.0,
+        )
+        as_of = date(2026, 6, 21)
+        out = build_holistic_timeline(
+            session=db_session, user_id="ariel", as_of=as_of,
+        )
+        # Future vests came from the DB projection (grant_id G1, fmv 180),
+        # not the canonical schedule (grant_id rsu_vest_schedule, fmv 215).
+        assert len(out.future_vests) > 0
+        assert all(v.grant_id == "G1" for v in out.future_vests)
+
+    def test_missing_schedule_degrades_to_empty(self, db_session):
+        # No UserContext at all → both fallbacks degrade to [] (no throw).
+        as_of = date(2026, 6, 21)
+        out = build_holistic_timeline(
+            session=db_session, user_id="ariel", as_of=as_of,
+        )
+        assert out.future_vests == []
+        # Phase curve still resolves (age falls back to 43.0), so life
+        # events DO populate even without a schedule — they only need the
+        # household age anchor, which extract_household_state always gives.
+        assert isinstance(out.life_events, list)
 
 
 class TestHorizonCaps:
