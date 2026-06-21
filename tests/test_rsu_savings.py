@@ -6,7 +6,67 @@ from __future__ import annotations
 
 from datetime import date
 
-from argosy.services.rsu_savings import contractual_rsu_net_by_year
+import pytest
+
+from argosy.services.rsu_savings import (
+    contractual_rsu_net_by_year,
+    project_quarterly_vests,
+)
+
+
+# Ariel's 6 NVIDIA grants (identity_yaml.rsu_grants) + the authoritative portal calendar.
+_ACTIVE_GRANTS = [
+    {"award_id": "213000", "award_date": "2022-06-08", "quarterly_shares": 0},
+    {"award_id": "246477", "award_date": "2023-06-08", "quarterly_shares": 220},
+    {"award_id": "289172", "award_date": "2024-04-08", "quarterly_shares": 20},
+    {"award_id": "289173", "award_date": "2024-04-08", "quarterly_shares": 83},
+    {"award_id": "331375", "award_date": "2025-03-10", "quarterly_shares": 71},
+    {"award_id": "374434", "award_date": "2026-03-09", "quarterly_shares": 57},
+]
+_PORTAL = [
+    {"date": "2026-06-17", "shares": 729},
+    {"date": "2026-09-16", "shares": 449},
+    {"date": "2026-12-09", "shares": 460},
+    {"date": "2027-03", "shares": 450},
+]
+
+
+def _bucket(events):
+    out = {}
+    for e in events:
+        y = int(e["date"][:4])
+        out[y] = out.get(y, 0) + e["shares"]
+    return out
+
+
+def test_projection_reproduces_codex_share_vector():
+    # codex-reviewed oracle: portal override for 2026-Jun..2027-Mar (incl. the +278
+    # one-time 2022-grant runoff in June), grant-runoff projection thereafter, forward
+    # window from 2026-06 (March 2026 already realized -> excluded).
+    events = project_quarterly_vests(
+        _ACTIVE_GRANTS, _PORTAL, horizon_start_year=2026, horizon_years=5)
+    assert _bucket(events) == {2026: 1638, 2027: 1363, 2028: 615, 2029: 299, 2030: 57}
+
+
+def test_projected_net_vector_matches_codex_at_capital_track_retention():
+    events = project_quarterly_vests(
+        _ACTIVE_GRANTS, _PORTAL, horizon_start_year=2026, horizon_years=5)
+    by_year, _avg = contractual_rsu_net_by_year(
+        events, nvda_price_usd=205.0, usd_nis_fx=2.88, at_vest_retention=0.68,
+        horizon_start_year=2026, horizon_years=5)
+    # net/share = 205*2.88*0.68 = 401.472 ; 2026 = 1638 * 401.472
+    assert by_year[2026] == pytest.approx(657_611, abs=2)
+    assert by_year[2027] == pytest.approx(547_206, abs=2)
+    assert by_year[2030] == pytest.approx(22_884, abs=2)
+    # front-loaded: 2026 net is well above the flat ~312k LLM floor it replaces.
+    assert by_year[2026] > 600_000
+
+
+def test_projection_excludes_realized_pre_window_vests():
+    # No event before the earliest portal date (2026-06) — March-2026 quarter dropped.
+    events = project_quarterly_vests(
+        _ACTIVE_GRANTS, _PORTAL, horizon_start_year=2026, horizon_years=5)
+    assert all(e["date"] >= "2026-06" for e in events)
 
 
 def test_sums_each_vest_into_its_calendar_year_net_of_retention():
