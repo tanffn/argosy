@@ -30,6 +30,7 @@ import {
   type ReasoningTrailItem,
 } from "@/lib/api";
 import { friendlySourceLabel } from "@/lib/plain-english-labels";
+import { ActionChecklistHeader } from "@/components/proposals/action-checklist-header";
 import { ActionProposalCard } from "@/components/proposals/ActionProposalCard";
 import { CustomizeModal } from "@/components/proposals/CustomizeModal";
 import { DeferModal } from "@/components/proposals/DeferModal";
@@ -602,6 +603,11 @@ export default function ProposalsPage() {
           ))}
         </select>
       </header>
+
+      {/* "What's on you to do" checklist — the consolidated, plain-language
+          view of the user-owned actions (design spec §7). Read-only; the
+          accept/reject affordances live on the proposal cards below. */}
+      <ActionChecklistHeader userId={USER_ID} />
 
       {/* Ask the team — the consult flow folded into the hub (codex #11). The
           same ConsultRunner backs /consult (kept as a deep link). Collapsed by
