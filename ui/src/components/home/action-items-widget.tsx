@@ -85,6 +85,9 @@ export function ActionItemsWidget({
   return (
     <section>
       <SectionHeader label="ACTION ITEMS" action={headerAction} />
+      <p className="text-[11px] text-muted-foreground mb-2 -mt-1">
+        Dated to-dos from your plan.
+      </p>
       <div className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-3">
         {loading ? (
           <p className="text-xs text-muted-foreground font-mono">loading…</p>

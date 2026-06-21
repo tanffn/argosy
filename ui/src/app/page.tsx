@@ -38,20 +38,26 @@ import { DecisionAccordion } from "@/components/agent/DecisionAccordion";
 
 const USER_ID = "ariel";
 
-// SDD §3.1 fleet size and §5.1 cadence-loop count. Hardcoded today; can later
-// be sourced from a /config endpoint. The 28 count is the concrete count of
-// `class \w+Agent` declarations under `argosy/agents/` (excluding `BaseAgent`
-// and the private `_ResearcherAgent` helper). RiskOfficerAgent counts as one
-// class even though it's instantiated three times per decision (perspective
-// kwarg in {aggressive, neutral, conservative}).
-const AGENT_FLEET_SIZE = 28;
+// SDD §3.1 fleet size and §5.1 cadence-loop count. Hardcoded today (no backend
+// /config or health route exposes these counts; verified 2026-06-21). The 51
+// count is the concrete count of public `class \w+Agent` declarations under
+// `argosy/agents/` (excluding the abstract `BaseAgent` base and the private
+// `_ResearcherAgent` helper). RiskOfficerAgent counts as one class even though
+// it's instantiated three times per decision (perspective kwarg in
+// {aggressive, neutral, conservative}). Re-derive with:
+//   grep -rhoE "^class [A-Za-z_]+Agent\b" argosy/agents/*.py \
+//     | grep -vE "BaseAgent|_ResearcherAgent" | sort -u | wc -l
+const AGENT_FLEET_SIZE = 51;
+// 9 cadence ticks displayed in the CADENCES TODAY strip below (see
+// CADENCE_NAMES) — a curated home-page subset of the ~23 loops registered in
+// the scheduler, NOT the total registered-loop count.
 const CADENCE_LOOPS = 9;
 
-// Pass-2 hardcoded knobs (see UI brief). MONTHLY_BUDGET_USD is the
-// tip-of-spend cap shown in the SYSTEM tile; NVDA_TARGET_2026 is the YTD
-// shares-sold target rendered in the NVDA PACE tile.
+// Pass-2 hardcoded knob (see UI brief). MONTHLY_BUDGET_USD is the
+// tip-of-spend cap shown in the SYSTEM tile. The NVDA PACE tile's
+// YTD shares-sold target is plan-derived (nvda_pace.target_shares_ytd),
+// NOT a hardcoded constant.
 const MONTHLY_BUDGET_USD = 200;
-const NVDA_TARGET_2026 = 10000;
 
 // Cadence loops shown in the CADENCES TODAY strip, in declared order.
 const CADENCE_NAMES = [
@@ -522,7 +528,11 @@ export default function Home() {
   const inFlightSynth = data.inFlightSynthesis;
   const nvdaSold = nvdaPace?.shares_sold_ytd ?? 0;
   const nvdaTargetYtd = nvdaPace?.target_shares_ytd ?? 0;
-  const nvdaPctSold = (nvdaSold / NVDA_TARGET_2026) * 100;
+  // Plan-derived YTD target drives the percentage. When no pace data exists
+  // yet (target <= 0) we have no denominator, so leave the percentage null and
+  // render an "awaiting plan" state instead of dividing by a hardcode.
+  const nvdaPctSold =
+    nvdaTargetYtd > 0 ? (nvdaSold / nvdaTargetYtd) * 100 : null;
 
   type NvdaStatus = "on_pace" | "behind_pace" | "neutral";
   const nvdaStatus: NvdaStatus = (() => {
@@ -577,14 +587,9 @@ export default function Home() {
 
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
-      {/* Sprint commit #17 — Home Red-Flag Strip. Renders one row per
-          active monitor_flags entry (allocation_drift / mc_regression /
-          macro_shift). Returns null when no flags are active so the
-          strip occupies zero vertical space — the right empty-state UX
-          is silent, not a "no flags" reassurance row. */}
-      <RedFlagStrip userId={USER_ID} />
-
-      {/* Brand hero card. Pared-down treatment after the Plan/Codex
+      {/* Brand hero card — pinned to the very top of <main> so the user
+          always lands on the welcome header above all banners + the
+          red-flag strip. Pared-down treatment after the Plan/Codex
           ideation pass: the prior version stacked three gradient
           flourishes (.argosy-hero-ring + top-edge stripe + the body
           radial glow) in 500px of viewport, which both engines
@@ -637,6 +642,15 @@ export default function Home() {
           </div>
         </div>
       </section>
+
+      {/* Sprint commit #17 — Home Red-Flag Strip. Renders one row per
+          active monitor_flags entry (allocation_drift / mc_regression /
+          macro_shift / thesis_monitor_*). Returns null when no flags are
+          active so the strip occupies zero vertical space — the right
+          empty-state UX is silent, not a "no flags" reassurance row.
+          Sits just below the brand hero so alerts surface above the
+          money sections. */}
+      <RedFlagStrip userId={USER_ID} />
 
       {/* Windfall banner — auto-detected from the user's monthly TSV
           dropped into $ARGOSY_EXPENSE_SAMPLES_ROOT. Renders only when a
@@ -861,17 +875,20 @@ export default function Home() {
         >
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div className="font-mono text-sm tabular-nums">
-              {nvdaSold.toLocaleString()} / {NVDA_TARGET_2026.toLocaleString()}{" "}
-              shares sold YTD
+              {nvdaTargetYtd > 0
+                ? `${nvdaSold.toLocaleString()} / ${nvdaTargetYtd.toLocaleString()} shares sold YTD (plan target)`
+                : "— / awaiting plan"}
             </div>
             <div className="text-[11px] text-muted-foreground tabular-nums">
-              {nvdaPctSold.toFixed(1)}% of target ·{" "}
+              {nvdaPctSold !== null
+                ? `${nvdaPctSold.toFixed(1)}% of plan target · `
+                : ""}
               {pctOfYearElapsed().toFixed(0)}% of year elapsed
               {nvdaPaceTooltip ? ` · ${nvdaPaceTooltip}` : ""}
             </div>
           </div>
           <ProgressBar
-            pct={Math.max(0, Math.min(100, nvdaPctSold))}
+            pct={nvdaPctSold === null ? 0 : Math.max(0, Math.min(100, nvdaPctSold))}
             tone={nvdaOnPace ? "success" : "warning"}
           />
         </div>

@@ -107,7 +107,7 @@ export function AdvisorBriefCard({ userId, className }: AdvisorBriefCardProps) {
         setError(
           isAbort
             ? "Couldn't reach advisor service."
-            : "Brief unavailable right now.",
+            : "Brief will refresh shortly.",
         );
       })
       .finally(() => {

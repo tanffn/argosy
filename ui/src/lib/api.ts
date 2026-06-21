@@ -1564,9 +1564,35 @@ async function formatHttpError(res: Response, path: string): Promise<string> {
 }
 
 async function getJSON<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(apiUrl(path), { cache: "no-store", ...(init ?? {}) });
-  if (!res.ok) throw new Error(await formatHttpError(res, path));
-  return (await res.json()) as T;
+  // Small retry to survive transient backend blips (e.g. a backend restart
+  // momentarily refusing connections, which surfaces as a "Failed to fetch"
+  // TypeError). We ONLY retry when fetch() itself THROWS at the network
+  // level — never on `!res.ok`, so real 4xx/5xx HTTP responses surface
+  // immediately. The caller's AbortSignal is honored: an AbortError is
+  // re-thrown without retrying.
+  const url = apiUrl(path);
+  const maxAttempts = 3; // 1 initial + 2 retries
+  const backoffMs = [300, 500];
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, { cache: "no-store", ...(init ?? {}) });
+    } catch (err) {
+      // Don't retry a caller-initiated abort/timeout.
+      if (err instanceof DOMException && err.name === "AbortError") throw err;
+      lastErr = err;
+      const wait = backoffMs[attempt];
+      if (wait === undefined) break; // out of retries
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+    if (!res.ok) throw new Error(await formatHttpError(res, path));
+    return (await res.json()) as T;
+  }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error(`Network error fetching ${path}`);
 }
 
 async function postJSON<T>(path: string, body: unknown): Promise<T> {
@@ -4438,11 +4464,13 @@ export interface SynthesisHealth {
  * ``argosy.api.routes.plan.NvdaPaceView`` (itself a thin DTO around
  * ``argosy.agents.concentration_analyst.NvdaPace``).
  *
- * The home page's NVDA PACE tile reads ``shares_sold_ytd`` directly; the
- * displayed annual target stays the UI-side ``NVDA_TARGET_2026`` constant
- * because ``target_shares_ytd`` is the YTD pro-rated number, not the cap.
- * ``on_track`` is authoritative — prefer it over the UI's prior heuristic
- * (pct-of-target vs pct-of-year) when both are available.
+ * The home page's NVDA PACE tile reads ``shares_sold_ytd`` and divides by
+ * the plan-derived ``target_shares_ytd`` (the YTD pro-rated target) to show
+ * "X / target shares sold YTD" — no UI-side hardcoded annual cap. When
+ * ``target_shares_ytd <= 0`` (no pace data yet) the tile renders an
+ * "awaiting plan" state instead of a percentage. ``on_track`` is
+ * authoritative — prefer it over the UI's prior heuristic (pct-of-target
+ * vs pct-of-year) when both are available.
  */
 export interface NvdaPaceDTO {
   shares_sold_ytd: number;

@@ -94,8 +94,13 @@ export function RedFlagStrip({ userId }: Props) {
       data-slot="red-flag-strip"
     >
       <CardContent className="px-4 py-3 flex flex-col gap-2">
-        <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
-          Red flags
+        <div className="flex flex-col gap-0.5">
+          <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+            Red flags
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            Alerts that may need your attention.
+          </div>
         </div>
         <ul className="flex flex-col gap-2">
           {urgent.map((flag) => (
@@ -198,6 +203,13 @@ function kindLabel(kind: MonitorFlagKind): string {
     if (stripped === "fx") return "FX";
     return humanize(stripped);
   }
+  if (kind.startsWith("thesis_monitor_")) {
+    // thesis_monitor_weakened / thesis_monitor_broken (from
+    // argosy/orchestrator/loops/thesis_monitor.py: kind = f"thesis_monitor_{status}").
+    // The per-ticker detail lives in the row summary; the badge just names
+    // the family so it doesn't read as the noisy "Thesis Monitor Weakened".
+    return "Thesis monitor";
+  }
   return humanize(kind);
 }
 
@@ -229,6 +241,11 @@ function linkForKind(kind: MonitorFlagKind): string {
   }
   if (kind.startsWith("state_observer_")) {
     return "/advisor";
+  }
+  if (kind.startsWith("thesis_monitor_")) {
+    // A weakened/broken position thesis is an actionable trim/exit signal —
+    // route to proposals where the resulting action surfaces.
+    return "/proposals";
   }
   return "/advisor";
 }
@@ -306,6 +323,9 @@ function buildSummary(flag: MonitorFlagDTO): string {
     }
     if (flag.kind.startsWith("state_observer_")) {
       return stateObserverSummary(flag.payload);
+    }
+    if (flag.kind.startsWith("thesis_monitor_")) {
+      return thesisMonitorSummary(flag.payload);
     }
     return `${kindLabel(flag.kind)} flag detected`;
   } catch {
@@ -396,6 +416,62 @@ function stateObserverSummary(payload: Record<string, unknown>): string {
   }
   if (primaryField) return primaryField;
   return "State-observer flag detected";
+}
+
+// thesis_monitor_* flags (argosy/orchestrator/loops/thesis_monitor.py).
+// Payload carries: ticker, thesis_status ("weakened"|"broken"), rationale_md,
+// signals (list of strings or objects), suggested_action. We render
+// "<TICKER>: thesis <status> — <truncated rationale>", falling back to the
+// first signal, then a generic, so the row is never the useless
+// "Thesis Monitor Weakened flag detected".
+function thesisMonitorSummary(payload: Record<string, unknown>): string {
+  const ticker =
+    typeof payload.ticker === "string" && payload.ticker.length > 0
+      ? payload.ticker
+      : null;
+  const status =
+    typeof payload.thesis_status === "string" && payload.thesis_status.length > 0
+      ? payload.thesis_status
+      : null;
+  const rationale =
+    typeof payload.rationale_md === "string" && payload.rationale_md.trim()
+      ? truncate(payload.rationale_md.trim(), 100)
+      : null;
+
+  // First non-empty signal as a fallback detail. Signals can be plain
+  // strings or objects (e.g. {label}/{summary}/{text}); coerce defensively.
+  let firstSignal: string | null = null;
+  if (Array.isArray(payload.signals)) {
+    for (const s of payload.signals) {
+      if (typeof s === "string" && s.trim()) {
+        firstSignal = truncate(s.trim(), 100);
+        break;
+      }
+      if (s && typeof s === "object") {
+        const rec = s as Record<string, unknown>;
+        const cand = rec.label ?? rec.summary ?? rec.text ?? rec.signal;
+        if (typeof cand === "string" && cand.trim()) {
+          firstSignal = truncate(cand.trim(), 100);
+          break;
+        }
+      }
+    }
+  }
+
+  const detail = rationale ?? firstSignal;
+  const head =
+    ticker && status
+      ? `${ticker}: thesis ${status}`
+      : ticker
+        ? `${ticker}: thesis flagged`
+        : status
+          ? `Thesis ${status}`
+          : null;
+
+  if (head && detail) return `${head} — ${detail}`;
+  if (head) return head;
+  if (detail) return detail;
+  return "Thesis monitor flag detected";
 }
 
 function alphaReportCautionSummary(payload: Record<string, unknown>): string {
