@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import {
@@ -85,9 +86,9 @@ export function UpcomingVestCard({ userId, horizonDays = 90 }: Props) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Upcoming RSU vests</CardTitle>
-          <CardDescription>
-            Projecting the next {horizonDays} days of expected
-            tranches…
+          <CardDescription className="flex items-center gap-2">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            Projecting the next {horizonDays} days of expected tranches…
           </CardDescription>
         </CardHeader>
       </Card>

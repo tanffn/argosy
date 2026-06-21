@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ValueWithTooltip } from "@/components/retirement/ValueWithTooltip";
@@ -70,7 +71,10 @@ export function RebalancingAlertsCard({ userId, currentAge }: Props) {
       </CardHeader>
       <CardContent>
         {data === null ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            Loading…
+          </p>
         ) : data.length === 0 ? (
           <p className="text-sm text-emerald-400">
             ●ALIGNED — no rebalancing needed at age {currentAge}.

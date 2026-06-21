@@ -7,7 +7,6 @@ import { api, type DerivedInputsResponse, type WithdrawalPolicy } from "@/lib/ap
 import { BituachLeumiCard } from "@/components/retirement/BituachLeumiCard";
 import { DecumulationOrderCard } from "@/components/retirement/DecumulationOrderCard";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
-import { DualTrackPlanCard } from "@/components/retirement/dual-track-plan-card";
 import { ExpectedRetirementAgeCard } from "@/components/retirement/ExpectedRetirementAgeCard";
 import { GlidePathCard } from "@/components/retirement/GlidePathCard";
 import { HealthcareCurveCard } from "@/components/retirement/HealthcareCurveCard";
@@ -26,6 +25,7 @@ import { ScenarioGridCard } from "@/components/retirement/ScenarioGridCard";
 import { DerivedInputsProvenancePanel } from "@/components/retirement/DerivedInputsProvenancePanel";
 import { SigmaCalibrationCard } from "@/components/retirement/SigmaCalibrationCard";
 import { SourcesPanel } from "@/components/retirement/SourcesPanel";
+import { PlanStoryLead } from "@/components/overview/PlanStoryLead";
 import { StochasticFxCard } from "@/components/retirement/StochasticFxCard";
 import { TaxBreakdownCard } from "@/components/retirement/TaxBreakdownCard";
 import { UpcomingVestCard } from "@/components/retirement/UpcomingVestCard";
@@ -39,7 +39,6 @@ const USER_ID = "ariel";
 // read-only visualization surface.
 const SECTIONS: Array<{ id: string; label: string }> = [
   { id: "when-can-i-retire", label: "When can I retire?" },
-  { id: "dual-track",        label: "Retire now or leave it?" },
   { id: "timeline",          label: "Holistic Timeline" },
   { id: "upcoming-vests",    label: "Upcoming RSU vests" },
   { id: "verdict",           label: "Verdict" },
@@ -165,6 +164,11 @@ export default function RetirementPage() {
       </nav>
 
       <div className="space-y-4 min-w-0">
+        {/* Plain-language plan "story" lead — merged in from the former
+            standalone /overview tab. Fetches /api/overview and renders the
+            chapters above the expert verdict cards. */}
+        <PlanStoryLead />
+
         {/* Expected retirement age headline (2026-05-29) — the most
             direct answer to "when can I retire?" surfaced as a card
             ABOVE the P(solvent) verdict. Sourced from the cashflow
@@ -173,13 +177,9 @@ export default function RetirementPage() {
           <ExpectedRetirementAgeCard userId={USER_ID} />
         </section>
 
-        {/* Dual-track retire-age ↔ estate-left-to-kids tradeoff: the two
-            intents (spend down vs. preserve for the kids) across return
-            regimes, the estate frontier, the spend-to-retire-now lever, and
-            the full assumption bag. Self-fetches its own payload on mount. */}
-        <section id="dual-track" className="scroll-mt-6">
-          <DualTrackPlanCard userId={USER_ID} />
-        </section>
+        {/* The dual-track "spend down vs. leave it to the kids" tradeoff is
+            now told by the plain-language story lead above (its dual-track
+            chapter), so the standalone DualTrackPlanCard is de-duped out. */}
 
         <section id="timeline" className="scroll-mt-6">
           <HolisticTimelineCard userId={USER_ID} />

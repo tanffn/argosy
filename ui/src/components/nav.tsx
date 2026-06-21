@@ -7,7 +7,6 @@ import {
   ChevronDown,
   CircleHelp,
   ClipboardList,
-  Compass,
   FileText,
   Flag,
   Gavel,
@@ -45,7 +44,6 @@ interface NavTab {
 // unit-testable.
 export const PRIMARY_TABS: NavTab[] = [
   { href: "/", label: "Home", Icon: Home },
-  { href: "/overview", label: "Overview", Icon: Compass },
   { href: "/advisor", label: "Advisor", Icon: MessageCircle },
   { href: "/portfolio", label: "Portfolio", Icon: PieChart },
   { href: "/proposals", label: "Proposals", Icon: Inbox },

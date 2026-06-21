@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
@@ -75,7 +76,10 @@ export function ScenarioGridCard({ userId, retirementAge = 49 }: Props) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Retirement readiness — scenario stress</CardTitle>
-          <CardDescription>Running scenario Monte Carlo…</CardDescription>
+          <CardDescription className="flex items-center gap-2">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            Running scenario Monte Carlo…
+          </CardDescription>
         </CardHeader>
       </Card>
     );

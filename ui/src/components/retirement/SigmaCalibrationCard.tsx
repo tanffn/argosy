@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { DrilldownSection } from "@/components/retirement/DrilldownSection";
@@ -65,7 +66,10 @@ export function SigmaCalibrationCard({ userId }: Props) {
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Portfolio volatility (σ)</CardTitle>
-          <CardDescription>Loading…</CardDescription>
+          <CardDescription className="flex items-center gap-2">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+            Loading…
+          </CardDescription>
         </CardHeader>
       </Card>
     );
