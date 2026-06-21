@@ -11,7 +11,7 @@
  */
 
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Paperclip, X } from "lucide-react";
 
 import { AgentCascadePanel } from "@/components/advisor/AgentCascadePanel";
@@ -121,7 +121,18 @@ function formatTimestamp(iso: string | null): string {
   }
 }
 
+// useSearchParams() requires a Suspense boundary for the static-render bailout
+// (Next.js prerender). The page body lives in an inner component; the default
+// export wraps it so the build doesn't fail prerendering /advisor.
 export default function AdvisorPage() {
+  return (
+    <Suspense fallback={null}>
+      <AdvisorPageInner />
+    </Suspense>
+  );
+}
+
+function AdvisorPageInner() {
   // Conversation + agent-turn state.
   const [history, setHistory] = useState<Turn[]>([]);
   const [pending, setPending] = useState<AdvisorTurnResponse | null>(null);
