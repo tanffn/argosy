@@ -264,18 +264,156 @@ def pace_for_line(
     )
 
 
+# Conviction labels differ between the discovery funnel (HIGH/MED/LOW on
+# FleetPick/EstimatorVerdict) and the sleeve sizer (HIGH/MEDIUM/LOW). Normalise
+# a cached pick's conviction onto the sleeve vocabulary so the EXISTING
+# conviction-weight sizing applies unchanged.
+_FLEET_CONVICTION_TO_SLEEVE: dict[str, str] = {
+    "HIGH": "HIGH", "MED": "MEDIUM", "MEDIUM": "MEDIUM", "LOW": "LOW",
+}
+
+
+def _cached_buy_sleeve_candidates(user_id: str):
+    """Sleeve candidates from the CACHED discovery graded picks.
+
+    Reads the persisted ScanState via the same accessor the /discovery GET uses
+    (``argosy.api.routes.portfolio._load_discovery_state``), keeps only graded
+    picks whose ``verdict == "BUY"``, and maps each :class:`FleetPick` onto a
+    :class:`SleeveCandidate`. Synchronous + read-only — it never triggers a live
+    funnel run. Returns ``None`` (caller falls back to the advisor seeds) when no
+    cached BUY picks exist or the read fails.
+
+    A graded discovery pick is a single US-listed name with no stamped UCITS
+    domicile, so it maps to the ``single_name`` / ``us_situs=True`` carve-out
+    leg of the sleeve (the same convention the seed single-names use).
+    """
+    from argosy.services.high_potential_sleeve import SleeveCandidate
+
+    try:
+        from argosy.api.routes.portfolio import _load_discovery_state
+
+        picks, _estimated, _last = _load_discovery_state(user_id)
+    except Exception:  # noqa: BLE001 — cached read is best-effort; fall back to seeds
+        return None
+    cands: list[SleeveCandidate] = []
+    for p in picks:
+        if (p.verdict or "").upper() != "BUY":
+            continue
+        cands.append(SleeveCandidate(
+            ticker=p.ticker,
+            name=p.ticker,
+            vehicle="single_name",
+            conviction=_FLEET_CONVICTION_TO_SLEEVE.get(
+                (p.conviction or "").upper(), "MEDIUM"),
+            thesis=p.thesis_md,
+            us_situs=True,
+            source="fleet_validated",
+        ))
+    return cands or None
+
+
+def _sleeve_estate_tag(cand) -> EstateTag:
+    """Estate tag for one sleeve candidate, via the EXISTING estate gate.
+
+    Builds a one-instrument :class:`TargetAllocationDoc` (domicile derived from
+    the candidate's ``us_situs`` flag: US single-name -> ``"US"``; UCITS thematic
+    -> ``"IE"``) and runs it through :func:`build_estate_map`, which itself calls
+    ``validate_instrument_domicile``. No new estate logic: UCITS thematic tags
+    ``estate_safe``; an unsanctioned US single-name tags ``us_situs_exposed``.
+    """
+    from argosy.services.target_allocation_doc import (
+        AllocationClassDoc, AllocationInstrument, TargetAllocationDoc,
+    )
+
+    domicile = "US" if cand.us_situs else "IE"
+    mini = TargetAllocationDoc(
+        anchor_sigma=0.18, blended_sigma=0.16, nvda_cap_pct=13.0, fi_pct=10.0,
+        provenance="high_potential_sleeve",
+        classes=[AllocationClassDoc(
+            label="High-potential sleeve", snapshot_category="High-potential sleeve",
+            sigma_class="us_equity", target_pct=100.0,
+            instruments=[AllocationInstrument(
+                symbol=cand.ticker, role="primary",
+                weight_within_class_pct=100.0, rationale="", domicile=domicile)],
+        )],
+        glide=[],
+    )
+    return build_estate_map(mini)[cand.ticker]
+
+
+def _high_potential_lines(
+    *, sleeve_budget_usd: float, user_id: str, market_context, book_usd: float,
+    tranche_usd: float,
+) -> tuple[list[DeploymentLine], float, float]:
+    """Build the ``high`` tier from the EXISTING high-potential sleeve sizer.
+
+    Feeds CACHED discovery BUY picks (falling back to the seed candidates) into
+    ``build_high_potential_sleeve`` and converts each :class:`SleeveAllocation`
+    into a ``tier="high"`` :class:`DeploymentLine`, estate-tagged via the
+    existing gate. Returns ``(lines, exposed_usd, sanctioned_usd)`` so the
+    headline estate split stays consistent with the core path.
+    """
+    from argosy.services.high_potential_sleeve import build_high_potential_sleeve
+
+    if sleeve_budget_usd <= 0:
+        return [], 0.0, 0.0
+    candidates = _cached_buy_sleeve_candidates(user_id)
+    allocs = build_high_potential_sleeve(sleeve_budget_usd, candidates)
+    lines: list[DeploymentLine] = []
+    exposed = 0.0
+    sanctioned = 0.0
+    for a in allocs:
+        cand = a.candidate
+        amt = round(a.amount_usd, 2)
+        estate = _sleeve_estate_tag(cand)
+        if estate.status == "us_situs_exposed":
+            exposed += amt
+        elif estate.status == "us_situs_sanctioned":
+            sanctioned += amt
+        if market_context is not None:
+            timing, p_rationale = pace_for_line(
+                amt, market_context, book_usd=book_usd, tranche_usd=tranche_usd)
+        else:
+            timing, p_rationale = "now", ""
+        rationale = (
+            f"High-potential sleeve ({cand.conviction} conviction, {cand.vehicle}): "
+            f"{cand.thesis}"
+        )
+        lines.append(DeploymentLine(
+            symbol=cand.ticker,
+            type=("ETF" if cand.vehicle == "ucits_thematic" else "Stock"),
+            amount_usd=amt, timing=timing, is_new=True, tier="high",
+            horizon=_TIER_HORIZON["high"], estate=estate,
+            cap_note=f"high-potential sleeve ({a.pct_of_sleeve:.1f}% of sleeve)",
+            net_of_tax_caveat=NET_OF_TAX_CAVEAT, rationale=rationale,
+            cites=(), held_value_usd=0.0, pace_rationale=p_rationale,
+        ))
+    return lines, round(exposed, 2), round(sanctioned, 2)
+
+
 def assemble_deployment_plan(
     *, doc, holdings: dict[str, float], deploy_amount_usd: float, as_of: date,
-    market_context=None,
+    market_context=None, sleeve_pct: float = 5.0, use_high_potential: bool = True,
+    user_id: str = "ariel",
 ) -> DeploymentPlan:
     """Build the deploy plan: plan-bound ``cash_only_deploy`` buys, each
     annotated with tier/estate/cap/tax/horizon/pacing, grouped into tiers that
     sum to ``deploy_amount_usd``.
 
-    P1 (``market_context=None``): reserve=0, medium/high empty, core = full
-    amount; all lines get ``timing="now"`` and ``pace_rationale=""``.
+    P1 (``market_context=None``): reserve=0, medium empty, core = post-sleeve
+    amount; all core lines get ``timing="now"`` and ``pace_rationale=""``.
     P2 (``market_context`` provided): lines are paced via ``pace_for_line``;
     staleness is surfaced as a caveat.
+
+    High-potential sleeve: when ``use_high_potential`` and ``sleeve_pct > 0``, a
+    ``sleeve_budget = deploy_amount * sleeve_pct/100`` is carved off the TOP and
+    routed to the ``high`` tier via the EXISTING ``build_high_potential_sleeve``
+    (fed by cached discovery BUY picks, seed fallback); core/medium are computed
+    on the REMAINDER. With ``use_high_potential=False`` (or ``sleeve_pct<=0``) the
+    ``high`` tier stays empty and core is computed on the full amount — the P1/P2
+    behaviour. Conservation holds in both modes:
+    ``deployed_total + undeployed_remainder == deploy_amount`` (within $0.01) and
+    ``sum(high-tier lines) == sleeve_budget`` (within $0.50).
     """
     amount = round(deploy_amount_usd, 2)
 
@@ -296,7 +434,19 @@ def assemble_deployment_plan(
 
     estate_map = build_estate_map(doc)
     plan_symbols = set(estate_map)
-    candidates = cash_only_deploy(doc, holdings, deploy_amount_usd, as_of=as_of)
+
+    # Carve the high-potential sleeve off the TOP: core/medium are computed on
+    # the REMAINDER so the sleeve budget is never double-counted. The sleeve
+    # budget is bounded to [0, amount] so a misconfigured pct can't carve more
+    # than the entered cash.
+    use_sleeve = bool(use_high_potential) and sleeve_pct > 0 and amount > 0
+    if use_sleeve:
+        sleeve_budget = min(amount, round(amount * sleeve_pct / 100.0, 2))
+    else:
+        sleeve_budget = 0.0
+    core_capital = round(amount - sleeve_budget, 2)
+
+    candidates = cash_only_deploy(doc, holdings, core_capital, as_of=as_of)
     # Post-deploy investable book — the materiality denominator for pacing.
     book_usd = round(sum(holdings.values()) + amount, 2)
 
@@ -346,11 +496,32 @@ def assemble_deployment_plan(
             # but the tier label stays honest.
             core_lines.append(line)
 
+    # High-potential sleeve (carved off the top). Built from the EXISTING sizer;
+    # its estate split folds into the headline totals so the sleeve's US-situs
+    # carve-out is never hidden.
+    high_lines: list[DeploymentLine] = []
+    if sleeve_budget > 0:
+        high_lines, sleeve_exposed, sleeve_sanctioned = _high_potential_lines(
+            sleeve_budget_usd=sleeve_budget, user_id=user_id,
+            market_context=market_context, book_usd=book_usd, tranche_usd=amount,
+        )
+        exposed_total += sleeve_exposed
+        sanctioned_total += sleeve_sanctioned
+        # Conservation (money-math): the high tier must place EXACTLY the carved
+        # budget. build_high_potential_sleeve renormalises conviction weights, so
+        # rounding drift across legs is bounded — assert it stays within $0.50.
+        high_total = round(sum(l.amount_usd for l in high_lines), 2)
+        if high_lines and abs(high_total - sleeve_budget) > 0.50:
+            raise ValueError(
+                f"high-potential sleeve sizing drift: lines total {high_total} "
+                f"!= sleeve budget {sleeve_budget}"
+            )
+
     tiers = (
         DeploymentTier("reserve", 0.0, ()),
         DeploymentTier("core", DEPLOY_TIER_CAPS["core"], tuple(core_lines)),
         DeploymentTier("medium", DEPLOY_TIER_CAPS["medium"], ()),
-        DeploymentTier("high", DEPLOY_TIER_CAPS["high"], ()),
+        DeploymentTier("high", DEPLOY_TIER_CAPS["high"], tuple(high_lines)),
     )
     deployed = round(sum(t.total_usd for t in tiers), 2)
     if deployed - amount > 0.01:

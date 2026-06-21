@@ -1626,6 +1626,21 @@ def get_deploy_cash(
     cash_usd: float | None = Query(None, ge=0.0),
     user_id: str = Query("ariel"),
     live: bool = Query(False),
+    sleeve_pct: float = Query(
+        5.0, ge=0.0, le=25.0,
+        description=(
+            "High-potential ('moonshot') share of the deploy amount carved off "
+            "the top and routed to the high-risk tier (default 5%)."
+        ),
+    ),
+    use_high_potential: bool = Query(
+        True,
+        description=(
+            "When true (default) the high tier is filled from the conviction-"
+            "weighted high-potential sleeve (cached discovery BUY picks, seed "
+            "fallback). When false the high tier stays empty (plan-bound only)."
+        ),
+    ),
     db: Session = Depends(get_db),
 ) -> DeploymentPlanDTO:
     """Plan-bound, risk-tiered, estate-annotated deploy list for a net-of-tax amount.
@@ -1638,6 +1653,11 @@ def get_deploy_cash(
     verification) and threads it through the deployment plan and its DTO. When
     ``live`` is omitted or false the route behaves exactly as in P1 (no live
     calls, ``market_context`` is null in the response).
+
+    ``sleeve_pct`` / ``use_high_potential`` control the high-potential sleeve:
+    ``sleeve_pct`` of the deploy amount is carved off the top into the high tier
+    (conviction-weighted, estate-tagged). Cached discovery BUY picks feed the
+    sleeve synchronously (no live funnel run); seed candidates are the fallback.
     """
     from datetime import date as _date
 
@@ -1655,7 +1675,8 @@ def get_deploy_cash(
 
     plan = assemble_deployment_plan(
         doc=doc, holdings=holdings, deploy_amount_usd=amount, as_of=_date.today(),
-        market_context=ctx,
+        market_context=ctx, sleeve_pct=sleeve_pct,
+        use_high_potential=use_high_potential, user_id=user_id,
     )
     return deployment_plan_to_dto(plan, market_context=ctx)
 

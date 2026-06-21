@@ -176,7 +176,7 @@ class TestAssemble:
         doc, holdings = self._doc_holdings()
         plan = assemble_deployment_plan(
             doc=doc, holdings=holdings, deploy_amount_usd=10_000.0,
-            as_of=date(2026, 6, 12),
+            as_of=date(2026, 6, 12), use_high_potential=False,
         )
         by_name = {t.name: t for t in plan.tiers}
         assert by_name["reserve"].total_usd == 0.0
@@ -190,7 +190,7 @@ class TestAssemble:
         doc, holdings = self._doc_holdings()
         plan = assemble_deployment_plan(
             doc=doc, holdings=holdings, deploy_amount_usd=10_000.0,
-            as_of=date(2026, 6, 12),
+            as_of=date(2026, 6, 12), use_high_potential=False,
         )
         lines = {l.symbol: l for t in plan.tiers for l in t.lines}
         assert lines["EXUS"].is_new is True
@@ -201,7 +201,7 @@ class TestAssemble:
         doc, holdings = self._doc_holdings()
         plan = assemble_deployment_plan(
             doc=doc, holdings=holdings, deploy_amount_usd=10_000.0,
-            as_of=date(2026, 6, 12),
+            as_of=date(2026, 6, 12), use_high_potential=False,
         )
         line = next(l for t in plan.tiers for l in t.lines)
         assert line.estate.status in {
@@ -259,7 +259,7 @@ class TestRemediation:
                             lambda *a, **k: [_candidate(("BUY", "CSPX", 50_000.0, "cash"))])
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={}, deploy_amount_usd=250_000.0,
-            as_of=date(2026, 6, 12),
+            as_of=date(2026, 6, 12), use_high_potential=False,
         )
         assert plan.deployed_total_usd == pytest.approx(50_000.0)
         assert plan.undeployed_remainder_usd == pytest.approx(200_000.0)
@@ -280,7 +280,7 @@ class TestRemediation:
         )])
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={}, deploy_amount_usd=100_000.0,
-            as_of=date(2026, 6, 12),
+            as_of=date(2026, 6, 12), use_high_potential=False,
         )
         assert plan.us_situs_sanctioned_usd == pytest.approx(40_000.0)
         assert plan.us_situs_exposed_usd == pytest.approx(30_000.0)  # NVDA NOT folded in
@@ -305,7 +305,7 @@ class TestRemediation:
         )])
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={"CSPX": 12_345.0}, deploy_amount_usd=5_000.0,
-            as_of=date(2026, 6, 12),
+            as_of=date(2026, 6, 12), use_high_potential=False,
         )
         line = next(l for t in plan.tiers for l in t.lines if l.symbol == "CSPX")
         assert line.held_value_usd == pytest.approx(12_345.0)
@@ -364,7 +364,7 @@ class TestP2Pacing:
         )])
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={}, deploy_amount_usd=50_000.0,
-            as_of=date(2026, 6, 12),
+            as_of=date(2026, 6, 12), use_high_potential=False,
         )
         assert plan.market_context_age is None
         lines = [l for t in plan.tiers for l in t.lines]
@@ -385,7 +385,7 @@ class TestP2Pacing:
         ctx = _stub_market_context(vix=35.0, sp_vs_trend_pct=20.0, is_stale=False)
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={}, deploy_amount_usd=50_000.0,
-            as_of=date(2026, 6, 12), market_context=ctx,
+            as_of=date(2026, 6, 12), market_context=ctx, use_high_potential=False,
         )
         assert plan.market_context_age == "live"
         line = [l for t in plan.tiers for l in t.lines][0]
@@ -406,7 +406,7 @@ class TestP2Pacing:
         ctx = _stub_market_context(vix=40.0, sp_vs_trend_pct=3.0)  # not stretched
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={}, deploy_amount_usd=50_000.0,
-            as_of=date(2026, 6, 12), market_context=ctx,
+            as_of=date(2026, 6, 12), market_context=ctx, use_high_potential=False,
         )
         line = [l for t in plan.tiers for l in t.lines][0]
         assert line.timing == "now"
@@ -422,7 +422,7 @@ class TestP2Pacing:
         ctx = _stub_market_context(vix=45.0, sp_vs_trend_pct=-12.0)
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={}, deploy_amount_usd=50_000.0,
-            as_of=date(2026, 6, 12), market_context=ctx,
+            as_of=date(2026, 6, 12), market_context=ctx, use_high_potential=False,
         )
         assert [l for t in plan.tiers for l in t.lines][0].timing == "now"
 
@@ -437,7 +437,7 @@ class TestP2Pacing:
         ctx = _stub_market_context(vix=35.0, sp_vs_trend_pct=20.0)
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={"CSPX": 1_000_000.0}, deploy_amount_usd=1_000.0,
-            as_of=date(2026, 6, 12), market_context=ctx,
+            as_of=date(2026, 6, 12), market_context=ctx, use_high_potential=False,
         )
         line = [l for t in plan.tiers for l in t.lines][0]
         assert line.timing == "now"
@@ -456,8 +456,125 @@ class TestP2Pacing:
         ctx = _stub_market_context(vix=20.0, sp_vs_trend_pct=0.0, is_stale=True)
         plan = assemble_deployment_plan(
             doc=self._doc(), holdings={}, deploy_amount_usd=10_000.0,
-            as_of=date(2026, 6, 12), market_context=ctx,
+            as_of=date(2026, 6, 12), market_context=ctx, use_high_potential=False,
         )
         assert ctx.is_any_stale is True
         stale_caveats = [c for c in plan.caveats if "stale" in c.lower() or "WARNING" in c]
         assert stale_caveats, f"expected staleness caveat; got caveats={plan.caveats}"
+
+
+# ----------------------------------------------------------------------
+# High-potential ("moonshot") sleeve: a sleeve_pct slice of the deploy amount
+# is carved off the TOP into the `high` tier via the EXISTING
+# build_high_potential_sleeve sizer + estate gate. Verifies:
+# (a) conservation: deployed + remainder == amount with the sleeve ON,
+# (b) the high tier sums to exactly the carved sleeve_budget,
+# (c) high-tier lines carry estate tags (UCITS=estate_safe, US single=exposed),
+# (d) use_high_potential=False reproduces P1 (high tier empty).
+# The candidate feed is forced to the deterministic SEED candidates (no DB / no
+# live funnel) so the sleeve math is reproducible.
+# ----------------------------------------------------------------------
+class TestHighPotentialSleeve:
+    def _doc(self):
+        # Two 50% classes so the glide-aware class %s sum to ~100 (the engine
+        # refuses a non-conserving plan).
+        from argosy.services.target_allocation_doc import (
+            AllocationClassDoc, AllocationInstrument, TargetAllocationDoc,
+        )
+        def _cls(label, symbol, domicile):
+            return AllocationClassDoc(
+                label=label, snapshot_category=label, sigma_class="us_equity",
+                target_pct=50.0,
+                instruments=[AllocationInstrument(
+                    symbol=symbol, role="primary",
+                    weight_within_class_pct=100.0, rationale="", domicile=domicile)],
+                agreement="", rationale="", dissent="",
+            )
+        return TargetAllocationDoc(
+            anchor_sigma=0.18, blended_sigma=0.16, nvda_cap_pct=13.0, fi_pct=10.0,
+            provenance="test",
+            classes=[
+                _cls("US broad-market core", "CSPX", "IE"),
+                _cls("International developed (ex-US)", "EXUS", "IE"),
+            ],
+            glide=[],
+        )
+
+    def _force_seed_candidates(self, monkeypatch):
+        """Pin the sleeve candidate feed to the seed set (no cached-DB read)."""
+        import argosy.services.deployment_advisor as da
+        monkeypatch.setattr(da, "_cached_buy_sleeve_candidates", lambda user_id: None)
+
+    def test_sleeve_conservation_deployed_plus_remainder_equals_amount(self, monkeypatch):
+        from datetime import date
+        self._force_seed_candidates(monkeypatch)
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=100_000.0,
+            as_of=date(2026, 6, 12), sleeve_pct=5.0, use_high_potential=True,
+        )
+        assert plan.deployed_total_usd + plan.undeployed_remainder_usd == pytest.approx(
+            100_000.0, abs=1.0)
+
+    def test_high_tier_sums_to_sleeve_budget(self, monkeypatch):
+        from datetime import date
+        self._force_seed_candidates(monkeypatch)
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=100_000.0,
+            as_of=date(2026, 6, 12), sleeve_pct=5.0, use_high_potential=True,
+        )
+        high = next(t for t in plan.tiers if t.name == "high")
+        # sleeve_budget = 100_000 * 5% = 5_000.
+        assert high.total_usd == pytest.approx(5_000.0, abs=0.5)
+        assert high.lines, "expected the high tier to be populated"
+        assert all(l.tier == "high" for l in high.lines)
+        assert all(l.horizon == "<=5yr" for l in high.lines)  # _TIER_HORIZON["high"]
+
+    def test_high_tier_lines_carry_estate_tags(self, monkeypatch):
+        from datetime import date
+        self._force_seed_candidates(monkeypatch)
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=100_000.0,
+            as_of=date(2026, 6, 12), sleeve_pct=5.0, use_high_potential=True,
+        )
+        high = next(t for t in plan.tiers if t.name == "high")
+        by_ticker = {l.symbol: l for l in high.lines}
+        # Seed UCITS thematic (IE, non-US-situs) -> estate_safe.
+        assert by_ticker["SMGB"].estate.status == "estate_safe"
+        # Seed single-name (US-situs, unsanctioned) -> us_situs_exposed (RED).
+        assert by_ticker["AMD"].estate.status == "us_situs_exposed"
+        # And that exposure folds into the plan headline.
+        assert plan.us_situs_exposed_usd > 0.0
+
+    def test_use_high_potential_false_keeps_high_tier_empty(self, monkeypatch):
+        from datetime import date
+        self._force_seed_candidates(monkeypatch)
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=100_000.0,
+            as_of=date(2026, 6, 12), sleeve_pct=5.0, use_high_potential=False,
+        )
+        high = next(t for t in plan.tiers if t.name == "high")
+        assert high.total_usd == 0.0
+        assert high.lines == ()
+        # Conservation still holds with the sleeve off.
+        assert plan.deployed_total_usd + plan.undeployed_remainder_usd == pytest.approx(
+            100_000.0, abs=1.0)
+
+    def test_cached_buy_picks_feed_the_sleeve(self, monkeypatch):
+        """When cached BUY picks exist they (not the seeds) feed the sleeve."""
+        from datetime import date
+        from argosy.services.high_potential_sleeve import SleeveCandidate
+        import argosy.services.deployment_advisor as da
+
+        picks = (
+            SleeveCandidate("PLTR", "PLTR", "single_name", "HIGH",
+                            "cached BUY pick", us_situs=True, source="fleet_validated"),
+        )
+        monkeypatch.setattr(da, "_cached_buy_sleeve_candidates", lambda user_id: list(picks))
+        plan = assemble_deployment_plan(
+            doc=self._doc(), holdings={}, deploy_amount_usd=100_000.0,
+            as_of=date(2026, 6, 12), sleeve_pct=5.0, use_high_potential=True,
+        )
+        high = next(t for t in plan.tiers if t.name == "high")
+        tickers = {l.symbol for l in high.lines}
+        assert tickers == {"PLTR"}
+        assert high.total_usd == pytest.approx(5_000.0, abs=0.5)
