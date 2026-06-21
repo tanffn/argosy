@@ -226,8 +226,42 @@ def resolve_canonical_basis(
     """Resolve the single deconcentrated, reserve-netted, CGT-haircut basis used
     across every retirement surface. Centralizing this (vs re-deriving it per
     surface) is what guarantees the dual-track headline, the ruin hero, and the
-    scenario grid reconcile (codex H8/H9)."""
+    scenario grid reconcile (codex H8/H9).
+
+    Memoized per (session, user_id, today, reserve-assumptions): the basis is
+    ``mu_real``-INDEPENDENT (only the YAML-heavy holdings/FI/σ/CGT resolution,
+    none of which read the return regime), so the /portfolio 3-scenario sweep —
+    which re-invokes this once per bear/conservative/typical varying only
+    ``mu_real_typical`` — recomputed the same ~2s basis three times. The cache is
+    held on ``session.info`` so it lives and dies with the request-scoped DB
+    session; the key includes the only two assumption fields that DO feed the
+    basis (``reserve_discount_real`` / ``reserve_avg_liability_years``) so a
+    caller varying those still recomputes. ``mu_real``/``n_paths``/``bar_*`` etc.
+    are deliberately NOT in the key — they do not affect any basis field."""
     a = assumptions or RetirementAssumptions()
+    cache_key = (
+        "argosy.retirement.canonical_basis",
+        user_id,
+        today,
+        a.reserve_discount_real,
+        a.reserve_avg_liability_years,
+    )
+    cache = None
+    info = getattr(session, "info", None)
+    if isinstance(info, dict):
+        cache = info.setdefault("_argosy_canonical_basis_cache", {})
+        if cache_key in cache:
+            return cache[cache_key]
+
+    basis = _resolve_canonical_basis_uncached(session, user_id, a, today)
+    if cache is not None:
+        cache[cache_key] = basis
+    return basis
+
+
+def _resolve_canonical_basis_uncached(
+    session, user_id: str, a: RetirementAssumptions, today: date | None
+) -> CanonicalBasis:
     g = _gather_inputs(session, user_id, today)
     sigma_hi = _calibrated_sigma(session, user_id)
     haircut = _nvda_deconcentration_haircut(
