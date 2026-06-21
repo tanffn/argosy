@@ -116,6 +116,10 @@ def create_app() -> FastAPI:
     # Plan: docs/superpowers/plans/2026-05-28-retirement-companion-overhaul.md
     from argosy.api.routes.retirement import router as retirement_router
     app.include_router(retirement_router, prefix=api_prefix)
+    # Overview — plain-language plan-explainer surface (7-chapter story).
+    # Spec: docs/superpowers/specs/2026-06-21-overview-plan-explainer-design.md
+    from argosy.api.routes.overview import router as overview_router
+    app.include_router(overview_router, prefix=api_prefix)
     # Per-FM-objection agree/disagree + start-new-round endpoints. Sibling
     # router so the agree/disagree work doesn't have to share plan.py with
     # concurrent edits (translation cache, NVDA PACE). Same /plan/draft/
