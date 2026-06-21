@@ -1109,6 +1109,8 @@ def _latest_two_tsvs(tsv_root: Path) -> tuple[Path | None, Path | None]:
 def get_windfall_detect(
     threshold_usd: float = DEFAULT_THRESHOLD_USD,
     threshold_nis: float = DEFAULT_THRESHOLD_NIS,
+    user_id: str = "ariel",
+    db: Session = Depends(get_db),
 ) -> dict:
     """Detect a windfall by diffing the two most recent TSV snapshots.
 
@@ -1151,6 +1153,15 @@ def get_windfall_detect(
             "previous_tsv": prev.name,
         }
 
+    # Transaction-based source attribution (best-effort): link the cash inflow
+    # to the real Schwab RSU sale(s) that produced it, via expense_transactions
+    # Leumi USD transfer credits. Replaces/augments the (neutralized) TSV-diff
+    # sale attribution. Degrades silently to "unclear" when no Schwab CSV /
+    # link is available.
+    from argosy.services.retirement.windfall_detector import attribute_cash_source
+    schwab_csv = samples_root / "2026" / "Schwab" / "EquityAwardsCenter_Transactions.csv"
+    event = attribute_cash_source(event, schwab_csv, db, user_id)
+
     plan = propose_allocations(event)
     return {
         "event": {
@@ -1161,6 +1172,9 @@ def get_windfall_detect(
             "fx_usd_nis": event.fx_usd_nis,
             "classified_source": event.classified_source,
             "requires_user_classification": event.requires_user_classification,
+            "reconciled_source_lines": event.reconciled_source_lines,
+            "reconciled_matched_usd": event.reconciled_matched_usd,
+            "reconciled_unexplained_usd": event.reconciled_unexplained_usd,
             "matching_sales": [
                 {
                     "symbol": s.symbol,

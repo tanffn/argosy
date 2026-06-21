@@ -26,7 +26,7 @@ from __future__ import annotations
 import csv
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -100,6 +100,13 @@ class WindfallEvent:
     allocation_delta_table: list[AllocationLine] = field(default_factory=list)
     source_tsv: str = ""
     previous_tsv: str | None = None
+    # Transaction-based source attribution (real Schwab sale → Leumi transfer
+    # links), populated best-effort by ``attribute_cash_source`` when a Schwab
+    # CSV + DB session are available. Empty when no link could be established;
+    # the surface then degrades to the "unclear" classification above.
+    reconciled_source_lines: list[str] = field(default_factory=list)
+    reconciled_matched_usd: float = 0.0
+    reconciled_unexplained_usd: float = 0.0
 
     def to_value_with_rationale_dict(self) -> dict[str, ValueWithRationale]:
         """Expose the headline numbers as ValueWithRationale for the UI."""
@@ -126,6 +133,26 @@ class WindfallEvent:
                     "Matched within 5% → confirmed sale; otherwise unclear."
                 ),
                 confidence="high" if not self.requires_user_classification else "low",
+            ),
+            "reconciled_source": ValueWithRationale(
+                value=(
+                    "; ".join(self.reconciled_source_lines)
+                    if self.reconciled_source_lines
+                    else "unclear / unexplained residual"
+                ),
+                unit="text",
+                source_id="argosy_derived",
+                rationale=(
+                    "Transaction-based attribution: each Schwab RSU sale "
+                    "(EquityAwardsCenter CSV) taxed per the NVIDIA ESOP §102 "
+                    "simulation (grant-dependent capital@25% / ordinary@62% "
+                    "split — NOT a flat rate) then linked to the Leumi USD "
+                    "transfer it produced (expense_transactions, account 44745200). "
+                    f"${self.reconciled_matched_usd:,.0f} of inflow attributed; "
+                    f"${self.reconciled_unexplained_usd:,.0f} unexplained "
+                    "(salary, FX conversions, or sales outside the CSV window)."
+                ),
+                confidence="high" if self.reconciled_source_lines else "low",
             ),
         }
 
@@ -417,3 +444,71 @@ def detect_windfall(
         source_tsv=str(current_tsv_path),
         previous_tsv=str(previous_tsv_path),
     )
+
+
+def attribute_cash_source(
+    event: WindfallEvent,
+    schwab_csv_path: Path,
+    session,
+    user_id: str,
+    *,
+    since: "date | None" = None,
+    until: "date | None" = None,
+) -> WindfallEvent:
+    """Best-effort: attach transaction-based source attribution to a windfall.
+
+    Runs the cash-source reconciler (Schwab RSU sales → Leumi USD transfer
+    credits, taxed per the NVIDIA ESOP §102 simulation) and folds the result
+    onto ``event`` in place:
+
+      * ``reconciled_source_lines`` — one human attribution line per linked
+        sale (e.g. "NVDA RSU sale 1040 sh @ $199.56 ($207,538 gross, §102 tax
+        $56,649 (91% capital @25% / 9% ordinary @50%)) → $150,889 net (~73%
+        retention) ≈ $150,864 to Leumi USD on 2026-04-29").
+      * ``reconciled_matched_usd`` / ``reconciled_unexplained_usd`` — the
+        attributed vs. residual cash totals.
+      * When at least one sale links AND the classifier was "unclear", the
+        event is upgraded to ``rsu_sale`` (real-transaction evidence beats the
+        neutralized TSV-diff classifier) and ``requires_user_classification``
+        is cleared.
+
+    ``since`` / ``until`` bound both the Schwab sales and the Leumi transfers
+    so the residual reflects only the relevant window. When omitted, defaults
+    to the calendar year of ``event.detected_at`` (Jan 1 → detection date) so
+    pre-window historical transfers don't inflate the "unexplained" residual.
+
+    Degrades silently to the unchanged event (still "unclear") on any error —
+    missing CSV, no DB, no link. Never raises. The cash *delta* itself is
+    untouched; only the source attribution is augmented.
+    """
+    if since is None:
+        since = date(event.detected_at.year, 1, 1)
+    if until is None:
+        until = event.detected_at.date()
+    try:
+        from argosy.services.cash_source_reconciler import reconcile_from_csv
+
+        report = reconcile_from_csv(
+            schwab_csv_path, session, user_id, since=since, until=until
+        )
+    except Exception:  # noqa: BLE001 — attribution is best-effort
+        return event
+
+    if report.links:
+        event.reconciled_source_lines = [l.describe() for l in report.links]
+        event.reconciled_matched_usd = round(report.matched_transfer_usd, 2)
+        event.reconciled_unexplained_usd = round(
+            report.unexplained_transfer_usd, 2
+        )
+        if event.classified_source == "unclear":
+            # Real transactions linked a sale → upgrade off the neutral default.
+            has_nvda = any(l.sale_symbol == "NVDA" for l in report.links)
+            event.classified_source = "rsu_sale" if has_nvda else "stock_sale"
+            event.requires_user_classification = False
+    else:
+        event.reconciled_source_lines = []
+        event.reconciled_matched_usd = 0.0
+        event.reconciled_unexplained_usd = round(
+            report.unexplained_transfer_usd, 2
+        )
+    return event

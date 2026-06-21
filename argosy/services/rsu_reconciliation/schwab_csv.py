@@ -43,6 +43,8 @@ class SchwabSaleLot:
     realized_gain_usd: float | None
     taxes_usd: float
     holding_period: str | None = None     # 'LONG TERM' | 'SHORT TERM' | None
+    grant_id: str | None = None           # Schwab GrantId on the RS sub-row
+    award_date: date | None = None        # AwardDate on the RS sub-row (often blank)
 
 
 @dataclass(frozen=True)
@@ -248,6 +250,8 @@ def parse_csv(path: Path) -> SchwabReport:
             realized = _money(row.get("RealizedGainLoss"))
             taxes = _money(row.get("Taxes"))
             holding = (row.get("HoldingPeriod") or "").strip() or None
+            grant_id = (row.get("GrantId") or "").strip() or None
+            award_date = _date(row.get("AwardDate"))
             pending_lots.append(SchwabSaleLot(
                 shares=shares,
                 sale_price_usd=_f0(sale_price),
@@ -257,6 +261,8 @@ def parse_csv(path: Path) -> SchwabReport:
                 realized_gain_usd=_f(realized),
                 taxes_usd=_f0(taxes),
                 holding_period=holding,
+                grant_id=grant_id,
+                award_date=award_date,
             ))
             continue
 

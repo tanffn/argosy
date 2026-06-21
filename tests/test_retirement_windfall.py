@@ -259,3 +259,192 @@ class TestAllocator:
             assert "agent fleet" in p.rationale.lower() or "synthesis" in p.rationale.lower()
         for p in plan.short_term:
             assert "watchlist" in p.rationale.lower() or "opportun" in p.rationale.lower()
+
+
+# ─── Transaction-based source attribution ────────────────────────────────
+
+
+def _live_shaped_schwab_csv() -> str:
+    return textwrap.dedent('''\
+"Date","Action","Symbol","Description","Quantity","FeesAndCommissions","DisbursementElection","Amount","Type","Shares","SalePrice","SubscriptionDate","SubscriptionFairMarketValue","PurchaseDate","PurchasePrice","PurchaseFairMarketValue","DispositionType","GrantId","VestDate","VestFairMarketValue","GrossProceeds","TotalCostBasis","RealizedGainLoss","HoldingPeriod","AwardDate","AwardId","FairMarketValuePrice","SharesSoldWithheldForTaxes","NetSharesDeposited","Taxes","TaxWithholdingMethod","SharesWithheld","SharesSold","CashRefund","CarryForward"
+"05/08/2026","Sale","NVDA","Share Sale","560","$2.60","","$121,005.00","","","","","","","","","","","","","","","","","","","","","","","","","","",""
+"","","","","","","","","RS","560","$216.085","","","","","","","182406","09/18/2024","$115.59","","$64,730.40","$56,277.20","LONG TERM","","","","","","","","","","",""
+''')
+
+
+@pytest.fixture()
+def _windfall_db():
+    from datetime import date
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.state.models import (
+        Base,
+        ExpenseSource,
+        ExpenseStatement,
+        ExpenseTransaction,
+        User,
+    )
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    s = Session()
+    s.add(User(id="ariel", email="a@example.com"))
+    s.add(ExpenseSource(
+        id=6, user_id="ariel", kind="bank", issuer="leumi",
+        external_id="44745200", display_name="Leumi USD account",
+    ))
+    s.add(ExpenseStatement(
+        id=1, user_id="ariel", source_id=6, file_id=1,
+        period_start=date(2026, 1, 1), period_end=date(2026, 12, 31),
+        parsed_total_nis=0, parser_name="leumi_usd", parser_version="1",
+        status="ok",
+    ))
+    s.add(ExpenseTransaction(
+        id=2220, user_id="ariel", statement_id=1, source_id=6,
+        occurred_on=date(2026, 6, 8), merchant_raw="העברת כספים",
+        merchant_normalized="העברת כספים", amount_orig=112229.99,
+        currency_orig="USD", direction="credit", tx_type="transfer",
+        raw_row_json="{}",
+    ))
+    s.commit()
+    yield s
+    s.close()
+
+
+def test_attribute_cash_source_upgrades_unclear(tmp_path: Path, _windfall_db) -> None:
+    """The proven flow: a windfall starts 'unclear' (TSV-diff neutralized),
+    then transaction-based attribution links the 560-NVDA sale → $112,230
+    Leumi transfer and upgrades it to a confident rsu_sale with a traceable
+    source line."""
+    from argosy.services.retirement.windfall_detector import (
+        WindfallEvent,
+        attribute_cash_source,
+    )
+
+    csv_path = tmp_path / "EquityAwardsCenter_Transactions.csv"
+    csv_path.write_text(_live_shaped_schwab_csv(), encoding="utf-8")
+
+    event = WindfallEvent(
+        detected_at=__import__("datetime").datetime.now(),
+        cash_delta_usd=112_229.99,
+        cash_delta_nis=0.0,
+        cash_delta_total_usd_equiv=112_229.99,
+        fx_usd_nis=3.0,
+        classified_source="unclear",
+        requires_user_classification=True,
+        source_tsv="cur.tsv",
+    )
+    event = attribute_cash_source(event, csv_path, _windfall_db, "ariel")
+
+    assert event.classified_source == "rsu_sale"
+    assert event.requires_user_classification is False
+    assert len(event.reconciled_source_lines) == 1
+    line = event.reconciled_source_lines[0]
+    assert "560 sh" in line
+    assert "112,230" in line
+    assert event.reconciled_matched_usd == pytest.approx(112229.99)
+    assert event.reconciled_unexplained_usd == pytest.approx(0.0)
+
+
+def test_attribute_cash_source_degrades_when_no_csv(tmp_path: Path, _windfall_db) -> None:
+    """Missing Schwab CSV → event stays 'unclear', no source lines, no raise."""
+    from argosy.services.retirement.windfall_detector import (
+        WindfallEvent,
+        attribute_cash_source,
+    )
+
+    missing = tmp_path / "does_not_exist.csv"
+    event = WindfallEvent(
+        detected_at=__import__("datetime").datetime.now(),
+        cash_delta_usd=112_229.99,
+        cash_delta_nis=0.0,
+        cash_delta_total_usd_equiv=112_229.99,
+        fx_usd_nis=3.0,
+        classified_source="unclear",
+        requires_user_classification=True,
+    )
+    event = attribute_cash_source(event, missing, _windfall_db, "ariel")
+    assert event.classified_source == "unclear"
+    assert event.reconciled_source_lines == []
+    # No CSV → nothing to reconcile against; no attribution, no residual.
+    assert event.reconciled_matched_usd == pytest.approx(0.0)
+    assert event.reconciled_unexplained_usd == pytest.approx(0.0)
+
+
+_SIM_PATH = Path(
+    "D:/Google Drive/Family/Finances/Portfolio/Resources/2026/Schwab/"
+    "Nvidia simulation Report.xlsx"
+)
+
+
+@pytest.mark.skipif(not _SIM_PATH.exists(), reason="simulation report not mounted")
+def test_windfall_surface_shows_grant_derived_102_tax(tmp_path: Path) -> None:
+    """When the sim report sits beside the Schwab CSV, the windfall source line
+    shows the grant-derived §102 capital/ordinary split — NOT a flat estimate."""
+    import shutil
+    from datetime import date
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from argosy.services.retirement.windfall_detector import (
+        WindfallEvent,
+        attribute_cash_source,
+    )
+    from argosy.state.models import (
+        Base, ExpenseSource, ExpenseStatement, ExpenseTransaction, User,
+    )
+
+    # Dedicated DB: the single 2026-05-18 transfer the 560-sh @ $216.09 sale
+    # produced (~$88K net under the §102 wire-calibrated model).
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    db.add(User(id="ariel", email="a@example.com"))
+    db.add(ExpenseSource(
+        id=6, user_id="ariel", kind="bank", issuer="leumi",
+        external_id="44745200", display_name="Leumi USD account",
+    ))
+    db.add(ExpenseStatement(
+        id=1, user_id="ariel", source_id=6, file_id=1,
+        period_start=date(2026, 1, 1), period_end=date(2026, 12, 31),
+        parsed_total_nis=0, parser_name="leumi_usd", parser_version="1",
+        status="ok",
+    ))
+    db.add(ExpenseTransaction(
+        id=2223, user_id="ariel", statement_id=1, source_id=6,
+        occurred_on=date(2026, 5, 18), merchant_raw="העברת כספים",
+        merchant_normalized="העברת כספים", amount_orig=88253.43,
+        currency_orig="USD", direction="credit", tx_type="transfer",
+        raw_row_json="{}",
+    ))
+    db.commit()
+
+    csv_path = tmp_path / "EquityAwardsCenter_Transactions.csv"
+    csv_path.write_text(_live_shaped_schwab_csv(), encoding="utf-8")
+    # Place the real sim report next to the CSV so it auto-resolves.
+    shutil.copy(_SIM_PATH, tmp_path / "Nvidia simulation Report.xlsx")
+
+    event = WindfallEvent(
+        detected_at=__import__("datetime").datetime.now(),
+        cash_delta_usd=88_253.43, cash_delta_nis=0.0,
+        cash_delta_total_usd_equiv=88_253.43, fx_usd_nis=3.0,
+        classified_source="unclear", requires_user_classification=True,
+        source_tsv="cur.tsv",
+    )
+    event = attribute_cash_source(event, csv_path, db, "ariel")
+    db.close()
+
+    assert event.classified_source == "rsu_sale"
+    assert len(event.reconciled_source_lines) == 1
+    line = event.reconciled_source_lines[0]
+    assert "§102" in line
+    assert "capital @25%" in line
+    assert "ordinary @50%" in line   # wire-calibrated effective ordinary rate
+    assert "flat estimate" not in line
+    # The ValueWithRationale rationale documents the §102 model.
+    vwr = event.to_value_with_rationale_dict()["reconciled_source"]
+    assert "§102" in vwr.rationale
