@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { SectionHeader } from "@/components/ui/section-header";
 import { Sparkline, type SparklineTone } from "@/components/ui/sparkline";
 import { StatusPill } from "@/components/ui/status-pill";
@@ -684,6 +685,15 @@ export default function Home() {
           aggregates. Read-only: accept/reject still happens on /plan. */}
       <ActionItemsWidget userId={USER_ID} />
 
+      {/* ============================================================
+          YOUR MONEY — finances-first. Net worth, concentration,
+          proposals, plan adherence, today's brief, NVDA sell pace
+          and the Argonaut paper-trading P&L all live above the fold.
+          These are what the household principal opens the app for;
+          pure ops/debug telemetry is demoted into the collapsed
+          "System health" section near the bottom.
+          ============================================================ */}
+
       {/* Compact metric row — now with sparklines. */}
       <section>
         <SectionHeader label="OVERVIEW" />
@@ -726,7 +736,150 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ARGONAUT card — chart only renders when we have ≥2 snapshots. */}
+      {/* PROPOSALS — flashes border on proposal.created/updated WS events. */}
+      <section>
+        <SectionHeader label="PROPOSALS" count={0} />
+        <FlashBorderBox flashKey={proposalFlash}>
+          <div className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-6 text-center text-xs text-muted-foreground font-mono">
+            No proposals queued
+          </div>
+        </FlashBorderBox>
+      </section>
+
+      {/* Plan + brief row */}
+      <section>
+        <SectionHeader label="PLAN" count={1} />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="font-mono">Plan adherence</CardTitle>
+                <StatusPill tone={planStatus.tone} mono>
+                  {planStatus.label}
+                </StatusPill>
+              </div>
+              <CardDescription>
+                {data.plan?.version_label
+                  ? `Latest: ${data.plan.version_label}`
+                  : "No plan imported yet."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground">
+              {planSummary?.overall_summary ||
+                "Run `argosy ingest plan <path>` then `argosy critique`."}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-mono">Phase 2 brief summary</CardTitle>
+              <CardDescription>
+                {data.brief?.run_at
+                  ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
+                  : "No legacy four-agent brief yet."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
+                {data.brief?.summary_text || "(no Phase 2 brief on file)"}
+              </pre>
+            </CardContent>
+          </Card>
+        </div>
+      </section>
+
+      {/* T4.5 — Daily brief.  The user sees it first thing in the
+          morning. When the T4.5 runner has produced a brief, render its
+          content_md; otherwise render a placeholder explaining when the
+          next brief will land. */}
+      <section>
+        <SectionHeader
+          label="TODAY'S BRIEF"
+          action={
+            data.brief?.brief_date ? (
+              <a
+                href="/briefs"
+                className="text-[11px] font-mono text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+              >
+                view all
+              </a>
+            ) : null
+          }
+        />
+        <Card>
+          <CardHeader>
+            <CardTitle className="font-mono">
+              {data.brief?.brief_date
+                ? `Brief — ${data.brief.brief_date}`
+                : "Daily brief will land tomorrow at 07:00"}
+            </CardTitle>
+            <CardDescription>
+              {data.brief?.run_at
+                ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
+                : "Set ARGOSY_DAILY_BRIEF_ENABLED=1 to enable the production scheduler, or run `argosy brief --user-id ariel` for a one-shot."}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {data.brief?.content_md ? (
+              <pre className="whitespace-pre-wrap text-xs font-mono text-foreground tabular-nums">
+                {data.brief.content_md}
+              </pre>
+            ) : data.brief?.summary_text ? (
+              <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
+                {data.brief.summary_text}
+              </pre>
+            ) : (
+              <p className="text-xs font-mono text-muted-foreground">
+                No brief on file yet. The runner fires daily at 07:00
+                Asia/Jerusalem when enabled.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </section>
+
+      {/* NVDA PACE tile — finance-relevant (sell-down schedule), so it
+          stays in YOUR MONEY rather than the demoted System-health block. */}
+      <section>
+        <SectionHeader
+          label="NVDA PACE"
+          action={
+            nvdaStatus === "neutral" ? (
+              <StatusPill tone="warning" mono>
+                —
+              </StatusPill>
+            ) : (
+              <StatusPill tone={nvdaOnPace ? "success" : "warning"} mono>
+                {nvdaOnPace ? "ON PACE" : "BEHIND PACE"}
+              </StatusPill>
+            )
+          }
+        />
+        <div
+          className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-2"
+          title={nvdaPaceTooltip}
+        >
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div className="font-mono text-sm tabular-nums">
+              {nvdaSold.toLocaleString()} / {NVDA_TARGET_2026.toLocaleString()}{" "}
+              shares sold YTD
+            </div>
+            <div className="text-[11px] text-muted-foreground tabular-nums">
+              {nvdaPctSold.toFixed(1)}% of target ·{" "}
+              {pctOfYearElapsed().toFixed(0)}% of year elapsed
+              {nvdaPaceTooltip ? ` · ${nvdaPaceTooltip}` : ""}
+            </div>
+          </div>
+          <ProgressBar
+            pct={Math.max(0, Math.min(100, nvdaPctSold))}
+            tone={nvdaOnPace ? "success" : "warning"}
+          />
+        </div>
+      </section>
+
+      {/* ARGONAUT card — paper-trading P&L. Finance-relevant side
+          experiment, kept in YOUR MONEY. Chart only renders when we
+          have ≥2 snapshots. */}
       <section>
         <SectionHeader
           label="ARGONAUT"
@@ -763,6 +916,19 @@ export default function Home() {
         </div>
       </section>
 
+      {/* ============================================================
+          SYSTEM HEALTH — demoted ops/debug telemetry. Collapsed by
+          default and parked at the bottom: engine/kill-switch/spend/DB
+          tiles, cadence ticks, domain-KB freshness, and the fleet
+          decision-activity accordion. Children are lazy-mounted by
+          <CollapsibleSection/> (only rendered while expanded) so the
+          self-fetching DecisionAccordion doesn't fire its requests
+          until the user opens this section.
+          ============================================================ */}
+      <CollapsibleSection
+        title="System health"
+        summary={`engine ${engineActive ? "active" : "down"} · DB ${data.dbSize ?? "—"}`}
+      >
       {/* SYSTEM tile row */}
       <section>
         <SectionHeader label="SYSTEM" />
@@ -875,44 +1041,6 @@ export default function Home() {
         </div>
       </section>
 
-      {/* NVDA PACE tile */}
-      <section>
-        <SectionHeader
-          label="NVDA PACE"
-          action={
-            nvdaStatus === "neutral" ? (
-              <StatusPill tone="warning" mono>
-                —
-              </StatusPill>
-            ) : (
-              <StatusPill tone={nvdaOnPace ? "success" : "warning"} mono>
-                {nvdaOnPace ? "ON PACE" : "BEHIND PACE"}
-              </StatusPill>
-            )
-          }
-        />
-        <div
-          className="rounded-lg border border-border bg-card px-4 py-3 flex flex-col gap-2"
-          title={nvdaPaceTooltip}
-        >
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div className="font-mono text-sm tabular-nums">
-              {nvdaSold.toLocaleString()} / {NVDA_TARGET_2026.toLocaleString()}{" "}
-              shares sold YTD
-            </div>
-            <div className="text-[11px] text-muted-foreground tabular-nums">
-              {nvdaPctSold.toFixed(1)}% of target ·{" "}
-              {pctOfYearElapsed().toFixed(0)}% of year elapsed
-              {nvdaPaceTooltip ? ` · ${nvdaPaceTooltip}` : ""}
-            </div>
-          </div>
-          <ProgressBar
-            pct={Math.max(0, Math.min(100, nvdaPctSold))}
-            tone={nvdaOnPace ? "success" : "warning"}
-          />
-        </div>
-      </section>
-
       {/* DOMAIN KB FRESHNESS tile */}
       <section>
         <SectionHeader label="DOMAIN KB FRESHNESS" />
@@ -952,115 +1080,17 @@ export default function Home() {
         </div>
       </section>
 
-      {/* T4.5 — Daily brief lands at the top of the page so the user
-          sees it first thing in the morning. When the T4.5 runner has
-          produced a brief, render its content_md; otherwise render a
-          placeholder explaining when the next brief will land. */}
-      <section>
-        <SectionHeader
-          label="TODAY'S BRIEF"
-          action={
-            data.brief?.brief_date ? (
-              <a
-                href="/briefs"
-                className="text-[11px] font-mono text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
-              >
-                view all
-              </a>
-            ) : null
-          }
-        />
-        <Card>
-          <CardHeader>
-            <CardTitle className="font-mono">
-              {data.brief?.brief_date
-                ? `Brief — ${data.brief.brief_date}`
-                : "Daily brief will land tomorrow at 07:00"}
-            </CardTitle>
-            <CardDescription>
-              {data.brief?.run_at
-                ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
-                : "Set ARGOSY_DAILY_BRIEF_ENABLED=1 to enable the production scheduler, or run `argosy brief --user-id ariel` for a one-shot."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {data.brief?.content_md ? (
-              <pre className="whitespace-pre-wrap text-xs font-mono text-foreground tabular-nums">
-                {data.brief.content_md}
-              </pre>
-            ) : data.brief?.summary_text ? (
-              <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
-                {data.brief.summary_text}
-              </pre>
-            ) : (
-              <p className="text-xs font-mono text-muted-foreground">
-                No brief on file yet. The runner fires daily at 07:00
-                Asia/Jerusalem when enabled.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </section>
-
-      {/* Plan + brief row */}
-      <section>
-        <SectionHeader label="PLAN" count={1} />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="font-mono">Plan adherence</CardTitle>
-                <StatusPill tone={planStatus.tone} mono>
-                  {planStatus.label}
-                </StatusPill>
-              </div>
-              <CardDescription>
-                {data.plan?.version_label
-                  ? `Latest: ${data.plan.version_label}`
-                  : "No plan imported yet."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="text-sm text-muted-foreground">
-              {planSummary?.overall_summary ||
-                "Run `argosy ingest plan <path>` then `argosy critique`."}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="font-mono">Phase 2 brief summary</CardTitle>
-              <CardDescription>
-                {data.brief?.run_at
-                  ? `Generated ${new Date(data.brief.run_at).toLocaleString()}`
-                  : "No legacy four-agent brief yet."}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <pre className="whitespace-pre-wrap text-xs font-mono text-muted-foreground tabular-nums">
-                {data.brief?.summary_text || "(no Phase 2 brief on file)"}
-              </pre>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
-
-      {/* Proposals — flashes border on proposal.created/updated WS events. */}
-      <section>
-        <SectionHeader label="PROPOSALS" count={0} />
-        <FlashBorderBox flashKey={proposalFlash}>
-          <div className="rounded-lg border border-dashed border-border bg-card/40 px-4 py-6 text-center text-xs text-muted-foreground font-mono">
-            No proposals queued
-          </div>
-        </FlashBorderBox>
-      </section>
-
-      {/* ACTIVITY — decision-grouped accordion with live WS cascade. */}
+      {/* ACTIVITY — fleet decision-grouped accordion with live WS
+          cascade. Internal fleet telemetry, so it lives inside the
+          collapsed System-health block and only mounts (and fires its
+          own fetch) when the section is expanded. */}
       <section>
         <SectionHeader label="ACTIVITY" />
         <FlashBorderBox flashKey={0}>
           <DecisionAccordion userId={USER_ID} />
         </FlashBorderBox>
       </section>
+      </CollapsibleSection>
 
       {data.error && (
         <p className="text-sm text-error font-mono">{data.error}</p>
