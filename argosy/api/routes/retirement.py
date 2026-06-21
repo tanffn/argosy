@@ -1578,13 +1578,17 @@ def get_upcoming_vests(
 def list_monitor_flags(user_id: str, db: Session = Depends(get_db)) -> list[dict]:
     """List active monitor flags for ``user_id`` (Home Red-Flag Strip).
 
-    Active = unacknowledged AND unexpired. Sprint commit #17 consumes
-    this from the UI. Returns rows directly from `monitor_flags` so the
-    `id` (needed for acknowledge) + `surfaced_at` + `expires_at` are
-    all present.
+    Active = status='active' AND unacknowledged AND unexpired. Returns rows
+    directly from `monitor_flags` so the `id` (needed for acknowledge) +
+    `surfaced_at` + `expires_at` are all present, newest-first.
 
-    Filters: kind IN drift/mc_regression/macro_shift (whatever's
-    persisted), acknowledged_at IS NULL, expires_at IS NULL OR > now.
+    The `status` filter (migration 0072) is what keeps the strip clean:
+    a fresh producer run marks its PRIOR same-scope observations
+    `superseded`, so stale/duplicate cross-run flags never surface even
+    though they're unacknowledged + unexpired.
+
+    Filters: status='active', acknowledged_at IS NULL, expires_at IS NULL
+    OR > now. MC baseline/no-fire anchor rows (payload fired!=True) drop.
 
     For mc_regression rows the payload may have `fired=False`
     (baseline + no-fire anchors); those are dropped here — only
@@ -1596,6 +1600,7 @@ def list_monitor_flags(user_id: str, db: Session = Depends(get_db)) -> list[dict
     stmt = (
         select(MonitorFlag)
         .where(MonitorFlag.user_id == user_id)
+        .where(MonitorFlag.status == "active")
         .where(MonitorFlag.acknowledged_at.is_(None))
         .order_by(MonitorFlag.surfaced_at.desc())
     )
@@ -1651,6 +1656,10 @@ def acknowledge_monitor_flag(
         raise HTTPException(status_code=404, detail="monitor flag not found")
     if flag.acknowledged_at is None:
         flag.acknowledged_at = datetime.now(timezone.utc)
+        # Keep ``status`` in lockstep so the active-only query (which now
+        # filters on status) hides dismissed flags. A flag the user
+        # dismissed is no longer 'active' regardless of how it was reached.
+        flag.status = "acknowledged"
         db.commit()
     # Normalize tz — SQLite drops tzinfo on read so the second
     # idempotent call would otherwise return a naive datetime.

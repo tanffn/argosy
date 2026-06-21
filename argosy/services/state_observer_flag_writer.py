@@ -224,6 +224,11 @@ class WriteSummary:
         (set ``acknowledged_at = now``) to free the partial-unique
         slot before a fresh insert. Each tombstone PRECEDES a paired
         write — so this count is bounded above by ``written_count``.
+      superseded_count: number of PRIOR active ``state_observer_*`` flags
+        this run marked ``superseded`` because their dedup_key was not in
+        the fresh observation set (cross-run replacement). Orthogonal to
+        the per-candidate counters — it counts OTHER rows, not this run's
+        candidates.
       errors: list of (primary_field, error_message) pairs for
         candidates that failed. The batch always completes; failures
         don't propagate.
@@ -235,6 +240,7 @@ class WriteSummary:
     written_count: int = 0
     deduplicated_count: int = 0
     tombstoned_count: int = 0
+    superseded_count: int = 0
     errors: list[tuple[str, str]] = field(default_factory=list)
     written_flag_ids: list[int] = field(default_factory=list)
 
@@ -244,6 +250,7 @@ class WriteSummary:
             "written_count": self.written_count,
             "deduplicated_count": self.deduplicated_count,
             "tombstoned_count": self.tombstoned_count,
+            "superseded_count": self.superseded_count,
             "errors": [
                 {"primary_field": pf, "error": err} for pf, err in self.errors
             ],
@@ -321,6 +328,17 @@ def write_observer_flags(
     errors: list[tuple[str, str]] = []
     written_flag_ids: list[int] = []
 
+    # Dedup-within-run: a single observer pass must never write the same
+    # (kind, primary_field) topic twice (the LLM occasionally emits two
+    # candidates for one field at different buckets — only the first wins
+    # within the pass; the dedup_key + DB index handle cross-run dedup).
+    seen_topics: set[tuple[str, str]] = set()
+    # Producer-scope supersession (root fix): collect the dedup_keys this
+    # run touched so we can mark every PRIOR active state_observer flag that
+    # is NOT part of this fresh observation set as ``superseded``. This is
+    # what stops cross-run bucket/field-index jitter from accumulating.
+    run_dedup_keys: set[str] = set()
+
     for cand in candidates:
         primary_field = getattr(cand, "primary_field", None) or "<unknown>"
         try:
@@ -336,6 +354,22 @@ def write_observer_flags(
                 primary_field=primary_field,
                 deviation_bucket=spec_bucket,
             )
+
+            # --- Dedup-within-run by (kind, primary_field) -----------
+            # The dedup_key embeds the deviation_bucket, so two candidates
+            # for the SAME field at different buckets hash to DIFFERENT
+            # dedup_keys and would both insert. Within one pass that is
+            # noise — keep the first, drop the rest. Cross-run dedup stays
+            # the dedup_key's job. We still record the kept key so the
+            # producer-scope supersession below treats it as part of the
+            # fresh set.
+            topic = (kind, primary_field)
+            if topic in seen_topics:
+                deduplicated_count += 1
+                run_dedup_keys.add(dedup_key)
+                continue
+            seen_topics.add(topic)
+            run_dedup_keys.add(dedup_key)
 
             # --- Branch order is load-bearing (§4.3) -----------------
             # 1. ACTIVE (unack + unexpired) peer    → skip (branch a)
@@ -411,6 +445,7 @@ def write_observer_flags(
                 surfaced_at=now,
                 expires_at=expires_at,
                 dedup_key=dedup_key,
+                status="active",
             )
             session.add(row)
             try:
@@ -517,10 +552,49 @@ def write_observer_flags(
                 },
             )
 
+    # --- Producer-scope supersession (root fix) ----------------------
+    # A fresh observer run REPLACES its prior observation set: any PRIOR
+    # active ``state_observer_*`` flag whose dedup_key was NOT refreshed by
+    # this run is now stale (the observation either resolved or its
+    # bucket/field-index jittered to a new key) -> mark ``superseded``.
+    # This is what collapses the cross-run accumulation. Scoped STRICTLY to
+    # state_observer kinds so we never touch thesis_monitor / alpha /
+    # mc_regression rows (different producers). Best-effort: a failure here
+    # must never break the flag-write batch, so the count is advisory.
+    #
+    # Guard: only run when this pass actually processed candidates
+    # (written OR deduplicated OR errored). An empty candidate list (LLM
+    # returned nothing, or the whole batch crashed pre-loop) must NOT wipe
+    # the live strip — absence of new observations is not evidence the old
+    # ones resolved.
+    superseded_count = 0
+    processed_any = bool(run_dedup_keys) or written_count or deduplicated_count
+    if processed_any:
+        try:
+            superseded_count = _supersede_stale_producer_flags(
+                session,
+                user_id=user_id,
+                kept_dedup_keys=run_dedup_keys,
+                now=now,
+            )
+            if superseded_count:
+                session.commit()
+        except Exception:  # noqa: BLE001 — never break the batch
+            try:
+                session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            _log.warning(
+                "state_observer_flag_writer.supersede_failed",
+                extra={"user_id": user_id},
+                exc_info=True,
+            )
+
     return WriteSummary(
         written_count=written_count,
         deduplicated_count=deduplicated_count,
         tombstoned_count=tombstoned_count,
+        superseded_count=superseded_count,
         errors=errors,
         written_flag_ids=written_flag_ids,
     )
@@ -834,6 +908,107 @@ def _maybe_run_action_proposer_safe(
         )
 
 
+#: Kinds in the state-observer producer scope. Supersession is confined to
+#: these so a fresh observer run never touches thesis_monitor / alpha_report
+#: / mc_regression / allocation_drift / macro_shift rows (other producers).
+_STATE_OBSERVER_KIND_PREFIX: str = "state_observer_"
+
+
+def _supersede_stale_producer_flags(
+    session: "Session",
+    *,
+    user_id: str,
+    kept_dedup_keys: set[str],
+    now: datetime,
+) -> int:
+    """Mark prior active ``state_observer_*`` flags NOT in this run as superseded.
+
+    A fresh observer run REPLACES its observation set. Any currently-active
+    (``status='active'`` AND ``acknowledged_at IS NULL``) state_observer flag
+    whose ``dedup_key`` was not refreshed by this run is stale and gets
+    ``status='superseded'``. Confined to the ``state_observer_`` kind prefix
+    so other producers' flags are untouched. Rows the user already
+    acknowledged are left alone (the user dismissed them deliberately).
+
+    Returns the number of rows superseded.
+    """
+    stmt = (
+        update(MonitorFlag)
+        .where(MonitorFlag.user_id == user_id)
+        .where(MonitorFlag.kind.like(f"{_STATE_OBSERVER_KIND_PREFIX}%"))
+        .where(MonitorFlag.status == "active")
+        .where(MonitorFlag.acknowledged_at.is_(None))
+        .values(status="superseded")
+    )
+    if kept_dedup_keys:
+        # Don't supersede the rows this run just (re)affirmed.
+        stmt = stmt.where(MonitorFlag.dedup_key.notin_(list(kept_dedup_keys)))
+    result = session.execute(stmt)
+    return int(result.rowcount or 0)
+
+
+def supersede_plan_assumption_flags(
+    session: "Session",
+    user_id: str,
+    *,
+    current_plan_label: str | None = None,
+    commit: bool = True,
+) -> int:
+    """Supersede active ``state_observer_plan_assumption_observation`` flags.
+
+    Called from the plan-promotion (``/accept``) flow: once a plan is
+    promoted to ``role='current'``, any active plan-assumption observation
+    is about a now-superseded plan label (e.g. the fm-rejected draft that
+    was the baseline when the observer last ran). It is stale by
+    definition and must not keep surfacing on the Red-Flag Strip.
+
+    When ``current_plan_label`` is provided, a flag is left ALONE iff its
+    payload's ``plan_version_label`` (or the rationale) references that
+    exact current label — so a legitimate observation about the freshly-
+    promoted plan survives. When the label can't be matched, supersede
+    (fail-safe: a plan-assumption flag that predates the just-promoted
+    plan is stale).
+
+    Best-effort and scoped to a single kind; never raises into the caller.
+    Returns the number of rows superseded.
+    """
+    try:
+        stmt = (
+            select(MonitorFlag)
+            .where(MonitorFlag.user_id == user_id)
+            .where(
+                MonitorFlag.kind
+                == "state_observer_plan_assumption_observation"
+            )
+            .where(MonitorFlag.status == "active")
+            .where(MonitorFlag.acknowledged_at.is_(None))
+        )
+        rows = list(session.execute(stmt).scalars())
+        superseded = 0
+        for r in rows:
+            if current_plan_label:
+                blob = (r.payload or "")
+                # Keep a flag that is genuinely about the current plan.
+                if current_plan_label in blob:
+                    continue
+            r.status = "superseded"
+            superseded += 1
+        if superseded and commit:
+            session.commit()
+        return superseded
+    except Exception:  # noqa: BLE001 — must never break the /accept flow
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        _log.warning(
+            "state_observer_flag_writer.supersede_plan_assumption_failed",
+            extra={"user_id": user_id},
+            exc_info=True,
+        )
+        return 0
+
+
 def _tombstone_expired_peers(
     session: "Session",
     *,
@@ -904,6 +1079,7 @@ def _active_peer_exists(
         .where(MonitorFlag.user_id == user_id)
         .where(MonitorFlag.dedup_key == dedup_key)
         .where(MonitorFlag.acknowledged_at.is_(None))
+        .where(MonitorFlag.status == "active")
         .where(
             (MonitorFlag.expires_at.is_(None))
             | (MonitorFlag.expires_at > n)
@@ -1060,4 +1236,6 @@ __all__ = [
     "build_dedup_key",
     "infer_kind_from_field",
     "write_observer_flags",
+    "supersede_plan_assumption_flags",
+    "_supersede_stale_producer_flags",
 ]

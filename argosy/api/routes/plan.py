@@ -3423,6 +3423,21 @@ def post_draft_accept(
     db.commit()
     invalidate_home_brief(user_id)
 
+    # Promotion makes any active plan-assumption observation stale — it was
+    # about the prior baseline (e.g. an fm-rejected draft). Supersede those
+    # so the Home Red-Flag Strip never shows a false "current plan was
+    # rejected" flag after a clean promotion. Best-effort; never blocks.
+    try:
+        from argosy.services.state_observer_flag_writer import (
+            supersede_plan_assumption_flags,
+        )
+
+        supersede_plan_assumption_flags(
+            db, user_id, current_plan_label=getattr(pv, "version_label", None),
+        )
+    except Exception:  # noqa: BLE001 — promotion must never fail on this
+        pass
+
     # Wave 8 v2.4.2 — auto-regenerate the bilingual plan narrative
     # against the freshly-accepted plan. Drops the stale cache entry
     # (keyed on the prior plan_version_id) and kicks a background

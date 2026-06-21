@@ -240,10 +240,33 @@ def write_thesis_flag(
         "confidence": str(getattr(assessment, "confidence", "")),
         "source": "thesis_monitor",
     }
+    # Producer-scope supersession (same-ticker only): a fresh thesis verdict
+    # for TICKER replaces any prior active thesis flag for the SAME ticker
+    # under a DIFFERENT status (e.g. a weakened→broken transition leaves a
+    # stale 'weakened' row that should no longer surface). Confined to this
+    # ticker so we never touch OTHER tickers' thesis flags or any
+    # state_observer / alpha / mc rows (different producers). Best-effort.
+    try:
+        from sqlalchemy import update as _sa_update
+
+        session.execute(
+            _sa_update(MonitorFlag)
+            .where(MonitorFlag.user_id == user_id)
+            .where(MonitorFlag.kind.like("thesis_monitor_%"))
+            .where(MonitorFlag.status == "active")
+            .where(MonitorFlag.acknowledged_at.is_(None))
+            .where(MonitorFlag.dedup_key != dedup_key)
+            .where(MonitorFlag.payload.like(f'%"ticker": "{ticker}"%'))
+            .values(status="superseded")
+        )
+    except Exception:  # noqa: BLE001 — supersession must never block the write
+        session.rollback()
+
     row = MonitorFlag(
         user_id=user_id, kind=kind, severity=severity,
         payload=json.dumps(payload), surfaced_at=now,
         expires_at=now + timedelta(days=_FLAG_TTL_DAYS), dedup_key=dedup_key,
+        status="active",
     )
     session.add(row)
     session.commit()

@@ -2280,6 +2280,22 @@ class MonitorFlag(Base):
     # index that SQLAlchemy's column-level ``index=True`` cannot express.
     dedup_key: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Lifecycle status (migration 0072). One of ``active`` / ``superseded`` /
+    # ``acknowledged``:
+    #   * ``active``       — the flag is live and surfaces on the Red-Flag Strip.
+    #   * ``superseded``   — a later run of the SAME producer (state_observer /
+    #                        thesis_monitor / plan-promotion) replaced this
+    #                        observation; it no longer reflects current state.
+    #   * ``acknowledged`` — the user dismissed it from the strip (kept in sync
+    #                        with ``acknowledged_at`` for backward compat).
+    # The /monitor/flags query returns ONLY ``status='active'`` rows. Prior to
+    # 0072 the strip filtered on ``acknowledged_at IS NULL`` alone, which let
+    # stale cross-run observations accumulate; ``status`` gives the producer a
+    # supersede primitive so a fresh run REPLACES its prior set.
+    status: Mapped[str] = mapped_column(
+        String(16), default="active", server_default="active", nullable=False
+    )
+
     __table_args__ = (
         Index(
             "ix_monitor_flags_user_active",

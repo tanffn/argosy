@@ -858,7 +858,11 @@ def test_migration_applied_dedup_index_rejects_dup_at_db_level(
     db_path = sync_url.replace("sqlite:///", "")
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     cfg = Config("alembic.ini")
-    command.upgrade(cfg, "0049_state_snapshots_and_monitor_flags")
+    # Upgrade to HEAD: the MonitorFlag ORM model carries the ``status``
+    # column (migration 0072) which the writer now sets, so the schema must
+    # be at least 0072. Running to head keeps this "real schema" integration
+    # test aligned with production rather than pinned to a stale revision.
+    command.upgrade(cfg, "head")
 
     engine = sa.create_engine(
         sync_url, connect_args={"check_same_thread": False},
