@@ -513,6 +513,43 @@ export interface UnallocatedCashProposalDTO {
   }>;
 }
 
+// Holistic rebalance review — composed whole-portfolio trim/sell→buy proposal,
+// thesis-gated + estate-gated. Mirrors argosy/services/holistic_rebalance_review.py
+// (RebalanceReview + RebalanceLeg dataclasses; serialized via to_dict()). The
+// POST /api/portfolio/rebalance-review route returns { review, proposal_written }.
+export interface RebalanceLeg {
+  action: string; // TRIM | SELL | BUY
+  ticker: string;
+  asset_class: string; // coarse class: equity | bonds | cash
+  from_pct: number | null;
+  to_pct: number | null;
+  amount_usd: number;
+  gate_reason: string;
+  thesis_conviction: string | null;
+  cited_flags: string[];
+  notes: string[];
+}
+
+export interface RebalanceReviewDTO {
+  status: string; // ok | cannot_review
+  summary: string;
+  rationale_md: string;
+  legs: RebalanceLeg[];
+  net_cash_delta_usd: number; // +ve = net buy (cash needed); -ve = net sell
+  severity: string; // info | warning | critical
+  cannot_review_reason: string | null;
+  dropped_buy_candidates: Array<{
+    ticker: string;
+    asset_class: string;
+    reason: string;
+  }>;
+}
+
+export interface RebalanceReviewResponse {
+  review: RebalanceReviewDTO;
+  proposal_written: boolean;
+}
+
 // Deploy Cash — risk-tiered, estate-annotated BUY list for a net-of-tax
 // cash amount. Mirrors argosy/services/contracts.py:
 // EstateTagDTO / DeploymentLineDTO / DeploymentTierDTO / DeploymentPlanDTO
@@ -2118,6 +2155,20 @@ export const api = {
     getJSON<AllocationBreakdownDTO>(
       `/api/portfolio/allocation-breakdown?user_id=${encodeURIComponent(userId)}` +
         (excludeNvda ? "&exclude_nvda=true" : ""),
+    ),
+  // Holistic, plan-driven, news-supported rebalance/sell review. Deterministic
+  // (no LLM): trims over-target sleeves to fund under-target ones, thesis-gated,
+  // estate-gated on the buy side. Proposal-only — NEVER executes. By default also
+  // persists a `rebalance` ActionProposal (proposal_written reflects whether a
+  // row was written). See argosy/services/holistic_rebalance_review.py.
+  portfolioRebalanceReview: (
+    userId: string,
+    writeProposal: boolean = true,
+  ): Promise<RebalanceReviewResponse> =>
+    postJSON<RebalanceReviewResponse>(
+      `/api/portfolio/rebalance-review?user_id=${encodeURIComponent(userId)}` +
+        (writeProposal ? "" : "&write_proposal=false"),
+      {},
     ),
   portfolioTrendRadar: (limit: number = 15): Promise<TrendRadarDTO> =>
     getJSON<TrendRadarDTO>(`/api/portfolio/trend-radar?limit=${limit}`),

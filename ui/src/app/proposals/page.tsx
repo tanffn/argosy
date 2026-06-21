@@ -36,6 +36,7 @@ import { CustomizeModal } from "@/components/proposals/CustomizeModal";
 import { DeferModal } from "@/components/proposals/DeferModal";
 import { RejectModal } from "@/components/proposals/RejectModal";
 import { DeployCashCard } from "@/components/proposals/DeployCashCard";
+import { RebalanceReviewCard } from "@/components/proposals/RebalanceReviewCard";
 import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { TrendRadarCard } from "@/components/portfolio/trend-radar-card";
 import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monitor-card";
@@ -953,7 +954,16 @@ export default function ProposalsPage() {
           watchlist / plan-assumption nudges, not buy/sell orders). Moved to the
           END and collapsed by default: it's a low-urgency backlog, so the
           action-oriented surfaces (Ask the team, allocation, discovery) lead. */}
-      <section id="action-proposals" className="scroll-mt-6">
+      <section id="action-proposals" className="scroll-mt-6 flex flex-col gap-4">
+        {/* On-demand holistic rebalance/sell review — produces a `rebalance`
+            ActionProposal that renders in the list below. Kept above the
+            collapsible list so the trigger is always visible. */}
+        <div id="rebalance-review" className="scroll-mt-6">
+          <RebalanceReviewCard
+            userId={USER_ID}
+            onReviewed={refreshActionProposals}
+          />
+        </div>
         <CollapsibleSection
           title="Action proposals"
           summary={

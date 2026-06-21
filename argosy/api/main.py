@@ -526,6 +526,29 @@ def create_app() -> FastAPI:
                 error_type=type(exc).__name__,
             )
 
+        # HolisticRebalanceReviewLoop — quarterly whole-portfolio rebalance
+        # review. 10:00 IDT on the 1st of Jan/Apr/Jul/Oct, source_kind='monitor'.
+        # Deterministic composer; writes a proposed-only 'rebalance' proposal
+        # with built-in dedup/cooldown only when drift is material.
+        try:
+            from argosy.orchestrator.loops.holistic_rebalance_review import (  # noqa: PLC0415
+                HolisticRebalanceReviewLoop,
+                holistic_rebalance_review_metadata,
+            )
+
+            rebalance_loop = HolisticRebalanceReviewLoop(enabled=True, user_id="ariel")
+            scheduler.register_loop(rebalance_loop)
+            registry.register(
+                job=rebalance_loop,
+                metadata=holistic_rebalance_review_metadata(),
+            )
+            log.info("scheduler.holistic_rebalance_review_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.holistic_rebalance_review_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # Sprint C commit #4 — PredictionsEvaluatorLoop. Gated on
         # ``cadences.predictions_evaluator.enabled`` (default True).
         # 03:30 IDT daily alongside job_runs_retention — both run

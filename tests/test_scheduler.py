@@ -221,6 +221,13 @@ def test_predictions_evaluator_registered_by_default(engine: None) -> None:
     assert "predictions_evaluator" in scheduler._loops  # type: ignore[attr-defined]
 
 
+def test_holistic_rebalance_review_registered_by_default(engine: None) -> None:
+    """register_default_loops() includes the quarterly holistic rebalance review."""
+    scheduler = Scheduler(user_id="ariel")
+    scheduler.register_default_loops()
+    assert "holistic_rebalance_review" in scheduler._loops  # type: ignore[attr-defined]
+
+
 def test_state_observer_disabled_by_config(engine: None) -> None:
     """state_observer_daily is absent when cadences.state_observer.enabled=False."""
     from argosy.agent_settings import AgentSettings, CadencesBlock
