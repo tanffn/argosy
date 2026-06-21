@@ -349,3 +349,17 @@ def test_fallback_legs_do_not_overtrim_the_class():
     assert total_trim <= overage_usd + 0.5, (
         f"fallback legs over-trimmed: {total_trim} > overage {overage_usd}"
     )
+
+
+# --- (h) alpha_report_caution ticker matching from caution text -------------
+def test_tickers_in_text_matches_known_whole_words_only():
+    from argosy.services.holistic_rebalance_review import _tickers_in_text
+    known = {"NVDA", "GOOG", "AI", "MSFT"}
+    text = "Caution on NVDA after the print; GOOG steady. Watch the AI theme."
+    got = _tickers_in_text(text, known)
+    assert got == ["AI", "GOOG", "NVDA"]  # sorted, whole-word, MSFT absent
+    # whole-word: 'AID' must NOT match the 'AI' ticker
+    assert _tickers_in_text("the company gave first AID", {"AI"}) == []
+    # empty inputs
+    assert _tickers_in_text("", known) == []
+    assert _tickers_in_text("NVDA", set()) == []

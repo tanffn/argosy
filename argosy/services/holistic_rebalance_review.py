@@ -639,7 +639,22 @@ def run_holistic_rebalance_review(
     verdicts = _load_position_verdicts(session, user_id, pv, snapshot)
 
     # --- active thesis / news flags (per ticker) ----------------------------
-    thesis_flags = _load_active_thesis_flags(session, user_id, now=now)
+    # Known tickers (held + plan instruments) let alpha_report_caution flags —
+    # whose payload carries no clean ticker — be matched by scanning the caution
+    # text, so the NEWS_CAUTION gate can fire on a held name.
+    known_tickers = {
+        (getattr(v, "ticker", "") or "").strip().upper() for v in verdicts
+    }
+    if doc is not None:
+        for cls in getattr(doc, "classes", []) or []:
+            for ins in getattr(cls, "instruments", []) or []:
+                sym = (getattr(ins, "symbol", "") or "").strip().upper()
+                if sym:
+                    known_tickers.add(sym)
+    known_tickers.discard("")
+    thesis_flags = _load_active_thesis_flags(
+        session, user_id, now=now, known_tickers=known_tickers,
+    )
 
     review = compose_rebalance_review(
         doc=doc,
@@ -715,9 +730,34 @@ def _load_position_verdicts(session: Any, user_id: str, pv: Any, snapshot: Any) 
         return []
 
 
-def _load_active_thesis_flags(session: Any, user_id: str, *, now: datetime) -> list[dict[str, Any]]:
+def _tickers_in_text(text: str, known: "set[str] | frozenset[str]") -> list[str]:
+    """Known tickers appearing as whole-word uppercase tokens in ``text``.
+
+    Used to attach a ticker to an ``alpha_report_caution`` flag whose payload
+    carries none. Whole-word match (``\\bTICKER\\b``) over the uppercased text
+    avoids substring false positives; restricting to KNOWN (held/plan) tickers
+    avoids matching arbitrary capitalized words. Deterministic (sorted)."""
+    if not text or not known:
+        return []
+    import re
+
+    up = text.upper()
+    return [tk for tk in sorted(known) if re.search(rf"\b{re.escape(tk)}\b", up)]
+
+
+def _load_active_thesis_flags(
+    session: Any, user_id: str, *, now: datetime,
+    known_tickers: "set[str] | frozenset[str]" = frozenset(),
+) -> list[dict[str, Any]]:
     """Query active, unexpired thesis_monitor_* / alpha_report_caution flags and
-    extract the ticker from each payload. Returns a list of normalized dicts."""
+    extract the ticker from each payload. Returns a list of normalized dicts.
+
+    thesis_monitor_* payloads carry a clean ``ticker``. alpha_report_caution
+    payloads do not, so when ``known_tickers`` is supplied the caution text is
+    scanned for held/plan tickers and one flag dict is emitted per matched
+    ticker (a caution naming several held names gates each). A caution that
+    names no known ticker is surfaced with an empty ticker (won't match a leg),
+    preserving the prior best-effort behavior."""
     from sqlalchemy import and_, or_, select
 
     from argosy.state.models import MonitorFlag
@@ -753,16 +793,27 @@ def _load_active_thesis_flags(session: Any, user_id: str, *, now: datetime) -> l
         except (TypeError, ValueError):
             payload = {}
         ticker = (payload.get("ticker") or "").strip().upper()
-        # alpha_report_caution payloads don't carry a clean ticker — pull from
-        # the caution text by scanning held tickers later isn't this layer's
-        # job; we surface whatever ticker the payload exposes (thesis_monitor
-        # always sets it). A caution without a ticker simply won't match a leg.
-        out.append({
+        base = {
             "kind": r.kind,
-            "ticker": ticker,
             "severity": r.severity,
             "dedup_key": r.dedup_key or r.kind,
-        })
+        }
+        if ticker:
+            # thesis_monitor_* — payload carries the ticker directly.
+            out.append({**base, "ticker": ticker})
+            continue
+        # alpha_report_caution (no payload ticker): scan the caution text for
+        # held/plan tickers so the NEWS_CAUTION gate can fire. Emit one dict per
+        # matched ticker; fall back to an empty ticker (won't match) when none.
+        text = " ".join(
+            str(payload.get(k) or "") for k in ("caution", "summary", "text")
+        )
+        matched = _tickers_in_text(text, known_tickers)
+        if matched:
+            for tk in matched:
+                out.append({**base, "ticker": tk})
+        else:
+            out.append({**base, "ticker": ""})
     return out
 
 
