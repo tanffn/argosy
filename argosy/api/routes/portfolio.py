@@ -1793,6 +1793,30 @@ async def refresh_discovery(
     )
 
 
+@router.post("/rebalance-review")
+def post_rebalance_review(
+    user_id: str = Query("ariel"),
+    write_proposal: bool = Query(True),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Compose a holistic, plan-driven, news-supported whole-portfolio rebalance
+    review (trim over-target sleeves to fund under-target ones, thesis-gated) and
+    optionally persist it as a ``rebalance`` ActionProposal.
+
+    Synchronous + deterministic — no LLM call. The review is ALWAYS returned;
+    ``proposal_written`` reflects whether a proposal row was persisted (False on
+    cannot_review / no-legs / write disabled). It NEVER executes.
+    """
+    from argosy.services.holistic_rebalance_review import (
+        run_holistic_rebalance_review,
+    )
+
+    review, written = run_holistic_rebalance_review(
+        user_id, db, write_proposal=write_proposal,
+    )
+    return {"review": review.to_dict(), "proposal_written": written}
+
+
 def _allocation_agent_context(user_id: str) -> tuple[dict, dict]:
     """(per-position verdicts, market-context snapshot) for the allocation agent.
 
