@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -16,6 +17,7 @@ import {
   type ActionItemsResponse,
   type ActionItemStatus,
 } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 const USER_ID = "ariel";
 
@@ -31,10 +33,12 @@ interface ActionChecklistHeaderProps {
  *
  * This is the consolidated "what only YOU can do" view (design spec §7):
  * a quick, readable list of the dated short/medium-horizon actions from
- * the user's plan, framed in plain language with a count summary. It is
- * READ-ONLY — accept / reject affordances live on the proposal cards
- * below. Reuses the canonical action-items endpoint
- * (`api.planActionItems`), the same source the Home-page widget reads.
+ * the user's plan, framed in plain language with a count summary. Each row
+ * carries a "How to do it" disclosure (how_to + a "Done when" criterion)
+ * and a Mark-done / Undo affordance backed by the action-item ack routes.
+ * Accept / reject affordances still live on the proposal cards below.
+ * Reuses the canonical action-items endpoint (`api.planActionItems`), the
+ * same source the Home-page widget reads.
  *
  * Renders nothing-box-free: when there are zero items it shows a quiet
  * "all caught up" line instead of an empty card.
@@ -45,6 +49,10 @@ export function ActionChecklistHeader({
 }: ActionChecklistHeaderProps) {
   const [data, setData] = useState<ActionItemsResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  // Per-item acknowledged override, applied optimistically on top of the
+  // server payload so a mark-done / undo flips the row instantly. Keyed by
+  // item_id; absent = use the server's `acknowledged` value.
+  const [ackOverrides, setAckOverrides] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     // `loading` starts true; we only ever flip it false in finally. (Calling
@@ -54,7 +62,10 @@ export function ActionChecklistHeader({
     api
       .planActionItems(userId, windowDays)
       .then((res) => {
-        if (!cancelled) setData(res);
+        if (!cancelled) {
+          setData(res);
+          setAckOverrides({});
+        }
       })
       .catch(() => null)
       .finally(() => {
@@ -68,29 +79,50 @@ export function ActionChecklistHeader({
   const items = data?.items ?? [];
   const total = items.length;
 
+  const isAcked = (it: ActionItem) =>
+    ackOverrides[it.item_id] ?? it.acknowledged;
+
+  // Recompute header counts excluding acknowledged ("done") items so a row
+  // the user just marked done stops counting against overdue/today.
+  const liveItems = items.filter((it) => !isAcked(it));
+  const overdueCount = liveItems.filter((it) => it.status === "OVERDUE").length;
+  const todayCount = liveItems.filter((it) => it.status === "TODAY").length;
+  const upcomingCount = liveItems.filter(
+    (it) => it.status === "UPCOMING" || it.status === "DUE_SOON",
+  ).length;
+  const doneCount = total - liveItems.length;
+
+  const setAck = (itemId: string, value: boolean) =>
+    setAckOverrides((prev) => ({ ...prev, [itemId]: value }));
+
   return (
     <Card>
       <CardHeader>
         <CardTitle className="text-base">What&apos;s on you to do</CardTitle>
         <CardDescription>
-          These are the moves only you can make right now. Review the details
-          below, then act on the matching proposal cards.
+          These are the moves only you can make right now. Expand a row for how
+          to do it, then mark it done when you have.
         </CardDescription>
         {data ? (
           <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-            {data.overdue_count > 0 ? (
+            {overdueCount > 0 ? (
               <StatusPill tone="error" mono>
-                {data.overdue_count} overdue
+                {overdueCount} overdue
               </StatusPill>
             ) : null}
-            {data.today_count > 0 ? (
+            {todayCount > 0 ? (
               <StatusPill tone="warning" mono>
-                {data.today_count} today
+                {todayCount} today
               </StatusPill>
             ) : null}
             <StatusPill tone="neutral" mono>
-              {data.upcoming_count} upcoming
+              {upcomingCount} upcoming
             </StatusPill>
+            {doneCount > 0 ? (
+              <StatusPill tone="success" mono>
+                {doneCount} done
+              </StatusPill>
+            ) : null}
           </div>
         ) : null}
       </CardHeader>
@@ -104,7 +136,13 @@ export function ActionChecklistHeader({
         ) : (
           <ul className="flex flex-col gap-2">
             {items.map((it) => (
-              <ChecklistRow key={it.item_id} item={it} />
+              <ChecklistRow
+                key={it.item_id}
+                item={it}
+                userId={userId}
+                acknowledged={isAcked(it)}
+                onAckChange={(value) => setAck(it.item_id, value)}
+              />
             ))}
           </ul>
         )}
@@ -115,26 +153,134 @@ export function ActionChecklistHeader({
 
 interface ChecklistRowProps {
   item: ActionItem;
+  userId: string;
+  acknowledged: boolean;
+  onAckChange: (value: boolean) => void;
 }
 
-function ChecklistRow({ item }: ChecklistRowProps) {
-  const tone = pillToneForStatus(item.status);
+function ChecklistRow({
+  item,
+  userId,
+  acknowledged,
+  onAckChange,
+}: ChecklistRowProps) {
+  const [expanded, setExpanded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const tone = acknowledged ? "success" : pillToneForStatus(item.status);
   const sub = item.detail || item.rationale;
+  const hasDetail = Boolean(item.how_to || item.done_when);
+
+  const handleMarkDone = async () => {
+    setBusy(true);
+    setError(null);
+    onAckChange(true); // optimistic
+    try {
+      await api.planActionItemAck(userId, item.item_id, item.content_fingerprint);
+    } catch {
+      onAckChange(false); // revert
+      setError("Couldn't mark done — try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUndo = async () => {
+    setBusy(true);
+    setError(null);
+    onAckChange(false); // optimistic
+    try {
+      await api.planActionItemUnack(userId, item.item_id);
+    } catch {
+      onAckChange(true); // revert
+      setError("Couldn't undo — try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
-    <li className="flex items-start gap-3">
-      <StatusPill tone={tone} mono className="mt-0.5">
-        {item.status}
-      </StatusPill>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold leading-snug">{item.label}</p>
-        {sub ? (
-          <p className="text-xs text-muted-foreground truncate">{sub}</p>
-        ) : null}
+    <li className="flex flex-col gap-1">
+      <div className="flex items-start gap-3">
+        <StatusPill tone={tone} mono className="mt-0.5">
+          {acknowledged ? "DONE" : item.status}
+        </StatusPill>
+        <div className="flex-1 min-w-0">
+          <p
+            className={cn(
+              "text-sm font-semibold leading-snug",
+              acknowledged && "line-through text-muted-foreground",
+            )}
+          >
+            {item.label}
+          </p>
+          {sub ? (
+            <p
+              className={cn(
+                "text-xs text-muted-foreground truncate",
+                acknowledged && "line-through",
+              )}
+            >
+              {sub}
+            </p>
+          ) : null}
+          <div className="flex items-center gap-3 mt-1">
+            {hasDetail ? (
+              <button
+                type="button"
+                onClick={() => setExpanded((v) => !v)}
+                className="text-xs font-medium text-primary underline-offset-4 hover:underline"
+                aria-expanded={expanded}
+              >
+                {expanded ? "Hide steps" : "How to do it"}
+              </button>
+            ) : null}
+            {acknowledged ? (
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs"
+                disabled={busy}
+                onClick={handleUndo}
+              >
+                Undo
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs"
+                disabled={busy}
+                onClick={handleMarkDone}
+              >
+                Mark done
+              </Button>
+            )}
+          </div>
+          {error ? (
+            <p className="text-xs text-destructive mt-1">{error}</p>
+          ) : null}
+        </div>
+        <span className="text-xs font-mono text-muted-foreground tabular-nums shrink-0 mt-0.5">
+          {dueLabel(item)}
+        </span>
       </div>
-      <span className="text-xs font-mono text-muted-foreground tabular-nums shrink-0 mt-0.5">
-        {dueLabel(item)}
-      </span>
+      {expanded && hasDetail ? (
+        <div className="ml-[3.25rem] rounded-md border bg-muted/40 px-3 py-2 text-xs flex flex-col gap-1.5">
+          {item.how_to ? (
+            <p className="text-muted-foreground whitespace-pre-line">
+              {item.how_to}
+            </p>
+          ) : null}
+          {item.done_when ? (
+            <p className="font-medium">
+              <span className="text-muted-foreground">Done when: </span>
+              {item.done_when}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </li>
   );
 }

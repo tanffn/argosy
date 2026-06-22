@@ -2692,6 +2692,22 @@ export const api = {
     getJSON<ActionItemsResponse>(
       `/api/plan/action-items?user_id=${encodeURIComponent(userId)}&window_days=${windowDays}`,
     ),
+  // Mark a checklist action-item done. The fingerprint is the value the UI
+  // read off the GET response; if the plan later edits the item the stored
+  // ack stops matching and the item resurfaces as not-done.
+  planActionItemAck: (userId: string, itemId: string, fingerprint: string) =>
+    postJSON<{ item_id: string; acknowledged: boolean }>(
+      `/api/plan/action-items/${encodeURIComponent(itemId)}/ack`,
+      { user_id: userId, content_fingerprint: fingerprint },
+    ),
+  // Undo "mark done". user_id is a query param (idempotent — missing row is a
+  // 200 no-op, not a 404).
+  planActionItemUnack: async (userId: string, itemId: string) => {
+    const path = `/api/plan/action-items/${encodeURIComponent(itemId)}/ack?user_id=${encodeURIComponent(userId)}`;
+    const res = await fetch(apiUrl(path), { method: "DELETE" });
+    if (!res.ok) throw new Error(await formatHttpError(res, path));
+    return (await res.json()) as { item_id: string; acknowledged: boolean };
+  },
   // Live snapshot of the user's currently-running synthesis run, used by
   // the /plan page to render a "Synthesis #N · phase X of 5" card when
   // /api/plan/draft has 404'd because the prior draft was superseded.
@@ -4603,6 +4619,15 @@ export interface ActionItem {
   rationale: string;
   cited_sources: string[];
   plan_version_id: number;
+  // Execution guidance + completion tracking (see backend ActionItem).
+  // how_to = concrete steps; done_when = a checkable completion criterion.
+  how_to: string;
+  done_when: string;
+  // Stable hash of the item's meaningful content; resurfaces the item as
+  // not-done when the plan edits it. ``acknowledged`` is True iff the user
+  // has an ack row whose stored fingerprint still matches.
+  content_fingerprint: string;
+  acknowledged: boolean;
 }
 
 export interface ActionItemsResponse {
