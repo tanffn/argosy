@@ -222,6 +222,44 @@ class TestAssemble:
         assert plan.undeployed_remainder_usd == pytest.approx(10_000.0)
 
 
+class TestHighPotentialSleeveHeldLookup:
+    """Regression: the high-potential sleeve must reflect the CURRENT book — an
+    already-held pick is a top-up (ADD), not a brand-new position (NEW). The
+    sleeve path used to hardcode is_new=True/held_value_usd=0 and so mislabeled
+    held single-names (TSLA/AMD/SOFI) as new."""
+
+    def _alloc(self, ticker, us_situs=True):
+        from argosy.services.high_potential_sleeve import (
+            SleeveAllocation,
+            SleeveCandidate,
+        )
+        cand = SleeveCandidate(
+            ticker=ticker, name=ticker, vehicle="single_name", conviction="HIGH",
+            thesis="t", us_situs=us_situs, held_today=0.0, source="test",
+        )
+        return SleeveAllocation(candidate=cand, amount_usd=2_000.0, pct_of_sleeve=50.0)
+
+    def test_held_sleeve_pick_is_add_unheld_is_new(self, monkeypatch):
+        import argosy.services.deployment_advisor as da
+        import argosy.services.high_potential_sleeve as hps
+
+        monkeypatch.setattr(da, "_cached_buy_sleeve_candidates", lambda _uid: [])
+        monkeypatch.setattr(
+            hps, "build_high_potential_sleeve",
+            lambda budget, cands: [self._alloc("AMD"), self._alloc("FRESH")],
+        )
+        lines, _exp, _san = da._high_potential_lines(
+            sleeve_budget_usd=4_000.0, user_id="ariel", market_context=None,
+            book_usd=100_000.0, tranche_usd=4_000.0,
+            holdings={"AMD": 48_840.0, "FRESH": 0.0},
+        )
+        by = {l.symbol: l for l in lines}
+        assert by["AMD"].is_new is False
+        assert by["AMD"].held_value_usd == 48_840.0
+        assert by["FRESH"].is_new is True
+        assert by["FRESH"].held_value_usd == 0.0
+
+
 # ----------------------------------------------------------------------
 # Remediation of codex money-math review (deploy_assemble_review):
 # (1) sum invariant ENFORCED via an explicit undeployed remainder,

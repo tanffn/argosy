@@ -343,7 +343,7 @@ def _sleeve_estate_tag(cand) -> EstateTag:
 
 def _high_potential_lines(
     *, sleeve_budget_usd: float, user_id: str, market_context, book_usd: float,
-    tranche_usd: float,
+    tranche_usd: float, holdings: dict[str, float] | None = None,
 ) -> tuple[list[DeploymentLine], float, float]:
     """Build the ``high`` tier from the EXISTING high-potential sleeve sizer.
 
@@ -359,12 +359,17 @@ def _high_potential_lines(
         return [], 0.0, 0.0
     candidates = _cached_buy_sleeve_candidates(user_id)
     allocs = build_high_potential_sleeve(sleeve_budget_usd, candidates)
+    # Case-normalised current book so a sleeve pick already held reads as a
+    # top-up (ADD), not a brand-new position (NEW). Mirrors the core path's
+    # held-value lookup — the sleeve must not pretend you don't own a name.
+    held_by = {str(k).upper(): float(v) for k, v in (holdings or {}).items()}
     lines: list[DeploymentLine] = []
     exposed = 0.0
     sanctioned = 0.0
     for a in allocs:
         cand = a.candidate
         amt = round(a.amount_usd, 2)
+        held_value = round(held_by.get((cand.ticker or "").upper(), 0.0), 2)
         estate = _sleeve_estate_tag(cand)
         if estate.status == "us_situs_exposed":
             exposed += amt
@@ -382,11 +387,11 @@ def _high_potential_lines(
         lines.append(DeploymentLine(
             symbol=cand.ticker,
             type=("ETF" if cand.vehicle == "ucits_thematic" else "Stock"),
-            amount_usd=amt, timing=timing, is_new=True, tier="high",
+            amount_usd=amt, timing=timing, is_new=(held_value <= 0.0), tier="high",
             horizon=_TIER_HORIZON["high"], estate=estate,
             cap_note=f"high-potential sleeve ({a.pct_of_sleeve:.1f}% of sleeve)",
             net_of_tax_caveat=NET_OF_TAX_CAVEAT, rationale=rationale,
-            cites=(), held_value_usd=0.0, pace_rationale=p_rationale,
+            cites=(), held_value_usd=held_value, pace_rationale=p_rationale,
         ))
     return lines, round(exposed, 2), round(sanctioned, 2)
 
@@ -504,6 +509,7 @@ def assemble_deployment_plan(
         high_lines, sleeve_exposed, sleeve_sanctioned = _high_potential_lines(
             sleeve_budget_usd=sleeve_budget, user_id=user_id,
             market_context=market_context, book_usd=book_usd, tranche_usd=amount,
+            holdings=holdings,
         )
         exposed_total += sleeve_exposed
         sanctioned_total += sleeve_sanctioned

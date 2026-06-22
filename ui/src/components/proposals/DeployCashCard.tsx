@@ -21,6 +21,28 @@ const TIER_LABEL: Record<string, string> = {
   high: "High",
 };
 
+// Size-proportional rounding for DISPLAY only (the actual order keeps the exact
+// value). A small buy rounds to a fine step, a big one to a coarse step, so the
+// numbers read clean without distorting meaningfully: a $3k line snaps to $500,
+// a $120k line to $5k. Step grows with magnitude.
+function niceRound(n: number): number {
+  const abs = Math.abs(n);
+  let step: number;
+  if (abs < 1_000) step = 50;
+  else if (abs < 10_000) step = 500;
+  else if (abs < 100_000) step = 1_000;
+  else step = 5_000;
+  return Math.round(n / step) * step;
+}
+
+// Format a USD amount as a clean, size-proportional figure: under $10k in full
+// ("$6,500"), $10k+ in compact "k" notation ("$52k", "$120k").
+function fmtMoney(n: number): string {
+  const r = niceRound(n);
+  if (Math.abs(r) >= 10_000) return `$${Math.round(r / 1_000).toLocaleString()}k`;
+  return `$${r.toLocaleString()}`;
+}
+
 // The deploy plan carries a free-form per-line horizon string plus a risk
 // tier; the allocation_actions store only accepts the windfall horizon enum
 // (long/medium/short). Map the line to one of those: prefer an explicit
@@ -162,9 +184,13 @@ function MarketContextStrip({ ctx }: { ctx: DeploymentMarketContextDTO }) {
 
 function TierHeading({ tier }: { tier: DeploymentTierDTO }) {
   return (
-    <div className="font-semibold">
-      <span>{TIER_LABEL[tier.name]}</span>
-      {` ($${tier.total_usd.toLocaleString()})`}
+    <div className="flex items-baseline gap-2">
+      <span className="text-sm font-semibold tracking-tight">
+        {TIER_LABEL[tier.name]}
+      </span>
+      <span className="text-sm text-muted-foreground tabular-nums">
+        {fmtMoney(tier.total_usd)}
+      </span>
     </div>
   );
 }
@@ -186,85 +212,97 @@ function TierBlock({
 }: TierBlockProps) {
   if (tier.lines.length === 0) {
     return (
-      <div className="mt-3">
+      <div className="mt-4">
         <TierHeading tier={tier} />
-        <div className="text-sm text-muted-foreground">
+        <div className="text-sm text-muted-foreground mt-1">
           {tier.name === "core" ? "—" : "Populated in a later phase."}
         </div>
       </div>
     );
   }
+  // Guarantee priority order within the tier: biggest allocation first (Core
+  // fills the largest plan-target gaps first; the High sleeve is sized by
+  // conviction, so highest conviction leads).
+  const lines = [...tier.lines].sort((a, b) => b.amount_usd - a.amount_usd);
   return (
-    <div className="mt-3">
+    <div className="mt-4">
       <TierHeading tier={tier} />
-      <table className="w-full text-sm">
-        <thead>
-          <tr>
-            <th>SYMBOL</th>
-            <th>TYPE</th>
-            <th>AMOUNT</th>
-            <th>TIMING</th>
-            <th>NEW?</th>
-            <th>ESTATE</th>
-            <th>REASON</th>
-            <th>DECISION</th>
-          </tr>
-        </thead>
-        <tbody>
-          {tier.lines.map((l) => {
-            const sourceRef = buildSourceRef({
-              snapshotDate: planAsOf,
-              horizon: lineHorizon(l),
-              assetClass: l.tier,
-              instrument: l.symbol,
-            });
-            return (
-              <tr key={`${tier.name}-${l.symbol}`}>
-                <td>{l.symbol}</td>
-                <td>{l.type}</td>
-                <td>{`$${l.amount_usd.toLocaleString()}`}</td>
-                <td>
-                  <div>{l.timing}</div>
-                  {l.pace_rationale && (
-                    <div
-                      className="text-xs text-muted-foreground"
-                      data-testid={`pace-rationale-${l.symbol}`}
-                    >
-                      {l.pace_rationale}
-                    </div>
-                  )}
-                </td>
-                <td>
-                  <span
-                    className={`inline-block rounded px-1.5 py-0.5 text-xs font-semibold ${
-                      l.is_new
-                        ? "bg-emerald-500/15 text-emerald-600"
-                        : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {l.is_new ? "NEW" : "ADD"}
-                  </span>
-                </td>
-                <td>{l.estate.status.replace(/_/g, " ")}</td>
-                <td>
+      <div className="mt-2 divide-y divide-border/40 rounded-md border border-border/50">
+        {lines.map((l) => {
+          const sourceRef = buildSourceRef({
+            snapshotDate: planAsOf,
+            horizon: lineHorizon(l),
+            assetClass: l.tier,
+            instrument: l.symbol,
+          });
+          return (
+            <div
+              key={`${tier.name}-${l.symbol}`}
+              className="flex items-start gap-3 px-3 py-2.5"
+            >
+              {/* Symbol + type */}
+              <div className="w-24 shrink-0">
+                <div className="font-semibold leading-tight">{l.symbol}</div>
+                <div className="text-xs text-muted-foreground">{l.type}</div>
+              </div>
+
+              {/* Amount + NEW/ADD */}
+              <div className="w-28 shrink-0">
+                <div className="font-semibold tabular-nums leading-tight">
+                  {fmtMoney(l.amount_usd)}
+                </div>
+                <span
+                  title={
+                    l.is_new
+                      ? "Opens a position you don't currently hold"
+                      : "Adds to a position you already hold"
+                  }
+                  className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                    l.is_new
+                      ? "bg-emerald-500/15 text-emerald-600"
+                      : "bg-sky-500/15 text-sky-600"
+                  }`}
+                >
+                  {l.is_new ? "New" : "Add"}
+                </span>
+              </div>
+
+              {/* Reason + estate + timing */}
+              <div className="min-w-0 flex-1">
+                <div className="text-sm leading-snug">
                   {l.cap_note}
                   {l.rationale ? ` — ${l.rationale}` : ""}
-                </td>
-                <td>
-                  <DeployLineActions
-                    line={l}
-                    userId={userId}
-                    planAsOf={planAsOf}
-                    sourceRef={sourceRef}
-                    prior={decisions.get(sourceRef) ?? null}
-                    onDecided={(action) => onDecided(sourceRef, action)}
-                  />
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                  <span>{l.estate.status.replace(/_/g, " ")}</span>
+                  <span aria-hidden>·</span>
+                  <span>{l.timing}</span>
+                  {l.pace_rationale && (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span data-testid={`pace-rationale-${l.symbol}`}>
+                        {l.pace_rationale}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Decision */}
+              <div className="shrink-0">
+                <DeployLineActions
+                  line={l}
+                  userId={userId}
+                  planAsOf={planAsOf}
+                  sourceRef={sourceRef}
+                  prior={decisions.get(sourceRef) ?? null}
+                  onDecided={(action) => onDecided(sourceRef, action)}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -447,7 +485,7 @@ export function DeployCashCard({
     <section className="rounded-lg border p-4">
       <h2 className="text-lg font-semibold">Deploy Cash</h2>
       <div className="text-sm text-muted-foreground">
-        {`Unallocated cash: $${unallocatedUsd.toLocaleString()}`}
+        {`Unallocated cash: ${fmtMoney(unallocatedUsd)}`}
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-4">
         <label className="block text-sm">
@@ -478,17 +516,18 @@ export function DeployCashCard({
             <div className="mt-2 text-sm italic">{plan.note}</div>
           )}
           <div className="mt-2 text-sm">
-            <span>{`Deployed: $${plan.deployed_total_usd.toLocaleString()}`}</span>
-            {plan.undeployed_remainder_usd > 0 && (
+            <span>{`Deployed: ${fmtMoney(plan.deployed_total_usd)}`}</span>
+            {/* Hide a sub-$1 rounding-artifact remainder; show real shortfalls. */}
+            {plan.undeployed_remainder_usd >= 1 && (
               <span className="ml-3 text-amber-600">
-                {`Undeployed remainder: $${plan.undeployed_remainder_usd.toLocaleString()}`}
+                {`Undeployed remainder: ${fmtMoney(plan.undeployed_remainder_usd)}`}
               </span>
             )}
           </div>
           <div className="text-xs text-muted-foreground">
-            {`US-situs estate exposure (planned buys): $${plan.us_situs_exposed_usd.toLocaleString()}`}
+            {`US-situs estate exposure (planned buys): ${fmtMoney(plan.us_situs_exposed_usd)}`}
             {plan.us_situs_sanctioned_usd > 0 &&
-              ` · sanctioned NVDA sleeve: $${plan.us_situs_sanctioned_usd.toLocaleString()}`}
+              ` · sanctioned NVDA sleeve: ${fmtMoney(plan.us_situs_sanctioned_usd)}`}
           </div>
           {plan.market_context && (
             <MarketContextStrip ctx={plan.market_context} />
