@@ -4474,22 +4474,36 @@ def _collect_action_items(
             acknowledged = bool(acked) and acked.get(item_id) == fingerprint
 
             # Closed-loop tie-in: if this is the §102 RSU-withholding item and
-            # Argosy has a verdict for it, surface the verdict. Only a POSITIVE
-            # (reconciled / satisfied) verdict marks it verified; a discrepancy
-            # or low-confidence parse surfaces the summary but leaves the item
-            # NOT verified so the user still investigates. Never silently
-            # satisfies on a discrepancy.
+            # Argosy has its own verdict, the CLIENT only belongs in the loop
+            # when there's a real problem to act on. Argosy is the back office:
+            # a question one agent raised and another answered (reconciled) is
+            # INTERNAL — it must NOT appear on the client's to-do list, not even
+            # as "verified, nothing to do". So:
+            #   * discrepancy → keep the item + surface why (the client must act);
+            #   * anything else (reconciled / awaiting-payslip / low-confidence)
+            #     → DROP it from the checklist. The verdict is persisted in
+            #     payslip_facts for audit and re-surfaces only if a future payslip
+            #     flips it to a discrepancy.
             argosy_verified: bool | None = None
             argosy_verified_summary: str | None = None
             argosy_verified_status: str | None = None
             if withholding_status and _is_withholding_item(label, detail):
-                argosy_verified = bool(withholding_status.get("satisfied"))
-                argosy_verified_summary = (
-                    withholding_status.get("summary") or None
-                )
-                argosy_verified_status = (
-                    withholding_status.get("status") or None
-                )
+                wstatus = withholding_status.get("status")
+                if wstatus == "reconciled":
+                    # Argosy positively self-resolved it — internal back-office,
+                    # never a client to-do. Drop it; the verdict is stored in
+                    # payslip_facts for audit and re-surfaces only on a discrepancy.
+                    continue
+                if wstatus == "discrepancy":
+                    # A real problem the client must act on — keep + surface why.
+                    argosy_verified = False
+                    argosy_verified_summary = (
+                        withholding_status.get("summary") or None
+                    )
+                    argosy_verified_status = "discrepancy"
+                # else (no_data / no_equity_yet / low_confidence): Argosy can't
+                # confirm yet, so it leaves the plain task in place (no verdict
+                # stamp) — it'll self-resolve and drop once a payslip reconciles.
 
             items.append(
                 ActionItem(

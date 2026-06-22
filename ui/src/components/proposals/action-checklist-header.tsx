@@ -225,24 +225,16 @@ function ChecklistRow({
               {sub}
             </p>
           ) : null}
+          {/* Argosy only surfaces a verdict here when it found a problem the
+              client must act on. Items Argosy self-resolved never reach the
+              checklist (they stay internal), so this is always a flag. */}
           {item.argosy_verified_summary ? (
-            <div
-              className={cn(
-                "mt-1.5 rounded-md border px-2.5 py-1.5 text-xs flex items-start gap-1.5",
-                item.argosy_verified
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                  : "border-amber-500/30 bg-amber-500/10 text-amber-300",
-              )}
-            >
+            <div className="mt-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300 flex items-start gap-1.5">
               <span aria-hidden className="mt-px shrink-0 font-mono">
-                {item.argosy_verified ? "✓" : "•"}
+                ⚠
               </span>
               <span>
-                <span className="font-semibold">
-                  {item.argosy_verified
-                    ? "Argosy verified — "
-                    : "Argosy checked — "}
-                </span>
+                <span className="font-semibold">Argosy flagged — </span>
                 {item.argosy_verified_summary}
               </span>
             </div>

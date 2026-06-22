@@ -853,22 +853,23 @@ def _withholding_action() -> dict:
     }
 
 
-def test_withholding_item_verified_on_reconciled(client_with_db):
-    """A reconciled verdict marks the withholding action item argosy_verified."""
+def test_withholding_item_dropped_when_reconciled(client_with_db):
+    """A reconciled verdict is INTERNAL back-office — the item must NOT appear on
+    the client's checklist at all (not even as 'verified, nothing to do')."""
     _seed_draft(client_with_db, short_actions=[_withholding_action()])
     _seed_payslip_verdict(
         client_with_db, "reconciled", "Your payslip reconciles ₪167,707."
     )
-    item = client_with_db.get(
+    items = client_with_db.get(
         "/api/plan/action-items?user_id=ariel"
-    ).json()["items"][0]
-    assert item["argosy_verified"] is True
-    assert item["argosy_verified_status"] == "reconciled"
-    assert "reconciles" in (item["argosy_verified_summary"] or "")
+    ).json()["items"]
+    # The sole seeded action was the (now self-resolved) withholding item.
+    assert all("withholding" not in (it["label"] or "").lower() for it in items)
 
 
-def test_withholding_item_not_verified_on_discrepancy(client_with_db):
-    """A discrepancy surfaces the summary but never marks verified."""
+def test_withholding_item_surfaced_only_on_discrepancy(client_with_db):
+    """A discrepancy is a real problem needing the client — it stays on the
+    checklist and surfaces why (flagged), never silently satisfied."""
     _seed_draft(client_with_db, short_actions=[_withholding_action()])
     _seed_payslip_verdict(
         client_with_db, "discrepancy", "Model mismatch — investigate."
@@ -876,8 +877,8 @@ def test_withholding_item_not_verified_on_discrepancy(client_with_db):
     item = client_with_db.get(
         "/api/plan/action-items?user_id=ariel"
     ).json()["items"][0]
-    assert item["argosy_verified"] is False
     assert item["argosy_verified_status"] == "discrepancy"
+    assert "investigate" in (item["argosy_verified_summary"] or "").lower()
 
 
 def test_non_withholding_item_has_no_verified_field(client_with_db):
