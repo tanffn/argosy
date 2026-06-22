@@ -1716,6 +1716,37 @@ export interface ConfigResponse {
   fleet_count: number;
 }
 
+/**
+ * §102 equity-tax withholding verdict (mirrors WithholdingVerdictDTO in
+ * argosy/api/routes/tax.py). Monetary values are NIS (₪); null means the
+ * number could not be computed (e.g. no equity yet) — never a fabricated
+ * default.
+ */
+export interface WithholdingVerdict {
+  status: string; // reconciled | discrepancy | no_equity_yet | low_confidence
+  period: number | null;
+  equity_ordinary_base: number | null;
+  equity_capital_base: number | null;
+  actual_tax_withheld: number | null;
+  expected_at_wire_rate: number | null;
+  reconc_residual: number | null;
+  conservative_liability: number | null;
+  potential_filing_topup: number | null;
+  effective_rate_pct: number | null;
+  summary: string;
+  confidence: string;
+  caveats: string[];
+}
+
+export interface WithholdingCheckResponse {
+  has_verdict: boolean;
+  period_year: number | null;
+  period_month: number | null;
+  ingested_at: string | null;
+  status: string;
+  verdict: WithholdingVerdict | null;
+}
+
 export const api = {
   overview: (userId: string) =>
     getJSON<OverviewResponse>(
@@ -3464,6 +3495,15 @@ export const api = {
         user_id: opts?.userId ?? "ariel",
         reason: opts?.reason ?? null,
       },
+    ),
+  /**
+   * §102 RSU-withholding closed loop — Argosy's own verdict on whether the
+   * equity-tax withheld/accounted through the latest payslip is adequate.
+   * See argosy/api/routes/tax.py + argosy/services/payslip_ingest.py.
+   */
+  taxWithholdingCheck: (userId: string): Promise<WithholdingCheckResponse> =>
+    getJSON<WithholdingCheckResponse>(
+      `/api/tax/withholding-check?user_id=${encodeURIComponent(userId)}`,
     ),
 };
 

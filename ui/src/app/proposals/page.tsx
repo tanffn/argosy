@@ -37,6 +37,7 @@ import { DeferModal } from "@/components/proposals/DeferModal";
 import { RejectModal } from "@/components/proposals/RejectModal";
 import { DeployCashCard } from "@/components/proposals/DeployCashCard";
 import { RebalanceReviewCard } from "@/components/proposals/RebalanceReviewCard";
+import { WithholdingCheckCard } from "@/components/proposals/WithholdingCheckCard";
 import { WindfallCard } from "@/components/retirement/WindfallCard";
 import { TrendRadarCard } from "@/components/portfolio/trend-radar-card";
 import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monitor-card";
@@ -609,6 +610,11 @@ export default function ProposalsPage() {
           view of the user-owned actions (design spec §7). Read-only; the
           accept/reject affordances live on the proposal cards below. */}
       <ActionChecklistHeader userId={USER_ID} />
+
+      {/* RSU tax withholding — Argosy's own verdict on whether the §102 equity
+          tax accounted through the latest payslip is adequate. Answers the
+          "Verify RSU withholding" checklist item directly (closed loop). */}
+      <WithholdingCheckCard userId={USER_ID} />
 
       {/* Ask the team — the consult flow folded into the hub (codex #11). The
           same ConsultRunner backs /consult (kept as a deep link). Collapsed by

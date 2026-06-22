@@ -68,6 +68,11 @@ _ALLOWED_SOURCES = frozenset({
     "intake_file_to_text",
     "cost_basis_import",
     "expense_statement",
+    # `payslip_ingest` was added for the §102 RSU-withholding closed loop —
+    # the payslip-ingest service routes each Hilan payslip PDF's raw bytes
+    # through `catalog_upload` before parsing (SDD §17.1: no ingest path may
+    # bypass the catalog).
+    "payslip_ingest",
 })
 
 # Allowed values for the `kind` column. Cataloging-side classification

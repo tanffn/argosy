@@ -280,6 +280,10 @@ def create_app() -> FastAPI:
     from argosy.api.routes import expenses as expenses_routes
     app.include_router(expenses_routes.router)
 
+    # Tax — §102 RSU-withholding closed loop (GET verdict + admin-gated ingest).
+    from argosy.api.routes import tax as tax_routes
+    app.include_router(tax_routes.router)
+
     # T4.5 — daily-brief production loop. Off by default; opt-in via
     # ARGOSY_DAILY_BRIEF_ENABLED=1. Always off under pytest so tests
     # never spawn a real background fire. The loop sleeps until 07:00
@@ -523,6 +527,29 @@ def create_app() -> FastAPI:
         except (ImportError, ValueError) as exc:
             log.exception(
                 "scheduler.thesis_monitor_register_failed",
+                error_type=type(exc).__name__,
+            )
+
+        # PayslipIngestLoop — daily §102 RSU-withholding closed loop. 06:30 IDT,
+        # source_kind='ingest'. Discovers/catalogs/parses the user's Hilan
+        # payslips, runs the §102 withholding check, and persists the verdict so
+        # Argosy answers "is my RSU withholding adequate?" itself.
+        try:
+            from argosy.orchestrator.loops.payslip_ingest import (  # noqa: PLC0415
+                PayslipIngestLoop,
+                payslip_ingest_metadata,
+            )
+
+            payslip_loop = PayslipIngestLoop(enabled=True, user_id="ariel")
+            scheduler.register_loop(payslip_loop)
+            registry.register(
+                job=payslip_loop,
+                metadata=payslip_ingest_metadata(),
+            )
+            log.info("scheduler.payslip_ingest_registered")
+        except (ImportError, ValueError) as exc:
+            log.exception(
+                "scheduler.payslip_ingest_register_failed",
                 error_type=type(exc).__name__,
             )
 

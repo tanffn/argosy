@@ -814,3 +814,90 @@ def test_migration_creates_plan_action_acks(alembic_engine_at_head):
         "content_fingerprint",
         "acknowledged_at",
     } <= cols
+
+
+# ---------- closed-loop withholding tie-in -------------------------------
+
+
+def _seed_payslip_verdict(client_with_db, status: str, summary: str) -> None:
+    """Persist a PayslipFactRow carrying a given withholding verdict status."""
+    from argosy.state.models import PayslipFactRow
+
+    _seed_user(client_with_db, "ariel")
+    sess = client_with_db.app.state.session_factory()
+    try:
+        sess.add(
+            PayslipFactRow(
+                user_id="ariel",
+                period_year=2026,
+                period_month=4,
+                source_file_id=None,
+                source_sha256="d" * 64,
+                parsed_json="{}",
+                verdict_json=json.dumps({"status": status, "summary": summary}),
+            )
+        )
+        sess.commit()
+    finally:
+        sess.close()
+
+
+def _withholding_action() -> dict:
+    return {
+        "label": "Verify the June 2026 RSU withholding is adequate",
+        "horizon_kind": "dated",
+        "trigger_or_date": _today_iso(1),
+        "detail": "",
+        "rationale": "",
+        "cited_sources": [],
+    }
+
+
+def test_withholding_item_verified_on_reconciled(client_with_db):
+    """A reconciled verdict marks the withholding action item argosy_verified."""
+    _seed_draft(client_with_db, short_actions=[_withholding_action()])
+    _seed_payslip_verdict(
+        client_with_db, "reconciled", "Your payslip reconciles ₪167,707."
+    )
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["argosy_verified"] is True
+    assert item["argosy_verified_status"] == "reconciled"
+    assert "reconciles" in (item["argosy_verified_summary"] or "")
+
+
+def test_withholding_item_not_verified_on_discrepancy(client_with_db):
+    """A discrepancy surfaces the summary but never marks verified."""
+    _seed_draft(client_with_db, short_actions=[_withholding_action()])
+    _seed_payslip_verdict(
+        client_with_db, "discrepancy", "Model mismatch — investigate."
+    )
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["argosy_verified"] is False
+    assert item["argosy_verified_status"] == "discrepancy"
+
+
+def test_non_withholding_item_has_no_verified_field(client_with_db):
+    """Unrelated action items are unaffected (backward compatible)."""
+    _seed_draft(
+        client_with_db,
+        short_actions=[
+            {
+                "label": "Rebalance the bond sleeve",
+                "horizon_kind": "dated",
+                "trigger_or_date": _today_iso(1),
+                "detail": "",
+                "rationale": "",
+                "cited_sources": [],
+            }
+        ],
+    )
+    _seed_payslip_verdict(client_with_db, "reconciled", "irrelevant")
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["argosy_verified"] is None
+    assert item["argosy_verified_summary"] is None

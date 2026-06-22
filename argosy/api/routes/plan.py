@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Generator
+from typing import Any, Generator
 
 logger = logging.getLogger(__name__)
 
@@ -4264,6 +4264,16 @@ class ActionItem(BaseModel):
     # row exists for (user_id, item_id) whose stored fingerprint matches.
     content_fingerprint: str
     acknowledged: bool
+    # Closed-loop evidence (optional, backward-compatible). When Argosy can
+    # itself verify an action item from ingested data, ``argosy_verified`` is
+    # set with a plain-language summary. Today only the §102 RSU-withholding
+    # item is auto-verified (from the latest payslip's withholding verdict). An
+    # item is only marked verified when the evidence is POSITIVE (a reconciled
+    # verdict) — a discrepancy or low-confidence parse leaves it unverified so
+    # the user still investigates. Default None keeps older clients unaffected.
+    argosy_verified: bool | None = None
+    argosy_verified_summary: str | None = None
+    argosy_verified_status: str | None = None
 
 
 class ActionItemsResponse(BaseModel):
@@ -4383,12 +4393,27 @@ def _content_fingerprint(item_id: str, label: str, detail: str, dated: _date | N
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
 
 
+def _is_withholding_item(label: str, detail: str) -> bool:
+    """True when an action item is the §102 RSU/equity withholding verification.
+
+    Matched on the meaningful words (``withholding`` + an equity term) so a
+    rename like "Verify RSU withholding" / "Check §102 equity tax withholding"
+    still binds to Argosy's auto-verification. Deliberately narrow so unrelated
+    tax actions don't get falsely satisfied.
+    """
+    text = f"{label} {detail}".lower()
+    if "withhold" not in text:
+        return False
+    return any(term in text for term in ("rsu", "equity", "§102", "102", "espp"))
+
+
 def _collect_action_items(
     pv: PlanVersion,
     *,
     today: _date,
     window_days: int,
     acked: dict[str, str] | None = None,
+    withholding_status: dict[str, Any] | None = None,
 ) -> list[ActionItem]:
     """Walk a plan version's short + medium horizon actions and emit
     surfaced ``ActionItem`` rows.
@@ -4448,6 +4473,24 @@ def _collect_action_items(
             fingerprint = _content_fingerprint(item_id, label, detail, dated)
             acknowledged = bool(acked) and acked.get(item_id) == fingerprint
 
+            # Closed-loop tie-in: if this is the §102 RSU-withholding item and
+            # Argosy has a verdict for it, surface the verdict. Only a POSITIVE
+            # (reconciled / satisfied) verdict marks it verified; a discrepancy
+            # or low-confidence parse surfaces the summary but leaves the item
+            # NOT verified so the user still investigates. Never silently
+            # satisfies on a discrepancy.
+            argosy_verified: bool | None = None
+            argosy_verified_summary: str | None = None
+            argosy_verified_status: str | None = None
+            if withholding_status and _is_withholding_item(label, detail):
+                argosy_verified = bool(withholding_status.get("satisfied"))
+                argosy_verified_summary = (
+                    withholding_status.get("summary") or None
+                )
+                argosy_verified_status = (
+                    withholding_status.get("status") or None
+                )
+
             items.append(
                 ActionItem(
                     item_id=item_id,
@@ -4464,6 +4507,9 @@ def _collect_action_items(
                     done_when=done_when,
                     content_fingerprint=fingerprint,
                     acknowledged=acknowledged,
+                    argosy_verified=argosy_verified,
+                    argosy_verified_summary=argosy_verified_summary,
+                    argosy_verified_status=argosy_verified_status,
                 )
             )
     # Sort ASC by date (overdue first because their days_until is negative).
@@ -4525,8 +4571,21 @@ def get_action_items(
 
     today = datetime.now(timezone.utc).date()
     acked = _load_action_acks(db, user_id)
+    # Closed-loop tie-in for the §102 RSU-withholding item — best-effort; a
+    # failure here never blocks the checklist.
+    withholding_status: dict[str, Any] | None = None
+    try:
+        from argosy.services.payslip_ingest import withholding_action_status
+
+        withholding_status = withholding_action_status(user_id, db)
+    except Exception:  # noqa: BLE001 — verdict is optional enrichment
+        withholding_status = None
     items = _collect_action_items(
-        pv, today=today, window_days=window_days, acked=acked
+        pv,
+        today=today,
+        window_days=window_days,
+        acked=acked,
+        withholding_status=withholding_status,
     )
     if not include_acknowledged:
         items = [it for it in items if not it.acknowledged]

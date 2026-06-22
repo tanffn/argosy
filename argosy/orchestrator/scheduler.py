@@ -288,6 +288,22 @@ class Scheduler:
                 error_type=type(exc).__name__,
             )
 
+        # PayslipIngestLoop — daily §102 RSU-withholding closed loop. Mirrors
+        # the block in argosy/api/main.py so `argosy run` boots the same job set.
+        try:
+            from argosy.orchestrator.loops.payslip_ingest import (  # noqa: PLC0415
+                PayslipIngestLoop,
+            )
+
+            self.register_loop(
+                PayslipIngestLoop(enabled=True, user_id=self.user_id)
+            )
+        except (ImportError, ValueError) as exc:
+            _log.exception(
+                "scheduler.payslip_ingest_register_failed",
+                error_type=type(exc).__name__,
+            )
+
         # HolisticRebalanceReviewLoop — quarterly whole-portfolio rebalance
         # review. Self-contained quarterly cron (no cadence config field, like
         # thesis_monitor). Mirrors the identical block in argosy/api/main.py so

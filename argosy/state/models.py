@@ -2349,6 +2349,58 @@ class PlanActionAck(Base):
     )
 
 
+class PayslipFactRow(Base):
+    """Parsed Hilan payslip facts + §102-equity withholding verdict, per period.
+
+    Backs the closed-loop "is my RSU (§102 equity) withholding adequate?"
+    feature. One row per ``(user_id, period_year, period_month)``:
+
+    * ``source_file_id`` / ``source_sha256`` — the ``user_files`` catalog row the
+      raw PDF bytes were stored under (every payslip flows through
+      ``argosy/services/file_catalog.py::catalog_upload``). ``source_sha256`` is
+      the idempotency key — re-ingesting identical bytes updates in place; a
+      changed PDF for the same period (new sha) overwrites the row.
+    * ``parsed_json`` — serialized :class:`argosy.services.payslip_parser.PayslipFacts`.
+    * ``verdict_json`` — serialized
+      :class:`argosy.services.rsu_reconciliation.withholding_check.WithholdingVerdict`
+      so the latest verdict reads fast without re-parsing the PDF.
+
+    ``(user_id, period_year, period_month)`` is UNIQUE so re-ingest upserts
+    rather than accumulating duplicate periods.
+
+    Migration: alembic 0074.
+    """
+
+    __tablename__ = "payslip_facts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    period_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    period_month: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_file_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("user_files.id", ondelete="SET NULL"), nullable=True
+    )
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    parsed_json: Mapped[str] = mapped_column(Text, nullable=False)
+    verdict_json: Mapped[str] = mapped_column(Text, nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "period_year",
+            "period_month",
+            name="uq_payslip_facts_user_period",
+        ),
+    )
+
+
 class StateSnapshot(Base):
     """One per-user per-day snapshot of the user's full ``current_state``.
 
