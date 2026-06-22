@@ -156,6 +156,28 @@ class Settings(BaseSettings):
     # ``ARGOSY_PHASE5_AGENTS=false`` to fall back to the 10-member core fleet.
     phase5_agents: bool = Field(default=True)
 
+    # Decision funnel (P0) — staged kill switches for the autonomous daily
+    # decision funnel. Layered so each capability can be disabled instantly and
+    # independently (codex: "build it as a conservative escalation system"):
+    #   - decision_funnel_enabled: master switch. When False the loop no-ops.
+    #     Default OFF — the funnel only runs once explicitly enabled.
+    #   - decision_funnel_shadow: when True (DEFAULT), the funnel runs and
+    #     records proposals + full trace but surfaces NOTHING to the client —
+    #     the calibration period against Ariel's real decisions. Flip to False
+    #     only after shadow mode has been validated.
+    #   - decision_funnel_stage3: when True, survivors escalate to the Opus
+    #     deep-decision fleet (Stage 3). Default OFF: Stage 0–2 (cheap scan +
+    #     routing + triage) run and are traced, but no expensive deep decision
+    #     fires until explicitly enabled.
+    #   - decision_funnel_autoact: when True, PRE-AUTHORIZED MECHANICAL rules
+    #     may auto-execute (idle-cash sweep, in-band rebalance, TLH). Default
+    #     OFF. Discretionary Buy/Sell/Trim is ALWAYS propose-and-ask regardless.
+    # Read via ARGOSY_DECISION_FUNNEL_ENABLED / _SHADOW / _STAGE3 / _AUTOACT.
+    decision_funnel_enabled: bool = Field(default=False)
+    decision_funnel_shadow: bool = Field(default=True)
+    decision_funnel_stage3: bool = Field(default=False)
+    decision_funnel_autoact: bool = Field(default=False)
+
     # Israeli surtax (mas yesef) parameters — config-sourced so the annually
     # re-set threshold is NOT a frozen magic literal. Defaults are the nominal
     # 2024/2025 values; override per tax year via ARGOSY_SURTAX_THRESHOLD_NIS /

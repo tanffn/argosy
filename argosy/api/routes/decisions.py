@@ -828,4 +828,94 @@ async def get_decisions_recent(
     return result
 
 
+# ----------------------------------------------------------------------
+# Decision-funnel trace (P0 observability)
+# ----------------------------------------------------------------------
+
+
+@router.get("/funnel/runs")
+async def list_funnel_runs(
+    user_id: str = Query("ariel"),
+    limit: int = Query(30, ge=1, le=200),
+) -> dict[str, Any]:
+    """List recent funnel runs (compact headers, newest first)."""
+    from argosy.services.funnel_view import run_summary
+    from argosy.state.models import FunnelRun
+
+    async with db_mod.get_session(user_id) as session:
+        rows = (
+            await session.execute(
+                select(FunnelRun)
+                .where(FunnelRun.user_id == user_id)
+                .order_by(desc(FunnelRun.started_at))
+                .limit(limit)
+            )
+        ).scalars().all()
+    return {"runs": [run_summary(r) for r in rows]}
+
+
+@router.get("/funnel/runs/{run_id}")
+async def get_funnel_run(
+    run_id: int, user_id: str = Query("ariel")
+) -> dict[str, Any]:
+    """Full debug view of one funnel run: per-stage rows (incl. dropped names +
+    reasons + model/tokens) + the immutable decision snapshots."""
+    from argosy.services.funnel_view import build_run_detail
+    from argosy.state.models import DecisionSnapshot, FunnelRun, FunnelStageRow
+
+    async with db_mod.get_session(user_id) as session:
+        run = (
+            await session.execute(
+                select(FunnelRun).where(
+                    FunnelRun.id == run_id, FunnelRun.user_id == user_id
+                )
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            raise HTTPException(status_code=404, detail="funnel run not found")
+        stage_rows = (
+            await session.execute(
+                select(FunnelStageRow)
+                .where(FunnelStageRow.run_id == run_id)
+                .order_by(asc(FunnelStageRow.id))
+            )
+        ).scalars().all()
+        snapshots = (
+            await session.execute(
+                select(DecisionSnapshot)
+                .where(DecisionSnapshot.run_id == run_id)
+                .order_by(asc(DecisionSnapshot.id))
+            )
+        ).scalars().all()
+    return build_run_detail(run, list(stage_rows), list(snapshots))
+
+
+@router.get("/funnel/runs/{run_id}/narrative")
+async def get_funnel_run_narrative(
+    run_id: int, user_id: str = Query("ariel")
+) -> dict[str, Any]:
+    """Plain-language 'what Argosy did for me' summary for the client surface."""
+    from argosy.services.funnel_view import build_client_narrative
+    from argosy.state.models import FunnelRun, FunnelStageRow
+
+    async with db_mod.get_session(user_id) as session:
+        run = (
+            await session.execute(
+                select(FunnelRun).where(
+                    FunnelRun.id == run_id, FunnelRun.user_id == user_id
+                )
+            )
+        ).scalar_one_or_none()
+        if run is None:
+            raise HTTPException(status_code=404, detail="funnel run not found")
+        stage_rows = (
+            await session.execute(
+                select(FunnelStageRow)
+                .where(FunnelStageRow.run_id == run_id)
+                .order_by(asc(FunnelStageRow.id))
+            )
+        ).scalars().all()
+    return build_client_narrative(run, list(stage_rows))
+
+
 __all__ = ["router"]
