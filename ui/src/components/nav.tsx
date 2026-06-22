@@ -35,18 +35,17 @@ interface NavTab {
 // PRIMARY tabs are visible at all times -- daily-to-monthly use,
 // ordered by typical session flow (Home glance -> Advisor for data
 // entry -> Portfolio/Expenses to read state -> Plan for the draft
-// -> Retirement for the verdict -> Consult on a ticker -> Proposals
-// to approve).
-// Proposals sits immediately after Portfolio: the action hub lives next to the
-// state it acts on (read your portfolio -> act on it). Consult is NOT a primary
-// tab — it's folded into the Proposals hub as "Ask the team"; the /consult
-// route stays as a working deep link. Exported so the ordering invariant is
-// unit-testable.
+// -> Retirement for the verdict -> Inbox to act).
+// Inbox (the action hub, formerly /proposals) sits immediately after Portfolio:
+// it lives next to the state it acts on (read your portfolio -> act on it).
+// Consult is NOT a primary tab — it's folded into the Inbox hub as "Ask the
+// team"; the /consult route stays as a working deep link. Exported so the
+// ordering invariant is unit-testable.
 export const PRIMARY_TABS: NavTab[] = [
   { href: "/", label: "Home", Icon: Home },
   { href: "/advisor", label: "Advisor", Icon: MessageCircle },
   { href: "/portfolio", label: "Portfolio", Icon: PieChart },
-  { href: "/proposals", label: "Proposals", Icon: Inbox },
+  { href: "/inbox", label: "Inbox", Icon: Inbox },
   { href: "/expenses", label: "Expenses", Icon: Wallet },
   { href: "/plan", label: "Plan", Icon: ClipboardList },
   { href: "/retirement", label: "Retirement", Icon: Flag },

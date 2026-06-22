@@ -720,8 +720,8 @@ export default function PlanPage() {
       {!synthesisRunning && synthesisDraftId !== null && (
         <p className="text-sm">
           Draft #{synthesisDraftId} ready ·{" "}
-          <Link href="/proposals" className="text-primary hover:underline">
-            → Review draft on /proposals
+          <Link href="/inbox" className="text-primary hover:underline">
+            → Review draft in your inbox
           </Link>
         </p>
       )}

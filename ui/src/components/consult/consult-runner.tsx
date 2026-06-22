@@ -317,7 +317,7 @@ export function ConsultRunner() {
           Submit one or more tickers with your conviction and rationale. The
           agent fleet runs a decision flow per ticker and returns a Buy / Sell /
           Hold recommendation backed by a full reasoning trail. The actual
-          accept/execute happens on <Link href="/proposals" className="text-primary hover:underline">/proposals</Link>.
+          accept/execute happens in your <Link href="/inbox" className="text-primary hover:underline">inbox</Link>.
         </p>
       </header>
 
@@ -493,10 +493,10 @@ export function ConsultRunner() {
                       <div>run #{o.result.decision_run_id}</div>
                       {o.result.proposal_id != null && (
                         <Link
-                          href={`/proposals`}
+                          href="/inbox"
                           className="text-primary hover:underline"
                         >
-                          → Proposal #{o.result.proposal_id}
+                          → Review in inbox
                         </Link>
                       )}
                     </div>

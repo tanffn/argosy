@@ -303,7 +303,7 @@ export default function DecisionReplayPage(props: {
             <div className="col-span-2 md:col-span-4">
               <a
                 className="text-primary hover:underline"
-                href="/proposals"
+                href="/inbox"
               >
                 ↗ Proposal #{run.proposal_id}
               </a>

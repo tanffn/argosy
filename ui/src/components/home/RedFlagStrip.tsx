@@ -216,13 +216,13 @@ function kindLabel(kind: MonitorFlagKind): string {
 function linkForKind(kind: MonitorFlagKind): string {
   switch (kind) {
     case "allocation_drift":
-      return "/proposals#allocation";
+      return "/inbox#allocation";
     case "mc_regression":
       return "/plan";
     case "macro_shift":
       return "/plan";
     case "alpha_report_caution":
-      return "/proposals";
+      return "/inbox";
   }
   if (kind === "state_observer_allocation_observation") {
     return "/portfolio";
@@ -244,8 +244,8 @@ function linkForKind(kind: MonitorFlagKind): string {
   }
   if (kind.startsWith("thesis_monitor_")) {
     // A weakened/broken position thesis is an actionable trim/exit signal —
-    // route to proposals where the resulting action surfaces.
-    return "/proposals";
+    // route to the inbox where the resulting action surfaces.
+    return "/inbox";
   }
   return "/advisor";
 }

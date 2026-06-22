@@ -27,6 +27,8 @@ const eslintConfig = defineConfig([
   // there.
   {
     files: [
+      "src/app/inbox/**/*.tsx",
+      "src/components/inbox/**/*.tsx",
       "src/app/proposals/**/*.tsx",
       "src/components/proposals/**/*.tsx",
       "src/app/page.tsx",

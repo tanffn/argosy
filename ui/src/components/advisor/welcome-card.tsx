@@ -174,7 +174,7 @@ export function AdvisorWelcomeCard({ userId, gaps }: AdvisorWelcomeCardProps) {
         </span>
         {p.summary}{" "}
         <Link
-          href={`/proposals#action-${p.id}`}
+          href="/inbox"
           className="text-info hover:underline"
         >
           review →

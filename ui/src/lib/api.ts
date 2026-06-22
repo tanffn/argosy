@@ -1833,6 +1833,68 @@ export interface FunnelRunDetail extends FunnelRunSummary {
   snapshots: FunnelSnapshotDTO[];
 }
 
+// ----------------------------------------------------------------------
+// Action inbox (GET /api/inbox) — the server-owned, ranked, typed feed the
+// /inbox page projects. The client renders these as-is; it computes no rank,
+// membership, or materiality. Mirrors argosy/services/inbox/types.py.
+// ----------------------------------------------------------------------
+export type InboxKind =
+  | "trade"
+  | "cash_deploy"
+  | "plan_task"
+  | "note"
+  | "discovery_buy"
+  | "switch";
+
+export interface InboxActionDTO {
+  intent: string;
+  label: string;
+  style: "primary" | "secondary" | "danger";
+  requires_confirmation: boolean;
+}
+
+export interface InboxSourceRefDTO {
+  source: string;
+  ref_id: string;
+}
+
+export interface InboxItemDTO {
+  id: string;
+  kind: InboxKind;
+  title: string;
+  why_now: string;
+  rank_reason: string;
+  bucket: number | null;
+  bucket_label: string | null;
+  primary_action: InboxActionDTO | null;
+  secondary_actions: InboxActionDTO[];
+  body: Record<string, unknown>;
+  due_at: string | null;
+  expires_at: string | null;
+  amount_usd: number | null;
+  source_refs: InboxSourceRefDTO[];
+  trace: Record<string, unknown> | null;
+}
+
+export interface InboxLivenessDTO {
+  last_checked: string;
+  pending_decisions: number;
+  open_approvals: number;
+  cash_within_band: boolean;
+  no_overdue_tasks: boolean;
+  next_review: string | null;
+}
+
+export interface InboxFeedDTO {
+  items: InboxItemDTO[];
+  quiet: boolean;
+  needs_you_count: number;
+  liveness: InboxLivenessDTO;
+  policy_version: string;
+  generated_at: string;
+  dropped: unknown[];
+}
+
 export const api = {
   overview: (userId: string) =>
     getJSON<OverviewResponse>(
@@ -3604,6 +3666,12 @@ export const api = {
     getJSON<WithholdingCheckResponse>(
       `/api/tax/withholding-check?user_id=${encodeURIComponent(userId)}`,
     ),
+  // The action inbox — one ranked, typed feed of what needs the user now.
+  getInbox: (userId: string, debug = false): Promise<InboxFeedDTO> => {
+    const qs = new URLSearchParams({ user_id: userId });
+    if (debug) qs.set("debug", "true");
+    return getJSON<InboxFeedDTO>(`/api/inbox?${qs.toString()}`);
+  },
 };
 
 // ----------------------------------------------------------------------
