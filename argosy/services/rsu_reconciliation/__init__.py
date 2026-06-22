@@ -29,6 +29,10 @@ from argosy.services.rsu_reconciliation.schwab_csv import (
     SchwabSaleLot,
     parse_csv,
 )
+from argosy.services.rsu_reconciliation.withholding_check import (
+    WithholdingVerdict,
+    check_withholding,
+)
 
 __all__ = [
     "LeumiCredit",
@@ -38,6 +42,8 @@ __all__ = [
     "SchwabReport",
     "SchwabSale",
     "SchwabSaleLot",
+    "WithholdingVerdict",
+    "check_withholding",
     "parse_csv",
     "reconcile",
 ]

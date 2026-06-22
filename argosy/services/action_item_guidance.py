@@ -85,17 +85,18 @@ def guidance_for_action(
     if _contains_any(label_l, ("withhold", "withholding", "section 102", "§102", "rsu tax")):
         return Guidance(
             how_to=(
-                "Open your latest payslip (or the Schwab/Etrade RSU vesting "
-                "confirmation) and read off the tax actually withheld on the "
-                "vest. Compare it to Argosy's §102 estimate on /retirement "
-                "(RSU reconciliation card). If the payslip withholding is "
-                "lower than the §102 estimate, set aside the shortfall in NIS "
-                "cash so you are not surprised at filing."
+                "In Israel the §102 tax on RSUs is withheld at SALE (the trustee "
+                "deducts it from the sale proceeds) and then trued up through "
+                "your payslip — if too much was withheld you get the difference "
+                "back in your paycheck. Drop your latest payslip in the Payslip "
+                "folder: Argosy reconciles its §102 equity tax to the model and "
+                "tells you whether a refund is due or a filing-time top-up should "
+                "be set aside in NIS."
             ),
             done_when=(
-                "You have compared the payslip's withheld tax against the §102 "
-                "estimate and either confirmed it is adequate or earmarked cash "
-                "for the gap."
+                "Argosy's withholding check reconciles your latest payslip's §102 "
+                "equity tax to the model — confirming the refund or earmarking any "
+                "filing-time top-up."
             ),
             category="verify_withholding",
         )
