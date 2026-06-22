@@ -425,9 +425,11 @@ def test_accept_matching_headline_number_passes_numeric_gate(client_with_db, mon
     assert r.json()["status"] == "accepted"
 
 
-def test_accept_derivation_pending_passes_numeric_gate(client_with_db, monkeypatch):
-    """#24: a draft that renders '[derivation pending]' for an un-derived
-    number is NOT flagged (the sanctioned escape hatch)."""
+def test_accept_derivation_pending_is_blocked_as_leakage(client_with_db, monkeypatch):
+    """A draft still rendering '[derivation pending]' for an un-derived number is
+    BLOCKED by the leakage gate (owner decision 2026-06-22: an unfinished
+    placeholder must not reach an accepted plan — it is leakage, not a sanctioned
+    escape hatch). Re-render / re-synthesize until clean, or override explicitly."""
     import argosy.api.routes.plan as plan_routes
     monkeypatch.setattr(plan_routes, "_auto_regen_narrative", lambda *a, **k: None)
     monkeypatch.setenv("ARGOSY_PLAN_GATE_ENFORCE", "true")
@@ -452,8 +454,10 @@ def test_accept_derivation_pending_passes_numeric_gate(client_with_db, monkeypat
         sess.close()
 
     r = client_with_db.post(f"/api/plan/draft/{draft_id}/accept?user_id=ariel")
-    assert r.status_code == 200, r.text
-    assert r.json()["status"] == "accepted"
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["error"] == "artifact_leakage"
+    assert any("derivation pending" in s for s in detail["leaks"])
 
 
 def test_accept_fail_closed_when_no_decision_run_id_in_enforce(client_with_db, monkeypatch):
