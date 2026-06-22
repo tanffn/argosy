@@ -209,6 +209,7 @@ class DecisionFlow:
         decision_run_id: int | None = None,
         persist_input_analysts: bool = True,
         consult_mode: Literal["tactical_trade", "long_hold"] = "long_hold",
+        funnel_meta: dict[str, Any] | None = None,
     ) -> ApprovedProposal | BlockedProposal:
         """Run the full pipeline for the given tier.
 
@@ -601,7 +602,8 @@ class DecisionFlow:
         if proposal.status == ProposalStatus.APPROVED:
             transitioned_by = "auto_execute:limited_t0t1"
         proposal_id = await self._persist_proposal(
-            proposal, fm_decision=fm_decision, transitioned_by=transitioned_by
+            proposal, fm_decision=fm_decision, transitioned_by=transitioned_by,
+            funnel_meta=funnel_meta,
         )
         proposal.id = proposal_id
 
@@ -759,6 +761,7 @@ class DecisionFlow:
         *,
         fm_decision: FundManagerDecision,
         transitioned_by: str,
+        funnel_meta: dict[str, Any] | None = None,
     ) -> int:
         if self.config.skip_persistence:
             return 0
@@ -800,6 +803,15 @@ class DecisionFlow:
                 decision_run_id=proposal.decision_run_id,
                 plan_version_id=plan_version_id,
             )
+            # Decision-funnel lifecycle fields set ATOMICALLY at creation so a
+            # shadow-mode proposal is NEVER briefly client-visible (no
+            # post-stamp visibility window). Existing callers pass no meta and
+            # the row keeps its DB defaults (source="manual", shadow=0).
+            if funnel_meta:
+                row.source = funnel_meta.get("source", "manual")
+                row.shadow = int(funnel_meta.get("shadow", 0))
+                row.expires_at = funnel_meta.get("expires_at")
+                row.funnel_run_id = funnel_meta.get("funnel_run_id")
             session.add(row)
             await session.flush()
             history = ProposalHistory(

@@ -16,32 +16,27 @@ attention" gate.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:  # pragma: no cover
-    from argosy.services.ips import InvestmentPolicyStatement
-
-# Triggers that materially advance the prime directive when acted on:
-# - risk-reducing (concentration / thesis deterioration) -> safer retirement
-# - opportunity / event-driven (big move, earnings) -> better finances
-# - drift correction -> keeps the plan on its glide to FI
-_MATERIAL_TRIGGERS = {
+# Risk-reducing triggers: acting reduces concentration / thesis / drawdown risk
+# -> a safer path to retirement. A risk-reducing trigger justifies a SELL/TRIM,
+# not a BUY (buying into a cap breach is contradictory).
+_RISK_REDUCING = {
     "thesis_broken",
     "thesis_weakened",
     "concentration_cap_breach",
     "concentration_unverified",
     "drift_band_breach",
-    "big_move",
     "big_drawdown",
+}
+
+# Opportunity / event-driven triggers: acting (in either direction) protects or
+# advances finances; these justify a BUY as well as a SELL.
+_OPPORTUNITY = {
+    "big_move",
     "earnings_imminent",
     "high_materiality_news",
     "macro_risk_off",
 }
-
-# A pure audit re-route is a false-drop SAFETY CHECK, not a directive signal —
-# if it happens to produce a proposal it is recorded, but it does not by itself
-# justify pushing the proposal to the client.
-_NON_DIRECTIVE_ONLY = {"audit_sample"}
 
 
 @dataclass(frozen=True)
@@ -54,44 +49,59 @@ def assess_alignment(
     *,
     triggers: list[str],
     action: str | None,
-    ips: "InvestmentPolicyStatement | None" = None,
+    proposed: bool = True,
 ) -> AlignmentVerdict:
-    """Judge whether a proposed action traces to the prime directive.
+    """Judge whether a PROPOSED action traces to the prime directive (maximize
+    finances + earliest safe retirement) and is directionally coherent.
 
-    Aligned when at least one MATERIAL trigger fired. A proposal whose only
-    trigger is the audit sample is NOT aligned (it was a false-drop check).
+    Called only for proposals the full T2 fleet already approved, so the bar is
+    "is this directionally sensible + worth the client's attention", not a
+    re-derivation. Returns aligned=False to KEEP a proposal out of the active
+    surface (it is still recorded for transparency).
     """
-    material = [t for t in triggers if t in _MATERIAL_TRIGGERS]
-    only_audit = bool(triggers) and all(t in _NON_DIRECTIVE_ONLY for t in triggers)
+    if not proposed:
+        return AlignmentVerdict(False, "no actionable proposal")
+    if not triggers:
+        return AlignmentVerdict(False, "no routing trigger — not surfaced")
 
-    if only_audit or not material:
+    act = (action or "").lower()
+    risk_reducing = [t for t in triggers if t in _RISK_REDUCING]
+    opportunity = [t for t in triggers if t in _OPPORTUNITY]
+    only_audit = bool(triggers) and triggers == ["audit_sample"]
+
+    # An audit-sample that yielded an APPROVED proposal is exactly the value of
+    # the false-drop audit — surface it.
+    if only_audit:
         return AlignmentVerdict(
-            aligned=False,
-            justification=(
-                "no material directive signal — surfaced via audit/no concrete "
-                "trigger; recorded for transparency, not pushed"
-            ),
+            True, "audit re-route surfaced a real, fleet-approved trade (caught a false drop)"
         )
 
-    # Risk-reduction framing for the common single-name cases.
-    risk_reducing = any(
-        t in ("thesis_broken", "thesis_weakened", "concentration_cap_breach",
-              "concentration_unverified", "drift_band_breach", "big_drawdown")
-        for t in material
-    )
-    act = (action or "").lower()
+    # Contradiction guard: a BUY justified ONLY by risk-reduction triggers (a
+    # cap breach / over-target drift / thesis deterioration) is incoherent —
+    # those call for a trim, not an add.
+    if act == "buy" and risk_reducing and not opportunity:
+        return AlignmentVerdict(
+            False,
+            f"incoherent: BUY against risk-reduction trigger(s) {', '.join(risk_reducing)} "
+            "— recorded, not surfaced",
+        )
+
     if risk_reducing and act in ("sell", "trim"):
-        why = "reduces single-name / thesis risk -> safer path to retirement"
-    elif "earnings_imminent" in material or "big_move" in material:
-        why = "event-driven repositioning -> protects/advances finances"
-    elif "high_materiality_news" in material:
-        why = "responds to material news affecting a holding"
-    else:
-        why = "keeps the book aligned to the plan's glide toward FI"
-    return AlignmentVerdict(
-        aligned=True,
-        justification=f"material trigger(s) {', '.join(material)}: {why}",
-    )
+        return AlignmentVerdict(
+            True,
+            f"reduces risk ({', '.join(risk_reducing)}) -> safer path to retirement",
+        )
+    if opportunity:
+        return AlignmentVerdict(
+            True, f"event-driven ({', '.join(opportunity)}) -> protects/advances finances"
+        )
+    if risk_reducing:
+        return AlignmentVerdict(
+            True, f"keeps the book aligned to plan ({', '.join(risk_reducing)})"
+        )
+    # A fleet-approved proposal with no recognised trigger still passed the full
+    # risk + fund-manager gate; surface it (the fleet is the primary authority).
+    return AlignmentVerdict(True, "fleet-approved trade with no contra-indication")
 
 
 __all__ = ["AlignmentVerdict", "assess_alignment"]

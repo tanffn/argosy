@@ -56,10 +56,14 @@ def expire_stale_proposals(
     """Transition every open, past-TTL proposal to EXPIRED. Returns the ids
     expired. Idempotent — terminal / future-dated proposals are skipped."""
     now = now or _utcnow()
+    # Scoped to funnel proposals (the only ones with a TTL) so this never
+    # touches a manually-created or monthly-cycle proposal even if one ever
+    # carries an expires_at.
     rows = (
         session.execute(
             select(Proposal).where(
                 Proposal.user_id == user_id,
+                Proposal.source == "decision_funnel",
                 Proposal.status.in_(_OPEN_STATES),
                 Proposal.expires_at.is_not(None),
                 Proposal.expires_at < now,

@@ -43,10 +43,24 @@ def test_north_star_aligned_for_earnings_event():
     assert v.aligned
 
 
-def test_north_star_not_aligned_for_audit_only():
+def test_north_star_audit_with_proposal_is_aligned():
+    # An audit re-route that yields a fleet-APPROVED trade caught a false drop —
+    # that is exactly its value, so it surfaces.
     v = assess_alignment(triggers=["audit_sample"], action="sell")
-    assert not v.aligned
+    assert v.aligned
     assert "audit" in v.justification.lower()
+
+
+def test_north_star_buy_on_risk_reduction_is_incoherent():
+    # A BUY justified ONLY by a cap breach is contradictory -> not surfaced.
+    v = assess_alignment(triggers=["concentration_cap_breach"], action="buy")
+    assert not v.aligned
+    assert "incoherent" in v.justification.lower()
+
+
+def test_north_star_not_aligned_when_not_proposed():
+    v = assess_alignment(triggers=["thesis_broken"], action="sell", proposed=False)
+    assert not v.aligned
 
 
 def test_north_star_not_aligned_when_no_triggers():

@@ -43,6 +43,7 @@ from argosy.services.decision_funnel.stage1_routing import (
 from argosy.services.decision_funnel.triage import triage_candidate
 from argosy.services.funnel_trace import (
     close_run,
+    fingerprint as _ft_fingerprint,
     open_run,
     record_snapshot,
     record_stage_row,
@@ -270,111 +271,172 @@ async def run_funnel(
             totals["stage2_stop"] += 1
 
     # ---- Phase C: Stage 3 deep decision (async LLM, gated) ----
-    for cand, _t in survivors:
-        if cand.subject_type != "holding":
-            with sf() as s3:
-                record_stage_row(
-                    s3, run_id=run_id, stage="stage3", subject=cand.subject,
-                    subject_type=cand.subject_type, decision="sleeve_deferred",
-                    reason="sleeve-level review deferred to plan refresh (P3)",
-                    signal_or_rule=cand.primary_signal,
-                )
-            continue
-        if not stage3_enabled:
-            with sf() as s3:
-                record_stage_row(
-                    s3, run_id=run_id, stage="stage3", subject=cand.subject,
-                    subject_type="holding", decision="stage3_skipped",
-                    reason="Stage 3 disabled (shadow calibration) — would escalate",
-                    signal_or_rule=cand.primary_signal,
-                )
-            totals["stage3_skipped"] += 1
-            continue
+    # Wrapped so the run is ALWAYS closed (status ok|error) even if a stage
+    # raises (codex BLOCKER: deep-decision failures must not leave the run open
+    # or a name untraced).
+    from argosy.services.decision_funnel.north_star import assess_alignment
+    from argosy.services.funnel_trace import snapshot_dedup_key
+    from argosy.state.models import DecisionSnapshot, Proposal
 
-        dd = await deep_decision_fn(
-            user_id=user_id, ticker=cand.subject, account_class="main",
-        )
-        subj = cand.subject.upper()
-        with sf() as s3:
-            decision_payload = {
-                "action": dd.action,
-                "status": dd.status,
-                "blocked_reason": dd.blocked_reason,
-                "blocked_by": dd.blocked_by,
-                "triggers": cand.triggers,
-                "router_reason": cand.reason,
+    try:
+        for cand, _t in survivors:
+            if cand.subject_type != "holding":
+                with sf() as s3:
+                    record_stage_row(
+                        s3, run_id=run_id, stage="stage3", subject=cand.subject,
+                        subject_type=cand.subject_type, decision="sleeve_deferred",
+                        reason="sleeve-level review deferred to plan refresh (P3)",
+                        signal_or_rule=cand.primary_signal,
+                    )
+                continue
+            if not stage3_enabled:
+                with sf() as s3:
+                    record_stage_row(
+                        s3, run_id=run_id, stage="stage3", subject=cand.subject,
+                        subject_type="holding", decision="stage3_skipped",
+                        reason="Stage 3 disabled (shadow calibration) — would escalate",
+                        signal_or_rule=cand.primary_signal,
+                    )
+                totals["stage3_skipped"] += 1
+                continue
+
+            subj = cand.subject.upper()
+            portfolio_snap = {
+                "weight_pct": weight_by.get(subj),
+                "cap_pct": cap_by.get(subj),
+                "book": weight_by,
             }
-            snap = record_snapshot(
-                s3, run_id=run_id, user_id=user_id, ticker=cand.subject, day=day,
-                decision=decision_payload,
-                portfolio_snapshot={"weight_pct": weight_by.get(subj),
-                                    "cap_pct": cap_by.get(subj),
-                                    "book": weight_by},
-                market_snapshot=market_dict,
-                policy_version=policy.version, policy=policy.to_dict(),
-                model_name=_FLEET_MODEL,
-                prompt_template_hash=(
-                    f"fleet:T2:{policy.version}:{day}:{subj}"
-                ),
-                model_inputs={"decision_run_id": dd.decision_run_id, "fleet_tier": "T2"},
-                source_refs=market.source_refs,
-                why_not_act=(dd.blocked_reason if dd.status != "approved" else None),
-                decision_run_id=dd.decision_run_id,
-                proposal_id=dd.proposal_id,
+            prompt_hash = f"fleet:T2:{policy.version}:{day}:{subj}"
+            # Dedup PRE-CHECK (codex BLOCKER 5): if an immutable snapshot for
+            # this exact input fingerprint already exists, skip the expensive
+            # fleet call entirely — no duplicate decision, no orphaned proposal.
+            dedup_key = snapshot_dedup_key(
+                user_id=user_id, ticker=subj, day=day,
+                policy_version=policy.version, model_name=_FLEET_MODEL,
+                prompt_template_hash=prompt_hash,
+                portfolio_fp=_ft_fingerprint(portfolio_snap),
+                market_fp=_ft_fingerprint(market_dict),
             )
-            # Stamp the proposal lifecycle columns (source/shadow/expiry/run).
-            if dd.proposal_id:
-                from argosy.state.models import Proposal
+            with sf() as s3:
+                exists = s3.execute(
+                    select(DecisionSnapshot.id).where(
+                        DecisionSnapshot.dedup_key == dedup_key
+                    )
+                ).scalar_one_or_none()
+            if exists is not None:
+                with sf() as s3:
+                    record_stage_row(
+                        s3, run_id=run_id, stage="stage3", subject=cand.subject,
+                        subject_type="holding", decision="deduped",
+                        reason="identical decision already recorded today (no re-run)",
+                        signal_or_rule=cand.primary_signal, snapshot_id=exists,
+                    )
+                continue
 
-                p = s3.get(Proposal, dd.proposal_id)
-                if p is not None:
-                    p.source = "decision_funnel"
-                    p.shadow = 1 if shadow else 0
-                    p.funnel_run_id = run_id
-                    p.expires_at = default_expiry(now)
-                    s3.commit()
+            funnel_meta = {
+                "source": "decision_funnel",
+                # Born shadow=1 in shadow mode so it is NEVER briefly
+                # client-visible (codex BLOCKER 1 — no post-stamp window).
+                "shadow": 1 if shadow else 0,
+                "expires_at": default_expiry(now),
+                "funnel_run_id": run_id,
+            }
+            try:
+                dd = await deep_decision_fn(
+                    user_id=user_id, ticker=cand.subject, account_class="main",
+                    funnel_meta=funnel_meta,
+                )
+            except Exception as exc:  # noqa: BLE001 — never abort the run
+                with sf() as s3:
+                    record_stage_row(
+                        s3, run_id=run_id, stage="stage3", subject=cand.subject,
+                        subject_type="holding", decision="error",
+                        reason=f"deep-decision raised: {str(exc)[:300]}",
+                        signal_or_rule=cand.primary_signal,
+                    )
+                _log.warning("decision_funnel.deep_raised", ticker=subj, error=str(exc)[:200])
+                continue
 
-            proposed = dd.status == "approved"
-            record_stage_row(
-                s3, run_id=run_id, stage="stage3", subject=cand.subject,
-                subject_type="holding",
-                decision=("proposed" if proposed else "blocked"),
-                reason=(f"action={dd.action}" if proposed else (dd.blocked_reason or "blocked")),
-                signal_or_rule=cand.primary_signal,
-                inputs={"action": dd.action, "status": dd.status},
-                snapshot_id=snap.id, proposal_id=dd.proposal_id,
+            # A proposal only exists when the fleet APPROVED *and* persisted one
+            # (codex BLOCKER 4: don't treat approved-without-proposal as proposed).
+            proposed = dd.status == "approved" and dd.proposal_id is not None
+            verdict = assess_alignment(
+                triggers=cand.triggers, action=dd.action, proposed=proposed
             )
-            # P5 north-star verify: before surfacing, the proposal must trace to
-            # the prime directive (maximize finances + earliest safe retirement).
-            from argosy.services.decision_funnel.north_star import assess_alignment
-
-            verdict = assess_alignment(triggers=cand.triggers, action=dd.action, ips=ips)
-            # Surface routing: an approved, non-shadow, directive-aligned proposal
-            # reaches the client's "needs me now" surface; everything else is
-            # recorded but hidden (shadow calibration / blocked / low-alignment).
             surfaced = proposed and not shadow and verdict.aligned
-            if not proposed:
-                surface_reason = dd.blocked_reason or "no actionable proposal"
-            elif shadow:
-                surface_reason = "shadow mode — recorded, not surfaced"
-            elif not verdict.aligned:
-                surface_reason = f"north-star: {verdict.justification}"
-            else:
-                surface_reason = f"client needs a decision — {verdict.justification}"
-            record_stage_row(
-                s3, run_id=run_id, stage="surface", subject=cand.subject,
-                subject_type="holding",
-                decision=("surfaced" if surfaced else "hidden"),
-                reason=surface_reason,
-                inputs={"north_star_aligned": verdict.aligned},
-                proposal_id=dd.proposal_id,
-            )
+
+            # All trace writes for this name in ONE transaction (codex BLOCKER 3).
+            with sf() as s3:
+                decision_payload = {
+                    "action": dd.action, "status": dd.status,
+                    "blocked_reason": dd.blocked_reason, "blocked_by": dd.blocked_by,
+                    "triggers": cand.triggers, "router_reason": cand.reason,
+                    "north_star_aligned": verdict.aligned,
+                }
+                snap = record_snapshot(
+                    s3, run_id=run_id, user_id=user_id, ticker=cand.subject, day=day,
+                    decision=decision_payload,
+                    portfolio_snapshot=portfolio_snap, market_snapshot=market_dict,
+                    policy_version=policy.version, policy=policy.to_dict(),
+                    model_name=_FLEET_MODEL, prompt_template_hash=prompt_hash,
+                    model_inputs={"decision_run_id": dd.decision_run_id, "fleet_tier": "T2"},
+                    source_refs=market.source_refs,
+                    why_not_act=(dd.blocked_reason if not proposed else None),
+                    decision_run_id=dd.decision_run_id, proposal_id=dd.proposal_id,
+                    human_action_state=("proposed" if proposed else "superseded"),
+                    commit=False,
+                )
+                # North-star tightening (codex BLOCKER 6): when NOT in shadow but
+                # north-star hid the proposal, set shadow=1 so the existing
+                # GET /api/proposals shadow filter durably keeps it off the
+                # client surface — visibility is tied to the surface decision.
+                if dd.proposal_id and proposed and not shadow and not verdict.aligned:
+                    p = s3.get(Proposal, dd.proposal_id)
+                    if p is not None:
+                        p.shadow = 1
+
+                record_stage_row(
+                    s3, run_id=run_id, stage="stage3", subject=cand.subject,
+                    subject_type="holding",
+                    decision=("proposed" if proposed else "blocked"),
+                    reason=(f"action={dd.action}" if proposed else (dd.blocked_reason or "blocked")),
+                    signal_or_rule=cand.primary_signal,
+                    inputs={"action": dd.action, "status": dd.status},
+                    snapshot_id=snap.id, proposal_id=dd.proposal_id, commit=False,
+                )
+                if not proposed:
+                    surface_reason = dd.blocked_reason or "no actionable proposal"
+                elif shadow:
+                    surface_reason = "shadow mode — recorded, not surfaced"
+                elif not verdict.aligned:
+                    surface_reason = f"north-star hid: {verdict.justification}"
+                else:
+                    surface_reason = f"client needs a decision — {verdict.justification}"
+                record_stage_row(
+                    s3, run_id=run_id, stage="surface", subject=cand.subject,
+                    subject_type="holding",
+                    decision=("surfaced" if surfaced else "hidden"),
+                    reason=surface_reason,
+                    inputs={"north_star_aligned": verdict.aligned},
+                    proposal_id=dd.proposal_id, commit=False,
+                )
+                s3.commit()
+
             if proposed:
                 totals["stage3_proposed"] += 1
             else:
                 totals["stage3_blocked"] += 1
             if surfaced:
                 totals["surfaced"] += 1
+    except Exception as exc:  # noqa: BLE001 — close the run on ANY failure
+        with sf() as sc:
+            close_run(
+                sc, run_id=run_id, status="error", totals=totals,
+                macro_read=market_dict, error_message=str(exc)[:2000],
+                finished_at=_utcnow(),
+            )
+        _log.exception("decision_funnel.run_failed", run_id=run_id)
+        raise
 
     # ---- close ----
     with sf() as sc:

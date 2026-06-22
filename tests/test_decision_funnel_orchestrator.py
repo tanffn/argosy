@@ -90,10 +90,17 @@ async def test_shadow_calibration_skips_stage3(sf):
 async def test_stage3_enabled_records_snapshot_and_stamps_proposal(sf):
     settings = SimpleNamespace(decision_funnel_shadow=True, decision_funnel_stage3=True)
 
-    async def _deep(*, user_id, ticker, **kwargs):
-        # Create a real proposal row so the orchestrator can stamp it.
+    async def _deep(*, user_id, ticker, funnel_meta=None, **kwargs):
+        # Create a proposal row applying funnel_meta the way flow._persist_proposal
+        # now does (shadow set ATOMICALLY at birth).
         s = sf()
-        p = Proposal(user_id=user_id, ticker=ticker, action="sell", tier="T2", status="awaiting_human")
+        fm = funnel_meta or {}
+        p = Proposal(
+            user_id=user_id, ticker=ticker, action="sell", tier="T2",
+            status="awaiting_human", source=fm.get("source", "manual"),
+            shadow=int(fm.get("shadow", 0)), expires_at=fm.get("expires_at"),
+            funnel_run_id=fm.get("funnel_run_id"),
+        )
         s.add(p)
         s.commit()
         pid = p.id
@@ -134,9 +141,15 @@ async def test_stage3_enabled_records_snapshot_and_stamps_proposal(sf):
 async def test_stage3_surfaces_when_not_shadow(sf):
     settings = SimpleNamespace(decision_funnel_shadow=False, decision_funnel_stage3=True)
 
-    async def _deep(*, user_id, ticker, **kwargs):
+    async def _deep(*, user_id, ticker, funnel_meta=None, **kwargs):
         s = sf()
-        p = Proposal(user_id=user_id, ticker=ticker, action="sell", tier="T2", status="awaiting_human")
+        fm = funnel_meta or {}
+        p = Proposal(
+            user_id=user_id, ticker=ticker, action="sell", tier="T2",
+            status="awaiting_human", source=fm.get("source", "manual"),
+            shadow=int(fm.get("shadow", 0)), expires_at=fm.get("expires_at"),
+            funnel_run_id=fm.get("funnel_run_id"),
+        )
         s.add(p)
         s.commit()
         pid = p.id
@@ -150,5 +163,5 @@ async def test_stage3_surfaces_when_not_shadow(sf):
     assert out["surfaced"] >= 1
     s = sf()
     p = s.execute(sa.select(Proposal)).scalars().first()
-    assert p.shadow == 0
+    assert p.shadow == 0  # non-shadow + north-star aligned -> client-visible
     s.close()

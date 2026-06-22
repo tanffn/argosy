@@ -50,12 +50,25 @@ async def run_deep_decision(
     account_class: str = "main",
     tier: Tier = Tier.T2,
     consult_mode: Literal["tactical_trade", "long_hold"] = "long_hold",
+    funnel_meta: dict | None = None,
 ) -> DeepDecisionOutcome:
     """Run the full deep-decision fleet for one ticker. Never raises — returns
-    a structured outcome the orchestrator records (incl. quorum / error)."""
-    pre_opened = await open_decision_run_for_consult(
-        user_id=user_id, ticker=ticker, tier_value=tier.value
-    )
+    a structured outcome the orchestrator records (incl. quorum / error).
+
+    ``funnel_meta`` (source/shadow/expires_at/funnel_run_id) is threaded into
+    the flow so the proposal is born with its funnel lifecycle fields set
+    ATOMICALLY — a shadow proposal is never briefly client-visible.
+    """
+    try:
+        pre_opened = await open_decision_run_for_consult(
+            user_id=user_id, ticker=ticker, tier_value=tier.value
+        )
+    except Exception as exc:  # noqa: BLE001 — pre-open must not crash the funnel
+        _log.warning("decision_funnel.deep_open_error", ticker=ticker, error=str(exc)[:200])
+        return DeepDecisionOutcome(
+            ticker=ticker, status="error", blocked_reason=str(exc)[:200],
+            blocked_by="open_error",
+        )
     try:
         result = await run_per_ticker_analysts(
             user_id=user_id, ticker=ticker, decision_run_id=pre_opened,
@@ -92,6 +105,7 @@ async def run_deep_decision(
             decision_run_id=pre_opened,
             persist_input_analysts=False,
             consult_mode=consult_mode,
+            funnel_meta=funnel_meta,
         )
     except Exception as exc:  # noqa: BLE001
         _log.warning("decision_funnel.deep_flow_error", ticker=ticker, error=str(exc)[:200])

@@ -237,11 +237,19 @@ def record_snapshot(
     why_not_act: str | None = None,
     decision_run_id: int | None = None,
     proposal_id: int | None = None,
+    human_action_state: str = "proposed",
+    commit: bool = True,
 ) -> DecisionSnapshot:
     """Write (or return the existing) IMMUTABLE decision snapshot.
 
     Dedup is on the FULL decision-input fingerprint, so an identical re-run is
     deduped while any real input change records a fresh, independent row.
+
+    ``commit=False`` flushes (so ``.id`` is available) but leaves the commit to
+    the caller, so the snapshot + the stage/surface rows that reference it land
+    in ONE transaction (no orphan window). ``human_action_state`` lets the
+    caller record the true lifecycle state ("proposed" only when a proposal
+    actually stands).
     """
     portfolio_fp = fingerprint(portfolio_snapshot)
     market_fp = fingerprint(market_snapshot)
@@ -279,13 +287,16 @@ def record_snapshot(
         policy_json=json.dumps(policy, default=str),
         unchanged_explanation=unchanged_explanation,
         why_not_act=why_not_act,
-        human_action_state="proposed",
+        human_action_state=human_action_state,
         decision_run_id=decision_run_id,
         proposal_id=proposal_id,
     )
     session.add(row)
-    session.commit()
-    session.refresh(row)
+    if commit:
+        session.commit()
+        session.refresh(row)
+    else:
+        session.flush()  # populate row.id without ending the transaction
     _log.info(
         "funnel_trace.snapshot_recorded",
         snapshot_id=row.id, run_id=run_id, ticker=ticker.upper(),
