@@ -130,7 +130,7 @@ def _structlog_isolation():
 
 
 @pytest.fixture
-def client_with_db(tmp_path):
+def client_with_db(tmp_path, monkeypatch):
     """Synchronous TestClient backed by a dedicated file-backed SQLite DB.
 
     Provides ``client_with_db.app.state.session_factory`` so test setup
@@ -141,6 +141,15 @@ def client_with_db(tmp_path):
     setup) and the async engine (for distill_baseline_plan_async which
     opens its own session via db_mod.get_session()) are pointed at the
     same file-backed SQLite so all code paths share the same data.
+
+    PERF: the in-process scheduler is disabled here (ARGOSY_RUN_SCHEDULER=0).
+    These are API-endpoint tests that never exercise the scheduler, and building
+    it on every TestClient startup (register_default_loops + ~12 job
+    registrations + supervisors, reading agent_settings.yaml) measured ~1.9s PER
+    TEST of startup (2.0s on vs 0.1s off) — a large slice of the multi-hour
+    suite. (Route mounting + table creation are the remaining per-test cost; a
+    session-scoped app would cut those but is a broader refactor.) Tests that
+    actually exercise the scheduler build their own app (see test_api_jobs).
     """
     import asyncio
 
@@ -150,6 +159,8 @@ def client_with_db(tmp_path):
 
     from argosy.api.main import create_app
     from argosy.api.routes.plan import get_db
+
+    monkeypatch.setenv("ARGOSY_RUN_SCHEDULER", "0")
 
     # File-backed SQLite in tmp_path; shared by sync + async connections.
     db_path = tmp_path / "test_plan.db"
