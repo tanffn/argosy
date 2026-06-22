@@ -178,4 +178,13 @@ async def test_discovery_pick_reaches_stage3_and_proposes_buy(sf):
         sa.select(Proposal).where(Proposal.ticker == "ASML")
     ).scalars().first()
     assert p is not None and p.action == "buy" and p.source == "decision_funnel"
+    # Funding gate (step 8 v0) recorded a 'funding' row for the approved BUY,
+    # honestly labelled nominal-snapshot cash (no fabricated settlement).
+    fund = s.execute(
+        sa.select(FunnelStageRow).where(
+            FunnelStageRow.stage == "funding", FunnelStageRow.subject == "ASML"
+        )
+    ).scalars().all()
+    assert fund, "expected a funding row for the discovery BUY"
+    assert "nominal_snapshot" in (fund[0].inputs_json or "")
     s.close()

@@ -36,6 +36,14 @@ from argosy.services.decision_funnel.deep_decision import run_deep_decision
 from argosy.services.decision_funnel.discovery_candidates import (
     load_discovery_candidates,
 )
+from argosy.services.decision_funnel.funding import (
+    build_availability,
+    classify_funding,
+    rank_funding_sources,
+)
+from argosy.services.decision_funnel.funding import (
+    buy_amount_usd as funding_buy_amount,
+)
 from argosy.services.decision_funnel.policy import DEFAULT_POLICY, RoutingPolicy
 from argosy.services.decision_funnel.stage0_market import build_market_read
 from argosy.services.decision_funnel.stage1_routing import (
@@ -95,6 +103,33 @@ def _last_review_map(session: Session, user_id: str) -> dict[str, datetime]:
                 ts = ts.replace(tzinfo=UTC)
             out[ticker.upper()] = ts
     return out
+
+
+def _snapshot_cash_usd(session: Session, user_id: str) -> float | None:
+    """Nominal cash (USD) from the latest portfolio snapshot — the only cash
+    figure we have. NOT settled/available-now (no settlement data); the funding
+    layer labels it honestly. Returns None when there's no snapshot."""
+    import json as _json
+
+    from argosy.services.portfolio_snapshot_store import get_latest_snapshot_row
+
+    snap = get_latest_snapshot_row(session, user_id)
+    if snap is None:
+        return None
+    try:
+        positions = _json.loads(snap.positions_json or "[]")
+    except (ValueError, TypeError):
+        return None
+    cash_k = 0.0
+    for p in positions:
+        if not isinstance(p, dict):
+            continue
+        if "cash" in (p.get("asset_type") or "").lower():
+            try:
+                cash_k += float(p.get("usd_value_k") or 0.0)
+            except (TypeError, ValueError):
+                continue
+    return cash_k * 1000.0
 
 
 def _build_signals(
@@ -249,6 +284,7 @@ async def run_funnel(
             h.ticker.upper(): _cap_for(h.ticker, ips, policy)[0] for h in book
         }
         market_dict = market.to_dict()
+        snapshot_cash_usd = _snapshot_cash_usd(s, user_id)
     finally:
         s.close()
 
@@ -392,6 +428,25 @@ async def run_funnel(
                     "triggers": cand.triggers, "router_reason": cand.reason,
                     "north_star_aligned": verdict.aligned,
                 }
+                # Funding gate (step 8, v0): for a fleet-approved BUY, classify
+                # whether it's payable from nominal cash, needs a sell-to-fund
+                # SWITCH, or is unfundable. Deterministic + recorded; in v0 it is
+                # OBSERVATIONAL (shadow calibration) and does not change surfacing
+                # (settlement timing + precise switch math are not modelled yet).
+                funding = None
+                if proposed and (dd.action or "").lower() == "buy":
+                    p_buy = s3.get(Proposal, dd.proposal_id)
+                    amt = funding_buy_amount(
+                        float(p_buy.size_shares_or_currency) if p_buy else None,
+                        p_buy.size_units if p_buy else None,
+                    )
+                    sources = rank_funding_sources(book, buy_ticker=cand.subject)
+                    funding = classify_funding(
+                        buy_amount=amt,
+                        availability=build_availability(snapshot_cash_usd),
+                        sources=sources,
+                    )
+                    decision_payload["funding"] = funding.to_dict()
                 snap = record_snapshot(
                     s3, run_id=run_id, user_id=user_id, ticker=cand.subject, day=day,
                     decision=decision_payload,
@@ -423,6 +478,14 @@ async def run_funnel(
                     inputs={"action": dd.action, "status": dd.status, **cand.extra},
                     snapshot_id=snap.id, proposal_id=dd.proposal_id, commit=False,
                 )
+                if funding is not None:
+                    record_stage_row(
+                        s3, run_id=run_id, stage="funding", subject=cand.subject,
+                        subject_type=cand.subject_type, decision=funding.outcome.value,
+                        reason=funding.reason, signal_or_rule="funding_gate",
+                        inputs=funding.to_dict(), snapshot_id=snap.id,
+                        proposal_id=dd.proposal_id, commit=False,
+                    )
                 if not proposed:
                     surface_reason = dd.blocked_reason or "no actionable proposal"
                 elif shadow:
