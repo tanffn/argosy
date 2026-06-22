@@ -75,10 +75,14 @@ def guidance_for_action(
     is returned when nothing matches.
     """
     hay = f"{label} {detail}".lower()
+    label_l = label.lower()
 
     # --- verify / check family -------------------------------------------
     # RSU / payroll / tax withholding is the headline example the user named.
-    if _contains_any(hay, ("withhold", "withholding", "section 102", "§102", "rsu tax")):
+    # Match the LABEL (the action's primary subject), NOT label+detail — a SELL
+    # action whose detail merely mentions "net-of-tax-withholding" must not be
+    # mis-routed to withholding-verification guidance.
+    if _contains_any(label_l, ("withhold", "withholding", "section 102", "§102", "rsu tax")):
         return Guidance(
             how_to=(
                 "Open your latest payslip (or the Schwab/Etrade RSU vesting "
@@ -156,7 +160,8 @@ def guidance_for_action(
     # --- buy / deploy / allocate -----------------------------------------
     if _contains_any(
         hay,
-        ("buy", "deploy", "allocate", "invest", "purchase", "add to", "build position"),
+        ("buy", "deploy", "allocate", "invest", "purchase", "add to", "build position",
+         "dollar-cost", "dollar cost", "averaging", "dca", "tranche"),
     ):
         return Guidance(
             how_to=(

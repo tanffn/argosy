@@ -74,3 +74,29 @@ def test_detail_used_as_fallback_for_matching():
     """When the label is generic but the detail carries the keyword."""
     g = guidance_for_action(label="Action #3", detail="rebalance toward target")
     assert g.category == "rebalance_trim_sell"
+
+
+def test_sell_action_with_withholding_in_detail_is_not_misrouted():
+    """A SELL action whose DETAIL mentions 'net-of-tax-withholding' must route
+    to sell guidance, not withholding-verification (the label is what matters)."""
+    from argosy.services.action_item_guidance import guidance_for_action
+    g = guidance_for_action(
+        label="Sell the June 17 net-vested NVDA shares and park proceeds in SGOV",
+        detail="Sell the net-of-tax-withholding portion of the 729-share vest.",
+    )
+    assert g.category == "rebalance_trim_sell", g.category
+
+
+def test_verify_withholding_still_matches_on_label():
+    from argosy.services.action_item_guidance import guidance_for_action
+    g = guidance_for_action(label="Verify the June 2026 RSU withholding is adequate")
+    assert g.category == "verify_withholding", g.category
+
+
+def test_dca_tranche_routes_to_deploy():
+    from argosy.services.action_item_guidance import guidance_for_action
+    g = guidance_for_action(
+        label="First UCITS dollar-cost-averaging tranche",
+        detail="Open the hybrid UCITS dollar-cost-averaging cadence with CSPX / ACWD.",
+    )
+    assert g.category == "buy_deploy_allocate", g.category
