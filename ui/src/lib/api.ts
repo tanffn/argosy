@@ -1747,6 +1747,41 @@ export interface WithholdingCheckResponse {
   verdict: WithholdingVerdict | null;
 }
 
+// Decision-funnel trace (the daily tiered decision funnel — see
+// /api/decisions/funnel/runs). The narrative is the plain-language "what
+// Argosy did for me" view shown in the collapsed transparency section.
+export interface FunnelRunSummary {
+  run_id: number;
+  trigger: string;
+  shadow: boolean;
+  status: string;
+  policy_version: string | null;
+  ips_version: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  totals: Record<string, number | boolean>;
+}
+
+export interface FunnelRunListResponse {
+  runs: FunnelRunSummary[];
+}
+
+export interface FunnelNarrative {
+  run_id: number;
+  shadow: boolean;
+  as_of: string | null;
+  headline: string;
+  macro: Record<string, unknown>;
+  counts: {
+    routed: number;
+    deep_reviewed: number;
+    proposed: number;
+    surfaced: number;
+    no_action: number;
+  };
+  proposed: { subject: string; proposal_id: number | null; reason: string }[];
+}
+
 export const api = {
   overview: (userId: string) =>
     getJSON<OverviewResponse>(
@@ -2319,6 +2354,15 @@ export const api = {
     if (status) qs.set("status", status);
     return getJSON<ProposalListResponse>(`/api/proposals?${qs.toString()}`);
   },
+  // Decision-funnel trace: recent runs + the plain-language narrative for one.
+  funnelRuns: (userId: string, limit = 10) =>
+    getJSON<FunnelRunListResponse>(
+      `/api/decisions/funnel/runs?user_id=${encodeURIComponent(userId)}&limit=${limit}`,
+    ),
+  funnelRunNarrative: (userId: string, runId: number) =>
+    getJSON<FunnelNarrative>(
+      `/api/decisions/funnel/runs/${runId}/narrative?user_id=${encodeURIComponent(userId)}`,
+    ),
   proposalDetail: (userId: string, id: number) =>
     getJSON<ProposalDetail>(
       `/api/proposals/${id}?user_id=${encodeURIComponent(userId)}`,

@@ -192,20 +192,31 @@ async def list_proposals(
     status: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    include_shadow: bool = Query(False),
 ) -> ProposalListResponse:
     async with db_mod.get_session() as session:
         from sqlalchemy import func
+
+        # Shadow-mode funnel proposals are recorded for calibration but must
+        # NEVER reach the client surface (feedback_client_in_loop_only_when_needed).
+        # Excluded by default; ``include_shadow=true`` is for the debug/trace view.
+        # SQLite stores the column as 0/1; treat NULL (pre-migration rows) as 0.
+        shadow_clause = func.coalesce(ProposalRow.shadow, 0) == 0
 
         count_stmt = select(func.count(ProposalRow.id)).where(
             ProposalRow.user_id == user_id
         )
         if status:
             count_stmt = count_stmt.where(ProposalRow.status == status)
+        if not include_shadow:
+            count_stmt = count_stmt.where(shadow_clause)
         total = (await session.execute(count_stmt)).scalar_one()
 
         stmt = select(ProposalRow).where(ProposalRow.user_id == user_id)
         if status:
             stmt = stmt.where(ProposalRow.status == status)
+        if not include_shadow:
+            stmt = stmt.where(shadow_clause)
         stmt = stmt.order_by(ProposalRow.created_at.desc()).limit(limit).offset(offset)
         rows = (await session.execute(stmt)).scalars().all()
         return ProposalListResponse(

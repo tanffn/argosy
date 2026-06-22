@@ -43,6 +43,7 @@ import { SpeculativeMonitorCard } from "@/components/portfolio/speculative-monit
 import { DiscoveryCard } from "@/components/portfolio/discovery-card";
 import { UnallocatedCashCard } from "@/components/portfolio/unallocated-cash-card";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
+import { FunnelTransparencyCard } from "@/components/proposals/funnel-transparency-card";
 import { ConsultRunner } from "@/components/consult/consult-runner";
 import { useWSEvents } from "@/lib/ws";
 
@@ -609,6 +610,13 @@ export default function ProposalsPage() {
           view of the user-owned actions (design spec §7). Read-only; the
           accept/reject affordances live on the proposal cards below. */}
       <ActionChecklistHeader userId={USER_ID} />
+
+      {/* "What Argosy did for me" — collapsed transparency view of the daily
+          decision funnel. Self-resolved work (most names: no action) is
+          summarised here, never pushed to the active to-do list above
+          (feedback_client_in_loop_only_when_needed). Renders nothing until the
+          funnel has run at least once. */}
+      <FunnelTransparencyCard userId={USER_ID} />
 
       {/* Ask the team — the consult flow folded into the hub (codex #11). The
           same ConsultRunner backs /consult (kept as a deep link). Collapsed by

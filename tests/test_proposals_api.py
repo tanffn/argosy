@@ -31,6 +31,8 @@ async def _seed_proposal(
     status: str = "awaiting_human",
     ticker: str = "AAPL",
     cooling_until: datetime | None = None,
+    shadow: int = 0,
+    source: str = "manual",
 ) -> int:
     async with db_mod.get_session() as session:
         row = ProposalRow(
@@ -45,10 +47,33 @@ async def _seed_proposal(
             expected_impact_json="{}",
             confidence="MEDIUM",
             cooling_off_until=cooling_until,
+            shadow=shadow,
+            source=source,
         )
         session.add(row)
         await session.commit()
         return row.id
+
+
+@pytest.mark.asyncio
+async def test_list_proposals_excludes_shadow_by_default(client: AsyncClient) -> None:
+    await _seed_user()
+    visible = await _seed_proposal(ticker="AAPL")
+    _hidden = await _seed_proposal(
+        ticker="NVDA", shadow=1, source="decision_funnel"
+    )
+    # Default: shadow proposal is NOT surfaced to the client.
+    r = await client.get("/api/proposals?user_id=ariel")
+    assert r.status_code == 200
+    body = r.json()
+    ids = {row["id"] for row in body["rows"]}
+    assert visible in ids
+    assert _hidden not in ids
+    assert body["total"] == 1
+    # Opt-in (debug/trace) sees both.
+    r2 = await client.get("/api/proposals?user_id=ariel&include_shadow=true")
+    ids2 = {row["id"] for row in r2.json()["rows"]}
+    assert {visible, _hidden} <= ids2
 
 
 @pytest.mark.asyncio
