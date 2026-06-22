@@ -144,6 +144,32 @@ This makes the inbox's BUY items honest: each is either funded from cash or
 carries its own funding (the paired sell), and the funnel never proposes a buy
 it can't pay for.
 
+## Telemetry + debug visibility (owner, 2026-06-22) — REQUIRED for ALL of the above
+
+Everything the funnel does must be recorded in the existing trace
+(`funnel_runs` / `funnel_stage_rows` / immutable `decision_snapshots`) and be
+visually inspectable for debugging under the **Decisions tab**
+(`/decisions/funnel` list → `/decisions/funnel/{id}` full per-stage trace +
+snapshots; built 2026-06-22 on the already-shipped `/api/decisions/funnel/runs`
+endpoints). As new behaviours land they MUST emit into the same trace — no
+silent paths:
+- **Discovery-driven candidates** → a Stage-1 row with the source marked
+  (e.g. `signal_or_rule="discovery_pick"`, the conviction + grader ref in
+  `inputs_json`), so a new-name idea is traceable from radar → proposal.
+- **Funding check** → recorded on the deep-decision snapshot / stage row: the
+  settled cash considered, the funding outcome (cash / switch / unfundable),
+  and — for a switch — the funding-source candidates evaluated + why X was
+  chosen (and why NVDA/others were excluded).
+- **Sell-to-fund switch** → the paired (sell X, buy Y) recorded as ONE linked
+  decision with both legs, tax/friction math, and the conviction delta that
+  cleared the bar; both proposal ids on the snapshot.
+- **Settlement model** → the as-of settled-cash figure + any pending proceeds
+  (amount + arrival date) captured in the snapshot's portfolio state, so "why
+  did it (not) fund this?" is answerable after the fact.
+Acceptance: for any run, the Decisions-tab debug view shows every name from
+"considered" → "acted / dropped / unfunded" with the reason, the model, the
+funding decision, and the immutable inputs — no re-run needed.
+
 ## Removals / demotions (not just collapse)
 
 - "Escalate tier" → **"Ask for deeper review"** (the current label reads as

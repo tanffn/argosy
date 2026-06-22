@@ -201,7 +201,15 @@ export default function DecisionsListPage() {
   return (
     <main className="max-w-6xl mx-auto p-6 flex flex-col gap-6">
       <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Decisions</h1>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h1 className="text-2xl font-semibold tracking-tight">Decisions</h1>
+          <Link
+            href="/decisions/funnel"
+            className="text-sm text-primary hover:underline font-medium"
+          >
+            Decision funnel runs (debug) →
+          </Link>
+        </div>
         <p className="text-sm text-muted-foreground">
           Recent decision_runs from the agent fleet — synthesis runs, plan
           revisions, daily briefs, delta pushbacks. Click a row for the full

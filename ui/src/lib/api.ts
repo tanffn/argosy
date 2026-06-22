@@ -1757,6 +1757,7 @@ export interface FunnelRunSummary {
   status: string;
   policy_version: string | null;
   ips_version: string | null;
+  plan_version_id: number | null;
   started_at: string | null;
   finished_at: string | null;
   totals: Record<string, number | boolean>;
@@ -1780,6 +1781,56 @@ export interface FunnelNarrative {
     no_action: number;
   };
   proposed: { subject: string; proposal_id: number | null; reason: string }[];
+}
+
+// Full debug view of one funnel run (every stage row + immutable snapshots).
+export interface FunnelStageRowDTO {
+  id: number;
+  stage: string;
+  subject: string;
+  subject_type: string;
+  decision: string;
+  reason: string;
+  signal_or_rule: string | null;
+  inputs: unknown;
+  model: string | null;
+  prompt_hash: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  cost_usd: number | null;
+  duration_ms: number | null;
+  snapshot_id: number | null;
+  proposal_id: number | null;
+}
+
+export interface FunnelSnapshotDTO {
+  id: number;
+  ticker: string;
+  dedup_key: string;
+  decision: Record<string, unknown> | null;
+  model_name: string | null;
+  model_version: string | null;
+  prompt_template_hash: string | null;
+  temperature: number | null;
+  seed: number | null;
+  policy_version: string | null;
+  policy: Record<string, unknown> | null;
+  portfolio_snapshot: Record<string, unknown> | null;
+  market_snapshot: Record<string, unknown> | null;
+  source_refs: unknown;
+  unchanged_explanation: string | null;
+  why_not_act: string | null;
+  execution_drift: unknown;
+  human_action_state: string;
+  proposal_id: number | null;
+  decision_run_id: number | null;
+}
+
+export interface FunnelRunDetail extends FunnelRunSummary {
+  macro_read: Record<string, unknown> | null;
+  error_message: string | null;
+  stages: Record<string, FunnelStageRowDTO[]>;
+  snapshots: FunnelSnapshotDTO[];
 }
 
 export const api = {
@@ -2362,6 +2413,10 @@ export const api = {
   funnelRunNarrative: (userId: string, runId: number) =>
     getJSON<FunnelNarrative>(
       `/api/decisions/funnel/runs/${runId}/narrative?user_id=${encodeURIComponent(userId)}`,
+    ),
+  funnelRunDetail: (userId: string, runId: number) =>
+    getJSON<FunnelRunDetail>(
+      `/api/decisions/funnel/runs/${runId}?user_id=${encodeURIComponent(userId)}`,
     ),
   proposalDetail: (userId: string, id: number) =>
     getJSON<ProposalDetail>(
