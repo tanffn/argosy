@@ -95,10 +95,92 @@ evidence in next report → confirm/resurface) across action types.
 **P5 — Verify + north-star check.** Each surfaced item must trace to the prime directive; an
 adversarial pass: "does the client actually need this, today, to retire sooner/safer?"
 
+## D3. Observability & audit (REQUIRED — Ariel, 2026-06-22)
+
+The daily funnel is autonomous, so it CANNOT be a black box. Every run must be fully logged and
+replayable — for Ariel to SEE how it worked and for us to DEBUG it.
+
+**Per-run trace (persisted, one record per daily run + per-stage rows):**
+- `funnel_run`: run_id, started_at/finished_at, status, totals (candidates in/out per stage,
+  tokens, cost, wall-clock).
+- Stage 0: the macro read + the exact inputs it used (with source refs: which news ids, VIX
+  value, indices, sentiment rows).
+- Stage 1: every name considered → routed or DROPPED, with the SIGNAL/RULE that fired (or "no
+  match"). Nothing drops silently.
+- Stage 2: each candidate's triage verdict + the cheap-model rationale + tokens.
+- Stage 3: each deep decision — the fleet transcript ref, the proposal, tokens/cost.
+- Surface routing: what went to needs-me-now vs the transparency view vs nothing, and why.
+Each row records inputs (source-cited), decision, REASON, model used, tokens, duration — so a
+human can answer "why did it (not) act on X today?" without re-running.
+
+**Two views off the same trace:**
+1. Client "how it worked" (plain-language, in the transparency section): "Scanned the market
+   (semis −3%, risk-off) → flagged NVDA + the index sleeve → reviewed NVDA deeply → proposed a
+   trim. 48 names: no action." 
+2. Debug/trace (full per-stage detail incl. dropped names + reasons + model/tokens) behind an
+   endpoint (e.g. `/api/decisions/funnel/runs/{id}`), reusing the `job_runs` accounting +
+   structured-log pattern + predictions ledger.
+
+Build on existing infra: structured JSON logging, `job_runs` (cadence accounting), the
+predictions ledger (per-call outcomes), monitor_flags. Do NOT invent a parallel logging stack.
+Acceptance: for any day, Ariel can open the run and trace every name from "considered" to
+"acted / dropped" with the reason and the model that decided it.
+
+## D4. Codex design review (2026-06-22) — INCORPORATED
+
+Verdict: **"Build it, but build it as a conservative escalation system, not a daily recommender."**
+Sound to build; the hardening below is mandatory. Top-3-first: (1) deterministic Stage-1 policy,
+(2) immutable decision snapshots, (3) shadow mode + kill switch + proposal expiry from day one.
+
+Design changes (override the lighter descriptions above):
+- **Stage 1 is a DETERMINISTIC, thresholded policy** — not just a cheap LLM. Explicit
+  exposure/sector map (signal → affected holdings), materiality thresholds, per-name COOLDOWNS,
+  HARD-TRIGGER bypasses (earnings, big price move, thesis break, drift band breach), default
+  NO-OP, and a periodic **random audit of Stage-1 DROPS** to catch false-drops. A name must EARN
+  a deep review.
+- **Stage 3 is PROPOSE-AND-ASK, never auto-act** for discretionary Buy/Sell/Trim (real money,
+  long-hold). Auto-action allowed ONLY for pre-authorized mechanical rules (idle-cash → T-bill
+  sweep, rebalance within explicit bands, TLH under constraints, user standing orders).
+- **Cadence is escalation, not uniform daily:** daily cheap scan (Stage 0–2); Stage 3 SPARSE
+  (hard triggers / high materiality only); weekly portfolio-level review; monthly/quarterly plan
+  alignment; event-driven forced reviews (earnings). Mitigate cheap-stage false-drops with
+  hard-trigger bypasses, primary-source priority, price-move backstops, periodic full-portfolio
+  sweeps, and miss-tracking.
+- **Hold has its own discipline** — "do nothing" is a real decision, not a weak Buy/Sell.
+- **Portfolio-level guard:** single-name decisions must not fight the total target allocation —
+  reconcile against the canonical plan/IPS before surfacing.
+- **Tax-lot-aware sells:** account type, cost basis, lots, long/short, wash-sale — required on
+  any SELL/TRIM (ties to the §102 + cash-source reconcilers already built).
+
+Observability (extends D3) — capture IMMUTABLE per-decision snapshots, else "why did it (not)
+act on X?" is unanswerable: model name/version + prompt-template hash + temperature/seed; full
+model inputs or immutable refs; source + fetch timestamps; the EXACT portfolio snapshot
+(holdings, cost basis, tax lots, cash, prices, FX, account); the EXACT market snapshot
+(price/quote time, benchmarks); the decision-POLICY version (thresholds/cooldowns/routing);
+dedup key + "unchanged" explanation; why-not-act for drops; post-decision execution DRIFT;
+human action state (proposed/accepted/rejected/expired/superseded).
+
+**P0 prerequisites (build FIRST, before any live proposal):**
+- **Shadow mode:** run the funnel, record proposals, but surface NOTHING — compare against
+  actual outcomes + Ariel's manual decisions for a calibration period.
+- **Backtest/replay harness** over historical monitor flags + portfolio snapshots.
+- **Kill switch:** disable proposals / Stage 3 / any auto-action instantly.
+- **Proposal expiry:** recommendations go stale on price/news/portfolio drift.
+- **IPS (Investment Policy Statement):** target risk, max concentration, sell discipline,
+  retirement horizon, tax priorities — the policy Stage 1/3 reason against (derive from the
+  canonical plan).
+- **User-feedback loop:** accepted/rejected/ignored tunes thresholds + cooldowns over time.
+
 ## F. Next-session start point
 
-Start with **P1 Stage 0+1** (market review + relevance routing) — that's the new spine; Stages
-2-3 reuse the existing estimator/fleet/decision code. P2 compaction (incl. the transparency
-section) can run in parallel on the frontend. Use codex-tandem for P1 routing + sizing.
-Backend on :8000; current plan pv62 (2026-06-20); migrations at 0074. All prior /proposals +
-payslip work shipped to master (through commit 53763df; this plan at ebc1b3b).
+Per the codex review, build as a conservative escalation system in this order:
+1. **P0 FIRST:** decision-trace/snapshot logging (D3+D4 observability), shadow mode, kill switch,
+   proposal expiry, and the IPS derived from the canonical plan. No live proposal until shadow
+   mode has calibrated against Ariel's real decisions.
+2. **P1 Stage 0 + deterministic Stage 1** (market review + thresholded exposure-map routing with
+   hard triggers / cooldowns / default-NO-OP) — the spine. Stages 2–3 reuse the existing
+   estimator / fleet / `decisions/flow.py`; Stage 3 is propose-and-ask only.
+3. **P2 compaction + transparency view** (frontend), in parallel.
+Use codex-tandem for the Stage-1 policy + sizing/tax-lot math. Backend on :8000; plan pv62
+(2026-06-20); migrations 0074. Prior /proposals + payslip work shipped to master (through
+53763df; this plan ebc1b3b onward).
