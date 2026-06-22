@@ -1315,8 +1315,8 @@ function InFlightSynthesisBanner({ inFlight }: InFlightSynthesisBannerProps) {
         </div>
         <div className="font-mono text-[11px] text-muted-foreground tabular-nums">
           {startedAtLabel ? `started ${startedAtLabel} · ` : ""}
-          status {inFlight.status} · a new draft will appear when complete
-          (~30 min)
+          status {inFlight.status.replace(/_/g, " ")} · a new draft will appear
+          when complete (~30 min)
         </div>
       </div>
       <div className="flex items-center gap-3 flex-wrap">

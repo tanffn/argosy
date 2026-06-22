@@ -80,7 +80,7 @@ export function RealEstateCard({ userId = "ariel" }: { userId?: string }) {
                       {p.name}
                       {p.status && (
                         <span className="ml-1.5 rounded bg-rose-500/15 px-1.5 py-0.5 text-[10px] font-medium uppercase text-rose-400">
-                          {p.status}
+                          {p.status.replace(/_/g, " ")}
                         </span>
                       )}
                       {p.warnings.length > 0 && (

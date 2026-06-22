@@ -19,12 +19,23 @@ const eslintConfig = defineConfig([
       ],
     },
   },
-  // Client-copy guard for the proposals decision surface: a client surface is
-  // a manual, not an internals dump. Keep raw state-machine enums and raw API
-  // paths out of what the user reads. Scoped here (the canonical client action
-  // surface) to stay high-signal; widen the glob as other surfaces are audited.
+  // Client-copy guard for the primary client surfaces: a client surface is a
+  // manual, not an internals dump. Keep raw state-machine enums and raw API
+  // paths out of what the user reads. Covers the four client-facing surfaces
+  // (proposals, home, retirement, portfolio); admin/debug surfaces (jobs,
+  // decision tree, advisor) intentionally stay out — raw status is legitimate
+  // there.
   {
-    files: ["src/app/proposals/**/*.tsx", "src/components/proposals/**/*.tsx"],
+    files: [
+      "src/app/proposals/**/*.tsx",
+      "src/components/proposals/**/*.tsx",
+      "src/app/page.tsx",
+      "src/components/home/**/*.tsx",
+      "src/app/retirement/**/*.tsx",
+      "src/components/retirement/**/*.tsx",
+      "src/app/portfolio/**/*.tsx",
+      "src/components/portfolio/**/*.tsx",
+    ],
     rules: {
       "no-restricted-syntax": [
         "error",
@@ -35,7 +46,7 @@ const eslintConfig = defineConfig([
           selector:
             "JSXElement > JSXExpressionContainer > MemberExpression[property.name='status']",
           message:
-            "Don't render a raw proposal .status in client JSX — wrap it in friendlyStatus() (raw state-machine enums read as internal jargon).",
+            "Don't render a raw .status enum in client JSX — humanize it first (friendlyStatus() for proposals; .replace(/_/g, ' ') otherwise). Raw state-machine enums read as internal jargon.",
         },
         {
           // A raw `/api/...` path shown to the client (JSX text).
