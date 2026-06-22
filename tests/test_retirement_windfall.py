@@ -217,44 +217,73 @@ def _stub_event(
     )
 
 
-class TestAllocator:
-    def test_long_term_fills_under_target_classes_first(self) -> None:
-        event = _stub_event(windfall_usd=100_000)
-        plan = propose_allocations(event)
-        # Biggest under-target gap is Growth (+132K), then International (+67K)
-        long_classes = {p.asset_class for p in plan.long_term}
-        assert "Growth" in long_classes
+def _canonical_doc():
+    """Canonical 2-class doc: Growth→CNDX (70%), Defensive→IB01 (30%). The
+    long-term instruments are sourced from THIS doc, not a hardcoded class map."""
+    from datetime import date as _date
 
-    def test_long_term_does_not_add_to_over_target_classes(self) -> None:
-        event = _stub_event(windfall_usd=100_000)
-        plan = propose_allocations(event)
-        # Core Equity has delta -90.8 (OVER target) — should NOT appear
-        assert "Core Equity" not in {p.asset_class for p in plan.long_term}
+    from argosy.services.target_allocation_doc import (
+        AllocationClassDoc, AllocationInstrument, GlideWaypoint, TargetAllocationDoc,
+    )
+    def _cls(label, sym, pct):
+        return AllocationClassDoc(
+            label=label, snapshot_category=label, sigma_class="us_equity",
+            target_pct=pct,
+            instruments=[AllocationInstrument(
+                symbol=sym, role="primary", weight_within_class_pct=100.0,
+                domicile="IE")])
+    return TargetAllocationDoc(
+        schema_version=1, anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0,
+        fi_pct=20.0, provenance="t",
+        classes=[_cls("Growth", "CNDX", 70.0), _cls("Defensive", "IB01", 30.0)],
+        glide=[GlideWaypoint(quarter=0, date=_date(2026, 1, 1),
+               composition_pct_by_class={"Growth": 70.0, "Defensive": 30.0})],
+    )
+
+
+def _propose(event, *, holdings=None):
+    from datetime import date as _date
+    return propose_allocations(
+        event, doc=_canonical_doc(), holdings=holdings or {},
+        as_of=_date(2026, 6, 1))
+
+
+class TestAllocator:
+    def test_long_term_instruments_come_from_canonical_doc(self) -> None:
+        """Long-term picks are the canonical doc's instruments (CNDX/IB01),
+        NOT a hardcoded class→ticker map."""
+        plan = _propose(_stub_event(windfall_usd=100_000))
+        instruments = {p.instrument for p in plan.long_term}
+        assert instruments and instruments <= {"CNDX", "IB01"}
+
+    def test_long_term_requires_canonical_doc(self) -> None:
+        """No doc → fail loud, never a silent hardcoded fallback."""
+        from datetime import date as _date
+        with pytest.raises(ValueError):
+            propose_allocations(_stub_event(windfall_usd=100_000), doc=None,
+                                holdings={}, as_of=_date(2026, 6, 1))
 
     def test_budget_split_60_25_15(self) -> None:
-        event = _stub_event(windfall_usd=100_000)
-        plan = propose_allocations(event)
+        plan = _propose(_stub_event(windfall_usd=100_000))
         long_sum = sum(p.amount_usd for p in plan.long_term)
         med_sum = sum(p.amount_usd for p in plan.medium_term)
         short_sum = sum(p.amount_usd for p in plan.short_term)
-        # Long ≤ 60% (might be less if total under-target gap < 60%)
+        # Long ≤ 60% (the empty-book deploy of 60k fully places against targets).
         assert long_sum <= 60_000 + 1
+        assert long_sum == pytest.approx(60_000, abs=1)
         assert med_sum == pytest.approx(25_000, abs=1)
         assert short_sum == pytest.approx(15_000, abs=1)
 
-    def test_preferred_instrument_picked(self) -> None:
-        event = _stub_event(windfall_usd=100_000)
-        plan = propose_allocations(event)
-        growth_picks = [p.instrument for p in plan.long_term
-                        if p.asset_class == "Growth"]
-        # Domicile-aware (S18): first preferred for Growth is the UCITS twin CNDX,
-        # NOT US-domiciled QQQM (US-situs estate exposure for a non-US-person).
-        assert "CNDX" in growth_picks
-        assert "QQQM" not in growth_picks
+    def test_long_term_buys_split_by_canonical_weights(self) -> None:
+        """60k long budget on an empty book splits 70/30 across CNDX/IB01 —
+        the canonical glide weights, deterministically."""
+        plan = _propose(_stub_event(windfall_usd=100_000))
+        by_sym = {p.instrument: p.amount_usd for p in plan.long_term}
+        assert by_sym.get("CNDX") == pytest.approx(42_000, abs=1)  # 70% of 60k
+        assert by_sym.get("IB01") == pytest.approx(18_000, abs=1)  # 30% of 60k
 
     def test_medium_short_have_placeholder_rationale(self) -> None:
-        event = _stub_event(windfall_usd=100_000)
-        plan = propose_allocations(event)
+        plan = _propose(_stub_event(windfall_usd=100_000))
         for p in plan.medium_term:
             assert "agent fleet" in p.rationale.lower() or "synthesis" in p.rationale.lower()
         for p in plan.short_term:

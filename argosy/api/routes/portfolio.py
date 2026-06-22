@@ -591,7 +591,7 @@ def upload_snapshot(
                     )
                     detect_status = "ok"
                     if event is not None:
-                        plan = propose_allocations(event)
+                        doc, holdings = _windfall_doc_and_holdings(db, user_id)
                         event_payload = {
                             "detected_at": event.detected_at.isoformat(),
                             "cash_delta_usd": event.cash_delta_usd,
@@ -626,7 +626,15 @@ def upload_snapshot(
                                 if event.previous_tsv else None
                             ),
                         }
-                        plan_payload = plan.to_dict()
+                        # Plan-bound buy list from the canonical doc (same engine
+                        # /deploy-cash uses). With no accepted plan, surface the
+                        # event but no buy list — never a hardcoded fallback.
+                        if doc is not None:
+                            from datetime import date as _date
+                            plan = propose_allocations(
+                                event, doc=doc, holdings=holdings,
+                                as_of=_date.today())
+                            plan_payload = plan.to_dict()
             except Exception as exc:  # noqa: BLE001
                 _log.warning(
                     "portfolio_snapshot.detector_failed",
@@ -759,9 +767,13 @@ def _handle_xls_branch(
                 )
                 detect_status = "ok"
                 if event is not None:
-                    plan = propose_allocations(event)
                     event_payload = _event_to_dict(event)
-                    plan_payload = plan.to_dict()
+                    doc, holdings = _windfall_doc_and_holdings(db, user_id)
+                    if doc is not None:
+                        from datetime import date as _date
+                        plan = propose_allocations(
+                            event, doc=doc, holdings=holdings, as_of=_date.today())
+                        plan_payload = plan.to_dict()
         except Exception as exc:  # noqa: BLE001
             _log.warning(
                 "portfolio_snapshot.xls_detector_failed",
@@ -783,6 +795,22 @@ def _handle_xls_branch(
         sha256=sha,
         pending_pair_id=resolution.pending_pair_id,
     )
+
+
+def _windfall_doc_and_holdings(db: Session, user_id: str):
+    """(canonical TargetAllocationDoc | None, holdings_by_symbol) for the windfall
+    long-term buy list, via the SAME accessors /deploy-cash uses. ``doc is None``
+    means no plan is accepted — the caller must skip the buy list (no hardcoded
+    fallback) rather than invent instruments."""
+    from argosy.services.allocation_engine import tradeable_holdings
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.queries import get_current_plan
+
+    pv = get_current_plan(db, user_id)
+    doc = load_plan_target_allocation(pv) if pv is not None else None
+    row = get_latest_snapshot_row(db, user_id=user_id)
+    holdings, _cash = tradeable_holdings(row_to_snapshot(row)) if row else ({}, 0.0)
+    return doc, holdings
 
 
 def _event_to_dict(event) -> dict:

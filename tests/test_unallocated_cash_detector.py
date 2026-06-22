@@ -19,6 +19,36 @@ from argosy.services.unallocated_cash_detector import (
 )
 
 
+def _canonical_doc():
+    """A minimal canonical TargetAllocationDoc whose single Growth instrument is
+    CNDX — used to drive the long-term proposals (instruments come from the doc,
+    NOT a hardcoded class map)."""
+    from argosy.services.target_allocation_doc import (
+        AllocationClassDoc, AllocationInstrument, GlideWaypoint, TargetAllocationDoc,
+    )
+    return TargetAllocationDoc(
+        schema_version=1, anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0,
+        fi_pct=20.0, provenance="t",
+        classes=[AllocationClassDoc(
+            label="Growth", snapshot_category="Growth", sigma_class="us_equity",
+            target_pct=100.0,
+            instruments=[AllocationInstrument(
+                symbol="CNDX", role="primary", weight_within_class_pct=100.0,
+                domicile="IE")])],
+        glide=[GlideWaypoint(quarter=0, date=date(2026, 1, 1),
+               composition_pct_by_class={"Growth": 100.0})],
+    )
+
+
+def _detect(snapshot, *, overage_ratio=DEFAULT_OVERAGE_RATIO, doc=None, holdings=None):
+    """Test helper: call _detect_from_snapshot with a canonical doc + as_of so the
+    long-term proposals are plan-bound (the production contract)."""
+    return _detect_from_snapshot(
+        snapshot, doc=doc if doc is not None else _canonical_doc(),
+        holdings=holdings or {}, as_of=date(2026, 6, 1),
+        overage_ratio=overage_ratio)
+
+
 def _snap(
     *,
     cash_current_k: float,
@@ -55,16 +85,16 @@ class TestThresholdGating:
     def test_below_threshold_returns_none(self):
         """Current cash within 1.5x of target -> no event."""
         snap = _snap(cash_current_k=10, cash_target_k=10)
-        assert _detect_from_snapshot(snap) is None
+        assert _detect(snap) is None
 
     def test_just_below_threshold_returns_none(self):
         snap = _snap(cash_current_k=14, cash_target_k=10)  # 1.4x
-        assert _detect_from_snapshot(snap) is None
+        assert _detect(snap) is None
 
     def test_above_threshold_fires(self):
         """Current cash > target * 1.5 -> event fires."""
         snap = _snap(cash_current_k=20, cash_target_k=10)  # 2.0x
-        event = _detect_from_snapshot(snap)
+        event = _detect(snap)
         assert event is not None
         assert event.current_cash_k_usd == 20.0
         assert event.target_cash_k_usd == 10.0
@@ -74,8 +104,8 @@ class TestThresholdGating:
     def test_custom_overage_ratio(self):
         """Tighter ratio = fires sooner."""
         snap = _snap(cash_current_k=11, cash_target_k=10)  # 1.1x
-        assert _detect_from_snapshot(snap, overage_ratio=1.5) is None
-        e = _detect_from_snapshot(snap, overage_ratio=1.05)
+        assert _detect(snap, overage_ratio=1.5) is None
+        e = _detect(snap, overage_ratio=1.05)
         assert e is not None
         assert e.excess_usd == pytest.approx(1000.0)
 
@@ -87,7 +117,7 @@ class TestProposalsShape:
             cash_current_k=50, cash_target_k=10,
             growth_current_k=100, growth_target_k=200,
         )
-        event = _detect_from_snapshot(snap)
+        event = _detect(snap)
         assert event is not None
         assert event.excess_usd == 40_000
         # At least one proposal in Growth (under target by $100K).
@@ -100,7 +130,7 @@ class TestProposalsShape:
 
     def test_headline_describes_ratio(self):
         snap = _snap(cash_current_k=30, cash_target_k=10)
-        event = _detect_from_snapshot(snap)
+        event = _detect(snap)
         assert event is not None
         assert "3.0x" in event.headline
 
@@ -108,7 +138,7 @@ class TestProposalsShape:
 class TestMissingData:
     def test_no_allocations_returns_none(self):
         snap = PortfolioSnapshot(source_path="x", allocations=[])
-        assert _detect_from_snapshot(snap) is None
+        assert _detect(snap) is None
 
     def test_no_cash_row_returns_none(self):
         snap = PortfolioSnapshot(
@@ -117,7 +147,7 @@ class TestMissingData:
                 AllocationRow(category="Growth", target_k=100, usd_value_k=50),
             ],
         )
-        assert _detect_from_snapshot(snap) is None
+        assert _detect(snap) is None
 
     def test_zero_target_cash_returns_none(self):
         """Defensive: zero or null target cash isn't actionable."""
@@ -128,7 +158,7 @@ class TestMissingData:
                 AllocationRow(category="Growth", target_k=100, usd_value_k=50, target_pct=50.0),
             ],
         )
-        assert _detect_from_snapshot(snap) is None
+        assert _detect(snap) is None
 
 
 class TestCashRowDetection:
@@ -256,11 +286,17 @@ class TestAPIRoute:
 
     def test_route_returns_proposal_when_overage(self, client_with_db):
         import json as _json
-        from argosy.state.models import PortfolioSnapshotRow, User
+        from argosy.state.models import PlanVersion, PortfolioSnapshotRow, User
         sess = client_with_db.app.state.session_factory()
         try:
             if sess.get(User, "ariel") is None:
                 sess.add(User(id="ariel", plan="free"))
+            # Seed a current canonical plan so the long-term buy list is
+            # plan-bound (CNDX from the doc — not a hardcoded class map).
+            sess.add(PlanVersion(
+                user_id="ariel", role="current", version_label="t",
+                target_allocation_json=_canonical_doc().model_dump_json(),
+            ))
             today = datetime.now(timezone.utc).date()
             row = PortfolioSnapshotRow(
                 user_id="ariel",
@@ -293,4 +329,6 @@ class TestAPIRoute:
         assert payload["overage_ratio"] == 2.0
         assert payload["snapshot_date"] == today.isoformat()
         assert len(payload["proposals"]) > 0
+        # Plan-bound: the buy list comes from the canonical doc's instruments.
+        assert {p["instrument"] for p in payload["proposals"]} == {"CNDX"}
         assert "allocation_delta_table" in payload

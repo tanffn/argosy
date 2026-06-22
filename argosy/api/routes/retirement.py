@@ -1162,7 +1162,36 @@ def get_windfall_detect(
     schwab_csv = samples_root / "2026" / "Schwab" / "EquityAwardsCenter_Transactions.csv"
     event = attribute_cash_source(event, schwab_csv, db, user_id)
 
-    plan = propose_allocations(event)
+    # Long-term instruments come from the canonical TargetAllocationDoc (the SAME
+    # engine /deploy-cash uses), so the windfall buy list matches deploy-cash +
+    # unallocated-cash. Load the doc + current holdings via the canonical
+    # accessors; fail loud (no hardcoded fallback) when no plan is accepted.
+    from datetime import date as _date
+
+    from argosy.services.allocation_engine import tradeable_holdings
+    from argosy.services.portfolio_snapshot_store import (
+        get_latest_snapshot_row,
+        row_to_snapshot,
+    )
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.queries import get_current_plan
+
+    pv = get_current_plan(db, user_id)
+    doc = load_plan_target_allocation(pv) if pv is not None else None
+    if doc is None:
+        return {
+            "event": None,
+            "reason": (
+                "no current canonical plan — accept a plan first so the "
+                "windfall buy list is plan-bound (no hardcoded instruments)."
+            ),
+            "current_tsv": cur.name,
+            "previous_tsv": prev.name,
+        }
+    snap_row = get_latest_snapshot_row(db, user_id=user_id)
+    holdings, _cash = tradeable_holdings(row_to_snapshot(snap_row)) if snap_row else ({}, 0.0)
+
+    plan = propose_allocations(event, doc=doc, holdings=holdings, as_of=_date.today())
     return {
         "event": {
             "detected_at": event.detected_at.isoformat(),

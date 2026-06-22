@@ -52,6 +52,40 @@ def _minimal_tsv(
     )
 
 
+def _seed_current_plan(client_with_db, *, user_id: str = "ariel") -> None:
+    """Seed a current canonical plan (Growth→CNDX) so the windfall buy list is
+    plan-bound through the canonical cash_only_deploy engine."""
+    from argosy.services.target_allocation_doc import (
+        AllocationClassDoc, AllocationInstrument, GlideWaypoint, TargetAllocationDoc,
+    )
+    from argosy.state.models import PlanVersion, User
+    from datetime import date as _date
+
+    doc = TargetAllocationDoc(
+        schema_version=1, anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0,
+        fi_pct=20.0, provenance="t",
+        classes=[AllocationClassDoc(
+            label="Growth", snapshot_category="Growth", sigma_class="us_equity",
+            target_pct=100.0,
+            instruments=[AllocationInstrument(
+                symbol="CNDX", role="primary", weight_within_class_pct=100.0,
+                domicile="IE")])],
+        glide=[GlideWaypoint(quarter=0, date=_date(2026, 1, 1),
+               composition_pct_by_class={"Growth": 100.0})],
+    )
+    sess = client_with_db.app.state.session_factory()
+    try:
+        if sess.get(User, user_id) is None:
+            sess.add(User(id=user_id, plan="free"))
+        sess.add(PlanVersion(
+            user_id=user_id, role="current", version_label="t",
+            target_allocation_json=doc.model_dump_json(),
+        ))
+        sess.commit()
+    finally:
+        sess.close()
+
+
 @pytest.fixture
 def snapshot_root(tmp_path, monkeypatch):
     """Point ARGOSY_EXPENSE_SAMPLES_ROOT at a tmp dir so the upload
@@ -94,7 +128,12 @@ class TestUploadSnapshot:
     def test_detector_fires_when_prev_exists(
         self, client_with_db, snapshot_root,
     ):
-        """Two snapshots, $100K USD cash delta between them -> event fires."""
+        """Two snapshots, $100K USD cash delta between them -> event fires.
+
+        Seeds a current canonical plan so the windfall long-term buy list is
+        plan-bound (same engine /deploy-cash uses) — with no plan accepted the
+        event still fires but ``plan`` is None (no hardcoded fallback)."""
+        _seed_current_plan(client_with_db)
         prev_body = _minimal_tsv(
             leumi_usd_cash=55_000, leumi_nis_cash=80_000,
             snapshot_date="24-Feb-26",

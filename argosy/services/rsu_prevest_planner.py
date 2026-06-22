@@ -23,9 +23,10 @@ behind a single opaque rate):
                                withholding worst-case
 
 Plus an allocation preview using the NOMINAL post-tax amount as the
-budget for ``_allocate_long_term`` against the latest portfolio
-snapshot's allocation table. The preview is empty when the snapshot
-isn't available — better an honest empty than a fabricated split.
+budget for the canonical ``cash_only_deploy`` engine against the current
+accepted plan + holdings (the SAME path /deploy-cash uses). The preview is
+empty when no plan is accepted — better an honest empty than a fabricated
+split.
 
 The NVDA spot price is pulled from the latest portfolio snapshot's
 positions block (same pattern as
@@ -48,9 +49,8 @@ from argosy.services.portfolio_snapshot_store import (
 from argosy.services.retirement.reference import resolve
 from argosy.services.retirement.windfall_allocator import (
     AllocationProposal,
-    _allocate_long_term,
+    _allocate_long_term_from_plan,
 )
-from argosy.services.retirement.windfall_detector import AllocationLine
 from argosy.state.models import RsuVestEvent
 
 
@@ -194,8 +194,8 @@ def compute_upcoming_vest_outlook(
         rate_conservative  = max(0.47, rate_nominal + 0.05)
 
     The allocation preview uses the NOMINAL post-tax amount as the
-    budget for ``_allocate_long_term`` against the latest portfolio
-    snapshot's allocation table (empty when no snapshot).
+    budget for the canonical ``cash_only_deploy`` engine against the
+    accepted plan + holdings (empty when no plan is accepted).
     """
     if as_of is None:
         as_of = date.today()
@@ -205,9 +205,22 @@ def compute_upcoming_vest_outlook(
     effective = _resolve_effective_rate(session, user_id)
     conservative = max(DEFAULT_CONSERVATIVE_FLOOR, nominal + 0.05)
 
-    nvda_price, allocation_table = _spot_price_and_allocation_table(
-        session, user_id
-    )
+    nvda_price = _spot_nvda_price(session, user_id)
+
+    # Canonical plan + current holdings for the allocation preview, loaded via
+    # the SAME accessors /deploy-cash uses so the preview's instruments match.
+    # Best-effort: an empty preview (no accepted plan / no snapshot) is honest;
+    # this advisory card must not 500 when a plan isn't accepted yet.
+    from argosy.services.allocation_engine import tradeable_holdings
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.queries import get_current_plan
+
+    pv = get_current_plan(session, user_id)
+    plan_doc = load_plan_target_allocation(pv) if pv is not None else None
+    prev_holdings: dict[str, float] = {}
+    _snap_row = get_latest_snapshot_row(session, user_id=user_id)
+    if _snap_row is not None:
+        prev_holdings, _ = tradeable_holdings(row_to_snapshot(_snap_row))
 
     projected: list[UpcomingVest] = []
     for latest in _latest_vest_per_grant(session, user_id):
@@ -225,7 +238,7 @@ def compute_upcoming_vest_outlook(
             post_effective = gross * (1.0 - effective)
             post_conservative = gross * (1.0 - conservative)
             preview = _build_allocation_preview(
-                post_nominal, allocation_table
+                post_nominal, plan_doc, prev_holdings, as_of=as_of,
             )
             projected.append(UpcomingVest(
                 grant_id=latest.grant_id,
@@ -355,21 +368,14 @@ def _resolve_effective_rate(session: Session, user_id: str) -> float:
     return DEFAULT_EFFECTIVE_RATE
 
 
-def _spot_price_and_allocation_table(
-    session: Session, user_id: str
-) -> tuple[float | None, list[AllocationLine]]:
-    """Pull the latest portfolio snapshot once and extract both:
-
-      * NVDA spot price from positions_json (None when missing)
-      * Allocation table (empty list when missing) — same conversion
-        path as :func:`unallocated_cash_detector._row_to_line`
-    """
+def _spot_nvda_price(session: Session, user_id: str) -> float | None:
+    """Latest NVDA spot price from the snapshot's positions_json (None when
+    missing). The long-term allocation preview is now sized off the canonical
+    plan doc + holdings, not the snapshot's TSV allocation table."""
     row = get_latest_snapshot_row(session, user_id=user_id)
     if row is None:
-        return None, []
-    snapshot = row_to_snapshot(row)
+        return None
 
-    # NVDA spot price.
     nvda_price: float | None = None
     try:
         positions = json.loads(row.positions_json or "[]")
@@ -384,45 +390,33 @@ def _spot_price_and_allocation_table(
                 except (ValueError, TypeError):
                     nvda_price = None
                 break
-
-    # Allocation table for the long-term preview.
-    allocation_table: list[AllocationLine] = []
-    for r in snapshot.allocations:
-        if r.target_pct is None:
-            continue
-        current_k = r.usd_value_k or 0.0
-        target_k = r.target_k or 0.0
-        delta_k = r.delta_k if r.delta_k is not None else (target_k - current_k)
-        allocation_table.append(AllocationLine(
-            asset_class=r.category,
-            current_pct=r.pct or 0.0,
-            current_k_usd=current_k,
-            target_pct=r.target_pct or 0.0,
-            target_k_usd=target_k,
-            delta_k_usd=delta_k,
-        ))
-
-    return nvda_price, allocation_table
+    return nvda_price
 
 
 def _build_allocation_preview(
     post_tax_usd: float,
-    allocation_table: list[AllocationLine],
+    doc,
+    holdings: dict[str, float],
+    *,
+    as_of: date,
 ) -> list[AllocationProposal]:
-    """Run ``_allocate_long_term`` over the nominal post-tax amount.
+    """Plan-bound long-term allocation preview for the nominal post-tax amount.
+
+    Routes through the canonical ``cash_only_deploy`` engine (via
+    ``_allocate_long_term_from_plan``) so the preview's instruments match
+    /deploy-cash + the windfall/unallocated-cash buy lists.
 
     Empty when:
       * post-tax amount is non-positive (defensive — vest gross was zero)
-      * allocation table is empty (no portfolio snapshot)
+      * no current canonical plan is accepted (``doc is None``) — an honest
+        empty preview beats a fabricated split.
     """
     if post_tax_usd <= 0:
         return []
-    if not allocation_table:
+    if doc is None:
         return []
-    # 100% budget so the preview reflects the full post-tax amount.
-    # The caller can render whichever subset the UI wants.
-    proposals, _remaining = _allocate_long_term(
-        post_tax_usd, allocation_table, long_term_budget_fraction=1.0,
+    proposals, _remaining = _allocate_long_term_from_plan(
+        post_tax_usd, doc, holdings, as_of=as_of,
     )
     return proposals
 

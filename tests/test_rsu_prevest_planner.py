@@ -28,10 +28,40 @@ from argosy.services.rsu_prevest_planner import (
 )
 from argosy.state.models import (
     Base,
+    PlanVersion,
     PortfolioSnapshotRow,
     RsuVestEvent,
     User,
 )
+
+
+def _canonical_doc():
+    """Canonical doc: Growth→CNDX. The allocation preview is sized off THIS doc
+    (via cash_only_deploy), not the snapshot's TSV allocation table."""
+    from argosy.services.target_allocation_doc import (
+        AllocationClassDoc, AllocationInstrument, GlideWaypoint, TargetAllocationDoc,
+    )
+    return TargetAllocationDoc(
+        schema_version=1, anchor_sigma=0.18, blended_sigma=0.18, nvda_cap_pct=13.0,
+        fi_pct=20.0, provenance="t",
+        classes=[AllocationClassDoc(
+            label="Growth", snapshot_category="Growth", sigma_class="us_equity",
+            target_pct=100.0,
+            instruments=[AllocationInstrument(
+                symbol="CNDX", role="primary", weight_within_class_pct=100.0,
+                domicile="IE")])],
+        glide=[GlideWaypoint(quarter=0, date=date(2026, 1, 1),
+               composition_pct_by_class={"Growth": 100.0})],
+    )
+
+
+def _seed_plan(session, *, user_id: str = "ariel") -> None:
+    """Seed a current canonical plan so the allocation preview is plan-bound."""
+    session.add(PlanVersion(
+        user_id=user_id, role="current", version_label="t",
+        target_allocation_json=_canonical_doc().model_dump_json(),
+    ))
+    session.commit()
 
 
 @pytest.fixture
@@ -302,12 +332,13 @@ class TestTaxScenarios:
 
 
 class TestAllocationPreview:
-    def test_preview_present_when_snapshot_available(self, db_session):
+    def test_preview_present_when_plan_accepted(self, db_session):
         _seed_vest(
             db_session, grant_id="G1",
             vest_date=date(2026, 3, 1), shares=100, fmv=200,
         )
         _seed_snapshot(db_session, nvda_price=180.0)
+        _seed_plan(db_session)
         out = compute_upcoming_vest_outlook(
             db_session, "ariel",
             horizon_days=365,
@@ -317,27 +348,24 @@ class TestAllocationPreview:
         # Snapshot supplied a spot price → that wins over FMV fallback.
         assert v.nvda_price_usd == 180.0
         assert v.expected_gross_usd == pytest.approx(100 * 180)
-        # Allocation preview must be non-empty + target under-target
-        # classes (Growth, Core Equity) and not Cash (under-target check
-        # excludes Cash per windfall_allocator._under_target).
+        # Preview is plan-bound: instruments come from the canonical doc (CNDX),
+        # NOT a hardcoded class→ticker map.
         assert len(v.allocation_preview) > 0
-        classes = {p.asset_class for p in v.allocation_preview}
-        assert "Cash" not in classes
-        # Total allocation should equal the nominal post-tax amount
-        # (long_term_budget_fraction=1.0 in our preview path).
+        assert {p.instrument for p in v.allocation_preview} == {"CNDX"}
+        # Total allocation should equal the nominal post-tax amount (100% budget,
+        # empty book → all of it deploys to the single canonical instrument).
         total = sum(p.amount_usd for p in v.allocation_preview)
-        # The allocator caps each class at its gap so we may have a
-        # remainder. Assert: total <= post_tax_nominal (tight), AND
-        # total > 0 (something was allocated).
-        assert total <= v.expected_post_tax_nominal_usd + 1e-3
+        assert total == pytest.approx(v.expected_post_tax_nominal_usd, rel=1e-3)
         assert total > 0.0
 
-    def test_preview_empty_when_no_snapshot(self, db_session):
+    def test_preview_empty_when_no_plan_accepted(self, db_session):
+        """No accepted plan → honest empty preview, never a hardcoded fallback."""
         _seed_vest(
             db_session, grant_id="G1",
             vest_date=date(2026, 3, 1), shares=100, fmv=200,
         )
-        # No snapshot seeded.
+        _seed_snapshot(db_session, nvda_price=180.0)
+        # No plan seeded.
         out = compute_upcoming_vest_outlook(
             db_session, "ariel",
             horizon_days=365,
@@ -346,12 +374,12 @@ class TestAllocationPreview:
         v = out.upcoming[0]
         assert v.allocation_preview == []
 
-    def test_preview_empty_when_snapshot_lacks_allocations(self, db_session):
+    def test_preview_empty_when_no_snapshot(self, db_session):
+        """No snapshot AND no plan → empty preview."""
         _seed_vest(
             db_session, grant_id="G1",
             vest_date=date(2026, 3, 1), shares=100, fmv=200,
         )
-        _seed_snapshot(db_session, nvda_price=180.0, with_allocations=False)
         out = compute_upcoming_vest_outlook(
             db_session, "ariel",
             horizon_days=365,

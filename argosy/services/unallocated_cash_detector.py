@@ -12,9 +12,13 @@ relative to the user's plan target for cash, which is parsed from the
 TSV's "Current allocation:" block (`AllocationRow`). The user's chosen
 threshold was "Plan-target gap" via AskUserQuestion on 2026-05-29.
 
-Reuses ``windfall_allocator._allocate_long_term`` directly so the
-proposals carry the same shape + asset-class targeting logic as the
-windfall flow. The Accept/Defer surface piggybacks on the renamed
+The long-term buy list is bound to the CANONICAL instrument-level
+``TargetAllocationDoc`` via ``windfall_allocator.propose_allocations_from_plan``
+(``cash_only_deploy``) — the SAME engine ``/deploy-cash`` uses — so the same
+``(doc, holdings, cash)`` yields the same instruments across all three
+surfaces. The cash-overage TRIGGER still reads the snapshot's TSV cash row
+(current vs target cash); only the instrument PICKS are canonical. The
+Accept/Defer surface piggybacks on the renamed
 ``allocation_actions`` table (migration 0041) with
 ``action_source='unallocated_cash'`` -- a "cash overage" decision and a
 "windfall RSU sale allocation" decision share the shape (horizon,
@@ -38,7 +42,7 @@ from argosy.services.portfolio_snapshot_store import (
 )
 from argosy.services.retirement.windfall_allocator import (
     AllocationProposal,
-    _allocate_long_term,
+    _allocate_long_term_from_plan,
 )
 from argosy.services.retirement.windfall_detector import AllocationLine
 
@@ -127,16 +131,38 @@ def detect_unallocated_cash_overage(
             today = datetime.now(timezone.utc).date()
         if (today - snapshot.snapshot_date).days > staleness_days:
             return None
-    return _detect_from_snapshot(snapshot, overage_ratio=overage_ratio)
+
+    # Load the canonical plan + current holdings via the SAME accessors
+    # /deploy-cash uses, so the long-term buy list is instrument-for-instrument
+    # identical across surfaces. Fail loud (downstream) if no plan is accepted —
+    # never fall back to a hardcoded class→instrument map.
+    from argosy.services.allocation_engine import tradeable_holdings
+    from argosy.services.target_allocation_doc import load_plan_target_allocation
+    from argosy.state.queries import get_current_plan
+
+    pv = get_current_plan(db, user_id)
+    doc = load_plan_target_allocation(pv) if pv is not None else None
+    holdings, _cash = tradeable_holdings(snapshot)
+    as_of = today or datetime.now(timezone.utc).date()
+    return _detect_from_snapshot(
+        snapshot, doc=doc, holdings=holdings, as_of=as_of,
+        overage_ratio=overage_ratio)
 
 
 def _detect_from_snapshot(
     snapshot: PortfolioSnapshot,
     *,
+    doc,
+    holdings: dict[str, float],
+    as_of: date,
     overage_ratio: float = DEFAULT_OVERAGE_RATIO,
 ) -> UnallocatedCashEvent | None:
     """Pure detector logic -- broken out from the DB-fetching wrapper so
-    tests can exercise the math without seeding the DB."""
+    tests can exercise the math without seeding the DB.
+
+    ``doc`` is the canonical TargetAllocationDoc and ``holdings`` the current
+    tradeable book; the long-term proposals are sized + named off them via the
+    canonical engine. A non-None overage with ``doc is None`` fails loud."""
     if not snapshot.allocations:
         return None
     cash_row = _find_cash_row(snapshot.allocations)
@@ -162,17 +188,27 @@ def _detect_from_snapshot(
 
     # Allocate 100% of the excess to long-term proposals (no medium/short
     # placeholders -- the unallocated-cash flow is about concrete buy
-    # suggestions, not horizon split).
-    proposals, _remaining = _allocate_long_term(
-        excess_usd, allocation_table,
-        long_term_budget_fraction=1.0,
-    )
-
-    headline = (
-        f"Cash sits {ratio:.1f}x your plan target "
-        f"({current_k:.0f}K vs {target_k:.0f}K). Proposed allocation closes "
-        f"the largest plan-target gaps."
-    )
+    # suggestions, not horizon split). Instruments come from the canonical doc
+    # via the SAME cash_only_deploy engine /deploy-cash uses. With NO accepted
+    # plan we surface the overage with an EMPTY buy list + an explanatory
+    # headline rather than inventing instruments from a hardcoded map — fail
+    # visible, never silently wrong.
+    if doc is None:
+        proposals = []
+        headline = (
+            f"Cash sits {ratio:.1f}x your plan target "
+            f"({current_k:.0f}K vs {target_k:.0f}K), but no plan is accepted yet "
+            f"— accept a plan to get a plan-bound buy list."
+        )
+    else:
+        proposals, _remaining = _allocate_long_term_from_plan(
+            excess_usd, doc, holdings, as_of=as_of,
+        )
+        headline = (
+            f"Cash sits {ratio:.1f}x your plan target "
+            f"({current_k:.0f}K vs {target_k:.0f}K). Proposed allocation closes "
+            f"the largest plan-target gaps."
+        )
 
     return UnallocatedCashEvent(
         detected_at=datetime.now(timezone.utc),

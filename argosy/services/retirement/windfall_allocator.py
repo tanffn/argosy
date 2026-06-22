@@ -1,8 +1,8 @@
-"""Plan-aware windfall allocator — reads the TSV's Current Allocation table
-and generates ranked allocation proposals split across three horizons.
+"""Plan-aware windfall allocator — generates ranked allocation proposals split
+across three horizons.
 
 User spec (2026-05-28):
-  - LONG-TERM: closes the largest negative deltas vs plan targets
+  - LONG-TERM: closes the largest gaps vs the CANONICAL plan targets
                  (deterministic, fast, low-confidence sensitivity).
   - MEDIUM-TERM: 3-12mo thesis trades — handed off to the multi-agent
                  fleet for full debate (analysts → bull/bear → trader →
@@ -10,43 +10,26 @@ User spec (2026-05-28):
   - SHORT-TERM: opportunistic entries from the watchlist + recent news.
                  Also fleet-driven.
 
-This module implements the LONG-TERM cut today. The medium + short
-horizon outputs are stubbed with rationale pointing to the fleet
+The LONG-TERM cut is bound to the canonical instrument-level
+``TargetAllocationDoc`` via :func:`propose_allocations_from_plan`, which
+delegates to ``allocation_engine.cash_only_deploy`` — the SAME path the
+``/deploy-cash`` surface uses. There is exactly ONE buy list across the
+windfall, unallocated-cash, and deploy-cash surfaces: feed the same
+``(doc, holdings, cash)`` and you get the same instruments. The medium +
+short horizon outputs are stubbed with rationale pointing to the fleet
 integration that follows.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Literal
 
 from argosy.services.retirement.citations import ValueWithRationale
-from argosy.services.retirement.windfall_detector import (
-    AllocationLine,
-    WindfallEvent,
-)
+from argosy.services.retirement.windfall_detector import WindfallEvent
 
 
 Horizon = Literal["long", "medium", "short"]
-
-
-# Map asset_class names from the TSV to preferred instruments. Picks
-# instruments the user already holds when possible (per user spec: "prefer
-# what's in your portfolio"). Falls back to a sensible default if none.
-# DOMICILE-AWARE (S18): UCITS (Irish-domiciled) twins, NOT US-domiciled ETFs —
-# for a non-US-person US-domiciled shares are US-situs and rebuild the estate-tax
-# tail (cite estate_tax_nonresidents.md / feedback_canonical_allocation_ucits_preferred).
-# This mirrors the canonical allocation_plan engine. NOTE: this hardcoded map is
-# the legacy class-level path; the proper fix is to bind windfall buys to the
-# canonical instrument-level TargetAllocationDoc (diff_plan_vs_holdings) — tracked.
-_PREFERRED_INSTRUMENTS_BY_CLASS: dict[str, list[str]] = {
-    "Core Equity":       ["CSPX", "ACWD"],
-    "Defensive":         ["IB01", "IBTA"],
-    "Dividend":          ["FUSA"],
-    "Growth":            ["CNDX", "R1GR"],
-    "Individual Stocks": ["SMGB", "WTAI"],  # high-potential via UCITS thematic, non-US-situs
-    "International":     ["EXUS", "FWRA"],
-    "Alternative":       ["DPYA"],
-}
 
 
 @dataclass
@@ -98,82 +81,81 @@ class WindfallAllocationPlan:
         }
 
 
-def _under_target(line: AllocationLine) -> bool:
-    """Under target = positive delta.
+def _symbol_to_class_label(doc) -> dict[str, str]:
+    """symbol -> canonical class label, for annotating buy proposals with the
+    plan class a buy fills. A symbol appearing in >1 class keeps the first."""
+    out: dict[str, str] = {}
+    for cls in getattr(doc, "classes", []) or []:
+        for instr in cls.instruments:
+            out.setdefault(instr.symbol, cls.label)
+    return out
 
-    TSV convention: ``delta = target - current``. So:
-      - positive delta  → current < target → UNDER target (need to add)
-      - negative delta  → current > target → OVER target  (need to trim)
-    Cash is excluded from "under target" candidates regardless of sign —
-    a windfall is cash, allocating cash to cash is a no-op.
+
+def _candidates_to_long_proposals(
+    candidates, doc,
+) -> list[AllocationProposal]:
+    """Map canonical ``AllocationCandidate[]`` (from ``cash_only_deploy``) onto the
+    long-term ``AllocationProposal`` DTO the UI surfaces consume.
+
+    Every BUY leg becomes one ``horizon='long'`` proposal whose ``instrument`` is
+    the canonical plan symbol (NOT a hardcoded class default) and whose
+    ``asset_class`` is the canonical class the symbol fills. ``closes_delta_usd``
+    equals the deployed amount — the engine sizes each buy at its plan-target gap
+    (water-filled to cash), so the deployed dollars ARE the gap closed.
     """
-    if line.asset_class.strip().lower() == "cash":
-        return False
-    return line.delta_k_usd > 0
-
-
-def _allocate_long_term(
-    windfall_usd: float,
-    allocation_table: list[AllocationLine],
-    *,
-    long_term_budget_fraction: float = 0.60,
-) -> tuple[list[AllocationProposal], float]:
-    """Plan-target closing allocation.
-
-    Allocates 60% of the windfall to closing the largest negative deltas
-    (under-target asset classes). Within each class, picks the user's
-    preferred instrument.
-    """
+    sym_to_class = _symbol_to_class_label(doc)
     proposals: list[AllocationProposal] = []
-    budget_usd = windfall_usd * long_term_budget_fraction
-    remaining = budget_usd
-
-    # Take only under-target classes, sorted by magnitude of gap descending
-    under = sorted(
-        (line for line in allocation_table if _under_target(line)),
-        key=lambda line: -line.delta_k_usd,  # largest positive delta first
-    )
-
-    for line in under:
-        if remaining <= 0:
-            break
-        gap_usd = abs(line.delta_k_usd) * 1000.0
-        allocate = min(remaining, gap_usd)
-        if allocate <= 0:
-            continue
-        instruments = _PREFERRED_INSTRUMENTS_BY_CLASS.get(
-            line.asset_class, [],
-        )
-        # Spread across up to 2 instruments per class for diversification
-        if len(instruments) >= 2 and allocate >= 30_000:
-            split = [allocate * 0.6, allocate * 0.4]
-            picks = instruments[:2]
-        elif instruments:
-            split = [allocate]
-            picks = [instruments[0]]
-        else:
-            split = [allocate]
-            picks = ["(class-level; pick ticker)"]
-        for amount, instr in zip(split, picks):
+    for cand in candidates:
+        for leg in cand.legs:
+            if leg.side != "BUY":
+                continue
+            amount = round(abs(leg.notional_usd), 2)
+            if amount <= 0:
+                continue
+            label = sym_to_class.get(leg.symbol, "(plan instrument)")
             proposals.append(AllocationProposal(
                 horizon="long",
-                asset_class=line.asset_class,
-                instrument=instr,
+                asset_class=label,
+                instrument=leg.symbol,
                 amount_usd=amount,
-                rationale=(
-                    f"Closes the {line.asset_class} plan-target gap "
-                    f"(${abs(line.delta_k_usd):,.0f}K under target). "
-                    f"Preferred instrument: {instr} (already in your portfolio)."
-                    if instr != "(class-level; pick ticker)"
-                    else f"Closes {line.asset_class} gap; no preferred "
-                         "instrument registered — pick a ticker in this class."
+                rationale=cand.rationale or (
+                    f"Deploy ${amount:,.0f} into {leg.symbol} toward its "
+                    f"canonical plan target ({label})."
                 ),
                 closes_delta_usd=amount,
                 confidence="high",
                 source_id="argosy_derived",
             ))
-        remaining -= allocate
+    return proposals
 
+
+def _allocate_long_term_from_plan(
+    budget_usd: float,
+    doc,
+    holdings: dict[str, float],
+    *,
+    as_of: date,
+) -> tuple[list[AllocationProposal], float]:
+    """Canonical plan-bound long-term allocation.
+
+    Deploys ``budget_usd`` toward the glide-aware instrument-level targets via
+    the SAME ``cash_only_deploy`` engine ``/deploy-cash`` uses, then maps the
+    resulting candidates into the proposal DTO. Returns ``(proposals, remaining)``
+    where ``remaining`` is the budget the engine could not place against current
+    plan targets (surfaced, never silently dropped).
+    """
+    if doc is None:
+        raise ValueError(
+            "windfall long-term allocation requires the canonical "
+            "TargetAllocationDoc — refusing to fall back to a hardcoded "
+            "instrument map (accept a plan first).")
+    if budget_usd <= 0:
+        return [], max(0.0, budget_usd)
+    candidates = propose_allocations_from_plan(
+        doc, holdings, budget_usd, as_of=as_of)
+    proposals = _candidates_to_long_proposals(candidates, doc)
+    placed = sum(p.amount_usd for p in proposals)
+    remaining = round(max(0.0, budget_usd - placed), 2)
     return proposals, remaining
 
 
@@ -244,17 +226,26 @@ def _stub_short_term(
 def propose_allocations(
     windfall: WindfallEvent,
     *,
+    doc,
+    holdings: dict[str, float],
+    as_of: date,
     long_term_budget_fraction: float = 0.60,
     medium_term_budget_fraction: float = 0.25,
     short_term_budget_fraction: float = 0.15,
 ) -> WindfallAllocationPlan:
-    """Generate ranked long/medium/short allocation proposals."""
+    """Generate ranked long/medium/short allocation proposals.
+
+    The horizon BUDGET split (60/25/15) is preserved for the amount math, but
+    the long-term INSTRUMENTS come from the canonical ``TargetAllocationDoc``
+    (via ``cash_only_deploy``), so the same cash yields the same instruments as
+    ``/deploy-cash``. ``doc`` is required — fail loud rather than fall back to a
+    hardcoded class→instrument map.
+    """
     windfall_usd = max(0.0, windfall.cash_delta_total_usd_equiv)
 
-    long_term, remaining_after_long = _allocate_long_term(
-        windfall_usd,
-        windfall.allocation_delta_table,
-        long_term_budget_fraction=long_term_budget_fraction,
+    long_term, _remaining_after_long = _allocate_long_term_from_plan(
+        windfall_usd * long_term_budget_fraction,
+        doc, holdings, as_of=as_of,
     )
 
     medium_term = _stub_medium_term(
@@ -293,13 +284,14 @@ def propose_allocations(
 
 
 def propose_allocations_from_plan(doc, holdings, cash_usd, *, as_of):
-    """Plan-bound cash deployment — the canonical replacement for the TSV-driven
-    long-term path. Delegates to the deterministic allocation engine (glide-aware
-    targets, buy-only and cash-constrained), so 'plan target' is the canonical
-    instrument-level TargetAllocationDoc rather than the TSV's typed targets.
+    """Plan-bound cash deployment — THE canonical long-term buy list. Delegates to
+    the deterministic allocation engine (glide-aware targets, buy-only and
+    cash-constrained), so 'plan target' is the canonical instrument-level
+    TargetAllocationDoc. This is the SAME engine ``/deploy-cash`` calls; the
+    windfall + unallocated-cash long-term proposals route through it (via
+    :func:`_allocate_long_term_from_plan`) so all three surfaces agree.
 
-    Returns ``AllocationCandidate[]`` (the cross-phase contract). The legacy
-    ``propose_allocations`` (TSV path) is retained for consumers not yet migrated."""
+    Returns ``AllocationCandidate[]`` (the cross-phase contract)."""
     from argosy.services.allocation_engine import AllocationMode, compute_allocation
 
     return compute_allocation(doc, holdings, AllocationMode.CASH_ONLY_DEPLOY,
