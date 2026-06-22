@@ -2307,6 +2307,48 @@ class MonitorFlag(Base):
     )
 
 
+class PlanActionAck(Base):
+    """User acknowledgement ("mark done") of a plan action-item checklist row.
+
+    Backs the /proposals "What's on you to do" checklist completion. Each row
+    records that ``user_id`` marked the action ``item_id`` done while it had a
+    specific ``content_fingerprint`` — a stable hash of the item's meaningful
+    content (id + label + dated + any amount in the label/detail), computed in
+    ``_collect_action_items``.
+
+    Resurface-on-change semantic: an item shows as acknowledged only when an ack
+    row exists for ``(user_id, item_id)`` AND its ``content_fingerprint``
+    matches the freshly computed one. If the plan later changes the item, the
+    fingerprint changes, the match fails, and the item RESURFACES as not-done.
+    Marking it done again upserts the row with the new fingerprint.
+
+    ``(user_id, item_id)`` is UNIQUE so an upsert replaces the prior ack rather
+    than accumulating stale fingerprints.
+
+    Migration: alembic 0073.
+    """
+
+    __tablename__ = "plan_action_acks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    item_id: Mapped[str] = mapped_column(Text, nullable=False)
+    content_fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    acknowledged_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "item_id", name="uq_plan_action_acks_user_item"
+        ),
+    )
+
+
 class StateSnapshot(Base):
     """One per-user per-day snapshot of the user's full ``current_state``.
 

@@ -4254,6 +4254,16 @@ class ActionItem(BaseModel):
     rationale: str
     cited_sources: list[str]
     plan_version_id: int
+    # Execution guidance (deterministic-or-synthesized): how_to = concrete
+    # steps, done_when = a checkable completion criterion. See
+    # argosy.services.action_item_guidance.
+    how_to: str
+    done_when: str
+    # Completion / resurface-on-change. ``content_fingerprint`` is a stable
+    # hash of the item's meaningful content; ``acknowledged`` is True iff an ack
+    # row exists for (user_id, item_id) whose stored fingerprint matches.
+    content_fingerprint: str
+    acknowledged: bool
 
 
 class ActionItemsResponse(BaseModel):
@@ -4337,11 +4347,48 @@ def _classify_status(
     return "UPCOMING"
 
 
+_AMOUNT_RE = None  # lazy compile
+
+
+def _content_fingerprint(item_id: str, label: str, detail: str, dated: _date | None) -> str:
+    """Stable hash of an action item's *meaningful* content.
+
+    Inputs: item_id + label + the dated ISO day + any monetary amounts found in
+    the label/detail. If the plan later edits the item (renames it, moves the
+    date, or changes the amount), the fingerprint changes — which makes a prior
+    acknowledgement stop matching so the item RESURFACES as not-done.
+
+    Deliberately ignores rationale/cited_sources/status (cosmetic or
+    time-derived) so an unchanged action keeps a stable fingerprint day-to-day.
+    """
+    import hashlib
+    import re
+
+    global _AMOUNT_RE
+    if _AMOUNT_RE is None:
+        # Match $1,234 / ₪12,000 / 1234.56 / 1.2k style amounts.
+        _AMOUNT_RE = re.compile(r"[₪$]?\s?\d[\d,]*(?:\.\d+)?\s?[kKmM%]?")
+    amounts = sorted(
+        m.group(0).replace(" ", "")
+        for m in _AMOUNT_RE.finditer(f"{label} {detail}")
+    )
+    basis = "".join(
+        [
+            item_id,
+            label.strip(),
+            dated.isoformat() if dated else "",
+            "|".join(amounts),
+        ]
+    )
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:32]
+
+
 def _collect_action_items(
     pv: PlanVersion,
     *,
     today: _date,
     window_days: int,
+    acked: dict[str, str] | None = None,
 ) -> list[ActionItem]:
     """Walk a plan version's short + medium horizon actions and emit
     surfaced ``ActionItem`` rows.
@@ -4382,6 +4429,25 @@ def _collect_action_items(
             days_until = (dated - today).days
             status = _classify_status(dated, today)
             item_id = f"{horizon}.actions.{_slug_action(label)}"
+
+            # how_to / done_when: prefer synthesizer-authored fields on the
+            # action JSON (newer plans); else derive deterministically.
+            how_to = (action.get("how_to") or "").strip()
+            done_when = (action.get("done_when") or action.get("acceptance") or "").strip()
+            if not how_to or not done_when:
+                from argosy.services.action_item_guidance import guidance_for_action
+
+                g = guidance_for_action(
+                    label=label,
+                    detail=detail,
+                    horizon_kind=action.get("horizon_kind"),
+                )
+                how_to = how_to or g.how_to
+                done_when = done_when or g.done_when
+
+            fingerprint = _content_fingerprint(item_id, label, detail, dated)
+            acknowledged = bool(acked) and acked.get(item_id) == fingerprint
+
             items.append(
                 ActionItem(
                     item_id=item_id,
@@ -4394,6 +4460,10 @@ def _collect_action_items(
                     rationale=rationale,
                     cited_sources=cited,
                     plan_version_id=pv.id,
+                    how_to=how_to,
+                    done_when=done_when,
+                    content_fingerprint=fingerprint,
+                    acknowledged=acknowledged,
                 )
             )
     # Sort ASC by date (overdue first because their days_until is negative).
@@ -4401,10 +4471,25 @@ def _collect_action_items(
     return items
 
 
+def _load_action_acks(db: Session, user_id: str) -> dict[str, str]:
+    """Return ``{item_id: content_fingerprint}`` for a user's ack rows."""
+    from argosy.state.models import PlanActionAck
+
+    rows = (
+        db.execute(
+            select(PlanActionAck).where(PlanActionAck.user_id == user_id)
+        )
+        .scalars()
+        .all()
+    )
+    return {r.item_id: r.content_fingerprint for r in rows}
+
+
 @router.get("/action-items", response_model=ActionItemsResponse)
 def get_action_items(
     user_id: str = Query("ariel"),
     window_days: int = Query(14, ge=1, le=365),
+    include_acknowledged: bool = Query(True),
     db: Session = Depends(get_db),
 ) -> ActionItemsResponse:
     """Return a flat list of dated short/medium-horizon actions for the
@@ -4415,8 +4500,16 @@ def get_action_items(
       2. Else the user's currently-accepted plan (role='current').
       3. Else an empty list with 200 (never 404).
 
-    The widget is intentionally read-only. Accepting / rejecting individual
-    items still flows through ``/draft/{id}/items/{item_id}/accept`` etc.
+    Each item carries ``how_to`` / ``done_when`` execution guidance and a
+    ``content_fingerprint`` + ``acknowledged`` flag (see ``PlanActionAck``).
+    By default acknowledged ("done") items are still RETURNED with
+    ``acknowledged=True`` so the UI can render them as done / allow undo; pass
+    ``include_acknowledged=false`` to drop them. An item whose content changed
+    since it was acked re-surfaces as ``acknowledged=False`` automatically.
+
+    Completion flows through ``POST/DELETE /action-items/{item_id}/ack``;
+    accepting / rejecting plan deltas still flows through
+    ``/draft/{id}/items/{item_id}/accept`` etc.
     """
     from argosy.state.queries import get_current_plan, get_pending_draft
 
@@ -4431,7 +4524,12 @@ def get_action_items(
         )
 
     today = datetime.now(timezone.utc).date()
-    items = _collect_action_items(pv, today=today, window_days=window_days)
+    acked = _load_action_acks(db, user_id)
+    items = _collect_action_items(
+        pv, today=today, window_days=window_days, acked=acked
+    )
+    if not include_acknowledged:
+        items = [it for it in items if not it.acknowledged]
 
     overdue_count = sum(1 for it in items if it.status == "OVERDUE")
     today_count = sum(1 for it in items if it.status == "TODAY")
@@ -4449,6 +4547,88 @@ def get_action_items(
         today_count=today_count,
         upcoming_count=upcoming_count,
     )
+
+
+class ActionItemAckRequest(BaseModel):
+    user_id: str = "ariel"
+    content_fingerprint: str
+
+
+@router.post("/action-items/{item_id}/ack")
+def acknowledge_action_item(
+    item_id: str,
+    req: ActionItemAckRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Mark a plan action-item checklist row as done for ``user_id``.
+
+    Upserts a ``plan_action_acks`` row keyed on ``(user_id, item_id)`` with the
+    client-supplied ``content_fingerprint`` (the value the UI read off the GET
+    response). If the plan later edits the item its fingerprint changes, the
+    stored ack stops matching, and the item resurfaces as not-done. Idempotent:
+    re-acking the same fingerprint just refreshes the timestamp.
+    """
+    from datetime import datetime, timezone
+
+    from argosy.state.models import PlanActionAck
+
+    row = (
+        db.execute(
+            select(PlanActionAck)
+            .where(PlanActionAck.user_id == req.user_id)
+            .where(PlanActionAck.item_id == item_id)
+        )
+        .scalars()
+        .first()
+    )
+    now = datetime.now(timezone.utc)
+    if row is None:
+        row = PlanActionAck(
+            user_id=req.user_id,
+            item_id=item_id,
+            content_fingerprint=req.content_fingerprint,
+            acknowledged_at=now,
+        )
+        db.add(row)
+    else:
+        row.content_fingerprint = req.content_fingerprint
+        row.acknowledged_at = now
+    db.commit()
+    return {
+        "item_id": item_id,
+        "user_id": req.user_id,
+        "content_fingerprint": req.content_fingerprint,
+        "acknowledged": True,
+        "acknowledged_at": now.isoformat(),
+    }
+
+
+@router.delete("/action-items/{item_id}/ack")
+def unacknowledge_action_item(
+    item_id: str,
+    user_id: str = Query("ariel"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Un-acknowledge (undo "mark done") a plan action-item checklist row.
+
+    Deletes the ``plan_action_acks`` row for ``(user_id, item_id)`` if present.
+    Idempotent: a missing row is a no-op 200, not a 404.
+    """
+    from argosy.state.models import PlanActionAck
+
+    row = (
+        db.execute(
+            select(PlanActionAck)
+            .where(PlanActionAck.user_id == user_id)
+            .where(PlanActionAck.item_id == item_id)
+        )
+        .scalars()
+        .first()
+    )
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return {"item_id": item_id, "user_id": user_id, "acknowledged": False}
 
 
 # Markdown export — one-pager snapshot of plan + wealth dashboard

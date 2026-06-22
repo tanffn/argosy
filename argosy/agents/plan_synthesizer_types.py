@@ -94,6 +94,14 @@ class Action(BaseModel):
     detail: str = ""
     rationale: str = ""
     cited_sources: list[str] = Field(default_factory=list)
+    # Optional execution guidance surfaced on the /proposals "What's on you to
+    # do" checklist. ``how_to`` = concrete steps (pointing at the right Argosy
+    # surface where relevant); ``done_when`` = a crisp, checkable completion
+    # criterion ("definition of done"). Both default to "" for backward
+    # compatibility — older plans without them fall back to the deterministic
+    # mapper in argosy.services.action_item_guidance.
+    how_to: str = ""
+    done_when: str = ""
 
 
 class SpeculativeCandidate(BaseModel):

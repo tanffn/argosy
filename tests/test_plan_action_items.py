@@ -562,3 +562,255 @@ def test_next_due_is_earliest_future_date(client_with_db):
     assert body["next_due"] == _today_iso(2)
     assert body["overdue_count"] == 1
     assert body["upcoming_count"] == 2  # Future #1 + Future #2 (both DUE_SOON/UPCOMING)
+
+
+# ---------- how_to / done_when guidance --------------------------------
+
+
+def test_deterministic_guidance_populated_for_rsu_withholding(client_with_db):
+    """An action with no how_to/done_when in its JSON gets deterministic
+    guidance derived from the label (the RSU-withholding example)."""
+    _seed_draft(
+        client_with_db,
+        short_actions=[
+            {
+                "label": "Verify the June 2026 RSU withholding is adequate",
+                "horizon_kind": "dated",
+                "trigger_or_date": _today_iso(1),
+                "detail": "",
+                "rationale": "",
+                "cited_sources": [],
+            }
+        ],
+    )
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["how_to"]
+    assert item["done_when"]
+    # Withholding category points the user at the payslip vs §102 comparison.
+    assert "§102" in item["how_to"] or "payslip" in item["how_to"].lower()
+
+
+def test_source_how_to_done_when_override_deterministic(client_with_db):
+    """When the action JSON carries how_to / done_when (acceptance), those
+    are used verbatim instead of the deterministic mapper."""
+    _seed_draft(
+        client_with_db,
+        short_actions=[
+            {
+                "label": "Verify the June 2026 RSU withholding is adequate",
+                "horizon_kind": "dated",
+                "trigger_or_date": _today_iso(1),
+                "detail": "",
+                "rationale": "",
+                "cited_sources": [],
+                "how_to": "SYNTH STEPS: open payroll portal and read line 47.",
+                "done_when": "SYNTH DONE: line 47 matches the estimate.",
+            }
+        ],
+    )
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["how_to"] == "SYNTH STEPS: open payroll portal and read line 47."
+    assert item["done_when"] == "SYNTH DONE: line 47 matches the estimate."
+
+
+def test_acceptance_field_maps_to_done_when(client_with_db):
+    """The synthesizer may emit ``acceptance`` as the done_when alias."""
+    _seed_draft(
+        client_with_db,
+        short_actions=[
+            {
+                "label": "Rebalance NVDA toward target",
+                "horizon_kind": "dated",
+                "trigger_or_date": _today_iso(1),
+                "detail": "",
+                "rationale": "",
+                "cited_sources": [],
+                "acceptance": "ACCEPTED: weight at or below target on /portfolio.",
+            }
+        ],
+    )
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["done_when"] == "ACCEPTED: weight at or below target on /portfolio."
+    # how_to still derived deterministically (rebalance category).
+    assert "/proposals" in item["how_to"]
+
+
+# ---------- ack / resurface-on-change ----------------------------------
+
+
+def test_ack_then_acknowledged_true_then_unack(client_with_db):
+    """POST ack → acknowledged=True; DELETE ack → acknowledged=False."""
+    _seed_draft(
+        client_with_db,
+        short_actions=[
+            {
+                "label": "Deploy the cash into the sleeve",
+                "horizon_kind": "dated",
+                "trigger_or_date": _today_iso(2),
+                "detail": "",
+                "rationale": "",
+                "cited_sources": [],
+            }
+        ],
+    )
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["acknowledged"] is False
+    item_id = item["item_id"]
+    fp = item["content_fingerprint"]
+
+    # Ack it.
+    r = client_with_db.post(
+        f"/api/plan/action-items/{item_id}/ack",
+        json={"user_id": "ariel", "content_fingerprint": fp},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["acknowledged"] is True
+
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["acknowledged"] is True
+
+    # Un-ack it.
+    r = client_with_db.delete(
+        f"/api/plan/action-items/{item_id}/ack?user_id=ariel"
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["acknowledged"] is False
+
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["acknowledged"] is False
+
+
+def test_changed_fingerprint_resurfaces_item(client_with_db):
+    """Ack an item, then edit the plan so its content (and fingerprint)
+    changes — the item must re-surface as acknowledged=False."""
+    _seed_draft(
+        client_with_db,
+        short_actions=[
+            {
+                "label": "Deploy $50k into the sleeve",
+                "horizon_kind": "dated",
+                "trigger_or_date": _today_iso(2),
+                "detail": "",
+                "rationale": "",
+                "cited_sources": [],
+            }
+        ],
+    )
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    item_id = item["item_id"]
+    fp_old = item["content_fingerprint"]
+    client_with_db.post(
+        f"/api/plan/action-items/{item_id}/ack",
+        json={"user_id": "ariel", "content_fingerprint": fp_old},
+    )
+    assert (
+        client_with_db.get("/api/plan/action-items?user_id=ariel")
+        .json()["items"][0]["acknowledged"]
+        is True
+    )
+
+    # Simulate a plan edit: same slug/item_id (label keyword unchanged) but
+    # the amount in the detail changes → fingerprint changes.
+    sess = client_with_db.app.state.session_factory()
+    try:
+        from argosy.state.models import PlanVersion
+
+        pv = sess.query(PlanVersion).filter_by(user_id="ariel", role="draft").one()
+        pv.horizon_short_json = _make_short_actions_json(
+            [
+                {
+                    "label": "Deploy $50k into the sleeve",
+                    "horizon_kind": "dated",
+                    "trigger_or_date": _today_iso(2),
+                    "detail": "now actually $75k after the windfall",
+                    "rationale": "",
+                    "cited_sources": [],
+                }
+            ]
+        )
+        sess.add(pv)
+        sess.commit()
+    finally:
+        sess.close()
+
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    assert item["item_id"] == item_id  # same item identity
+    assert item["content_fingerprint"] != fp_old  # content changed
+    assert item["acknowledged"] is False  # resurfaced
+
+
+def test_include_acknowledged_false_drops_done_items(client_with_db):
+    """include_acknowledged=false hides acked items entirely."""
+    _seed_draft(
+        client_with_db,
+        short_actions=[
+            {
+                "label": "Trim NVDA",
+                "horizon_kind": "dated",
+                "trigger_or_date": _today_iso(1),
+                "detail": "",
+                "rationale": "",
+                "cited_sources": [],
+            }
+        ],
+    )
+    item = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel"
+    ).json()["items"][0]
+    client_with_db.post(
+        f"/api/plan/action-items/{item['item_id']}/ack",
+        json={"user_id": "ariel", "content_fingerprint": item["content_fingerprint"]},
+    )
+    # Default still returns it (marked done).
+    assert len(
+        client_with_db.get("/api/plan/action-items?user_id=ariel").json()["items"]
+    ) == 1
+    # include_acknowledged=false drops it.
+    body = client_with_db.get(
+        "/api/plan/action-items?user_id=ariel&include_acknowledged=false"
+    ).json()
+    assert body["items"] == []
+
+
+def test_unack_missing_row_is_noop_200(client_with_db):
+    """Deleting an ack that doesn't exist is an idempotent 200."""
+    r = client_with_db.delete(
+        "/api/plan/action-items/short.actions.nonexistent/ack?user_id=ariel"
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["acknowledged"] is False
+
+
+# ---------- migration ---------------------------------------------------
+
+
+def test_migration_creates_plan_action_acks(alembic_engine_at_head):
+    """Migration 0073 creates the plan_action_acks table at head."""
+    import sqlalchemy as sa
+
+    inspector = sa.inspect(alembic_engine_at_head)
+    assert "plan_action_acks" in inspector.get_table_names()
+    cols = {c["name"] for c in inspector.get_columns("plan_action_acks")}
+    assert {
+        "id",
+        "user_id",
+        "item_id",
+        "content_fingerprint",
+        "acknowledged_at",
+    } <= cols
