@@ -108,6 +108,42 @@ browse/audit, while its high-conviction output flows into "Needs you now" as a
 proper, sized, propose-and-ask BUY — subject to the same shadow-mode + IPS +
 north-star + estate (UCITS-preferred) guards as held-name proposals.
 
+## Funding-aware proposals + sell-to-fund switch (owner, 2026-06-22)
+
+Discovery runs **every weekday** and its conviction picks feed the daily
+decision funnel (above). Crucially, every BUY the funnel produces — held-name
+add OR discovery-driven new name — must be **FUNDED**, checked against the
+user's **settled, available-now cash** ("Cash to allocate"), not the nominal
+balance. The funding step:
+
+1. **Cash covers it** → normal Buy, sized to available cash.
+2. **Cash short, but the opportunity clears a higher bar** → a **SWITCH**
+   proposal: "Sell X (~$Z) → Buy Y", presented as ONE paired decision (not two
+   unlinked items). Fires only when Y's conviction MATERIALLY exceeds the
+   funding source's (a "fantastic deal" threshold, not a routine swap), and
+   only when net-positive after tax + transaction friction.
+3. **Cash short, nothing worth selling** → NO action invented; surface the idea
+   honestly ("great idea, but no funding without a sale you'd regret"), or hold
+   it until cash arrives.
+
+**Funding-source (X) selection — deterministic policy + fleet judgement:**
+- Eligible: liquid, **fast-settling** (standard ETF/equity, ~T+1–T+2 → cash in
+  days), lowest-conviction / most-overweight-vs-target / weakest-thesis-fit, and
+  tax-sensible to trim.
+- **NVDA is INELIGIBLE as a funding source** — RSU/NVDA-sale proceeds take
+  **~2–3 weeks to settle**, so an NVDA sale cannot fund a buy "now". (NVDA also
+  has its own managed deconcentration glide; opportunistic funding must not
+  borrow from it.)
+- More generally, model cash by **SETTLEMENT DATE, not nominal balance**:
+  "Cash to allocate" = settled + available today; pending RSU/sale proceeds are
+  tracked separately with their arrival date. A time-sensitive deal can only be
+  funded from sources that settle in time; otherwise surface it as a
+  "buy once your pending proceeds settle (~<date>)" scheduled item.
+
+This makes the inbox's BUY items honest: each is either funded from cash or
+carries its own funding (the paired sell), and the funnel never proposes a buy
+it can't pay for.
+
 ## Removals / demotions (not just collapse)
 
 - "Escalate tier" → **"Ask for deeper review"** (the current label reads as
@@ -139,9 +175,14 @@ north-star + estate (UCITS-preferred) guards as held-name proposals.
 2. The explicit **priority policy** with thresholds (overdue, $ affected, drift,
    risk, cash drag, confidence) + per-item "why ranked".
 3. Wire **discovery → decision-funnel candidate source** (§Discovery drives
-   proposals) so new-name BUYs enter the queue.
-4. Consider renaming `/proposals` → `/actions` or `/inbox` (open question).
-5. A proper **audit/history** surface for funnel transparency, reasoning trails,
+   proposals), running every weekday, so new-name BUYs enter the queue.
+4. **Funding-aware proposals + sell-to-fund switch** (§Funding-aware): a funding
+   step on every BUY against settled cash; a paired "Sell X → Buy Y" when cash
+   is short and the deal clears the bar; settlement-date cash model with NVDA
+   excluded as a funding source (~2–3wk RSU settlement). Reuses the deploy-cash
+   advisor + tax-lot reconcilers already built.
+5. Consider renaming `/proposals` → `/actions` or `/inbox` (open question).
+6. A proper **audit/history** surface for funnel transparency, reasoning trails,
    resolved/expired proposals, and self-verifications.
 
 ## Open question for the owner
