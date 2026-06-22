@@ -670,16 +670,12 @@ export default function ProposalsPage() {
             Deploy your cash
           </h2>
           <p className="text-sm text-muted-foreground mt-1 max-w-3xl">
-            One pool of idle cash:{" "}
-            <span className="text-foreground">how much is deployable</span>{" "}
-            (what&apos;s above your plan target) feeds{" "}
-            <span className="text-foreground">the buy list</span> (the single
-            actionable place to deploy it, by risk tier — accept or defer each
-            line). Below that,{" "}
-            <span className="text-foreground">context</span>: where the cash
-            came from (reconciled to RSU sales) and where the portfolio is short
-            of plan. It&apos;s all the same money — one list to act on, not
-            three.
+            <span className="text-foreground">How much is deployable</span>{" "}
+            (cash above your plan target) and{" "}
+            <span className="text-foreground">where to put it</span> — a buy
+            list by risk tier; accept or defer each line. Below:{" "}
+            <span className="text-foreground">where the cash came from</span>{" "}
+            (reconciled to your RSU sales) and where you&apos;re short of target.
           </p>
         </div>
 
@@ -730,7 +726,7 @@ export default function ProposalsPage() {
           <DiscoveryCard />
           <CollapsibleSection
             title="Raw sourcing (advanced)"
-            summary="trend radar + exit monitor — the conviction picks above supersede the old $-sized sleeve"
+            summary="trend radar + exit monitor — the underlying signals behind the conviction picks above"
           >
             <TrendRadarCard />
             <SpeculativeMonitorCard />
