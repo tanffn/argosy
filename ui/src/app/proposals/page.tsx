@@ -29,7 +29,7 @@ import {
   type ProposalListItem,
   type ReasoningTrailItem,
 } from "@/lib/api";
-import { friendlySourceLabel } from "@/lib/plain-english-labels";
+import { friendlySourceLabel, friendlyStatus } from "@/lib/plain-english-labels";
 import { ActionChecklistHeader } from "@/components/proposals/action-checklist-header";
 import { ActionProposalCard } from "@/components/proposals/ActionProposalCard";
 import { CustomizeModal } from "@/components/proposals/CustomizeModal";
@@ -223,7 +223,7 @@ function ProposalCard(props: ActionProps) {
             <CardTitle className="text-base">
               {p.action.toUpperCase()} {p.ticker}
             </CardTitle>
-            <Badge variant={statusVariant(p.status)}>{p.status}</Badge>
+            <Badge variant={statusVariant(p.status)}>{friendlyStatus(p.status)}</Badge>
           </div>
           <div className="text-xs font-mono text-muted-foreground">
             #{p.id} · {p.account_class} · {p.confidence ?? "?"}
@@ -590,7 +590,8 @@ export default function ProposalsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Proposals</h1>
           <p className="text-sm text-muted-foreground">
-            Pending decisions across all tiers. Approve, reject, or escalate.
+            Decisions waiting on you — approve, reject, or send back for a
+            deeper review.
           </p>
         </div>
         <select
@@ -600,7 +601,7 @@ export default function ProposalsPage() {
         >
           {filterOptions.map((opt) => (
             <option key={opt || "all"} value={opt}>
-              {opt || "All statuses"}
+              {opt ? friendlyStatus(opt) : "All statuses"}
             </option>
           ))}
         </select>
@@ -740,21 +741,17 @@ export default function ProposalsPage() {
       {!loading && rows.length === 0 && (
         <Card>
           <CardContent className="py-10 text-center text-sm text-muted-foreground flex flex-col gap-3 items-center">
-            <p>No proposals match the selected filter.</p>
+            <p>Nothing needs your decision right now.</p>
             <p>
-              Proposals are produced by ticker-decision flows. Head to the{" "}
+              Want a second opinion on a specific stock? Head to{" "}
               <Link
                 href="/consult"
                 className="text-primary hover:underline font-medium"
               >
-                Consult
+                Ask the team
               </Link>{" "}
-              tab to submit a ticker with your rationale and have the agent
-              fleet generate a structured Buy/Sell/Hold proposal.
-            </p>
-            <p className="text-xs">
-              From the CLI you can also run{" "}
-              <code className="font-mono">argosy decide --ticker NVDA --tier T2</code>.
+              — give it a ticker and your thinking, and Argosy returns a
+              Buy / Sell / Hold recommendation with its full reasoning.
             </p>
           </CardContent>
         </Card>
@@ -790,12 +787,12 @@ export default function ProposalsPage() {
         <section className="flex flex-col gap-3">
           <div className="border-t border-border/40 pt-4">
             <h2 className="text-sm font-semibold tracking-tight">
-              Speculative candidates (Argonaut / limited account)
+              Higher-risk / speculative trades
             </h2>
             <p className="text-xs text-muted-foreground">
-              High-conviction speculative trades separate from the core
-              plan. Risk-capped, paper-by-default. Click a card to expand
-              for full rationale and approve / reject.
+              High-conviction speculative ideas, kept separate from your core
+              plan and capped in size. Click a card for the full reasoning and
+              to approve or reject.
             </p>
           </div>
           <ul className="flex flex-col gap-2">
@@ -976,18 +973,19 @@ export default function ProposalsPage() {
           />
         </div>
         <CollapsibleSection
-          title="Action proposals"
+          title="Things Argosy noticed"
           summary={
             actionLoading
               ? "loading…"
-              : `${actionProposals.length} open · system observations — defer / reject / accept`
+              : `${actionProposals.length} open · notes to review — accept / defer / dismiss`
           }
         >
           <p className="text-xs text-muted-foreground">
-            System-proposed nudges derived from state observations (allocation
-            drift, cash overweight, plan-assumption drift, watchlist). These are
-            mostly notes, not buy/sell orders — Accept records your decision
-            (it never moves money), Defer snoozes it, Reject dismisses it.
+            Things Argosy flagged while watching your portfolio — your mix
+            drifting from plan, cash piling up, a plan assumption that may no
+            longer hold, a name to keep an eye on. These are notes, not
+            buy/sell orders: Accept records your decision (it never moves
+            money), Defer snoozes it, Dismiss clears it.
           </p>
           {actionError && (
             <p className="text-sm text-error font-mono">{actionError}</p>

@@ -136,3 +136,27 @@ export function friendlySourceLabels(sourceIds: string[], maxCount = 6): string[
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// Proposal status -> plain-language label. The raw values are state-machine
+// enums (awaiting_human, executed_paper, …) that should not surface as-is to
+// the client — they read as internal jargon.
+// ---------------------------------------------------------------------------
+
+const STATUS_LABELS: Record<string, string> = {
+  draft: "Draft",
+  cooling: "Cooling-off",
+  awaiting_human: "Needs your decision",
+  approved: "Approved",
+  rejected: "Rejected",
+  executed_paper: "Done (paper)",
+  executed_live: "Done",
+  blocked: "Blocked",
+  expired: "Expired",
+  cancelled: "Cancelled",
+};
+
+export function friendlyStatus(status: string): string {
+  if (!status) return "";
+  return STATUS_LABELS[status] ?? status.replace(/_/g, " ");
+}

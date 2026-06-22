@@ -61,16 +61,15 @@ export function FunnelTransparencyCard({ userId }: { userId: string }) {
         <div className="flex flex-col gap-3 px-1 py-1">
           {shadow && (
             <p className="text-xs text-muted-foreground">
-              The daily decision funnel is in shadow mode — it scanned the
-              market and your book and recorded what it would propose, but is
-              not yet surfacing trade proposals while it calibrates.
+              Argosy&apos;s daily review is still warming up — it checks the
+              market and your holdings each day and records what it would
+              suggest, but isn&apos;t putting suggestions in front of you yet
+              while it learns what&apos;s worth your attention.
             </p>
           )}
           <p className="text-sm">{narrative.headline}</p>
           {narrative.as_of && (
-            <p className="text-xs font-mono text-muted-foreground">
-              as of {narrative.as_of}
-            </p>
+            <p className="text-xs text-muted-foreground">as of {narrative.as_of}</p>
           )}
           {narrative.proposed.length > 0 && (
             <ul className="flex flex-col gap-1 text-sm">
@@ -83,12 +82,8 @@ export function FunnelTransparencyCard({ userId }: { userId: string }) {
             </ul>
           )}
           <p className="text-xs text-muted-foreground">
-            Full per-name trace (every name considered → acted or dropped, with
-            the reason and the model that decided it) is available at{" "}
-            <code className="font-mono">
-              /api/decisions/funnel/runs/{narrative.run_id}
-            </code>
-            .
+            Every holding it looked at — and why it did or didn&apos;t act — is
+            kept on record so you can always check its work.
           </p>
         </div>
       </CollapsibleSection>
