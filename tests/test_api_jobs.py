@@ -29,8 +29,12 @@ import asyncio
 from datetime import datetime, timezone
 
 import pytest
+import pytest_asyncio
+import sqlalchemy as sa
 from sqlalchemy import select
 from starlette.testclient import TestClient
+
+from argosy.state.models import Base
 
 from argosy.orchestrator.loops.base import (
     CadenceLoop,
@@ -45,6 +49,40 @@ from argosy.state.models import JobRun
 # ---------------------------------------------------------------------------
 # Test jobs
 # ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def engine(tmp_path):
+    """Override the conftest in-memory engine with a FILE-backed one — for the
+    jobs tests ONLY.
+
+    These tests run with the scheduler ON, so the scheduler (run_forever +
+    supervisors, on the TestClient portal thread) and the test thread hit the DB
+    concurrently. The conftest's shared-single-connection ``:memory:`` engine
+    corrupted reads under that cross-thread/cross-loop access — seeded
+    ``job_runs`` rows went missing and reconnect hit sqlite errors,
+    intermittently (passed alone, failed amid siblings). A file-backed DB gives
+    each connection its own handle to ONE consistent on-disk DB; WAL +
+    busy_timeout let the concurrent writers coexist. Scoped to this module so the
+    global ``:memory:`` fixture (which other async tests rely on, and which a
+    file-backed engine would expose to write-lock contention) is unchanged.
+    """
+    test_url = f"sqlite+aiosqlite:///{tmp_path / 'jobs_test.db'}"
+    eng = db_mod.init_engine(test_url)
+
+    @sa.event.listens_for(eng.sync_engine, "connect")
+    def _pragmas(dbapi_conn, _rec):  # pragma: no cover - trivial
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA busy_timeout=30000")
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.close()
+
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    try:
+        yield None
+    finally:
+        await db_mod.dispose_engine()
 
 
 class _OkLoop(CadenceLoop):
