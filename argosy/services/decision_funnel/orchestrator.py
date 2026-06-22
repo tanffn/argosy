@@ -344,18 +344,29 @@ async def run_funnel(
                 inputs={"action": dd.action, "status": dd.status},
                 snapshot_id=snap.id, proposal_id=dd.proposal_id,
             )
-            # Surface routing: only an approved, non-shadow proposal reaches the
-            # client's "needs me now" surface; everything else is recorded but
-            # hidden (shadow calibration / blocked).
-            surfaced = proposed and not shadow
+            # P5 north-star verify: before surfacing, the proposal must trace to
+            # the prime directive (maximize finances + earliest safe retirement).
+            from argosy.services.decision_funnel.north_star import assess_alignment
+
+            verdict = assess_alignment(triggers=cand.triggers, action=dd.action, ips=ips)
+            # Surface routing: an approved, non-shadow, directive-aligned proposal
+            # reaches the client's "needs me now" surface; everything else is
+            # recorded but hidden (shadow calibration / blocked / low-alignment).
+            surfaced = proposed and not shadow and verdict.aligned
+            if not proposed:
+                surface_reason = dd.blocked_reason or "no actionable proposal"
+            elif shadow:
+                surface_reason = "shadow mode — recorded, not surfaced"
+            elif not verdict.aligned:
+                surface_reason = f"north-star: {verdict.justification}"
+            else:
+                surface_reason = f"client needs a decision — {verdict.justification}"
             record_stage_row(
                 s3, run_id=run_id, stage="surface", subject=cand.subject,
                 subject_type="holding",
                 decision=("surfaced" if surfaced else "hidden"),
-                reason=(
-                    "client needs a decision" if surfaced
-                    else ("shadow mode — recorded, not surfaced" if shadow else "no actionable proposal")
-                ),
+                reason=surface_reason,
+                inputs={"north_star_aligned": verdict.aligned},
                 proposal_id=dd.proposal_id,
             )
             if proposed:

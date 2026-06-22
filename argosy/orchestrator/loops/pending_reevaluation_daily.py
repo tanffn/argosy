@@ -93,6 +93,33 @@ class PendingReevaluationDailyLoop(CadenceLoop):
         self.last_output_summary: dict[str, Any] | None = None
 
     async def tick(self) -> dict[str, Any] | None:
+        # Proposal expiry (P4): sweep open, past-TTL proposals to EXPIRED so a
+        # stale recommendation can't be acted on against drifted facts. Runs
+        # daily regardless of whether the decision funnel is enabled.
+        expired_count = 0
+        try:
+            import asyncio as _asyncio
+
+            from argosy.services.proposal_expiry import expire_stale_proposals
+
+            def _sweep_expiry() -> int:
+                from argosy.orchestrator.loops.state_observer import (
+                    _build_default_session_factory,
+                )
+
+                sf = _build_default_session_factory()
+                s = sf()
+                try:
+                    return len(expire_stale_proposals(s, user_id=self.user_id))
+                finally:
+                    s.close()
+
+            expired_count = await _asyncio.to_thread(_sweep_expiry)
+        except Exception as exc:  # noqa: BLE001 — never block the queue sweep
+            _log.warning(
+                "pending_reevaluation_daily.expiry_failed", error=str(exc)[:200]
+            )
+
         rows = await list_pending_for_sweep(user_id=self.user_id)
         if not rows:
             summary = {
@@ -100,6 +127,7 @@ class PendingReevaluationDailyLoop(CadenceLoop):
                 "resolved": 0,
                 "still_pending": 0,
                 "abandoned": 0,
+                "proposals_expired": expired_count,
             }
             self.last_output_summary = summary
             _log.info("pending_reevaluation_daily.no_rows", **summary)
@@ -176,6 +204,7 @@ class PendingReevaluationDailyLoop(CadenceLoop):
             "resolved": resolved,
             "still_pending": still_pending,
             "abandoned": abandoned,
+            "proposals_expired": expired_count,
         }
         self.last_output_summary = summary
         _log.info("pending_reevaluation_daily.summary", **summary)

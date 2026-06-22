@@ -918,4 +918,30 @@ async def get_funnel_run_narrative(
     return build_client_narrative(run, list(stage_rows))
 
 
+@router.get("/funnel/plan-freshness")
+async def get_plan_freshness(user_id: str = Query("ariel")) -> dict[str, Any]:
+    """Plan age + material-change detection (advisory). Surfaces whether the
+    near-term plan actions may be stale; never auto-regenerates."""
+    from argosy.services.decision_funnel.plan_freshness import detect_plan_freshness
+
+    async with db_mod.get_session(user_id) as session:
+        # detect_plan_freshness is a sync-session helper; run it against a sync
+        # view of the same DB via run_in_threadpool to avoid mixing sessions.
+        import anyio
+
+        def _run() -> dict[str, Any]:
+            from argosy.orchestrator.loops.state_observer import (
+                _build_default_session_factory,
+            )
+
+            sf = _build_default_session_factory()
+            s = sf()
+            try:
+                return detect_plan_freshness(s, user_id=user_id).to_dict()
+            finally:
+                s.close()
+
+        return await anyio.to_thread.run_sync(_run)
+
+
 __all__ = ["router"]
