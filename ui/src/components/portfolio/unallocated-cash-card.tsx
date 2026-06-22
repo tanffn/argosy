@@ -1,15 +1,7 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { StatusPill } from "@/components/ui/status-pill";
 import { api, type UnallocatedCashProposalDTO } from "@/lib/api";
 
@@ -19,20 +11,13 @@ interface Props {
 }
 
 /**
- * /proposals detection banner: "$X above your cash target → it's deployable".
+ * /proposals deploy-cash lead-in: one line — "$X above your cash target is
+ * deployable" — sized off the user's plan-target cash row (self-tuning, not a
+ * hard-coded threshold). It is the DETECTION line only; the buy list (where it
+ * goes) is the DeployCashCard below it, and the source breakdown is the
+ * WindfallCard below that — so this stays a single line, not a competing panel.
  *
- * The continuous version of the windfall flow ([[unallocated cash]] memory).
- * Routine paycheck residue below the $25K windfall threshold still needs
- * allocation; this banner surfaces a self-tuning trigger based on the user's
- * plan-target cash row (not a hard-coded dollar threshold).
- *
- * This is the DETECTION surface only — it answers "how much is deployable"
- * (current cash vs plan target vs overage ratio) and feeds the deploy amount.
- * The actionable buy list lives in the DeployCashCard below it; this banner no
- * longer renders a competing list of suggested buys.
- *
- * Renders nothing when no overage detected -- the banner only appears when
- * Argosy thinks the user has actionable unallocated cash.
+ * Renders nothing when no overage detected.
  */
 export function UnallocatedCashCard({ userId, overageRatio = 1.5 }: Props) {
   const [proposal, setProposal] = useState<UnallocatedCashProposalDTO | null>(null);
@@ -67,69 +52,20 @@ export function UnallocatedCashCard({ userId, overageRatio = 1.5 }: Props) {
   const excessK = proposal.excess_usd / 1000;
 
   return (
-    <Card className="border-warning/30">
-      <CardHeader>
-        <div className="flex items-start justify-between gap-2 flex-wrap">
-          <div>
-            <CardTitle className="text-base font-mono">
-              Unallocated cash &mdash; proposed allocation
-            </CardTitle>
-            <CardDescription className="mt-1">
-              {proposal.headline}
-            </CardDescription>
-            {proposal.snapshot_date ? (
-              <div className="mt-1 text-[11px] text-muted-foreground font-mono">
-                Based on snapshot dated {proposal.snapshot_date}
-              </div>
-            ) : null}
-          </div>
-          <StatusPill tone="warning" mono>
-            ${excessK.toFixed(0)}K excess
-          </StatusPill>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-3 gap-2 mb-4 text-xs font-mono text-muted-foreground">
-          <div>
-            <div className="text-foreground font-semibold text-sm">
-              ${proposal.current_cash_k_usd.toFixed(0)}K
-            </div>
-            <div>current cash</div>
-          </div>
-          <div>
-            <div className="text-foreground font-semibold text-sm">
-              ${proposal.target_cash_k_usd.toFixed(0)}K
-            </div>
-            <div>plan target</div>
-          </div>
-          <div>
-            <div className="text-foreground font-semibold text-sm">
-              {proposal.overage_ratio.toFixed(1)}x
-            </div>
-            <div>overage ratio</div>
-          </div>
-        </div>
-
-        <div className="mt-4 text-xs text-muted-foreground">
-          Trigger: current cash &gt; plan-target cash &times;{" "}
-          {overageRatio.toFixed(1)}. Self-tuning &mdash; no hard-coded dollar
-          threshold. The deployable amount feeds the buy list below; see{" "}
-          <Link
-            href="/proposals#deploy-cash"
-            className="text-info hover:underline"
-          >
-            /proposals#deploy-cash
-          </Link>{" "}
-          to choose where it goes, or{" "}
-          <Link
-            href="/proposals#allocation"
-            className="text-info hover:underline"
-          >
-            /proposals#allocation
-          </Link>{" "}
-          for the cross-month windfall flow ($25K+ deltas).
-        </div>
-      </CardContent>
-    </Card>
+    <div className="rounded-lg border border-warning/30 bg-warning/5 px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
+      <p className="text-sm">
+        <span className="font-semibold">
+          ${excessK.toFixed(0)}K is above your cash target
+        </span>{" "}
+        <span className="text-muted-foreground">
+          (${proposal.current_cash_k_usd.toFixed(0)}K cash vs $
+          {proposal.target_cash_k_usd.toFixed(0)}K target) — deployable in the
+          buy list below.
+        </span>
+      </p>
+      <StatusPill tone="warning" mono>
+        ${excessK.toFixed(0)}K deployable
+      </StatusPill>
+    </div>
   );
 }
