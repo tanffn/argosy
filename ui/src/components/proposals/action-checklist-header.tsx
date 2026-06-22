@@ -225,6 +225,28 @@ function ChecklistRow({
               {sub}
             </p>
           ) : null}
+          {item.argosy_verified_summary ? (
+            <div
+              className={cn(
+                "mt-1.5 rounded-md border px-2.5 py-1.5 text-xs flex items-start gap-1.5",
+                item.argosy_verified
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+                  : "border-amber-500/30 bg-amber-500/10 text-amber-300",
+              )}
+            >
+              <span aria-hidden className="mt-px shrink-0 font-mono">
+                {item.argosy_verified ? "✓" : "•"}
+              </span>
+              <span>
+                <span className="font-semibold">
+                  {item.argosy_verified
+                    ? "Argosy verified — "
+                    : "Argosy checked — "}
+                </span>
+                {item.argosy_verified_summary}
+              </span>
+            </div>
+          ) : null}
           <div className="flex items-center gap-3 mt-1">
             {hasDetail ? (
               <button

@@ -284,11 +284,11 @@ def check_withholding(facts: PayslipFacts) -> WithholdingVerdict:
 
     caveats = [
         scope_caveat,
-        "The §102 ordinary equity band is accounted at ~50% (top marginal"
-        " 47% + 3% surtax); the conservative filing estimate uses ~62.17%"
-        " (adds the National Insurance / health band on equity). The top-up is"
-        " the gap, and only bites if your marginal ordinary rate is the top"
-        " bracket.",
+        "~50% is the realistic effective ceiling for the §102 ordinary band"
+        " (top marginal 47% + 3% surtax). A more conservative estimate (~62%)"
+        f" would imply up to ~{_fmt(topup)} more, but it adds National-Insurance"
+        " / health that is typically capped, so an actual top-up is unlikely —"
+        " your annual return settles it.",
         "Filing liability can still adjust for NI/health caps, annual surtax,"
         " FX/NIS basis, and credits; this is the §102 equity tax reconciled"
         " through the payslip, not the final return.",
@@ -296,27 +296,19 @@ def check_withholding(facts: PayslipFacts) -> WithholdingVerdict:
 
     if reconciled:
         status = STATUS_RECONCILED
-        if topup > tol:
-            adequacy = (
-                f"The §102 equity tax reconciles, but set aside ~{_fmt(topup)}"
-                " for a filing-time top-up if your marginal ordinary rate is the"
-                " top bracket (the ordinary band was accounted at ~50%, the"
-                " conservative estimate is ~62%)."
-            )
-        else:
-            adequacy = (
-                "The §102 equity tax looks adequate — the conservative filing"
-                " estimate does not exceed what was already accounted, so a"
-                " top-up is unlikely (a refund — paid back through payroll — is"
-                " even possible)."
-            )
+        # The 50% wire rate IS the realistic effective rate for the §102 ordinary
+        # band; the sim's ~62% is over-conservative (NI/health is capped). So a
+        # clean reconcile means the tax is settled — do NOT push a speculative
+        # "set aside ₪X" number (that alarms with a phantom liability). The
+        # conservative gap stays as data + a soft caveat for the annual return.
         summary = (
-            f"Your payslip reconciles {_fmt(actual)} of §102 equity tax YTD on"
-            f" {_fmt(ord_base)} ordinary + {_fmt(cap_base)} capital equity"
-            f" income. That tax was withheld at sale by the §102 trustee and"
-            f" trued up through payroll, and it matches the §102 model at the"
-            f" 50% wire rate (expected {_fmt(expected_at_wire)}, residual"
-            f" {_fmt(residual)}). {adequacy}"
+            f"Your RSU §102 tax is fully reconciled — nothing to do. {_fmt(actual)}"
+            f" of equity tax YTD (on {_fmt(ord_base)} ordinary + {_fmt(cap_base)}"
+            f" capital income) was withheld at sale by the trustee and trued up"
+            f" on your payslip, matching the §102 model (expected"
+            f" {_fmt(expected_at_wire)}, residual {_fmt(residual)}). Your annual"
+            f" return is the final reconciliation; a refund through payroll is"
+            f" possible, an extra payment is unlikely."
         )
         confidence = "high"
     else:

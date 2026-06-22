@@ -92,8 +92,12 @@ def test_april_reconciles_with_expected_topup() -> None:
 
     assert v.confidence == "high"
     assert isinstance(v.caveats, list) and v.caveats
-    # Summary mentions the earmark.
-    assert "top-up" in v.summary.lower() or "adequate" in v.summary.lower()
+    # A clean reconcile reads "settled, nothing to do" — it must NOT push a
+    # speculative "set aside ₪X" directive (the 62% conservative gap is an
+    # over-conservative artifact, surfaced only as a soft caveat).
+    assert "reconciled" in v.summary.lower()
+    assert "nothing to do" in v.summary.lower()
+    assert "set aside" not in v.summary.lower()
 
 
 # ---------------------------------------------------------------------------

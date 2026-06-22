@@ -4668,6 +4668,14 @@ export interface ActionItem {
   // has an ack row whose stored fingerprint still matches.
   content_fingerprint: string;
   acknowledged: boolean;
+  // Argosy's own verdict on this item from live data (e.g. the §102 payslip
+  // withholding reconciliation answers "verify RSU withholding"). Null when
+  // Argosy has no automated check for the item. argosy_verified is true only
+  // when the evidence confirms it; otherwise the summary still shows but the
+  // item stays open.
+  argosy_verified?: boolean | null;
+  argosy_verified_summary?: string | null;
+  argosy_verified_status?: string | null;
 }
 
 export interface ActionItemsResponse {
