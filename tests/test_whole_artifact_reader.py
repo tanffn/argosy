@@ -24,17 +24,19 @@ from argosy.orchestrator.flows.plan_synthesis.whole_artifact_reader import (
 
 def test_reader_codex_timeout_default_and_env_override(monkeypatch):
     monkeypatch.delenv("ARGOSY_READER_CODEX_TIMEOUT_S", raising=False)
-    assert _reader_codex_timeout_s() == 300
-    assert _hard_ceiling_s() == 360
-    # A large artifact can need more than 5 min; the timeout is bumpable.
-    monkeypatch.setenv("ARGOSY_READER_CODEX_TIMEOUT_S", "540")
+    # Default bumped to 540 (2026-06-21) — a large assembled artifact (~100k
+    # chars) legitimately needs more than 5 min; ceiling adds a 60s grace.
     assert _reader_codex_timeout_s() == 540
     assert _hard_ceiling_s() == 600
+    # Env override to a SMALLER value proves the knob works (and != the default).
+    monkeypatch.setenv("ARGOSY_READER_CODEX_TIMEOUT_S", "300")
+    assert _reader_codex_timeout_s() == 300
+    assert _hard_ceiling_s() == 360
     # Clamped to run_codex's 600s subprocess ceiling; garbage falls back to default.
     monkeypatch.setenv("ARGOSY_READER_CODEX_TIMEOUT_S", "99999")
     assert _reader_codex_timeout_s() == 600
     monkeypatch.setenv("ARGOSY_READER_CODEX_TIMEOUT_S", "not-a-number")
-    assert _reader_codex_timeout_s() == 300
+    assert _reader_codex_timeout_s() == 540  # garbage falls back to the default
 
 
 class _StubCodexResult:
