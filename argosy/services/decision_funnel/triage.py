@@ -85,9 +85,9 @@ class Stage2TriageAgent(BaseAgent[TriageOutput]):
 
 
 def triage_candidate(
-    candidate: "RoutedCandidate",
+    candidate: RoutedCandidate,
     *,
-    market: "MarketRead",
+    market: MarketRead,
     weight_pct: float | None,
     cap_pct: float | None,
     user_id: str = "ariel",

@@ -23,8 +23,9 @@ callables are injectable so the whole flow is testable without live LLMs.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 
@@ -32,6 +33,9 @@ from argosy.config import get_settings
 from argosy.logging import get_logger
 from argosy.services.decision_funnel.book import load_book
 from argosy.services.decision_funnel.deep_decision import run_deep_decision
+from argosy.services.decision_funnel.discovery_candidates import (
+    load_discovery_candidates,
+)
 from argosy.services.decision_funnel.policy import DEFAULT_POLICY, RoutingPolicy
 from argosy.services.decision_funnel.stage0_market import build_market_read
 from argosy.services.decision_funnel.stage1_routing import (
@@ -43,10 +47,12 @@ from argosy.services.decision_funnel.stage1_routing import (
 from argosy.services.decision_funnel.triage import triage_candidate
 from argosy.services.funnel_trace import (
     close_run,
-    fingerprint as _ft_fingerprint,
     open_run,
     record_snapshot,
     record_stage_row,
+)
+from argosy.services.funnel_trace import (
+    fingerprint as _ft_fingerprint,
 )
 from argosy.services.ips import build_ips
 from argosy.services.proposal_expiry import default_expiry, expire_stale_proposals
@@ -63,7 +69,7 @@ _FLEET_MODEL = "claude-opus-4-8"
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _default_session_factory():
@@ -72,7 +78,7 @@ def _default_session_factory():
     return _build_default_session_factory()
 
 
-def _last_review_map(session: "Session", user_id: str) -> dict[str, datetime]:
+def _last_review_map(session: Session, user_id: str) -> dict[str, datetime]:
     """Per-ticker last deep-decision time, from the immutable snapshots — the
     cooldown source of truth."""
     from argosy.state.models import DecisionSnapshot
@@ -86,13 +92,13 @@ def _last_review_map(session: "Session", user_id: str) -> dict[str, datetime]:
     for ticker, ts in rows:
         if ticker and ts is not None:
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                ts = ts.replace(tzinfo=UTC)
             out[ticker.upper()] = ts
     return out
 
 
 def _build_signals(
-    session: "Session", user_id: str, book, market
+    session: Session, user_id: str, book, market
 ) -> dict[str, PerNameSignal]:
     """Assemble per-name signals from ALREADY-INGESTED data: active thesis
     monitor flags + high-materiality news. Price/earnings triggers stay None
@@ -149,7 +155,7 @@ async def run_funnel(
     *,
     now: datetime | None = None,
     trigger: str = "scheduler",
-    session_factory: Callable[[], "Session"] | None = None,
+    session_factory: Callable[[], Session] | None = None,
     policy: RoutingPolicy = DEFAULT_POLICY,
     triage_fn: Callable[..., Any] = triage_candidate,
     deep_decision_fn: Callable[..., Any] = run_deep_decision,
@@ -162,7 +168,7 @@ async def run_funnel(
     stage3_enabled = bool(getattr(settings, "decision_funnel_stage3", False))
     now = now or _utcnow()
     if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        now = now.replace(tzinfo=UTC)
     day = now.date().isoformat()
     sf = session_factory or _default_session_factory()
 
@@ -207,12 +213,23 @@ async def run_funnel(
             book=book, market_read=market, ips=ips, signals=signals,
             last_review_by_ticker=last_review, policy=policy, day=day, now=now,
         )
+        # Discovery-driven NEW-name candidates: the high-potential funnel's
+        # HIGH-conviction BUY picks enter the same flow as held names (new kinds
+        # slot in without a contract change). Skipped for names already held.
+        try:
+            held_tickers = {h.ticker.upper() for h in book}
+            discovery = load_discovery_candidates(
+                s, user_id=user_id, held_tickers=held_tickers, policy=policy,
+            )
+            routing.routed.extend(discovery)
+        except Exception as exc:  # noqa: BLE001 — discovery is additive; never abort the run
+            _log.warning("decision_funnel.discovery_load_failed", error=str(exc)[:200])
         for cand in routing.routed:
             record_stage_row(
                 s, run_id=run_id, stage="stage1", subject=cand.subject,
                 subject_type=cand.subject_type, decision="routed",
                 reason=cand.reason, signal_or_rule=cand.primary_signal,
-                inputs={"triggers": cand.triggers, "is_audit": cand.is_audit},
+                inputs={**cand.extra, "triggers": cand.triggers, "is_audit": cand.is_audit},
                 commit=False,
             )
             if cand.is_audit:
@@ -280,7 +297,9 @@ async def run_funnel(
 
     try:
         for cand, _t in survivors:
-            if cand.subject_type != "holding":
+            # Held names AND discovery new-name picks get a deep BUY/SELL/HOLD
+            # decision; sleeve-level reviews defer to the plan refresh (P3).
+            if cand.subject_type not in ("holding", "discovery"):
                 with sf() as s3:
                     record_stage_row(
                         s3, run_id=run_id, stage="stage3", subject=cand.subject,
@@ -293,7 +312,7 @@ async def run_funnel(
                 with sf() as s3:
                     record_stage_row(
                         s3, run_id=run_id, stage="stage3", subject=cand.subject,
-                        subject_type="holding", decision="stage3_skipped",
+                        subject_type=cand.subject_type, decision="stage3_skipped",
                         reason="Stage 3 disabled (shadow calibration) — would escalate",
                         signal_or_rule=cand.primary_signal,
                     )
@@ -327,7 +346,7 @@ async def run_funnel(
                 with sf() as s3:
                     record_stage_row(
                         s3, run_id=run_id, stage="stage3", subject=cand.subject,
-                        subject_type="holding", decision="deduped",
+                        subject_type=cand.subject_type, decision="deduped",
                         reason="identical decision already recorded today (no re-run)",
                         signal_or_rule=cand.primary_signal, snapshot_id=exists,
                     )
@@ -350,7 +369,7 @@ async def run_funnel(
                 with sf() as s3:
                     record_stage_row(
                         s3, run_id=run_id, stage="stage3", subject=cand.subject,
-                        subject_type="holding", decision="error",
+                        subject_type=cand.subject_type, decision="error",
                         reason=f"deep-decision raised: {str(exc)[:300]}",
                         signal_or_rule=cand.primary_signal,
                     )
@@ -397,11 +416,11 @@ async def run_funnel(
 
                 record_stage_row(
                     s3, run_id=run_id, stage="stage3", subject=cand.subject,
-                    subject_type="holding",
+                    subject_type=cand.subject_type,
                     decision=("proposed" if proposed else "blocked"),
                     reason=(f"action={dd.action}" if proposed else (dd.blocked_reason or "blocked")),
                     signal_or_rule=cand.primary_signal,
-                    inputs={"action": dd.action, "status": dd.status},
+                    inputs={"action": dd.action, "status": dd.status, **cand.extra},
                     snapshot_id=snap.id, proposal_id=dd.proposal_id, commit=False,
                 )
                 if not proposed:
@@ -414,7 +433,7 @@ async def run_funnel(
                     surface_reason = f"client needs a decision — {verdict.justification}"
                 record_stage_row(
                     s3, run_id=run_id, stage="surface", subject=cand.subject,
-                    subject_type="holding",
+                    subject_type=cand.subject_type,
                     decision=("surfaced" if surfaced else "hidden"),
                     reason=surface_reason,
                     inputs={"north_star_aligned": verdict.aligned},

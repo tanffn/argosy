@@ -19,7 +19,7 @@ paths; a from-material-change auto-resynth is neither yet).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import desc, select
@@ -83,15 +83,15 @@ def _plan_as_of(plan) -> datetime | None:
     for attr in ("accepted_at", "imported_at", "created_at"):
         v = getattr(plan, attr, None)
         if v is not None:
-            return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+            return v if v.tzinfo else v.replace(tzinfo=UTC)
     return None
 
 
 def detect_plan_freshness(
-    session: "Session", *, user_id: str, now: datetime | None = None
+    session: Session, *, user_id: str, now: datetime | None = None
 ) -> PlanFreshness:
     """Compute plan age + material-change detection. Never raises."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     from argosy.state.models import FunnelRun, FunnelStageRow
     from argosy.state.queries import get_current_plan
 
@@ -128,7 +128,7 @@ def detect_plan_freshness(
             or latest.started_at is None
             or (
                 latest.started_at if latest.started_at.tzinfo
-                else latest.started_at.replace(tzinfo=timezone.utc)
+                else latest.started_at.replace(tzinfo=UTC)
             ) >= as_of_dt
         )
         if run_after_plan:

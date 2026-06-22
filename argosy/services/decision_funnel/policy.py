@@ -72,6 +72,15 @@ class RoutingPolicy:
     fallback_general_single_name_cap_pct: float = 10.0
     fallback_nvda_cap_pct: float = 13.0
 
+    # --- discovery-driven new-name candidates ---
+    # The discovery funnel's conviction picks feed the decision funnel as
+    # new-name BUY candidates. Only the strongest (HIGH conviction + a BUY
+    # verdict) earn a deep review — a new name is a higher bar than acting on a
+    # held one. Routing them is conservative: deep decision is still
+    # propose-and-ask, and (until the funding engine lands) shadow-gated.
+    route_discovery_picks: bool = True
+    discovery_conviction_floor: str = "HIGH"
+
     @property
     def version(self) -> str:
         """Short content hash — stamped on every run + snapshot."""
@@ -93,7 +102,7 @@ def audit_hit(one_in: int, *, day: str, ticker: str) -> bool:
     run replays identically)."""
     if one_in <= 0:
         return False
-    h = hashlib.sha256(f"{day}|{ticker.upper()}".encode("utf-8")).hexdigest()
+    h = hashlib.sha256(f"{day}|{ticker.upper()}".encode()).hexdigest()
     return int(h[:8], 16) % one_in == 0
 
 

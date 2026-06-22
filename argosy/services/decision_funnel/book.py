@@ -32,7 +32,7 @@ class BookHolding:
     weight_pct: float  # % of the tradeable securities book
 
 
-def load_book(session: "Session", *, user_id: str) -> list[BookHolding]:
+def load_book(session: Session, *, user_id: str) -> list[BookHolding]:
     """Return the current routable book (per-name weights), newest snapshot.
 
     Empty list when there is no snapshot or no tradeable book — the funnel

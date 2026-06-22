@@ -22,7 +22,7 @@ cooldown map from already-ingested data and the trace tables, then calls
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from argosy.services.decision_funnel.policy import (
@@ -64,11 +64,15 @@ class PerNameSignal:
 @dataclass(frozen=True)
 class RoutedCandidate:
     subject: str
-    subject_type: str  # "holding" | "sleeve" | "watch"
+    subject_type: str  # "holding" | "sleeve" | "discovery"
     triggers: list[str]
     primary_signal: str
     reason: str
     is_audit: bool = False
+    # Structured extras folded into the Stage-1 trace inputs (e.g. a discovery
+    # pick's conviction + grader citations), so a routed candidate is traceable
+    # from its source without widening this dataclass per source.
+    extra: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -86,7 +90,7 @@ class RoutingResult:
 
 
 def _cap_for(
-    ticker: str, ips: "InvestmentPolicyStatement | None", policy: RoutingPolicy
+    ticker: str, ips: InvestmentPolicyStatement | None, policy: RoutingPolicy
 ) -> tuple[float | None, bool]:
     """Return ``(cap_pct, resolved)`` for a ticker.
 
@@ -109,7 +113,7 @@ def _cap_for(
     return fallback, False
 
 
-def _nvda_target(ips: "InvestmentPolicyStatement | None") -> float | None:
+def _nvda_target(ips: InvestmentPolicyStatement | None) -> float | None:
     if ips is not None and ips.nvda_target_pct.value is not None:
         return float(ips.nvda_target_pct.value)
     return None
@@ -128,9 +132,9 @@ def _is_blind(sig: PerNameSignal) -> bool:
 
 
 def _hard_triggers(
-    h: "BookHolding",
+    h: BookHolding,
     sig: PerNameSignal,
-    ips: "InvestmentPolicyStatement | None",
+    ips: InvestmentPolicyStatement | None,
     policy: RoutingPolicy,
 ) -> list[str]:
     triggers: list[str] = []
@@ -175,7 +179,7 @@ def _hard_triggers(
 
 
 def _affected_sleeves(
-    ips: "InvestmentPolicyStatement | None",
+    ips: InvestmentPolicyStatement | None,
 ) -> list[str]:
     """Broad-EQUITY sleeves to route on a risk-off macro read (excludes bonds,
     cash, alternatives, gold, crypto, REIT/real-estate, defensive)."""
@@ -191,9 +195,9 @@ def _affected_sleeves(
 
 def route(
     *,
-    book: list["BookHolding"],
-    market_read: "MarketRead",
-    ips: "InvestmentPolicyStatement | None",
+    book: list[BookHolding],
+    market_read: MarketRead,
+    ips: InvestmentPolicyStatement | None,
     signals: dict[str, PerNameSignal],
     day: str,
     now: datetime,
@@ -209,7 +213,7 @@ def route(
     reason; a drop carries its reason. The loop persists both via the trace.
     """
     if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        now = now.replace(tzinfo=UTC)
     # Normalise lookup keys to upper-case so a lowercase signal/cooldown key
     # can't silently miss (codex NIT).
     signals = {k.upper(): v for k, v in (signals or {}).items()}

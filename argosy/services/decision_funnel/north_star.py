@@ -36,6 +36,9 @@ _OPPORTUNITY = {
     "earnings_imminent",
     "high_materiality_news",
     "macro_risk_off",
+    # A high-conviction discovery pick is an opportunity to advance finances; it
+    # justifies a BUY (it is never a risk-reduction trigger).
+    "discovery_pick",
 }
 
 

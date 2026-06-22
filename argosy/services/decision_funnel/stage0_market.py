@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import desc, select
@@ -92,7 +92,7 @@ def _loads(blob: Any, default: Any) -> Any:
         return default
 
 
-def _read_vix(session: "Session") -> float | None:
+def _read_vix(session: Session) -> float | None:
     """Best-effort VIX from MacroCache; None if not cached."""
     try:
         from argosy.state.models import MacroCache
@@ -123,12 +123,12 @@ def _read_vix(session: "Session") -> float | None:
 
 
 def build_market_read(
-    session: "Session", *, user_id: str, now: datetime | None = None
+    session: Session, *, user_id: str, now: datetime | None = None
 ) -> MarketRead:
     """Assemble the Stage-0 macro read. Never raises — degrades to a neutral
     read when no signals are available (the funnel then routes only on
     per-name hard triggers)."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     from argosy.state.models import AlphaReportAnalysis, MonitorFlag, NewsSignal
 
     refs: list[dict[str, Any]] = []
