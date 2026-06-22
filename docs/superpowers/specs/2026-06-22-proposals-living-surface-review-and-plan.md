@@ -45,41 +45,60 @@ client-ready **Buy/Sell/Hold** proposal. Specifically:
 4. **Proposals are terminal.** An open proposal isn't re-evaluated daily as facts change.
 5. **Surface still leaks internal work** (research panels, note-only observations) onto the client.
 
-## D. Plan (phased)
+## D. Ariel's decisions (2026-06-22) — build to these
 
-**P1 — Daily decision agent (the core fix).** New daily loop (after the 17:00/18:00 monitors)
-that, for each ticker with a fresh trigger that day (thesis flag ≥ warning, material
-alpha_report sentiment, allocation drift), fires the decision flow (analysts → bull/bear →
-trader → 3 risk → FM) and writes/refreshes a Buy/Sell/Hold proposal. Store with a daily
-re-eval; surface **only NEW/CHANGED** recommendations needing the client. This makes
-/proposals the daily-actions surface the north star describes. (Scope/cost fork → see questions.)
+1. **Daily agent = a SMART TIERED FUNNEL, not brute force.** "Agent does a review of the market —
+   news, VIX, etc → does it apply to an ETF/index, does it apply to stock X or Y → run
+   preliminary analysis, run deep analysis as needed. Be smart, work like the agency we are
+   building." → Top-down macro→relevance→triage→deep escalation (mirror the existing
+   `discovery_funnel`: radar → quick estimator (Sonnet) → fleet grader (Opus)).
+2. **Discovery/raw-sourcing:** KEEP, collapsed/opt-in (don't remove).
+3. **Plan freshness:** refresh near-term (short-horizon) actions on MATERIAL change (flag escalation),
+   not just monthly.
+4. **/proposals shape:** "needs me now" up top + a COLLAPSED "what Argosy did for me" transparency/
+   audit section (self-resolved work hidden-by-default but auditable on demand).
 
-**P2 — Client-surface compaction.** Restructure /proposals to "what needs you now": fresh
-decisions + real actions on top; demote internal research (discovery/raw-sourcing) and
-note-only observations off the client surface (they feed proposals, not the client). Apply the
-`feedback_client_in_loop_only_when_needed` filter everywhere (self-resolved → hidden).
+## D2. Plan (phased, decisions baked in)
 
-**P3 — Plan freshness.** Trigger an inter-cycle near-term refresh on material flag escalation
-(so action items react to daily reality), or at minimum show plan age + a "refresh" affordance.
+**P1 — Daily decision FUNNEL (keystone).** A daily loop (after the 17:00/18:00 monitors) that
+works like the agency, in escalating tiers — cheap-first, deep-only-where-it-matters:
+  - **Stage 0 — Market review (macro, 1 cheap pass):** ingest/scan the day's market context —
+    news (already via `news_daily`), VIX/volatility, major indices, rates, broad sentiment
+    (alpha_report). Produce a compact "what moved + why" macro read.
+  - **Stage 1 — Relevance routing (deterministic + cheap LLM):** map the macro read + per-name
+    signals (thesis flags, Form 4, single-name news) onto the actual book. Decide *what could be
+    affected*: which ETF/index sleeves (broad-market moves) and which single names (X, Y). Most
+    of the book is untouched on a normal day → routes to nothing.
+  - **Stage 2 — Preliminary triage (Sonnet quick-estimator):** for each candidate Stage 1 surfaced,
+    a cheap pass: "does this warrant a real decision today?" Kill the no-ops here.
+  - **Stage 3 — Deep decision (Opus full fleet) ONLY for survivors:** analysts → bull/bear →
+    trader → 3 risk → FM → a fresh Buy/Sell/Hold proposal (reuse `decisions/flow.py`).
+  - Store proposals with a daily re-eval; surface **only NEW/CHANGED** recommendations. Reuse the
+    `discovery_funnel` triage architecture (radar→estimator→grader) as the template; reuse the
+    estimator/grader model tiers. Use codex-tandem for the routing + any sizing math.
 
-**P4 — Proposal lifecycle + closed loop.** Daily re-evaluate open proposals (TTL/re-check);
-generalize the payslip closed-loop expectation layer (mark-done → expect evidence in next
-report → confirm/resurface) across action types.
+**P2 — Client-surface compaction (frontend).** "Needs me now" up top (fresh decisions + real
+actions). Discovery/raw-sourcing → collapsed/opt-in (per decision #2). Add a collapsed
+**"What Argosy did for me"** transparency section (per decision #4) that lists self-resolved
+work (e.g. the reconciled withholding verdict, monitor checks that passed) — auditable, not
+pushed. Apply `feedback_client_in_loop_only_when_needed` everywhere (self-resolved → hidden from
+the active list, shown only in the transparency section).
+
+**P3 — Plan freshness (per decision #3).** On material flag escalation (thesis break, big drift,
+life event), refresh the plan's short-horizon actions so the to-do reflects today — not the
+1st-of-month snapshot. Show plan age regardless.
+
+**P4 — Proposal lifecycle + closed loop.** Daily re-evaluate open proposals (TTL/re-check, resurface
+only on change); generalize the payslip closed-loop expectation layer (mark-done → expect
+evidence in next report → confirm/resurface) across action types.
 
 **P5 — Verify + north-star check.** Each surfaced item must trace to the prime directive; an
-adversarial pass that asks "does the client actually need this, today, to retire sooner/safer?"
-
-## E. Open questions for Ariel (answered below once reviewed)
-
-1. Daily decision-agent **scope** (cost vs coverage): all holdings+watchlist daily / only
-   triggered tickers / rolling cadence + on-trigger.
-2. **Discovery/research panels** on the client surface: remove (feed proposals silently) / keep collapsed.
-3. **Plan freshness**: refresh near-term on material change / monthly+on-demand is fine (just show age).
-4. **/proposals north star** confirmation: "only what needs you now; everything Argosy handles is hidden."
+adversarial pass: "does the client actually need this, today, to retire sooner/safer?"
 
 ## F. Next-session start point
 
-Begin P1 (daily decision agent) per Ariel's scope answer; it's the keystone. P2 compaction can
-proceed in parallel (frontend). Use codex-tandem for the decision-loop trigger logic + any
-money-affecting sizing. Backend running on :8000; current plan pv62 (2026-06-20). Migrations at
-0074. All prior /proposals + payslip work shipped to master (through commit 53763df).
+Start with **P1 Stage 0+1** (market review + relevance routing) — that's the new spine; Stages
+2-3 reuse the existing estimator/fleet/decision code. P2 compaction (incl. the transparency
+section) can run in parallel on the frontend. Use codex-tandem for P1 routing + sizing.
+Backend on :8000; current plan pv62 (2026-06-20); migrations at 0074. All prior /proposals +
+payslip work shipped to master (through commit 53763df; this plan at ebc1b3b).
