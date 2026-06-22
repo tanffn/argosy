@@ -1,0 +1,150 @@
+# /proposals → an action inbox — redesign plan (for review)
+
+**Date:** 2026-06-22. **Status:** PLAN ONLY — not yet implemented (owner: build later).
+**Mindset:** Argosy is the back office. `/proposals` exists to answer ONE question
+at a glance: **"what, if anything, needs me right now?"** Everything else
+(research, tools, audit, system mechanics) is secondary and collapsed.
+
+Reviewed with codex (design review, 2026-06-22). Owner decisions baked in
+(see §Decisions).
+
+## The problem (today)
+
+Action items are scattered across ~5 positions on the page — the read-only
+"What's on you to do" checklist, the deploy-cash section, the trade-proposal
+list, the speculative cards, and the "Things Argosy noticed" notes — and they
+are interleaved with Tools (Ask the team, Run a portfolio review), Explore
+(discovery, raw sourcing), and Audit (the funnel transparency view, reasoning
+trails). To be *sure* nothing needs them, the user must scan the whole page.
+There is no single "this is what's on you" queue, and there are 4–5 competing
+"lists". A back-office inbox must never make the user hunt.
+
+## The target — four zones, in order
+
+1. **Needs you now** (always open, top) — the only thing the user must look at.
+   ONE prioritized queue. Empty most days → a confident quiet state.
+2. **What Argosy did for me** (collapsed) — audit / transparency (the daily
+   decision-funnel narrative + self-resolved work).
+3. **Tools** (collapsed) — client-initiated commands: Ask the team (consult),
+   Run a portfolio review (rebalance). Not queue items.
+4. **Explore** (collapsed, opt-in) — high-potential discovery + raw sourcing.
+   Research the user can browse — but its real job is to FEED the queue (see
+   §Discovery drives proposals).
+
+### The unification principle (codex)
+
+Unify the **attention contract, not the workflow mechanics.** Every queue item
+shares one envelope:
+- plain-language title,
+- one-line **why now**,
+- a primary action + **Defer** + **Dismiss/Reject** (where applicable),
+- an **expander** for the full reasoning/details.
+
+Inside that envelope each item keeps its own body:
+- a **trade proposal** → approve / reject / ask-for-deeper-review / execute + reasoning trail (inline);
+- a **cash deployment** → ONE item ("Deploy $X idle cash above target") that
+  expands into the tiered buy-list + amount input (do NOT put every buy-list
+  line in the global queue unless each line is independently decision-worthy);
+- a **plan to-do** → mark-done / how-to;
+- a **system note** → acknowledge / defer / dismiss.
+
+The user should never wonder "did I miss another action lower on the page?"
+
+### Prioritisation — legible, not a mystery score
+
+Order the queue by an explicit, explainable policy:
+1. **Overdue / expiring / blocking** — tax deadlines, plan inputs, trades about
+   to expire, execution blockers.
+2. **Risk-reduction decisions** — sell / rebalance / concentration / drift where
+   inaction has downside.
+3. **Material plan commitments** — dated plan to-dos, required info.
+4. **Material cash deployment** — idle cash above the plan band, by amount / drag.
+5. **Opportunity / speculative** — only if they truly require a decision.
+6. **Low-risk observations** — only if material; else → audit/history.
+
+Signals Argosy already has: due/overdue days + expiry, dollars affected, % of
+net worth, risk tier + downside of inaction, drift from target, tax-window
+sensitivity, confidence/consensus, reversibility, whether other work is blocked.
+**Each item states its rank reason locally** ("Top: overdue 3 days, affects
+$84k"). Trust comes from visible reasons.
+
+### Empty / steady state
+
+Most days, nothing needs the user. Open with a confident quiet state, not a
+dead screen:
+
+> You're all caught up. Argosy is watching; nothing needs you.
+
+Plus small liveness signals: `0 pending decisions`, `Last checked: today 08:40`,
+`Next review: Jun 24`, `Cash within target band`, `No overdue plan tasks`,
+`No open approvals`. Then collapsed links to Audit / Tools. **Do not** fill the
+empty state with discovery content — that turns "nothing needs you" into "go
+browse ideas" and undermines the trust contract.
+
+## Decisions (owner, 2026-06-22)
+
+1. **Scope:** plan only for now — implement later.
+2. **Checklist:** REMOVE the read-only "What's on you to do" checklist. Fold its
+   dated plan to-dos into the unified queue as first-class action items (a
+   read-only list that sends the user hunting elsewhere is bad IA).
+3. **Discovery:** keep the discovery/raw-sourcing panel COLLAPSED on /proposals,
+   AND make discovery DRIVE proposals (see next).
+
+## Discovery drives proposals (owner insight)
+
+High-potential discovery is not just browsable research — its output should
+become **actionable proposals** in the queue. Concretely, connect the two
+funnels already built:
+- the **discovery funnel** (radar → Sonnet estimator → Opus grader →
+  conviction picks, `argosy/services/high_potential_funnel.py`) surfaces
+  candidate NEW names;
+- the **decision funnel** (`argosy/services/decision_funnel/`) currently routes
+  only HELD names. Extend Stage 1 to also take high-conviction discovery picks
+  as candidates → Stage 2 triage → Stage 3 deep decision → a **BUY proposal**
+  for a new name, sized against deployable cash (deploy-cash advisor).
+
+So the Explore panel stays collapsed as the "where did this idea come from"
+browse/audit, while its high-conviction output flows into "Needs you now" as a
+proper, sized, propose-and-ask BUY — subject to the same shadow-mode + IPS +
+north-star + estate (UCITS-preferred) guards as held-name proposals.
+
+## Removals / demotions (not just collapse)
+
+- "Escalate tier" → **"Ask for deeper review"** (the current label reads as
+  system mechanics).
+- Reasoning-trail as a page-level section → **inline** per item (expander).
+- Discovery/raw-sourcing → out of the active flow (collapsed Explore, feeding
+  the queue per above).
+- The funnel transparency view → **below** the queue (it's audit, not action).
+- Deploy-cash always-open mid-page section → a single queue item, shown only
+  when there is material idle cash.
+
+## Ranked changes
+
+**Clear wins (low risk):**
+1. One **Needs you now** section at the top with a count + the quiet empty state.
+2. Move all active trade proposals + (folded) plan to-dos + the material
+   cash prompt + material notes into that first section; order by the policy above.
+3. Move Audit, Tools, Explore below it, collapsed.
+4. Remove the read-only checklist (decision #2); its items become queue items.
+5. Gate deploy-cash visibility by materiality; collapse to one queue item.
+6. Group "Ask the team" + "Run a portfolio review" into a collapsed Tools drawer.
+7. Reasoning trails → per-item expander.
+8. "Escalate tier" → "Ask for deeper review".
+9. Empty/quiet state above all secondary zones; liveness signals.
+
+**Bigger restructures (need a second pass / more wiring):**
+1. A real **action-inbox abstraction** spanning trades, plan tasks, cash
+   deployment, discovery-driven buys, and notes — one queue, typed bodies.
+2. The explicit **priority policy** with thresholds (overdue, $ affected, drift,
+   risk, cash drag, confidence) + per-item "why ranked".
+3. Wire **discovery → decision-funnel candidate source** (§Discovery drives
+   proposals) so new-name BUYs enter the queue.
+4. Consider renaming `/proposals` → `/actions` or `/inbox` (open question).
+5. A proper **audit/history** surface for funnel transparency, reasoning trails,
+   resolved/expired proposals, and self-verifications.
+
+## Open question for the owner
+
+- Rename `/proposals` → `/actions` (or `/inbox`)? The IA is an inbox now; the
+  name still says "proposals". Low effort, but it's a naming/identity call.
